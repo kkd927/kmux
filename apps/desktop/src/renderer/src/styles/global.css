@@ -1,0 +1,88 @@
+:root {
+  --kmux-font-family:
+    "JetBrains Mono",
+    "SFMono-Regular",
+    ui-monospace,
+    Menlo,
+    Monaco,
+    Consolas,
+    monospace;
+  --kmux-font-size: 13px;
+  --kmux-line-height: 1;
+  color: var(--text-primary);
+  background: var(--window-bg);
+  font-family: var(--kmux-font-family);
+  text-rendering: optimizeLegibility;
+  color-scheme: dark;
+  font-size: var(--kmux-font-size);
+  line-height: var(--kmux-line-height);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--window-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%),
+    var(--window-bg);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  letter-spacing: inherit;
+}
+
+input,
+select,
+button {
+  outline: none;
+}
+
+::placeholder {
+  color: var(--text-faint);
+}
+
+*::-webkit-scrollbar,
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-track,
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: #ffffff;
+}

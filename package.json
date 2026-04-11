@@ -1,0 +1,45 @@
+{
+  "name": "kmux",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @kmux/desktop",
+    "build": "npm run build:pty-host && npm run build:cli && npm run build --workspace @kmux/desktop",
+    "build:pty-host": "tsup apps/desktop/src/pty-host/index.ts --platform=node --format=cjs --target=node20 --out-dir apps/desktop/dist/pty-host --clean",
+    "build:cli": "tsup packages/cli/src/bin.ts --platform=node --format=cjs --target=node20 --out-dir packages/cli/dist --clean",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3,node-pty",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:visible": "KMUX_E2E_WINDOW_MODE=visible npm run build && playwright test",
+    "capture:scene": "npm run build && node scripts/capture-reference-scene.mjs",
+    "capture:cmux": "node scripts/capture-live-cmux-scene.mjs",
+    "compare:cmux": "npm run capture:scene && npm run capture:cmux",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@playwright/test": "^1.53.2",
+    "@types/node": "^22.15.17",
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.3.7",
+    "@typescript-eslint/eslint-plugin": "^8.31.0",
+    "@typescript-eslint/parser": "^8.31.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "^35.2.0",
+    "electron-vite": "^3.1.0",
+    "eslint": "^9.25.1",
+    "eslint-config-prettier": "^10.1.2",
+    "prettier": "^3.5.3",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  }
+}

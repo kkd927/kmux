@@ -1,0 +1,1489 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { DEFAULT_SHORTCUTS } from "@kmux/ui";
+import {
+  type ActiveWorkspaceVm,
+  type Id,
+  type KmuxSettings,
+  type NotificationItem,
+  type PaneTreeNode,
+  type PtySessionSpec,
+  type SessionLaunchConfig,
+  type SessionRuntimeState,
+  type ShellViewModel,
+  type SidebarLogEntry,
+  type SidebarProgress,
+  type SocketMode,
+  type SplitAxis,
+  type SplitDirection,
+  type SurfaceVm,
+  isoNow,
+  makeId
+} from "@kmux/proto";
+
+export interface WindowState {
+  id: Id;
+  workspaceOrder: Id[];
+  activeWorkspaceId: Id;
+  sidebarVisible: boolean;
+}
+
+export interface WorkspaceState {
+  id: Id;
+  windowId: Id;
+  name: string;
+  nameLocked?: boolean;
+  rootNodeId: Id;
+  nodeMap: Record<Id, PaneTreeNode>;
+  activePaneId: Id;
+  pinned: boolean;
+  cwdSummary?: string;
+  branch?: string;
+  ports: number[];
+  statusText?: string;
+  progress?: SidebarProgress;
+  logs: SidebarLogEntry[];
+}
+
+export interface PaneState {
+  id: Id;
+  workspaceId: Id;
+  surfaceIds: Id[];
+  activeSurfaceId: Id;
+}
+
+export interface SurfaceState {
+  id: Id;
+  paneId: Id;
+  sessionId: Id;
+  title: string;
+  titleLocked: boolean;
+  cwd?: string;
+  branch?: string;
+  ports: number[];
+  unreadCount: number;
+  attention: boolean;
+}
+
+export interface SessionState {
+  id: Id;
+  surfaceId: Id;
+  launch: SessionLaunchConfig;
+  authToken: string;
+  runtimeState: SessionRuntimeState;
+  pid?: number;
+  exitCode?: number;
+}
+
+export interface AppState {
+  windows: Record<Id, WindowState>;
+  workspaces: Record<Id, WorkspaceState>;
+  panes: Record<Id, PaneState>;
+  surfaces: Record<Id, SurfaceState>;
+  sessions: Record<Id, SessionState>;
+  notifications: NotificationItem[];
+  settings: KmuxSettings;
+  activeWindowId: Id;
+}
+
+const DEFAULT_APP_FONT_SIZE = 13;
+const DEFAULT_APP_FONT_FAMILY =
+  '"JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace';
+const DEFAULT_APP_LINE_HEIGHT = 1;
+
+export type AppEffect =
+  | {
+      type: "session.spawn";
+      spec: PtySessionSpec;
+    }
+  | {
+      type: "session.close";
+      sessionId: Id;
+    }
+  | {
+      type: "metadata.refresh";
+      workspaceId: Id;
+      surfaceId?: Id;
+      pid?: number;
+      cwd?: string;
+    }
+  | {
+      type: "persist";
+    }
+  | {
+      type: "notify.desktop";
+      notification: NotificationItem;
+    };
+
+export type AppAction =
+  | { type: "workspace.create"; name?: string; cwd?: string }
+  | { type: "workspace.select"; workspaceId: Id }
+  | { type: "workspace.selectRelative"; delta: number }
+  | { type: "workspace.selectIndex"; index: number }
+  | { type: "workspace.rename"; workspaceId: Id; name: string }
+  | { type: "workspace.close"; workspaceId: Id }
+  | { type: "workspace.closeOthers"; workspaceId: Id }
+  | { type: "workspace.pin.toggle"; workspaceId: Id }
+  | { type: "workspace.move"; workspaceId: Id; toIndex: number }
+  | { type: "workspace.sidebar.toggle" }
+  | { type: "pane.split"; paneId: Id; direction: SplitDirection }
+  | { type: "pane.focus"; paneId: Id }
+  | { type: "pane.focusDirection"; direction: SplitDirection; paneId?: Id }
+  | {
+      type: "pane.resize";
+      paneId: Id;
+      direction: SplitDirection;
+      delta: number;
+    }
+  | { type: "pane.setSplitRatio"; splitNodeId: Id; ratio: number }
+  | { type: "pane.close"; paneId: Id }
+  | { type: "surface.create"; paneId: Id; title?: string; cwd?: string }
+  | { type: "surface.focus"; surfaceId: Id }
+  | { type: "surface.focusRelative"; paneId: Id; delta: number }
+  | { type: "surface.focusIndex"; paneId: Id; index: number }
+  | { type: "surface.rename"; surfaceId: Id; title: string }
+  | { type: "surface.close"; surfaceId: Id }
+  | { type: "surface.closeOthers"; surfaceId: Id }
+  | {
+      type: "surface.metadata";
+      surfaceId: Id;
+      cwd?: string;
+      title?: string;
+      branch?: string;
+      ports?: number[];
+      attention?: boolean;
+      unreadDelta?: number;
+    }
+  | { type: "sidebar.setStatus"; workspaceId: Id; text: string }
+  | { type: "sidebar.clearStatus"; workspaceId: Id }
+  | { type: "sidebar.setProgress"; workspaceId: Id; progress: SidebarProgress }
+  | { type: "sidebar.clearProgress"; workspaceId: Id }
+  | {
+      type: "sidebar.log";
+      workspaceId: Id;
+      level: SidebarLogEntry["level"];
+      message: string;
+    }
+  | { type: "sidebar.clearLog"; workspaceId: Id }
+  | {
+      type: "notification.create";
+      workspaceId: Id;
+      paneId?: Id;
+      surfaceId?: Id;
+      title: string;
+      message: string;
+      source?: NotificationItem["source"];
+    }
+  | { type: "notification.clear"; notificationId?: Id }
+  | { type: "notification.jumpLatestUnread" }
+  | { type: "settings.update"; patch: Partial<KmuxSettings> }
+  | { type: "session.started"; sessionId: Id; pid: number }
+  | { type: "session.exited"; sessionId: Id; exitCode?: number }
+  | { type: "state.restore"; snapshot: AppState };
+
+export function createDefaultSettings(
+  mode: SocketMode = "kmuxOnly"
+): KmuxSettings {
+  return {
+    socketMode: mode,
+    startupRestore: true,
+    notificationDesktop: true,
+    notificationSound: false,
+    shell: process.env.SHELL,
+    shortcuts: { ...DEFAULT_SHORTCUTS },
+    terminalFontSize: DEFAULT_APP_FONT_SIZE,
+    terminalFontFamily: DEFAULT_APP_FONT_FAMILY,
+    terminalLineHeight: DEFAULT_APP_LINE_HEIGHT
+  };
+}
+
+export function createInitialState(): AppState {
+  const windowId = makeId("window");
+  const workspaceId = makeId("workspace");
+  const paneId = makeId("pane");
+  const surfaceId = makeId("surface");
+  const sessionId = makeId("session");
+  const nodeId = makeId("node");
+
+  const state: AppState = {
+    windows: {
+      [windowId]: {
+        id: windowId,
+        workspaceOrder: [workspaceId],
+        activeWorkspaceId: workspaceId,
+        sidebarVisible: true
+      }
+    },
+    workspaces: {
+      [workspaceId]: {
+        id: workspaceId,
+        windowId,
+        name: "hq",
+        rootNodeId: nodeId,
+        nodeMap: {
+          [nodeId]: {
+            id: nodeId,
+            kind: "leaf",
+            paneId
+          }
+        },
+        activePaneId: paneId,
+        pinned: true,
+        cwdSummary: "~/",
+        ports: [],
+        logs: []
+      }
+    },
+    panes: {
+      [paneId]: {
+        id: paneId,
+        workspaceId,
+        surfaceIds: [surfaceId],
+        activeSurfaceId: surfaceId
+      }
+    },
+    surfaces: {
+      [surfaceId]: {
+        id: surfaceId,
+        paneId,
+        sessionId,
+        title: "hq",
+        titleLocked: false,
+        cwd: join(homedir()),
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      }
+    },
+    sessions: {
+      [sessionId]: {
+        id: sessionId,
+        surfaceId,
+        launch: {
+          cwd: join(homedir()),
+          shell: process.env.SHELL,
+          args: []
+        },
+        authToken: makeId("auth"),
+        runtimeState: "pending"
+      }
+    },
+    notifications: [],
+    settings: createDefaultSettings(),
+    activeWindowId: windowId
+  };
+
+  return state;
+}
+
+export function cloneState(snapshot: AppState): AppState {
+  return sanitizeState(structuredClone(snapshot));
+}
+
+export function applyAction(state: AppState, action: AppAction): AppEffect[] {
+  switch (action.type) {
+    case "state.restore":
+      Object.assign(state, cloneState(action.snapshot));
+      return [{ type: "persist" }];
+    case "workspace.create":
+      return createWorkspace(
+        state,
+        action.name ?? "new workspace",
+        action.cwd,
+        !!action.name
+      );
+    case "workspace.select":
+      return selectWorkspace(state, action.workspaceId);
+    case "workspace.selectRelative":
+      return selectWorkspaceRelative(state, action.delta);
+    case "workspace.selectIndex":
+      return selectWorkspaceIndex(state, action.index);
+    case "workspace.rename":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].name =
+          action.name.trim() || state.workspaces[action.workspaceId].name;
+        state.workspaces[action.workspaceId].nameLocked = true;
+      }
+      return [{ type: "persist" }];
+    case "workspace.close":
+      return closeWorkspace(state, action.workspaceId);
+    case "workspace.closeOthers":
+      return closeOtherWorkspaces(state, action.workspaceId);
+    case "workspace.pin.toggle":
+      return toggleWorkspacePinned(state, action.workspaceId);
+    case "workspace.move":
+      return moveWorkspace(state, action.workspaceId, action.toIndex);
+    case "workspace.sidebar.toggle":
+      state.windows[state.activeWindowId].sidebarVisible =
+        !state.windows[state.activeWindowId].sidebarVisible;
+      return [{ type: "persist" }];
+    case "pane.split":
+      return splitPane(state, action.paneId, action.direction);
+    case "pane.focus":
+      return focusPane(state, action.paneId);
+    case "pane.focusDirection":
+      return focusPaneDirection(state, action.direction, action.paneId);
+    case "pane.resize":
+      return resizePane(state, action.paneId, action.direction, action.delta);
+    case "pane.setSplitRatio":
+      return setSplitRatio(state, action.splitNodeId, action.ratio);
+    case "pane.close":
+      return closePane(state, action.paneId);
+    case "surface.create":
+      return createSurface(state, action.paneId, action.title, action.cwd);
+    case "surface.focus":
+      return focusSurface(state, action.surfaceId);
+    case "surface.focusRelative":
+      return focusSurfaceRelative(state, action.paneId, action.delta);
+    case "surface.focusIndex":
+      return focusSurfaceIndex(state, action.paneId, action.index);
+    case "surface.rename":
+      if (state.surfaces[action.surfaceId]) {
+        const nextTitle = action.title.trim();
+        if (nextTitle) {
+          state.surfaces[action.surfaceId].title = nextTitle;
+          state.surfaces[action.surfaceId].titleLocked = true;
+        }
+      }
+      return [{ type: "persist" }];
+    case "surface.close":
+      return closeSurface(state, action.surfaceId);
+    case "surface.closeOthers":
+      return closeOtherSurfaces(state, action.surfaceId);
+    case "surface.metadata":
+      return updateSurfaceMetadata(state, action);
+    case "sidebar.setStatus":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].statusText = action.text.slice(
+          0,
+          256
+        );
+      }
+      return [{ type: "persist" }];
+    case "sidebar.clearStatus":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].statusText = undefined;
+      }
+      return [{ type: "persist" }];
+    case "sidebar.setProgress":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].progress = {
+          value: Math.max(0, Math.min(1, action.progress.value)),
+          label: action.progress.label
+        };
+      }
+      return [{ type: "persist" }];
+    case "sidebar.clearProgress":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].progress = undefined;
+      }
+      return [{ type: "persist" }];
+    case "sidebar.log":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].logs.unshift({
+          id: makeId("log"),
+          level: action.level,
+          message: action.message,
+          createdAt: isoNow()
+        });
+        state.workspaces[action.workspaceId].logs = state.workspaces[
+          action.workspaceId
+        ].logs.slice(0, 50);
+      }
+      return [{ type: "persist" }];
+    case "sidebar.clearLog":
+      if (state.workspaces[action.workspaceId]) {
+        state.workspaces[action.workspaceId].logs = [];
+      }
+      return [{ type: "persist" }];
+    case "notification.create":
+      return createNotification(state, action);
+    case "notification.clear":
+      return clearNotifications(state, action.notificationId);
+    case "notification.jumpLatestUnread":
+      return jumpLatestUnread(state);
+    case "settings.update": {
+      const shortcuts = sanitizeShortcuts({
+        ...state.settings.shortcuts,
+        ...(action.patch.shortcuts ?? {})
+      });
+      state.settings = {
+        ...state.settings,
+        ...action.patch,
+        terminalFontFamily: sanitizeFontFamily(
+          action.patch.terminalFontFamily ?? state.settings.terminalFontFamily
+        ),
+        terminalFontSize: sanitizeFontSize(
+          action.patch.terminalFontSize ?? state.settings.terminalFontSize
+        ),
+        terminalLineHeight: sanitizeLineHeight(
+          action.patch.terminalLineHeight ?? state.settings.terminalLineHeight
+        ),
+        shortcuts
+      };
+      return [{ type: "persist" }];
+    }
+    case "session.started":
+      if (state.sessions[action.sessionId]) {
+        state.sessions[action.sessionId].runtimeState = "running";
+        state.sessions[action.sessionId].pid = action.pid;
+      }
+      return [{ type: "persist" }];
+    case "session.exited":
+      if (state.sessions[action.sessionId]) {
+        state.sessions[action.sessionId].runtimeState = "exited";
+        state.sessions[action.sessionId].exitCode = action.exitCode;
+      }
+      return [{ type: "persist" }];
+    default:
+      return [];
+  }
+}
+
+function createWorkspace(
+  state: AppState,
+  name: string,
+  cwd?: string,
+  nameLocked = false
+): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const workspaceId = makeId("workspace");
+  const paneId = makeId("pane");
+  const surfaceId = makeId("surface");
+  const sessionId = makeId("session");
+  const nodeId = makeId("node");
+  const workspaceName =
+    name.trim() || `workspace ${window.workspaceOrder.length + 1}`;
+
+  state.workspaces[workspaceId] = {
+    id: workspaceId,
+    windowId: window.id,
+    name: workspaceName,
+    nameLocked,
+    rootNodeId: nodeId,
+    nodeMap: {
+      [nodeId]: {
+        id: nodeId,
+        kind: "leaf",
+        paneId
+      }
+    },
+    activePaneId: paneId,
+    pinned: false,
+    cwdSummary: cwd,
+    ports: [],
+    logs: []
+  };
+  state.panes[paneId] = {
+    id: paneId,
+    workspaceId,
+    surfaceIds: [surfaceId],
+    activeSurfaceId: surfaceId
+  };
+  state.surfaces[surfaceId] = {
+    id: surfaceId,
+    paneId,
+    sessionId,
+    title: workspaceName,
+    titleLocked: false,
+    cwd,
+    ports: [],
+    unreadCount: 0,
+    attention: false
+  };
+  state.sessions[sessionId] = {
+    id: sessionId,
+    surfaceId,
+    launch: {
+      cwd,
+      shell: state.settings.shell || process.env.SHELL,
+      args: []
+    },
+    authToken: makeId("auth"),
+    runtimeState: "pending"
+  };
+  window.workspaceOrder.push(workspaceId);
+  window.activeWorkspaceId = workspaceId;
+
+  return [
+    {
+      type: "session.spawn",
+      spec: buildPtySpec(state, workspaceId, surfaceId, sessionId)
+    },
+    { type: "persist" }
+  ];
+}
+
+function selectWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  if (!state.workspaces[workspaceId]) {
+    return [];
+  }
+  window.activeWorkspaceId = workspaceId;
+  return [{ type: "persist" }];
+}
+
+function selectWorkspaceRelative(state: AppState, delta: number): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const index = window.workspaceOrder.indexOf(window.activeWorkspaceId);
+  const next =
+    (index + delta + window.workspaceOrder.length) %
+    window.workspaceOrder.length;
+  return selectWorkspace(state, window.workspaceOrder[next]);
+}
+
+function selectWorkspaceIndex(state: AppState, index: number): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const workspaceId = window.workspaceOrder[index];
+  return workspaceId ? selectWorkspace(state, workspaceId) : [];
+}
+
+function moveWorkspace(
+  state: AppState,
+  workspaceId: Id,
+  toIndex: number
+): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const currentIndex = window.workspaceOrder.indexOf(workspaceId);
+  if (currentIndex === -1) {
+    return [];
+  }
+  const [removed] = window.workspaceOrder.splice(currentIndex, 1);
+  window.workspaceOrder.splice(
+    Math.max(0, Math.min(window.workspaceOrder.length, toIndex)),
+    0,
+    removed
+  );
+  return [{ type: "persist" }];
+}
+
+function closeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  if (window.workspaceOrder.length === 1 || !state.workspaces[workspaceId]) {
+    return [];
+  }
+  const currentIndex = window.workspaceOrder.indexOf(workspaceId);
+  const nextActiveIndex = Math.max(
+    0,
+    Math.min(window.workspaceOrder.length - 2, currentIndex)
+  );
+  const nextActiveWorkspaceId = window.workspaceOrder[nextActiveIndex];
+  const closeEffects = removeWorkspace(state, workspaceId);
+  if (window.activeWorkspaceId === workspaceId && nextActiveWorkspaceId) {
+    window.activeWorkspaceId = nextActiveWorkspaceId;
+  }
+
+  return [...closeEffects, { type: "persist" }];
+}
+
+function closeOtherWorkspaces(state: AppState, workspaceId: Id): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  if (window.workspaceOrder.length <= 1 || !state.workspaces[workspaceId]) {
+    return [];
+  }
+  const closeIds = window.workspaceOrder.filter((id) => id !== workspaceId);
+  return closeWorkspaceIds(state, closeIds, workspaceId);
+}
+
+function closeWorkspaceIds(
+  state: AppState,
+  workspaceIds: Id[],
+  nextActiveWorkspaceId?: Id
+): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const closeIds = workspaceIds.filter(
+    (workspaceId) => state.workspaces[workspaceId]
+  );
+  if (!closeIds.length || closeIds.length >= window.workspaceOrder.length) {
+    return [];
+  }
+  if (nextActiveWorkspaceId && state.workspaces[nextActiveWorkspaceId]) {
+    window.activeWorkspaceId = nextActiveWorkspaceId;
+  }
+  const closeEffects = closeIds.flatMap((workspaceId) =>
+    removeWorkspace(state, workspaceId)
+  );
+  return closeEffects.length ? [...closeEffects, { type: "persist" }] : [];
+}
+
+function toggleWorkspacePinned(state: AppState, workspaceId: Id): AppEffect[] {
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
+    return [];
+  }
+  workspace.pinned = !workspace.pinned;
+  return [{ type: "persist" }];
+}
+
+function removeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
+  const window = state.windows[state.activeWindowId];
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
+    return [];
+  }
+  const paneIds = Object.values(state.panes)
+    .filter((pane) => pane.workspaceId === workspaceId)
+    .map((pane) => pane.id);
+  const sessionIds = paneIds.flatMap((paneId) =>
+    state.panes[paneId].surfaceIds
+      .map((surfaceId) => state.surfaces[surfaceId]?.sessionId)
+      .filter(Boolean)
+  ) as Id[];
+
+  for (const paneId of paneIds) {
+    for (const surfaceId of state.panes[paneId].surfaceIds) {
+      delete state.sessions[state.surfaces[surfaceId].sessionId];
+      delete state.surfaces[surfaceId];
+    }
+    delete state.panes[paneId];
+  }
+  delete state.workspaces[workspace.id];
+  window.workspaceOrder = window.workspaceOrder.filter(
+    (id) => id !== workspaceId
+  );
+
+  return sessionIds.map(
+    (sessionId) => ({ type: "session.close", sessionId }) satisfies AppEffect
+  );
+}
+
+function splitPane(
+  state: AppState,
+  paneId: Id,
+  direction: SplitDirection
+): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  const targetLeafId = Object.values(workspace.nodeMap).find(
+    (node): node is Extract<PaneTreeNode, { kind: "leaf" }> =>
+      node.kind === "leaf" && node.paneId === paneId
+  )?.id;
+  if (!targetLeafId) {
+    return [];
+  }
+
+  const newPaneId = makeId("pane");
+  const newSurfaceId = makeId("surface");
+  const newSessionId = makeId("session");
+  const newLeafId = makeId("node");
+  const splitId = makeId("node");
+  const axis: SplitAxis =
+    direction === "left" || direction === "right" ? "vertical" : "horizontal";
+  const splitNode =
+    direction === "left" || direction === "up"
+      ? {
+          id: splitId,
+          kind: "split" as const,
+          axis,
+          ratio: 0.5,
+          first: newLeafId,
+          second: targetLeafId
+        }
+      : {
+          id: splitId,
+          kind: "split" as const,
+          axis,
+          ratio: 0.5,
+          first: targetLeafId,
+          second: newLeafId
+        };
+
+  replaceNodeReference(workspace, targetLeafId, splitId);
+  workspace.nodeMap[splitId] = splitNode;
+  workspace.nodeMap[newLeafId] = {
+    id: newLeafId,
+    kind: "leaf",
+    paneId: newPaneId
+  };
+
+  state.panes[newPaneId] = {
+    id: newPaneId,
+    workspaceId: workspace.id,
+    surfaceIds: [newSurfaceId],
+    activeSurfaceId: newSurfaceId
+  };
+  state.surfaces[newSurfaceId] = {
+    id: newSurfaceId,
+    paneId: newPaneId,
+    sessionId: newSessionId,
+    title: "new terminal",
+    titleLocked: false,
+    cwd: activeSurface(state, paneId)?.cwd,
+    ports: [],
+    unreadCount: 0,
+    attention: false
+  };
+  state.sessions[newSessionId] = {
+    id: newSessionId,
+    surfaceId: newSurfaceId,
+    launch: {
+      cwd: activeSurface(state, paneId)?.cwd,
+      shell: state.settings.shell || process.env.SHELL,
+      args: []
+    },
+    authToken: makeId("auth"),
+    runtimeState: "pending"
+  };
+  workspace.activePaneId = newPaneId;
+
+  return [
+    {
+      type: "session.spawn",
+      spec: buildPtySpec(state, workspace.id, newSurfaceId, newSessionId)
+    },
+    { type: "persist" }
+  ];
+}
+
+function focusPane(state: AppState, paneId: Id): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  workspace.activePaneId = paneId;
+  const surface = state.surfaces[pane.activeSurfaceId];
+  surface.attention = false;
+  surface.unreadCount = 0;
+  markNotificationsRead(state, pane.workspaceId, paneId, pane.activeSurfaceId);
+  return [{ type: "persist" }];
+}
+
+function focusPaneDirection(
+  state: AppState,
+  direction: SplitDirection,
+  explicitPaneId?: Id
+): AppEffect[] {
+  const workspace = activeWorkspaceState(state);
+  const paneId = explicitPaneId ?? workspace.activePaneId;
+  const rects = computePaneRects(workspace);
+  const current = rects.find((entry) => entry.paneId === paneId);
+  if (!current) {
+    return [];
+  }
+
+  const next = rects
+    .filter((entry) => entry.paneId !== paneId)
+    .map((entry) => ({
+      paneId: entry.paneId,
+      distance: directionalDistance(current, entry, direction)
+    }))
+    .filter((entry) => entry.distance !== Number.POSITIVE_INFINITY)
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  return next ? focusPane(state, next.paneId) : [];
+}
+
+function resizePane(
+  state: AppState,
+  paneId: Id,
+  direction: SplitDirection,
+  delta: number
+): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  const path = findAncestorSplits(workspace, paneId);
+  const targetAxis: SplitAxis =
+    direction === "left" || direction === "right" ? "vertical" : "horizontal";
+  const target = [...path]
+    .reverse()
+    .find(
+      (entry) =>
+        workspace.nodeMap[entry.splitId]?.kind === "split" &&
+        workspace.nodeMap[entry.splitId].axis === targetAxis
+    );
+  if (!target) {
+    return [];
+  }
+  const split = workspace.nodeMap[target.splitId];
+  if (split.kind !== "split") {
+    return [];
+  }
+  const signed = direction === "left" || direction === "up" ? -delta : delta;
+  const ratio = target.isFirst ? split.ratio + signed : split.ratio - signed;
+  split.ratio = clamp(ratio, 0.15, 0.85);
+  return [{ type: "persist" }];
+}
+
+function setSplitRatio(
+  state: AppState,
+  splitNodeId: Id,
+  ratio: number
+): AppEffect[] {
+  const workspace = activeWorkspaceState(state);
+  const split = workspace.nodeMap[splitNodeId];
+  if (split?.kind === "split") {
+    split.ratio = clamp(ratio, 0.1, 0.9);
+  }
+  return [{ type: "persist" }];
+}
+
+function closePane(state: AppState, paneId: Id): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  const paneIds = listPaneIds(workspace);
+  if (paneIds.length === 1) {
+    return [];
+  }
+
+  const leafId = Object.values(workspace.nodeMap).find(
+    (node): node is Extract<PaneTreeNode, { kind: "leaf" }> =>
+      node.kind === "leaf" && node.paneId === paneId
+  )?.id;
+  if (!leafId) {
+    return [];
+  }
+  const parentEntry = findParentSplit(workspace, leafId);
+  if (!parentEntry) {
+    return [];
+  }
+  const parent = workspace.nodeMap[parentEntry.parentId];
+  if (parent.kind !== "split") {
+    return [];
+  }
+  const siblingId = parent.first === leafId ? parent.second : parent.first;
+  replaceNodeReference(workspace, parent.id, siblingId);
+  delete workspace.nodeMap[parent.id];
+  delete workspace.nodeMap[leafId];
+
+  const closeEffects: AppEffect[] = [];
+  for (const surfaceId of pane.surfaceIds) {
+    const surface = state.surfaces[surfaceId];
+    closeEffects.push({ type: "session.close", sessionId: surface.sessionId });
+    delete state.sessions[surface.sessionId];
+    delete state.surfaces[surfaceId];
+  }
+  delete state.panes[paneId];
+  workspace.activePaneId = listPaneIds(workspace)[0];
+
+  return [...closeEffects, { type: "persist" }];
+}
+
+function createSurface(
+  state: AppState,
+  paneId: Id,
+  title?: string,
+  cwd?: string
+): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  const surfaceId = makeId("surface");
+  const sessionId = makeId("session");
+  const launchCwd = cwd ?? activeSurface(state, paneId)?.cwd;
+
+  state.surfaces[surfaceId] = {
+    id: surfaceId,
+    paneId,
+    sessionId,
+    title: title?.trim() || `tab ${pane.surfaceIds.length + 1}`,
+    titleLocked: Boolean(title?.trim()),
+    cwd: launchCwd,
+    ports: [],
+    unreadCount: 0,
+    attention: false
+  };
+  state.sessions[sessionId] = {
+    id: sessionId,
+    surfaceId,
+    launch: {
+      cwd: launchCwd,
+      shell: state.settings.shell || process.env.SHELL,
+      args: [],
+      title
+    },
+    authToken: makeId("auth"),
+    runtimeState: "pending"
+  };
+  pane.surfaceIds.push(surfaceId);
+  pane.activeSurfaceId = surfaceId;
+  workspace.activePaneId = paneId;
+
+  return [
+    {
+      type: "session.spawn",
+      spec: buildPtySpec(state, workspace.id, surfaceId, sessionId)
+    },
+    { type: "persist" }
+  ];
+}
+
+function focusSurface(state: AppState, surfaceId: Id): AppEffect[] {
+  const surface = state.surfaces[surfaceId];
+  if (!surface) {
+    return [];
+  }
+  const pane = state.panes[surface.paneId];
+  pane.activeSurfaceId = surfaceId;
+  surface.attention = false;
+  surface.unreadCount = 0;
+  return focusPane(state, pane.id);
+}
+
+function focusSurfaceRelative(
+  state: AppState,
+  paneId: Id,
+  delta: number
+): AppEffect[] {
+  const pane = state.panes[paneId];
+  if (!pane) {
+    return [];
+  }
+  const index = pane.surfaceIds.indexOf(pane.activeSurfaceId);
+  const nextIndex =
+    (index + delta + pane.surfaceIds.length) % pane.surfaceIds.length;
+  return focusSurface(state, pane.surfaceIds[nextIndex]);
+}
+
+function focusSurfaceIndex(
+  state: AppState,
+  paneId: Id,
+  index: number
+): AppEffect[] {
+  const pane = state.panes[paneId];
+  return pane?.surfaceIds[index]
+    ? focusSurface(state, pane.surfaceIds[index])
+    : [];
+}
+
+function closeSurface(state: AppState, surfaceId: Id): AppEffect[] {
+  const surface = state.surfaces[surfaceId];
+  if (!surface) {
+    return [];
+  }
+  const pane = state.panes[surface.paneId];
+  if (pane.surfaceIds.length === 1) {
+    return closePane(state, pane.id);
+  }
+  pane.surfaceIds = pane.surfaceIds.filter((id) => id !== surfaceId);
+  if (pane.activeSurfaceId === surfaceId) {
+    pane.activeSurfaceId = pane.surfaceIds[0];
+  }
+  delete state.sessions[surface.sessionId];
+  delete state.surfaces[surfaceId];
+  return [
+    { type: "session.close", sessionId: surface.sessionId },
+    { type: "persist" }
+  ];
+}
+
+function closeOtherSurfaces(state: AppState, surfaceId: Id): AppEffect[] {
+  const surface = state.surfaces[surfaceId];
+  if (!surface) {
+    return [];
+  }
+  const pane = state.panes[surface.paneId];
+  const toClose = pane.surfaceIds.filter((id) => id !== surfaceId);
+  const effects = toClose.flatMap((id) => closeSurface(state, id));
+  pane.activeSurfaceId = surfaceId;
+  pane.surfaceIds = [surfaceId];
+  return [...effects, { type: "persist" }];
+}
+
+function updateSurfaceMetadata(
+  state: AppState,
+  action: Extract<AppAction, { type: "surface.metadata" }>
+): AppEffect[] {
+  const surface = state.surfaces[action.surfaceId];
+  if (!surface) {
+    return [];
+  }
+  if (action.cwd !== undefined) {
+    surface.cwd = action.cwd;
+    state.workspaces[state.panes[surface.paneId].workspaceId].cwdSummary =
+      action.cwd;
+  }
+  if (action.title !== undefined) {
+    if (!surface.titleLocked) {
+      surface.title = action.title;
+    }
+    const workspaceId = state.panes[surface.paneId].workspaceId;
+    if (!state.workspaces[workspaceId].nameLocked) {
+      state.workspaces[workspaceId].name = action.title;
+    }
+  }
+  if (action.branch !== undefined) {
+    surface.branch = action.branch;
+    state.workspaces[state.panes[surface.paneId].workspaceId].branch =
+      action.branch;
+  }
+  if (action.ports !== undefined) {
+    surface.ports = action.ports.slice(0, 3);
+    state.workspaces[state.panes[surface.paneId].workspaceId].ports =
+      surface.ports.slice(0, 3);
+  }
+  if (action.attention !== undefined) {
+    surface.attention = action.attention;
+  }
+  if (action.unreadDelta) {
+    surface.unreadCount = Math.max(0, surface.unreadCount + action.unreadDelta);
+  }
+  const workspaceId = state.panes[surface.paneId].workspaceId;
+  const session = state.sessions[surface.sessionId];
+  return [
+    {
+      type: "metadata.refresh",
+      workspaceId,
+      surfaceId: surface.id,
+      pid: session.pid,
+      cwd: surface.cwd
+    },
+    { type: "persist" }
+  ];
+}
+
+function createNotification(
+  state: AppState,
+  action: Extract<AppAction, { type: "notification.create" }>
+): AppEffect[] {
+  const notification: NotificationItem = {
+    id: makeId("notification"),
+    workspaceId: action.workspaceId,
+    paneId: action.paneId,
+    surfaceId: action.surfaceId,
+    title: action.title,
+    message: action.message.slice(0, 512),
+    source: action.source ?? "socket",
+    createdAt: isoNow(),
+    read: false
+  };
+  state.notifications.unshift(notification);
+  if (action.surfaceId && state.surfaces[action.surfaceId]) {
+    state.surfaces[action.surfaceId].attention = true;
+    state.surfaces[action.surfaceId].unreadCount += 1;
+  }
+  return [{ type: "notify.desktop", notification }, { type: "persist" }];
+}
+
+function clearNotifications(state: AppState, notificationId?: Id): AppEffect[] {
+  if (notificationId) {
+    const notification = state.notifications.find(
+      (item) => item.id === notificationId
+    );
+    state.notifications = state.notifications.filter(
+      (item) => item.id !== notificationId
+    );
+    if (notification?.surfaceId) {
+      syncSurfaceNotificationState(state, notification.surfaceId);
+    }
+  } else {
+    state.notifications = [];
+    for (const surface of Object.values(state.surfaces)) {
+      surface.unreadCount = 0;
+      surface.attention = false;
+    }
+  }
+  return [{ type: "persist" }];
+}
+
+function jumpLatestUnread(state: AppState): AppEffect[] {
+  const latest = state.notifications.find((item) => !item.read);
+  if (!latest) {
+    return [];
+  }
+  latest.read = true;
+  if (latest.workspaceId) {
+    selectWorkspace(state, latest.workspaceId);
+  }
+  if (latest.surfaceId) {
+    return focusSurface(state, latest.surfaceId);
+  }
+  return [{ type: "persist" }];
+}
+
+function markNotificationsRead(
+  state: AppState,
+  workspaceId: Id,
+  paneId: Id,
+  surfaceId: Id
+): void {
+  for (const notification of state.notifications) {
+    if (
+      notification.workspaceId === workspaceId &&
+      notification.paneId === paneId &&
+      notification.surfaceId === surfaceId
+    ) {
+      notification.read = true;
+    }
+  }
+  syncSurfaceNotificationState(state, surfaceId);
+}
+
+function syncSurfaceNotificationState(state: AppState, surfaceId: Id): void {
+  const surface = state.surfaces[surfaceId];
+  if (!surface) {
+    return;
+  }
+  const unreadCount = state.notifications.reduce((count, notification) => {
+    if (!notification.read && notification.surfaceId === surfaceId) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
+  surface.unreadCount = unreadCount;
+  surface.attention = unreadCount > 0;
+}
+
+function findParentSplit(
+  workspace: WorkspaceState,
+  nodeId: Id
+): { parentId: Id } | null {
+  for (const node of Object.values(workspace.nodeMap)) {
+    if (
+      node.kind === "split" &&
+      (node.first === nodeId || node.second === nodeId)
+    ) {
+      return { parentId: node.id };
+    }
+  }
+  return null;
+}
+
+function replaceNodeReference(
+  workspace: WorkspaceState,
+  targetNodeId: Id,
+  replacementNodeId: Id
+): void {
+  if (workspace.rootNodeId === targetNodeId) {
+    workspace.rootNodeId = replacementNodeId;
+  }
+  for (const node of Object.values(workspace.nodeMap)) {
+    if (node.kind === "split") {
+      if (node.first === targetNodeId) {
+        node.first = replacementNodeId;
+      }
+      if (node.second === targetNodeId) {
+        node.second = replacementNodeId;
+      }
+    }
+  }
+}
+
+function findAncestorSplits(
+  workspace: WorkspaceState,
+  paneId: Id
+): Array<{ splitId: Id; isFirst: boolean }> {
+  const result: Array<{ splitId: Id; isFirst: boolean }> = [];
+  const walk = (nodeId: Id): boolean => {
+    const node = workspace.nodeMap[nodeId];
+    if (!node) {
+      return false;
+    }
+    if (node.kind === "leaf") {
+      return node.paneId === paneId;
+    }
+    const firstHit = walk(node.first);
+    if (firstHit) {
+      result.push({ splitId: node.id, isFirst: true });
+      return true;
+    }
+    const secondHit = walk(node.second);
+    if (secondHit) {
+      result.push({ splitId: node.id, isFirst: false });
+      return true;
+    }
+    return false;
+  };
+
+  walk(workspace.rootNodeId);
+  return result;
+}
+
+function activeSurface(state: AppState, paneId: Id): SurfaceState | undefined {
+  const pane = state.panes[paneId];
+  return pane ? state.surfaces[pane.activeSurfaceId] : undefined;
+}
+
+function buildPtySpec(
+  state: AppState,
+  workspaceId: Id,
+  surfaceId: Id,
+  sessionId: Id
+): PtySessionSpec {
+  const session = state.sessions[sessionId];
+  return {
+    sessionId,
+    surfaceId,
+    workspaceId,
+    launch: session.launch,
+    cols: 120,
+    rows: 30,
+    env: {
+      KMUX_SOCKET_MODE: state.settings.socketMode,
+      KMUX_WORKSPACE_ID: workspaceId,
+      KMUX_SURFACE_ID: surfaceId,
+      KMUX_AUTH_TOKEN: session.authToken,
+      TERM_PROGRAM: "kmux"
+    }
+  };
+}
+
+export function listPaneIds(workspace: WorkspaceState): Id[] {
+  return Object.values(workspace.nodeMap)
+    .filter(
+      (node): node is Extract<PaneTreeNode, { kind: "leaf" }> =>
+        node.kind === "leaf"
+    )
+    .map((node) => node.paneId);
+}
+
+function activeWorkspaceState(state: AppState): WorkspaceState {
+  return state.workspaces[
+    state.windows[state.activeWindowId].activeWorkspaceId
+  ];
+}
+
+export function buildViewModel(state: AppState): ShellViewModel {
+  const window = state.windows[state.activeWindowId];
+  const workspace = state.workspaces[window.activeWorkspaceId];
+  const workspacePaneIds = listPaneIds(workspace).filter(
+    (paneId) => state.panes[paneId]?.workspaceId === workspace.id
+  );
+  const activeWorkspace: ActiveWorkspaceVm = {
+    id: workspace.id,
+    name: workspace.name,
+    rootNodeId: workspace.rootNodeId,
+    nodes: structuredClone(workspace.nodeMap),
+    panes: Object.fromEntries(
+      workspacePaneIds.map((paneId) => {
+        const pane = state.panes[paneId];
+        return [
+          paneId,
+          {
+            id: pane.id,
+            surfaceIds: [...pane.surfaceIds],
+            activeSurfaceId: pane.activeSurfaceId,
+            focused: workspace.activePaneId === paneId
+          }
+        ];
+      })
+    ),
+    surfaces: Object.fromEntries(
+      Object.values(state.surfaces)
+        .filter(
+          (surface) => state.panes[surface.paneId].workspaceId === workspace.id
+        )
+        .map((surface) => [
+          surface.id,
+          {
+            id: surface.id,
+            title: surface.title,
+            cwd: surface.cwd,
+            branch: surface.branch,
+            ports: [...surface.ports],
+            unreadCount: surface.unreadCount,
+            attention: surface.attention,
+            sessionState:
+              state.sessions[surface.sessionId]?.runtimeState ?? "pending",
+            exitCode: state.sessions[surface.sessionId]?.exitCode
+          } satisfies SurfaceVm
+        ])
+    ),
+    activePaneId: workspace.activePaneId,
+    sidebarStatus: workspace.statusText,
+    progress: workspace.progress,
+    logs: [...workspace.logs]
+  };
+
+  return {
+    windowId: window.id,
+    title: `${workspace.name} cli/unix socket`,
+    sidebarVisible: window.sidebarVisible,
+    workspaceRows: window.workspaceOrder.map((workspaceId) => {
+      const entry = state.workspaces[workspaceId];
+      const surfaces = Object.values(state.surfaces).filter(
+        (surface) => state.panes[surface.paneId].workspaceId === workspaceId
+      );
+      return {
+        workspaceId,
+        name: entry.name,
+        summary: entry.statusText ?? surfaces[0]?.title ?? "Waiting for input",
+        cwd: entry.cwdSummary,
+        branch: entry.branch,
+        ports: entry.ports,
+        statusText: entry.statusText,
+        unreadCount: surfaces.reduce(
+          (sum, surface) => sum + surface.unreadCount,
+          0
+        ),
+        attention: surfaces.some((surface) => surface.attention),
+        pinned: entry.pinned,
+        isActive: workspaceId === window.activeWorkspaceId
+      };
+    }),
+    activeWorkspace,
+    notifications: [...state.notifications],
+    unreadNotifications: state.notifications.filter((item) => !item.read)
+      .length,
+    settings: state.settings
+  };
+}
+
+function sanitizeState(state: AppState): AppState {
+  const firstWindowId = Object.keys(state.windows)[0];
+  if (!state.windows[state.activeWindowId] && firstWindowId) {
+    state.activeWindowId = firstWindowId;
+  }
+
+  const firstWorkspaceId = Object.keys(state.workspaces)[0];
+
+  for (const window of Object.values(state.windows)) {
+    window.workspaceOrder = window.workspaceOrder.filter((workspaceId) =>
+      Boolean(state.workspaces[workspaceId])
+    );
+    if (!window.workspaceOrder.length && firstWorkspaceId) {
+      window.workspaceOrder = [firstWorkspaceId];
+    }
+    if (
+      !state.workspaces[window.activeWorkspaceId] &&
+      window.workspaceOrder.length > 0
+    ) {
+      window.activeWorkspaceId = window.workspaceOrder[0];
+    }
+  }
+
+  for (const pane of Object.values(state.panes)) {
+    pane.surfaceIds = pane.surfaceIds.filter(
+      (surfaceId) => state.surfaces[surfaceId]?.paneId === pane.id
+    );
+    if (
+      pane.surfaceIds.length > 0 &&
+      !pane.surfaceIds.includes(pane.activeSurfaceId)
+    ) {
+      pane.activeSurfaceId = pane.surfaceIds[0];
+    }
+  }
+
+  for (const workspace of Object.values(state.workspaces)) {
+    const paneIds = listPaneIds(workspace).filter(
+      (paneId) => state.panes[paneId]?.workspaceId === workspace.id
+    );
+    if (paneIds.length > 0 && !paneIds.includes(workspace.activePaneId)) {
+      workspace.activePaneId = paneIds[0];
+    }
+    delete (workspace as WorkspaceState & { zoomedPaneId?: Id }).zoomedPaneId;
+  }
+
+  state.settings.shortcuts = sanitizeShortcuts(state.settings.shortcuts);
+  state.settings.terminalFontFamily = sanitizeFontFamily(
+    state.settings.terminalFontFamily
+  );
+  state.settings.terminalFontSize = sanitizeFontSize(
+    state.settings.terminalFontSize
+  );
+  state.settings.terminalLineHeight = sanitizeLineHeight(
+    state.settings.terminalLineHeight
+  );
+
+  return state;
+}
+
+function sanitizeShortcuts(
+  shortcuts: Record<string, string>
+): Record<string, string> {
+  const nextShortcuts = { ...shortcuts };
+  delete nextShortcuts["workspace.switcher"];
+  delete nextShortcuts["pane.zoom"];
+  return nextShortcuts;
+}
+
+function sanitizeFontFamily(fontFamily: string | undefined): string {
+  return fontFamily?.trim() || DEFAULT_APP_FONT_FAMILY;
+}
+
+function sanitizeFontSize(fontSize: number | undefined): number {
+  if (!Number.isFinite(fontSize)) {
+    return DEFAULT_APP_FONT_SIZE;
+  }
+  return Math.max(8, Math.min(32, fontSize));
+}
+
+function sanitizeLineHeight(lineHeight: number | undefined): number {
+  if (!Number.isFinite(lineHeight)) {
+    return DEFAULT_APP_LINE_HEIGHT;
+  }
+  return Math.max(0.8, Math.min(2, lineHeight));
+}
+
+function computePaneRects(
+  workspace: WorkspaceState
+): Array<{ paneId: Id; x: number; y: number; width: number; height: number }> {
+  const rects: Array<{
+    paneId: Id;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> = [];
+  const walk = (
+    nodeId: Id,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ) => {
+    const node = workspace.nodeMap[nodeId];
+    if (!node) {
+      return;
+    }
+    if (node.kind === "leaf") {
+      rects.push({ paneId: node.paneId, x, y, width, height });
+      return;
+    }
+    if (node.axis === "vertical") {
+      const firstWidth = width * node.ratio;
+      walk(node.first, x, y, firstWidth, height);
+      walk(node.second, x + firstWidth, y, width - firstWidth, height);
+    } else {
+      const firstHeight = height * node.ratio;
+      walk(node.first, x, y, width, firstHeight);
+      walk(node.second, x, y + firstHeight, width, height - firstHeight);
+    }
+  };
+  walk(workspace.rootNodeId, 0, 0, 1, 1);
+  return rects;
+}
+
+function directionalDistance(
+  current: { x: number; y: number; width: number; height: number },
+  candidate: { x: number; y: number; width: number; height: number },
+  direction: SplitDirection
+): number {
+  const currentCenterX = current.x + current.width / 2;
+  const currentCenterY = current.y + current.height / 2;
+  const candidateCenterX = candidate.x + candidate.width / 2;
+  const candidateCenterY = candidate.y + candidate.height / 2;
+  const dx = candidateCenterX - currentCenterX;
+  const dy = candidateCenterY - currentCenterY;
+
+  if (direction === "left" && dx >= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (direction === "right" && dx <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (direction === "up" && dy >= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (direction === "down" && dy <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@kmux/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev --config electron.vite.config.ts",
+    "build": "electron-vite build --config electron.vite.config.ts",
+    "preview": "electron-vite preview --config electron.vite.config.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.4",
+    "@vscode/codicons": "^0.0.45",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
+    "better-sqlite3": "^11.10.0",
+    "node-pty": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.4"
+  }
+}

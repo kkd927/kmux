@@ -1,0 +1,11 @@
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[features]
+codex_hooks = true
+
+[agents]
+max_threads = 6
+max_depth = 1
