@@ -45,6 +45,20 @@ npm run rebuild:electron
 - `npm run capture:scene`: capture the current app scene for visual review
 - `npm run compare:cmux`: run the local visual comparison workflow when that parity check is needed
 
+## Release Signing
+
+Tagged desktop releases are signed and notarized in GitHub Actions.
+
+Required repository secrets:
+
+- `CSC_LINK`: base64-encoded `Developer ID Application` certificate export (`.p12`)
+- `CSC_KEY_PASSWORD`: password for the exported `.p12`
+- `APPLE_API_KEY_P8`: App Store Connect API key contents (`AuthKey_*.p8`)
+- `APPLE_API_KEY_ID`: App Store Connect API key ID
+- `APPLE_API_ISSUER`: App Store Connect issuer ID
+
+The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes the path through the `APPLE_API_KEY` environment variable so electron-builder can notarize the build.
+
 ## Recommended Validation Flow
 
 Run the narrowest useful checks first, then broaden out:

@@ -10,9 +10,12 @@ asarUnpack:
   - "**/*.node"
 
 mac:
-  identity: null
   category: public.app-category.developer-tools
   icon: build/icon.icns
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
   target:
     - dmg

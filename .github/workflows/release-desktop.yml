@@ -38,11 +38,52 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Validate macOS signing secrets
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required GitHub secret: $name" >&2
+              exit 1
+            fi
+          done
+      - name: Prepare Apple notarization credentials
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          {
+            echo "APPLE_API_KEY=$api_key_path"
+            echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+          } >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run build
       - run: npm run rebuild:electron
       - name: Package macOS DMG
-        run: npm run dist:mac --workspace @kmux/desktop -- --${{ matrix.arch }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: npm run dist:mac --workspace @kmux/desktop -- --${{ matrix.arch }} -c.forceCodeSigning=true
+      - name: Verify signature and notarization
+        run: |
+          app_path="$(find apps/desktop/release -maxdepth 2 -name '*.app' | head -n 1)"
+          dmg_path="$(find apps/desktop/release -maxdepth 1 -name '*.dmg' | head -n 1)"
+          test -n "$app_path"
+          test -n "$dmg_path"
+          codesign --verify --deep --strict "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+          xcrun stapler validate "$app_path"
+          xcrun stapler validate "$dmg_path"
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
         with:
