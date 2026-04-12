@@ -1,12 +1,12 @@
-# 0002: Electron + xterm.js + node-pty MVP architecture
+# 0002: Electron + xterm.js + node-pty MVP Architecture
 
 ## Context
 
-`docs/spec.md` optimizes for a Rust daemon-first architecture, a custom renderer, and scale targets up to 100 workspaces x 4 panes.
+Earlier planning explored a Rust daemon-first architecture, a custom renderer, and more ambitious scale targets.
 
-That remains a valid long-term direction, but it front-loads a large amount of systems work before the product can validate its core UX.
+Those remain plausible long-term directions, but they front-load a large amount of systems work before the product can validate its core UX.
 
-For the current phase, the goal is narrower:
+For the current product phase, the goal is narrower:
 
 - cover typical single-user developer workloads
 - keep terminal quality high from day one
@@ -39,13 +39,13 @@ Keep these architectural rules even in the Electron MVP:
 - sidebar updates must remain row-scoped and virtualized
 - transport messages must be typed and transport-neutral so the `pty-host` can later become an external daemon
 
-## Scope of deviation
+## Deferred alternatives
 
-This decision intentionally relaxes several constraints from `docs/spec.md` for the MVP phase:
+Compared with those earlier exploratory directions, this decision intentionally does not pursue:
 
 - `No browser or webview dependencies`
 - `No Electron/Tauri dependencies`
-- `Use libghostty-vt behind an internal adapter crate named mux-term-engine`
+- `Use a custom internal terminal engine behind an adapter layer`
 - `Use winit + egui for desktop UI shell`
 - `Use wgpu for terminal rendering, with a software fallback path`
 
@@ -281,9 +281,9 @@ Do not persist raw DOM terminal objects. Session restore should recreate PTYs an
 
 ## Performance envelope
 
-This architecture is explicitly optimized for a smaller target than the current long-term spec.
+This architecture is explicitly optimized for the current MVP target envelope.
 
-Target envelope for the Electron MVP:
+Target envelope:
 
 - 10 to 20 workspaces used actively
 - 1 to 4 panes per workspace
@@ -311,7 +311,7 @@ Do not take these shortcuts even in the MVP:
 
 ## Suggested repository shape
 
-If the project moves to this architecture, a TypeScript/Electron layout like this is a good fit:
+The repository shape for this architecture is:
 
 ```text
 apps/
@@ -325,6 +325,8 @@ packages/
   core/
   persistence/
   metadata/
+  cli/
+  ui/
 ```
 
 Suggested package responsibilities:
@@ -333,13 +335,15 @@ Suggested package responsibilities:
 - `packages/core`: IDs, commands, reducer, selectors, layout tree
 - `packages/persistence`: SQLite schema and data access
 - `packages/metadata`: cwd/git/ports/status helpers
+- `packages/cli`: socket-based automation CLI
+- `packages/ui`: shared UI helpers and tokens
 - `apps/desktop/src/main`: Electron app lifecycle and store host
 - `apps/desktop/src/pty-host`: `node-pty` and headless terminal runtime
 - `apps/desktop/src/renderer`: UI shell, sidebar, pane layout, visible terminals
 
 ## Migration path
 
-This MVP should preserve a future path back toward the original daemon-first architecture.
+This MVP should preserve a future path toward an external daemon architecture if scale or product requirements change.
 
 To keep that option open:
 

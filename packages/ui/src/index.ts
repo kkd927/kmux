@@ -17,7 +17,6 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "pane.resize.down": "Alt+Shift+Meta+ArrowDown",
   "pane.close": "Meta+Alt+K",
   "surface.create": "Meta+T",
-  "surface.rename": "Meta+Ctrl+R",
   "surface.close": "Meta+W",
   "surface.closeOthers": "Meta+Ctrl+W",
   "surface.next": "Ctrl+Tab",
@@ -33,7 +32,10 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "terminal.copyMode": "Meta+Shift+M"
 };
 
-const THEME_TOKENS = {
+export type ColorTheme = "dark" | "light";
+export type ThemeMode = ColorTheme | "system";
+
+const DARK_THEME_TOKENS = {
   windowBg: "#181818",
   shellBg: "#181818",
   titlebarBg: "#181818",
@@ -42,18 +44,18 @@ const THEME_TOKENS = {
   chromeBg: "#1b1b1b",
   chromeElevated: "#202020",
   panelBg: "#1f1f1f",
-  panelMuted: "#181818",
+  panelMuted: "#1d1d1d",
   sidebarBg: "#181818",
   sidebarHeaderBg: "#181818",
   tabBg: "#181818",
   tabInactiveBg: "#181818",
   tabActiveBg: "#1f1f1f",
-  tabHoverBg: "#232323",
+  tabHoverBg: "#252526",
   tabIndicator: "#0078d4",
   cardBg: "#1f1f1f",
-  cardHover: "#232323",
-  cardActive: "rgba(0, 120, 212, 0.14)",
-  cardActiveBorder: "rgba(0, 120, 212, 0.3)",
+  cardHover: "#252526",
+  cardActive: "rgba(9, 71, 113, 0.9)",
+  cardActiveBorder: "#0078d4",
   borderStrong: "#2b2b2b",
   borderSoft: "#303031",
   divider: "#2b2b2b",
@@ -88,6 +90,65 @@ const THEME_TOKENS = {
   scrollbarThumb: "rgba(121, 121, 121, 0.4)",
   scrollbarThumbHover: "rgba(153, 153, 153, 0.56)"
 } as const;
+
+type ThemeTokenName = keyof typeof DARK_THEME_TOKENS;
+type ThemeTokens = Record<ThemeTokenName, string>;
+
+const LIGHT_THEME_TOKENS: ThemeTokens = {
+  windowBg: "#f7f7f5",
+  shellBg: "#f7f7f5",
+  titlebarBg: "#fbfbfb",
+  titlebarInactiveBg: "#eef1f4",
+  titlebarGlow: "rgba(255, 255, 255, 0.72)",
+  chromeBg: "#f4f6f8",
+  chromeElevated: "#eef3f6",
+  panelBg: "#ffffff",
+  panelMuted: "#f4f6f8",
+  sidebarBg: "#e8f1f6",
+  sidebarHeaderBg: "#e8f1f6",
+  tabBg: "#f5f7f9",
+  tabInactiveBg: "#f3f5f7",
+  tabActiveBg: "#ffffff",
+  tabHoverBg: "#edf2f6",
+  tabIndicator: "#0a67d8",
+  cardBg: "#ffffff",
+  cardHover: "#dfe9f2",
+  cardActive: "#d7e6f3",
+  cardActiveBorder: "#bfd5e8",
+  borderStrong: "#d7dee5",
+  borderSoft: "#e1e6eb",
+  divider: "#d5dde4",
+  textPrimary: "#1f2328",
+  textSecondary: "#57606a",
+  textTertiary: "#6e7781",
+  textFaint: "#8c959f",
+  accent: "#0a67d8",
+  accentSoft: "rgba(10, 103, 216, 0.1)",
+  accentMuted: "rgba(10, 103, 216, 0.08)",
+  accentHover: "#0860ca",
+  success: "#1a7f37",
+  warning: "#9a6700",
+  error: "#cf222e",
+  inputBg: "#ffffff",
+  inputBorder: "#cfd8e1",
+  popupBg: "#ffffff",
+  popupBorder: "#d7dee5",
+  selectionBg: "rgba(10, 103, 216, 0.16)",
+  listHover: "#edf2f6",
+  listActive: "rgba(10, 103, 216, 0.12)",
+  listActiveBorder: "rgba(10, 103, 216, 0.22)",
+  listInactive: "#eef2f5",
+  buttonHover: "#edf2f6",
+  buttonActive: "#e3e9ef",
+  focusRing: "rgba(10, 103, 216, 0.24)",
+  focusRingStrong: "rgba(10, 103, 216, 0.72)",
+  overlayBg: "rgba(36, 44, 52, 0.16)",
+  shadowStrong:
+    "0 18px 42px rgba(31, 35, 40, 0.12), 0 8px 18px rgba(31, 35, 40, 0.08)",
+  shadowMedium: "0 10px 26px rgba(31, 35, 40, 0.1)",
+  scrollbarThumb: "rgba(92, 111, 129, 0.35)",
+  scrollbarThumbHover: "rgba(92, 111, 129, 0.5)"
+};
 
 const CSS_VARIABLE_NAMES = {
   windowBg: "--window-bg",
@@ -142,63 +203,155 @@ const CSS_VARIABLE_NAMES = {
   shadowMedium: "--shadow-medium",
   scrollbarThumb: "--scrollbar-thumb",
   scrollbarThumbHover: "--scrollbar-thumb-hover"
-} as const satisfies Record<keyof typeof THEME_TOKENS, `--${string}`>;
+} as const satisfies Record<ThemeTokenName, `--${string}`>;
 
-type ThemeTokenName = keyof typeof THEME_TOKENS;
+export const THEMES = Object.freeze({
+  dark: Object.freeze(DARK_THEME_TOKENS),
+  light: Object.freeze(LIGHT_THEME_TOKENS)
+}) as Readonly<Record<ColorTheme, Readonly<ThemeTokens>>>;
 
-export const THEME = Object.freeze(THEME_TOKENS);
+export const THEME = THEMES.dark;
 
-export const THEME_CSS_VARIABLES = Object.freeze(
-  Object.fromEntries(
-    (
-      Object.entries(CSS_VARIABLE_NAMES) as Array<
-        [ThemeTokenName, `--${string}`]
-      >
-    ).map(([tokenName, variableName]) => [variableName, THEME[tokenName]])
+const THEME_CSS_VARIABLE_MAP = Object.freeze({
+  dark: Object.freeze(
+    Object.fromEntries(
+      (
+        Object.entries(CSS_VARIABLE_NAMES) as Array<
+          [ThemeTokenName, `--${string}`]
+        >
+      ).map(([tokenName, variableName]) => [
+        variableName,
+        THEMES.dark[tokenName]
+      ])
+    )
+  ),
+  light: Object.freeze(
+    Object.fromEntries(
+      (
+        Object.entries(CSS_VARIABLE_NAMES) as Array<
+          [ThemeTokenName, `--${string}`]
+        >
+      ).map(([tokenName, variableName]) => [
+        variableName,
+        THEMES.light[tokenName]
+      ])
+    )
   )
-) as Readonly<Record<`--${string}`, string>>;
+}) as Readonly<Record<ColorTheme, Readonly<Record<`--${string}`, string>>>>;
 
-export const XTERM_THEME = Object.freeze({
-  background: THEME.panelBg,
-  foreground: "#d4d4d4",
-  cursor: THEME.textPrimary,
-  cursorAccent: THEME.panelBg,
-  selectionBackground: THEME.selectionBg,
-  selectionForeground: "#ffffff",
-  selectionInactiveBackground: THEME.listHover,
-  black: "#1e1e1e",
-  red: "#f14c4c",
-  green: "#23d18b",
-  yellow: "#dcdcaa",
-  blue: "#3794ff",
-  magenta: "#c586c0",
-  cyan: "#29b8db",
-  white: "#d4d4d4",
-  brightBlack: "#808080",
-  brightRed: "#f14c4c",
-  brightGreen: "#23d18b",
-  brightYellow: "#f5f543",
-  brightBlue: "#3b8eea",
-  brightMagenta: "#d670d6",
-  brightCyan: "#29b8db",
-  brightWhite: "#e5e5e5"
+export const THEME_CSS_VARIABLES = THEME_CSS_VARIABLE_MAP.dark;
+
+const XTERM_THEMES = Object.freeze({
+  dark: Object.freeze({
+    background: THEMES.dark.panelBg,
+    foreground: "#d4d4d4",
+    cursor: THEMES.dark.textPrimary,
+    cursorAccent: THEMES.dark.panelBg,
+    selectionBackground: THEMES.dark.selectionBg,
+    selectionForeground: "#ffffff",
+    selectionInactiveBackground: THEMES.dark.listHover,
+    black: "#1e1e1e",
+    red: "#f14c4c",
+    green: "#23d18b",
+    yellow: "#dcdcaa",
+    blue: "#3794ff",
+    magenta: "#c586c0",
+    cyan: "#29b8db",
+    white: "#d4d4d4",
+    brightBlack: "#808080",
+    brightRed: "#f14c4c",
+    brightGreen: "#23d18b",
+    brightYellow: "#f5f543",
+    brightBlue: "#3b8eea",
+    brightMagenta: "#d670d6",
+    brightCyan: "#29b8db",
+    brightWhite: "#e5e5e5"
+  }),
+  light: Object.freeze({
+    background: THEMES.light.panelBg,
+    foreground: THEMES.light.textPrimary,
+    cursor: THEMES.light.textPrimary,
+    cursorAccent: THEMES.light.panelBg,
+    selectionBackground: THEMES.light.selectionBg,
+    selectionForeground: THEMES.light.textPrimary,
+    selectionInactiveBackground: THEMES.light.listHover,
+    black: "#24292f",
+    red: "#cf222e",
+    green: "#1a7f37",
+    yellow: "#9a6700",
+    blue: "#0550ae",
+    magenta: "#8250df",
+    cyan: "#1b7c83",
+    white: "#57606a",
+    brightBlack: "#57606a",
+    brightRed: "#a40e26",
+    brightGreen: "#116329",
+    brightYellow: "#7d4e00",
+    brightBlue: "#033d8b",
+    brightMagenta: "#6639ba",
+    brightCyan: "#176c73",
+    brightWhite: "#1f2328"
+  })
 });
 
-export const TERMINAL_SEARCH_DECORATIONS = Object.freeze({
-  matchBackground: "rgba(210, 153, 34, 0.24)",
-  matchBorder: "#b8952f",
-  matchOverviewRuler: "#b8952f",
-  activeMatchBackground: "rgba(0, 120, 212, 0.32)",
-  activeMatchBorder: THEME.accent,
-  activeMatchColorOverviewRuler: THEME.accent
+export const XTERM_THEME = XTERM_THEMES.dark;
+
+const TERMINAL_SEARCH_DECORATIONS_MAP = Object.freeze({
+  dark: Object.freeze({
+    matchBackground: "rgba(210, 153, 34, 0.24)",
+    matchBorder: "#b8952f",
+    matchOverviewRuler: "#b8952f",
+    activeMatchBackground: "rgba(0, 120, 212, 0.32)",
+    activeMatchBorder: THEMES.dark.accent,
+    activeMatchColorOverviewRuler: THEMES.dark.accent
+  }),
+  light: Object.freeze({
+    matchBackground: "rgba(185, 137, 43, 0.2)",
+    matchBorder: "#a17118",
+    matchOverviewRuler: "#a17118",
+    activeMatchBackground: "rgba(10, 103, 216, 0.18)",
+    activeMatchBorder: THEMES.light.accent,
+    activeMatchColorOverviewRuler: THEMES.light.accent
+  })
 });
+
+export const TERMINAL_SEARCH_DECORATIONS = TERMINAL_SEARCH_DECORATIONS_MAP.dark;
+
+export function getThemeTokens(theme: ColorTheme = "dark"): Readonly<ThemeTokens> {
+  return THEMES[theme];
+}
+
+export function getThemeCssVariables(
+  theme: ColorTheme = "dark"
+): Readonly<Record<`--${string}`, string>> {
+  return THEME_CSS_VARIABLE_MAP[theme];
+}
+
+export function getXtermTheme(theme: ColorTheme = "dark") {
+  return XTERM_THEMES[theme];
+}
+
+export function getTerminalSearchDecorations(theme: ColorTheme = "dark") {
+  return TERMINAL_SEARCH_DECORATIONS_MAP[theme];
+}
+
+export function resolveColorTheme(
+  mode: ThemeMode,
+  prefersDark: boolean
+): ColorTheme {
+  if (mode === "system") {
+    return prefersDark ? "dark" : "light";
+  }
+  return mode;
+}
 
 export function applyThemeVariables(
-  target: HTMLElement | Pick<CSSStyleDeclaration, "setProperty">
+  target: HTMLElement | Pick<CSSStyleDeclaration, "setProperty">,
+  theme: ColorTheme = "dark"
 ): void {
   const style = "style" in target ? target.style : target;
 
-  for (const [name, value] of Object.entries(THEME_CSS_VARIABLES)) {
+  for (const [name, value] of Object.entries(getThemeCssVariables(theme))) {
     style.setProperty(name, value);
   }
 }

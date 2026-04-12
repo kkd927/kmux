@@ -8,7 +8,7 @@ import "./styles/global.css";
 import "@vscode/codicons/dist/codicon.css";
 import "@xterm/xterm/css/xterm.css";
 
-applyThemeVariables(document.documentElement);
+applyThemeVariables(document.documentElement, "dark");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

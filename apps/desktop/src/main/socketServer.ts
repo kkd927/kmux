@@ -2,13 +2,25 @@ import { createServer, type Socket } from "node:net";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { AppAction, AppState } from "@kmux/core";
+import {
+  listWorkspaceSurfaceIds,
+  type AppAction,
+  type AppState
+} from "@kmux/core";
 import type {
   JsonRpcEnvelope,
   ShellIdentity,
   SplitDirection
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
+import { ZodError } from "zod";
+
+import {
+  UnknownSocketMethodError,
+  parseSocketEnvelope,
+  parseSocketRequest,
+  type ParsedSocketRequest
+} from "./socketRpc";
 
 interface SocketServerOptions {
   socketPath: string;
@@ -58,38 +70,60 @@ export class KmuxSocketServer {
   }
 
   private handleMessage(socket: Socket, line: string): void {
+    let envelope:
+      | ReturnType<typeof parseSocketEnvelope>
+      | undefined;
+
     try {
-      const message = JSON.parse(line) as JsonRpcEnvelope<
-        Record<string, unknown>
-      >;
-      const authToken = message.params?.authToken as string | undefined;
+      envelope = parseSocketEnvelope(line);
+      const parsedEnvelope = envelope;
       const state = this.options.getState();
       const allowed =
         state.settings.socketMode === "allowAll" ||
         (state.settings.socketMode === "kmuxOnly" &&
           Object.values(state.sessions).some(
-            (session) => session.authToken === authToken
+            (session) => session.authToken === parsedEnvelope.authToken
           ));
 
       if (!allowed) {
-        this.reply(socket, message.id, undefined, {
+        this.reply(socket, parsedEnvelope.id, undefined, {
           code: -32001,
           message: "Socket access denied for current mode"
         });
         return;
       }
 
-      const result = this.route(message.method ?? "", message.params ?? {});
-      this.reply(socket, message.id, result);
+      const request = parseSocketRequest(
+        parsedEnvelope.method,
+        parsedEnvelope.params,
+        parsedEnvelope.id,
+        parsedEnvelope.authToken
+      );
+      const result = this.route(request);
+      this.reply(socket, request.id, result);
     } catch (error) {
-      this.reply(socket, undefined, undefined, {
+      if (error instanceof ZodError) {
+        this.reply(socket, envelope?.id, undefined, {
+          code: envelope ? -32602 : -32600,
+          message: error.issues[0]?.message ?? "Invalid request payload"
+        });
+        return;
+      }
+      if (error instanceof UnknownSocketMethodError) {
+        this.reply(socket, envelope?.id, undefined, {
+          code: -32601,
+          message: error.message
+        });
+        return;
+      }
+      this.reply(socket, envelope?.id, undefined, {
         code: -32603,
         message: error instanceof Error ? error.message : "Unknown server error"
       });
     }
   }
 
-  private route(method: string, params: Record<string, unknown>): unknown {
+  private route(request: ParsedSocketRequest): unknown {
     const state = this.options.getState();
     const activeWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
@@ -97,7 +131,7 @@ export class KmuxSocketServer {
     const activePane = state.panes[activeWorkspace.activePaneId];
     const activeSurfaceId = activePane.activeSurfaceId;
 
-    switch (method) {
+    switch (request.method) {
       case "workspace.list":
         return state.windows[state.activeWindowId].workspaceOrder.map(
           (workspaceId) => state.workspaces[workspaceId]
@@ -105,14 +139,14 @@ export class KmuxSocketServer {
       case "workspace.create":
         this.options.dispatch({
           type: "workspace.create",
-          name: params.name as string | undefined,
-          cwd: params.cwd as string | undefined
+          name: request.params.name,
+          cwd: request.params.cwd
         });
         return { ok: true };
       case "workspace.select":
         this.options.dispatch({
           type: "workspace.select",
-          workspaceId: params.workspaceId as string
+          workspaceId: request.params.workspaceId
         });
         return { ok: true };
       case "workspace.current":
@@ -120,50 +154,48 @@ export class KmuxSocketServer {
       case "workspace.close":
         this.options.dispatch({
           type: "workspace.close",
-          workspaceId: params.workspaceId as string
+          workspaceId: request.params.workspaceId
         });
         return { ok: true };
       case "surface.list": {
-        const workspaceId =
-          (params.workspaceId as string | undefined) ?? activeWorkspaceId;
-        return Object.values(state.surfaces).filter(
-          (surface) => state.panes[surface.paneId].workspaceId === workspaceId
+        const workspaceId = request.params.workspaceId ?? activeWorkspaceId;
+        return listWorkspaceSurfaceIds(state, workspaceId).map(
+          (surfaceId) => state.surfaces[surfaceId]
         );
       }
       case "surface.split":
         this.options.dispatch({
           type: "pane.split",
-          paneId: params.paneId as string,
-          direction: params.direction as SplitDirection
+          paneId: request.params.paneId,
+          direction: request.params.direction as SplitDirection
         });
         return { ok: true };
       case "surface.focus":
         this.options.dispatch({
           type: "surface.focus",
-          surfaceId: (params.surfaceId as string | undefined) ?? activeSurfaceId
+          surfaceId: request.params.surfaceId ?? activeSurfaceId
         });
         return { ok: true };
       case "surface.send_text":
         this.options.sendSurfaceText(
-          (params.surfaceId as string | undefined) ?? activeSurfaceId,
-          params.text as string
+          request.params.surfaceId ?? activeSurfaceId,
+          request.params.text
         );
         return { ok: true };
       case "surface.send_key":
         this.options.sendSurfaceKey(
-          (params.surfaceId as string | undefined) ?? activeSurfaceId,
-          params.key as string
+          request.params.surfaceId ?? activeSurfaceId,
+          request.params.key
         );
         return { ok: true };
       case "notification.create":
         this.options.dispatch({
           type: "notification.create",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId,
-          title: params.title as string,
-          message: params.message as string,
-          surfaceId: params.surfaceId as string | undefined,
-          paneId: params.paneId as string | undefined
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
+          title: request.params.title,
+          message: request.params.message,
+          surfaceId: request.params.surfaceId,
+          paneId: request.params.paneId
         });
         return { ok: true };
       case "notification.list":
@@ -171,57 +203,50 @@ export class KmuxSocketServer {
       case "notification.clear":
         this.options.dispatch({
           type: "notification.clear",
-          notificationId: params.notificationId as string | undefined
+          notificationId: request.params.notificationId
         });
         return { ok: true };
       case "sidebar.set_status":
         this.options.dispatch({
           type: "sidebar.setStatus",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId,
-          text: params.text as string
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
+          text: request.params.text
         });
         return { ok: true };
       case "sidebar.clear_status":
         this.options.dispatch({
           type: "sidebar.clearStatus",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId
         });
         return { ok: true };
       case "sidebar.set_progress":
         this.options.dispatch({
           type: "sidebar.setProgress",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId,
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           progress: {
-            value: Number(params.value ?? 0),
-            label: params.label as string | undefined
+            value: request.params.value,
+            label: request.params.label
           }
         });
         return { ok: true };
       case "sidebar.clear_progress":
         this.options.dispatch({
           type: "sidebar.clearProgress",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId
         });
         return { ok: true };
       case "sidebar.log":
         this.options.dispatch({
           type: "sidebar.log",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId,
-          level:
-            (params.level as "info" | "warn" | "error" | undefined) ?? "info",
-          message: params.message as string
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
+          level: request.params.level ?? "info",
+          message: request.params.message
         });
         return { ok: true };
       case "sidebar.clear_log":
         this.options.dispatch({
           type: "sidebar.clearLog",
-          workspaceId:
-            (params.workspaceId as string | undefined) ?? activeWorkspaceId
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId
         });
         return { ok: true };
       case "sidebar.state":
@@ -234,7 +259,7 @@ export class KmuxSocketServer {
       case "system.identify":
         return this.options.identify();
       default:
-        throw new Error(`Unknown method: ${method}`);
+        throw new Error("Unhandled socket method");
     }
   }
 

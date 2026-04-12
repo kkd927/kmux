@@ -28,6 +28,14 @@ declare global {
       windowControl(
         action: "minimize" | "maximize" | "fullscreen" | "close"
       ): Promise<void>;
+      showWorkspaceContextMenu(
+        workspaceId: string,
+        x: number,
+        y: number
+      ): Promise<boolean>;
+      subscribeWorkspaceRenameRequest(
+        listener: (workspaceId: string) => void
+      ): () => void;
       identify(): Promise<ShellIdentity>;
     };
   }

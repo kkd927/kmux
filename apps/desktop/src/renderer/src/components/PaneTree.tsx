@@ -1,4 +1,5 @@
 import type { ActiveWorkspaceVm, Id, KmuxSettings } from "@kmux/proto";
+import type { ColorTheme } from "@kmux/ui";
 
 import styles from "../styles/PaneTree.module.css";
 import { TerminalPane } from "./TerminalPane";
@@ -6,15 +7,13 @@ import { TerminalPane } from "./TerminalPane";
 interface PaneTreeProps {
   workspace: ActiveWorkspaceVm;
   settings: KmuxSettings;
+  colorTheme: ColorTheme;
   searchSurfaceId: string | null;
-  renameSurfaceRequest: { surfaceId: string; token: number } | null;
   focusTerminalRequest: { surfaceId: string; token: number } | null;
-  onConsumeRenameSurfaceRequest: (token: number) => void;
   onConsumeFocusTerminalRequest: (token: number) => void;
   onSetSplitRatio: (splitNodeId: string, ratio: number) => void;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
-  onRenameSurface: (surfaceId: string, title: string) => void;
   onCreateSurface: (paneId: string) => void;
   onCloseSurface: (surfaceId: string) => void;
   onCloseOthers: (surfaceId: string) => void;
@@ -59,14 +58,12 @@ function PaneNode(
         surfaces={surfaces}
         activeSurfaceId={pane.activeSurfaceId}
         settings={props.settings}
+        colorTheme={props.colorTheme}
         showSearch={props.searchSurfaceId === pane.activeSurfaceId}
-        renameSurfaceRequest={props.renameSurfaceRequest}
         focusTerminalRequest={props.focusTerminalRequest}
-        onConsumeRenameSurfaceRequest={props.onConsumeRenameSurfaceRequest}
         onConsumeFocusTerminalRequest={props.onConsumeFocusTerminalRequest}
         onFocusPane={props.onFocusPane}
         onFocusSurface={props.onFocusSurface}
-        onRenameSurface={props.onRenameSurface}
         onCreateSurface={props.onCreateSurface}
         onCloseSurface={props.onCloseSurface}
         onCloseOthers={props.onCloseOthers}

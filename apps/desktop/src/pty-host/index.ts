@@ -1,5 +1,5 @@
 import * as pty from "node-pty";
-import * as Headless from "@xterm/headless";
+import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 
 import type {
@@ -9,6 +9,19 @@ import type {
   SurfaceSnapshotPayload,
   TerminalKeyInput
 } from "@kmux/proto";
+import type {
+  ITerminalInitOnlyOptions as HeadlessTerminalInitOptions,
+  ITerminalOptions as HeadlessTerminalOptions,
+  Terminal as HeadlessTerminal
+} from "@xterm/headless";
+
+const HeadlessTerminalCtor = (
+  Headless as unknown as {
+    Terminal: new (
+      options?: HeadlessTerminalOptions & HeadlessTerminalInitOptions
+    ) => HeadlessTerminal;
+  }
+).Terminal;
 
 interface SessionRecord {
   sessionId: Id;
@@ -22,8 +35,6 @@ interface SessionRecord {
   cols: number;
   rows: number;
 }
-
-const HeadlessTerminal = Headless.default?.Terminal ?? Headless.Terminal;
 
 const sessions = new Map<Id, SessionRecord>();
 
@@ -69,7 +80,7 @@ function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
     sequence: record.sequence,
-    vt: record.serialize.serialize({ scrollback: true }),
+    vt: record.serialize.serialize({ scrollback: 5000 }),
     title: record.title,
     cwd: record.cwd,
     branch: undefined,
@@ -93,7 +104,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       ...request.spec.env
     }
   });
-  const terminal = new HeadlessTerminal({
+  const terminal = new HeadlessTerminalCtor({
     cols: request.spec.cols,
     rows: request.spec.rows,
     allowProposedApi: true,
@@ -116,7 +127,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   };
   sessions.set(record.sessionId, record);
 
-  terminal.parser.registerOscHandler(7, (data) => {
+  terminal.parser.registerOscHandler(7, (data: string) => {
     const cwd = parseOsc7(data);
     if (cwd) {
       record.cwd = cwd;
@@ -130,7 +141,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     }
     return true;
   });
-  terminal.onTitleChange((title) => {
+  terminal.onTitleChange((title: string) => {
     record.title = title;
     send({
       type: "metadata",
@@ -244,9 +255,6 @@ process.on("message", (request: PtyRequest) => {
     case "input:key":
       sessions.get(request.sessionId)?.pty.write(encodeKey(request.input));
       break;
-    case "attach":
-    case "detach":
-      break;
     case "snapshot": {
       const record = sessions.get(request.sessionId);
       if (record) {
@@ -258,8 +266,6 @@ process.on("message", (request: PtyRequest) => {
       }
       break;
     }
-    case "search":
-      break;
     default:
       break;
   }

@@ -14,10 +14,11 @@ export interface PersistedWindowState {
   x?: number;
   y?: number;
   maximized: boolean;
+  sidebarWidth?: number;
 }
 
 export class KmuxDatabase {
-  private readonly db: Database.Database;
+  private readonly db: InstanceType<typeof Database>;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -25,12 +26,6 @@ export class KmuxDatabase {
     this.db.pragma("journal_mode = WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS app_state (
-        id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS app_settings (
         id TEXT PRIMARY KEY,
         payload TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

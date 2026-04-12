@@ -1,13 +1,13 @@
 type CodiconName =
   | "add"
   | "bell"
+  | "check"
   | "close"
   | "gear"
   | "layout-sidebar-left"
-  | "search"
   | "split-horizontal"
   | "split-vertical"
-  | "terminal-bash";
+  | "terminal";
 
 interface CodiconProps {
   name: CodiconName;

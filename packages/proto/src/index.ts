@@ -32,6 +32,7 @@ export interface SidebarLogEntry {
 export interface WorkspaceRowVm {
   workspaceId: Id;
   name: string;
+  nameLocked: boolean;
   summary: string;
   cwd?: string;
   branch?: string;
@@ -116,10 +117,7 @@ export type PtyRequest =
   | { type: "resize"; sessionId: Id; cols: number; rows: number }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
-  | { type: "attach"; sessionId: Id; surfaceId: Id }
-  | { type: "detach"; sessionId: Id; surfaceId: Id }
-  | { type: "snapshot"; sessionId: Id; surfaceId: Id; requestId: Id }
-  | { type: "search"; sessionId: Id; term: string };
+  | { type: "snapshot"; sessionId: Id; surfaceId: Id; requestId: Id };
 
 export type PtyEvent =
   | { type: "ready" }
@@ -143,11 +141,14 @@ export interface JsonRpcEnvelope<T = unknown> {
   };
 }
 
+export type ThemeMode = "dark" | "light" | "system";
+
 export interface KmuxSettings {
   socketMode: SocketMode;
   startupRestore: boolean;
   notificationDesktop: boolean;
   notificationSound: boolean;
+  themeMode: ThemeMode;
   shell?: string;
   shortcuts: Record<string, string>;
   terminalFontSize: number;
@@ -208,6 +209,7 @@ export interface ShellViewModel {
   windowId: Id;
   title: string;
   sidebarVisible: boolean;
+  sidebarWidth: number;
   workspaceRows: WorkspaceRowVm[];
   activeWorkspace: ActiveWorkspaceVm;
   notifications: NotificationItem[];

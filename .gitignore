@@ -1,20 +1,61 @@
-/.DS_Store
+# OS / editor noise
 .DS_Store
-/.idea
-/node_modules
-node_modules
-/dist
-dist
-/coverage
-/playwright-report
-/test-results
-/output
-/apps/desktop/dist
-/apps/desktop/out
-/apps/desktop/.vite
-/apps/desktop/.electron-vite
-/npm-debug.log*
-/.dev-output.log
-/pnpm-lock.yaml
-/yarn.lock
-/tmp
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.iml
+*.icls
+
+# Dependencies
+node_modules/
+
+# Build outputs / caches
+dist/
+out/
+coverage/
+playwright-report/
+test-results/
+output/
+tmp/
+temp/
+.cache/
+.turbo/
+.eslintcache
+*.tsbuildinfo
+apps/desktop/dist/
+apps/desktop/out/
+apps/desktop/release/
+apps/desktop/.vite/
+apps/desktop/.electron-vite/
+packages/cli/dist/
+
+# Logs / local runtime artifacts
+*.log
+*.pid
+*.pid.lock
+*.seed
+*.stackdump
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.dev-output.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Project-local tooling
+/.codex/
+/AGENTS.md
+
+# Swap / patch leftovers
+*.swp
+*.swo
+*.tmp
+*.orig
+*~

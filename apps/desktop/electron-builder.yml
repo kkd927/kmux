@@ -1,0 +1,18 @@
+appId: dev.kmux.desktop
+productName: kmux
+
+directories:
+  output: release
+  buildResources: build
+
+npmRebuild: false
+asarUnpack:
+  - "**/*.node"
+
+mac:
+  identity: null
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  target:
+    - dmg

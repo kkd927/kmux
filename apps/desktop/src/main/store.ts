@@ -1,5 +1,3 @@
-import { EventEmitter } from "node:events";
-
 import {
   applyAction,
   buildViewModel,
@@ -10,11 +8,10 @@ import {
 } from "@kmux/core";
 import type { ShellViewModel } from "@kmux/proto";
 
-export class AppStore extends EventEmitter {
+export class AppStore {
   private state: AppState;
 
   constructor(initialState: AppState) {
-    super();
     this.state = cloneState(initialState);
   }
 
@@ -27,9 +24,6 @@ export class AppStore extends EventEmitter {
   }
 
   dispatch(action: AppAction): AppEffect[] {
-    const effects = applyAction(this.state, action);
-    this.emit("view", this.getView(), action);
-    this.emit("effects", effects, action);
-    return effects;
+    return applyAction(this.state, action);
   }
 }

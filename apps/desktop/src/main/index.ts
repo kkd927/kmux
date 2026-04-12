@@ -1,12 +1,21 @@
-import { app, BrowserWindow, ipcMain, Notification, shell } from "electron";
-import { dirname, join } from "node:path";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeImage,
+  Notification,
+  shell
+} from "electron";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   cloneState,
   createDefaultSettings,
   createInitialState,
+  DEFAULT_SIDEBAR_WIDTH,
   type AppAction,
   type AppEffect
 } from "@kmux/core";
@@ -29,9 +38,12 @@ import {
 import { AppStore } from "./store";
 import { PtyHostManager } from "./ptyHost";
 import { KmuxSocketServer } from "./socketServer";
+import { buildNativeWorkspaceContextMenu } from "./workspaceContextMenu";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
+const developmentDockIconIcnsPath = join(currentDir, "../../build/icon.icns");
+const developmentDockIconPngPath = join(currentDir, "../../build/icon.png");
 
 let mainWindow: BrowserWindow | null = null;
 let db: KmuxDatabase | null = null;
@@ -41,6 +53,27 @@ let socketServer: KmuxSocketServer | null = null;
 let settingsStore = createSettingsStore(paths.settingsPath);
 let persistTimer: NodeJS.Timeout | null = null;
 const attachedSurfacesByContents = new Map<number, Set<Id>>();
+
+function setDevelopmentDockIcon(): void {
+  if (process.platform !== "darwin" || app.isPackaged) {
+    return;
+  }
+
+  const iconPath = existsSync(developmentDockIconIcnsPath)
+    ? developmentDockIconIcnsPath
+    : developmentDockIconPngPath;
+
+  if (!existsSync(iconPath)) {
+    return;
+  }
+
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    return;
+  }
+
+  app.dock?.setIcon(icon);
+}
 
 function getState() {
   if (!store) {
@@ -54,6 +87,11 @@ function getView() {
     throw new Error("Store not ready");
   }
   return store.getView();
+}
+
+function dispatchAppAction(action: AppAction): void {
+  const effects = store?.dispatch(action) ?? [];
+  runEffects(effects);
 }
 
 function broadcastView(): void {
@@ -74,6 +112,9 @@ function schedulePersist(): void {
     }
     db.saveSnapshot(store.getState());
     settingsStore.save(store.getState().settings);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      persistWindowState(mainWindow);
+    }
   }, 300);
 }
 
@@ -83,7 +124,26 @@ function refreshMetadata(surfaceId: Id, cwd?: string, pid?: number): void {
       resolveGitBranch(cwd),
       resolveListeningPorts(pid)
     ]);
-    store?.dispatch({
+
+    if (!store) {
+      return;
+    }
+
+    const currentState = store.getState();
+    const surface = currentState.surfaces[surfaceId];
+    if (!surface) {
+      return;
+    }
+
+    const session = currentState.sessions[surface.sessionId];
+    if (cwd !== undefined && surface.cwd !== cwd) {
+      return;
+    }
+    if (pid !== undefined && session?.pid !== pid) {
+      return;
+    }
+
+    dispatchAppAction({
       type: "surface.metadata",
       surfaceId,
       branch: branch ?? undefined,
@@ -121,27 +181,24 @@ function handlePtyEvent(event: PtyEvent): void {
   }
   switch (event.type) {
     case "spawned":
-      store.dispatch({
-        type: "session.started",
-        sessionId: event.sessionId,
-        pid: event.pid
-      });
+      runEffects(
+        store.dispatch({
+          type: "session.started",
+          sessionId: event.sessionId,
+          pid: event.pid
+        })
+      );
       return;
     case "metadata":
-      store.dispatch({
-        type: "surface.metadata",
-        surfaceId: event.payload.surfaceId,
-        cwd: event.payload.cwd,
-        title: event.payload.title,
-        attention: event.payload.attention,
-        unreadDelta: event.payload.unreadDelta
-      });
-      refreshMetadata(
-        event.payload.surfaceId,
-        event.payload.cwd,
-        getState().sessions[
-          getState().surfaces[event.payload.surfaceId]?.sessionId ?? ""
-        ]?.pid
+      runEffects(
+        store.dispatch({
+          type: "surface.metadata",
+          surfaceId: event.payload.surfaceId,
+          cwd: event.payload.cwd,
+          title: event.payload.title,
+          attention: event.payload.attention,
+          unreadDelta: event.payload.unreadDelta
+        })
       );
       return;
     case "bell":
@@ -151,27 +208,31 @@ function handlePtyEvent(event: PtyEvent): void {
       if (!getState().panes[getState().surfaces[event.surfaceId].paneId]) {
         return;
       }
-      store.dispatch({
-        type: "notification.create",
-        workspaceId:
-          getState().panes[getState().surfaces[event.surfaceId].paneId]
-            .workspaceId,
-        paneId: getState().surfaces[event.surfaceId].paneId,
-        surfaceId: event.surfaceId,
-        title: event.title,
-        message: event.cwd ?? "Bell received",
-        source: "bell"
-      });
+      runEffects(
+        store.dispatch({
+          type: "notification.create",
+          workspaceId:
+            getState().panes[getState().surfaces[event.surfaceId].paneId]
+              .workspaceId,
+          paneId: getState().surfaces[event.surfaceId].paneId,
+          surfaceId: event.surfaceId,
+          title: event.title,
+          message: event.cwd ?? "Bell received",
+          source: "bell"
+        })
+      );
       return;
     case "chunk":
       forwardTerminalChunk(event.payload);
       return;
     case "exit":
-      store.dispatch({
-        type: "session.exited",
-        sessionId: event.payload.sessionId,
-        exitCode: event.payload.exitCode
-      });
+      runEffects(
+        store.dispatch({
+          type: "session.exited",
+          sessionId: event.payload.sessionId,
+          exitCode: event.payload.exitCode
+        })
+      );
       forwardTerminalExit(event.payload);
       return;
     case "error":
@@ -246,6 +307,7 @@ function runEffects(effects: AppEffect[]): void {
 }
 
 function createMainWindow(): BrowserWindow {
+  setDevelopmentDockIcon();
   const savedWindowState = db?.loadWindowState();
   const isMac = process.platform === "darwin";
   const backgroundTestWindow =
@@ -339,7 +401,10 @@ function persistWindowState(window: BrowserWindow): void {
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
-    maximized: window.isMaximized()
+    maximized: window.isMaximized(),
+    sidebarWidth:
+      store?.getState().windows[store.getState().activeWindowId]?.sidebarWidth ??
+      DEFAULT_SIDEBAR_WIDTH
   });
 }
 
@@ -374,6 +439,7 @@ function capabilityList(): string[] {
 
 function restoreInitialState(): ReturnType<typeof createInitialState> {
   const snapshot = db?.loadSnapshot();
+  const savedWindowState = db?.loadWindowState();
   const settings = settingsStore.load() ?? createDefaultSettings();
   const initial =
     snapshot && settings.startupRestore
@@ -399,14 +465,23 @@ function restoreInitialState(): ReturnType<typeof createInitialState> {
     }
   }
 
+  const activeWindow = initial.windows[initial.activeWindowId];
+  const persistedSidebarWidth = savedWindowState?.sidebarWidth;
+  if (
+    activeWindow &&
+    typeof persistedSidebarWidth === "number" &&
+    Number.isFinite(persistedSidebarWidth)
+  ) {
+    activeWindow.sidebarWidth = persistedSidebarWidth;
+  }
+
   return initial;
 }
 
 function registerIpc(): void {
   ipcMain.handle("kmux:view:get", () => getView());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {
-    const effects = store?.dispatch(action) ?? [];
-    runEffects(effects);
+    dispatchAppAction(action);
     return getView();
   });
   ipcMain.handle(
@@ -420,17 +495,12 @@ function registerIpc(): void {
         attachedSurfacesByContents.get(event.sender.id) ?? new Set<Id>();
       attached.add(surfaceId);
       attachedSurfacesByContents.set(event.sender.id, attached);
-      ptyHost?.attach(surface.sessionId, surfaceId);
       return (await ptyHost?.snapshot(surface.sessionId, surfaceId)) ?? null;
     }
   );
   ipcMain.handle("kmux:detach-surface", (event, surfaceId: Id) => {
-    const surface = getState().surfaces[surfaceId];
     const attached = attachedSurfacesByContents.get(event.sender.id);
     attached?.delete(surfaceId);
-    if (surface) {
-      ptyHost?.detach(surface.sessionId, surfaceId);
-    }
   });
   ipcMain.handle("kmux:terminal:text", (_event, surfaceId: Id, text: string) =>
     sendText(surfaceId, text)
@@ -475,6 +545,37 @@ function registerIpc(): void {
       }
     }
   );
+  ipcMain.handle(
+    "kmux:workspace-context-menu",
+    async (
+      event,
+      payload: { workspaceId: Id; x: number; y: number }
+    ): Promise<boolean> => {
+      if (process.env.NODE_ENV === "test") {
+        return false;
+      }
+
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const menu = buildNativeWorkspaceContextMenu({
+        workspaceId: payload.workspaceId,
+        getView,
+        rename: (workspaceId) => {
+          event.sender.send("kmux:workspace-rename-request", workspaceId);
+        },
+        dispatch: dispatchAppAction
+      });
+      if (!window || !menu) {
+        return false;
+      }
+
+      menu.popup({
+        window,
+        x: Math.round(payload.x),
+        y: Math.round(payload.y)
+      });
+      return true;
+    }
+  );
   ipcMain.handle("kmux:identify", (): ShellIdentity => {
     const state = getState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
@@ -492,6 +593,7 @@ function registerIpc(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  setDevelopmentDockIcon();
   db = new KmuxDatabase(paths.dbPath);
   const initial = restoreInitialState();
 
@@ -503,10 +605,7 @@ async function bootstrap(): Promise<void> {
   socketServer = new KmuxSocketServer({
     socketPath: paths.socketPath,
     getState,
-    dispatch: (action) => {
-      const effects = store?.dispatch(action) ?? [];
-      runEffects(effects);
-    },
+    dispatch: dispatchAppAction,
     sendSurfaceText: sendText,
     sendSurfaceKey: sendKey,
     identify: () => {

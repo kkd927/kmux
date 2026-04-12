@@ -107,12 +107,4 @@ export class PtyHostManager extends EventEmitter {
   sendKey(sessionId: Id, input: TerminalKeyInput): void {
     this.send({ type: "input:key", sessionId, input });
   }
-
-  attach(sessionId: Id, surfaceId: Id): void {
-    this.send({ type: "attach", sessionId, surfaceId });
-  }
-
-  detach(sessionId: Id, surfaceId: Id): void {
-    this.send({ type: "detach", sessionId, surfaceId });
-  }
 }

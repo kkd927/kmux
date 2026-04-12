@@ -7,10 +7,11 @@ import { Terminal } from "@xterm/xterm";
 
 import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
 import {
-  TERMINAL_SEARCH_DECORATIONS,
-  XTERM_THEME,
+  getTerminalSearchDecorations,
+  getXtermTheme,
   normalizeShortcut
 } from "@kmux/ui";
+import type { ColorTheme } from "@kmux/ui";
 
 import { Codicon } from "./Codicon";
 import styles from "../styles/TerminalPane.module.css";
@@ -21,14 +22,12 @@ interface TerminalPaneProps {
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
   settings: KmuxSettings;
+  colorTheme: ColorTheme;
   showSearch: boolean;
-  renameSurfaceRequest: { surfaceId: string; token: number } | null;
   focusTerminalRequest: { surfaceId: string; token: number } | null;
-  onConsumeRenameSurfaceRequest: (token: number) => void;
   onConsumeFocusTerminalRequest: (token: number) => void;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
-  onRenameSurface: (surfaceId: string, title: string) => void;
   onCreateSurface: (paneId: string) => void;
   onCloseSurface: (surfaceId: string) => void;
   onCloseOthers: (surfaceId: string) => void;
@@ -37,6 +36,25 @@ interface TerminalPaneProps {
   onClosePane: (paneId: string) => void;
   onToggleSearch: (surfaceId: string | null) => void;
 }
+
+type SearchMatch = {
+  row: number;
+  col: number;
+  size: number;
+  term: string;
+};
+
+type SearchAddonWithInternals = SearchAddon & {
+  _resultTracker?: {
+    searchResults?: SearchMatch[];
+    selectedDecoration?: { match: SearchMatch };
+  };
+  _selectResult?: (
+    result: SearchMatch,
+    options: ReturnType<typeof getTerminalSearchDecorations>,
+    noScroll?: boolean
+  ) => boolean;
+};
 
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
@@ -49,13 +67,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
   const [copyMode, setCopyMode] = useState(false);
-  const [editingSurfaceId, setEditingSurfaceId] = useState<string | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
   const showSearchRef = useRef(props.showSearch);
-  const handledRenameRequestTokenRef = useRef<number | null>(null);
   const handledFocusRequestTokenRef = useRef<number | null>(null);
+  const terminalTheme = useMemo(
+    () => getXtermTheme(props.colorTheme),
+    [props.colorTheme]
+  );
+  const terminalSearchDecorations = useMemo(
+    () => getTerminalSearchDecorations(props.colorTheme),
+    [props.colorTheme]
+  );
 
   activeSurfaceRef.current = activeSurface;
   copyModeRef.current = copyMode;
@@ -72,6 +96,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     containerRef.current.dataset.terminalBaseY = String(
       terminal.buffer.active.baseY
     );
+  }
+
+  function syncTerminalViewportBackground(): void {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const viewport = container.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport) {
+      viewport.style.setProperty("background-color", terminalTheme.background);
+    }
+    const scrollable = container.querySelector<HTMLElement>(
+      ".xterm-scrollable-element"
+    );
+    if (scrollable) {
+      scrollable.style.setProperty("background-color", terminalTheme.background);
+    }
   }
 
   function focusTerminalInput(): void {
@@ -97,14 +138,51 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!term) {
       return;
     }
+
+    const searchAddon = searchRef.current as SearchAddonWithInternals | null;
+    const results = searchAddon?._resultTracker?.searchResults ?? [];
+    const currentMatch = searchAddon?._resultTracker?.selectedDecoration?.match;
+
+    if (
+      results.length > 0 &&
+      typeof searchAddon?._selectResult === "function"
+    ) {
+      const currentIndex = currentMatch
+        ? results.findIndex(
+            (result) =>
+              result.row === currentMatch.row &&
+              result.col === currentMatch.col &&
+              result.size === currentMatch.size
+          )
+        : -1;
+      const nextIndex =
+        direction === "next"
+          ? currentIndex >= 0
+            ? (currentIndex + 1) % results.length
+            : 0
+          : currentIndex >= 0
+            ? (currentIndex - 1 + results.length) % results.length
+            : results.length - 1;
+      const targetMatch = results[nextIndex];
+
+      if (targetMatch) {
+        searchAddon._selectResult(
+          targetMatch,
+          terminalSearchDecorations,
+          false
+        );
+        return;
+      }
+    }
+
     if (direction === "next") {
       searchRef.current?.findNext(term, {
-        decorations: TERMINAL_SEARCH_DECORATIONS
+        decorations: terminalSearchDecorations
       });
       return;
     }
     searchRef.current?.findPrevious(term, {
-      decorations: TERMINAL_SEARCH_DECORATIONS
+      decorations: terminalSearchDecorations
     });
   }
 
@@ -144,7 +222,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       fontWeight: "normal",
       cursorBlink: true,
       macOptionIsMeta: true,
-      theme: XTERM_THEME
+      theme: terminalTheme
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -253,6 +331,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
     terminal.open(container);
+    syncTerminalViewportBackground();
+    requestAnimationFrame(() => {
+      syncTerminalViewportBackground();
+    });
     try {
       const webgl = new WebglAddon();
       terminal.loadAddon(webgl);
@@ -268,11 +350,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       resizeTimeout = setTimeout(() => {
         try {
           fit.fit();
-          void window.kmux.resizeSurface(
-            props.activeSurfaceId,
-            terminal.cols,
-            terminal.rows
-          );
+          const currentSurface = activeSurfaceRef.current;
+          if (currentSurface) {
+            void window.kmux.resizeSurface(
+              currentSurface.id,
+              terminal.cols,
+              terminal.rows
+            );
+          }
           syncTerminalMetrics(terminal);
         } catch {
           // ignore resize errors during unmount
@@ -282,7 +367,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     resizeObserver.observe(containerRef.current);
 
     const disposeData = terminal.onData((data) => {
-      void window.kmux.sendText(props.activeSurfaceId, data);
+      const currentSurface = activeSurfaceRef.current;
+      if (currentSurface) {
+        void window.kmux.sendText(currentSurface.id, data);
+      }
     });
     const disposeScroll = terminal.onScroll(() => {
       syncTerminalMetrics(terminal);
@@ -303,11 +391,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       searchRef.current = null;
     };
   }, [
-    props.activeSurfaceId,
     props.paneId,
     props.settings.terminalFontFamily,
     props.settings.terminalFontSize,
-    props.settings.terminalLineHeight
+    props.settings.terminalLineHeight,
+    terminalTheme
   ]);
 
   useEffect(() => {
@@ -375,9 +463,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
     searchRef.current?.findNext(query, {
       incremental: true,
-      decorations: TERMINAL_SEARCH_DECORATIONS
+      decorations: terminalSearchDecorations
     });
-  }, [props.showSearch, query]);
+  }, [props.showSearch, query, terminalSearchDecorations]);
 
   useEffect(() => {
     if (!props.showSearch) {
@@ -393,27 +481,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [activeSurface.id]);
 
   useEffect(() => {
-    if (!props.renameSurfaceRequest) {
-      return;
-    }
-    if (
-      handledRenameRequestTokenRef.current === props.renameSurfaceRequest.token
-    ) {
-      return;
-    }
-    if (
-      !props.surfaces.some(
-        (surface) => surface.id === props.renameSurfaceRequest?.surfaceId
-      )
-    ) {
-      return;
-    }
-    handledRenameRequestTokenRef.current = props.renameSurfaceRequest.token;
-    setEditingSurfaceId(props.renameSurfaceRequest.surfaceId);
-    props.onConsumeRenameSurfaceRequest(props.renameSurfaceRequest.token);
-  }, [props.renameSurfaceRequest, props.surfaces]);
-
-  useEffect(() => {
     if (!props.focusTerminalRequest) {
       return;
     }
@@ -422,17 +489,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) {
       return;
     }
-    if (
-      !props.surfaces.some(
-        (surface) => surface.id === props.focusTerminalRequest?.surfaceId
-      )
-    ) {
+    if (props.focusTerminalRequest.surfaceId !== activeSurface.id) {
       return;
     }
     handledFocusRequestTokenRef.current = props.focusTerminalRequest.token;
     focusTerminalInput();
     props.onConsumeFocusTerminalRequest(props.focusTerminalRequest.token);
-  }, [props.focusTerminalRequest, props.surfaces]);
+  }, [activeSurface.id, props.focusTerminalRequest]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
@@ -466,85 +529,37 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           }}
         >
           {tabs.map((surface) => {
-            const editing = editingSurfaceId === surface.id;
-            const submitSurfaceRename = (
-              title: string,
-              restoreFocus: boolean
-            ) => {
-              props.onRenameSurface(surface.id, title);
-              setEditingSurfaceId(null);
-              if (restoreFocus) {
-                focusTerminalInput();
-              }
-            };
+            const selected = surface.id === props.activeSurfaceId;
+            const active = selected && props.focused;
             return (
               <div
                 key={surface.id}
                 className={styles.tabItem}
-                data-active={surface.id === props.activeSurfaceId}
+                data-selected={selected}
+                data-active={active}
                 data-surface-id={surface.id}
               >
-                {editing ? (
-                  <div
-                    className={styles.tabEditing}
-                    title={surface.cwd ?? surface.title}
-                  >
-                    <span className={styles.tabIcon}>
-                      <Codicon name="terminal-bash" />
+                <button
+                  className={styles.tab}
+                  role="tab"
+                  aria-selected={surface.id === props.activeSurfaceId}
+                  aria-label={`Focus surface ${surface.title}`}
+                  onClick={() => props.onFocusSurface(surface.id)}
+                  title={surface.cwd ?? surface.title}
+                >
+                  <span className={styles.tabIcon}>
+                    <Codicon name="terminal" />
+                  </span>
+                  <span className={styles.tabLabel}>{surface.title}</span>
+                  {surface.attention ? (
+                    <span className={styles.attentionDot} />
+                  ) : null}
+                  {surface.unreadCount > 0 ? (
+                    <span className={styles.badge}>
+                      {surface.unreadCount}
                     </span>
-                    <input
-                      autoFocus
-                      className={styles.tabInput}
-                      aria-label={`Rename surface ${surface.title}`}
-                      defaultValue={surface.title}
-                      onFocus={(event) => event.currentTarget.select()}
-                      onBlur={(event) => {
-                        submitSurfaceRename(event.currentTarget.value, false);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          submitSurfaceRename(event.currentTarget.value, true);
-                        } else if (event.key === "Escape") {
-                          event.preventDefault();
-                          setEditingSurfaceId(null);
-                          focusTerminalInput();
-                        }
-                      }}
-                    />
-                    {surface.attention ? (
-                      <span className={styles.attentionDot} />
-                    ) : null}
-                    {surface.unreadCount > 0 ? (
-                      <span className={styles.badge}>
-                        {surface.unreadCount}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : (
-                  <button
-                    className={styles.tab}
-                    role="tab"
-                    aria-selected={surface.id === props.activeSurfaceId}
-                    aria-label={`Focus surface ${surface.title}`}
-                    onClick={() => props.onFocusSurface(surface.id)}
-                    onDoubleClick={() => setEditingSurfaceId(surface.id)}
-                    title={surface.cwd ?? surface.title}
-                  >
-                    <span className={styles.tabIcon}>
-                      <Codicon name="terminal-bash" />
-                    </span>
-                    <span className={styles.tabLabel}>{surface.title}</span>
-                    {surface.attention ? (
-                      <span className={styles.attentionDot} />
-                    ) : null}
-                    {surface.unreadCount > 0 ? (
-                      <span className={styles.badge}>
-                        {surface.unreadCount}
-                      </span>
-                    ) : null}
-                  </button>
-                )}
+                  ) : null}
+                </button>
                 <button
                   className={styles.tabClose}
                   aria-label={`Close tab ${surface.title}`}
@@ -581,15 +596,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             onClick={() => props.onSplitDown(props.paneId)}
           >
             <Codicon name="split-vertical" />
-          </button>
-          <button
-            title="Search"
-            aria-label="Search active terminal"
-            onClick={() =>
-              toggleSearch(props.showSearch ? null : activeSurface.id)
-            }
-          >
-            <Codicon name="search" />
           </button>
           <button
             title="Close pane"

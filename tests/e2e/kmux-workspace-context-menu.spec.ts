@@ -34,9 +34,12 @@ test("workspace sidebar context menu exposes key cmux-style management actions",
 
     const betaRow = page.locator(`[data-workspace-id="${betaId!}"]`);
     await betaRow.click({ button: "right" });
-    await expect(
-      page.getByRole("menu", { name: "Workspace menu for beta" })
-    ).toBeVisible();
+    const workspaceMenu = page.getByRole("menu", {
+      name: "Workspace menu for beta"
+    });
+    await expect(workspaceMenu).toBeVisible();
+    await expect(workspaceMenu.getByText("⌘⇧R")).toBeVisible();
+    await expect(workspaceMenu.getByRole("separator")).toHaveCount(2);
     await expect(
       page.getByRole("menuitem", { name: "Close Workspaces Above" })
     ).toHaveCount(0);

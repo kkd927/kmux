@@ -61,6 +61,27 @@ const api = {
   ): Promise<void> {
     return ipcRenderer.invoke("kmux:window-control", action);
   },
+  showWorkspaceContextMenu(
+    workspaceId: string,
+    x: number,
+    y: number
+  ): Promise<boolean> {
+    return ipcRenderer.invoke("kmux:workspace-context-menu", {
+      workspaceId,
+      x,
+      y
+    });
+  },
+  subscribeWorkspaceRenameRequest(
+    listener: (workspaceId: string) => void
+  ): () => void {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      workspaceId: string
+    ) => listener(workspaceId);
+    ipcRenderer.on("kmux:workspace-rename-request", handler);
+    return () => ipcRenderer.off("kmux:workspace-rename-request", handler);
+  },
   identify(): Promise<ShellIdentity> {
     return ipcRenderer.invoke("kmux:identify");
   }

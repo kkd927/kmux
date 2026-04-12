@@ -2,11 +2,14 @@
   "name": "@kmux/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "Keyboard-first terminal workspace manager for macOS",
+  "author": "kmux contributors",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev --config electron.vite.config.ts",
     "build": "electron-vite build --config electron.vite.config.ts",
+    "dist:mac": "electron-builder --config electron-builder.yml --mac dmg --publish never",
     "preview": "electron-vite preview --config electron.vite.config.ts"
   },
   "dependencies": {

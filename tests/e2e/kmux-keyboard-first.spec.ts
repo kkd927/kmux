@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { ShellViewModel } from "@kmux/proto";
 
 import {
   closeKmux,
@@ -7,6 +8,42 @@ import {
   launchKmux,
   waitForView
 } from "./helpers";
+
+function listPaneIdsInTreeOrder(
+  workspace: ShellViewModel["activeWorkspace"]
+): string[] {
+  const paneIds: string[] = [];
+
+  function walk(nodeId: string): void {
+    const node = workspace.nodes[nodeId];
+    if (!node) {
+      return;
+    }
+    if (node.kind === "leaf") {
+      if (workspace.panes[node.paneId]) {
+        paneIds.push(node.paneId);
+      }
+      return;
+    }
+    walk(node.first);
+    walk(node.second);
+  }
+
+  walk(workspace.rootNodeId);
+  return paneIds;
+}
+
+function listSurfaceShortcutTargets(workspace: ShellViewModel["activeWorkspace"]): {
+  paneId: string;
+  surfaceId: string;
+}[] {
+  return listPaneIdsInTreeOrder(workspace).flatMap((paneId) =>
+    (workspace.panes[paneId]?.surfaceIds ?? []).map((surfaceId) => ({
+      paneId,
+      surfaceId
+    }))
+  );
+}
 
 test("command palette supports a keyboard-only flow", async () => {
   const launched = await launchKmux("kmux-e2e-keyboard-palette-");
@@ -76,13 +113,15 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       workspaces.activeWorkspace.panes[alertsPaneId].activeSurfaceId;
     const originalAlertSurfaceId = alertsSurfaceId;
 
+    await page.locator("textarea.xterm-helper-textarea").focus();
     await page.keyboard.press("Meta+1");
     await waitForView(
       page,
-      (view) => view.activeWorkspace.name === "hq",
+      (view) => view.activeWorkspace.id === initial.activeWorkspace.id,
       "Meta+1 should select the first workspace"
     );
 
+    await page.locator("textarea.xterm-helper-textarea").focus();
     await page.keyboard.press("Meta+3");
     await waitForView(
       page,
@@ -90,7 +129,20 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       "Meta+3 should select the third workspace"
     );
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await dispatch(page, {
+      type: "workspace.select",
+      workspaceId: alertsWorkspaceId
+    });
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.id === alertsWorkspaceId,
+      "surface shortcut flow should start in the alerts workspace"
+    );
+
+    const alertsTerminal = page.locator(
+      `[data-pane-id="${alertsPaneId}"] textarea.xterm-helper-textarea`
+    );
+    await alertsTerminal.focus();
     await page.keyboard.press("Meta+T");
     const withSecondSurface = await waitForView(
       page,
@@ -102,28 +154,56 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       withSecondSurface.activeWorkspace.panes[alertsPaneId].activeSurfaceId;
     expect(secondSurfaceId).not.toBe(originalAlertSurfaceId);
 
+    await alertsTerminal.focus();
     await page.keyboard.press("Control+1");
     await waitForView(
       page,
       (view) =>
-        view.activeWorkspace.panes[alertsPaneId].activeSurfaceId ===
+        view.activeWorkspace.id === alertsWorkspaceId &&
+        view.activeWorkspace.panes[alertsPaneId]?.activeSurfaceId ===
         originalAlertSurfaceId,
       "Control+1 should focus the first surface"
     );
+    await expect(alertsTerminal).toBeFocused();
 
+    await alertsTerminal.focus();
     await page.keyboard.press("Control+2");
     await waitForView(
       page,
       (view) =>
-        view.activeWorkspace.panes[alertsPaneId].activeSurfaceId ===
+        view.activeWorkspace.id === alertsWorkspaceId &&
+        view.activeWorkspace.panes[alertsPaneId]?.activeSurfaceId ===
         secondSurfaceId,
       "Control+2 should focus the second surface"
     );
+    await expect(alertsTerminal).toBeFocused();
 
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await alertsTerminal.focus();
+      await page.keyboard.press("Control+1");
+      await alertsTerminal.focus();
+      await page.keyboard.press("Control+2");
+    }
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.id === alertsWorkspaceId &&
+        view.activeWorkspace.panes[alertsPaneId]?.activeSurfaceId ===
+        secondSurfaceId,
+      "Control+number shortcuts should not leave the pane on the wrong tab"
+    );
+    const afterShortcutMash = await getView(page);
+    expect(
+      Object.values(afterShortcutMash.activeWorkspace.surfaces).some(
+        (surface) => surface.attention || surface.unreadCount > 0
+      )
+    ).toBeFalsy();
+
+    await page.locator("textarea.xterm-helper-textarea").focus();
     await page.keyboard.press("Meta+1");
     await waitForView(
       page,
-      (view) => view.activeWorkspace.name === "hq",
+      (view) => view.activeWorkspace.id === initial.activeWorkspace.id,
       "should return to the first workspace before notification jump"
     );
 
@@ -163,7 +243,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
   }
 });
 
-test("rename and close shortcuts keep workspace, pane, and surface management keyboard-first", async () => {
+test("workspace rename and tab close shortcuts stay keyboard-first while tab rename stays disabled", async () => {
   const launched = await launchKmux("kmux-e2e-keyboard-rename-close-");
 
   try {
@@ -189,50 +269,31 @@ test("rename and close shortcuts keep workspace, pane, and surface management ke
     await page.locator("textarea.xterm-helper-textarea").focus();
     await page.keyboard.press("Meta+T");
 
-    const withTwoSurfaces = await waitForView(
+    await waitForView(
       page,
       (view) =>
         view.activeWorkspace.panes[initialPaneId].surfaceIds.length === 2,
       "surface create shortcut should create another tab"
     );
-    const renamedSurfaceId =
-      withTwoSurfaces.activeWorkspace.panes[initialPaneId].activeSurfaceId;
-    const surfaceRenameShortcut = withTwoSurfaces.settings.shortcuts[
-      "surface.rename"
-    ].replace("Ctrl", "Control");
-
     await expect(page.locator("textarea.xterm-helper-textarea")).toBeFocused();
     const surfaceRenameInput = page.locator(
       `[data-pane-id="${initialPaneId}"] input[aria-label^="Rename surface"]`
     );
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await page.keyboard.press(surfaceRenameShortcut);
-      if ((await surfaceRenameInput.count()) > 0) {
-        break;
-      }
-      await page.waitForTimeout(100);
-    }
-    await expect(surfaceRenameInput).toHaveCount(1);
-    await expect(surfaceRenameInput).toBeFocused();
-    await surfaceRenameInput.fill("logs");
-    await surfaceRenameInput.press("Enter");
-    await expect(surfaceRenameInput).toHaveCount(0);
-
-    await waitForView(
-      page,
-      (view) =>
-        view.activeWorkspace.surfaces[renamedSurfaceId].title === "logs",
-      "surface rename shortcut should update the active tab title"
+    const activeTab = page.locator(
+      `[data-pane-id="${initialPaneId}"] [role="tab"][aria-selected="true"]`
     );
+    await activeTab.dblclick();
+    await page.waitForTimeout(100);
+    await expect(surfaceRenameInput).toHaveCount(0);
+    await page.keyboard.press("Meta+Control+R");
+    await page.waitForTimeout(100);
+    await expect(surfaceRenameInput).toHaveCount(0);
 
     await page.keyboard.press("Control+Meta+W");
     await waitForView(
       page,
-      (view) =>
-        view.activeWorkspace.panes[initialPaneId].surfaceIds.length === 1 &&
-        view.activeWorkspace.panes[initialPaneId].activeSurfaceId ===
-          renamedSurfaceId,
-      "close others shortcut should keep only the renamed active tab"
+      (view) => view.activeWorkspace.panes[initialPaneId].surfaceIds.length === 1,
+      "close others shortcut should keep only one tab"
     );
 
     await page.keyboard.press("Meta+D");
@@ -248,6 +309,109 @@ test("rename and close shortcuts keep workspace, pane, and surface management ke
       (view) => Object.keys(view.activeWorkspace.panes).length === 1,
       "pane close shortcut should remove the active pane"
     );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("surface index shortcuts traverse workspace tabs across split panes without creating attention", async () => {
+  const launched = await launchKmux("kmux-e2e-keyboard-split-surface-index-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const firstPaneId = initial.activeWorkspace.activePaneId;
+
+    await page.locator("textarea.xterm-helper-textarea").focus();
+    await page.keyboard.press("Meta+T");
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[firstPaneId].surfaceIds.length === 2,
+      "first pane should gain a second tab"
+    );
+    await page.keyboard.press("Meta+T");
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[firstPaneId].surfaceIds.length === 3,
+      "first pane should gain a third tab"
+    );
+
+    await page.keyboard.press("Meta+D");
+
+    const splitView = await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 2,
+      "split shortcut should create a second pane before pane shortcut checks"
+    );
+    const secondPaneId = splitView.activeWorkspace.activePaneId;
+
+    await page
+      .locator(`[data-pane-id="${secondPaneId}"] textarea.xterm-helper-textarea`)
+      .focus();
+    await page.keyboard.press("Meta+T");
+
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[secondPaneId].surfaceIds.length === 2,
+      "second pane should gain a second tab"
+    );
+
+    await page.keyboard.press("Meta+D");
+    const withThreePanes = await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 3,
+      "split shortcut should create a third pane"
+    );
+
+    const shortcutTargets = listSurfaceShortcutTargets(
+      withThreePanes.activeWorkspace
+    );
+    expect(shortcutTargets).toHaveLength(6);
+
+    const activeIndicators = page.locator('[role="tablist"] [data-active="true"]');
+
+    for (const [index, target] of shortcutTargets.entries()) {
+      await page.keyboard.press(`Control+${index + 1}`);
+      await waitForView(
+        page,
+        (view) =>
+          view.activeWorkspace.activePaneId === target.paneId &&
+          view.activeWorkspace.panes[target.paneId].activeSurfaceId ===
+            target.surfaceId,
+        `Control+${index + 1} should focus surface ${index + 1} across split panes`
+      );
+      await expect(
+        page.locator(
+          `[data-pane-id="${target.paneId}"] textarea.xterm-helper-textarea`
+        )
+      ).toBeFocused();
+      await expect(activeIndicators).toHaveCount(1);
+    }
+
+    for (let index = shortcutTargets.length - 1; index >= 0; index -= 1) {
+      const target = shortcutTargets[index];
+      await page.keyboard.press(`Control+${index + 1}`);
+      await waitForView(
+        page,
+        (view) =>
+          view.activeWorkspace.activePaneId === target.paneId &&
+          view.activeWorkspace.panes[target.paneId].activeSurfaceId ===
+            target.surfaceId,
+        `Control+${index + 1} should still focus the same surface when traversing backward`
+      );
+      await expect(
+        page.locator(
+          `[data-pane-id="${target.paneId}"] textarea.xterm-helper-textarea`
+        )
+      ).toBeFocused();
+    }
+
+    const afterShortcutTraversal = await getView(page);
+    expect(
+      Object.values(afterShortcutTraversal.activeWorkspace.surfaces).some(
+        (surface) => surface.attention || surface.unreadCount > 0
+      )
+    ).toBeFalsy();
   } finally {
     await closeKmux(launched);
   }

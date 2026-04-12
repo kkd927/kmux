@@ -1,10 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  closeKmuxApp,
   closeKmux,
+  createSandbox,
   dispatch,
+  destroySandbox,
   getView,
   launchKmux,
+  launchKmuxWithSandbox,
   runCliJson,
   waitForSurfaceSnapshotContains,
   waitForView
@@ -102,6 +106,238 @@ test("settings modal updates shared typography for ui and terminal", async () =>
   }
 });
 
+test("settings modal switches between light and system themes and keeps terminal colors in sync", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-theme-");
+
+  try {
+    const page = launched.page;
+    await page.emulateMedia({ colorScheme: "light" });
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const themeModeSelect = page.getByLabel("Theme mode");
+    await expect(themeModeSelect).toBeVisible();
+    await themeModeSelect.selectOption("light");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const lightUpdated = await waitForView(
+      page,
+      (view) => view.settings.themeMode === "light",
+      "theme mode should persist the light appearance selection"
+    );
+
+    expect(lightUpdated.settings.themeMode).toBe("light");
+
+    await page.waitForFunction(() => {
+      const root = document.documentElement;
+      return (
+        root.dataset.colorTheme === "light" &&
+        root.dataset.themeMode === "light" &&
+        root.style.colorScheme === "light"
+      );
+    });
+
+    const lightAppearance = await page.evaluate(() => {
+      const root = document.documentElement;
+      const viewport = document.querySelector(".xterm-viewport");
+      return {
+        windowBg: root.style.getPropertyValue("--window-bg").trim(),
+        sidebarBg: root.style.getPropertyValue("--sidebar-bg").trim(),
+        viewportBg:
+          viewport instanceof HTMLElement
+            ? getComputedStyle(viewport).backgroundColor
+            : null
+      };
+    });
+
+    expect(lightAppearance.windowBg).toBe("#f7f7f5");
+    expect(lightAppearance.sidebarBg).toBe("#e8f1f6");
+    expect(lightAppearance.viewportBg).toBe("rgb(255, 255, 255)");
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    await themeModeSelect.selectOption("system");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const systemUpdated = await waitForView(
+      page,
+      (view) => view.settings.themeMode === "system",
+      "theme mode should persist the system appearance selection"
+    );
+
+    expect(systemUpdated.settings.themeMode).toBe("system");
+
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForFunction(() => {
+      const root = document.documentElement;
+      return (
+        root.dataset.colorTheme === "dark" &&
+        root.dataset.themeMode === "system" &&
+        root.style.colorScheme === "dark"
+      );
+    });
+
+    const systemAppearance = await page.evaluate(() => {
+      const root = document.documentElement;
+      const viewport = document.querySelector(".xterm-viewport");
+      return {
+        windowBg: root.style.getPropertyValue("--window-bg").trim(),
+        viewportBg:
+          viewport instanceof HTMLElement
+            ? getComputedStyle(viewport).backgroundColor
+            : null
+      };
+    });
+
+    expect(systemAppearance.windowBg).toBe("#181818");
+    expect(systemAppearance.viewportBg).toBe("rgb(31, 31, 31)");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings modal keeps save and cancel visible in short windows", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-short-window-");
+
+  try {
+    const page = launched.page;
+    await page.setViewportSize({ width: 920, height: 560 });
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+
+    const dialog = page.getByTestId("settings-dialog");
+    const body = page.getByTestId("settings-body");
+    const saveButton = page.getByRole("button", { name: "Save" });
+    const cancelButton = page.getByRole("button", { name: "Cancel" });
+
+    await expect(dialog).toBeVisible();
+    await expect(body).toBeVisible();
+    await expect(saveButton).toBeVisible();
+    await expect(cancelButton).toBeVisible();
+
+    const geometry = await page.evaluate(() => {
+      const dialog = document.querySelector<HTMLElement>(
+        '[data-testid="settings-dialog"]'
+      );
+      const body = document.querySelector<HTMLElement>(
+        '[data-testid="settings-body"]'
+      );
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const saveButton = buttons.find((button) => button.textContent?.trim() === "Save");
+      const cancelButton = buttons.find(
+        (button) => button.textContent?.trim() === "Cancel"
+      );
+      if (
+        !dialog ||
+        !body ||
+        !(saveButton instanceof HTMLElement) ||
+        !(cancelButton instanceof HTMLElement)
+      ) {
+        return null;
+      }
+
+      const dialogRect = dialog.getBoundingClientRect();
+      const bodyRect = body.getBoundingClientRect();
+      const saveRect = saveButton.getBoundingClientRect();
+      const cancelRect = cancelButton.getBoundingClientRect();
+
+      return {
+        viewportHeight: window.innerHeight,
+        dialogBottom: dialogRect.bottom,
+        bodyTop: bodyRect.top,
+        bodyBottom: bodyRect.bottom,
+        bodyClientHeight: body.clientHeight,
+        bodyScrollHeight: body.scrollHeight,
+        saveBottom: saveRect.bottom,
+        cancelBottom: cancelRect.bottom
+      };
+    });
+
+    expect(geometry).toBeTruthy();
+    expect(geometry?.bodyScrollHeight).toBeGreaterThan(
+      geometry?.bodyClientHeight ?? 0
+    );
+    expect(geometry?.saveBottom).toBeLessThanOrEqual(
+      geometry?.viewportHeight ?? 0
+    );
+    expect(geometry?.cancelBottom).toBeLessThanOrEqual(
+      geometry?.viewportHeight ?? 0
+    );
+    expect(geometry?.bodyBottom).toBeLessThan(
+      geometry?.saveBottom ?? Number.POSITIVE_INFINITY
+    );
+    expect(geometry?.dialogBottom).toBeLessThanOrEqual(
+      geometry?.viewportHeight ?? 0
+    );
+
+    await body.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await expect(saveButton).toBeVisible();
+
+    await page.getByLabel("Theme mode").selectOption("light");
+    await saveButton.click();
+
+    const updated = await waitForView(
+      page,
+      (view) => view.settings.themeMode === "light",
+      "save button should remain clickable in a short settings window"
+    );
+
+    expect(updated.settings.themeMode).toBe("light");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("pty title updates are reflected immediately without switching workspaces", async () => {
+  const launched = await launchKmux("kmux-e2e-pty-title-updates-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+
+    await dispatch(page, {
+      type: "settings.update",
+      patch: {
+        ...initial.settings,
+        socketMode: "allowAll"
+      }
+    });
+
+    runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "surface",
+        "send-text",
+        "--surface",
+        activeSurfaceId,
+        "--text",
+        "printf '\\033]0;osc-title-1\\007'; sleep 2\r"
+      ]
+    );
+
+    const updated = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.surfaces[activeSurfaceId]?.title === "osc-title-1",
+      "pty title updates should reach the renderer without a workspace switch"
+    );
+
+    expect(updated.activeWorkspace.surfaces[activeSurfaceId]?.title).toBe(
+      "osc-title-1"
+    );
+    await expect(page.locator(`[data-surface-id="${activeSurfaceId}"]`)).toContainText(
+      "osc-title-1"
+    );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("terminal fit target stays separate from the padded shell frame", async () => {
   const launched = await launchKmux("kmux-e2e-terminal-fit-geometry-");
 
@@ -125,8 +361,12 @@ test("terminal fit target stays separate from the padded shell frame", async () 
       return {
         fitPaddingTop: fitStyle.paddingTop,
         fitPaddingBottom: fitStyle.paddingBottom,
+        fitPaddingLeft: fitStyle.paddingLeft,
+        fitPaddingRight: fitStyle.paddingRight,
         framePaddingTop: frameStyle.paddingTop,
         framePaddingBottom: frameStyle.paddingBottom,
+        framePaddingLeft: frameStyle.paddingLeft,
+        framePaddingRight: frameStyle.paddingRight,
         fitHeight: fitTarget.clientHeight,
         frameHeight: frame.clientHeight
       };
@@ -135,10 +375,118 @@ test("terminal fit target stays separate from the padded shell frame", async () 
     expect(geometry).toBeTruthy();
     expect(geometry?.fitPaddingTop).toBe("0px");
     expect(geometry?.fitPaddingBottom).toBe("0px");
+    expect(geometry?.fitPaddingLeft).toBe("0px");
+    expect(geometry?.fitPaddingRight).toBe("0px");
     expect(geometry?.framePaddingTop).toBe("8px");
     expect(geometry?.framePaddingBottom).toBe("8px");
+    expect(geometry?.framePaddingLeft).toBe("10px");
+    expect(geometry?.framePaddingRight).toBe("0px");
     expect(geometry?.fitHeight).toBeGreaterThan(0);
     expect(geometry?.frameHeight).toBeGreaterThan(geometry?.fitHeight ?? 0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("narrow windows clamp the rendered sidebar width without mutating the saved sidebar size", async () => {
+  const launched = await launchKmux("kmux-e2e-sidebar-width-clamp-");
+
+  try {
+    const page = launched.page;
+    await page.setViewportSize({ width: 1280, height: 820 });
+
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+
+    expect(initial.sidebarWidth).toBe(320);
+
+    await page.setViewportSize({ width: 780, height: 820 });
+    await page.waitForFunction(
+      (surfaceId) => {
+        const sidebar = document.querySelector(
+          '[data-testid="workspace-tool-window"]'
+        );
+        const fitTarget = document.querySelector(
+          `[data-testid="terminal-${surfaceId}"]`
+        );
+        const frame = fitTarget?.parentElement;
+
+        return (
+          sidebar instanceof HTMLElement &&
+          frame instanceof HTMLElement &&
+          sidebar.clientWidth === 272 &&
+          frame.clientWidth >= 500
+        );
+      },
+      activeSurfaceId
+    );
+
+    const geometry = await page.evaluate((surfaceId) => {
+      const sidebar = document.querySelector(
+        '[data-testid="workspace-tool-window"]'
+      );
+      const fitTarget = document.querySelector(
+        `[data-testid="terminal-${surfaceId}"]`
+      );
+      const frame = fitTarget?.parentElement;
+
+      if (
+        !(sidebar instanceof HTMLElement) ||
+        !(frame instanceof HTMLElement)
+      ) {
+        return null;
+      }
+
+      return {
+        sidebarWidth: sidebar.clientWidth,
+        terminalFrameWidth: frame.clientWidth
+      };
+    }, activeSurfaceId);
+
+    expect(geometry).toBeTruthy();
+    expect(geometry?.sidebarWidth).toBe(272);
+    expect(geometry?.terminalFrameWidth).toBeGreaterThanOrEqual(500);
+
+    const resized = await getView(page);
+    expect(resized.sidebarWidth).toBe(320);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("terminal viewport background matches the pane background without a black bottom strip", async () => {
+  const launched = await launchKmux("kmux-e2e-terminal-viewport-background-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+
+    const colors = await page.evaluate((surfaceId) => {
+      const fitTarget = document.querySelector(
+        `[data-testid="terminal-${surfaceId}"]`
+      );
+      const frame = fitTarget?.parentElement;
+      const viewport = fitTarget?.querySelector(".xterm-viewport");
+      if (
+        !(fitTarget instanceof HTMLElement) ||
+        !(frame instanceof HTMLElement) ||
+        !(viewport instanceof HTMLElement)
+      ) {
+        return null;
+      }
+      return {
+        frameBackground: getComputedStyle(frame).backgroundColor,
+        viewportBackground: getComputedStyle(viewport).backgroundColor
+      };
+    }, activeSurfaceId);
+
+    expect(colors).toBeTruthy();
+    expect(colors?.viewportBackground).toBe(colors?.frameBackground);
   } finally {
     await closeKmux(launched);
   }
@@ -280,6 +628,81 @@ test("sidebar status/progress/log updates from cli are reflected and cleared in 
     expect(cleared.activeWorkspace.logs).toHaveLength(0);
   } finally {
     await closeKmux(launched);
+  }
+});
+
+test("sidebar width respects the minimum and persists across relaunch", async () => {
+  const sandbox = createSandbox("kmux-e2e-sidebar-resize-");
+  let launched = await launchKmuxWithSandbox(sandbox);
+
+  try {
+    let page = launched.page;
+    await page.setViewportSize({ width: 1277, height: 1179 });
+
+    const resizer = page.getByTestId("sidebar-resizer");
+    const sidebar = page.getByTestId("workspace-tool-window");
+
+    await resizer.focus();
+    await resizer.press("Home");
+    await waitForView(
+      page,
+      (view) => view.sidebarWidth === 110,
+      "sidebar resize handle should clamp to the minimum width"
+    );
+
+    await dispatch(page, {
+      type: "workspace.sidebar.setWidth",
+      width: 320
+    });
+    await waitForView(
+      page,
+      (view) => view.sidebarWidth === 320,
+      "sidebar width should return to the maximum width"
+    );
+
+    await dispatch(page, {
+      type: "workspace.sidebar.setWidth",
+      width: 272
+    });
+
+    const resized = await waitForView(
+      page,
+      (view) => view.sidebarWidth < 320 && view.sidebarWidth >= 110,
+      "sidebar width updates should persist a narrower width"
+    );
+    const persistedWidth = resized.sidebarWidth;
+    expect(persistedWidth).toBeGreaterThanOrEqual(110);
+    expect(persistedWidth).toBeLessThan(320);
+
+    await expect
+      .poll(async () => Math.round((await sidebar.boundingBox())?.width ?? 0))
+      .toBe(persistedWidth);
+
+    await closeKmuxApp(launched);
+    launched = await launchKmuxWithSandbox(sandbox);
+    page = launched.page;
+    await page.setViewportSize({ width: 1277, height: 1179 });
+
+    const restored = await waitForView(
+      page,
+      (view) => view.sidebarWidth === persistedWidth,
+      "sidebar width should restore from persisted window state"
+    );
+    expect(restored.sidebarWidth).toBe(persistedWidth);
+    await expect
+      .poll(
+        async () =>
+          Math.round(
+            (await page.getByTestId("workspace-tool-window").boundingBox())?.width ?? 0
+          )
+      )
+      .toBe(persistedWidth);
+  } finally {
+    if (launched) {
+      await closeKmux(launched);
+    } else {
+      destroySandbox(sandbox);
+    }
   }
 });
 
@@ -439,6 +862,62 @@ test("repeated workspace switches preserve terminal snapshots", async () => {
     );
 
     expect(restoredSnapshot?.vt).toBe(baselineSnapshot?.vt);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("closing the active workspace by shortcut keeps the app responsive and selects a remaining workspace", async () => {
+  const launched = await launchKmux("kmux-e2e-workspace-close-active-");
+
+  try {
+    const page = launched.page;
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+
+    await dispatch(page, { type: "workspace.create", name: "alpha" });
+    await dispatch(page, { type: "workspace.create", name: "beta" });
+    await dispatch(page, { type: "workspace.create", name: "gamma" });
+
+    const seeded = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length >= 4 &&
+        view.activeWorkspace.name === "gamma",
+      "workspace fixtures should be ready before closing the active workspace"
+    );
+    const betaId = seeded.workspaceRows.find((row) => row.name === "beta")?.workspaceId;
+    const gammaId = seeded.workspaceRows.find(
+      (row) => row.name === "gamma"
+    )?.workspaceId;
+
+    expect(betaId).toBeTruthy();
+    expect(gammaId).toBeTruthy();
+
+    await dispatch(page, { type: "workspace.select", workspaceId: betaId! });
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.id === betaId,
+      "beta workspace should become active before closing it"
+    );
+
+    await page.keyboard.press("Meta+Shift+W");
+
+    const afterClose = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.id === gammaId &&
+        view.workspaceRows.every((row) => row.workspaceId !== betaId),
+      "closing the active workspace should promote a remaining workspace"
+    );
+
+    expect(afterClose.activeWorkspace.id).toBe(gammaId);
+    expect(afterClose.workspaceRows.every((row) => row.workspaceId !== betaId)).toBe(
+      true
+    );
+    expect(pageErrors).toEqual([]);
   } finally {
     await closeKmux(launched);
   }

@@ -103,8 +103,7 @@ test("terminal supports real keyboard typing and in-pane search controls", async
     );
 
     const activePane = page.locator(`[data-pane-id="${activePaneId}"]`);
-    await activePane.getByLabel("Search active terminal").click();
-
+    await page.keyboard.press("Meta+F");
     const searchInput = activePane.getByLabel("Find in terminal");
     await expect(searchInput).toBeVisible();
     await searchInput.fill(probeText);
@@ -310,25 +309,46 @@ test("terminal shortcuts cover paste, search navigation, copy mode, and copy", a
       .poll(async () => searchMatches.count())
       .toBeGreaterThan(0);
 
-    const activeSearchMatch = searchMatches.last();
-    const firstTop = await activeSearchMatch.evaluate(
-      (node) => node.getBoundingClientRect().top
-    );
+    const readActiveSearchMatchTop = async (): Promise<number | null> =>
+      page.evaluate((paneId) => {
+        const matches = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            `[data-pane-id="${paneId}"] .xterm-find-result-decoration`
+          )
+        );
+        if (matches.length === 0) {
+          return null;
+        }
+
+        const outlineCounts = new Map<string, number>();
+        for (const match of matches) {
+          const outlineColor = getComputedStyle(match).outlineColor;
+          outlineCounts.set(
+            outlineColor,
+            (outlineCounts.get(outlineColor) ?? 0) + 1
+          );
+        }
+
+        const inactiveOutlineColor =
+          [...outlineCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ??
+          null;
+        const activeMatch = matches.find(
+          (match) => getComputedStyle(match).outlineColor !== inactiveOutlineColor
+        );
+        return activeMatch?.getBoundingClientRect().top ?? null;
+      }, activePaneId);
+
+    await expect.poll(readActiveSearchMatchTop).not.toBeNull();
+    const firstTop = await readActiveSearchMatchTop();
     await searchInput.press("Meta+G");
     await expect
-      .poll(async () =>
-        activeSearchMatch.evaluate((node) => node.getBoundingClientRect().top)
-      )
+      .poll(readActiveSearchMatchTop)
       .not.toBe(firstTop);
 
-    const nextTop = await activeSearchMatch.evaluate(
-      (node) => node.getBoundingClientRect().top
-    );
+    const nextTop = await readActiveSearchMatchTop();
     await searchInput.press("Meta+Shift+G");
     await expect
-      .poll(async () =>
-        activeSearchMatch.evaluate((node) => node.getBoundingClientRect().top)
-      )
+      .poll(readActiveSearchMatchTop)
       .not.toBe(nextTop);
 
     await page.keyboard.press("Escape");

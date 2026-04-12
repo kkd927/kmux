@@ -1,26 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 import type { AppAction } from "@kmux/core";
 import type {
+  ActiveWorkspaceVm,
   KmuxSettings,
-  NotificationItem,
   ShellViewModel,
-  SidebarLogEntry,
-  SidebarProgress,
   WorkspaceRowVm
 } from "@kmux/proto";
-import { normalizeShortcut } from "@kmux/ui";
+import {
+  applyThemeVariables,
+  normalizeShortcut,
+  resolveColorTheme,
+  type ColorTheme
+} from "@kmux/ui";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { Codicon } from "./components/Codicon";
+import { NotificationsPanel } from "./components/NotificationsPanel";
 import { PaneTree } from "./components/PaneTree";
+import { WorkspaceCard } from "./components/WorkspaceCard";
+import { WorkspaceContextMenu } from "./components/WorkspaceContextMenu";
 import { useShellView } from "./hooks/useShellView";
+import {
+  buildWorkspaceContextMenuEntries,
+  findWorkspaceContext,
+  runWorkspaceContextAction as runSharedWorkspaceContextAction,
+  type WorkspaceContextAction
+} from "../../shared/workspaceContextMenu";
 import styles from "./styles/App.module.css";
 
-type RenameSurfaceRequest = {
-  surfaceId: string;
-  token: number;
-};
 type TerminalFocusRequest = {
   surfaceId: string;
   token: number;
@@ -35,11 +50,61 @@ type WorkspaceContextMenuState = {
   x: number;
   y: number;
 };
-type WorkspaceRowContext = {
-  view: ShellViewModel;
-  row: WorkspaceRowVm;
-  index: number;
+type SidebarResizeState = {
+  startX: number;
+  startWidth: number;
 };
+const MIN_SIDEBAR_WIDTH = 110;
+const MAX_SIDEBAR_WIDTH = 320;
+const NARROW_WINDOW_SIDEBAR_BREAKPOINT = 1180;
+const NARROW_WINDOW_MAX_SIDEBAR_WIDTH = 272;
+
+function maxSidebarWidthForWindow(windowWidth: number): number {
+  return windowWidth <= NARROW_WINDOW_SIDEBAR_BREAKPOINT
+    ? Math.min(MAX_SIDEBAR_WIDTH, NARROW_WINDOW_MAX_SIDEBAR_WIDTH)
+    : MAX_SIDEBAR_WIDTH;
+}
+
+function clampSidebarWidthForWindow(width: number, windowWidth: number): number {
+  return Math.max(
+    MIN_SIDEBAR_WIDTH,
+    Math.min(maxSidebarWidthForWindow(windowWidth), Math.round(width))
+  );
+}
+
+function estimateWorkspaceRowHeight(
+  row: WorkspaceRowVm | undefined,
+  activeWorkspace: ActiveWorkspaceVm | undefined
+): number {
+  if (!row) {
+    return 62;
+  }
+
+  const isActive = row.workspaceId === activeWorkspace?.id;
+  let height = 62;
+
+  if (isActive && row.cwd) {
+    height += 19;
+  }
+
+  if (row.attention || (isActive && (Boolean(row.branch) || row.ports.length > 0))) {
+    height += 27;
+  }
+
+  if (isActive) {
+    if (activeWorkspace?.sidebarStatus) {
+      height += 29;
+    }
+    if (activeWorkspace?.progress) {
+      height += 39;
+    }
+    if (activeWorkspace?.logs[0]) {
+      height += 24;
+    }
+  }
+
+  return height;
+}
 
 export function App(): JSX.Element {
   const view = useShellView();
@@ -53,8 +118,6 @@ export function App(): JSX.Element {
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
     null
   );
-  const [renameSurfaceRequest, setRenameSurfaceRequest] =
-    useState<RenameSurfaceRequest | null>(null);
   const [terminalFocusRequest, setTerminalFocusRequest] =
     useState<TerminalFocusRequest | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] =
@@ -64,9 +127,20 @@ export function App(): JSX.Element {
   const [dropPosition, setDropPosition] = useState<"before" | "after" | null>(
     null
   );
+  const [showWorkspaceShortcutHints, setShowWorkspaceShortcutHints] =
+    useState(false);
+  const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(
+    () => document.documentElement.clientWidth || window.innerWidth
+  );
+  const [prefersDarkColorScheme, setPrefersDarkColorScheme] = useState(() =>
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
   const [settingsDraft, setSettingsDraft] = useState(view?.settings);
   const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<ShellViewModel | null>(view);
+  const sidebarResizeStateRef = useRef<SidebarResizeState | null>(null);
   const overlayStateRef = useRef({
     paletteOpen,
     notificationsOpen,
@@ -96,15 +170,60 @@ export function App(): JSX.Element {
   }, [view?.settings]);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const updatePreference = (
+      event: MediaQueryListEvent | MediaQueryList
+    ): void => {
+      setPrefersDarkColorScheme(event.matches);
+    };
+
+    updatePreference(mediaQuery);
+    const listener = (event: MediaQueryListEvent) => updatePreference(event);
+    mediaQuery.addEventListener("change", listener);
+    return () => mediaQuery.removeEventListener("change", listener);
+  }, []);
+
+  useEffect(() => {
+    const updateWindowWidth = () => {
+      const nextWidth = document.documentElement.clientWidth || window.innerWidth;
+      setWindowWidth((currentWidth) =>
+        currentWidth === nextWidth ? currentWidth : nextWidth
+      );
+    };
+
+    updateWindowWidth();
+    const resizeObserver = new ResizeObserver(() => {
+      updateWindowWidth();
+    });
+    resizeObserver.observe(document.documentElement);
+    window.addEventListener("resize", updateWindowWidth);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateWindowWidth);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!view?.settings) {
       return;
     }
-    applyTypographySettings(view.settings);
+    applyAppearanceSettings(view.settings, prefersDarkColorScheme);
   }, [
+    view?.settings?.themeMode,
     view?.settings?.terminalFontFamily,
     view?.settings?.terminalFontSize,
-    view?.settings?.terminalLineHeight
+    view?.settings?.terminalLineHeight,
+    prefersDarkColorScheme
   ]);
+
+  const resolvedColorTheme = resolveColorTheme(
+    view?.settings?.themeMode ?? "dark",
+    prefersDarkColorScheme
+  );
+  const renderedSidebarWidth = clampSidebarWidthForWindow(
+    view?.sidebarWidth ?? MAX_SIDEBAR_WIDTH,
+    windowWidth
+  );
 
   useEffect(() => {
     if (
@@ -119,7 +238,30 @@ export function App(): JSX.Element {
   }, [view, workspaceContextMenu]);
 
   useEffect(() => {
+    if (!workspaceContextMenu) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      workspaceMenuRef.current
+        ?.querySelector<HTMLButtonElement>(
+          'button[role="menuitem"]:not(:disabled)'
+        )
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [workspaceContextMenu]);
+
+  useEffect(() => {
+    return window.kmux.subscribeWorkspaceRenameRequest((workspaceId) => {
+      beginWorkspaceRename(workspaceId);
+    });
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isMac) {
+        setShowWorkspaceShortcutHints(event.metaKey);
+      }
       const currentView = viewRef.current;
       if (!currentView) {
         return;
@@ -132,7 +274,6 @@ export function App(): JSX.Element {
         searchSurfaceId: currentSearchSurfaceId,
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen
       } = overlayStateRef.current;
-      const activePaneId = currentView.activeWorkspace.activePaneId;
       if (event.key === "Escape") {
         if (currentWorkspaceContextMenuOpen) {
           event.preventDefault();
@@ -193,33 +334,49 @@ export function App(): JSX.Element {
         return;
       }
 
+      const digitIndex =
+        event.code.startsWith("Digit") && event.code.length === "Digit1".length
+          ? Number(event.code.slice("Digit".length)) - 1
+          : Number.NaN;
+
       if (
         event.metaKey &&
         !event.shiftKey &&
         !event.altKey &&
-        event.key >= "1" &&
-        event.key <= "9"
+        !Number.isNaN(digitIndex)
       ) {
         event.preventDefault();
+        event.stopPropagation();
         void window.kmux.dispatch({
           type: "workspace.selectIndex",
-          index: Number(event.key) - 1
+          index: digitIndex
         });
         return;
       }
       if (
         event.ctrlKey &&
-        !event.shiftKey &&
         !event.altKey &&
-        event.key >= "1" &&
-        event.key <= "9"
+        !event.metaKey &&
+        !event.shiftKey &&
+        !Number.isNaN(digitIndex)
       ) {
         event.preventDefault();
-        void window.kmux.dispatch({
-          type: "surface.focusIndex",
-          paneId: activePaneId,
-          index: Number(event.key) - 1
-        });
+        event.stopPropagation();
+        const latestView = viewRef.current;
+        const shortcutTargets = latestView
+          ? listWorkspaceSurfaceShortcutTargets(latestView.activeWorkspace)
+          : [];
+        const targetSurfaceId = shortcutTargets[digitIndex] ?? null;
+        if (!targetSurfaceId) {
+          return;
+        }
+        window.setTimeout(() => {
+          requestTerminalFocus(targetSurfaceId);
+          void window.kmux.dispatch({
+            type: "surface.focus",
+            surfaceId: targetSurfaceId
+          });
+        }, 0);
         return;
       }
       if (matchShortcut(currentView, event, "command.palette")) {
@@ -242,14 +399,17 @@ export function App(): JSX.Element {
       }
       if (matchShortcut(currentView, event, "settings.toggle")) {
         event.preventDefault();
-        setSettingsOpen((open) => !open);
+        if (currentSettingsOpen) {
+          setSettingsOpen(false);
+        } else {
+          openSettingsModal();
+        }
         return;
       }
       if (matchShortcut(currentView, event, "workspace.create")) {
         event.preventDefault();
         void window.kmux.dispatch({
-          type: "workspace.create",
-          name: "new workspace"
+          type: "workspace.create"
         });
         return;
       }
@@ -347,7 +507,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "pane.resize.left")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatch({
             type: "pane.resize",
             paneId: latestPaneId,
             direction: "left",
@@ -359,7 +519,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "pane.resize.right")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatch({
             type: "pane.resize",
             paneId: latestPaneId,
             direction: "right",
@@ -371,7 +531,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "pane.resize.up")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatch({
             type: "pane.resize",
             paneId: latestPaneId,
             direction: "up",
@@ -383,7 +543,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "pane.resize.down")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatch({
             type: "pane.resize",
             paneId: latestPaneId,
             direction: "down",
@@ -395,7 +555,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "pane.close")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({ type: "pane.close", paneId: latestPaneId })
+          dispatch({ type: "pane.close", paneId: latestPaneId })
         );
         return;
       }
@@ -409,20 +569,11 @@ export function App(): JSX.Element {
         );
         return;
       }
-      if (matchShortcut(currentView, event, "surface.rename")) {
-        event.preventDefault();
-        void withLatestActiveShortcutContext(
-          ({ activeSurfaceId: latestSurfaceId }) => {
-            requestSurfaceRename(latestSurfaceId);
-          }
-        );
-        return;
-      }
       if (matchShortcut(currentView, event, "surface.close")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(
           ({ activeSurfaceId: latestSurfaceId }) =>
-            window.kmux.dispatch({
+            dispatch({
               type: "surface.close",
               surfaceId: latestSurfaceId
             })
@@ -433,7 +584,7 @@ export function App(): JSX.Element {
         event.preventDefault();
         void withLatestActiveShortcutContext(
           ({ activeSurfaceId: latestSurfaceId }) =>
-            window.kmux.dispatch({
+            dispatch({
               type: "surface.closeOthers",
               surfaceId: latestSurfaceId
             })
@@ -443,7 +594,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "surface.next")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatchAndFocusActiveTerminal({
             type: "surface.focusRelative",
             paneId: latestPaneId,
             delta: 1
@@ -454,7 +605,7 @@ export function App(): JSX.Element {
       if (matchShortcut(currentView, event, "surface.prev")) {
         event.preventDefault();
         void withLatestActiveShortcutContext(({ activePaneId: latestPaneId }) =>
-          window.kmux.dispatch({
+          dispatchAndFocusActiveTerminal({
             type: "surface.focusRelative",
             paneId: latestPaneId,
             delta: -1
@@ -476,34 +627,139 @@ export function App(): JSX.Element {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [isMac]);
+
+  useEffect(() => {
+    const hideWorkspaceShortcutHints = () => {
+      setShowWorkspaceShortcutHints(false);
+    };
+    const syncWorkspaceShortcutHints = (metaKey: boolean) => {
+      setShowWorkspaceShortcutHints(metaKey);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!isMac) {
+        return;
+      }
+      syncWorkspaceShortcutHints(event.metaKey);
+    };
+    const onPointerInteraction = (event: MouseEvent | PointerEvent | WheelEvent) => {
+      if (!isMac || event.metaKey) {
+        return;
+      }
+      hideWorkspaceShortcutHints();
+    };
+    const onWindowFocus = () => {
+      if (!isMac) {
+        return;
+      }
+      hideWorkspaceShortcutHints();
+    };
+    const onVisibilityChange = () => {
+      if (!isMac || document.visibilityState === "visible") {
+        return;
+      }
+      hideWorkspaceShortcutHints();
+    };
+
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", hideWorkspaceShortcutHints);
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("pointerdown", onPointerInteraction, true);
+    window.addEventListener("wheel", onPointerInteraction, true);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", hideWorkspaceShortcutHints);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("pointerdown", onPointerInteraction, true);
+      window.removeEventListener("wheel", onPointerInteraction, true);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [isMac]);
+
+  useEffect(() => {
+    const stopSidebarResize = () => {
+      if (!sidebarResizeStateRef.current) {
+        return;
+      }
+      sidebarResizeStateRef.current = null;
+      setSidebarResizeActive(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const dragState = sidebarResizeStateRef.current;
+      if (!dragState) {
+        return;
+      }
+      const nextWidth = clampSidebarWidthForWindow(
+        dragState.startWidth + event.clientX - dragState.startX,
+        window.innerWidth
+      );
+      const currentRenderedWidth = clampSidebarWidthForWindow(
+        viewRef.current?.sidebarWidth ?? nextWidth,
+        window.innerWidth
+      );
+      if (nextWidth === currentRenderedWidth) {
+        return;
+      }
+      void window.kmux.dispatch({
+        type: "workspace.sidebar.setWidth",
+        width: nextWidth
+      });
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopSidebarResize);
+    window.addEventListener("pointercancel", stopSidebarResize);
+    window.addEventListener("blur", stopSidebarResize);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopSidebarResize);
+      window.removeEventListener("pointercancel", stopSidebarResize);
+      window.removeEventListener("blur", stopSidebarResize);
+      stopSidebarResize();
+    };
   }, []);
 
   const rows = view?.workspaceRows ?? [];
-  const workspaceContextRow = workspaceContextMenu
-    ? (rows.find(
-        (row) => row.workspaceId === workspaceContextMenu.workspaceId
-      ) ?? null)
+  const workspaceContext = workspaceContextMenu && view
+    ? findWorkspaceContext(view, workspaceContextMenu.workspaceId)
     : null;
-  const workspaceContextIndex = workspaceContextRow
-    ? rows.findIndex(
-        (row) => row.workspaceId === workspaceContextRow.workspaceId
-      )
-    : -1;
-  const activeWorkspaceHasAux = Boolean(
-    view?.activeWorkspace.sidebarStatus ||
-    view?.activeWorkspace.progress ||
-    view?.activeWorkspace.logs[0]
-  );
+  const workspaceContextMenuItems = workspaceContext
+    ? buildWorkspaceContextMenuEntries(workspaceContext)
+      : [];
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => sidebarRef.current,
+    getItemKey: (index) => rows[index]?.workspaceId ?? index,
     estimateSize: (index) =>
-      rows[index]?.workspaceId === view?.activeWorkspace.id &&
-      activeWorkspaceHasAux
-        ? 126
-        : 62,
-    overscan: 4
+      estimateWorkspaceRowHeight(rows[index], view?.activeWorkspace),
+    overscan: 4,
+    useAnimationFrameWithResizeObserver: true
   });
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      sidebarRef.current
+        ?.querySelectorAll<HTMLElement>("[data-workspace-virtual-item]")
+        .forEach((element) => {
+          rowVirtualizer.measureElement(element);
+        });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    rowVirtualizer,
+    rows,
+    view?.activeWorkspace.id,
+    view?.activeWorkspace.sidebarStatus,
+    view?.activeWorkspace.progress?.label,
+    view?.activeWorkspace.progress?.value,
+    view?.activeWorkspace.logs[0]?.id,
+    showWorkspaceShortcutHints,
+    editingWorkspaceId,
+    renderedSidebarWidth
+  ]);
 
   const paletteItems = useMemo(() => {
     if (!view) {
@@ -515,8 +771,7 @@ export function App(): JSX.Element {
         id: "new-workspace",
         label: "New workspace",
         subtitle: "Create another workspace",
-        run: () =>
-          void dispatch({ type: "workspace.create", name: "new workspace" })
+        run: () => void dispatch({ type: "workspace.create" })
       },
       {
         id: "rename-workspace",
@@ -541,15 +796,6 @@ export function App(): JSX.Element {
               paneId: activePaneId
             })
           )
-      },
-      {
-        id: "rename-tab",
-        label: "Rename active tab",
-        subtitle: "Edit the active surface title",
-        run: () =>
-          void withLatestActiveShortcutContext(({ activeSurfaceId }) => {
-            requestSurfaceRename(activeSurfaceId);
-          })
       },
       {
         id: "close-other-tabs",
@@ -608,7 +854,7 @@ export function App(): JSX.Element {
         id: "toggle-settings",
         label: "Settings",
         subtitle: "Open settings modal",
-        run: () => setSettingsOpen(true)
+        run: () => openSettingsModal()
       }
     ].filter(
       (item) =>
@@ -674,8 +920,7 @@ export function App(): JSX.Element {
               className={`${styles.titleActionButton} ${styles.titleActionGhost}`}
               onClick={() =>
                 void dispatch({
-                  type: "workspace.create",
-                  name: "new workspace"
+                  type: "workspace.create"
                 })
               }
             >
@@ -704,7 +949,7 @@ export function App(): JSX.Element {
           <button
             aria-label="Open settings"
             className={`${styles.titleActionButton} ${styles.titleActionGhost}`}
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettingsModal()}
           >
             <Codicon name="gear" />
           </button>
@@ -712,190 +957,222 @@ export function App(): JSX.Element {
       </div>
       <div className={styles.shell}>
         {view.sidebarVisible ? (
-          <aside className={styles.sidebar} data-testid="workspace-tool-window">
-            <div className={styles.sidebarPanel}>
-              <div className={styles.sidebarHeader}>
-                <div className={styles.sidebarHeaderLabelGroup}>
-                  <div className={styles.sidebarHeaderTitleRow}>
-                    <div className={styles.sidebarHeaderTitle}>WORKSPACES</div>
-                    <span className={styles.sidebarHeaderCount}>
-                      {rows.length}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div ref={sidebarRef} className={styles.sidebarScroll}>
-                {rows.length === 0 ? (
-                  <div
-                    className={styles.paletteEmpty}
-                    style={{ margin: "10px", marginTop: "20px" }}
-                  >
-                    <div style={{ marginBottom: "6px" }}>No workspaces</div>
-                    <div style={{ fontSize: "0.769rem", opacity: 0.6 }}>
-                      Press Cmd/Ctrl + N or +
+          <>
+            <aside
+              className={styles.sidebar}
+              data-testid="workspace-tool-window"
+              style={{
+                width: `${renderedSidebarWidth}px`,
+                minWidth: `${renderedSidebarWidth}px`,
+                maxWidth: `${renderedSidebarWidth}px`
+              }}
+            >
+              <div className={styles.sidebarPanel}>
+                <div className={styles.sidebarHeader}>
+                  <div className={styles.sidebarHeaderLabelGroup}>
+                    <div className={styles.sidebarHeaderTitleRow}>
+                      <div className={styles.sidebarHeaderTitle}>WORKSPACES</div>
+                      <span className={styles.sidebarHeaderCount}>
+                        {rows.length}
+                      </span>
                     </div>
                   </div>
-                ) : (
-                  <div
-                    className={styles.virtualBody}
-                    style={{
-                      height: rowVirtualizer.getTotalSize()
-                    }}
-                  >
-                    {rowVirtualizer.getVirtualItems().map((item) => {
-                      const row = rows[item.index];
-                      return (
-                        <div
-                          key={row.workspaceId}
-                          className={styles.virtualItem}
-                          data-index={item.index}
-                          ref={rowVirtualizer.measureElement}
-                          style={{
-                            transform: `translateY(${item.start}px)`
-                          }}
-                        >
-                          <WorkspaceCard
-                            row={row}
-                            editing={editingWorkspaceId === row.workspaceId}
-                            expanded={
-                              row.workspaceId === view.activeWorkspace.id
-                            }
-                            menuOpen={
-                              workspaceContextMenu?.workspaceId ===
-                              row.workspaceId
-                            }
-                            status={
-                              row.workspaceId === view.activeWorkspace.id
-                                ? view.activeWorkspace.sidebarStatus
-                                : undefined
-                            }
-                            progress={
-                              row.workspaceId === view.activeWorkspace.id
-                                ? view.activeWorkspace.progress
-                                : undefined
-                            }
-                            latestLog={
-                              row.workspaceId === view.activeWorkspace.id
-                                ? view.activeWorkspace.logs[0]
-                                : undefined
-                            }
-                            onSelect={() =>
-                              void dispatch({
-                                type: "workspace.select",
-                                workspaceId: row.workspaceId
-                              })
-                            }
-                            onRenameStart={() =>
-                              beginWorkspaceRename(row.workspaceId)
-                            }
-                            onOpenContextMenu={(position) =>
-                              openWorkspaceContextMenu(
-                                row.workspaceId,
-                                position.x,
-                                position.y
-                              )
-                            }
-                            onRename={(name) => {
-                              void dispatch({
-                                type: "workspace.rename",
-                                workspaceId: row.workspaceId,
-                                name
-                              });
-                              setEditingWorkspaceId(null);
+                </div>
+                <div ref={sidebarRef} className={styles.sidebarScroll}>
+                  {rows.length === 0 ? (
+                    <div
+                      className={styles.paletteEmpty}
+                      style={{ margin: "10px", marginTop: "20px" }}
+                    >
+                      <div style={{ marginBottom: "6px" }}>No workspaces</div>
+                      <div style={{ fontSize: "0.769rem", opacity: 0.6 }}>
+                        Press Cmd/Ctrl + N or +
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={styles.virtualBody}
+                      style={{
+                        height: rowVirtualizer.getTotalSize()
+                      }}
+                    >
+                      {rowVirtualizer.getVirtualItems().map((item) => {
+                        const row = rows[item.index];
+                        return (
+                          <div
+                            key={row.workspaceId}
+                            className={styles.virtualItem}
+                            data-index={item.index}
+                            data-workspace-virtual-item=""
+                            ref={rowVirtualizer.measureElement}
+                            style={{
+                              transform: `translateY(${item.start}px)`
                             }}
-                            dragging={dragWorkspaceId === row.workspaceId}
-                            dropPosition={
-                              dropWorkspaceId === row.workspaceId
-                                ? dropPosition
-                                : null
-                            }
-                            onDragStart={() => {
-                              setDragWorkspaceId(row.workspaceId);
-                              setDropWorkspaceId(null);
-                              setDropPosition(null);
-                            }}
-                            onDragTarget={(position) => {
-                              if (
-                                !dragWorkspaceId ||
-                                dragWorkspaceId === row.workspaceId
-                              ) {
+                          >
+                            <WorkspaceCard
+                              row={row}
+                              displayName={
+                                row.nameLocked ? row.name : "new workspace"
+                              }
+                              shortcutHint={
+                                showWorkspaceShortcutHints && item.index < 9
+                                  ? `⌘${item.index + 1}`
+                                  : undefined
+                              }
+                              editing={editingWorkspaceId === row.workspaceId}
+                              expanded={
+                                row.workspaceId === view.activeWorkspace.id
+                              }
+                              menuOpen={
+                                workspaceContextMenu?.workspaceId ===
+                                row.workspaceId
+                              }
+                              status={
+                                row.workspaceId === view.activeWorkspace.id
+                                  ? view.activeWorkspace.sidebarStatus
+                                  : undefined
+                              }
+                              progress={
+                                row.workspaceId === view.activeWorkspace.id
+                                  ? view.activeWorkspace.progress
+                                  : undefined
+                              }
+                              latestLog={
+                                row.workspaceId === view.activeWorkspace.id
+                                  ? view.activeWorkspace.logs[0]
+                                  : undefined
+                              }
+                              onSelect={() =>
+                                void dispatch({
+                                  type: "workspace.select",
+                                  workspaceId: row.workspaceId
+                                })
+                              }
+                              onRenameStart={() =>
+                                beginWorkspaceRename(row.workspaceId)
+                              }
+                              onOpenContextMenu={(position) =>
+                                void openWorkspaceContextMenu(
+                                  row.workspaceId,
+                                  position.x,
+                                  position.y
+                                )
+                              }
+                              onRename={(name) => {
+                                void dispatch({
+                                  type: "workspace.rename",
+                                  workspaceId: row.workspaceId,
+                                  name
+                                });
+                                setEditingWorkspaceId(null);
+                              }}
+                              dragging={dragWorkspaceId === row.workspaceId}
+                              dropPosition={
+                                dropWorkspaceId === row.workspaceId
+                                  ? dropPosition
+                                  : null
+                              }
+                              onDragStart={() => {
+                                setDragWorkspaceId(row.workspaceId);
                                 setDropWorkspaceId(null);
                                 setDropPosition(null);
-                                return;
-                              }
-                              setDropWorkspaceId(row.workspaceId);
-                              setDropPosition(position);
-                            }}
-                            onDragLeave={() => {
-                              if (dropWorkspaceId === row.workspaceId) {
-                                setDropWorkspaceId(null);
-                                setDropPosition(null);
-                              }
-                            }}
-                            onDrop={(position) => {
-                              if (
-                                !dragWorkspaceId ||
-                                dragWorkspaceId === row.workspaceId
-                              ) {
+                              }}
+                              onDragTarget={(position) => {
+                                if (
+                                  !dragWorkspaceId ||
+                                  dragWorkspaceId === row.workspaceId
+                                ) {
+                                  setDropWorkspaceId(null);
+                                  setDropPosition(null);
+                                  return;
+                                }
+                                setDropWorkspaceId(row.workspaceId);
+                                setDropPosition(position);
+                              }}
+                              onDragLeave={() => {
+                                if (dropWorkspaceId === row.workspaceId) {
+                                  setDropWorkspaceId(null);
+                                  setDropPosition(null);
+                                }
+                              }}
+                              onDrop={(position) => {
+                                if (
+                                  !dragWorkspaceId ||
+                                  dragWorkspaceId === row.workspaceId
+                                ) {
+                                  setDragWorkspaceId(null);
+                                  setDropWorkspaceId(null);
+                                  setDropPosition(null);
+                                  return;
+                                }
+                                const sourceIndex = rows.findIndex(
+                                  (entry) => entry.workspaceId === dragWorkspaceId
+                                );
+                                const targetIndex = rows.findIndex(
+                                  (entry) => entry.workspaceId === row.workspaceId
+                                );
+                                if (sourceIndex === -1 || targetIndex === -1) {
+                                  setDragWorkspaceId(null);
+                                  setDropWorkspaceId(null);
+                                  setDropPosition(null);
+                                  return;
+                                }
+
+                                const toIndex =
+                                  position === "after"
+                                    ? sourceIndex < targetIndex
+                                      ? targetIndex
+                                      : targetIndex + 1
+                                    : sourceIndex < targetIndex
+                                      ? targetIndex - 1
+                                      : targetIndex;
+
+                                void dispatch({
+                                  type: "workspace.move",
+                                  workspaceId: dragWorkspaceId,
+                                  toIndex
+                                });
                                 setDragWorkspaceId(null);
                                 setDropWorkspaceId(null);
                                 setDropPosition(null);
-                                return;
-                              }
-                              const sourceIndex = rows.findIndex(
-                                (entry) => entry.workspaceId === dragWorkspaceId
-                              );
-                              const targetIndex = rows.findIndex(
-                                (entry) => entry.workspaceId === row.workspaceId
-                              );
-                              if (sourceIndex === -1 || targetIndex === -1) {
+                              }}
+                              onDragEnd={() => {
                                 setDragWorkspaceId(null);
                                 setDropWorkspaceId(null);
                                 setDropPosition(null);
-                                return;
-                              }
-
-                              const toIndex =
-                                position === "after"
-                                  ? sourceIndex < targetIndex
-                                    ? targetIndex
-                                    : targetIndex + 1
-                                  : sourceIndex < targetIndex
-                                    ? targetIndex - 1
-                                    : targetIndex;
-
-                              void dispatch({
-                                type: "workspace.move",
-                                workspaceId: dragWorkspaceId,
-                                toIndex
-                              });
-                              setDragWorkspaceId(null);
-                              setDropWorkspaceId(null);
-                              setDropPosition(null);
-                            }}
-                            onDragEnd={() => {
-                              setDragWorkspaceId(null);
-                              setDropWorkspaceId(null);
-                              setDropPosition(null);
-                            }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                              }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          </aside>
+            </aside>
+            <div
+              aria-label="Resize sidebar"
+              aria-orientation="vertical"
+              aria-valuemax={MAX_SIDEBAR_WIDTH}
+              aria-valuemin={MIN_SIDEBAR_WIDTH}
+              aria-valuenow={view.sidebarWidth}
+              className={styles.sidebarResizer}
+              data-active={sidebarResizeActive}
+              data-testid="sidebar-resizer"
+              onKeyDown={handleSidebarResizeKeyDown}
+              onPointerDown={beginSidebarResize}
+              role="separator"
+              tabIndex={0}
+            />
+          </>
         ) : null}
         <main className={styles.main}>
-          <PaneTree
-            workspace={view.activeWorkspace}
-            settings={view.settings}
-            searchSurfaceId={searchSurfaceId}
-            renameSurfaceRequest={renameSurfaceRequest}
-            focusTerminalRequest={terminalFocusRequest}
-            onConsumeRenameSurfaceRequest={consumeRenameSurfaceRequest}
+            <PaneTree
+              workspace={view.activeWorkspace}
+              settings={view.settings}
+              colorTheme={resolvedColorTheme}
+              searchSurfaceId={searchSurfaceId}
+              focusTerminalRequest={terminalFocusRequest}
             onConsumeFocusTerminalRequest={consumeTerminalFocusRequest}
             onSetSplitRatio={(splitNodeId, ratio) =>
               void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
@@ -905,9 +1182,6 @@ export function App(): JSX.Element {
             }
             onFocusSurface={(surfaceId) =>
               void dispatch({ type: "surface.focus", surfaceId })
-            }
-            onRenameSurface={(surfaceId, title) =>
-              void dispatch({ type: "surface.rename", surfaceId, title })
             }
             onCreateSurface={(paneId) =>
               void dispatch({ type: "surface.create", paneId })
@@ -1008,134 +1282,21 @@ export function App(): JSX.Element {
           </div>
         </div>
       ) : null}
-      {workspaceContextMenu && workspaceContextRow ? (
-        <div
-          className={styles.menuOverlay}
-          onClick={closeWorkspaceContextMenu}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            closeWorkspaceContextMenu();
-          }}
-        >
-          <div
-            className={styles.workspaceMenu}
-            role="menu"
-            aria-label={`Workspace menu for ${workspaceContextRow.name}`}
-            style={{
-              left: workspaceContextMenu.x,
-              top: workspaceContextMenu.y
-            }}
-            onClick={(event) => event.stopPropagation()}
-            onContextMenu={(event) => event.preventDefault()}
-          >
-            <div className={styles.workspaceMenuHeader}>
-              <span>{workspaceContextRow.name}</span>
-              {workspaceContextRow.pinned ? (
-                <span className={styles.workspaceMenuMeta}>Pinned</span>
-              ) : null}
-            </div>
-            <div className={styles.workspaceMenuGroup}>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "rename",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Rename Workspace…
-              </button>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "pin-toggle",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                {workspaceContextRow.pinned
-                  ? "Unpin Workspace"
-                  : "Pin Workspace"}
-              </button>
-            </div>
-            <div className={styles.workspaceMenuGroup}>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                disabled={workspaceContextIndex <= 0}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "move-top",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Move to Top
-              </button>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                disabled={workspaceContextIndex <= 0}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "move-up",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Move Up
-              </button>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                disabled={
-                  workspaceContextIndex === -1 ||
-                  workspaceContextIndex >= rows.length - 1
-                }
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "move-down",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Move Down
-              </button>
-            </div>
-            <div className={styles.workspaceMenuGroup}>
-              <button
-                role="menuitem"
-                className={styles.workspaceMenuItem}
-                disabled={rows.length <= 1}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "close-others",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Close Other Workspaces
-              </button>
-              <button
-                role="menuitem"
-                className={`${styles.workspaceMenuItem} ${styles.workspaceMenuItemDanger}`}
-                disabled={rows.length <= 1}
-                onClick={() =>
-                  void runWorkspaceContextAction(
-                    "close",
-                    workspaceContextRow.workspaceId
-                  )
-                }
-              >
-                Close Workspace
-              </button>
-            </div>
-          </div>
-        </div>
+      {workspaceContextMenu && workspaceContext ? (
+        <WorkspaceContextMenu
+          workspaceName={workspaceContext.row.name}
+          position={workspaceContextMenu}
+          items={workspaceContextMenuItems}
+          isMac={isMac}
+          menuRef={workspaceMenuRef}
+          onClose={closeWorkspaceContextMenu}
+          onAction={(action) =>
+            void handleWorkspaceContextAction(
+              action,
+              workspaceContext.row.workspaceId
+            )
+          }
+        />
       ) : null}
       {notificationsOpen ? (
         <NotificationsPanel
@@ -1149,12 +1310,21 @@ export function App(): JSX.Element {
         />
       ) : null}
       {settingsOpen && settingsDraft ? (
-        <div className={styles.overlay} onClick={() => setSettingsOpen(false)}>
+        <div
+          className={`${styles.overlay} ${styles.settingsOverlay}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSettingsOpen(false);
+            }
+          }}
+        >
           <div
             className={styles.settings}
             role="dialog"
             aria-modal="true"
             aria-label="Settings"
+            data-testid="settings-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
             <div className={styles.modalHeader}>
@@ -1166,127 +1336,201 @@ export function App(): JSX.Element {
                 ×
               </button>
             </div>
-            <label>
-              Socket mode
-              <select
-                value={settingsDraft.socketMode}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    socketMode: event.currentTarget
-                      .value as ShellViewModel["settings"]["socketMode"]
-                  })
-                }
-              >
-                <option value="kmuxOnly">kmuxOnly</option>
-                <option value="allowAll">allowAll</option>
-                <option value="off">off</option>
-              </select>
-            </label>
-            <label>
-              Startup restore
-              <input
-                type="checkbox"
-                checked={settingsDraft.startupRestore}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    startupRestore: event.currentTarget.checked
-                  })
-                }
-              />
-            </label>
-            <label>
-              Desktop notifications
-              <input
-                type="checkbox"
-                checked={settingsDraft.notificationDesktop}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    notificationDesktop: event.currentTarget.checked
-                  })
-                }
-              />
-            </label>
-            <label>
-              Font family
-              <input
-                type="text"
-                value={settingsDraft.terminalFontFamily}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    terminalFontFamily: event.currentTarget.value
-                  })
-                }
-              />
-            </label>
-            <label>
-              Font size
-              <input
-                type="number"
-                min="8"
-                max="32"
-                value={settingsDraft.terminalFontSize}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    terminalFontSize: Number(event.currentTarget.value)
-                  })
-                }
-              />
-            </label>
-            <label>
-              Line height
-              <input
-                type="number"
-                min="0.8"
-                max="2"
-                step="0.05"
-                value={settingsDraft.terminalLineHeight}
-                onChange={(event) =>
-                  setSettingsDraft({
-                    ...settingsDraft,
-                    terminalLineHeight: Number(event.currentTarget.value)
-                  })
-                }
-              />
-            </label>
-            <div className={styles.shortcutsEditor}>
-              {Object.entries(settingsDraft.shortcuts)
-                .filter(
-                  ([command]) =>
-                    command !== "workspace.switcher" &&
-                    command !== "pane.zoom"
-                )
-                .map(([command, binding]) => (
-                  <label key={command}>
-                    <span>{command}</span>
-                    <input
-                      value={binding}
-                      onChange={(event) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          shortcuts: {
-                            ...settingsDraft.shortcuts,
-                            [command]: event.currentTarget.value
+            <div className={styles.settingsBody} data-testid="settings-body">
+              <label>
+                Theme mode
+                <select
+                  aria-label="Theme mode"
+                  value={settingsDraft.themeMode}
+                  onChange={(event) => {
+                    const themeMode =
+                      event.currentTarget
+                        .value as ShellViewModel["settings"]["themeMode"];
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            themeMode
                           }
-                        })
-                      }
-                    />
-                  </label>
-                ))}
+                        : current
+                    );
+                  }}
+                >
+                  <option value="system">system</option>
+                  <option value="dark">dark</option>
+                  <option value="light">light</option>
+                </select>
+              </label>
+              <label>
+                Socket mode
+                <select
+                  aria-label="Socket mode"
+                  value={settingsDraft.socketMode}
+                  onChange={(event) => {
+                    const socketMode =
+                      event.currentTarget
+                        .value as ShellViewModel["settings"]["socketMode"];
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            socketMode
+                          }
+                        : current
+                    );
+                  }}
+                >
+                  <option value="kmuxOnly">kmuxOnly</option>
+                  <option value="allowAll">allowAll</option>
+                  <option value="off">off</option>
+                </select>
+              </label>
+              <label>
+                Startup restore
+                <input
+                  aria-label="Startup restore"
+                  type="checkbox"
+                  checked={settingsDraft.startupRestore}
+                  onChange={(event) => {
+                    const startupRestore = event.currentTarget.checked;
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            startupRestore
+                          }
+                        : current
+                    );
+                  }}
+                />
+              </label>
+              <label>
+                Desktop notifications
+                <input
+                  aria-label="Desktop notifications"
+                  type="checkbox"
+                  checked={settingsDraft.notificationDesktop}
+                  onChange={(event) => {
+                    const notificationDesktop = event.currentTarget.checked;
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            notificationDesktop
+                          }
+                        : current
+                    );
+                  }}
+                />
+              </label>
+              <label>
+                Font family
+                <input
+                  aria-label="Font family"
+                  type="text"
+                  value={settingsDraft.terminalFontFamily}
+                  onChange={(event) => {
+                    const terminalFontFamily = event.currentTarget.value;
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            terminalFontFamily
+                          }
+                        : current
+                    );
+                  }}
+                />
+              </label>
+              <label>
+                Font size
+                <input
+                  aria-label="Font size"
+                  type="number"
+                  min="8"
+                  max="32"
+                  value={settingsDraft.terminalFontSize}
+                  onChange={(event) => {
+                    const terminalFontSize = Number(event.currentTarget.value);
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            terminalFontSize
+                          }
+                        : current
+                    );
+                  }}
+                />
+              </label>
+              <label>
+                Line height
+                <input
+                  aria-label="Line height"
+                  type="number"
+                  min="0.8"
+                  max="2"
+                  step="0.05"
+                  value={settingsDraft.terminalLineHeight}
+                  onChange={(event) => {
+                    const terminalLineHeight = Number(event.currentTarget.value);
+                    setSettingsDraft((current) =>
+                      current
+                        ? {
+                            ...current,
+                            terminalLineHeight
+                          }
+                        : current
+                    );
+                  }}
+                />
+              </label>
+              <div className={styles.shortcutsEditor}>
+                {Object.entries(settingsDraft.shortcuts)
+                  .filter(
+                    ([command]) =>
+                      command !== "workspace.switcher" &&
+                      command !== "pane.zoom"
+                  )
+                  .map(([command, binding]) => (
+                    <label key={command}>
+                      <span>{command}</span>
+                      <input
+                        value={binding}
+                        onChange={(event) => {
+                          const nextBinding = event.currentTarget.value;
+                          setSettingsDraft((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  shortcuts: {
+                                    ...current.shortcuts,
+                                    [command]: nextBinding
+                                  }
+                                }
+                              : current
+                          );
+                        }}
+                      />
+                    </label>
+                  ))}
+              </div>
             </div>
             <div className={styles.modalActions}>
-              <button onClick={() => setSettingsOpen(false)}>Cancel</button>
               <button
+                aria-label="Cancel"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                aria-label="Save"
                 onClick={() => {
                   const settingsPatch = {
                     ...settingsDraft,
                     shortcuts: omitDeprecatedShortcuts(settingsDraft.shortcuts)
                   };
-                  applyTypographySettings(settingsPatch);
+                  applyAppearanceSettings(settingsPatch, prefersDarkColorScheme);
                   void dispatch({
                     type: "settings.update",
                     patch: settingsPatch
@@ -1313,13 +1557,30 @@ export function App(): JSX.Element {
     setPaletteSelectedIndex(0);
   }
 
-  function openWorkspaceContextMenu(
+  function openSettingsModal(): void {
+    requestAnimationFrame(() => {
+      setSettingsOpen(true);
+    });
+  }
+
+  async function openWorkspaceContextMenu(
     workspaceId: string,
     x: number,
     y: number
-  ): void {
-    const menuWidth = 228;
-    const menuHeight = 320;
+  ): Promise<void> {
+    setWorkspaceContextMenu(null);
+
+    const usedNative = await window.kmux.showWorkspaceContextMenu(
+      workspaceId,
+      x,
+      y
+    );
+    if (usedNative) {
+      return;
+    }
+
+    const menuWidth = 272;
+    const menuHeight = 252;
     setWorkspaceContextMenu({
       workspaceId,
       x: Math.max(12, Math.min(x, window.innerWidth - menuWidth - 12)),
@@ -1329,6 +1590,59 @@ export function App(): JSX.Element {
 
   function closeWorkspaceContextMenu(): void {
     setWorkspaceContextMenu(null);
+  }
+
+  function setSidebarWidth(width: number): void {
+    const nextWidth = clampSidebarWidthForWindow(width, window.innerWidth);
+    if (nextWidth === renderedSidebarWidth) {
+      return;
+    }
+    void dispatch({
+      type: "workspace.sidebar.setWidth",
+      width: nextWidth
+    });
+  }
+
+  function beginSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0 || !viewRef.current?.sidebarVisible) {
+      return;
+    }
+    sidebarResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: renderedSidebarWidth
+    };
+    setSidebarResizeActive(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    event.preventDefault();
+  }
+
+  function handleSidebarResizeKeyDown(
+    event: ReactKeyboardEvent<HTMLDivElement>
+  ): void {
+    if (!viewRef.current?.sidebarVisible) {
+      return;
+    }
+    const currentWidth = renderedSidebarWidth;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSidebarWidth(currentWidth - 12);
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSidebarWidth(currentWidth + 12);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setSidebarWidth(MIN_SIDEBAR_WIDTH);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setSidebarWidth(maxSidebarWidthForWindow(window.innerWidth));
+    }
   }
 
   function beginWorkspaceRename(
@@ -1341,24 +1655,11 @@ export function App(): JSX.Element {
     setEditingWorkspaceId(workspaceId);
   }
 
-  function requestSurfaceRename(surfaceId: string): void {
-    setRenameSurfaceRequest({
-      surfaceId,
-      token: Date.now()
-    });
-  }
-
   function requestTerminalFocus(surfaceId: string): void {
     setTerminalFocusRequest({
       surfaceId,
       token: Date.now()
     });
-  }
-
-  function consumeRenameSurfaceRequest(token: number): void {
-    setRenameSurfaceRequest((current) =>
-      current?.token === token ? null : current
-    );
   }
 
   function consumeTerminalFocusRequest(token: number): void {
@@ -1401,95 +1702,33 @@ export function App(): JSX.Element {
     await run(await window.kmux.getView());
   }
 
-  async function withLatestWorkspaceContext(
-    workspaceId: string,
-    run: (context: WorkspaceRowContext) => void | Promise<void>
-  ): Promise<void> {
-    await withLatestView(async (latestView) => {
-      const index = latestView.workspaceRows.findIndex(
-        (row) => row.workspaceId === workspaceId
-      );
-      if (index === -1) {
-        return;
-      }
-      await run({
-        view: latestView,
-        row: latestView.workspaceRows[index],
-        index
-      });
-    });
-  }
-
-  async function runWorkspaceContextAction(
-    action:
-      | "rename"
-      | "pin-toggle"
-      | "move-top"
-      | "move-up"
-      | "move-down"
-      | "close-others"
-      | "close",
+  async function handleWorkspaceContextAction(
+    action: WorkspaceContextAction,
     workspaceId: string
   ): Promise<void> {
     closeWorkspaceContextMenu();
 
-    switch (action) {
-      case "rename":
-        await withLatestWorkspaceContext(
-          workspaceId,
-          ({ view: latestView }) => {
-            beginWorkspaceRename(workspaceId, latestView.sidebarVisible);
+    const resolveWorkspaceContext = async () =>
+      findWorkspaceContext(await window.kmux.getView(), workspaceId);
+
+    await runSharedWorkspaceContextAction(
+      workspaceId,
+      action,
+      resolveWorkspaceContext,
+      {
+        rename: async (targetWorkspaceId) => {
+          const latestContext = await resolveWorkspaceContext();
+          if (!latestContext) {
+            return;
           }
-        );
-        return;
-      case "pin-toggle":
-        await dispatch({ type: "workspace.pin.toggle", workspaceId });
-        return;
-      case "move-top":
-        await withLatestWorkspaceContext(workspaceId, ({ index }) => {
-          if (index > 0) {
-            return dispatch({
-              type: "workspace.move",
-              workspaceId,
-              toIndex: 0
-            });
-          }
-        });
-        return;
-      case "move-up":
-        await withLatestWorkspaceContext(workspaceId, ({ index }) => {
-          if (index > 0) {
-            return dispatch({
-              type: "workspace.move",
-              workspaceId,
-              toIndex: index - 1
-            });
-          }
-        });
-        return;
-      case "move-down":
-        await withLatestWorkspaceContext(
-          workspaceId,
-          ({ index, view: latestView }) => {
-            if (index < latestView.workspaceRows.length - 1) {
-              return dispatch({
-                type: "workspace.move",
-                workspaceId,
-                toIndex: index + 1
-              });
-            }
-          }
-        );
-        return;
-      case "close-others":
-        await dispatch({ type: "workspace.closeOthers", workspaceId });
-        return;
-      case "close":
-        await dispatch({ type: "workspace.close", workspaceId });
-        return;
-      default:
-        return;
-    }
+          beginWorkspaceRename(
+            targetWorkspaceId,
+            latestContext.view.sidebarVisible
+          );
+        },
+        dispatch
+      }
+    );
   }
 
   function executePaletteItem(index: number): void {
@@ -1500,237 +1739,6 @@ export function App(): JSX.Element {
     item.run();
     closePalette();
   }
-}
-
-function WorkspaceCard(props: {
-  row: WorkspaceRowVm;
-  editing: boolean;
-  expanded: boolean;
-  menuOpen: boolean;
-  status?: string;
-  progress?: SidebarProgress;
-  latestLog?: SidebarLogEntry;
-  dragging: boolean;
-  dropPosition: "before" | "after" | null;
-  onSelect: () => void;
-  onRenameStart: () => void;
-  onOpenContextMenu: (position: { x: number; y: number }) => void;
-  onRename: (name: string) => void;
-  onDragStart: () => void;
-  onDragTarget: (position: "before" | "after") => void;
-  onDragLeave: () => void;
-  onDrop: (position: "before" | "after") => void;
-  onDragEnd: () => void;
-}): JSX.Element {
-  const summaryText =
-    props.row.summary && props.row.summary !== props.row.name
-      ? props.row.summary
-      : props.row.cwd
-        ? (lastPathSegment(props.row.cwd) ?? "Workspace folder")
-        : "Detached workspace";
-  const pathText = props.row.cwd ?? "No workspace folder";
-  const showMeta = props.row.ports.length > 0 || props.row.attention;
-
-  return (
-    <button
-      className={styles.workspaceCard}
-      data-workspace-id={props.row.workspaceId}
-      data-active={props.row.isActive}
-      data-menu-open={props.menuOpen}
-      data-dragging={props.dragging}
-      data-drop-position={props.dropPosition ?? undefined}
-      draggable={!props.editing}
-      onClick={props.onSelect}
-      onDoubleClick={props.onRenameStart}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        props.onOpenContextMenu({ x: event.clientX, y: event.clientY });
-      }}
-      onKeyDown={(event) => {
-        if (
-          props.editing ||
-          event.target instanceof HTMLInputElement ||
-          !(
-            event.key === "ContextMenu" ||
-            (event.shiftKey && event.key === "F10")
-          )
-        ) {
-          return;
-        }
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        props.onOpenContextMenu({
-          x: rect.right - 12,
-          y: rect.top + 14
-        });
-      }}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", props.row.workspaceId);
-        props.onDragStart();
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        const position =
-          event.clientY >= rect.top + rect.height / 2 ? "after" : "before";
-        props.onDragTarget(position);
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          props.onDragLeave();
-        }
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        const position =
-          event.clientY >= rect.top + rect.height / 2 ? "after" : "before";
-        props.onDrop(position);
-      }}
-      onDragEnd={props.onDragEnd}
-    >
-      <div className={styles.workspaceCardHeader}>
-        <div className={styles.workspaceTextBlock}>
-          <div className={styles.workspaceTitleRow}>
-            {props.editing ? (
-              <input
-                autoFocus
-                defaultValue={props.row.name}
-                onFocus={(event) => event.currentTarget.select()}
-                onBlur={(event) => props.onRename(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    props.onRename((event.target as HTMLInputElement).value);
-                  }
-                }}
-              />
-            ) : (
-              <span className={styles.workspaceTitle}>{props.row.name}</span>
-            )}
-            <div className={styles.workspaceMetrics}>
-              {props.row.pinned ? (
-                <span className={styles.workspacePinned}>PIN</span>
-              ) : null}
-              {props.row.unreadCount > 0 ? (
-                <span className={styles.workspaceUnread}>
-                  {props.row.unreadCount}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <span className={styles.workspaceSummary}>{summaryText}</span>
-          <div className={styles.workspacePathRow}>
-            {props.row.branch ? (
-              <span className={styles.workspaceBranch}>{props.row.branch}</span>
-            ) : null}
-            <div className={styles.workspacePath}>{pathText}</div>
-          </div>
-          {showMeta ? (
-            <div className={styles.workspaceMeta}>
-              {props.row.ports.map((port) => (
-                <span key={port} className={styles.workspaceMetaChip}>
-                  :{port}
-                </span>
-              ))}
-              {props.row.attention ? (
-                <span
-                  className={`${styles.workspaceMetaChip} ${styles.workspaceAttention}`}
-                >
-                  Attention
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {props.expanded &&
-          (props.status || props.progress || props.latestLog) ? (
-            <div className={styles.workspaceAux}>
-              {props.status ? (
-                <div className={styles.statusPill}>{props.status}</div>
-              ) : null}
-              {props.progress ? (
-                <div className={styles.workspaceProgress}>
-                  <div className={styles.workspaceProgressLabel}>
-                    {props.progress.label ?? "Progress"}
-                  </div>
-                  <div className={styles.progressTrack}>
-                    <div
-                      className={styles.progressFill}
-                      style={{ width: `${props.progress.value * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ) : null}
-              {props.latestLog ? (
-                <div
-                  className={styles.workspaceLog}
-                  data-level={props.latestLog.level}
-                >
-                  <span>{props.latestLog.level}</span>
-                  <span>{props.latestLog.message}</span>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function NotificationsPanel(props: {
-  notifications: NotificationItem[];
-  onClose: () => void;
-  onJump: () => void;
-  onClear: () => void;
-}): JSX.Element {
-  return (
-    <div className={styles.overlay} onClick={props.onClose}>
-      <div
-        className={styles.notifications}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Notifications"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className={styles.modalHeader}>
-          <h2>Notifications</h2>
-          <button aria-label="Close notifications" onClick={props.onClose}>
-            ×
-          </button>
-        </div>
-        <div className={styles.notificationActions}>
-          <button onClick={props.onJump}>Jump latest unread</button>
-          <button onClick={props.onClear}>Clear all</button>
-        </div>
-        <div className={styles.notificationList}>
-          {props.notifications.map((notification) => (
-            <div
-              key={notification.id}
-              className={styles.notificationItem}
-              data-read={notification.read}
-            >
-              <div>{notification.title}</div>
-              <div>{notification.message}</div>
-              <div>{formatClock(notification.createdAt)}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function formatClock(value: string): string {
-  return new Date(value).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function lastPathSegment(value: string): string | null {
-  const parts = value.split(/[\\/]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : null;
 }
 
 function matchShortcut(
@@ -1747,7 +1755,27 @@ function omitDeprecatedShortcuts(
   const nextShortcuts = { ...shortcuts };
   delete nextShortcuts["workspace.switcher"];
   delete nextShortcuts["pane.zoom"];
+  delete nextShortcuts["surface.rename"];
   return nextShortcuts;
+}
+
+function applyAppearanceSettings(
+  settings: KmuxSettings,
+  prefersDarkColorScheme: boolean
+): ColorTheme {
+  const root = document.documentElement;
+  const resolvedTheme = resolveColorTheme(
+    settings.themeMode,
+    prefersDarkColorScheme
+  );
+
+  applyThemeVariables(root, resolvedTheme);
+  root.dataset.colorTheme = resolvedTheme;
+  root.dataset.themeMode = settings.themeMode;
+  root.style.colorScheme = resolvedTheme;
+
+  applyTypographySettings(settings);
+  return resolvedTheme;
 }
 
 function applyTypographySettings(settings: KmuxSettings): void {
@@ -1765,4 +1793,36 @@ function applyTypographySettings(settings: KmuxSettings): void {
     "--kmux-line-height",
     `${Number.isFinite(settings.terminalLineHeight) ? settings.terminalLineHeight : 1}`
   );
+}
+
+function listWorkspaceSurfaceShortcutTargets(
+  workspace: ActiveWorkspaceVm
+): string[] {
+  return listWorkspacePaneIdsInTreeOrder(workspace).flatMap(
+    (paneId) => workspace.panes[paneId]?.surfaceIds ?? []
+  );
+}
+
+function listWorkspacePaneIdsInTreeOrder(
+  workspace: ActiveWorkspaceVm
+): string[] {
+  const paneIds: string[] = [];
+
+  function walk(nodeId: string): void {
+    const node = workspace.nodes[nodeId];
+    if (!node) {
+      return;
+    }
+    if (node.kind === "leaf") {
+      if (workspace.panes[node.paneId]) {
+        paneIds.push(node.paneId);
+      }
+      return;
+    }
+    walk(node.first);
+    walk(node.second);
+  }
+
+  walk(workspace.rootNodeId);
+  return paneIds;
 }
