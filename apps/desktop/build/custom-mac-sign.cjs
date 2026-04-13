@@ -1,4 +1,4 @@
-const { sign, walkAsync } = require("@electron/osx-sign");
+const { signApp, walkAsync } = require("@electron/osx-sign");
 
 const fs = require("node:fs/promises");
 
@@ -61,7 +61,7 @@ async function customMacSign(opts) {
     `[custom-mac-sign] Walked ${walkedCount} paths; signing ${walkedCount - duplicateAliases.size} after filtering ${duplicateAliases.size} duplicate aliases.`,
   );
 
-  return sign({
+  await signApp({
     ...opts,
     ignore(filePath) {
       const originalResult =
@@ -70,6 +70,8 @@ async function customMacSign(opts) {
       return originalResult || duplicateAliases.has(filePath);
     },
   });
+
+  console.log("[custom-mac-sign] Signing completed.");
 }
 
 module.exports = customMacSign;
