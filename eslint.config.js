@@ -18,6 +18,20 @@ export default [
   js.configs.recommended,
   prettier,
   {
+    files: ["apps/desktop/build/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        Buffer: "readonly",
+        process: "readonly",
+        require: "readonly",
+        module: "readonly",
+        __dirname: "readonly",
+        __filename: "readonly",
+      }
+    }
+  },
+  {
     files: ["**/*.ts", "**/*.tsx"],
     languageOptions: {
       parser: tsparser,
