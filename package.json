@@ -26,7 +26,7 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
+    "@electron/rebuild": "^4.0.3",
     "@playwright/test": "^1.53.2",
     "@types/node": "^22.15.17",
     "@types/react": "^18.3.23",
