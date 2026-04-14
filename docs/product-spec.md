@@ -26,7 +26,7 @@ The baseline architecture is defined in [`0002-electron-xterm-mvp-architecture.m
 
 Processes:
 
-- `electron-main`: single writer, persistence, socket API, metadata scheduling
+- `electron-main`: single writer, file-store persistence, socket API, metadata scheduling
 - `pty-host`: `node-pty` and `@xterm/headless` session runtime
 - `renderer`: visible `xterm.js` mounts, split UI, sidebar, overlays
 

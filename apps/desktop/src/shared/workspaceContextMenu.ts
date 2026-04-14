@@ -29,6 +29,9 @@ export interface WorkspaceContext {
   view: ShellViewModel;
   row: WorkspaceRowVm;
   index: number;
+  groupStartIndex: number;
+  groupIndex: number;
+  groupSize: number;
   totalRows: number;
 }
 
@@ -47,10 +50,22 @@ export function findWorkspaceContext(
   if (index === -1) {
     return null;
   }
+  const row = view.workspaceRows[index];
+  const groupRows = view.workspaceRows.filter(
+    (candidate) => candidate.pinned === row.pinned
+  );
+  const groupStartIndex = view.workspaceRows.findIndex(
+    (candidate) => candidate.pinned === row.pinned
+  );
   return {
     view,
-    row: view.workspaceRows[index],
+    row,
     index,
+    groupStartIndex,
+    groupIndex: groupRows.findIndex(
+      (candidate) => candidate.workspaceId === workspaceId
+    ),
+    groupSize: groupRows.length,
     totalRows: view.workspaceRows.length
   };
 }
@@ -58,7 +73,7 @@ export function findWorkspaceContext(
 export function buildWorkspaceContextMenuEntries(
   context: WorkspaceContext
 ): WorkspaceContextMenuEntry[] {
-  const { index, row, totalRows, view } = context;
+  const { groupIndex, groupSize, row, totalRows, view } = context;
 
   return [
     {
@@ -81,21 +96,21 @@ export function buildWorkspaceContextMenuEntries(
       kind: "action",
       label: "Move to Top",
       action: "move-top",
-      disabled: index <= 0
+      disabled: groupIndex <= 0
     },
     {
       id: "move-up",
       kind: "action",
       label: "Move Up",
       action: "move-up",
-      disabled: index <= 0
+      disabled: groupIndex <= 0
     },
     {
       id: "move-down",
       kind: "action",
       label: "Move Down",
       action: "move-down",
-      disabled: index === -1 || index >= totalRows - 1
+      disabled: groupIndex === -1 || groupIndex >= groupSize - 1
     },
     { id: "separator-close", kind: "separator" },
     {
@@ -135,16 +150,16 @@ export async function runWorkspaceContextAction(
       await runner.dispatch({ type: "workspace.pin.toggle", workspaceId });
       return;
     case "move-top":
-      if (context.index > 0) {
+      if (context.groupIndex > 0) {
         await runner.dispatch({
           type: "workspace.move",
           workspaceId,
-          toIndex: 0
+          toIndex: context.groupStartIndex
         });
       }
       return;
     case "move-up":
-      if (context.index > 0) {
+      if (context.groupIndex > 0) {
         await runner.dispatch({
           type: "workspace.move",
           workspaceId,
@@ -153,7 +168,7 @@ export async function runWorkspaceContextAction(
       }
       return;
     case "move-down":
-      if (context.index < context.totalRows - 1) {
+      if (context.groupIndex < context.groupSize - 1) {
         await runner.dispatch({
           type: "workspace.move",
           workspaceId,

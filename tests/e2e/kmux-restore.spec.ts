@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
 import {
@@ -54,6 +57,9 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
     });
 
     await firstLaunch.app.close();
+
+    expect(existsSync(join(sandbox.configDir, "state.json"))).toBe(true);
+    expect(existsSync(join(sandbox.configDir, "window-state.json"))).toBe(true);
 
     relaunch = await launchKmuxWithSandbox(sandbox);
     const restored = await waitForView(

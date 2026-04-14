@@ -225,20 +225,13 @@ function estimateWorkspaceRowHeight(
   activeWorkspace: ActiveWorkspaceVm | undefined
 ): number {
   if (!row) {
-    return 62;
+    return 100;
   }
 
   const isActive = row.workspaceId === activeWorkspace?.id;
-  let height = 62;
+  let height = 100;
 
-  if (isActive && row.cwd) {
-    height += 19;
-  }
-
-  if (
-    row.attention ||
-    (isActive && (Boolean(row.branch) || row.ports.length > 0))
-  ) {
+  if (isActive && row.ports.length > 0) {
     height += 27;
   }
 

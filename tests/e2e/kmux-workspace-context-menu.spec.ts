@@ -70,9 +70,9 @@ test("workspace sidebar context menu exposes key workspace management actions", 
     await waitForView(
       page,
       (view) =>
-        view.workspaceRows.some(
-          (row) => row.workspaceId === betaId && row.pinned
-        ),
+        view.workspaceRows[1]?.workspaceId === betaId &&
+        view.workspaceRows[1]?.pinned &&
+        view.workspaceRows[2]?.name === "alpha",
       "pin workspace should toggle pinned state from the context menu"
     );
     await expect(betaRow.getByText("PIN")).toBeVisible();

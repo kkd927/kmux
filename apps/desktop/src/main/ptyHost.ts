@@ -3,7 +3,14 @@ import {type ChildProcess, fork} from "node:child_process";
 import {dirname, join, resolve, sep} from "node:path";
 import {fileURLToPath} from "node:url";
 
-import type {Id, PtyEvent, PtyRequest, SurfaceSnapshotPayload, TerminalKeyInput} from "@kmux/proto";
+import type {
+  Id,
+  PtyEvent,
+  PtyRequest,
+  SurfaceSnapshotOptions,
+  SurfaceSnapshotPayload,
+  TerminalKeyInput
+} from "@kmux/proto";
 import {makeId} from "@kmux/proto";
 
 export interface PtyHostLaunchOptions {
@@ -46,12 +53,20 @@ export function resolvePtyHostLaunchOptions(
 
 export class PtyHostManager extends EventEmitter {
   private child: ChildProcess | null = null;
+  private readonly readySessions = new Set<Id>();
   private readonly pendingSnapshots = new Map<
     string,
     (payload: SurfaceSnapshotPayload | null) => void
   >();
+  private readonly queuedRequests = new Map<Id, PtyRequest[]>();
 
-  start(): void {
+  constructor(
+    private readonly forkProcess: typeof fork = fork
+  ) {
+    super();
+  }
+
+  start(env: NodeJS.ProcessEnv = process.env): void {
     if (this.child) {
       return;
     }
@@ -59,12 +74,13 @@ export class PtyHostManager extends EventEmitter {
     const currentDir = dirname(fileURLToPath(import.meta.url));
     const launchOptions = resolvePtyHostLaunchOptions(currentDir);
 
-    this.child = fork(
+    this.child = this.forkProcess(
       launchOptions.entry,
       [],
       {
         cwd: launchOptions.cwd,
         execArgv: launchOptions.execArgv,
+        env,
         stdio: ["inherit", "inherit", "inherit", "ipc"]
       }
     );
@@ -78,11 +94,25 @@ export class PtyHostManager extends EventEmitter {
         }
         return;
       }
+      if (event.type === "spawned") {
+        this.readySessions.add(event.sessionId);
+        this.flushQueuedRequests(event.sessionId);
+      }
+      if (event.type === "exit" || event.type === "error") {
+        const sessionId =
+          event.type === "exit" ? event.payload.sessionId : event.sessionId;
+        if (sessionId) {
+          this.readySessions.delete(sessionId);
+          this.queuedRequests.delete(sessionId);
+        }
+      }
       this.emit("event", event);
     });
 
     this.child.on("exit", () => {
       this.child = null;
+      this.readySessions.clear();
+      this.queuedRequests.clear();
       this.emit("event", {
         type: "error",
         message: "pty-host exited unexpectedly"
@@ -100,6 +130,8 @@ export class PtyHostManager extends EventEmitter {
   stop(): void {
     this.child?.kill();
     this.child = null;
+    this.readySessions.clear();
+    this.queuedRequests.clear();
   }
 
   send(message: PtyRequest): void {
@@ -126,15 +158,20 @@ export class PtyHostManager extends EventEmitter {
 
   snapshot(
     sessionId: Id,
-    surfaceId: Id
+    surfaceId: Id,
+    options: SurfaceSnapshotOptions = {}
   ): Promise<SurfaceSnapshotPayload | null> {
     const requestId = makeId("snapshot");
-    this.send({
+    const settleForMs = normalizeSettleDuration(options.settleForMs);
+    const timeoutMs = normalizeSnapshotTimeout(options.timeoutMs, settleForMs);
+    const request = {
       type: "snapshot",
       sessionId,
       surfaceId,
-      requestId
-    });
+      requestId,
+      ...(settleForMs > 0 ? { settleForMs } : {})
+    } satisfies PtyRequest;
+    this.sendWhenReady(sessionId, request);
     return new Promise((resolve) => {
       this.pendingSnapshots.set(requestId, resolve);
       setTimeout(() => {
@@ -143,19 +180,57 @@ export class PtyHostManager extends EventEmitter {
           this.pendingSnapshots.delete(requestId);
           pending(null);
         }
-      }, 500);
+      }, timeoutMs);
     });
   }
 
   resize(sessionId: Id, cols: number, rows: number): void {
-    this.send({ type: "resize", sessionId, cols, rows });
+    this.sendWhenReady(sessionId, { type: "resize", sessionId, cols, rows });
   }
 
   sendText(sessionId: Id, text: string): void {
-    this.send({ type: "input:text", sessionId, text });
+    this.sendWhenReady(sessionId, { type: "input:text", sessionId, text });
   }
 
   sendKey(sessionId: Id, input: TerminalKeyInput): void {
-    this.send({ type: "input:key", sessionId, input });
+    this.sendWhenReady(sessionId, { type: "input:key", sessionId, input });
   }
+
+  private sendWhenReady(sessionId: Id, message: PtyRequest): void {
+    if (this.readySessions.has(sessionId)) {
+      this.send(message);
+      return;
+    }
+    const queued = this.queuedRequests.get(sessionId) ?? [];
+    queued.push(message);
+    this.queuedRequests.set(sessionId, queued);
+  }
+
+  private flushQueuedRequests(sessionId: Id): void {
+    const queued = this.queuedRequests.get(sessionId);
+    if (!queued || queued.length === 0) {
+      return;
+    }
+    this.queuedRequests.delete(sessionId);
+    for (const request of queued) {
+      this.send(request);
+    }
+  }
+}
+
+function normalizeSettleDuration(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(value));
+}
+
+function normalizeSnapshotTimeout(
+  value: number | undefined,
+  settleForMs: number
+): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(250, Math.round(value));
+  }
+  return Math.max(2000, settleForMs + 1500);
 }

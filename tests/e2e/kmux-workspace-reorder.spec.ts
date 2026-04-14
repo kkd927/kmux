@@ -27,7 +27,7 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       name: "gamma"
     });
 
-    const beforeDrag = await waitForView(
+    const seeded = await waitForView(
       firstLaunch.page,
       (view) =>
         view.workspaceRows.length >= 4 &&
@@ -38,11 +38,32 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "workspace list should contain the draggable test fixtures"
     );
 
+    const betaId = seeded.workspaceRows.find(
+      (row) => row.name === "beta"
+    )?.workspaceId;
+    if (!betaId) {
+      throw new Error("beta workspace should exist before pinning");
+    }
+    await dispatch(firstLaunch.page, {
+      type: "workspace.pin.toggle",
+      workspaceId: betaId
+    });
+
+    const pinned = await waitForView(
+      firstLaunch.page,
+      (view) =>
+        view.workspaceRows[0]?.name === "hq" &&
+        view.workspaceRows[1]?.name === "beta" &&
+        view.workspaceRows[2]?.name === "alpha" &&
+        view.workspaceRows[3]?.name === "gamma",
+      "pinning beta should promote it into the pinned section"
+    );
+
     const source = firstLaunch.page.locator(
-      '[data-workspace-id="' + beforeDrag.workspaceRows[0].workspaceId + '"]'
+      '[data-workspace-id="' + pinned.workspaceRows[3].workspaceId + '"]'
     );
     const target = firstLaunch.page.locator(
-      '[data-workspace-id="' + beforeDrag.workspaceRows[3].workspaceId + '"]'
+      '[data-workspace-id="' + pinned.workspaceRows[2].workspaceId + '"]'
     );
     const targetBox = await target.boundingBox();
     if (!targetBox) {
@@ -53,9 +74,45 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     await source.dragTo(target, {
       targetPosition: {
         x: Math.max(12, Math.min(targetBox.width - 12, targetBox.width / 2)),
+        y: Math.max(12, Math.min(targetBox.height - 12, targetBox.height * 0.25))
+      }
+    });
+
+    const reorderedUnpinned = await waitForView(
+      firstLaunch.page,
+      (view) =>
+        view.workspaceRows[0]?.name === "hq" &&
+        view.workspaceRows[1]?.name === "beta" &&
+        view.workspaceRows[2]?.name === "gamma" &&
+        view.workspaceRows[3]?.name === "alpha",
+      "workspace order should update inside the unpinned section"
+    );
+
+    expect(
+      reorderedUnpinned.workspaceRows.map((row) => row.name).slice(0, 4)
+    ).toEqual(["hq", "beta", "gamma", "alpha"]);
+
+    const pinnedSource = firstLaunch.page.locator(
+      '[data-workspace-id="' + reorderedUnpinned.workspaceRows[1].workspaceId + '"]'
+    );
+    const pinnedTarget = firstLaunch.page.locator(
+      '[data-workspace-id="' + reorderedUnpinned.workspaceRows[0].workspaceId + '"]'
+    );
+    const pinnedTargetBox = await pinnedTarget.boundingBox();
+    if (!pinnedTargetBox) {
+      throw new Error(
+        "pinned workspace reorder target should have a measurable bounding box"
+      );
+    }
+    await pinnedSource.dragTo(pinnedTarget, {
+      targetPosition: {
+        x: Math.max(
+          12,
+          Math.min(pinnedTargetBox.width - 12, pinnedTargetBox.width / 2)
+        ),
         y: Math.max(
           12,
-          Math.min(targetBox.height - 12, targetBox.height * 0.75)
+          Math.min(pinnedTargetBox.height - 12, pinnedTargetBox.height * 0.25)
         )
       }
     });
@@ -63,18 +120,18 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     const reordered = await waitForView(
       firstLaunch.page,
       (view) =>
-        view.workspaceRows[0]?.name === "alpha" &&
-        view.workspaceRows[1]?.name === "beta" &&
+        view.workspaceRows[0]?.name === "beta" &&
+        view.workspaceRows[1]?.name === "hq" &&
         view.workspaceRows[2]?.name === "gamma" &&
-        view.workspaceRows[3]?.name === "hq",
-      "workspace order should update after drag reorder"
+        view.workspaceRows[3]?.name === "alpha",
+      "workspace order should update inside the pinned section"
     );
 
     expect(reordered.workspaceRows.map((row) => row.name).slice(0, 4)).toEqual([
-      "alpha",
       "beta",
+      "hq",
       "gamma",
-      "hq"
+      "alpha"
     ]);
 
     await firstLaunch.app.close();
@@ -83,18 +140,18 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     const restored = await waitForView(
       relaunch.page,
       (view) =>
-        view.workspaceRows[0]?.name === "alpha" &&
-        view.workspaceRows[1]?.name === "beta" &&
+        view.workspaceRows[0]?.name === "beta" &&
+        view.workspaceRows[1]?.name === "hq" &&
         view.workspaceRows[2]?.name === "gamma" &&
-        view.workspaceRows[3]?.name === "hq",
+        view.workspaceRows[3]?.name === "alpha",
       "workspace order should persist after relaunch"
     );
 
     expect(restored.workspaceRows.map((row) => row.name).slice(0, 4)).toEqual([
-      "alpha",
       "beta",
+      "hq",
       "gamma",
-      "hq"
+      "alpha"
     ]);
   } finally {
     await firstLaunch.app.close().catch(() => {});

@@ -2,11 +2,17 @@ import { clipboard, contextBridge, ipcRenderer } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type {
+  ImportedTerminalThemePalette,
+  TerminalColorPalette,
+  ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellViewModel,
+  SurfaceSnapshotOptions,
   SurfaceChunkPayload,
   SurfaceExitPayload,
   SurfaceSnapshotPayload,
+  TerminalTypographyProbeReport,
+  TerminalTypographySettings,
   TerminalKeyInput
 } from "@kmux/proto";
 
@@ -50,6 +56,32 @@ const api = {
   resizeSurface(surfaceId: string, cols: number, rows: number): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:resize", surfaceId, cols, rows);
   },
+  listTerminalFontFamilies(): Promise<string[]> {
+    return ipcRenderer.invoke("kmux:terminal-typography:fonts:list");
+  },
+  previewTerminalTypography(
+    settings: TerminalTypographySettings
+  ): Promise<ResolvedTerminalTypographyVm> {
+    return ipcRenderer.invoke("kmux:terminal-typography:preview", settings);
+  },
+  reportTerminalTypographyProbe(
+    report: TerminalTypographyProbeReport
+  ): Promise<void> {
+    return ipcRenderer.invoke("kmux:terminal-typography:probe-report", report);
+  },
+  importTerminalThemePalette(): Promise<ImportedTerminalThemePalette | null> {
+    return ipcRenderer.invoke("kmux:terminal-theme:import");
+  },
+  exportTerminalThemePalette(
+    suggestedName: string,
+    palette: TerminalColorPalette
+  ): Promise<boolean> {
+    return ipcRenderer.invoke(
+      "kmux:terminal-theme:export",
+      suggestedName,
+      palette
+    );
+  },
   readClipboardText(): string {
     return clipboard.readText();
   },
@@ -87,4 +119,20 @@ const api = {
   }
 };
 
+const testApi = {
+  snapshotSurface(
+    surfaceId: string,
+    options?: SurfaceSnapshotOptions
+  ): Promise<SurfaceSnapshotPayload | null> {
+    return ipcRenderer.invoke("kmux:snapshot-surface", surfaceId, options);
+  }
+};
+
 contextBridge.exposeInMainWorld("kmux", api);
+if (
+  process.env.NODE_ENV === "test" ||
+  process.env.KMUX_ENABLE_TEST_API === "1"
+) {
+  // Keep renderer inspection helpers off the production bridge surface.
+  contextBridge.exposeInMainWorld("kmuxTest", testApi);
+}

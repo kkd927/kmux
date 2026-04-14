@@ -1,7 +1,19 @@
 import {BrowserWindow, ipcMain} from "electron";
 
 import type {AppAction} from "@kmux/core";
-import type {Id, ShellIdentity, ShellViewModel, SurfaceSnapshotPayload, TerminalKeyInput} from "@kmux/proto";
+import type {
+  Id,
+  ImportedTerminalThemePalette,
+  ResolvedTerminalTypographyVm,
+  ShellIdentity,
+  ShellViewModel,
+  SurfaceSnapshotOptions,
+  SurfaceSnapshotPayload,
+  TerminalColorPalette,
+  TerminalKeyInput,
+  TerminalTypographyProbeReport,
+  TerminalTypographySettings
+} from "@kmux/proto";
 
 import {buildNativeWorkspaceContextMenu} from "./workspaceContextMenu";
 
@@ -12,11 +24,28 @@ interface IpcHandlersOptions {
     contentsId: number,
     surfaceId: Id
   ) => Promise<SurfaceSnapshotPayload | null>;
+  snapshotSurface: (
+    surfaceId: Id,
+    options?: SurfaceSnapshotOptions
+  ) => Promise<SurfaceSnapshotPayload | null>;
   detachSurface: (contentsId: number, surfaceId: Id) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
   resizeSurface: (surfaceId: Id, cols: number, rows: number) => void;
   identify: () => ShellIdentity;
+  listTerminalFontFamilies: () => Promise<string[]>;
+  previewTerminalTypography: (
+    settings: TerminalTypographySettings
+  ) => Promise<ResolvedTerminalTypographyVm>;
+  reportTerminalTypographyProbe: (report: TerminalTypographyProbeReport) => void;
+  importTerminalThemePalette: (
+    window: BrowserWindow | null
+  ) => Promise<ImportedTerminalThemePalette | null>;
+  exportTerminalThemePalette: (
+    window: BrowserWindow | null,
+    suggestedName: string,
+    palette: TerminalColorPalette
+  ) => Promise<boolean>;
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
@@ -29,6 +58,15 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:attach-surface",
     async (event, surfaceId: Id): Promise<SurfaceSnapshotPayload | null> =>
       options.attachSurface(event.sender.id, surfaceId)
+  );
+  ipcMain.handle(
+    "kmux:snapshot-surface",
+    async (
+      _event,
+      surfaceId: Id,
+      snapshotOptions?: SurfaceSnapshotOptions
+    ): Promise<SurfaceSnapshotPayload | null> =>
+      options.snapshotSurface(surfaceId, snapshotOptions)
   );
   ipcMain.handle("kmux:detach-surface", (event, surfaceId: Id) => {
     options.detachSurface(event.sender.id, surfaceId);
@@ -46,6 +84,31 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:terminal:resize",
     (_event, surfaceId: Id, cols: number, rows: number) => {
       options.resizeSurface(surfaceId, cols, rows);
+    }
+  );
+  ipcMain.handle("kmux:terminal-typography:fonts:list", () =>
+    options.listTerminalFontFamilies()
+  );
+  ipcMain.handle(
+    "kmux:terminal-typography:preview",
+    (_event, settings: TerminalTypographySettings) =>
+      options.previewTerminalTypography(settings)
+  );
+  ipcMain.handle(
+    "kmux:terminal-typography:probe-report",
+    (_event, report: TerminalTypographyProbeReport) => {
+      options.reportTerminalTypographyProbe(report);
+    }
+  );
+  ipcMain.handle("kmux:terminal-theme:import", (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return options.importTerminalThemePalette(window);
+  });
+  ipcMain.handle(
+    "kmux:terminal-theme:export",
+    (event, suggestedName: string, palette: TerminalColorPalette) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      return options.exportTerminalThemePalette(window, suggestedName, palette);
     }
   );
   ipcMain.handle(

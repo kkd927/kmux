@@ -161,11 +161,12 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
   const launched = await launchKmux("kmux-e2e-sidebar-info-");
 
   try {
-    const page = launched.page;
+    const {page, sandbox} = launched;
     await page.setViewportSize({ width: 1277, height: 1179 });
 
     const created = await dispatch(page, {
-      type: "workspace.create"
+      type: "workspace.create",
+      cwd: sandbox.profileRoot
     });
     const activeWorkspaceId = created.activeWorkspace.id;
     const activePaneId = created.activeWorkspace.activePaneId;
@@ -191,6 +192,8 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
       `[data-workspace-id="${activeWorkspaceId}"]`
     );
     const inactiveRow = page.locator('[data-workspace-id][data-active="false"]').first();
+    const activeBranchRow = activeRow.locator("[data-workspace-branch-row]");
+    const inactiveBranchRow = inactiveRow.locator("[data-workspace-branch-row]");
 
     await expect(activeRow).toContainText("agents");
     await expect(inactiveRow).toContainText("new workspace");
@@ -202,9 +205,12 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     await expect(activeRow).toContainText("Codex waiting for input");
     await expect(activeRow.locator("[data-workspace-path]")).toHaveCount(1);
     await expect(activeRow.locator("[data-workspace-path]")).toContainText(
-      "/Users/"
+      sandbox.profileRoot
     );
-    await expect(inactiveRow.locator("[data-workspace-path]")).toHaveCount(0);
+    await expect(activeRow.locator("[data-workspace-branch]")).toHaveText("-");
+    await expect(activeRow.locator("[data-workspace-branch-icon]")).toHaveCount(0);
+    await expect(inactiveRow.locator("[data-workspace-path]")).toHaveCount(1);
+    await expect(inactiveRow.locator("[data-workspace-branch]")).toHaveCount(1);
     const inactiveHeightBefore = Math.round(
       (await inactiveRow.boundingBox())?.height ?? 0
     );
@@ -215,6 +221,8 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     await page.keyboard.down("Meta");
     await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘1");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(inactiveBranchRow).toContainText("⌘1");
+    await expect(activeBranchRow).toContainText("⌘2");
     await expect
       .poll(async () => Math.round((await inactiveRow.boundingBox())?.height ?? 0))
       .toBe(inactiveHeightBefore);
@@ -237,6 +245,8 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     await page.keyboard.down("Meta");
     await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘1");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(inactiveBranchRow).toContainText("⌘1");
+    await expect(activeBranchRow).toContainText("⌘2");
     await expect
       .poll(async () => Math.round((await inactiveRow.boundingBox())?.height ?? 0))
       .toBe(inactiveHeightBefore);
@@ -260,21 +270,27 @@ test("workspace create affordances keep default names while exposing command-num
 
     await page.getByRole("button", { name: "Create workspace" }).click();
     const activeRow = page.locator('[data-workspace-id][data-active="true"]').first();
+    const activeBranchRow = activeRow.locator("[data-workspace-branch-row]");
     await expect(activeRow).toContainText("new workspace");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
 
     await page.keyboard.down("Meta");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(activeBranchRow).toContainText("⌘2");
     await page.keyboard.up("Meta");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
 
     await page.keyboard.press("Meta+N");
     const latestActiveRow = page.locator('[data-workspace-id][data-active="true"]').first();
+    const latestActiveBranchRow = latestActiveRow.locator(
+      "[data-workspace-branch-row]"
+    );
     await expect(latestActiveRow).toContainText("new workspace");
     await expect(latestActiveRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
 
     await page.keyboard.down("Meta");
     await expect(latestActiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘3");
+    await expect(latestActiveBranchRow).toContainText("⌘3");
     await page.keyboard.up("Meta");
   } finally {
     await closeKmux(launched);

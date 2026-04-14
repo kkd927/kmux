@@ -1,5 +1,6 @@
 appId: dev.kmux.desktop
 productName: kmux
+electronUpdaterCompatibility: ">=2.16"
 
 directories:
   output: release
@@ -10,6 +11,12 @@ asarUnpack:
   - "**/*.node"
   - "dist/pty-host/**"
 artifactBuildCompleted: ./build/custom-mac-artifact-notarize.cjs
+
+publish:
+  provider: github
+  owner: kkd927
+  repo: kmux
+  releaseType: release
 
 mac:
   category: public.app-category.developer-tools
@@ -22,3 +29,4 @@ mac:
   entitlementsInherit: build/entitlements.mac.inherit.plist
   target:
     - dmg
+    - zip

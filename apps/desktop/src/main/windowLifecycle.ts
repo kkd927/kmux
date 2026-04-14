@@ -1,9 +1,18 @@
-import {app, BrowserWindow, nativeImage, shell, type WebContents} from "electron";
-import {existsSync} from "node:fs";
-import {join} from "node:path";
+import {
+  app,
+  BrowserWindow,
+  nativeImage,
+  shell,
+  type WebContents
+} from "electron";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
-import {DEFAULT_SIDEBAR_WIDTH} from "@kmux/core";
-import type {KmuxDatabase, PersistedWindowState} from "@kmux/persistence";
+import { DEFAULT_SIDEBAR_WIDTH } from "@kmux/core";
+import type {
+  PersistedWindowState,
+  WindowStateFileStore
+} from "@kmux/persistence";
 
 interface CreateMainWindowOptions {
   currentDir: string;
@@ -12,7 +21,7 @@ interface CreateMainWindowOptions {
 }
 
 interface PersistWindowStateOptions {
-  db: KmuxDatabase;
+  windowStateStore: WindowStateFileStore;
   window: BrowserWindow;
   getSidebarWidth: () => number | undefined;
 }
@@ -104,16 +113,14 @@ export function createMainWindow(
   return window;
 }
 
-export function persistWindowState(
-  options: PersistWindowStateOptions
-): void {
+export function persistWindowState(options: PersistWindowStateOptions): void {
   if (options.window.isDestroyed()) {
     return;
   }
   const bounds = options.window.isMaximized()
     ? options.window.getNormalBounds()
     : options.window.getBounds();
-  options.db.saveWindowState({
+  options.windowStateStore.save({
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,

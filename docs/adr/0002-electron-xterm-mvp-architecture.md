@@ -29,7 +29,7 @@ Use the following technology choices:
 - `xterm.js` for visible terminal rendering and input UX
 - `node-pty` in the `pty-host` process for PTY/session management
 - `@xterm/headless` in the `pty-host` process to keep terminal state independent from DOM widgets
-- `better-sqlite3` or equivalent synchronous SQLite binding in `electron-main` for persistence
+- synchronous file-store persistence in `electron-main` for app snapshots, window state, and settings
 
 Keep these architectural rules even in the Electron MVP:
 
@@ -265,7 +265,7 @@ These collectors should run in `electron-main` or a helper worker, not in the re
 
 ## Persistence
 
-Persist in SQLite from `electron-main`.
+Persist with synchronous file-store writes from `electron-main`.
 
 Store:
 
@@ -333,7 +333,7 @@ Suggested package responsibilities:
 
 - `packages/proto`: typed IPC contracts
 - `packages/core`: IDs, commands, reducer, selectors, layout tree
-- `packages/persistence`: SQLite schema and data access
+- `packages/persistence`: file-store persistence helpers and app paths
 - `packages/metadata`: cwd/git/ports/status helpers
 - `packages/cli`: socket-based automation CLI
 - `packages/ui`: shared UI helpers and tokens
