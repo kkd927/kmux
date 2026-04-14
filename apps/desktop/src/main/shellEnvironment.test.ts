@@ -27,6 +27,7 @@ describe("shell environment resolver", () => {
       "/bin/fish"
     );
 
+    expect(resolveShellPath(undefined, {}, "darwin", "")).toBe("/bin/zsh");
     expect(resolveShellPath(undefined, {}, "linux", "")).toBe("/bin/bash");
   });
 
@@ -87,16 +88,17 @@ describe("shell environment resolver", () => {
         ELECTRON_RUN_AS_NODE: "1"
       },
       platform: "darwin",
+      userShell: "/bin/bash",
       exec: vi.fn(async () => {
         throw new Error("boom");
       })
     });
 
     expect(resolved.source).toBe("fallback");
-    expect(resolved.shellPath).toBe("/bin/zsh");
+    expect(resolved.shellPath).toBe("/bin/bash");
     expect(resolved.baseEnv.PATH).toBe("/usr/bin");
     expect(resolved.baseEnv.ELECTRON_RUN_AS_NODE).toBeUndefined();
-    expect(resolved.baseEnv.SHELL).toBe("/bin/zsh");
+    expect(resolved.baseEnv.SHELL).toBe("/bin/bash");
     expect(warning).toHaveBeenCalled();
     warning.mockRestore();
   });
