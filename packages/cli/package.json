@@ -1,0 +1,12 @@
+{
+  "name": "@kmux/cli",
+  "version": "0.1.9",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "kmux": "./dist/bin.cjs"
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  }
+}

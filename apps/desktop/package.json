@@ -1,0 +1,36 @@
+{
+  "name": "@kmux/desktop",
+  "version": "0.1.10",
+  "private": true,
+  "description": "Keyboard-first terminal workspace manager for macOS",
+  "author": "kmux contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kkd927/kmux.git",
+    "directory": "apps/desktop"
+  },
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev --config electron.vite.config.ts",
+    "build": "electron-vite build --config electron.vite.config.ts",
+    "dist:mac": "electron-builder --config electron-builder.yml --mac dmg --publish never",
+    "preview": "electron-vite preview --config electron.vite.config.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.4",
+    "@vscode/codicons": "^0.0.45",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
+    "better-sqlite3": "^12.4.6",
+    "node-pty": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.4"
+  }
+}

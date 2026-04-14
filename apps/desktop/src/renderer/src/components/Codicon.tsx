@@ -1,0 +1,23 @@
+type CodiconName =
+  | "add"
+  | "bell"
+  | "check"
+  | "close"
+  | "gear"
+  | "layout-sidebar-left"
+  | "split-horizontal"
+  | "split-vertical"
+  | "terminal";
+
+interface CodiconProps {
+  name: CodiconName;
+  className?: string;
+}
+
+export function Codicon(props: CodiconProps): JSX.Element {
+  const className = [props.className, "codicon", `codicon-${props.name}`]
+    .filter(Boolean)
+    .join(" ");
+
+  return <span aria-hidden="true" className={className} />;
+}

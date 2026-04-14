@@ -1,0 +1,24 @@
+appId: dev.kmux.desktop
+productName: kmux
+
+directories:
+  output: release
+  buildResources: build
+
+npmRebuild: false
+asarUnpack:
+  - "**/*.node"
+  - "dist/pty-host/**"
+artifactBuildCompleted: ./build/custom-mac-artifact-notarize.cjs
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  sign: ./build/custom-mac-sign.cjs
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  target:
+    - dmg
