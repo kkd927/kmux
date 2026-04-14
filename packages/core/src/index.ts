@@ -1,25 +1,29 @@
-import {homedir} from "node:os";
-import {join} from "node:path";
-
-import {DEFAULT_SHORTCUTS} from "@kmux/ui";
 import {
-    type ActiveWorkspaceVm,
-    type Id,
-    isoNow,
-    type KmuxSettings,
-    makeId,
-    type NotificationItem,
-    type PaneTreeNode,
-    type PtySessionSpec,
-    type SessionLaunchConfig,
-    type SessionRuntimeState,
-    type ShellViewModel,
-    type SidebarLogEntry,
-    type SidebarProgress,
-    type SocketMode,
-    type SplitAxis,
-    type SplitDirection,
-    type SurfaceVm
+  DEFAULT_SHORTCUTS,
+  createDefaultTerminalThemeSettings,
+  sanitizeTerminalThemeSettings
+} from "@kmux/ui";
+import {
+  type ActiveWorkspaceVm,
+  type Id,
+  isoNow,
+  type KmuxSettings,
+  type ResolvedTerminalTypographyVm,
+  makeId,
+  type NotificationItem,
+  type PaneTreeNode,
+  type PtySessionSpec,
+  type TerminalTypographySettings,
+  type SessionLaunchConfig,
+  type SessionRuntimeState,
+  type ShellViewModel,
+  type SidebarLogEntry,
+  type SidebarProgress,
+  type SocketMode,
+  type SplitAxis,
+  type SplitDirection,
+  type SurfaceVm,
+  type TerminalThemeSettings
 } from "@kmux/proto";
 
 export interface WindowState {
@@ -88,13 +92,30 @@ export interface AppState {
   activeWindowId: Id;
 }
 
-const DEFAULT_APP_FONT_SIZE = 13;
-const DEFAULT_APP_FONT_FAMILY =
+type LegacyTypographyFields = {
+  terminalFontFamily?: string;
+  terminalFontSize?: number;
+  terminalLineHeight?: number;
+};
+
+type LegacyKmuxSettings = Partial<KmuxSettings> & LegacyTypographyFields;
+
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;
+export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY =
   '"JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace';
-const DEFAULT_APP_LINE_HEIGHT = 1;
+export const DEFAULT_TERMINAL_LINE_HEIGHT = 1;
+export const KMUX_BUILTIN_SYMBOL_FONT_FAMILY = '"kmux Symbols Nerd Font Mono"';
 export const DEFAULT_SIDEBAR_WIDTH = 320;
 export const MIN_SIDEBAR_WIDTH = 110;
 export const MAX_SIDEBAR_WIDTH = 320;
+
+function defaultHomeDirectory(): string {
+  const homeDirectory =
+    typeof process !== "undefined"
+      ? (process.env.HOME ?? process.env.USERPROFILE)
+      : undefined;
+  return homeDirectory?.trim() || "~";
+}
 
 export type AppEffect =
   | {
@@ -118,7 +139,17 @@ export type AppEffect =
   | {
       type: "notify.desktop";
       notification: NotificationItem;
+    }
+  | {
+      type: "bell.sound";
     };
+
+export type SettingsPatch = Partial<
+  Omit<KmuxSettings, "terminalTypography" | "terminalThemes">
+> & {
+  terminalTypography?: Partial<TerminalTypographySettings>;
+  terminalThemes?: Partial<TerminalThemeSettings>;
+};
 
 export type AppAction =
   | { type: "workspace.create"; name?: string; cwd?: string }
@@ -155,7 +186,7 @@ export type AppAction =
       surfaceId: Id;
       cwd?: string;
       title?: string;
-      branch?: string;
+      branch?: string | null;
       ports?: number[];
       attention?: boolean;
       unreadDelta?: number;
@@ -182,29 +213,130 @@ export type AppAction =
     }
   | { type: "notification.clear"; notificationId?: Id }
   | { type: "notification.jumpLatestUnread" }
-  | { type: "settings.update"; patch: Partial<KmuxSettings> }
+  | { type: "terminal.bell" }
+  | { type: "settings.update"; patch: SettingsPatch }
   | { type: "session.started"; sessionId: Id; pid: number }
   | { type: "session.exited"; sessionId: Id; exitCode?: number }
   | { type: "state.restore"; snapshot: AppState };
 
 export function createDefaultSettings(
-  mode: SocketMode = "kmuxOnly"
+  mode: SocketMode = "kmuxOnly",
+  shellPath: string | undefined = process.env.SHELL
 ): KmuxSettings {
   return {
     socketMode: mode,
     startupRestore: true,
     notificationDesktop: true,
     notificationSound: false,
+    terminalUseWebgl: true,
     themeMode: "dark",
-    shell: process.env.SHELL,
+    shell: shellPath,
     shortcuts: { ...DEFAULT_SHORTCUTS },
-    terminalFontSize: DEFAULT_APP_FONT_SIZE,
-    terminalFontFamily: DEFAULT_APP_FONT_FAMILY,
-    terminalLineHeight: DEFAULT_APP_LINE_HEIGHT
+    terminalTypography: createDefaultTerminalTypographySettings(),
+    terminalThemes: createDefaultTerminalThemeSettings()
   };
 }
 
-export function createInitialState(): AppState {
+export function createDefaultTerminalTypographySettings(): TerminalTypographySettings {
+  return {
+    preferredTextFontFamily: DEFAULT_TERMINAL_TEXT_FONT_FAMILY,
+    preferredSymbolFallbackFamilies: [],
+    fontSize: DEFAULT_TERMINAL_FONT_SIZE,
+    lineHeight: DEFAULT_TERMINAL_LINE_HEIGHT
+  };
+}
+
+export function buildResolvedTerminalFontFamily(
+  textFontFamily: string,
+  symbolFallbackFamilies: string[]
+): string {
+  return [textFontFamily, ...symbolFallbackFamilies].filter(Boolean).join(", ");
+}
+
+export function buildBaseTerminalSymbolFallbackFamilies(
+  symbolFallbackFamilies: string[]
+): string[] {
+  return sanitizeSymbolFallbackFamilies([
+    ...symbolFallbackFamilies,
+    KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+  ]);
+}
+
+export function createPendingResolvedTerminalTypographyVm(
+  settings: TerminalTypographySettings
+): ResolvedTerminalTypographyVm {
+  const terminalTypography = normalizeTerminalTypographySettings(settings);
+  const symbolFallbackFamilies = buildBaseTerminalSymbolFallbackFamilies(
+    terminalTypography.preferredSymbolFallbackFamilies
+  );
+
+  return {
+    stackHash: `pending:${terminalTypography.preferredTextFontFamily}:${symbolFallbackFamilies.join("|")}`,
+    resolvedFontFamily: buildResolvedTerminalFontFamily(
+      terminalTypography.preferredTextFontFamily,
+      symbolFallbackFamilies
+    ),
+    textFontFamily: terminalTypography.preferredTextFontFamily,
+    symbolFallbackFamilies,
+    autoFallbackApplied: symbolFallbackFamilies.length > 0,
+    status: "pending",
+    issues: []
+  };
+}
+
+export function mergeSettings(
+  current: KmuxSettings,
+  patch: SettingsPatch & LegacyTypographyFields
+): KmuxSettings {
+  const {
+    terminalFontFamily: _legacyTerminalFontFamily,
+    terminalFontSize: _legacyTerminalFontSize,
+    terminalLineHeight: _legacyTerminalLineHeight,
+    ...nextPatch
+  } = patch;
+  const shortcuts = sanitizeShortcuts({
+    ...current.shortcuts,
+    ...(nextPatch.shortcuts ?? {})
+  });
+
+  return {
+    ...current,
+    ...nextPatch,
+    terminalUseWebgl: sanitizeTerminalUseWebgl(
+      nextPatch.terminalUseWebgl ?? current.terminalUseWebgl
+    ),
+    themeMode: sanitizeThemeMode(nextPatch.themeMode ?? current.themeMode),
+    terminalTypography: sanitizeTerminalTypographySettings(
+      nextPatch.terminalTypography,
+      patch,
+      current.terminalTypography
+    ),
+    terminalThemes: sanitizeTerminalThemeSettings(
+      nextPatch.terminalThemes,
+      current.terminalThemes
+    ),
+    shortcuts
+  };
+}
+
+export function sanitizeSettings(
+  settings: LegacyKmuxSettings | undefined
+): KmuxSettings {
+  if (!settings) {
+    return createDefaultSettings();
+  }
+  return mergeSettings(createDefaultSettings(settings.socketMode), settings);
+}
+
+export function normalizeTerminalTypographySettings(
+  terminalTypography: Partial<TerminalTypographySettings> | undefined
+): TerminalTypographySettings {
+  return sanitizeTerminalTypographySettings(terminalTypography);
+}
+
+export function createInitialState(
+  shellPath: string | undefined = process.env.SHELL
+): AppState {
   const windowId = makeId("window");
   const workspaceId = makeId("workspace");
   const paneId = makeId("pane");
@@ -257,7 +389,7 @@ export function createInitialState(): AppState {
         sessionId,
         title: "hq",
         titleLocked: false,
-        cwd: join(homedir()),
+        cwd: defaultHomeDirectory(),
         ports: [],
         unreadCount: 0,
         attention: false
@@ -268,16 +400,15 @@ export function createInitialState(): AppState {
         id: sessionId,
         surfaceId,
         launch: {
-          cwd: join(homedir()),
-          shell: process.env.SHELL,
-          args: []
+          cwd: defaultHomeDirectory(),
+          shell: shellPath
         },
         authToken: makeId("auth"),
         runtimeState: "pending"
       }
     },
     notifications: [],
-    settings: createDefaultSettings(),
+    settings: createDefaultSettings("kmuxOnly", shellPath),
     activeWindowId: windowId
   };
 
@@ -417,28 +548,10 @@ export function applyAction(state: AppState, action: AppAction): AppEffect[] {
       return clearNotifications(state, action.notificationId);
     case "notification.jumpLatestUnread":
       return jumpLatestUnread(state);
+    case "terminal.bell":
+      return state.settings.notificationSound ? [{ type: "bell.sound" }] : [];
     case "settings.update": {
-      const shortcuts = sanitizeShortcuts({
-        ...state.settings.shortcuts,
-        ...(action.patch.shortcuts ?? {})
-      });
-      state.settings = {
-        ...state.settings,
-        ...action.patch,
-        themeMode: sanitizeThemeMode(
-          action.patch.themeMode ?? state.settings.themeMode
-        ),
-        terminalFontFamily: sanitizeFontFamily(
-          action.patch.terminalFontFamily ?? state.settings.terminalFontFamily
-        ),
-        terminalFontSize: sanitizeFontSize(
-          action.patch.terminalFontSize ?? state.settings.terminalFontSize
-        ),
-        terminalLineHeight: sanitizeLineHeight(
-          action.patch.terminalLineHeight ?? state.settings.terminalLineHeight
-        ),
-        shortcuts
-      };
+      state.settings = mergeSettings(state.settings, action.patch);
       return [{ type: "persist" }];
     }
     case "session.started":
@@ -484,7 +597,7 @@ function createWorkspace(
   const inheritedCwd = activeWorkspace
     ? activeSurface(state, activeWorkspace.activePaneId)?.cwd
     : undefined;
-  const workspaceCwd = cwd ?? inheritedCwd ?? join(homedir());
+  const workspaceCwd = cwd ?? inheritedCwd ?? defaultHomeDirectory();
   const workspaceId = makeId("workspace");
   const paneId = makeId("pane");
   const surfaceId = makeId("surface");
@@ -534,8 +647,7 @@ function createWorkspace(
     surfaceId,
     launch: {
       cwd: workspaceCwd,
-      shell: state.settings.shell || process.env.SHELL,
-      args: []
+      shell: state.settings.shell || process.env.SHELL
     },
     authToken: makeId("auth"),
     runtimeState: "pending"
@@ -563,16 +675,19 @@ function selectWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
 
 function selectWorkspaceRelative(state: AppState, delta: number): AppEffect[] {
   const window = state.windows[state.activeWindowId];
-  const index = window.workspaceOrder.indexOf(window.activeWorkspaceId);
+  const visibleWorkspaceIds = listVisibleWorkspaceIds(state, window);
+  const index = visibleWorkspaceIds.indexOf(window.activeWorkspaceId);
+  if (index === -1 || visibleWorkspaceIds.length === 0) {
+    return [];
+  }
   const next =
-    (index + delta + window.workspaceOrder.length) %
-    window.workspaceOrder.length;
-  return selectWorkspace(state, window.workspaceOrder[next]);
+    (index + delta + visibleWorkspaceIds.length) % visibleWorkspaceIds.length;
+  return selectWorkspace(state, visibleWorkspaceIds[next]);
 }
 
 function selectWorkspaceIndex(state: AppState, index: number): AppEffect[] {
   const window = state.windows[state.activeWindowId];
-  const workspaceId = window.workspaceOrder[index];
+  const workspaceId = listVisibleWorkspaceIds(state, window)[index];
   return workspaceId ? selectWorkspace(state, workspaceId) : [];
 }
 
@@ -582,16 +697,51 @@ function moveWorkspace(
   toIndex: number
 ): AppEffect[] {
   const window = state.windows[state.activeWindowId];
-  const currentIndex = window.workspaceOrder.indexOf(workspaceId);
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
+    return [];
+  }
+  const visibleWorkspaceIds = listVisibleWorkspaceIds(state, window);
+  const currentIndex = visibleWorkspaceIds.indexOf(workspaceId);
   if (currentIndex === -1) {
     return [];
   }
-  const [removed] = window.workspaceOrder.splice(currentIndex, 1);
-  window.workspaceOrder.splice(
-    Math.max(0, Math.min(window.workspaceOrder.length, toIndex)),
-    0,
-    removed
+  const groupedWorkspaceIds = visibleWorkspaceIds.filter(
+    (id) => state.workspaces[id]?.pinned === workspace.pinned
   );
+  const groupStartIndex = visibleWorkspaceIds.findIndex(
+    (id) => state.workspaces[id]?.pinned === workspace.pinned
+  );
+  const groupEndIndex = groupStartIndex + groupedWorkspaceIds.length - 1;
+  const nextIndex = clamp(toIndex, groupStartIndex, groupEndIndex);
+  const currentGroupIndex = groupedWorkspaceIds.indexOf(workspaceId);
+  const nextGroupIndex = nextIndex - groupStartIndex;
+  if (currentGroupIndex === -1 || currentGroupIndex === nextGroupIndex) {
+    return [];
+  }
+
+  const nextGroupedWorkspaceIds = [...groupedWorkspaceIds];
+  const [removed] = nextGroupedWorkspaceIds.splice(currentGroupIndex, 1);
+  nextGroupedWorkspaceIds.splice(nextGroupIndex, 0, removed);
+
+  const groupPositions = window.workspaceOrder.reduce<number[]>(
+    (positions, id, index) => {
+      if (state.workspaces[id]?.pinned === workspace.pinned) {
+        positions.push(index);
+      }
+      return positions;
+    },
+    []
+  );
+  if (groupPositions.length !== nextGroupedWorkspaceIds.length) {
+    return [];
+  }
+
+  const nextWorkspaceOrder = [...window.workspaceOrder];
+  groupPositions.forEach((position, index) => {
+    nextWorkspaceOrder[position] = nextGroupedWorkspaceIds[index];
+  });
+  window.workspaceOrder = nextWorkspaceOrder;
   return [{ type: "persist" }];
 }
 
@@ -760,8 +910,7 @@ function splitPane(
     surfaceId: newSurfaceId,
     launch: {
       cwd: activeSurface(state, paneId)?.cwd,
-      shell: state.settings.shell || process.env.SHELL,
-      args: []
+      shell: state.settings.shell || process.env.SHELL
     },
     authToken: makeId("auth"),
     runtimeState: "pending"
@@ -937,7 +1086,6 @@ function createSurface(
     launch: {
       cwd: launchCwd,
       shell: state.settings.shell || process.env.SHELL,
-      args: [],
       title
     },
     authToken: makeId("auth"),
@@ -1003,9 +1151,13 @@ function closeSurface(state: AppState, surfaceId: Id): AppEffect[] {
   if (pane.surfaceIds.length === 1) {
     return closePane(state, pane.id);
   }
-  pane.surfaceIds = pane.surfaceIds.filter((id) => id !== surfaceId);
+  const closedIndex = pane.surfaceIds.indexOf(surfaceId);
+  const remainingSurfaceIds = pane.surfaceIds.filter((id) => id !== surfaceId);
+  pane.surfaceIds = remainingSurfaceIds;
   if (pane.activeSurfaceId === surfaceId) {
-    pane.activeSurfaceId = pane.surfaceIds[0];
+    const nextActiveIndex = closedIndex > 0 ? closedIndex - 1 : 0;
+    pane.activeSurfaceId =
+      remainingSurfaceIds[nextActiveIndex] ?? remainingSurfaceIds[0];
   }
   delete state.sessions[surface.sessionId];
   delete state.surfaces[surfaceId];
@@ -1053,10 +1205,10 @@ function updateSurfaceMetadata(
       state.workspaces[workspaceId].name = action.title;
     }
   }
-  if (action.branch !== undefined) {
-    surface.branch = action.branch;
-    state.workspaces[state.panes[surface.paneId].workspaceId].branch =
-      action.branch;
+  if ("branch" in action) {
+    const branch = action.branch ?? undefined;
+    surface.branch = branch;
+    state.workspaces[state.panes[surface.paneId].workspaceId].branch = branch;
   }
   if (action.ports !== undefined) {
     surface.ports = action.ports.slice(0, 3);
@@ -1307,11 +1459,31 @@ function activeWorkspaceState(state: AppState): WorkspaceState {
   ];
 }
 
+function listVisibleWorkspaceIds(
+  state: AppState,
+  window: WindowState = state.windows[state.activeWindowId]
+): Id[] {
+  const pinned: Id[] = [];
+  const unpinned: Id[] = [];
+
+  for (const workspaceId of window.workspaceOrder) {
+    const workspace = state.workspaces[workspaceId];
+    if (!workspace) {
+      continue;
+    }
+    if (workspace.pinned) {
+      pinned.push(workspaceId);
+    } else {
+      unpinned.push(workspaceId);
+    }
+  }
+
+  return [...pinned, ...unpinned];
+}
+
 export function buildViewModel(state: AppState): ShellViewModel {
   const window = state.windows[state.activeWindowId];
-  const orderedWorkspaceIds = window.workspaceOrder.filter((workspaceId) =>
-    Boolean(state.workspaces[workspaceId])
-  );
+  const orderedWorkspaceIds = listVisibleWorkspaceIds(state, window);
   const workspace =
     state.workspaces[window.activeWorkspaceId] ??
     state.workspaces[orderedWorkspaceIds[0]] ??
@@ -1413,7 +1585,10 @@ export function buildViewModel(state: AppState): ShellViewModel {
     notifications: [...state.notifications],
     unreadNotifications: state.notifications.filter((item) => !item.read)
       .length,
-    settings: state.settings
+    settings: state.settings,
+    terminalTypography: createPendingResolvedTerminalTypographyVm(
+      state.settings.terminalTypography
+    )
   };
 }
 
@@ -1500,19 +1675,35 @@ function sanitizeState(state: AppState): AppState {
     delete (workspace as WorkspaceState & { zoomedPaneId?: Id }).zoomedPaneId;
   }
 
-  state.settings.shortcuts = sanitizeShortcuts(state.settings.shortcuts);
-  state.settings.themeMode = sanitizeThemeMode(state.settings.themeMode);
-  state.settings.terminalFontFamily = sanitizeFontFamily(
-    state.settings.terminalFontFamily
-  );
-  state.settings.terminalFontSize = sanitizeFontSize(
-    state.settings.terminalFontSize
-  );
-  state.settings.terminalLineHeight = sanitizeLineHeight(
-    state.settings.terminalLineHeight
-  );
+  state.settings = sanitizeSettings(state.settings as LegacyKmuxSettings);
+
+  for (const session of Object.values(state.sessions)) {
+    session.launch = sanitizeSessionLaunchConfig(
+      session.launch,
+      state.settings.shell
+    );
+  }
 
   return state;
+}
+
+function sanitizeSessionLaunchConfig(
+  launch: SessionLaunchConfig | undefined,
+  fallbackShell: string | undefined
+): SessionLaunchConfig {
+  const nextLaunch: SessionLaunchConfig = {
+    ...(launch ?? {})
+  };
+
+  if (!Array.isArray(nextLaunch.args) || nextLaunch.args.length === 0) {
+    delete nextLaunch.args;
+  }
+
+  if (!nextLaunch.shell && fallbackShell) {
+    nextLaunch.shell = fallbackShell;
+  }
+
+  return nextLaunch;
 }
 
 function sanitizeShortcuts(
@@ -1524,10 +1715,6 @@ function sanitizeShortcuts(
   return nextShortcuts;
 }
 
-function sanitizeFontFamily(fontFamily: string | undefined): string {
-  return fontFamily?.trim() || DEFAULT_APP_FONT_FAMILY;
-}
-
 function sanitizeThemeMode(
   themeMode: KmuxSettings["themeMode"] | undefined
 ): KmuxSettings["themeMode"] {
@@ -1537,18 +1724,76 @@ function sanitizeThemeMode(
   return "dark";
 }
 
+function sanitizeTerminalUseWebgl(
+  terminalUseWebgl: boolean | undefined
+): boolean {
+  return typeof terminalUseWebgl === "boolean" ? terminalUseWebgl : true;
+}
+
+function sanitizeTextFontFamily(fontFamily: string | undefined): string {
+  return fontFamily?.trim() || DEFAULT_TERMINAL_TEXT_FONT_FAMILY;
+}
+
+function sanitizeSymbolFallbackFamilies(
+  symbolFallbackFamilies: string[] | undefined
+): string[] {
+  if (!Array.isArray(symbolFallbackFamilies)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const family of symbolFallbackFamilies) {
+    const nextFamily = typeof family === "string" ? family.trim() : "";
+    if (!nextFamily || seen.has(nextFamily)) {
+      continue;
+    }
+    seen.add(nextFamily);
+    normalized.push(nextFamily);
+  }
+  return normalized;
+}
+
 function sanitizeFontSize(fontSize: number | undefined): number {
   if (typeof fontSize !== "number" || !Number.isFinite(fontSize)) {
-    return DEFAULT_APP_FONT_SIZE;
+    return DEFAULT_TERMINAL_FONT_SIZE;
   }
   return Math.max(8, Math.min(32, fontSize));
 }
 
 function sanitizeLineHeight(lineHeight: number | undefined): number {
   if (typeof lineHeight !== "number" || !Number.isFinite(lineHeight)) {
-    return DEFAULT_APP_LINE_HEIGHT;
+    return DEFAULT_TERMINAL_LINE_HEIGHT;
   }
   return Math.max(0.8, Math.min(2, lineHeight));
+}
+
+function sanitizeTerminalTypographySettings(
+  terminalTypography: Partial<TerminalTypographySettings> | undefined,
+  legacyTypography: LegacyTypographyFields = {},
+  current: TerminalTypographySettings = createDefaultTerminalTypographySettings()
+): TerminalTypographySettings {
+  return {
+    preferredTextFontFamily: sanitizeTextFontFamily(
+      terminalTypography?.preferredTextFontFamily ??
+        legacyTypography.terminalFontFamily ??
+        current.preferredTextFontFamily
+    ),
+    preferredSymbolFallbackFamilies: sanitizeSymbolFallbackFamilies(
+      terminalTypography?.preferredSymbolFallbackFamilies ??
+        current.preferredSymbolFallbackFamilies
+    ),
+    fontSize: sanitizeFontSize(
+      terminalTypography?.fontSize ??
+        legacyTypography.terminalFontSize ??
+        current.fontSize
+    ),
+    lineHeight: sanitizeLineHeight(
+      terminalTypography?.lineHeight ??
+        legacyTypography.terminalLineHeight ??
+        current.lineHeight
+    )
+  };
 }
 
 function computePaneRects(

@@ -1,3 +1,11 @@
+import type {
+  ResolvedTerminalThemeVm,
+  TerminalColorPalette,
+  TerminalThemeProfile,
+  TerminalThemeProfileSource,
+  TerminalThemeSettings
+} from "@kmux/proto";
+
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "workspace.create": "Meta+N",
   "workspace.rename": "Meta+Shift+R",
@@ -241,57 +249,412 @@ const THEME_CSS_VARIABLE_MAP = Object.freeze({
 
 export const THEME_CSS_VARIABLES = THEME_CSS_VARIABLE_MAP.dark;
 
-const XTERM_THEMES = Object.freeze({
-  dark: Object.freeze({
+export const DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO = 1;
+export const KMUX_DEFAULT_TERMINAL_THEME_PROFILE_ID =
+  "terminal_theme_kmux_default";
+export const BUILTIN_TERMINAL_THEME_PROFILE_ID =
+  KMUX_DEFAULT_TERMINAL_THEME_PROFILE_ID;
+export const INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID =
+  "terminal_theme_intellij_islands";
+const KMUX_DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO = 2.5;
+const INTELLIJ_ISLANDS_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO = 1;
+
+function createTerminalColorPalette(
+  palette: TerminalColorPalette
+): TerminalColorPalette {
+  return {
+    ...palette,
+    ansi: [...palette.ansi]
+  };
+}
+
+const KMUX_DEFAULT_TERMINAL_COLOR_PALETTES = Object.freeze({
+  dark: createTerminalColorPalette({
     background: THEMES.dark.panelBg,
-    foreground: "#d4d4d4",
-    cursor: THEMES.dark.textPrimary,
-    cursorAccent: THEMES.dark.panelBg,
+    foreground: "#e3e8ef",
+    cursor: "#ffffff",
+    cursorText: THEMES.dark.panelBg,
     selectionBackground: THEMES.dark.selectionBg,
     selectionForeground: "#ffffff",
-    selectionInactiveBackground: THEMES.dark.listHover,
-    black: "#1e1e1e",
-    red: "#f14c4c",
-    green: "#23d18b",
-    yellow: "#dcdcaa",
-    blue: "#3794ff",
-    magenta: "#c586c0",
-    cyan: "#29b8db",
-    white: "#d4d4d4",
-    brightBlack: "#808080",
-    brightRed: "#f14c4c",
-    brightGreen: "#23d18b",
-    brightYellow: "#f5f543",
-    brightBlue: "#3b8eea",
-    brightMagenta: "#d670d6",
-    brightCyan: "#29b8db",
-    brightWhite: "#e5e5e5"
+    ansi: [
+      "#566070",
+      "#e05b66",
+      "#2fb36f",
+      "#c89b3c",
+      "#4c9ffe",
+      "#ba8cf5",
+      "#35bac4",
+      "#e3e8ef",
+      "#8c98a8",
+      "#f14c4c",
+      "#4fd08b",
+      "#e1b954",
+      "#79b8ff",
+      "#d670d6",
+      "#56d4dd",
+      "#ffffff"
+    ]
   }),
-  light: Object.freeze({
+  light: createTerminalColorPalette({
     background: THEMES.light.panelBg,
-    foreground: THEMES.light.textPrimary,
-    cursor: THEMES.light.textPrimary,
-    cursorAccent: THEMES.light.panelBg,
-    selectionBackground: THEMES.light.selectionBg,
-    selectionForeground: THEMES.light.textPrimary,
-    selectionInactiveBackground: THEMES.light.listHover,
-    black: "#24292f",
-    red: "#cf222e",
-    green: "#1a7f37",
-    yellow: "#9a6700",
-    blue: "#0550ae",
-    magenta: "#8250df",
-    cyan: "#1b7c83",
-    white: "#57606a",
-    brightBlack: "#57606a",
-    brightRed: "#a40e26",
-    brightGreen: "#116329",
-    brightYellow: "#7d4e00",
-    brightBlue: "#033d8b",
-    brightMagenta: "#6639ba",
-    brightCyan: "#176c73",
-    brightWhite: "#1f2328"
+    foreground: "#232c35",
+    cursor: "#232c35",
+    cursorText: THEMES.light.panelBg,
+    selectionBackground: "rgba(10, 103, 216, 0.22)",
+    selectionForeground: "#080808",
+    ansi: [
+      "#4b5563",
+      "#cf222e",
+      "#1a7f37",
+      "#9a6700",
+      "#0550ae",
+      "#8250df",
+      "#1b7c83",
+      "#6e7781",
+      "#6e7781",
+      "#a40e26",
+      "#116329",
+      "#7d4e00",
+      "#033d8b",
+      "#6639ba",
+      "#176c73",
+      "#232c35"
+    ]
   })
+}) as Readonly<Record<ColorTheme, TerminalColorPalette>>;
+
+const INTELLIJ_ISLANDS_TERMINAL_COLOR_PALETTES = Object.freeze({
+  dark: createTerminalColorPalette({
+    background: "#191a1c",
+    foreground: "#cccccc",
+    cursor: "#bcbec4",
+    cursorText: "#191a1c",
+    selectionBackground: "rgba(255, 255, 255, 0.25)",
+    selectionForeground: "#ffffff",
+    ansi: [
+      "#000000",
+      "#cd3131",
+      "#0dbc79",
+      "#e5e510",
+      "#2472c8",
+      "#bc3fbc",
+      "#11a8cd",
+      "#e5e5e5",
+      "#666666",
+      "#f14c4c",
+      "#23d18b",
+      "#f5f543",
+      "#3b8eea",
+      "#d670d6",
+      "#29b8db",
+      "#e5e5e5"
+    ]
+  }),
+  light: createTerminalColorPalette({
+    background: "#ffffff",
+    foreground: "#080808",
+    cursor: "#080808",
+    cursorText: "#ffffff",
+    selectionBackground: "#a6d2ff",
+    selectionForeground: "#080808",
+    ansi: [
+      "#000000",
+      "#de1b2e",
+      "#067d17",
+      "#9e880d",
+      "#0033b3",
+      "#871094",
+      "#007e8a",
+      "#6c707e",
+      "#8c8c8c",
+      "#e53935",
+      "#2e9f43",
+      "#c28f16",
+      "#1750eb",
+      "#a333c8",
+      "#286d73",
+      "#080808"
+    ]
+  })
+}) as Readonly<Record<ColorTheme, TerminalColorPalette>>;
+
+export const BUILTIN_TERMINAL_THEME_PROFILE: Readonly<TerminalThemeProfile> =
+  Object.freeze({
+    id: KMUX_DEFAULT_TERMINAL_THEME_PROFILE_ID,
+    name: "kmux Default",
+    source: "builtin",
+    minimumContrastRatio: KMUX_DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
+    variants: {
+      dark: createTerminalColorPalette(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark),
+      light: createTerminalColorPalette(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light)
+    }
+  });
+
+export const KMUX_DEFAULT_TERMINAL_THEME_PROFILE = BUILTIN_TERMINAL_THEME_PROFILE;
+
+export const INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE: Readonly<TerminalThemeProfile> =
+  Object.freeze({
+    id: INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID,
+    name: "IntelliJ Islands",
+    source: "builtin",
+    minimumContrastRatio: INTELLIJ_ISLANDS_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
+    variants: {
+      dark: createTerminalColorPalette(
+        INTELLIJ_ISLANDS_TERMINAL_COLOR_PALETTES.dark
+      ),
+      light: createTerminalColorPalette(
+        INTELLIJ_ISLANDS_TERMINAL_COLOR_PALETTES.light
+      )
+    }
+  });
+
+export const BUILTIN_TERMINAL_THEME_PROFILES = Object.freeze([
+  BUILTIN_TERMINAL_THEME_PROFILE,
+  INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE
+]) as ReadonlyArray<Readonly<TerminalThemeProfile>>;
+
+export function cloneTerminalColorPalette(
+  palette: TerminalColorPalette
+): TerminalColorPalette {
+  return createTerminalColorPalette(palette);
+}
+
+export function cloneTerminalThemeProfile(
+  profile: TerminalThemeProfile
+): TerminalThemeProfile {
+  return {
+    ...profile,
+    variants: {
+      dark: cloneTerminalColorPalette(profile.variants.dark),
+      light: cloneTerminalColorPalette(profile.variants.light)
+    }
+  };
+}
+
+export function isBuiltinTerminalThemeProfileId(profileId: string): boolean {
+  return BUILTIN_TERMINAL_THEME_PROFILES.some(
+    (profile) => profile.id === profileId
+  );
+}
+
+export function createDefaultTerminalThemeSettings(): TerminalThemeSettings {
+  return {
+    activeProfileId: KMUX_DEFAULT_TERMINAL_THEME_PROFILE_ID,
+    profiles: BUILTIN_TERMINAL_THEME_PROFILES.map((profile) =>
+      cloneTerminalThemeProfile(profile)
+    )
+  };
+}
+
+function sanitizeTerminalThemeSource(
+  source: TerminalThemeProfileSource | undefined
+): TerminalThemeProfileSource {
+  if (source === "itermcolors") {
+    return source;
+  }
+  return "custom";
+}
+
+function sanitizeTerminalThemeName(name: string | undefined): string {
+  const nextName = typeof name === "string" ? name.trim() : "";
+  return nextName || "Custom theme";
+}
+
+function sanitizeTerminalThemeId(id: string | undefined, fallback: string): string {
+  const nextId = typeof id === "string" ? id.trim() : "";
+  return nextId || fallback;
+}
+
+function sanitizeCssColor(color: string | undefined, fallback: string): string {
+  const nextColor = typeof color === "string" ? color.trim() : "";
+  return nextColor || fallback;
+}
+
+function sanitizeAnsiPalette(
+  ansi: string[] | undefined,
+  fallback: string[]
+): string[] {
+  const nextAnsi = Array.isArray(ansi) ? ansi : [];
+  return fallback.map((fallbackColor, index) =>
+    sanitizeCssColor(nextAnsi[index], fallbackColor)
+  );
+}
+
+function sanitizeMinimumContrastRatio(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO;
+  }
+  return Math.max(1, Math.min(21, Number(value.toFixed(2))));
+}
+
+export function sanitizeTerminalColorPalette(
+  palette: Partial<TerminalColorPalette> | undefined,
+  fallback: TerminalColorPalette
+): TerminalColorPalette {
+  return {
+    foreground: sanitizeCssColor(palette?.foreground, fallback.foreground),
+    background: sanitizeCssColor(palette?.background, fallback.background),
+    cursor: sanitizeCssColor(palette?.cursor, fallback.cursor),
+    cursorText: sanitizeCssColor(palette?.cursorText, fallback.cursorText),
+    selectionBackground: sanitizeCssColor(
+      palette?.selectionBackground,
+      fallback.selectionBackground
+    ),
+    selectionForeground: sanitizeCssColor(
+      palette?.selectionForeground,
+      fallback.selectionForeground
+    ),
+    ansi: sanitizeAnsiPalette(palette?.ansi, fallback.ansi)
+  };
+}
+
+function sanitizeTerminalThemeProfile(
+  profile: Partial<TerminalThemeProfile>,
+  index: number
+): TerminalThemeProfile {
+  const darkFallback = KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark;
+  const lightFallback = KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light;
+
+  return {
+    id: sanitizeTerminalThemeId(profile.id, `terminal_theme_custom_${index + 1}`),
+    name: sanitizeTerminalThemeName(profile.name),
+    source: sanitizeTerminalThemeSource(profile.source),
+    minimumContrastRatio: sanitizeMinimumContrastRatio(
+      profile.minimumContrastRatio
+    ),
+    variants: {
+      dark: sanitizeTerminalColorPalette(profile.variants?.dark, darkFallback),
+      light: sanitizeTerminalColorPalette(
+        profile.variants?.light,
+        lightFallback
+      )
+    }
+  };
+}
+
+export function sanitizeTerminalThemeSettings(
+  terminalThemes: Partial<TerminalThemeSettings> | undefined,
+  current: TerminalThemeSettings = createDefaultTerminalThemeSettings()
+): TerminalThemeSettings {
+  const inputProfiles = Array.isArray(terminalThemes?.profiles)
+    ? terminalThemes.profiles
+    : current.profiles;
+  const profiles = BUILTIN_TERMINAL_THEME_PROFILES.map((profile) =>
+    cloneTerminalThemeProfile(profile)
+  );
+  const profileIds = new Set<string>(profiles.map((profile) => profile.id));
+
+  for (const [index, profile] of inputProfiles.entries()) {
+    if (
+      !profile ||
+      (typeof profile.id === "string" && isBuiltinTerminalThemeProfileId(profile.id))
+    ) {
+      continue;
+    }
+
+    const nextProfile = sanitizeTerminalThemeProfile(profile, index);
+    if (profileIds.has(nextProfile.id)) {
+      continue;
+    }
+    profileIds.add(nextProfile.id);
+    profiles.push(nextProfile);
+  }
+
+  const requestedActiveProfileId = sanitizeTerminalThemeId(
+    terminalThemes?.activeProfileId,
+    current.activeProfileId
+  );
+  const activeProfileId = profileIds.has(requestedActiveProfileId)
+    ? requestedActiveProfileId
+    : KMUX_DEFAULT_TERMINAL_THEME_PROFILE_ID;
+
+  return {
+    activeProfileId,
+    profiles
+  };
+}
+
+export function resolveTerminalTheme(
+  terminalThemes: TerminalThemeSettings | undefined,
+  theme: ColorTheme = "dark"
+): ResolvedTerminalThemeVm {
+  const settings = sanitizeTerminalThemeSettings(terminalThemes);
+  const profile =
+    settings.profiles.find(
+      (candidate) => candidate.id === settings.activeProfileId
+    ) ?? settings.profiles[0] ?? BUILTIN_TERMINAL_THEME_PROFILE;
+
+  return {
+    profileId: profile.id,
+    profileName: profile.name,
+    source: profile.source,
+    minimumContrastRatio: sanitizeMinimumContrastRatio(
+      profile.minimumContrastRatio
+    ),
+    variant: theme,
+    palette: cloneTerminalColorPalette(profile.variants[theme])
+  };
+}
+
+export function createXtermTheme(
+  palette: TerminalColorPalette,
+  theme: ColorTheme = "dark"
+) {
+  const normalizedPalette = sanitizeTerminalColorPalette(
+    palette,
+    KMUX_DEFAULT_TERMINAL_COLOR_PALETTES[theme]
+  );
+  const [
+    black,
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white,
+    brightBlack,
+    brightRed,
+    brightGreen,
+    brightYellow,
+    brightBlue,
+    brightMagenta,
+    brightCyan,
+    brightWhite
+  ] = normalizedPalette.ansi;
+
+  return {
+    background: normalizedPalette.background,
+    foreground: normalizedPalette.foreground,
+    cursor: normalizedPalette.cursor,
+    cursorAccent: normalizedPalette.cursorText,
+    selectionBackground: normalizedPalette.selectionBackground,
+    selectionForeground: normalizedPalette.selectionForeground,
+    selectionInactiveBackground: THEMES[theme].listHover,
+    black,
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white,
+    brightBlack,
+    brightRed,
+    brightGreen,
+    brightYellow,
+    brightBlue,
+    brightMagenta,
+    brightCyan,
+    brightWhite
+  };
+}
+
+const XTERM_THEMES = Object.freeze({
+  dark: Object.freeze(createXtermTheme(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark)),
+  light: Object.freeze(
+    createXtermTheme(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light, "light")
+  )
 });
 
 export const XTERM_THEME = XTERM_THEMES.dark;

@@ -1,41 +1,79 @@
-import {app} from "electron";
-import {homedir} from "node:os";
-import {dirname} from "node:path";
-import {fileURLToPath} from "node:url";
+import { app, BrowserWindow, Menu } from "electron";
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import electronUpdater from "electron-updater";
 
-import {createSettingsStore, defaultAppPaths, KmuxDatabase} from "@kmux/persistence";
+import {
+  createSettingsStore,
+  createSnapshotStore,
+  createWindowStateStore,
+  defaultAppPaths
+} from "@kmux/persistence";
 
-import {createAppRuntime} from "./appRuntime";
-import {registerIpcHandlers} from "./ipcHandlers";
-import {createMetadataRuntime} from "./metadataRuntime";
-import {PtyHostManager} from "./ptyHost";
-import {KmuxSocketServer} from "./socketServer";
-import {createTerminalBridge} from "./terminalBridge";
-import {createMainWindow, persistWindowState, setDevelopmentDockIcon} from "./windowLifecycle";
-import {AppStore} from "./store";
+import { createAppRuntime } from "./appRuntime";
+import { registerIpcHandlers } from "./ipcHandlers";
+import { createMetadataRuntime } from "./metadataRuntime";
+import { PtyHostManager } from "./ptyHost";
+import { resolveShellEnvironment } from "./shellEnvironment";
+import { KmuxSocketServer } from "./socketServer";
+import { buildApplicationMenuTemplate } from "./appMenu";
+import { createTerminalBridge } from "./terminalBridge";
+import { createFontInventoryProvider } from "./terminalTypography";
+import { createUpdaterController } from "./updater";
+import {
+  createNativeUpdaterDialogs,
+  createNativeUpdaterNotifier
+} from "./updaterUi";
+import {
+  exportItermcolorsPalette,
+  importItermcolorsPalette
+} from "./itermcolors";
+import {
+  createMainWindow,
+  persistWindowState,
+  setDevelopmentDockIcon
+} from "./windowLifecycle";
+import { AppStore } from "./store";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
+const { autoUpdater } = electronUpdater;
 
-let db: KmuxDatabase | null = null;
 let ptyHost: PtyHostManager | null = null;
 let socketServer: KmuxSocketServer | null = null;
 
 async function bootstrap(): Promise<void> {
   setDevelopmentDockIcon(currentDir);
-  const database = new KmuxDatabase(paths.dbPath);
-  db = database;
+  app.setAboutPanelOptions({
+    applicationName: app.getName(),
+    applicationVersion: app.getVersion(),
+    version: app.getVersion(),
+    website: "https://github.com/kkd927/kmux"
+  });
+  const snapshotStore = createSnapshotStore(paths.statePath);
+  const windowStateStore = createWindowStateStore(paths.windowStatePath);
   const settingsStore = createSettingsStore(paths.settingsPath);
+  const savedSettings = settingsStore.load();
+  const resolvedShellEnv = await resolveShellEnvironment({
+    preferredShell: savedSettings?.shell,
+    env: process.env
+  });
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
 
   const runtime = createAppRuntime({
     paths,
-    db: database,
+    snapshotStore,
+    windowStateStore,
     settingsStore,
+    defaultShellPath: resolvedShellEnv.shellPath,
     refreshMetadata: (...args) => metadataRuntime.refreshMetadata(...args),
+    fontInventoryProvider: createFontInventoryProvider(
+      resolvedShellEnv.baseEnv
+    ),
     persistWindowState: (window) => {
       persistWindowState({
-        db: database,
+        windowStateStore,
         window,
         getSidebarWidth: () => {
           const state = runtime.getState();
@@ -47,7 +85,8 @@ async function bootstrap(): Promise<void> {
 
   metadataRuntime = createMetadataRuntime({
     getState: runtime.getState,
-    dispatchAppAction: runtime.dispatchAppAction
+    dispatchAppAction: runtime.dispatchAppAction,
+    env: resolvedShellEnv.baseEnv
   });
 
   const initial = runtime.restoreInitialState();
@@ -62,7 +101,7 @@ async function bootstrap(): Promise<void> {
     getPtyHost: () => ptyHost
   });
 
-  ptyHost.start();
+  ptyHost.start(resolvedShellEnv.baseEnv);
   ptyHost.on("event", terminalBridge.handlePtyEvent);
 
   socketServer = new KmuxSocketServer({
@@ -79,19 +118,25 @@ async function bootstrap(): Promise<void> {
     getView: runtime.getView,
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,
+    snapshotSurface: terminalBridge.snapshotSurface,
     detachSurface: terminalBridge.detachSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,
     resizeSurface: terminalBridge.resizeSurface,
-    identify: runtime.identify
+    identify: runtime.identify,
+    listTerminalFontFamilies: runtime.listTerminalFontFamilies,
+    previewTerminalTypography: runtime.previewTerminalTypography,
+    reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,
+    importTerminalThemePalette: importItermcolorsPalette,
+    exportTerminalThemePalette: exportItermcolorsPalette
   });
 
   const mainWindow = createMainWindow({
     currentDir,
-    loadWindowState: () => database.loadWindowState(),
+    loadWindowState: () => windowStateStore.load(),
     onClose: (window) => {
       persistWindowState({
-        db: database,
+        windowStateStore,
         window,
         getSidebarWidth: () => {
           const state = runtime.getState();
@@ -101,14 +146,74 @@ async function bootstrap(): Promise<void> {
     }
   });
   runtime.setMainWindow(mainWindow);
+  if (process.arch === "arm64") {
+    autoUpdater.channel = "latest-arm64";
+  }
+  autoUpdater.allowDowngrade = false;
+  const updater = createUpdaterController({
+    driver: autoUpdater,
+    dialogs: createNativeUpdaterDialogs({
+      appName: app.getName(),
+      getWindow: () => BrowserWindow.getFocusedWindow() ?? mainWindow
+    }),
+    notifier: createNativeUpdaterNotifier({
+      appName: app.getName()
+    }),
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    env: process.env
+  });
+  const updateApplicationMenu = () => {
+    const template = buildApplicationMenuTemplate({
+      appName: app.getName(),
+      isMac: process.platform === "darwin",
+      isDevelopment: !app.isPackaged,
+      updaterState: updater.getState(),
+      actions: {
+        checkForUpdates: () => updater.checkForUpdates("foreground"),
+        downloadUpdate: () => updater.downloadUpdate("foreground"),
+        quitAndInstall: () => updater.quitAndInstall()
+      }
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+  const unsubscribeUpdater = updater.subscribe(() => {
+    updateApplicationMenu();
+  });
+  updateApplicationMenu();
   runtime.broadcastView();
   runtime.respawnRestoredSessions();
+  mainWindow.once("ready-to-show", () => {
+    updater.startBackgroundChecks();
+  });
 
-  app.on("before-quit", async () => {
-    runtime.shutdown();
-    await socketServer?.stop();
-    ptyHost?.stop();
-    db?.close();
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdownOnce = (): Promise<void> => {
+    if (!shutdownPromise) {
+      shutdownPromise = (async () => {
+        unsubscribeUpdater();
+        updater.dispose();
+        runtime.shutdown();
+
+        const server = socketServer;
+        socketServer = null;
+        const host = ptyHost;
+        ptyHost = null;
+
+        const socketStop = server?.stop();
+        host?.stop();
+        await socketStop;
+      })().catch((error) => {
+        console.error("[main:shutdown]", error);
+      });
+    }
+
+    return shutdownPromise;
+  };
+
+  app.on("before-quit", () => {
+    void shutdownOnce();
   });
 }
 
@@ -121,7 +226,5 @@ app
   });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.quit();
 });

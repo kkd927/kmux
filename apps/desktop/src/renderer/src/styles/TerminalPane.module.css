@@ -349,6 +349,9 @@
   overflow: hidden;
   background: var(--panel-bg);
   padding: 8px 0 8px 10px;
+  font-family: var(--kmux-terminal-font-family);
+  font-size: var(--kmux-terminal-font-size);
+  line-height: var(--kmux-terminal-line-height);
 }
 
 .terminalViewport {
@@ -360,6 +363,13 @@
 
 .terminalViewport :global(.xterm) {
   height: 100%;
+  font-family: var(--kmux-terminal-font-family);
+  font-size: var(--kmux-terminal-font-size);
+  line-height: var(--kmux-terminal-line-height);
+}
+
+.terminalViewport :global(.xterm .xterm-helper-textarea) {
+  font-family: var(--kmux-terminal-font-family);
 }
 
 .terminalViewport :global(.xterm .xterm-viewport) {

@@ -21,6 +21,28 @@ describe("buildSessionEnv", () => {
     expect(env.COLORTERM).toBe("truecolor");
   });
 
+  it("drops shell-managed path variables when launching a default macOS login shell", () => {
+    const env = buildSessionEnv(
+      {
+        PATH: "/usr/local/bin:/usr/bin",
+        MANPATH: "/usr/share/man",
+        INFOPATH: "/usr/share/info"
+      },
+      undefined,
+      {
+        TERM_PROGRAM: "kmux"
+      },
+      {
+        stripShellManagedEnv: true
+      }
+    );
+
+    expect(env.PATH).toBeUndefined();
+    expect(env.MANPATH).toBeUndefined();
+    expect(env.INFOPATH).toBeUndefined();
+    expect(env.TERM_PROGRAM).toBe("kmux");
+  });
+
   it("still allows explicit session env overrides after sanitizing inherited values", () => {
     const env = buildSessionEnv(
       {

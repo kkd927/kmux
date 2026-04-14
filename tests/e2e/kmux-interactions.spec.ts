@@ -139,6 +139,9 @@ test("tab close button closes only the targeted tab while pane close still close
       .locator(`[data-pane-id="${paneId}"] button[title^="Close tab"]`)
       .first()
       .click();
+    await expect(page.getByTestId("workspace-close-confirm-dialog")).toHaveCount(
+      0
+    );
 
     const afterTabClose = await waitForView(
       page,
@@ -165,6 +168,124 @@ test("tab close button closes only the targeted tab while pane close still close
       (view) => Object.keys(view.activeWorkspace.panes).length === 1,
       "pane close button should still remove the whole pane"
     );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("last tab close button asks before closing the workspace", async () => {
+  const launched = await launchKmux("kmux-e2e-last-tab-close-confirm-");
+
+  try {
+    const page = launched.page;
+
+    await dispatch(page, { type: "workspace.create", name: "alpha" });
+    const seeded = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 2 && view.activeWorkspace.name === "alpha",
+      "workspace fixture should be ready before closing the last tab"
+    );
+    const workspaceId = seeded.activeWorkspace.id;
+    const paneId = seeded.activeWorkspace.activePaneId;
+    const dialog = page.getByTestId("workspace-close-confirm-dialog");
+    const closeTabButton = page
+      .locator(`[data-pane-id="${paneId}"] button[title^="Close tab"]`)
+      .first();
+
+    await closeTabButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(
+      "This workspace only has one tab left. Closing it will close the workspace."
+    );
+
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const afterCancel = await getView(page);
+    expect(
+      afterCancel.workspaceRows.some((row) => row.workspaceId === workspaceId)
+    ).toBeTruthy();
+    expect(afterCancel.activeWorkspace.id).toBe(workspaceId);
+
+    await closeTabButton.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close Workspace" }).click();
+
+    const afterConfirm = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 1 &&
+        view.workspaceRows.every((row) => row.workspaceId !== workspaceId),
+      "confirming the last-tab dialog should close the targeted workspace"
+    );
+
+    expect(afterConfirm.activeWorkspace.id).not.toBe(workspaceId);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("closing the active tab focuses the previous tab in the same pane", async () => {
+  const launched = await launchKmux("kmux-e2e-tab-close-focus-previous-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+    const firstSurfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
+
+    await page.getByLabel("Create new tab").click();
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[paneId].surfaceIds.length === 2,
+      "first new tab button click should add a second tab"
+    );
+
+    await page.getByLabel("Create new tab").click();
+    const withThreeTabs = await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[paneId].surfaceIds.length === 3,
+      "second new tab button click should add a third tab"
+    );
+    const secondSurfaceId =
+      withThreeTabs.activeWorkspace.panes[paneId].surfaceIds[1];
+
+    await page
+      .locator(
+        `[data-pane-id="${paneId}"] [data-surface-id="${secondSurfaceId}"] [role="tab"]`
+      )
+      .click();
+
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[paneId].activeSurfaceId === secondSurfaceId,
+      "middle tab should become active before it is closed"
+    );
+
+    await page
+      .locator(
+        `[data-pane-id="${paneId}"] [data-surface-id="${secondSurfaceId}"] button[title^="Close tab"]`
+      )
+      .click();
+
+    const afterClose = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[paneId].surfaceIds.length === 2 &&
+        view.activeWorkspace.panes[paneId].activeSurfaceId === firstSurfaceId,
+      "closing the active middle tab should focus the previous tab"
+    );
+
+    expect(afterClose.activeWorkspace.panes[paneId].surfaceIds).not.toContain(
+      secondSurfaceId
+    );
+    await expect(
+      page.locator(
+        `[data-pane-id="${paneId}"] [data-surface-id="${firstSurfaceId}"] [role="tab"]`
+      )
+    ).toHaveAttribute("aria-selected", "true");
   } finally {
     await closeKmux(launched);
   }

@@ -1,8 +1,14 @@
 import type { AppAction } from "@kmux/core";
 import type {
+  ImportedTerminalThemePalette,
+  TerminalColorPalette,
+  ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellViewModel,
+  SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
+  TerminalTypographyProbeReport,
+  TerminalTypographySettings,
   TerminalKeyInput
 } from "@kmux/proto";
 import type { TerminalEvent } from "../../preload/index";
@@ -23,6 +29,18 @@ declare global {
         cols: number,
         rows: number
       ): Promise<void>;
+      listTerminalFontFamilies(): Promise<string[]>;
+      previewTerminalTypography(
+        settings: TerminalTypographySettings
+      ): Promise<ResolvedTerminalTypographyVm>;
+      reportTerminalTypographyProbe(
+        report: TerminalTypographyProbeReport
+      ): Promise<void>;
+      importTerminalThemePalette(): Promise<ImportedTerminalThemePalette | null>;
+      exportTerminalThemePalette(
+        suggestedName: string,
+        palette: TerminalColorPalette
+      ): Promise<boolean>;
       readClipboardText(): string;
       writeClipboardText(text: string): void;
       windowControl(
@@ -37,6 +55,12 @@ declare global {
         listener: (workspaceId: string) => void
       ): () => void;
       identify(): Promise<ShellIdentity>;
+    };
+    kmuxTest?: {
+      snapshotSurface(
+        surfaceId: string,
+        options?: SurfaceSnapshotOptions
+      ): Promise<SurfaceSnapshotPayload | null>;
     };
   }
 }

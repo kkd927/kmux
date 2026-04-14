@@ -1,4 +1,4 @@
-import {BrowserWindow, Notification} from "electron";
+import { BrowserWindow, Notification, shell } from "electron";
 
 import {
   type AppAction,
@@ -6,22 +6,41 @@ import {
   type AppState,
   cloneState,
   createDefaultSettings,
-  createInitialState
+  createInitialState,
+  mergeSettings
 } from "@kmux/core";
-import type {Id, ShellIdentity} from "@kmux/proto";
-import type {KmuxDatabase, SettingsFileStore} from "@kmux/persistence";
+import type {
+  Id,
+  ResolvedTerminalTypographyVm,
+  ShellIdentity,
+  ShellViewModel,
+  TerminalTypographyProbeReport,
+  TerminalTypographySettings
+} from "@kmux/proto";
+import type {
+  SettingsFileStore,
+  SnapshotFileStore,
+  WindowStateFileStore
+} from "@kmux/persistence";
 
-import type {AppStore} from "./store";
-import type {PtyHostManager} from "./ptyHost";
+import type { AppStore } from "./store";
+import type { PtyHostManager } from "./ptyHost";
+import {
+  type FontInventoryProvider,
+  TerminalTypographyController
+} from "./terminalTypography";
 
 interface AppRuntimeOptions {
   paths: {
     socketPath: string;
   };
-  db: KmuxDatabase;
+  snapshotStore: SnapshotFileStore;
+  windowStateStore: WindowStateFileStore;
   settingsStore: SettingsFileStore;
+  defaultShellPath: string;
   refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
+  fontInventoryProvider?: FontInventoryProvider;
 }
 
 export interface AppRuntime {
@@ -29,13 +48,18 @@ export interface AppRuntime {
   setPtyHost(ptyHost: PtyHostManager | null): void;
   setMainWindow(window: BrowserWindow | null): void;
   getState(): AppState;
-  getView(): ReturnType<AppStore["getView"]>;
+  getView(): ShellViewModel;
   dispatchAppAction(action: AppAction): void;
   runEffects(effects: AppEffect[]): void;
   broadcastView(): void;
   restoreInitialState(): AppState;
   capabilityList(): string[];
   identify(): ShellIdentity;
+  listTerminalFontFamilies(): Promise<string[]>;
+  previewTerminalTypography(
+    settings: TerminalTypographySettings
+  ): Promise<ResolvedTerminalTypographyVm>;
+  reportTerminalTypographyProbe(report: TerminalTypographyProbeReport): void;
   respawnRestoredSessions(): void;
   shutdown(): void;
 }
@@ -45,6 +69,18 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let ptyHost: PtyHostManager | null = null;
   let mainWindow: BrowserWindow | null = null;
   let persistTimer: NodeJS.Timeout | null = null;
+  let shuttingDown = false;
+  const terminalTypographyController = new TerminalTypographyController({
+    initialSettings: createDefaultSettings("kmuxOnly", options.defaultShellPath)
+      .terminalTypography,
+    fontInventoryProvider: options.fontInventoryProvider,
+    shouldLogInventoryErrors: () => !shuttingDown,
+    onDidChange: () => {
+      if (store) {
+        broadcastView();
+      }
+    }
+  });
 
   function getState(): AppState {
     if (!store) {
@@ -53,11 +89,14 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     return store.getState();
   }
 
-  function getView(): ReturnType<AppStore["getView"]> {
+  function getView(): ShellViewModel {
     if (!store) {
       throw new Error("Store not ready");
     }
-    return store.getView();
+    return {
+      ...store.getView(),
+      terminalTypography: terminalTypographyController.getViewModel()
+    };
   }
 
   function broadcastView(): void {
@@ -76,7 +115,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       if (!store) {
         return;
       }
-      options.db.saveSnapshot(store.getState());
+      options.snapshotStore.save(store.getState());
       options.settingsStore.save(store.getState().settings);
       if (mainWindow && !mainWindow.isDestroyed()) {
         options.persistWindowState(mainWindow);
@@ -106,7 +145,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           });
           break;
         case "metadata.refresh":
-          options.refreshMetadata(effect.surfaceId ?? "", effect.cwd, effect.pid);
+          options.refreshMetadata(
+            effect.surfaceId ?? "",
+            effect.cwd,
+            effect.pid
+          );
           break;
         case "notify.desktop":
           if (getState().settings.notificationDesktop) {
@@ -114,6 +157,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
               title: effect.notification.title,
               body: effect.notification.message
             }).show();
+          }
+          break;
+        case "bell.sound":
+          if (getState().settings.notificationSound) {
+            shell.beep();
           }
           break;
         case "persist":
@@ -127,27 +175,31 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function dispatchAppAction(action: AppAction): void {
+    const previousSettings = store?.getState().settings.terminalTypography;
     const effects = store?.dispatch(action) ?? [];
+    const nextSettings = store?.getState().settings.terminalTypography;
+    if (
+      previousSettings &&
+      nextSettings &&
+      !areTerminalTypographySettingsEqual(previousSettings, nextSettings)
+    ) {
+      terminalTypographyController.setSettings(nextSettings);
+    }
     runEffects(effects);
   }
 
   function restoreInitialState(): AppState {
-    const snapshot = options.db.loadSnapshot();
-    const savedWindowState = options.db.loadWindowState();
-    const settings = options.settingsStore.load() ?? createDefaultSettings();
+    const snapshot = options.snapshotStore.load();
+    const savedWindowState = options.windowStateStore.load();
+    const settings =
+      options.settingsStore.load() ??
+      createDefaultSettings("kmuxOnly", options.defaultShellPath);
     const initial =
       snapshot && settings.startupRestore
         ? cloneState(snapshot)
-        : createInitialState();
+        : createInitialState(options.defaultShellPath);
 
-    initial.settings = {
-      ...initial.settings,
-      ...settings,
-      shortcuts: {
-        ...initial.settings.shortcuts,
-        ...settings.shortcuts
-      }
-    };
+    initial.settings = mergeSettings(initial.settings, settings ?? {});
 
     if (settings.startupRestore) {
       for (const session of Object.values(initial.sessions)) {
@@ -216,12 +268,28 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     };
   }
 
+  function listTerminalFontFamilies(): Promise<string[]> {
+    return terminalTypographyController.listFontFamilies();
+  }
+
+  function previewTerminalTypography(
+    settings: TerminalTypographySettings
+  ): Promise<ResolvedTerminalTypographyVm> {
+    return terminalTypographyController.preview(settings);
+  }
+
+  function reportTerminalTypographyProbe(
+    report: TerminalTypographyProbeReport
+  ): void {
+    terminalTypographyController.reportProbe(report);
+  }
+
   function respawnRestoredSessions(): void {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
       if (session.runtimeState !== "exited") {
-        const workspaceId = state.panes[state.surfaces[session.surfaceId].paneId]
-          .workspaceId;
+        const workspaceId =
+          state.panes[state.surfaces[session.surfaceId].paneId].workspaceId;
         runEffects([
           {
             type: "session.spawn",
@@ -247,6 +315,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function shutdown(): void {
+    shuttingDown = true;
     if (persistTimer) {
       clearTimeout(persistTimer);
     }
@@ -254,7 +323,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      options.db.saveSnapshot(store.getState());
+      options.snapshotStore.save(store.getState());
       options.settingsStore.save(store.getState().settings);
     }
   }
@@ -262,6 +331,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   return {
     setStore(nextStore) {
       store = nextStore;
+      terminalTypographyController.setSettings(
+        nextStore.getState().settings.terminalTypography
+      );
     },
     setPtyHost(nextPtyHost) {
       ptyHost = nextPtyHost;
@@ -277,7 +349,27 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     restoreInitialState,
     capabilityList,
     identify,
+    listTerminalFontFamilies,
+    previewTerminalTypography,
+    reportTerminalTypographyProbe,
     respawnRestoredSessions,
     shutdown
   };
+}
+
+function areTerminalTypographySettingsEqual(
+  left: TerminalTypographySettings,
+  right: TerminalTypographySettings
+): boolean {
+  return (
+    left.preferredTextFontFamily === right.preferredTextFontFamily &&
+    left.fontSize === right.fontSize &&
+    left.lineHeight === right.lineHeight &&
+    left.preferredSymbolFallbackFamilies.length ===
+      right.preferredSymbolFallbackFamilies.length &&
+    left.preferredSymbolFallbackFamilies.every(
+      (fontFamily, index) =>
+        fontFamily === right.preferredSymbolFallbackFamilies[index]
+    )
+  );
 }

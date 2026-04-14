@@ -9,6 +9,13 @@ import {SerializeAddon} from "@xterm/addon-serialize";
 import type {Id, PtyEvent, PtyRequest, SurfaceSnapshotPayload, TerminalKeyInput} from "@kmux/proto";
 import type * as PtyModule from "node-pty";
 import {loadNodePty} from "./nodePtyLoader";
+import {
+  buildOsc9Notification,
+  buildOsc777Notification,
+  parseOsc99Notification,
+  type Osc99NotificationState
+} from "./terminalNotifications";
+import {resolveDefaultShellArgs, shouldStripShellManagedEnv} from "./shellLaunch";
 import {buildSessionEnv} from "./sessionEnv";
 
 let cachedPty: typeof PtyModule | null = null;
@@ -39,6 +46,13 @@ interface SessionRecord {
   sequence: number;
   cols: number;
   rows: number;
+  osc99State: Osc99NotificationState;
+  lastActivityAt: number;
+  pendingSettledSnapshots: Array<{
+    requestId: Id;
+    settleForMs: number;
+  }>;
+  settledSnapshotTimer: NodeJS.Timeout | null;
 }
 
 const sessions = new Map<Id, SessionRecord>();
@@ -95,12 +109,35 @@ function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
   };
 }
 
+function sendTerminalNotification(
+  record: SessionRecord,
+  protocol: 9 | 99 | 777,
+  title?: string,
+  message?: string
+): void {
+  send({
+    type: "terminal.notification",
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    protocol,
+    title,
+    message
+  });
+}
+
 function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   const pty = resolvePtyModule();
   const shell = request.spec.launch.shell || process.env.SHELL || "/bin/zsh";
+  const args =
+    request.spec.launch.args ?? resolveDefaultShellArgs(shell, process.platform);
+  const stripShellManagedEnv = shouldStripShellManagedEnv(
+    shell,
+    request.spec.launch.args,
+    process.platform
+  );
   let ptyProcess: PtyModule.IPty;
   try {
-    ptyProcess = pty.spawn(shell, request.spec.launch.args ?? [], {
+    ptyProcess = pty.spawn(shell, args, {
       name: "xterm-256color",
       cols: request.spec.cols,
       rows: request.spec.rows,
@@ -108,7 +145,10 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       env: buildSessionEnv(
         process.env,
         request.spec.launch.env,
-        request.spec.env
+        request.spec.env,
+        {
+          stripShellManagedEnv
+        }
       )
     });
   } catch (error) {
@@ -146,7 +186,11 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     serialize,
     sequence: 0,
     cols: request.spec.cols,
-    rows: request.spec.rows
+    rows: request.spec.rows,
+    osc99State: {},
+    lastActivityAt: Date.now(),
+    pendingSettledSnapshots: [],
+    settledSnapshotTimer: null
   };
   sessions.set(record.sessionId, record);
 
@@ -183,40 +227,51 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       cwd: record.cwd
     });
   });
-  terminal.parser.registerOscHandler(9, () => {
-    send({
-      type: "bell",
-      surfaceId: record.surfaceId,
-      sessionId: record.sessionId,
-      title: record.title,
-      cwd: record.cwd
-    });
+  terminal.parser.registerOscHandler(9, (data: string) => {
+    const notification = buildOsc9Notification(data, record.title);
+    sendTerminalNotification(
+      record,
+      notification.protocol,
+      notification.title,
+      notification.message
+    );
     return true;
   });
-  terminal.parser.registerOscHandler(99, () => {
-    send({
-      type: "bell",
-      surfaceId: record.surfaceId,
-      sessionId: record.sessionId,
-      title: record.title,
-      cwd: record.cwd
-    });
+  terminal.parser.registerOscHandler(99, (data: string) => {
+    const {nextState, notification} = parseOsc99Notification(
+      data,
+      record.osc99State,
+      record.title
+    );
+    record.osc99State = nextState;
+    if (notification) {
+      sendTerminalNotification(
+        record,
+        notification.protocol,
+        notification.title,
+        notification.message
+      );
+    }
     return true;
   });
-  terminal.parser.registerOscHandler(777, () => {
-    send({
-      type: "bell",
-      surfaceId: record.surfaceId,
-      sessionId: record.sessionId,
-      title: record.title,
-      cwd: record.cwd
-    });
+  terminal.parser.registerOscHandler(777, (data: string) => {
+    const notification = buildOsc777Notification(data, record.title, record.cwd);
+    if (notification) {
+      sendTerminalNotification(
+        record,
+        notification.protocol,
+        notification.title,
+        notification.message
+      );
+    }
     return true;
   });
 
   ptyProcess.onData((chunk) => {
     record.sequence += 1;
+    record.lastActivityAt = Date.now();
     terminal.write(chunk);
+    scheduleSettledSnapshotCheck(record);
     send({
       type: "chunk",
       payload: {
@@ -228,6 +283,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   ptyProcess.onExit(({ exitCode }) => {
+    disposeSettledSnapshotState(record);
     send({
       type: "exit",
       payload: {
@@ -252,8 +308,15 @@ process.on("message", (request: PtyRequest) => {
       spawnSession(request);
       break;
     case "close":
-      sessions.get(request.sessionId)?.pty.kill();
-      sessions.delete(request.sessionId);
+      {
+        const record = sessions.get(request.sessionId);
+        if (!record) {
+          break;
+        }
+        disposeSettledSnapshotState(record);
+        record.pty.kill();
+        sessions.delete(request.sessionId);
+      }
       break;
     case "resize":
       {
@@ -281,11 +344,19 @@ process.on("message", (request: PtyRequest) => {
     case "snapshot": {
       const record = sessions.get(request.sessionId);
       if (record) {
-        send({
-          type: "snapshot",
-          requestId: request.requestId,
-          payload: snapshot(record)
-        });
+        if ((request.settleForMs ?? 0) > 0) {
+          record.pendingSettledSnapshots.push({
+            requestId: request.requestId,
+            settleForMs: request.settleForMs ?? 0
+          });
+          scheduleSettledSnapshotCheck(record);
+        } else {
+          send({
+            type: "snapshot",
+            requestId: request.requestId,
+            payload: snapshot(record)
+          });
+        }
       }
       break;
     }
@@ -295,3 +366,54 @@ process.on("message", (request: PtyRequest) => {
 });
 
 send({ type: "ready" });
+
+function scheduleSettledSnapshotCheck(record: SessionRecord): void {
+  if (record.settledSnapshotTimer) {
+    clearTimeout(record.settledSnapshotTimer);
+    record.settledSnapshotTimer = null;
+  }
+  if (record.pendingSettledSnapshots.length === 0) {
+    return;
+  }
+
+  const quietForMs = Date.now() - record.lastActivityAt;
+  let nextDelay = Number.POSITIVE_INFINITY;
+  const remainingSnapshots: SessionRecord["pendingSettledSnapshots"] = [];
+
+  for (const pendingSnapshot of record.pendingSettledSnapshots) {
+    const remainingQuietMs = pendingSnapshot.settleForMs - quietForMs;
+    if (remainingQuietMs <= 0) {
+      send({
+        type: "snapshot",
+        requestId: pendingSnapshot.requestId,
+        payload: snapshot(record)
+      });
+      continue;
+    }
+
+    remainingSnapshots.push(pendingSnapshot);
+    nextDelay = Math.min(nextDelay, remainingQuietMs);
+  }
+
+  record.pendingSettledSnapshots = remainingSnapshots;
+
+  if (!Number.isFinite(nextDelay)) {
+    return;
+  }
+
+  record.settledSnapshotTimer = setTimeout(() => {
+    record.settledSnapshotTimer = null;
+    if (!sessions.has(record.sessionId)) {
+      return;
+    }
+    scheduleSettledSnapshotCheck(record);
+  }, nextDelay);
+}
+
+function disposeSettledSnapshotState(record: SessionRecord): void {
+  if (record.settledSnapshotTimer) {
+    clearTimeout(record.settledSnapshotTimer);
+    record.settledSnapshotTimer = null;
+  }
+  record.pendingSettledSnapshots = [];
+}

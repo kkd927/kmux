@@ -5,15 +5,24 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 
-import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
+import type {
+  KmuxSettings,
+  ResolvedTerminalThemeVm,
+  ResolvedTerminalTypographyVm,
+  SurfaceVm
+} from "@kmux/proto";
 import {
+  createXtermTheme,
   getTerminalSearchDecorations,
-  getXtermTheme,
   normalizeShortcut
 } from "@kmux/ui";
 import type { ColorTheme } from "@kmux/ui";
 
 import { Codicon } from "./Codicon";
+import {
+  applyTerminalWebglPreference,
+  type DisposableAddon
+} from "../terminalRenderer";
 import styles from "../styles/TerminalPane.module.css";
 
 interface TerminalPaneProps {
@@ -22,10 +31,10 @@ interface TerminalPaneProps {
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
   settings: KmuxSettings;
+  terminalTypography: ResolvedTerminalTypographyVm;
+  terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
   showSearch: boolean;
-  focusTerminalRequest: { surfaceId: string; token: number } | null;
-  onConsumeFocusTerminalRequest: (token: number) => void;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
   onCreateSurface: (paneId: string) => void;
@@ -63,6 +72,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const webglAddonRef = useRef<DisposableAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
@@ -71,20 +81,34 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
   const showSearchRef = useRef(props.showSearch);
-  const handledFocusRequestTokenRef = useRef<number | null>(null);
+  const shortcutsRef = useRef(props.settings.shortcuts);
+  const onToggleSearchRef = useRef(props.onToggleSearch);
+  const terminalPaletteSignature = [
+    props.terminalTheme.palette.background,
+    props.terminalTheme.palette.foreground,
+    props.terminalTheme.palette.cursor,
+    props.terminalTheme.palette.cursorText,
+    props.terminalTheme.palette.selectionBackground,
+    props.terminalTheme.palette.selectionForeground,
+    props.terminalTheme.palette.ansi.join("\u0000")
+  ].join("\u0001");
   const terminalTheme = useMemo(
-    () => getXtermTheme(props.colorTheme),
-    [props.colorTheme]
+    () => createXtermTheme(props.terminalTheme.palette, props.colorTheme),
+    [props.colorTheme, terminalPaletteSignature]
   );
   const terminalSearchDecorations = useMemo(
     () => getTerminalSearchDecorations(props.colorTheme),
     [props.colorTheme]
   );
+  const searchDecorationsRef = useRef(terminalSearchDecorations);
 
   activeSurfaceRef.current = activeSurface;
   copyModeRef.current = copyMode;
   queryRef.current = query;
   showSearchRef.current = props.showSearch;
+  shortcutsRef.current = props.settings.shortcuts;
+  onToggleSearchRef.current = props.onToggleSearch;
+  searchDecorationsRef.current = terminalSearchDecorations;
 
   function syncTerminalMetrics(terminal: Terminal | null): void {
     if (!containerRef.current || !terminal) {
@@ -111,15 +135,50 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       ".xterm-scrollable-element"
     );
     if (scrollable) {
-      scrollable.style.setProperty("background-color", terminalTheme.background);
+      scrollable.style.setProperty(
+        "background-color",
+        terminalTheme.background
+      );
     }
   }
 
   function focusTerminalInput(): void {
     requestAnimationFrame(() => {
-      containerRef.current
-        ?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")
-        ?.focus();
+      terminalRef.current?.focus();
+    });
+  }
+
+  function fitAndSyncTerminal(terminal: Terminal): void {
+    fitRef.current?.fit();
+    const currentSurface = activeSurfaceRef.current;
+    if (currentSurface) {
+      void window.kmux.resizeSurface(
+        currentSurface.id,
+        terminal.cols,
+        terminal.rows
+      );
+    }
+    syncTerminalMetrics(terminal);
+  }
+
+  function matchesTerminalShortcut(
+    event: Pick<
+      KeyboardEvent,
+      "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key" | "code"
+    >,
+    actionId: string
+  ): boolean {
+    return matchesBinding(event, shortcutsRef.current[actionId]);
+  }
+
+  function writeTerminal(
+    terminal: Terminal,
+    data: string,
+    afterWrite?: () => void
+  ): void {
+    terminal.write(data, () => {
+      syncTerminalMetrics(terminal);
+      afterWrite?.();
     });
   }
 
@@ -127,7 +186,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (surfaceId) {
       setCopyMode(false);
     }
-    props.onToggleSearch(surfaceId);
+    onToggleSearchRef.current(surfaceId);
     if (!surfaceId) {
       focusTerminalInput();
     }
@@ -138,6 +197,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!term) {
       return;
     }
+    const decorations = searchDecorationsRef.current;
 
     const searchAddon = searchRef.current as SearchAddonWithInternals | null;
     const results = searchAddon?._resultTracker?.searchResults ?? [];
@@ -166,23 +226,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       const targetMatch = results[nextIndex];
 
       if (targetMatch) {
-        searchAddon._selectResult(
-          targetMatch,
-          terminalSearchDecorations,
-          false
-        );
+        searchAddon._selectResult(targetMatch, decorations, false);
         return;
       }
     }
 
     if (direction === "next") {
       searchRef.current?.findNext(term, {
-        decorations: terminalSearchDecorations
+        decorations
       });
       return;
     }
     searchRef.current?.findPrevious(term, {
-      decorations: terminalSearchDecorations
+      decorations
     });
   }
 
@@ -216,16 +272,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     const terminal = new Terminal({
       allowProposedApi: true,
-      fontFamily: props.settings.terminalFontFamily,
-      fontSize: props.settings.terminalFontSize,
-      lineHeight: props.settings.terminalLineHeight || 1.0,
-      fontWeight: "normal",
+      fontFamily: props.terminalTypography.resolvedFontFamily,
+      fontSize: props.settings.terminalTypography.fontSize,
+      lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
+      fontWeight: 400,
       cursorBlink: true,
       macOptionIsMeta: true,
+      scrollback: 5000,
+      minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
       theme: terminalTheme
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
+    terminalRef.current = terminal;
+    fitRef.current = fit;
+    searchRef.current = search;
     terminal.loadAddon(fit);
     terminal.loadAddon(search);
     const handleTerminalShortcut = (event: KeyboardEvent) => {
@@ -233,9 +294,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!currentSurface) {
         return;
       }
-      if (
-        matchesBinding(event, props.settings.shortcuts["terminal.copyMode"])
-      ) {
+      if (matchesTerminalShortcut(event, "terminal.copyMode")) {
         event.preventDefault();
         event.stopPropagation();
         if (!copyModeRef.current && showSearchRef.current) {
@@ -244,35 +303,31 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         setCopyMode((current) => !current);
         return;
       }
-      if (matchesBinding(event, props.settings.shortcuts["terminal.search"])) {
+      if (matchesTerminalShortcut(event, "terminal.search")) {
         event.preventDefault();
         event.stopPropagation();
         toggleSearch(showSearchRef.current ? null : currentSurface.id);
         return;
       }
-      if (
-        matchesBinding(event, props.settings.shortcuts["terminal.search.next"])
-      ) {
+      if (matchesTerminalShortcut(event, "terminal.search.next")) {
         event.preventDefault();
         event.stopPropagation();
         stepSearch("next");
         return;
       }
-      if (
-        matchesBinding(event, props.settings.shortcuts["terminal.search.prev"])
-      ) {
+      if (matchesTerminalShortcut(event, "terminal.search.prev")) {
         event.preventDefault();
         event.stopPropagation();
         stepSearch("prev");
         return;
       }
-      if (matchesBinding(event, props.settings.shortcuts["terminal.copy"])) {
+      if (matchesTerminalShortcut(event, "terminal.copy")) {
         event.preventDefault();
         event.stopPropagation();
         void copyTerminalSelection(terminal, copyModeRef.current);
         return;
       }
-      if (matchesBinding(event, props.settings.shortcuts["terminal.paste"])) {
+      if (matchesTerminalShortcut(event, "terminal.paste")) {
         event.preventDefault();
         event.stopPropagation();
         if (!copyModeRef.current) {
@@ -335,30 +390,26 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    try {
-      const webgl = new WebglAddon();
-      terminal.loadAddon(webgl);
-    } catch (e) {
-      console.warn("Failed to load WebGL addon", e);
-    }
-    fit.fit();
-    syncTerminalMetrics(terminal);
+    webglAddonRef.current = applyTerminalWebglPreference({
+      terminal,
+      currentAddon: webglAddonRef.current,
+      useWebgl: props.settings.terminalUseWebgl,
+      createAddon: () => new WebglAddon(),
+      onLoadError: (error) => {
+        console.warn(
+          "Failed to load the WebGL terminal renderer; falling back to the default renderer",
+          error
+        );
+      }
+    });
+    fitAndSyncTerminal(terminal);
 
     let resizeTimeout: ReturnType<typeof setTimeout>;
     const resizeObserver = new ResizeObserver(() => {
       clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
         try {
-          fit.fit();
-          const currentSurface = activeSurfaceRef.current;
-          if (currentSurface) {
-            void window.kmux.resizeSurface(
-              currentSurface.id,
-              terminal.cols,
-              terminal.rows
-            );
-          }
-          syncTerminalMetrics(terminal);
+          fitAndSyncTerminal(terminal);
         } catch {
           // ignore resize errors during unmount
         }
@@ -372,31 +423,81 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         void window.kmux.sendText(currentSurface.id, data);
       }
     });
+    const disposeWriteParsed = terminal.onWriteParsed(() => {
+      syncTerminalMetrics(terminal);
+    });
     const disposeScroll = terminal.onScroll(() => {
       syncTerminalMetrics(terminal);
     });
 
-    terminalRef.current = terminal;
-    fitRef.current = fit;
-    searchRef.current = search;
-
     return () => {
       resizeObserver.disconnect();
       disposeData.dispose();
+      disposeWriteParsed.dispose();
       disposeScroll.dispose();
       container.removeEventListener("keydown", handleTerminalShortcut, true);
+      webglAddonRef.current?.dispose();
+      webglAddonRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
     };
+  }, [props.paneId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    terminal.options.fontFamily = props.terminalTypography.resolvedFontFamily;
+    terminal.options.fontSize = props.settings.terminalTypography.fontSize;
+    terminal.options.lineHeight =
+      props.settings.terminalTypography.lineHeight || 1.0;
+    terminal.options.minimumContrastRatio =
+      props.terminalTheme.minimumContrastRatio;
+    terminal.options.theme = { ...terminalTheme };
+    syncTerminalViewportBackground();
+    requestAnimationFrame(() => {
+      syncTerminalViewportBackground();
+    });
+    fitAndSyncTerminal(terminal);
   }, [
-    props.paneId,
-    props.settings.terminalFontFamily,
-    props.settings.terminalFontSize,
-    props.settings.terminalLineHeight,
+    props.terminalTypography.resolvedFontFamily,
+    props.settings.terminalTypography.fontSize,
+    props.settings.terminalTypography.lineHeight,
+    props.terminalTheme.minimumContrastRatio,
     terminalTheme
   ]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    webglAddonRef.current = applyTerminalWebglPreference({
+      terminal,
+      currentAddon: webglAddonRef.current,
+      useWebgl: props.settings.terminalUseWebgl,
+      createAddon: () => new WebglAddon(),
+      onLoadError: (error) => {
+        console.warn(
+          "Failed to load the WebGL terminal renderer; falling back to the default renderer",
+          error
+        );
+      }
+    });
+    if (terminal.rows > 0) {
+      terminal.refresh(0, terminal.rows - 1);
+    }
+    syncTerminalViewportBackground();
+    requestAnimationFrame(() => {
+      syncTerminalViewportBackground();
+    });
+    fitAndSyncTerminal(terminal);
+  }, [props.settings.terminalUseWebgl]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -405,20 +506,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
 
     let mounted = true;
-    void window.kmux.attachSurface(activeSurface.id).then((snapshot) => {
-      if (!mounted || !snapshot || !terminalRef.current) {
-        return;
-      }
-      terminalRef.current.reset();
-      terminalRef.current.write(snapshot.vt);
-      syncTerminalMetrics(terminalRef.current);
-      fitRef.current?.fit();
-      void window.kmux.resizeSurface(
-        activeSurface.id,
-        terminalRef.current.cols,
-        terminalRef.current.rows
-      );
-    });
 
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (!terminalRef.current) {
@@ -428,19 +515,30 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         event.type === "chunk" &&
         event.payload.surfaceId === activeSurface.id
       ) {
-        terminalRef.current.write(event.payload.chunk);
-        syncTerminalMetrics(terminalRef.current);
+        writeTerminal(terminalRef.current, event.payload.chunk);
       }
       if (
         event.type === "exit" &&
         event.payload.surfaceId === activeSurface.id
       ) {
-        terminalRef.current.writeln("");
-        terminalRef.current.writeln(
-          `\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m`
+        writeTerminal(
+          terminalRef.current,
+          `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`
         );
-        syncTerminalMetrics(terminalRef.current);
       }
+    });
+
+    void window.kmux.attachSurface(activeSurface.id).then((snapshot) => {
+      if (!mounted || !snapshot || !terminalRef.current) {
+        return;
+      }
+      terminalRef.current.reset();
+      writeTerminal(terminalRef.current, snapshot.vt, () => {
+        if (!terminalRef.current) {
+          return;
+        }
+        fitAndSyncTerminal(terminalRef.current);
+      });
     });
 
     return () => {
@@ -448,12 +546,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       unsubscribe();
       void window.kmux.detachSurface(activeSurface.id);
     };
-  }, [
-    activeSurface?.id,
-    props.settings.terminalFontFamily,
-    props.settings.terminalFontSize,
-    props.settings.terminalLineHeight
-  ]);
+  }, [activeSurface?.id, props.paneId]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -481,21 +574,20 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [activeSurface.id]);
 
   useEffect(() => {
-    if (!props.focusTerminalRequest) {
+    if (!props.focused || props.showSearch) {
       return;
     }
-    if (
-      handledFocusRequestTokenRef.current === props.focusTerminalRequest.token
-    ) {
+    const activeElement = document.activeElement;
+    const editingOutsideTerminal =
+      activeElement instanceof HTMLInputElement ||
+      (activeElement instanceof HTMLTextAreaElement &&
+        !activeElement.classList.contains("xterm-helper-textarea")) ||
+      (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+    if (editingOutsideTerminal) {
       return;
     }
-    if (props.focusTerminalRequest.surfaceId !== activeSurface.id) {
-      return;
-    }
-    handledFocusRequestTokenRef.current = props.focusTerminalRequest.token;
     focusTerminalInput();
-    props.onConsumeFocusTerminalRequest(props.focusTerminalRequest.token);
-  }, [activeSurface.id, props.focusTerminalRequest]);
+  }, [activeSurface.id, props.focused, props.showSearch]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
@@ -555,9 +647,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                     <span className={styles.attentionDot} />
                   ) : null}
                   {surface.unreadCount > 0 ? (
-                    <span className={styles.badge}>
-                      {surface.unreadCount}
-                    </span>
+                    <span className={styles.badge}>{surface.unreadCount}</span>
                   ) : null}
                 </button>
                 <button

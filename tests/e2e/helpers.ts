@@ -1,18 +1,33 @@
-import {execFileSync} from "node:child_process";
-import {mkdirSync, mkdtempSync, rmSync} from "node:fs";
-import {createConnection} from "node:net";
-import {tmpdir} from "node:os";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import {fileURLToPath} from "node:url";
+import { fileURLToPath } from "node:url";
 
-import {_electron as electron, type ElectronApplication, type Page} from "@playwright/test";
+import {
+  _electron as electron,
+  type ElectronApplication,
+  type Page
+} from "@playwright/test";
 
-import type {JsonRpcEnvelope, ShellViewModel} from "@kmux/proto";
+import type {
+  JsonRpcEnvelope,
+  ShellViewModel,
+  SurfaceSnapshotOptions,
+  SurfaceSnapshotPayload
+} from "@kmux/proto";
 
 type KmuxWindow = {
   kmux: {
     getView: () => Promise<ShellViewModel>;
     dispatch: (action: unknown) => Promise<ShellViewModel>;
+  };
+  kmuxTest?: {
+    snapshotSurface: (
+      surfaceId: string,
+      options?: SurfaceSnapshotOptions
+    ) => Promise<SurfaceSnapshotPayload | null>;
   };
 };
 
@@ -21,6 +36,9 @@ export interface KmuxSandbox {
   configDir: string;
   runtimeDir: string;
   socketPath: string;
+  shellHomeDir: string;
+  shellHistoryPath: string;
+  xdgConfigHome: string;
 }
 
 export interface LaunchedKmux {
@@ -33,6 +51,7 @@ export interface LaunchedKmux {
 
 export interface KmuxLaunchOptions {
   executablePath?: string;
+  env?: Record<string, string | undefined>;
 }
 
 export function kmuxPaths(): {
@@ -63,9 +82,36 @@ export function createSandbox(prefix: string): KmuxSandbox {
   const configDir = path.join(profileRoot, "config");
   const runtimeDir = path.join(profileRoot, "runtime");
   const socketPath = path.join(runtimeDir, "control.sock");
+  const shellHomeDir = path.join(profileRoot, "shell-home");
+  const xdgConfigHome = path.join(shellHomeDir, ".config");
+  const fishConfigDir = path.join(xdgConfigHome, "fish");
+  const shellHistoryPath = path.join(shellHomeDir, ".zsh_history");
   mkdirSync(configDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
-  return { profileRoot, configDir, runtimeDir, socketPath };
+  mkdirSync(shellHomeDir, { recursive: true });
+  mkdirSync(fishConfigDir, { recursive: true });
+  for (const relativePath of [
+    ".zshenv",
+    ".zprofile",
+    ".zshrc",
+    ".zlogin",
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    path.join(".config", "fish", "config.fish")
+  ]) {
+    writeFileSync(path.join(shellHomeDir, relativePath), "", "utf8");
+  }
+  writeFileSync(shellHistoryPath, "", "utf8");
+  return {
+    profileRoot,
+    configDir,
+    runtimeDir,
+    socketPath,
+    shellHomeDir,
+    shellHistoryPath,
+    xdgConfigHome
+  };
 }
 
 export function destroySandbox(sandbox: KmuxSandbox): void {
@@ -94,7 +140,15 @@ export async function launchKmuxWithSandbox(
       NODE_ENV: "test",
       KMUX_E2E_WINDOW_MODE: process.env.KMUX_E2E_WINDOW_MODE ?? "background",
       KMUX_CONFIG_DIR: sandbox.configDir,
-      KMUX_RUNTIME_DIR: sandbox.runtimeDir
+      KMUX_RUNTIME_DIR: sandbox.runtimeDir,
+      KMUX_TEST_FONT_FAMILIES:
+        process.env.KMUX_TEST_FONT_FAMILIES ??
+        JSON.stringify(["JetBrains Mono", "Fira Code", "Menlo"]),
+      HOME: sandbox.shellHomeDir,
+      ZDOTDIR: sandbox.shellHomeDir,
+      HISTFILE: sandbox.shellHistoryPath,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+      ...options.env
     }
   });
   const page = await app.firstWindow();
@@ -161,10 +215,7 @@ export async function waitForSurfaceSnapshotContains(
   let lastSnapshot = "";
 
   while (Date.now() - startTime < timeoutMs) {
-    const snapshot = await page.evaluate(
-      (targetSurfaceId) => window.kmux.attachSurface(targetSurfaceId),
-      surfaceId
-    );
+    const snapshot = await getSurfaceSnapshot(page, surfaceId);
     lastSnapshot = snapshot?.vt ?? "";
     if (lastSnapshot.includes(expectedText)) {
       return lastSnapshot;
@@ -175,6 +226,20 @@ export async function waitForSurfaceSnapshotContains(
   throw new Error(
     `surface ${surfaceId} did not contain expected text "${expectedText}" within ${timeoutMs}ms; lastSnapshot=${JSON.stringify(lastSnapshot)}`
   );
+}
+
+export async function getSurfaceSnapshot(
+  page: Page,
+  surfaceId: string,
+  options?: SurfaceSnapshotOptions
+): Promise<SurfaceSnapshotPayload | null> {
+  return page.evaluate(({ targetSurfaceId, snapshotOptions }) => {
+    const testApi = (window as unknown as KmuxWindow).kmuxTest;
+    if (!testApi) {
+      throw new Error("kmuxTest bridge unavailable");
+    }
+    return testApi.snapshotSurface(targetSurfaceId, snapshotOptions);
+  }, { targetSurfaceId: surfaceId, snapshotOptions: options });
 }
 
 export function runCliJson<T>(

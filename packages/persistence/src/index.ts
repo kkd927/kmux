@@ -1,12 +1,18 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, join } from "node:path";
-
-import Database from "better-sqlite3";
 
 import type { AppState } from "@kmux/core";
 import type { KmuxSettings } from "@kmux/proto";
 
-const APP_ROW_ID = "singleton";
+const SNAPSHOT_STORE_VERSION = 1;
+const WINDOW_STATE_STORE_VERSION = 1;
 
 export interface PersistedWindowState {
   width: number;
@@ -17,77 +23,26 @@ export interface PersistedWindowState {
   sidebarWidth?: number;
 }
 
-export class KmuxDatabase {
-  private readonly db: InstanceType<typeof Database>;
+interface SnapshotEnvelope {
+  version: number;
+  snapshot: AppState;
+}
 
-  constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
+interface WindowStateEnvelope {
+  version: number;
+  windowState: PersistedWindowState;
+}
 
-      CREATE TABLE IF NOT EXISTS app_window (
-        id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-  }
+export interface SnapshotFileStore {
+  path: string;
+  load(): AppState | null;
+  save(snapshot: AppState): void;
+}
 
-  loadSnapshot(): AppState | null {
-    const row = this.db
-      .prepare("SELECT payload FROM app_state WHERE id = ?")
-      .get(APP_ROW_ID) as { payload: string } | undefined;
-    return row ? (JSON.parse(row.payload) as AppState) : null;
-  }
-
-  saveSnapshot(snapshot: AppState): void {
-    this.db
-      .prepare(
-        `
-          INSERT INTO app_state (id, payload, updated_at)
-          VALUES (@id, @payload, CURRENT_TIMESTAMP)
-          ON CONFLICT(id)
-          DO UPDATE SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP
-        `
-      )
-      .run({
-        id: APP_ROW_ID,
-        payload: JSON.stringify(snapshot)
-      });
-  }
-
-  loadWindowState(): PersistedWindowState | null {
-    const row = this.db
-      .prepare("SELECT payload FROM app_window WHERE id = ?")
-      .get(APP_ROW_ID) as { payload: string } | undefined;
-    return row ? (JSON.parse(row.payload) as PersistedWindowState) : null;
-  }
-
-  saveWindowState(windowState: PersistedWindowState): void {
-    this.db
-      .prepare(
-        `
-          INSERT INTO app_window (id, payload, updated_at)
-          VALUES (@id, @payload, CURRENT_TIMESTAMP)
-          ON CONFLICT(id)
-          DO UPDATE SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP
-        `
-      )
-      .run({
-        id: APP_ROW_ID,
-        payload: JSON.stringify(windowState)
-      });
-  }
-
-  close(): void {
-    this.db.close();
-  }
+export interface WindowStateFileStore {
+  path: string;
+  load(): PersistedWindowState | null;
+  save(windowState: PersistedWindowState): void;
 }
 
 export interface SettingsFileStore {
@@ -96,20 +51,123 @@ export interface SettingsFileStore {
   save(settings: KmuxSettings): void;
 }
 
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function warnInvalidFile(filePath: string, reason: string): void {
+  console.warn(`[persistence] ignoring ${filePath}: ${reason}`);
+}
+
+function readJsonFile<T>(filePath: string): T | null {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8")) as T;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return null;
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    warnInvalidFile(filePath, reason);
+    return null;
+  }
+}
+
+function atomicWrite(filePath: string, content: string): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, content);
+  try {
+    renameSync(tmpPath, filePath);
+  } finally {
+    if (existsSync(tmpPath)) {
+      rmSync(tmpPath, { force: true });
+    }
+  }
+}
+
+export function createSnapshotStore(statePath: string): SnapshotFileStore {
+  return {
+    path: statePath,
+    load() {
+      const envelope = readJsonFile<Partial<SnapshotEnvelope>>(statePath);
+      if (!envelope) {
+        return null;
+      }
+      if (envelope.version !== SNAPSHOT_STORE_VERSION) {
+        warnInvalidFile(
+          statePath,
+          `unsupported version ${String(envelope.version)}`
+        );
+        return null;
+      }
+      if (!envelope.snapshot) {
+        warnInvalidFile(statePath, "missing snapshot payload");
+        return null;
+      }
+      return envelope.snapshot;
+    },
+    save(snapshot) {
+      atomicWrite(
+        statePath,
+        JSON.stringify({
+          version: SNAPSHOT_STORE_VERSION,
+          snapshot
+        } satisfies SnapshotEnvelope)
+      );
+    }
+  };
+}
+
+export function createWindowStateStore(
+  windowStatePath: string
+): WindowStateFileStore {
+  return {
+    path: windowStatePath,
+    load() {
+      const envelope =
+        readJsonFile<Partial<WindowStateEnvelope>>(windowStatePath);
+      if (!envelope) {
+        return null;
+      }
+      if (envelope.version !== WINDOW_STATE_STORE_VERSION) {
+        warnInvalidFile(
+          windowStatePath,
+          `unsupported version ${String(envelope.version)}`
+        );
+        return null;
+      }
+      if (!envelope.windowState) {
+        warnInvalidFile(windowStatePath, "missing window state payload");
+        return null;
+      }
+      return envelope.windowState;
+    },
+    save(windowState) {
+      atomicWrite(
+        windowStatePath,
+        JSON.stringify({
+          version: WINDOW_STATE_STORE_VERSION,
+          windowState
+        } satisfies WindowStateEnvelope)
+      );
+    }
+  };
+}
+
 export function createSettingsStore(settingsPath: string): SettingsFileStore {
   mkdirSync(dirname(settingsPath), { recursive: true });
 
   return {
     path: settingsPath,
     load() {
-      try {
-        return JSON.parse(readFileSync(settingsPath, "utf8")) as KmuxSettings;
-      } catch {
-        return null;
-      }
+      return readJsonFile<KmuxSettings>(settingsPath);
     },
     save(settings) {
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      atomicWrite(settingsPath, JSON.stringify(settings, null, 2));
     }
   };
 }
@@ -118,14 +176,16 @@ export function defaultAppPaths(
   homeDir: string,
   env: NodeJS.ProcessEnv = process.env
 ): {
-  dbPath: string;
+  statePath: string;
+  windowStatePath: string;
   settingsPath: string;
   socketPath: string;
 } {
   const configDir = env.KMUX_CONFIG_DIR ?? join(homeDir, ".config", "kmux");
   const runtimeDir = env.KMUX_RUNTIME_DIR ?? join(homeDir, ".kmux");
   return {
-    dbPath: join(configDir, "kmux.db"),
+    statePath: join(configDir, "state.json"),
+    windowStatePath: join(configDir, "window-state.json"),
     settingsPath: join(configDir, "settings.json"),
     socketPath: join(runtimeDir, "control.sock")
   };

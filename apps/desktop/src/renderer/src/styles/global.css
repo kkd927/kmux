@@ -1,21 +1,29 @@
+@font-face {
+  font-family: "kmux Symbols Nerd Font Mono";
+  src: url("../assets/SymbolsNerdFontMono.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --kmux-font-family:
-    "JetBrains Mono",
-    "SFMono-Regular",
-    ui-monospace,
-    Menlo,
-    Monaco,
-    Consolas,
-    monospace;
-  --kmux-font-size: 13px;
-  --kmux-line-height: 1;
+  --kmux-ui-font-family:
+    "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --kmux-ui-font-size: 13px;
+  --kmux-ui-line-height: 1.35;
+  --kmux-terminal-font-family:
+    "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas,
+    "kmux Symbols Nerd Font Mono", monospace;
+  --kmux-terminal-font-size: 13px;
+  --kmux-terminal-line-height: 1;
   color: var(--text-primary);
   background: var(--window-bg);
-  font-family: var(--kmux-font-family);
+  font-family: var(--kmux-ui-font-family);
   text-rendering: optimizeLegibility;
   color-scheme: dark;
-  font-size: var(--kmux-font-size);
-  line-height: var(--kmux-line-height);
+  font-size: var(--kmux-ui-font-size);
+  line-height: var(--kmux-ui-line-height);
 }
 
 * {

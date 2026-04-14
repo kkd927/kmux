@@ -6,6 +6,7 @@ import type {Id} from "@kmux/proto";
 interface MetadataRuntimeOptions {
   getState: () => AppState;
   dispatchAppAction: (action: AppAction) => void;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface MetadataRuntime {
@@ -19,8 +20,8 @@ export function createMetadataRuntime(
     refreshMetadata(surfaceId, cwd, pid): void {
       void (async () => {
         const [branch, ports] = await Promise.all([
-          resolveGitBranch(cwd),
-          resolveListeningPorts(pid)
+          resolveGitBranch(cwd, options.env),
+          resolveListeningPorts(pid, options.env)
         ]);
 
         const currentState = options.getState();
@@ -40,7 +41,7 @@ export function createMetadataRuntime(
         options.dispatchAppAction({
           type: "surface.metadata",
           surfaceId,
-          branch: branch ?? undefined,
+          branch,
           ports
         });
       })();

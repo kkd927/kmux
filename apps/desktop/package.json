@@ -15,7 +15,7 @@
   "scripts": {
     "dev": "electron-vite dev --config electron.vite.config.ts",
     "build": "electron-vite build --config electron.vite.config.ts",
-    "dist:mac": "electron-builder --config electron-builder.yml --mac dmg --publish never",
+    "dist:mac": "electron-builder --config electron-builder.yml --mac --publish never",
     "preview": "electron-vite preview --config electron.vite.config.ts"
   },
   "dependencies": {
@@ -27,8 +27,9 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",
-    "better-sqlite3": "^12.4.6",
+    "electron-updater": "^6.8.3",
     "node-pty": "^1.0.0",
+    "plist": "^3.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.24.4"

@@ -1,13 +1,19 @@
-import { randomUUID } from "node:crypto";
-
 export type Id = string;
 
 export type SocketMode = "kmuxOnly" | "allowAll" | "off";
 export type SplitAxis = "horizontal" | "vertical";
 export type SplitDirection = "left" | "right" | "up" | "down";
-export type NotificationSource = "bell" | "socket" | "status" | "system";
+export type NotificationSource =
+  | "bell"
+  | "terminal"
+  | "socket"
+  | "status"
+  | "system";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
+export type TerminalNotificationProtocol = 9 | 99 | 777;
+export type TerminalThemeVariant = "dark" | "light";
+export type TerminalThemeProfileSource = "builtin" | "itermcolors" | "custom";
 
 export interface SessionLaunchConfig {
   cwd?: string;
@@ -78,6 +84,11 @@ export interface SurfaceSnapshotPayload {
   attention: boolean;
 }
 
+export interface SurfaceSnapshotOptions {
+  settleForMs?: number;
+  timeoutMs?: number;
+}
+
 export interface SurfaceChunkPayload {
   surfaceId: Id;
   sessionId: Id;
@@ -95,7 +106,7 @@ export interface SurfaceMetadataPayload {
   surfaceId: Id;
   cwd?: string;
   title?: string;
-  branch?: string;
+  branch?: string | null;
   ports?: number[];
   attention?: boolean;
   unreadDelta?: number;
@@ -117,7 +128,13 @@ export type PtyRequest =
   | { type: "resize"; sessionId: Id; cols: number; rows: number }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
-  | { type: "snapshot"; sessionId: Id; surfaceId: Id; requestId: Id };
+  | {
+      type: "snapshot";
+      sessionId: Id;
+      surfaceId: Id;
+      requestId: Id;
+      settleForMs?: number;
+    };
 
 export type PtyEvent =
   | { type: "ready" }
@@ -126,6 +143,14 @@ export type PtyEvent =
   | { type: "chunk"; payload: SurfaceChunkPayload }
   | { type: "metadata"; payload: SurfaceMetadataPayload }
   | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }
+  | {
+      type: "terminal.notification";
+      surfaceId: Id;
+      sessionId: Id;
+      protocol: TerminalNotificationProtocol;
+      title?: string;
+      message?: string;
+    }
   | { type: "exit"; payload: SurfaceExitPayload }
   | { type: "error"; sessionId?: Id; message: string };
 
@@ -143,17 +168,92 @@ export interface JsonRpcEnvelope<T = unknown> {
 
 export type ThemeMode = "dark" | "light" | "system";
 
+export interface TerminalTypographySettings {
+  preferredTextFontFamily: string;
+  preferredSymbolFallbackFamilies: string[];
+  fontSize: number;
+  lineHeight: number;
+}
+
+export interface TerminalColorPalette {
+  foreground: string;
+  background: string;
+  cursor: string;
+  cursorText: string;
+  selectionBackground: string;
+  selectionForeground: string;
+  ansi: string[];
+}
+
+export interface TerminalThemeProfile {
+  id: Id;
+  name: string;
+  source: TerminalThemeProfileSource;
+  minimumContrastRatio: number;
+  variants: Record<TerminalThemeVariant, TerminalColorPalette>;
+}
+
+export interface TerminalThemeSettings {
+  activeProfileId: Id;
+  profiles: TerminalThemeProfile[];
+}
+
+export interface ResolvedTerminalThemeVm {
+  profileId: Id;
+  profileName: string;
+  source: TerminalThemeProfileSource;
+  minimumContrastRatio: number;
+  variant: TerminalThemeVariant;
+  palette: TerminalColorPalette;
+}
+
+export interface ImportedTerminalThemePalette {
+  suggestedName: string;
+  palette: TerminalColorPalette;
+  warnings: string[];
+}
+
+export type TerminalTypographyStatus = "pending" | "ready" | "degraded";
+
+export type TerminalTypographyIssueCode =
+  | "text_font_missing"
+  | "symbol_font_missing"
+  | "non_monospaced_text_font"
+  | "nerd_glyph_missing"
+  | "powerline_glyph_missing"
+  | "powerline_width_mismatch";
+
+export interface TerminalTypographyIssue {
+  code: TerminalTypographyIssueCode;
+  severity: "info" | "warning";
+}
+
+export interface ResolvedTerminalTypographyVm {
+  stackHash: string;
+  resolvedFontFamily: string;
+  textFontFamily: string;
+  symbolFallbackFamilies: string[];
+  autoFallbackApplied: boolean;
+  status: TerminalTypographyStatus;
+  issues: TerminalTypographyIssue[];
+}
+
+export interface TerminalTypographyProbeReport {
+  stackHash: string;
+  issues: TerminalTypographyIssue[];
+}
+
 export interface KmuxSettings {
   socketMode: SocketMode;
   startupRestore: boolean;
   notificationDesktop: boolean;
   notificationSound: boolean;
+  terminalUseWebgl: boolean;
   themeMode: ThemeMode;
   shell?: string;
   shortcuts: Record<string, string>;
-  terminalFontSize: number;
-  terminalFontFamily: string;
-  terminalLineHeight: number;
+  terminalTypography: TerminalTypographySettings;
+  terminalThemes: TerminalThemeSettings;
 }
 
 export interface PaneLeafNode {
@@ -215,6 +315,7 @@ export interface ShellViewModel {
   notifications: NotificationItem[];
   unreadNotifications: number;
   settings: KmuxSettings;
+  terminalTypography: ResolvedTerminalTypographyVm;
 }
 
 export interface ShellIdentity {
@@ -227,9 +328,16 @@ export interface ShellIdentity {
 }
 
 export function makeId(prefix: string): Id {
-  return `${prefix}_${randomUUID()}`;
+  return `${prefix}_${createUuid()}`;
 }
 
 export function isoNow(date = new Date()): string {
   return date.toISOString();
+}
+
+function createUuid(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }

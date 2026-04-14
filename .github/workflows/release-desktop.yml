@@ -70,27 +70,39 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run rebuild:electron
-      - name: Package macOS DMG
+      - name: Package macOS release assets
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           KMUX_REQUIRE_SIGNING: "1"
-        run: npm run dist:mac --workspace @kmux/desktop -- --${{ matrix.arch }} -c.forceCodeSigning=true
-      - name: Verify signature and notarization
+        run: |
+          extra_args=()
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            extra_args+=("-c.publish.channel=latest-arm64")
+          fi
+          npm run dist:mac --workspace @kmux/desktop -- --${{ matrix.arch }} -c.forceCodeSigning=true "${extra_args[@]}"
+      - name: Verify signature, notarization, and update assets
         run: |
           app_path="$(find apps/desktop/release -maxdepth 2 -name '*.app' | head -n 1)"
           dmg_path="$(find apps/desktop/release -maxdepth 1 -name '*.dmg' | head -n 1)"
+          zip_path="$(find apps/desktop/release -maxdepth 1 -name '*.zip' | head -n 1)"
+          manifest_path="$(find apps/desktop/release -maxdepth 1 -name 'latest*-mac.yml' | head -n 1)"
           test -n "$app_path"
           test -n "$dmg_path"
+          test -n "$zip_path"
+          test -n "$manifest_path"
           codesign --verify --deep --strict "$app_path"
           spctl --assess --type execute --verbose=4 "$app_path"
           xcrun stapler validate "$app_path"
           xcrun stapler validate "$dmg_path"
-      - name: Upload DMG artifact
+      - name: Upload macOS release assets
         uses: actions/upload-artifact@v7
         with:
-          name: macos-${{ matrix.arch }}-dmg
-          path: apps/desktop/release/*.dmg
+          name: macos-${{ matrix.arch }}-release-assets
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/latest*-mac.yml
           if-no-files-found: error
 
   smoke-packaged-macos:
@@ -114,7 +126,7 @@ jobs:
       - run: npm run build:cli
       - uses: actions/download-artifact@v8
         with:
-          name: macos-${{ matrix.arch }}-dmg
+          name: macos-${{ matrix.arch }}-release-assets
           path: release-assets
       - name: Smoke packaged DMG
         run: npm run smoke:packaged:mac
@@ -126,19 +138,30 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: macos-arm64-dmg
+          name: macos-arm64-release-assets
           path: release-assets
       - uses: actions/download-artifact@v8
         with:
-          name: macos-x64-dmg
+          name: macos-x64-release-assets
           path: release-assets
+      - name: Verify update manifest assets
+        run: |
+          shopt -s nullglob
+          manifests=(release-assets/latest*-mac.yml)
+          zips=(release-assets/*.zip)
+          test "${#manifests[@]}" -eq 2
+          test "${#zips[@]}" -gt 0
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
-          assets=(release-assets/*.dmg)
+          assets=(
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/latest*-mac.yml
+          )
           test "${#assets[@]}" -gt 0
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber

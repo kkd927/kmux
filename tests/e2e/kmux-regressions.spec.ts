@@ -1,4 +1,11 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
+import {
+  createDefaultSettings,
+  KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+} from "@kmux/core";
 
 import {
   closeKmuxApp,
@@ -6,6 +13,7 @@ import {
   createSandbox,
   dispatch,
   destroySandbox,
+  getSurfaceSnapshot,
   getView,
   launchKmux,
   launchKmuxWithSandbox,
@@ -43,7 +51,7 @@ test("global workspace create shortcut is ignored when a settings input is focus
   }
 });
 
-test("settings modal updates shared typography for ui and terminal", async () => {
+test("settings modal updates terminal typography preferences and preview", async () => {
   const launched = await launchKmux("kmux-e2e-settings-typography-");
 
   try {
@@ -51,56 +59,224 @@ test("settings modal updates shared typography for ui and terminal", async () =>
 
     await page.getByRole("button", { name: "Open settings" }).click();
 
-    const fontFamilyInput = page.getByLabel("Font family");
+    const fontFamilyInput = page.getByLabel("Text font");
     const fontSizeInput = page.getByRole("spinbutton", { name: "Font size" });
     const lineHeightInput = page.getByRole("spinbutton", {
       name: "Line height"
     });
+    const preview = page.getByTestId("terminal-typography-preview");
 
     await expect(fontFamilyInput).toBeVisible();
+    await expect(preview).toBeVisible();
+    await expect(page.getByLabel("Symbol fallback fonts")).toHaveCount(0);
     await fontFamilyInput.fill('"Fira Code", monospace');
     await fontSizeInput.fill("15");
     await lineHeightInput.fill("1.15");
+
+    await expect(preview).toContainText("Glyph support ready");
+    await expect(preview).toContainText("Using built-in kmux glyph font.");
+
     await page.getByRole("button", { name: "Save" }).click();
 
     const updated = await waitForView(
       page,
       (view) =>
-        view.settings.terminalFontFamily === '"Fira Code", monospace' &&
-        view.settings.terminalFontSize === 15 &&
-        view.settings.terminalLineHeight === 1.15,
+        view.settings.terminalTypography.preferredTextFontFamily ===
+          '"Fira Code", monospace' &&
+        view.settings.terminalTypography.fontSize === 15 &&
+        view.settings.terminalTypography.lineHeight === 1.15,
       "font settings should update after saving settings"
     );
 
-    expect(updated.settings.terminalFontFamily).toBe('"Fira Code", monospace');
-    expect(updated.settings.terminalFontSize).toBe(15);
-    expect(updated.settings.terminalLineHeight).toBe(1.15);
+    expect(updated.settings.terminalTypography.preferredTextFontFamily).toBe(
+      '"Fira Code", monospace'
+    );
+    expect(updated.settings.terminalTypography.fontSize).toBe(15);
+    expect(updated.settings.terminalTypography.lineHeight).toBe(1.15);
+    expect(updated.terminalTypography.resolvedFontFamily).toContain(
+      '"Fira Code", monospace'
+    );
+    expect(updated.terminalTypography.resolvedFontFamily).toContain(
+      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+    );
 
     await page.waitForFunction(() => {
       const root = document.documentElement;
       return (
-        root.style.getPropertyValue("--kmux-font-family") ===
-          '"Fira Code", monospace' &&
-        root.style.getPropertyValue("--kmux-font-size") === "15px" &&
-        root.style.getPropertyValue("--kmux-line-height") === "1.15"
+        root.style
+          .getPropertyValue("--kmux-terminal-font-family")
+          .includes('"Fira Code", monospace') &&
+        root.style
+          .getPropertyValue("--kmux-terminal-font-family")
+          .includes("kmux Symbols Nerd Font Mono") &&
+        root.style.getPropertyValue("--kmux-terminal-font-size") === "15px" &&
+        root.style.getPropertyValue("--kmux-terminal-line-height") === "1.15"
       );
     });
 
     const typographyVars = await page.evaluate(() => ({
       fontFamily: document.documentElement.style.getPropertyValue(
-        "--kmux-font-family"
+        "--kmux-terminal-font-family"
       ),
       fontSize: document.documentElement.style.getPropertyValue(
-        "--kmux-font-size"
+        "--kmux-terminal-font-size"
       ),
       lineHeight: document.documentElement.style.getPropertyValue(
-        "--kmux-line-height"
+        "--kmux-terminal-line-height"
       )
     }));
 
-    expect(typographyVars.fontFamily).toBe('"Fira Code", monospace');
+    expect(typographyVars.fontFamily).toContain('"Fira Code", monospace');
+    expect(typographyVars.fontFamily).toContain("kmux Symbols Nerd Font Mono");
     expect(typographyVars.fontSize).toBe("15px");
     expect(typographyVars.lineHeight).toBe("1.15");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings modal toggles the terminal WebGL renderer for comparison", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-terminal-renderer-", {
+    env: {
+      KMUX_E2E_WINDOW_MODE: "visible"
+    }
+  });
+
+  try {
+    const page = launched.page;
+
+    await page.waitForFunction(() => {
+      const xterm = document.querySelector(".xterm");
+      return Boolean(xterm && xterm.querySelectorAll("canvas").length > 0);
+    });
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const rendererToggle = page.getByLabel("Use WebGL terminal renderer");
+    await expect(rendererToggle).toBeVisible();
+    await expect(rendererToggle).toBeChecked();
+
+    await rendererToggle.uncheck();
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const disabled = await waitForView(
+      page,
+      (view) => view.settings.terminalUseWebgl === false,
+      "terminal WebGL renderer should disable after saving settings"
+    );
+    expect(disabled.settings.terminalUseWebgl).toBe(false);
+
+    await page.waitForFunction(() => {
+      const xterm = document.querySelector(".xterm");
+      return Boolean(
+        xterm &&
+        xterm.querySelectorAll("canvas").length === 0 &&
+        xterm.querySelectorAll(".xterm-rows > div").length > 0
+      );
+    });
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    await expect(
+      page.getByLabel("Use WebGL terminal renderer")
+    ).not.toBeChecked();
+    await page.getByLabel("Use WebGL terminal renderer").check();
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const enabled = await waitForView(
+      page,
+      (view) => view.settings.terminalUseWebgl === true,
+      "terminal WebGL renderer should re-enable after saving settings"
+    );
+    expect(enabled.settings.terminalUseWebgl).toBe(true);
+
+    await page.waitForFunction(() => {
+      const xterm = document.querySelector(".xterm");
+      return Boolean(xterm && xterm.querySelectorAll("canvas").length > 0);
+    });
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings preview stays ready with the built-in glyph font when no compatible font is installed", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-typography-degraded-", {
+    env: {
+      KMUX_TEST_FONT_FAMILIES: JSON.stringify(["JetBrains Mono", "Menlo"])
+    }
+  });
+
+  try {
+    const page = launched.page;
+    await page.getByRole("button", { name: "Open settings" }).click();
+
+    const preview = page.getByTestId("terminal-typography-preview");
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText("Glyph support ready");
+    await expect(preview).toContainText("Using built-in kmux glyph font.");
+    await expect(preview).not.toContainText(
+      "Compatible installed font detected:"
+    );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings preview reports a detected installed compatible font", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-typography-installed-", {
+    env: {
+      KMUX_TEST_FONT_FAMILIES: JSON.stringify([
+        "JetBrains Mono",
+        "JetBrainsMono Nerd Font Mono"
+      ])
+    }
+  });
+
+  try {
+    const page = launched.page;
+    await page.getByRole("button", { name: "Open settings" }).click();
+
+    const preview = page.getByTestId("terminal-typography-preview");
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText("Glyph support ready");
+    await expect(preview).toContainText("Using built-in kmux glyph font.");
+    await expect(preview).toContainText(
+      "Compatible installed font detected: JetBrainsMono Nerd Font Mono"
+    );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("legacy preferred symbol fallback settings still load without breaking typography", async () => {
+  const sandbox = createSandbox("kmux-e2e-settings-typography-legacy-");
+  const settingsPath = join(sandbox.configDir, "settings.json");
+  const legacySettings = createDefaultSettings();
+  legacySettings.terminalTypography.preferredSymbolFallbackFamilies = [
+    "Legacy Nerd Font Mono"
+  ];
+  writeFileSync(settingsPath, JSON.stringify(legacySettings, null, 2));
+
+  const launched = await launchKmuxWithSandbox(sandbox, {
+    env: {
+      KMUX_TEST_FONT_FAMILIES: JSON.stringify(["JetBrains Mono", "Menlo"])
+    }
+  });
+
+  try {
+    const page = launched.page;
+    const view = await getView(page);
+
+    expect(
+      view.settings.terminalTypography.preferredSymbolFallbackFamilies
+    ).toEqual(["Legacy Nerd Font Mono"]);
+    expect(view.terminalTypography.symbolFallbackFamilies).toEqual([
+      "Legacy Nerd Font Mono",
+      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+    ]);
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const preview = page.getByTestId("terminal-typography-preview");
+    await expect(preview).toContainText("Glyph support ready");
+    await expect(preview).toContainText("Using built-in kmux glyph font.");
   } finally {
     await closeKmux(launched);
   }
@@ -111,6 +287,44 @@ test("settings modal switches between light and system themes and keeps terminal
 
   try {
     const page = launched.page;
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+    const terminal = page.getByTestId(`terminal-${activeSurfaceId}`);
+
+    await dispatch(page, {
+      type: "settings.update",
+      patch: {
+        ...initial.settings,
+        socketMode: "allowAll"
+      }
+    });
+    runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "surface",
+        "send-text",
+        "--surface",
+        activeSurfaceId,
+        "--text",
+        "printf 'kmux-theme-keepalive\\n'; for i in $(seq 1 160); do echo kmux-theme-$i; done\r"
+      ]
+    );
+    await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      "kmux-theme-keepalive",
+      6000
+    );
+    await expect
+      .poll(async () =>
+        Number((await terminal.getAttribute("data-terminal-base-y")) ?? "0")
+      )
+      .toBeGreaterThan(0);
+
     await page.emulateMedia({ colorScheme: "light" });
 
     await page.getByRole("button", { name: "Open settings" }).click();
@@ -152,6 +366,11 @@ test("settings modal switches between light and system themes and keeps terminal
     expect(lightAppearance.windowBg).toBe("#f7f7f5");
     expect(lightAppearance.sidebarBg).toBe("#e8f1f6");
     expect(lightAppearance.viewportBg).toBe("rgb(255, 255, 255)");
+    await expect
+      .poll(async () =>
+        Number((await terminal.getAttribute("data-terminal-base-y")) ?? "0")
+      )
+      .toBeGreaterThan(0);
 
     await page.getByRole("button", { name: "Open settings" }).click();
     await themeModeSelect.selectOption("system");
@@ -189,6 +408,64 @@ test("settings modal switches between light and system themes and keeps terminal
 
     expect(systemAppearance.windowBg).toBe("#181818");
     expect(systemAppearance.viewportBg).toBe("rgb(31, 31, 31)");
+    await expect
+      .poll(async () =>
+        Number((await terminal.getAttribute("data-terminal-base-y")) ?? "0")
+      )
+      .toBeGreaterThan(0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings modal exposes built-in terminal presets and keeps them undeletable", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-terminal-presets-");
+
+  try {
+    const page = launched.page;
+    await page.getByRole("button", { name: "Open settings" }).click();
+
+    const themeSelect = page.getByLabel("Active terminal theme");
+    const deleteButton = page.getByRole("button", {
+      name: "Delete terminal theme"
+    });
+    const preview = page.getByTestId("terminal-theme-preview");
+
+    await expect(themeSelect).toBeVisible();
+    const optionLabels = await themeSelect.evaluate((element) =>
+      Array.from((element as HTMLSelectElement).options).map(
+        (option) => option.label
+      )
+    );
+    expect(optionLabels).toEqual(["kmux Default", "IntelliJ Islands"]);
+    await expect(deleteButton).toBeDisabled();
+    await expect(preview).toBeVisible();
+
+    const kmuxDefaultPreviewColor = await preview.evaluate(
+      (element) => getComputedStyle(element).color
+    );
+    expect(kmuxDefaultPreviewColor).toBe("rgb(227, 232, 239)");
+
+    await themeSelect.selectOption({ label: "IntelliJ Islands" });
+    await expect(deleteButton).toBeDisabled();
+    await expect(preview).toContainText("IntelliJ Islands");
+    await expect
+      .poll(() =>
+        preview.evaluate((element) => getComputedStyle(element).color)
+      )
+      .toBe("rgb(204, 204, 204)");
+
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const updated = await waitForView(
+      page,
+      (view) =>
+        view.settings.terminalThemes.activeProfileId ===
+        "terminal_theme_intellij_islands",
+      "built-in IntelliJ Islands preset should save as the active profile"
+    );
+
+    expect(updated.settings.terminalThemes.profiles).toHaveLength(2);
   } finally {
     await closeKmux(launched);
   }
@@ -221,7 +498,9 @@ test("settings modal keeps save and cancel visible in short windows", async () =
         '[data-testid="settings-body"]'
       );
       const buttons = Array.from(document.querySelectorAll("button"));
-      const saveButton = buttons.find((button) => button.textContent?.trim() === "Save");
+      const saveButton = buttons.find(
+        (button) => button.textContent?.trim() === "Save"
+      );
       const cancelButton = buttons.find(
         (button) => button.textContent?.trim() === "Cancel"
       );
@@ -330,9 +609,9 @@ test("pty title updates are reflected immediately without switching workspaces",
     expect(updated.activeWorkspace.surfaces[activeSurfaceId]?.title).toBe(
       "osc-title-1"
     );
-    await expect(page.locator(`[data-surface-id="${activeSurfaceId}"]`)).toContainText(
-      "osc-title-1"
-    );
+    await expect(
+      page.locator(`[data-surface-id="${activeSurfaceId}"]`)
+    ).toContainText("osc-title-1");
   } finally {
     await closeKmux(launched);
   }
@@ -353,7 +632,10 @@ test("terminal fit target stays separate from the padded shell frame", async () 
         `[data-testid="terminal-${surfaceId}"]`
       );
       const frame = fitTarget?.parentElement;
-      if (!(fitTarget instanceof HTMLElement) || !(frame instanceof HTMLElement)) {
+      if (
+        !(fitTarget instanceof HTMLElement) ||
+        !(frame instanceof HTMLElement)
+      ) {
         return null;
       }
       const fitStyle = getComputedStyle(fitTarget);
@@ -403,25 +685,22 @@ test("narrow windows clamp the rendered sidebar width without mutating the saved
     expect(initial.sidebarWidth).toBe(320);
 
     await page.setViewportSize({ width: 780, height: 820 });
-    await page.waitForFunction(
-      (surfaceId) => {
-        const sidebar = document.querySelector(
-          '[data-testid="workspace-tool-window"]'
-        );
-        const fitTarget = document.querySelector(
-          `[data-testid="terminal-${surfaceId}"]`
-        );
-        const frame = fitTarget?.parentElement;
+    await page.waitForFunction((surfaceId) => {
+      const sidebar = document.querySelector(
+        '[data-testid="workspace-tool-window"]'
+      );
+      const fitTarget = document.querySelector(
+        `[data-testid="terminal-${surfaceId}"]`
+      );
+      const frame = fitTarget?.parentElement;
 
-        return (
-          sidebar instanceof HTMLElement &&
-          frame instanceof HTMLElement &&
-          sidebar.clientWidth === 272 &&
-          frame.clientWidth >= 500
-        );
-      },
-      activeSurfaceId
-    );
+      return (
+        sidebar instanceof HTMLElement &&
+        frame instanceof HTMLElement &&
+        sidebar.clientWidth === 272 &&
+        frame.clientWidth >= 500
+      );
+    }, activeSurfaceId);
 
     const geometry = await page.evaluate((surfaceId) => {
       const sidebar = document.querySelector(
@@ -690,11 +969,11 @@ test("sidebar width respects the minimum and persists across relaunch", async ()
     );
     expect(restored.sidebarWidth).toBe(persistedWidth);
     await expect
-      .poll(
-        async () =>
-          Math.round(
-            (await page.getByTestId("workspace-tool-window").boundingBox())?.width ?? 0
-          )
+      .poll(async () =>
+        Math.round(
+          (await page.getByTestId("workspace-tool-window").boundingBox())
+            ?.width ?? 0
+        )
       )
       .toBe(persistedWidth);
   } finally {
@@ -740,10 +1019,7 @@ test("terminal output survives surface switches through attach snapshots", async
 
     let snapshotVt = "";
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const snapshot = await page.evaluate(
-        (surfaceId) => window.kmux.attachSurface(surfaceId),
-        originalSurfaceId
-      );
+      const snapshot = await getSurfaceSnapshot(page, originalSurfaceId);
       snapshotVt = snapshot?.vt ?? "";
       if (snapshotVt.includes("kmux-attach-check")) {
         break;
@@ -777,10 +1053,7 @@ test("terminal output survives surface switches through attach snapshots", async
       "original surface should become active again"
     );
 
-    const restoredSnapshot = await page.evaluate(
-      (surfaceId) => window.kmux.attachSurface(surfaceId),
-      originalSurfaceId
-    );
+    const restoredSnapshot = await getSurfaceSnapshot(page, originalSurfaceId);
     expect(restoredSnapshot?.vt).toContain("kmux-attach-check");
   } finally {
     await closeKmux(launched);
@@ -829,10 +1102,10 @@ test("repeated workspace switches preserve terminal snapshots", async () => {
     );
 
     await waitForSurfaceSnapshotContains(page, targetSurfaceId, "kmux> ");
-    const baselineSnapshot = await page.evaluate(
-      (surfaceId) => window.kmux.attachSurface(surfaceId),
-      targetSurfaceId
-    );
+    const baselineSnapshot = await getSurfaceSnapshot(page, targetSurfaceId, {
+      settleForMs: 300,
+      timeoutMs: 5000
+    });
 
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await dispatch(page, {
@@ -856,10 +1129,10 @@ test("repeated workspace switches preserve terminal snapshots", async () => {
       );
     }
 
-    const restoredSnapshot = await page.evaluate(
-      (surfaceId) => window.kmux.attachSurface(surfaceId),
-      targetSurfaceId
-    );
+    const restoredSnapshot = await getSurfaceSnapshot(page, targetSurfaceId, {
+      settleForMs: 300,
+      timeoutMs: 5000
+    });
 
     expect(restoredSnapshot?.vt).toBe(baselineSnapshot?.vt);
   } finally {
@@ -884,11 +1157,12 @@ test("closing the active workspace by shortcut keeps the app responsive and sele
     const seeded = await waitForView(
       page,
       (view) =>
-        view.workspaceRows.length >= 4 &&
-        view.activeWorkspace.name === "gamma",
+        view.workspaceRows.length >= 4 && view.activeWorkspace.name === "gamma",
       "workspace fixtures should be ready before closing the active workspace"
     );
-    const betaId = seeded.workspaceRows.find((row) => row.name === "beta")?.workspaceId;
+    const betaId = seeded.workspaceRows.find(
+      (row) => row.name === "beta"
+    )?.workspaceId;
     const gammaId = seeded.workspaceRows.find(
       (row) => row.name === "gamma"
     )?.workspaceId;
@@ -914,9 +1188,53 @@ test("closing the active workspace by shortcut keeps the app responsive and sele
     );
 
     expect(afterClose.activeWorkspace.id).toBe(gammaId);
-    expect(afterClose.workspaceRows.every((row) => row.workspaceId !== betaId)).toBe(
-      true
+    expect(
+      afterClose.workspaceRows.every((row) => row.workspaceId !== betaId)
+    ).toBe(true);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("closing the app's last workspace replaces it with a fresh workspace without runtime errors", async () => {
+  const launched = await launchKmux("kmux-e2e-last-workspace-replace-");
+
+  try {
+    const page = launched.page;
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+
+    const initial = await getView(page);
+    const workspaceId = initial.activeWorkspace.id;
+    const paneId = initial.activeWorkspace.activePaneId;
+    const dialog = page.getByTestId("workspace-close-confirm-dialog");
+
+    await page
+      .locator(`[data-pane-id="${paneId}"] button[title^="Close tab"]`)
+      .first()
+      .click();
+
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(
+      "This workspace only has one tab left. Closing it will replace it with a new workspace."
     );
+    await dialog.getByRole("button", { name: "Close Workspace" }).click();
+
+    const replaced = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 1 &&
+        view.activeWorkspace.id !== workspaceId,
+      "confirming the last workspace close should replace it with a fresh workspace"
+    );
+
+    expect(replaced.workspaceRows).toHaveLength(1);
+    expect(replaced.activeWorkspace.id).not.toBe(workspaceId);
+    expect(replaced.activeWorkspace.name).not.toBe("");
+    expect(Object.keys(replaced.activeWorkspace.panes)).toHaveLength(1);
     expect(pageErrors).toEqual([]);
   } finally {
     await closeKmux(launched);

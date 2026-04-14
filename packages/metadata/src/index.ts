@@ -9,7 +9,10 @@ const branchCache = new Map<
 >();
 const portsCache = new Map<number, { value: number[]; expiresAt: number }>();
 
-export async function resolveGitBranch(cwd?: string): Promise<string | null> {
+export async function resolveGitBranch(
+  cwd?: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string | null> {
   if (!cwd) {
     return null;
   }
@@ -24,7 +27,8 @@ export async function resolveGitBranch(cwd?: string): Promise<string | null> {
       "git",
       ["rev-parse", "--abbrev-ref", "HEAD"],
       {
-        cwd
+        cwd,
+        env
       }
     );
     const branch = stdout.trim() || null;
@@ -36,7 +40,10 @@ export async function resolveGitBranch(cwd?: string): Promise<string | null> {
   }
 }
 
-export async function resolveListeningPorts(pid?: number): Promise<number[]> {
+export async function resolveListeningPorts(
+  pid?: number,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<number[]> {
   if (!pid) {
     return [];
   }
@@ -53,7 +60,9 @@ export async function resolveListeningPorts(pid?: number): Promise<number[]> {
       `${pid}`,
       "-iTCP",
       "-sTCP:LISTEN"
-    ]);
+    ], {
+      env
+    });
     const ports = Array.from(
       new Set(
         stdout

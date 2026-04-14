@@ -34,6 +34,8 @@ If native dependencies need to be rebuilt after a Node or Electron change:
 npm run rebuild:electron
 ```
 
+This now rebuilds `node-pty` only. Persistence uses JSON file stores under the kmux config directory.
+
 ## Key Scripts
 
 - `npm run dev`: start the desktop app in development mode
@@ -83,7 +85,7 @@ apps/
 packages/
   core/           Reducers, domain model, selectors
   proto/          Shared types and IPC contracts
-  persistence/    SQLite persistence and app paths
+  persistence/    File-store persistence helpers and app paths
   metadata/       Sidebar metadata utilities
   cli/            kmux CLI over Unix domain socket JSON-RPC
   ui/             Shared UI helpers and tokens

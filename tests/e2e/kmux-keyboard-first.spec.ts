@@ -108,10 +108,27 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
     );
 
     const alertsWorkspaceId = workspaces.activeWorkspace.id;
+    const alphaWorkspaceId = workspaces.workspaceRows.find(
+      (row) => row.name === "alpha"
+    )?.workspaceId;
     const alertsPaneId = workspaces.activeWorkspace.activePaneId;
     const alertsSurfaceId =
       workspaces.activeWorkspace.panes[alertsPaneId].activeSurfaceId;
     const originalAlertSurfaceId = alertsSurfaceId;
+    expect(alphaWorkspaceId).toBeTruthy();
+
+    await dispatch(page, {
+      type: "workspace.pin.toggle",
+      workspaceId: alertsWorkspaceId
+    });
+    await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows[0]?.workspaceId === initial.activeWorkspace.id &&
+        view.workspaceRows[1]?.workspaceId === alertsWorkspaceId &&
+        view.workspaceRows[2]?.workspaceId === alphaWorkspaceId,
+      "pinning alerts should change the visible workspace shortcut order"
+    );
 
     await page.locator("textarea.xterm-helper-textarea").focus();
     await page.keyboard.press("Meta+1");
@@ -122,11 +139,19 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
     );
 
     await page.locator("textarea.xterm-helper-textarea").focus();
-    await page.keyboard.press("Meta+3");
+    await page.keyboard.press("Meta+2");
     await waitForView(
       page,
       (view) => view.activeWorkspace.id === alertsWorkspaceId,
-      "Meta+3 should select the third workspace"
+      "Meta+2 should select the second visible workspace"
+    );
+
+    await page.locator("textarea.xterm-helper-textarea").focus();
+    await page.keyboard.press("Meta+3");
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.id === alphaWorkspaceId,
+      "Meta+3 should select the third visible workspace"
     );
 
     await dispatch(page, {
@@ -309,6 +334,57 @@ test("workspace rename and tab close shortcuts stay keyboard-first while tab ren
       (view) => Object.keys(view.activeWorkspace.panes).length === 1,
       "pane close shortcut should remove the active pane"
     );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("Meta+W on the last tab opens the workspace close confirmation", async () => {
+  const launched = await launchKmux("kmux-e2e-keyboard-last-tab-close-");
+
+  try {
+    const page = launched.page;
+
+    await dispatch(page, {
+      type: "workspace.create",
+      name: "alpha"
+    });
+    const seeded = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 2 && view.activeWorkspace.name === "alpha",
+      "workspace fixture should be ready before keyboard last-tab close"
+    );
+    const workspaceId = seeded.activeWorkspace.id;
+
+    const terminal = page.locator("textarea.xterm-helper-textarea");
+    const dialog = page.getByTestId("workspace-close-confirm-dialog");
+
+    await terminal.focus();
+    await page.keyboard.press("Meta+W");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(
+      "This workspace only has one tab left. Closing it will close the workspace."
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    expect((await getView(page)).activeWorkspace.id).toBe(workspaceId);
+
+    await terminal.focus();
+    await page.keyboard.press("Meta+W");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close Workspace" }).click();
+
+    const afterConfirm = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 1 &&
+        view.workspaceRows.every((row) => row.workspaceId !== workspaceId),
+      "keyboard confirmation should close the workspace after Meta+W"
+    );
+
+    expect(afterConfirm.activeWorkspace.id).not.toBe(workspaceId);
   } finally {
     await closeKmux(launched);
   }

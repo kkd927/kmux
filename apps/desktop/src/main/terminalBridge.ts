@@ -4,6 +4,7 @@ import type {AppAction, AppState} from "@kmux/core";
 import type {
     Id,
     PtyEvent,
+    SurfaceSnapshotOptions,
     SurfaceChunkPayload,
     SurfaceExitPayload,
     SurfaceSnapshotPayload,
@@ -18,12 +19,23 @@ interface TerminalBridgeOptions {
   getPtyHost: () => PtyHostManager | null;
 }
 
+interface SurfaceAttachmentState {
+  status: "hydrating" | "ready";
+  queuedChunks: SurfaceChunkPayload[];
+  pendingExit: SurfaceExitPayload | null;
+  hydratePromise: Promise<SurfaceSnapshotPayload | null> | null;
+}
+
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
   sendText(surfaceId: Id, text: string): void;
   sendKey(surfaceId: Id, key: string): void;
   sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void;
   resizeSurface(surfaceId: Id, cols: number, rows: number): void;
+  snapshotSurface(
+    surfaceId: Id,
+    options?: SurfaceSnapshotOptions
+  ): Promise<SurfaceSnapshotPayload | null>;
   attachSurface(
     contentsId: number,
     surfaceId: Id
@@ -35,7 +47,10 @@ export interface TerminalBridge {
 export function createTerminalBridge(
   options: TerminalBridgeOptions
 ): TerminalBridge {
-  const attachedSurfacesByContents = new Map<number, Set<Id>>();
+  const attachedSurfacesByContents = new Map<
+    number,
+    Map<Id, SurfaceAttachmentState>
+  >();
 
   function surfaceSessionId(surfaceId: Id): Id | null {
     const surface = options.getState().surfaces[surfaceId];
@@ -67,41 +82,153 @@ export function createTerminalBridge(
     }
   }
 
-  async function attachSurface(
-    contentsId: number,
-    surfaceId: Id
+  async function snapshotSurface(
+    surfaceId: Id,
+    snapshotOptions: SurfaceSnapshotOptions = {}
   ): Promise<SurfaceSnapshotPayload | null> {
     const surface = options.getState().surfaces[surfaceId];
     if (!surface) {
       return null;
     }
-    const attached = attachedSurfacesByContents.get(contentsId) ?? new Set<Id>();
-    attached.add(surfaceId);
-    attachedSurfacesByContents.set(contentsId, attached);
     return (
-      (await options.getPtyHost()?.snapshot(surface.sessionId, surfaceId)) ?? null
+      (await options
+        .getPtyHost()
+        ?.snapshot(surface.sessionId, surfaceId, snapshotOptions)) ?? null
     );
   }
 
+  async function attachSurface(
+    contentsId: number,
+    surfaceId: Id
+  ): Promise<SurfaceSnapshotPayload | null> {
+    if (!options.getState().surfaces[surfaceId]) {
+      return null;
+    }
+
+    const attached =
+      attachedSurfacesByContents.get(contentsId) ?? new Map<Id, SurfaceAttachmentState>();
+    attachedSurfacesByContents.set(contentsId, attached);
+
+    const existingAttachment = attached.get(surfaceId);
+    if (existingAttachment?.status === "ready") {
+      return snapshotSurface(surfaceId);
+    }
+    if (existingAttachment?.hydratePromise) {
+      return existingAttachment.hydratePromise;
+    }
+
+    const attachment: SurfaceAttachmentState = {
+      status: "hydrating",
+      queuedChunks: [],
+      pendingExit: null,
+      hydratePromise: null
+    };
+    attached.set(surfaceId, attachment);
+
+    attachment.hydratePromise = (async () => {
+      const snapshot = await snapshotSurface(surfaceId);
+      const currentAttachment = attachedSurfacesByContents
+        .get(contentsId)
+        ?.get(surfaceId);
+      if (currentAttachment !== attachment) {
+        return snapshot;
+      }
+
+      attachment.status = "ready";
+      attachment.hydratePromise = null;
+      flushQueuedTerminalEvents(contentsId, surfaceId, snapshot?.sequence ?? 0);
+      return snapshot;
+    })();
+
+    return attachment.hydratePromise;
+  }
+
   function detachSurface(contentsId: number, surfaceId: Id): void {
-    attachedSurfacesByContents.get(contentsId)?.delete(surfaceId);
+    const attached = attachedSurfacesByContents.get(contentsId);
+    attached?.delete(surfaceId);
+    if (attached && attached.size === 0) {
+      attachedSurfacesByContents.delete(contentsId);
+    }
+  }
+
+  function sendTerminalEvent(
+    contentsId: number,
+    event:
+      | { type: "chunk"; payload: SurfaceChunkPayload }
+      | { type: "exit"; payload: SurfaceExitPayload }
+  ): void {
+    const window = BrowserWindow.getAllWindows().find(
+      (entry) => entry.webContents.id === contentsId
+    );
+    window?.webContents.send("kmux:terminal-event", event);
+  }
+
+  function surfaceAttachmentEntries(surfaceId: Id): Array<
+    [number, SurfaceAttachmentState]
+  > {
+    const entries: Array<[number, SurfaceAttachmentState]> = [];
+    for (const [contentsId, attached] of attachedSurfacesByContents.entries()) {
+      const attachment = attached.get(surfaceId);
+      if (attachment) {
+        entries.push([contentsId, attachment]);
+      }
+    }
+    return entries;
+  }
+
+  function flushQueuedTerminalEvents(
+    contentsId: number,
+    surfaceId: Id,
+    snapshotSequence: number
+  ): void {
+    const attachment = attachedSurfacesByContents.get(contentsId)?.get(surfaceId);
+    if (!attachment) {
+      return;
+    }
+
+    const queuedChunks = attachment.queuedChunks
+      .filter((payload) => payload.sequence > snapshotSequence)
+      .sort((left, right) => left.sequence - right.sequence);
+    attachment.queuedChunks = [];
+    for (const payload of queuedChunks) {
+      sendTerminalEvent(contentsId, {
+        type: "chunk",
+        payload
+      });
+    }
+    if (attachment.pendingExit) {
+      sendTerminalEvent(contentsId, {
+        type: "exit",
+        payload: attachment.pendingExit
+      });
+      attachment.pendingExit = null;
+    }
   }
 
   function forwardTerminalChunk(payload: SurfaceChunkPayload): void {
-    for (const window of BrowserWindow.getAllWindows()) {
-      const attached = attachedSurfacesByContents.get(window.webContents.id);
-      if (attached?.has(payload.surfaceId)) {
-        window.webContents.send("kmux:terminal-event", {
-          type: "chunk",
-          payload
-        });
+    for (const [contentsId, attachment] of surfaceAttachmentEntries(
+      payload.surfaceId
+    )) {
+      if (attachment.status === "hydrating") {
+        attachment.queuedChunks.push(payload);
+        continue;
       }
+      sendTerminalEvent(contentsId, {
+        type: "chunk",
+        payload
+      });
     }
   }
 
   function forwardTerminalExit(payload: SurfaceExitPayload): void {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send("kmux:terminal-event", {
+    for (const [contentsId, attachment] of surfaceAttachmentEntries(
+      payload.surfaceId
+    )) {
+      if (attachment.status === "hydrating") {
+        attachment.pendingExit = payload;
+        continue;
+      }
+      sendTerminalEvent(contentsId, {
         type: "exit",
         payload
       });
@@ -128,6 +255,15 @@ export function createTerminalBridge(
         });
         return;
       case "bell": {
+        if (!options.getState().surfaces[event.surfaceId]) {
+          return;
+        }
+        options.dispatchAppAction({
+          type: "terminal.bell"
+        });
+        return;
+      }
+      case "terminal.notification": {
         const state = options.getState();
         const surface = state.surfaces[event.surfaceId];
         if (!surface) {
@@ -142,9 +278,9 @@ export function createTerminalBridge(
           workspaceId: pane.workspaceId,
           paneId: surface.paneId,
           surfaceId: event.surfaceId,
-          title: event.title,
-          message: event.cwd ?? "Bell received",
-          source: "bell"
+          title: event.title ?? surface.title,
+          message: event.message ?? surface.cwd ?? "Terminal notification",
+          source: "terminal"
         });
         return;
       }
@@ -173,6 +309,7 @@ export function createTerminalBridge(
     sendKey,
     sendKeyInput,
     resizeSurface,
+    snapshotSurface,
     attachSurface,
     detachSurface,
     handlePtyEvent

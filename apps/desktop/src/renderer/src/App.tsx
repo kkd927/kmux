@@ -1,17 +1,44 @@
-import {useEffect, useMemo, useRef, useState} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import type {AppAction} from "@kmux/core";
-import type {KmuxSettings, ShellViewModel} from "@kmux/proto";
-import {applyThemeVariables, type ColorTheme, resolveColorTheme} from "@kmux/ui";
+import type { AppAction } from "@kmux/core";
+import type {
+  ImportedTerminalThemePalette,
+  KmuxSettings,
+  ResolvedTerminalTypographyVm,
+  ShellViewModel,
+  TerminalThemeProfile,
+  TerminalThemeVariant
+} from "@kmux/proto";
+import {
+  applyThemeVariables,
+  BUILTIN_TERMINAL_THEME_PROFILE_ID,
+  cloneTerminalColorPalette,
+  cloneTerminalThemeProfile,
+  DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
+  isBuiltinTerminalThemeProfileId,
+  type ColorTheme,
+  resolveColorTheme,
+  resolveTerminalTheme,
+  sanitizeTerminalThemeSettings
+} from "@kmux/ui";
 
-import {AppOverlays} from "./components/AppOverlays";
-import {Codicon} from "./components/Codicon";
-import {PaneTree} from "./components/PaneTree";
-import {WorkspaceSidebar} from "./components/WorkspaceSidebar";
-import {useGlobalShortcuts} from "./hooks/useGlobalShortcuts";
-import {useShellView} from "./hooks/useShellView";
-import {clampSidebarWidthForWindow, MAX_SIDEBAR_WIDTH, useSidebarResize} from "./hooks/useSidebarResize";
-import {useWorkspaceContextMenu} from "./hooks/useWorkspaceContextMenu";
+import { AppOverlays } from "./components/AppOverlays";
+import { Codicon } from "./components/Codicon";
+import { PaneTree } from "./components/PaneTree";
+import {
+  applyProbeIssuesToResolvedTypography,
+  probeResolvedTerminalTypography
+} from "./terminalTypography";
+import { determineSurfaceCloseStrategy } from "./surfaceCloseStrategy";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { useShellView } from "./hooks/useShellView";
+import {
+  clampSidebarWidthForWindow,
+  MAX_SIDEBAR_WIDTH,
+  useSidebarResize
+} from "./hooks/useSidebarResize";
+import { useWorkspaceContextMenu } from "./hooks/useWorkspaceContextMenu";
 import {
   findWorkspaceContext,
   runWorkspaceContextAction as runSharedWorkspaceContextAction,
@@ -19,10 +46,6 @@ import {
 } from "../../shared/workspaceContextMenu";
 import styles from "./styles/App.module.css";
 
-type TerminalFocusRequest = {
-  surfaceId: string;
-  token: number;
-};
 type ActiveShortcutContext = {
   view: ShellViewModel;
   activePaneId: string;
@@ -34,6 +57,12 @@ type OverlayState = {
   settingsOpen: boolean;
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
+  workspaceCloseConfirmOpen: boolean;
+};
+
+type PendingWorkspaceClose = {
+  workspaceId: string;
+  isLastWorkspace: boolean;
 };
 
 export function App(): JSX.Element {
@@ -48,8 +77,6 @@ export function App(): JSX.Element {
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
     null
   );
-  const [terminalFocusRequest, setTerminalFocusRequest] =
-    useState<TerminalFocusRequest | null>(null);
   const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null);
   const [dropWorkspaceId, setDropWorkspaceId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<"before" | "after" | null>(
@@ -61,17 +88,30 @@ export function App(): JSX.Element {
   const [windowWidth, setWindowWidth] = useState(
     () => document.documentElement.clientWidth || window.innerWidth
   );
-  const [prefersDarkColorScheme, setPrefersDarkColorScheme] = useState(() =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches
+  const [prefersDarkColorScheme, setPrefersDarkColorScheme] = useState(
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   const [settingsDraft, setSettingsDraft] = useState(view?.settings);
+  const [availableTerminalFontFamilies, setAvailableTerminalFontFamilies] =
+    useState<string[]>([]);
+  const [
+    settingsTerminalTypographyPreview,
+    setSettingsTerminalTypographyPreview
+  ] = useState<ResolvedTerminalTypographyVm | null>(null);
+  const [settingsThemeNotice, setSettingsThemeNotice] = useState<string | null>(
+    null
+  );
+  const [pendingWorkspaceClose, setPendingWorkspaceClose] =
+    useState<PendingWorkspaceClose | null>(null);
   const viewRef = useRef<ShellViewModel | null>(view);
+  const reportedTypographyStacksRef = useRef(new Set<string>());
   const overlayStateRef = useRef<OverlayState>({
     paletteOpen,
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
-    workspaceContextMenuOpen: false
+    workspaceContextMenuOpen: false,
+    workspaceCloseConfirmOpen: false
   });
 
   viewRef.current = view;
@@ -86,6 +126,26 @@ export function App(): JSX.Element {
         : undefined
     );
   }, [view?.settings]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      setSettingsThemeNotice(null);
+    }
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!pendingWorkspaceClose || !view) {
+      return;
+    }
+
+    if (
+      !view.workspaceRows.some(
+        (row) => row.workspaceId === pendingWorkspaceClose.workspaceId
+      )
+    ) {
+      setPendingWorkspaceClose(null);
+    }
+  }, [pendingWorkspaceClose, view]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -103,7 +163,8 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const updateWindowWidth = () => {
-      const nextWidth = document.documentElement.clientWidth || window.innerWidth;
+      const nextWidth =
+        document.documentElement.clientWidth || window.innerWidth;
       setWindowWidth((currentWidth) =>
         currentWidth === nextWidth ? currentWidth : nextWidth
       );
@@ -125,18 +186,118 @@ export function App(): JSX.Element {
     if (!view?.settings) {
       return;
     }
-    applyAppearanceSettings(view.settings, prefersDarkColorScheme);
+    applyAppearanceSettings(
+      view.settings,
+      view.terminalTypography,
+      prefersDarkColorScheme
+    );
   }, [
     view?.settings?.themeMode,
-    view?.settings?.terminalFontFamily,
-    view?.settings?.terminalFontSize,
-    view?.settings?.terminalLineHeight,
+    view?.settings?.terminalTypography?.fontSize,
+    view?.settings?.terminalTypography?.lineHeight,
+    view?.terminalTypography?.resolvedFontFamily,
     prefersDarkColorScheme
+  ]);
+
+  useEffect(() => {
+    if (!view?.terminalTypography?.stackHash) {
+      return;
+    }
+
+    const stackHash = view.terminalTypography.stackHash;
+    if (reportedTypographyStacksRef.current.has(stackHash)) {
+      return;
+    }
+
+    let active = true;
+    void (async () => {
+      const issues = await probeResolvedTerminalTypography(
+        view.terminalTypography
+      );
+      if (!active) {
+        return;
+      }
+      reportedTypographyStacksRef.current.add(stackHash);
+      await window.kmux.reportTerminalTypographyProbe({
+        stackHash,
+        issues
+      });
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    view?.terminalTypography?.stackHash,
+    view?.terminalTypography?.resolvedFontFamily
+  ]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      setSettingsTerminalTypographyPreview(null);
+      return;
+    }
+
+    let active = true;
+    void window.kmux.listTerminalFontFamilies().then((fontFamilies) => {
+      if (active) {
+        setAvailableTerminalFontFamilies(fontFamilies);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!settingsOpen || !settingsDraft) {
+      setSettingsTerminalTypographyPreview(null);
+      return;
+    }
+
+    let active = true;
+    void (async () => {
+      const preview = await window.kmux.previewTerminalTypography(
+        settingsDraft.terminalTypography
+      );
+      const issues = await probeResolvedTerminalTypography(preview);
+      if (!active) {
+        return;
+      }
+      setSettingsTerminalTypographyPreview(
+        applyProbeIssuesToResolvedTypography(preview, issues)
+      );
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    settingsOpen,
+    settingsDraft?.terminalTypography?.preferredTextFontFamily,
+    settingsDraft?.terminalTypography?.preferredSymbolFallbackFamilies?.join(
+      "\u0000"
+    ),
+    settingsDraft?.terminalTypography?.fontSize,
+    settingsDraft?.terminalTypography?.lineHeight
   ]);
 
   const resolvedColorTheme = resolveColorTheme(
     view?.settings?.themeMode ?? "dark",
     prefersDarkColorScheme
+  );
+  const resolvedTerminalTheme = useMemo(
+    () =>
+      resolveTerminalTheme(view?.settings?.terminalThemes, resolvedColorTheme),
+    [resolvedColorTheme, view?.settings?.terminalThemes]
+  );
+  const resolvedSettingsDraftTerminalTheme = useMemo(
+    () =>
+      settingsDraft
+        ? resolveTerminalTheme(settingsDraft.terminalThemes, resolvedColorTheme)
+        : null,
+    [resolvedColorTheme, settingsDraft]
   );
   const renderedSidebarWidth = clampSidebarWidthForWindow(
     view?.sidebarWidth ?? MAX_SIDEBAR_WIDTH,
@@ -160,7 +321,8 @@ export function App(): JSX.Element {
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
-    workspaceContextMenuOpen: Boolean(workspaceContextMenu)
+    workspaceContextMenuOpen: Boolean(workspaceContextMenu),
+    workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose)
   };
 
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
@@ -176,8 +338,8 @@ export function App(): JSX.Element {
     overlayStateRef,
     setShowWorkspaceShortcutHints,
     closeWorkspaceContextMenu,
+    closeWorkspaceCloseConfirm: () => setPendingWorkspaceClose(null),
     setSearchSurfaceId,
-    requestTerminalFocus,
     setSettingsOpen,
     setNotificationsOpen,
     closePalette,
@@ -185,8 +347,8 @@ export function App(): JSX.Element {
     openSettingsModal,
     beginWorkspaceRename,
     dispatch,
-    dispatchAndFocusActiveTerminal,
-    withLatestActiveShortcutContext
+    withLatestActiveShortcutContext,
+    requestSurfaceClose
   });
 
   const paletteItems = useMemo(() => {
@@ -311,6 +473,183 @@ export function App(): JSX.Element {
 
   if (!view) {
     return <div className={styles.loading}>Booting kmux…</div>;
+  }
+
+  function updateSettingsDraftTerminalThemes(
+    update: (
+      terminalThemes: KmuxSettings["terminalThemes"]
+    ) => KmuxSettings["terminalThemes"]
+  ): void {
+    setSettingsDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        terminalThemes: sanitizeTerminalThemeSettings(
+          update(current.terminalThemes),
+          current.terminalThemes
+        )
+      };
+    });
+  }
+
+  async function handleImportTerminalTheme(): Promise<void> {
+    try {
+      const imported = await window.kmux.importTerminalThemePalette();
+      if (!imported) {
+        return;
+      }
+
+      updateSettingsDraftTerminalThemes((terminalThemes) => {
+        const profile = createImportedTerminalThemeProfile(
+          imported,
+          terminalThemes
+        );
+        return {
+          activeProfileId: profile.id,
+          profiles: [...terminalThemes.profiles, profile]
+        };
+      });
+      setSettingsThemeNotice(buildThemeImportNotice(imported));
+    } catch (error) {
+      setSettingsThemeNotice(describeThemeActionError("Import failed", error));
+    }
+  }
+
+  async function handleReplaceTerminalThemeVariant(
+    variant: TerminalThemeVariant
+  ): Promise<void> {
+    try {
+      const imported = await window.kmux.importTerminalThemePalette();
+      if (!imported) {
+        return;
+      }
+
+      updateSettingsDraftTerminalThemes((terminalThemes) =>
+        updateEditableActiveTerminalTheme(terminalThemes, (profile) => {
+          profile.variants[variant] = cloneTerminalColorPalette(
+            imported.palette
+          );
+          profile.source =
+            profile.source === "builtin" ? "custom" : profile.source;
+          return profile;
+        })
+      );
+      setSettingsThemeNotice(
+        `${buildThemeImportNotice(imported)} Replaced the ${variant} variant.`
+      );
+    } catch (error) {
+      setSettingsThemeNotice(
+        describeThemeActionError(`Replacing ${variant} theme failed`, error)
+      );
+    }
+  }
+
+  function handleDuplicateTerminalTheme(): void {
+    let duplicateName: string | null = null;
+    updateSettingsDraftTerminalThemes((terminalThemes) => {
+      const activeProfile = findTerminalThemeProfile(
+        terminalThemes,
+        terminalThemes.activeProfileId
+      );
+      if (!activeProfile) {
+        return terminalThemes;
+      }
+
+      const profile = duplicateTerminalThemeProfile(
+        activeProfile,
+        terminalThemes
+      );
+      duplicateName = profile.name;
+      return {
+        activeProfileId: profile.id,
+        profiles: [...terminalThemes.profiles, profile]
+      };
+    });
+    if (duplicateName) {
+      setSettingsThemeNotice(
+        `Duplicated the active theme as "${duplicateName}".`
+      );
+    }
+  }
+
+  function handleDeleteTerminalTheme(): void {
+    let deletedProfileName: string | null = null;
+    let blockedDelete = false;
+    updateSettingsDraftTerminalThemes((terminalThemes) => {
+      const activeProfile = findTerminalThemeProfile(
+        terminalThemes,
+        terminalThemes.activeProfileId
+      );
+      if (!activeProfile || activeProfile.source === "builtin") {
+        blockedDelete = true;
+        return terminalThemes;
+      }
+
+      deletedProfileName = activeProfile.name;
+      return {
+        activeProfileId: BUILTIN_TERMINAL_THEME_PROFILE_ID,
+        profiles: terminalThemes.profiles.filter(
+          (profile) => profile.id !== activeProfile.id
+        )
+      };
+    });
+    if (blockedDelete) {
+      setSettingsThemeNotice("Built-in terminal themes cannot be deleted.");
+      return;
+    }
+    if (deletedProfileName) {
+      setSettingsThemeNotice(`Deleted "${deletedProfileName}".`);
+    }
+  }
+
+  function handleSelectTerminalTheme(profileId: string): void {
+    updateSettingsDraftTerminalThemes((terminalThemes) => ({
+      ...terminalThemes,
+      activeProfileId: profileId
+    }));
+  }
+
+  function handleSetTerminalThemeContrast(value: number): void {
+    updateSettingsDraftTerminalThemes((terminalThemes) =>
+      updateEditableActiveTerminalTheme(terminalThemes, (profile) => {
+        profile.minimumContrastRatio = value;
+        profile.source =
+          profile.source === "builtin" ? "custom" : profile.source;
+        return profile;
+      })
+    );
+  }
+
+  async function handleExportTerminalThemeVariant(
+    variant: TerminalThemeVariant
+  ): Promise<void> {
+    const activeProfile = settingsDraft
+      ? findTerminalThemeProfile(
+          settingsDraft.terminalThemes,
+          settingsDraft.terminalThemes.activeProfileId
+        )
+      : null;
+    if (!activeProfile) {
+      return;
+    }
+
+    try {
+      const didExport = await window.kmux.exportTerminalThemePalette(
+        `${activeProfile.name}-${variant}`,
+        activeProfile.variants[variant]
+      );
+      if (didExport) {
+        setSettingsThemeNotice(
+          `Exported "${activeProfile.name}" (${variant}).`
+        );
+      }
+    } catch (error) {
+      setSettingsThemeNotice(
+        describeThemeActionError(`Exporting ${variant} theme failed`, error)
+      );
+    }
   }
 
   return (
@@ -476,10 +815,10 @@ export function App(): JSX.Element {
           <PaneTree
             workspace={view.activeWorkspace}
             settings={view.settings}
+            terminalTypography={view.terminalTypography}
+            terminalTheme={resolvedTerminalTheme}
             colorTheme={resolvedColorTheme}
             searchSurfaceId={searchSurfaceId}
-            focusTerminalRequest={terminalFocusRequest}
-            onConsumeFocusTerminalRequest={consumeTerminalFocusRequest}
             onSetSplitRatio={(splitNodeId, ratio) =>
               void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
             }
@@ -492,9 +831,7 @@ export function App(): JSX.Element {
             onCreateSurface={(paneId) =>
               void dispatch({ type: "surface.create", paneId })
             }
-            onCloseSurface={(surfaceId) =>
-              void dispatch({ type: "surface.close", surfaceId })
-            }
+            onCloseSurface={(surfaceId) => void requestSurfaceClose(surfaceId)}
             onCloseOthers={(surfaceId) =>
               void dispatch({ type: "surface.closeOthers", surfaceId })
             }
@@ -539,16 +876,35 @@ export function App(): JSX.Element {
         onClearNotifications={() =>
           void dispatch({ type: "notification.clear" })
         }
+        workspaceCloseConfirm={pendingWorkspaceClose}
+        onCloseWorkspaceCloseConfirm={() => setPendingWorkspaceClose(null)}
+        onConfirmWorkspaceClose={() => void confirmPendingWorkspaceClose()}
         settingsOpen={settingsOpen}
         settingsDraft={settingsDraft}
         setSettingsDraft={setSettingsDraft}
+        settingsThemeNotice={settingsThemeNotice}
+        availableTerminalFontFamilies={availableTerminalFontFamilies}
+        terminalTypographyPreview={
+          settingsTerminalTypographyPreview ?? view.terminalTypography
+        }
+        terminalThemePreview={resolvedSettingsDraftTerminalTheme}
+        onImportTerminalTheme={() => void handleImportTerminalTheme()}
+        onReplaceTerminalThemeVariant={(variant) =>
+          void handleReplaceTerminalThemeVariant(variant)
+        }
+        onDuplicateTerminalTheme={handleDuplicateTerminalTheme}
+        onDeleteTerminalTheme={handleDeleteTerminalTheme}
+        onSelectTerminalTheme={handleSelectTerminalTheme}
+        onSetTerminalThemeContrast={handleSetTerminalThemeContrast}
+        onExportTerminalThemeVariant={(variant) =>
+          void handleExportTerminalThemeVariant(variant)
+        }
         onCloseSettings={() => setSettingsOpen(false)}
         onSaveSettings={(draft) => {
           const settingsPatch = {
             ...draft,
             shortcuts: omitDeprecatedShortcuts(draft.shortcuts)
           };
-          applyAppearanceSettings(settingsPatch, prefersDarkColorScheme);
           void dispatch({
             type: "settings.update",
             patch: settingsPatch
@@ -597,29 +953,44 @@ export function App(): JSX.Element {
     setEditingWorkspaceId(workspaceId);
   }
 
-  function requestTerminalFocus(surfaceId: string): void {
-    setTerminalFocusRequest({
-      surfaceId,
-      token: Date.now()
+  async function requestSurfaceClose(surfaceId: string): Promise<void> {
+    const latestView = await window.kmux.getView();
+    const strategy = determineSurfaceCloseStrategy(latestView, surfaceId);
+    if (strategy.kind === "close-surface") {
+      await dispatch({ type: "surface.close", surfaceId });
+      return;
+    }
+
+    setPendingWorkspaceClose({
+      workspaceId: strategy.workspaceId,
+      isLastWorkspace: strategy.isLastWorkspace
     });
   }
 
-  function consumeTerminalFocusRequest(token: number): void {
-    setTerminalFocusRequest((current) =>
-      current?.token === token ? null : current
-    );
-  }
-
-  async function dispatchAndFocusActiveTerminal(
-    action: AppAction
-  ): Promise<void> {
-    const nextView = await window.kmux.dispatch(action);
-    const nextPaneId = nextView.activeWorkspace.activePaneId;
-    const nextPane = nextView.activeWorkspace.panes[nextPaneId];
-    if (!nextPane) {
+  async function confirmPendingWorkspaceClose(): Promise<void> {
+    const nextPendingWorkspaceClose = pendingWorkspaceClose;
+    if (!nextPendingWorkspaceClose) {
       return;
     }
-    requestTerminalFocus(nextPane.activeSurfaceId);
+
+    setPendingWorkspaceClose(null);
+
+    const latestView = await window.kmux.getView();
+    const workspaceExists = latestView.workspaceRows.some(
+      (row) => row.workspaceId === nextPendingWorkspaceClose.workspaceId
+    );
+    if (!workspaceExists) {
+      return;
+    }
+
+    if (latestView.workspaceRows.length === 1) {
+      await dispatch({ type: "workspace.create" });
+    }
+
+    await dispatch({
+      type: "workspace.close",
+      workspaceId: nextPendingWorkspaceClose.workspaceId
+    });
   }
 
   async function withLatestActiveShortcutContext(
@@ -693,8 +1064,136 @@ function omitDeprecatedShortcuts(
   return nextShortcuts;
 }
 
+function findTerminalThemeProfile(
+  terminalThemes: KmuxSettings["terminalThemes"],
+  profileId: string
+): TerminalThemeProfile | null {
+  return (
+    terminalThemes.profiles.find((profile) => profile.id === profileId) ?? null
+  );
+}
+
+function createImportedTerminalThemeProfile(
+  imported: ImportedTerminalThemePalette,
+  terminalThemes: KmuxSettings["terminalThemes"]
+): TerminalThemeProfile {
+  const id = buildUniqueTerminalThemeId(imported.suggestedName, terminalThemes);
+  return {
+    id,
+    name: imported.suggestedName,
+    source: "itermcolors",
+    minimumContrastRatio: DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
+    variants: {
+      dark: cloneTerminalColorPalette(imported.palette),
+      light: cloneTerminalColorPalette(imported.palette)
+    }
+  };
+}
+
+function duplicateTerminalThemeProfile(
+  profile: TerminalThemeProfile,
+  terminalThemes: KmuxSettings["terminalThemes"]
+): TerminalThemeProfile {
+  const duplicate = cloneTerminalThemeProfile(profile);
+  const nextName = buildCopyName(profile.name, terminalThemes.profiles);
+  return {
+    ...duplicate,
+    id: buildUniqueTerminalThemeId(nextName, terminalThemes),
+    name: nextName,
+    source: "custom"
+  };
+}
+
+function updateEditableActiveTerminalTheme(
+  terminalThemes: KmuxSettings["terminalThemes"],
+  mutate: (profile: TerminalThemeProfile) => TerminalThemeProfile
+): KmuxSettings["terminalThemes"] {
+  const activeProfile = findTerminalThemeProfile(
+    terminalThemes,
+    terminalThemes.activeProfileId
+  );
+  if (!activeProfile) {
+    return terminalThemes;
+  }
+
+  const editableProfile = isBuiltinTerminalThemeProfileId(activeProfile.id)
+    ? duplicateTerminalThemeProfile(activeProfile, terminalThemes)
+    : cloneTerminalThemeProfile(activeProfile);
+  const nextProfile = mutate(editableProfile);
+
+  if (isBuiltinTerminalThemeProfileId(activeProfile.id)) {
+    return {
+      activeProfileId: nextProfile.id,
+      profiles: [...terminalThemes.profiles, nextProfile]
+    };
+  }
+
+  return {
+    activeProfileId: nextProfile.id,
+    profiles: terminalThemes.profiles.map((profile) =>
+      profile.id === nextProfile.id ? nextProfile : profile
+    )
+  };
+}
+
+function buildUniqueTerminalThemeId(
+  name: string,
+  terminalThemes: KmuxSettings["terminalThemes"]
+): string {
+  const base = slugifyTerminalThemeName(name) || "terminal-theme";
+  const existingIds = new Set(
+    terminalThemes.profiles.map((profile) => profile.id)
+  );
+  if (!existingIds.has(base)) {
+    return base;
+  }
+
+  let suffix = 2;
+  while (existingIds.has(`${base}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base}-${suffix}`;
+}
+
+function buildCopyName(name: string, profiles: TerminalThemeProfile[]): string {
+  const existingNames = new Set(profiles.map((profile) => profile.name));
+  const baseName = `${name} Copy`;
+  if (!existingNames.has(baseName)) {
+    return baseName;
+  }
+
+  let suffix = 2;
+  while (existingNames.has(`${baseName} ${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseName} ${suffix}`;
+}
+
+function slugifyTerminalThemeName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildThemeImportNotice(
+  imported: ImportedTerminalThemePalette
+): string {
+  if (!imported.warnings.length) {
+    return `Imported "${imported.suggestedName}".`;
+  }
+  return `Imported "${imported.suggestedName}" with fallbacks: ${imported.warnings.join(" ")}`;
+}
+
+function describeThemeActionError(prefix: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${prefix}: ${message}`;
+}
+
 function applyAppearanceSettings(
   settings: KmuxSettings,
+  terminalTypography: ResolvedTerminalTypographyVm,
   prefersDarkColorScheme: boolean
 ): ColorTheme {
   const root = document.documentElement;
@@ -708,23 +1207,26 @@ function applyAppearanceSettings(
   root.dataset.themeMode = settings.themeMode;
   root.style.colorScheme = resolvedTheme;
 
-  applyTypographySettings(settings);
+  applyTypographySettings(settings, terminalTypography);
   return resolvedTheme;
 }
 
-function applyTypographySettings(settings: KmuxSettings): void {
+function applyTypographySettings(
+  settings: KmuxSettings,
+  terminalTypography: ResolvedTerminalTypographyVm
+): void {
   const root = document.documentElement;
   root.style.setProperty(
-    "--kmux-font-family",
-    settings.terminalFontFamily.trim() ||
-      '"JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace'
+    "--kmux-terminal-font-family",
+    terminalTypography.resolvedFontFamily ||
+      settings.terminalTypography.preferredTextFontFamily.trim()
   );
   root.style.setProperty(
-    "--kmux-font-size",
-    `${Number.isFinite(settings.terminalFontSize) ? settings.terminalFontSize : 13}px`
+    "--kmux-terminal-font-size",
+    `${Number.isFinite(settings.terminalTypography.fontSize) ? settings.terminalTypography.fontSize : 13}px`
   );
   root.style.setProperty(
-    "--kmux-line-height",
-    `${Number.isFinite(settings.terminalLineHeight) ? settings.terminalLineHeight : 1}`
+    "--kmux-terminal-line-height",
+    `${Number.isFinite(settings.terminalTypography.lineHeight) ? settings.terminalTypography.lineHeight : 1}`
   );
 }

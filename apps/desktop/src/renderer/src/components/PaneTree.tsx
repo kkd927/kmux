@@ -1,4 +1,10 @@
-import type { ActiveWorkspaceVm, Id, KmuxSettings } from "@kmux/proto";
+import type {
+  ActiveWorkspaceVm,
+  Id,
+  KmuxSettings,
+  ResolvedTerminalThemeVm,
+  ResolvedTerminalTypographyVm
+} from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 
 import styles from "../styles/PaneTree.module.css";
@@ -7,10 +13,10 @@ import { TerminalPane } from "./TerminalPane";
 interface PaneTreeProps {
   workspace: ActiveWorkspaceVm;
   settings: KmuxSettings;
+  terminalTypography: ResolvedTerminalTypographyVm;
+  terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
   searchSurfaceId: string | null;
-  focusTerminalRequest: { surfaceId: string; token: number } | null;
-  onConsumeFocusTerminalRequest: (token: number) => void;
   onSetSplitRatio: (splitNodeId: string, ratio: number) => void;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
@@ -58,10 +64,10 @@ function PaneNode(
         surfaces={surfaces}
         activeSurfaceId={pane.activeSurfaceId}
         settings={props.settings}
+        terminalTypography={props.terminalTypography}
+        terminalTheme={props.terminalTheme}
         colorTheme={props.colorTheme}
         showSearch={props.searchSurfaceId === pane.activeSurfaceId}
-        focusTerminalRequest={props.focusTerminalRequest}
-        onConsumeFocusTerminalRequest={props.onConsumeFocusTerminalRequest}
         onFocusPane={props.onFocusPane}
         onFocusSurface={props.onFocusSurface}
         onCreateSurface={props.onCreateSurface}

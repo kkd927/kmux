@@ -5,6 +5,7 @@ import type {
 } from "@kmux/proto";
 
 import styles from "../styles/App.module.css";
+import {Codicon} from "./Codicon";
 
 interface WorkspaceCardProps {
   row: WorkspaceRowVm;
@@ -31,12 +32,13 @@ interface WorkspaceCardProps {
 
 export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
   const summaryText = props.row.summary.trim() || "Waiting for input";
+  const pathText = props.row.cwd?.trim() || "-";
+  const branchText = props.row.branch?.trim() || "-";
+  const showBranchIcon = Boolean(props.row.branch?.trim());
   const statusText = (props.status ?? props.row.statusText)?.trim() ?? "";
   const showStatus = Boolean(statusText);
-  const showPath = props.expanded && Boolean(props.row.cwd);
-  const showMeta =
-    props.row.attention ||
-    (props.expanded && (Boolean(props.row.branch) || props.row.ports.length > 0));
+  const showShortcut = Boolean(props.shortcutHint);
+  const showMeta = props.expanded && props.row.ports.length > 0;
   const showAux =
     props.expanded && Boolean(showStatus || props.progress || props.latestLog);
 
@@ -130,16 +132,35 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
           </div>
           <div className={styles.workspaceSummaryRow}>
             <span
-              className={`${styles.workspaceSummary} ${
-                !props.expanded && props.shortcutHint
-                  ? styles.workspaceSummaryWithShortcut
-                  : ""
-              }`}
+              className={styles.workspaceSummary}
               data-workspace-summary=""
             >
               {summaryText}
             </span>
-            {!props.expanded && props.shortcutHint ? (
+          </div>
+          <div className={styles.workspacePathRow}>
+            <div className={styles.workspacePath} data-workspace-path="">
+              {pathText}
+            </div>
+          </div>
+          <div
+            className={`${styles.workspacePathRow} ${styles.workspaceBranchRow}`}
+            data-workspace-branch-row=""
+          >
+            {showBranchIcon ? (
+              <span className={styles.workspaceMetaIcon} data-workspace-branch-icon="">
+                <Codicon name="git-branch" />
+              </span>
+            ) : null}
+            <div
+              className={`${styles.workspacePath} ${
+                showShortcut ? styles.workspacePathWithShortcut : ""
+              }`}
+              data-workspace-branch=""
+            >
+              {branchText}
+            </div>
+            {showShortcut ? (
               <span
                 className={styles.workspaceShortcutHint}
                 data-workspace-shortcut=""
@@ -148,45 +169,13 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
               </span>
             ) : null}
           </div>
-          {showPath ? (
-            <div className={styles.workspacePathRow}>
-              <div
-                className={`${styles.workspacePath} ${
-                  props.shortcutHint ? styles.workspacePathWithShortcut : ""
-                }`}
-                data-workspace-path=""
-              >
-                {props.row.cwd}
-              </div>
-              {props.shortcutHint ? (
-                <span
-                  className={styles.workspaceShortcutHint}
-                  data-workspace-shortcut=""
-                >
-                  {props.shortcutHint}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
           {showMeta ? (
             <div className={styles.workspaceMeta}>
-              {props.expanded && props.row.branch ? (
-                <span className={styles.workspaceBranch}>{props.row.branch}</span>
-              ) : null}
-              {props.expanded
-                ? props.row.ports.map((port) => (
-                    <span key={port} className={styles.workspaceMetaChip}>
-                      :{port}
-                    </span>
-                  ))
-                : null}
-              {props.row.attention ? (
-                <span
-                  className={`${styles.workspaceMetaChip} ${styles.workspaceAttention}`}
-                >
-                  Attention
+              {props.row.ports.map((port) => (
+                <span key={port} className={styles.workspaceMetaChip}>
+                  :{port}
                 </span>
-              ) : null}
+              ))}
             </div>
           ) : null}
           {showAux ? (

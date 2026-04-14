@@ -4,6 +4,7 @@ type CodiconName =
   | "check"
   | "close"
   | "gear"
+  | "git-branch"
   | "layout-sidebar-left"
   | "split-horizontal"
   | "split-vertical"

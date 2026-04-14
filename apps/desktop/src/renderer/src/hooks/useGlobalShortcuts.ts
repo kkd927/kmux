@@ -10,6 +10,7 @@ interface OverlayState {
   settingsOpen: boolean;
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
+  workspaceCloseConfirmOpen: boolean;
 }
 
 interface ActiveShortcutContext {
@@ -24,8 +25,8 @@ interface UseGlobalShortcutsOptions {
   overlayStateRef: MutableRefObject<OverlayState>;
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
   closeWorkspaceContextMenu: () => void;
+  closeWorkspaceCloseConfirm: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
-  requestTerminalFocus: (surfaceId: string) => void;
   setSettingsOpen: Dispatch<SetStateAction<boolean>>;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
   closePalette: () => void;
@@ -33,7 +34,7 @@ interface UseGlobalShortcutsOptions {
   openSettingsModal: () => void;
   beginWorkspaceRename: (workspaceId: string, sidebarVisible?: boolean) => void;
   dispatch: (action: AppAction) => Promise<void>;
-  dispatchAndFocusActiveTerminal: (action: AppAction) => Promise<void>;
+  requestSurfaceClose: (surfaceId: string) => Promise<void>;
   withLatestActiveShortcutContext: (
     run: (context: ActiveShortcutContext) => void | Promise<void>
   ) => Promise<void>;
@@ -62,9 +63,15 @@ export function useGlobalShortcuts(
         notificationsOpen: currentNotificationsOpen,
         settingsOpen: currentSettingsOpen,
         searchSurfaceId: currentSearchSurfaceId,
-        workspaceContextMenuOpen: currentWorkspaceContextMenuOpen
+        workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
+        workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen
       } = currentOptions.overlayStateRef.current;
       if (event.key === "Escape") {
+        if (currentWorkspaceCloseConfirmOpen) {
+          event.preventDefault();
+          currentOptions.closeWorkspaceCloseConfirm();
+          return;
+        }
         if (currentWorkspaceContextMenuOpen) {
           event.preventDefault();
           currentOptions.closeWorkspaceContextMenu();
@@ -73,7 +80,6 @@ export function useGlobalShortcuts(
         if (currentSearchSurfaceId) {
           event.preventDefault();
           currentOptions.setSearchSurfaceId(null);
-          currentOptions.requestTerminalFocus(currentSearchSurfaceId);
           return;
         }
         if (currentSettingsOpen) {
@@ -93,7 +99,10 @@ export function useGlobalShortcuts(
         }
       }
 
-      if (currentWorkspaceContextMenuOpen) {
+      if (
+        currentWorkspaceContextMenuOpen ||
+        currentWorkspaceCloseConfirmOpen
+      ) {
         return;
       }
 
@@ -154,13 +163,10 @@ export function useGlobalShortcuts(
         if (!targetSurfaceId) {
           return;
         }
-        window.setTimeout(() => {
-          currentOptions.requestTerminalFocus(targetSurfaceId);
-          void currentOptions.dispatch({
-            type: "surface.focus",
-            surfaceId: targetSurfaceId
-          });
-        }, 0);
+        void currentOptions.dispatch({
+          type: "surface.focus",
+          surfaceId: targetSurfaceId
+        });
         return;
       }
       if (matchShortcut(currentView, event, "command.palette")) {
@@ -234,7 +240,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatchAndFocusActiveTerminal({
+            currentOptions.dispatch({
               type: "pane.split",
               paneId: latestPaneId,
               direction: "right"
@@ -246,7 +252,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatchAndFocusActiveTerminal({
+            currentOptions.dispatch({
               type: "pane.split",
               paneId: latestPaneId,
               direction: "down"
@@ -350,7 +356,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatchAndFocusActiveTerminal({
+            currentOptions.dispatch({
               type: "surface.create",
               paneId: latestPaneId
             })
@@ -361,10 +367,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activeSurfaceId: latestSurfaceId }) =>
-            currentOptions.dispatch({
-              type: "surface.close",
-              surfaceId: latestSurfaceId
-            })
+            currentOptions.requestSurfaceClose(latestSurfaceId)
         );
         return;
       }
@@ -383,7 +386,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatchAndFocusActiveTerminal({
+            currentOptions.dispatch({
               type: "surface.focusRelative",
               paneId: latestPaneId,
               delta: 1
@@ -395,7 +398,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatchAndFocusActiveTerminal({
+            currentOptions.dispatch({
               type: "surface.focusRelative",
               paneId: latestPaneId,
               delta: -1
