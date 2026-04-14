@@ -7,7 +7,7 @@
 Split panes. Tabbed surfaces. Sidebar status. Automation-ready.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v0.1.9-38bdf8?style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
+[![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
 [![macOS](https://img.shields.io/badge/platform-macOS-000?logo=apple&logoColor=fff)](https://github.com/kkd927/kmux/releases/latest)
 [![Electron](https://img.shields.io/badge/electron-39-47848F?logo=electron&logoColor=fff)](https://www.electronjs.org/)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=fff)](https://nodejs.org/)
