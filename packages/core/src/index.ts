@@ -1190,7 +1190,7 @@ function updateSurfaceMetadata(
   }
   let shouldRefreshDerivedMetadata = false;
 
-  if (action.cwd !== undefined) {
+  if (action.cwd !== undefined && action.cwd !== surface.cwd) {
     surface.cwd = action.cwd;
     state.workspaces[state.panes[surface.paneId].workspaceId].cwdSummary =
       action.cwd;

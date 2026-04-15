@@ -13,6 +13,23 @@ describe("terminal notification parsing", () => {
     });
   });
 
+  it("extracts message from OSC 9 subtype 1", () => {
+    expect(buildOsc9Notification("1;Build complete", "shell")).toEqual({
+      protocol: 9,
+      title: "shell",
+      message: "Build complete"
+    });
+  });
+
+  it("ignores OSC 9 progress subtype (4;0;)", () => {
+    expect(buildOsc9Notification("4;0;", "shell")).toBeNull();
+  });
+
+  it("ignores OSC 9 non-notification subtypes", () => {
+    expect(buildOsc9Notification("2;my title", "shell")).toBeNull();
+    expect(buildOsc9Notification("3;tab text", "shell")).toBeNull();
+  });
+
   it("parses OSC 777 notify title and body", () => {
     expect(
       buildOsc777Notification("notify;Build complete;All tasks passed", "shell")
