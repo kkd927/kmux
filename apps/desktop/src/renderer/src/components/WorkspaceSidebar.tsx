@@ -1,16 +1,23 @@
 import {
-    type KeyboardEvent as ReactKeyboardEvent,
-    type PointerEvent as ReactPointerEvent,
-    useEffect,
-    useRef
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef
 } from "react";
 
-import type {ActiveWorkspaceVm, ShellViewModel, WorkspaceRowVm} from "@kmux/proto";
-import {useVirtualizer} from "@tanstack/react-virtual";
+import type {
+  ActiveWorkspaceVm,
+  ShellViewModel,
+  WorkspaceRowVm
+} from "@kmux/proto";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
-import {MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH} from "../hooks/useSidebarResize";
+import {
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH
+} from "../hooks/useSidebarResize";
 import styles from "../styles/App.module.css";
-import {WorkspaceCard} from "./WorkspaceCard";
+import { WorkspaceCard } from "./WorkspaceCard";
 
 interface WorkspaceSidebarProps {
   view: ShellViewModel;
@@ -32,22 +39,15 @@ interface WorkspaceSidebarProps {
     position: "before" | "after"
   ) => void;
   onDragLeaveWorkspace: (workspaceId: string) => void;
-  onDropWorkspace: (
-    workspaceId: string,
-    position: "before" | "after"
-  ) => void;
+  onDropWorkspace: (workspaceId: string, position: "before" | "after") => void;
   onDragEndWorkspace: () => void;
-  onSidebarResizeKeyDown: (
-    event: ReactKeyboardEvent<HTMLDivElement>
-  ) => void;
+  onSidebarResizeKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onSidebarResizePointerDown: (
     event: ReactPointerEvent<HTMLDivElement>
   ) => void;
 }
 
-export function WorkspaceSidebar(
-  props: WorkspaceSidebarProps
-): JSX.Element {
+export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
   const rows = props.view.workspaceRows;
   const sidebarRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
@@ -74,6 +74,7 @@ export function WorkspaceSidebar(
     rows,
     props.view.activeWorkspace.id,
     props.view.activeWorkspace.sidebarStatus,
+    props.view.activeWorkspace.statusEntries.length,
     props.view.activeWorkspace.progress?.label,
     props.view.activeWorkspace.progress?.value,
     props.view.activeWorkspace.logs[0]?.id,
@@ -135,14 +136,18 @@ export function WorkspaceSidebar(
                     >
                       <WorkspaceCard
                         row={row}
-                        displayName={row.nameLocked ? row.name : "new workspace"}
+                        displayName={
+                          row.nameLocked ? row.name : "new workspace"
+                        }
                         shortcutHint={
                           props.showWorkspaceShortcutHints && item.index < 9
                             ? `⌘${item.index + 1}`
                             : undefined
                         }
                         editing={props.editingWorkspaceId === row.workspaceId}
-                        expanded={row.workspaceId === props.view.activeWorkspace.id}
+                        expanded={
+                          row.workspaceId === props.view.activeWorkspace.id
+                        }
                         menuOpen={
                           props.workspaceContextMenuWorkspaceId ===
                           row.workspaceId
@@ -162,8 +167,12 @@ export function WorkspaceSidebar(
                             ? props.view.activeWorkspace.logs[0]
                             : undefined
                         }
-                        onSelect={() => props.onSelectWorkspace(row.workspaceId)}
-                        onRenameStart={() => props.onStartRename(row.workspaceId)}
+                        onSelect={() =>
+                          props.onSelectWorkspace(row.workspaceId)
+                        }
+                        onRenameStart={() =>
+                          props.onStartRename(row.workspaceId)
+                        }
                         onOpenContextMenu={(position) =>
                           props.onOpenContextMenu(
                             row.workspaceId,
@@ -235,8 +244,20 @@ function estimateWorkspaceRowHeight(
     height += 27;
   }
 
+  if (
+    !isActive &&
+    (row.statusEntries ?? []).some(
+      (entry) => entry.variant === "attention" || entry.variant === "error"
+    )
+  ) {
+    height += 29;
+  }
+
   if (isActive) {
-    if (activeWorkspace?.sidebarStatus) {
+    if (
+      (activeWorkspace?.statusEntries.length ?? 0) > 0 ||
+      activeWorkspace?.sidebarStatus
+    ) {
       height += 29;
     }
     if (activeWorkspace?.progress) {

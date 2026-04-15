@@ -70,9 +70,7 @@ export class KmuxSocketServer {
   }
 
   private handleMessage(socket: Socket, line: string): void {
-    let envelope:
-      | ReturnType<typeof parseSocketEnvelope>
-      | undefined;
+    let envelope: ReturnType<typeof parseSocketEnvelope> | undefined;
 
     try {
       envelope = parseSocketEnvelope(line);
@@ -210,13 +208,33 @@ export class KmuxSocketServer {
         this.options.dispatch({
           type: "sidebar.setStatus",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
-          text: request.params.text
+          text: request.params.text,
+          key: request.params.key,
+          label: request.params.label,
+          variant: request.params.variant,
+          surfaceId: request.params.surfaceId
         });
         return { ok: true };
       case "sidebar.clear_status":
         this.options.dispatch({
           type: "sidebar.clearStatus",
-          workspaceId: request.params.workspaceId ?? activeWorkspaceId
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
+          key: request.params.key
+        });
+        return { ok: true };
+      case "agent.event":
+        logAgentEvent(request.params, activeWorkspaceId);
+        this.options.dispatch({
+          type: "agent.event",
+          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
+          paneId: request.params.paneId,
+          surfaceId: request.params.surfaceId,
+          sessionId: request.params.sessionId,
+          agent: request.params.agent,
+          event: request.params.event,
+          title: request.params.title,
+          message: request.params.message,
+          details: request.params.details
         });
         return { ok: true };
       case "sidebar.set_progress":
@@ -277,4 +295,43 @@ export class KmuxSocketServer {
     };
     socket.write(`${JSON.stringify(response)}\n`);
   }
+}
+
+function logAgentEvent(
+  params: Extract<ParsedSocketRequest, { method: "agent.event" }>["params"],
+  fallbackWorkspaceId: string
+): void {
+  const workspaceId = params.workspaceId ?? fallbackWorkspaceId;
+  const fields = [
+    `agent=${params.agent}`,
+    `event=${params.event}`,
+    `workspace=${workspaceId}`
+  ];
+  if (params.surfaceId) {
+    fields.push(`surface=${params.surfaceId}`);
+  }
+  if (params.sessionId) {
+    fields.push(`session=${params.sessionId}`);
+  }
+  const rawHookEvent = stringDetail(params.details, "hook_event_name");
+  const hookArg = stringDetail(params.details, "kmux_hook_event_arg");
+  if (rawHookEvent) {
+    fields.push(`hook=${JSON.stringify(rawHookEvent)}`);
+  } else if (hookArg) {
+    fields.push(`hook=${JSON.stringify(hookArg)}`);
+  }
+  if (params.message) {
+    fields.push(`message=${JSON.stringify(params.message.slice(0, 160))}`);
+  }
+  console.log(`[Agent Hook] ${fields.join(" ")}`);
+}
+
+function stringDetail(
+  details: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = details?.[key];
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, 160)
+    : undefined;
 }

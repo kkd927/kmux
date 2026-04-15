@@ -1,10 +1,10 @@
-import {EventEmitter} from "node:events";
+import { EventEmitter } from "node:events";
 
-import type {ChildProcess, fork} from "node:child_process";
-import {describe, expect, it} from "vitest";
-import {vi} from "vitest";
+import type { ChildProcess, fork } from "node:child_process";
+import { describe, expect, it } from "vitest";
+import { vi } from "vitest";
 
-import {PtyHostManager, resolvePtyHostLaunchOptions} from "./ptyHost";
+import { PtyHostManager, resolvePtyHostLaunchOptions } from "./ptyHost";
 
 describe("resolvePtyHostLaunchOptions", () => {
   it("uses the unpacked pty-host bundle when running from app.asar", () => {
@@ -50,30 +50,30 @@ describe("resolvePtyHostLaunchOptions", () => {
 
   it("passes the resolved env through when starting the pty-host child", () => {
     const fakeChild = new EventEmitter() as ChildProcess;
-    (fakeChild as ChildProcess & {connected: boolean}).connected = true;
-    (fakeChild as ChildProcess & {kill: () => boolean}).kill = () => true;
-    (fakeChild as ChildProcess & {send: () => boolean}).send = () => true;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
 
     const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
     const manager = new PtyHostManager(forkProcess);
 
-    manager.start({PATH: "/usr/local/bin"});
+    manager.start({ PATH: "/usr/local/bin" });
 
     expect(forkProcess).toHaveBeenCalledWith(
       expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
       [],
       expect.objectContaining({
-        env: {PATH: "/usr/local/bin"}
+        env: { PATH: "/usr/local/bin" }
       })
     );
   });
 
   it("queues text input until the session reports spawned", () => {
     const fakeChild = new EventEmitter() as ChildProcess;
-    (fakeChild as ChildProcess & {connected: boolean}).connected = true;
-    (fakeChild as ChildProcess & {kill: () => boolean}).kill = () => true;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
     const send = vi.fn((message: unknown) => Boolean(message));
-    (fakeChild as ChildProcess & {send: typeof send}).send = send;
+    (fakeChild as ChildProcess & { send: typeof send }).send = send;
 
     const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
     const manager = new PtyHostManager(forkProcess);
@@ -96,12 +96,35 @@ describe("resolvePtyHostLaunchOptions", () => {
     });
   });
 
+  it("does not report an unexpected pty-host exit after an intentional stop", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+    const onEvent = vi.fn();
+
+    manager.on("event", onEvent);
+    manager.start();
+    manager.stop();
+    fakeChild.emit("exit", 0);
+
+    expect(onEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        message: "pty-host exited unexpectedly"
+      })
+    );
+  });
+
   it("forwards settled snapshot requests to the pty-host child", async () => {
     const fakeChild = new EventEmitter() as ChildProcess;
-    (fakeChild as ChildProcess & {connected: boolean}).connected = true;
-    (fakeChild as ChildProcess & {kill: () => boolean}).kill = () => true;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
     const send = vi.fn((message: unknown) => Boolean(message));
-    (fakeChild as ChildProcess & {send: typeof send}).send = send;
+    (fakeChild as ChildProcess & { send: typeof send }).send = send;
 
     const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
     const manager = new PtyHostManager(forkProcess);

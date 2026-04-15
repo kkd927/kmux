@@ -5,12 +5,20 @@ export type SplitAxis = "horizontal" | "vertical";
 export type SplitDirection = "left" | "right" | "up" | "down";
 export type NotificationSource =
   | "bell"
+  | "agent"
   | "terminal"
   | "socket"
   | "status"
   | "system";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
+export type SidebarStatusVariant = "info" | "attention" | "muted" | "error";
+export type AgentEventName =
+  | "session_start"
+  | "running"
+  | "needs_input"
+  | "idle"
+  | "session_end";
 export type TerminalNotificationProtocol = 9 | 99 | 777;
 export type TerminalThemeVariant = "dark" | "light";
 export type TerminalThemeProfileSource = "builtin" | "itermcolors" | "custom";
@@ -35,6 +43,15 @@ export interface SidebarLogEntry {
   createdAt: string;
 }
 
+export interface SidebarStatusEntry {
+  key: string;
+  text: string;
+  label?: string;
+  variant: SidebarStatusVariant;
+  updatedAt: string;
+  surfaceId?: Id;
+}
+
 export interface WorkspaceRowVm {
   workspaceId: Id;
   name: string;
@@ -44,6 +61,7 @@ export interface WorkspaceRowVm {
   branch?: string;
   ports: number[];
   statusText?: string;
+  statusEntries: SidebarStatusEntry[];
   unreadCount: number;
   attention: boolean;
   pinned: boolean;
@@ -301,6 +319,7 @@ export interface ActiveWorkspaceVm {
   surfaces: Record<Id, SurfaceVm>;
   activePaneId: Id;
   sidebarStatus?: string;
+  statusEntries: SidebarStatusEntry[];
   progress?: SidebarProgress;
   logs: SidebarLogEntry[];
 }

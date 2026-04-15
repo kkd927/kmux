@@ -225,7 +225,6 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.onTitleChange((title: string) => {
-    console.log(`[TitleChange] surface=${record.surfaceId} old=${record.title} new=${JSON.stringify(title)}`);
     record.title = title;
     send({
       type: "metadata",

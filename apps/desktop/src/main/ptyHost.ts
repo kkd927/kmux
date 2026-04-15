@@ -1,7 +1,7 @@
-import {EventEmitter} from "node:events";
-import {type ChildProcess, fork} from "node:child_process";
-import {dirname, join, resolve, sep} from "node:path";
-import {fileURLToPath} from "node:url";
+import { EventEmitter } from "node:events";
+import { type ChildProcess, fork } from "node:child_process";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   Id,
@@ -11,7 +11,7 @@ import type {
   SurfaceSnapshotPayload,
   TerminalKeyInput
 } from "@kmux/proto";
-import {makeId} from "@kmux/proto";
+import { makeId } from "@kmux/proto";
 
 export interface PtyHostLaunchOptions {
   cwd: string;
@@ -53,6 +53,7 @@ export function resolvePtyHostLaunchOptions(
 
 export class PtyHostManager extends EventEmitter {
   private child: ChildProcess | null = null;
+  private stopping = false;
   private readonly readySessions = new Set<Id>();
   private readonly pendingSnapshots = new Map<
     string,
@@ -60,9 +61,7 @@ export class PtyHostManager extends EventEmitter {
   >();
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
 
-  constructor(
-    private readonly forkProcess: typeof fork = fork
-  ) {
+  constructor(private readonly forkProcess: typeof fork = fork) {
     super();
   }
 
@@ -74,18 +73,16 @@ export class PtyHostManager extends EventEmitter {
     const currentDir = dirname(fileURLToPath(import.meta.url));
     const launchOptions = resolvePtyHostLaunchOptions(currentDir);
 
-    this.child = this.forkProcess(
-      launchOptions.entry,
-      [],
-      {
-        cwd: launchOptions.cwd,
-        execArgv: launchOptions.execArgv,
-        env,
-        stdio: ["inherit", "inherit", "inherit", "ipc"]
-      }
-    );
+    const child = this.forkProcess(launchOptions.entry, [], {
+      cwd: launchOptions.cwd,
+      execArgv: launchOptions.execArgv,
+      env,
+      stdio: ["inherit", "inherit", "inherit", "ipc"]
+    });
+    this.child = child;
+    this.stopping = false;
 
-    this.child.on("message", (event: PtyEvent) => {
+    child.on("message", (event: PtyEvent) => {
       if (event.type === "snapshot") {
         const resolver = this.pendingSnapshots.get(event.requestId);
         if (resolver) {
@@ -109,17 +106,24 @@ export class PtyHostManager extends EventEmitter {
       this.emit("event", event);
     });
 
-    this.child.on("exit", () => {
-      this.child = null;
+    child.on("exit", () => {
+      const expectedExit = this.stopping;
+      this.stopping = false;
+      if (this.child === child) {
+        this.child = null;
+      }
       this.readySessions.clear();
       this.queuedRequests.clear();
+      if (expectedExit) {
+        return;
+      }
       this.emit("event", {
         type: "error",
         message: "pty-host exited unexpectedly"
       } satisfies PtyEvent);
     });
 
-    this.child.on("error", (error) => {
+    child.on("error", (error) => {
       this.emit("event", {
         type: "error",
         message: `pty-host failed to start: ${error.message}`
@@ -128,7 +132,11 @@ export class PtyHostManager extends EventEmitter {
   }
 
   stop(): void {
-    this.child?.kill();
+    if (!this.child) {
+      return;
+    }
+    this.stopping = true;
+    this.child.kill();
     this.child = null;
     this.readySessions.clear();
     this.queuedRequests.clear();

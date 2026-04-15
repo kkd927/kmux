@@ -116,6 +116,293 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(0);
   });
 
+  it("records agent needs-input events as a status entry and notification", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId,
+      sessionId: state.surfaces[surfaceId].sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?"
+    });
+
+    const vm = buildViewModel(state);
+    const row = vm.workspaceRows.find(
+      (item) => item.workspaceId === workspaceId
+    );
+
+    expect(row?.statusEntries).toEqual([
+      expect.objectContaining({
+        key: `agent:claude:${surfaceId}`,
+        label: "Claude",
+        text: "Approve tool use?",
+        variant: "attention",
+        surfaceId
+      })
+    ]);
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        workspaceId,
+        paneId,
+        surfaceId,
+        source: "agent",
+        title: "Claude needs input",
+        message: "Approve tool use?"
+      })
+    );
+    expect(state.surfaces[surfaceId].unreadCount).toBe(1);
+  });
+
+  it("clears only the matching agent status entry when the agent becomes idle", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "idle"
+    });
+
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.notifications).toHaveLength(1);
+  });
+
+  it("treats repeated agent running events as no-ops", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    const firstEffects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "running",
+      message: "Running"
+    });
+    const key = `agent:claude:${surfaceId}`;
+    const firstEntry = state.workspaces[workspaceId].statusEntries[key];
+    const firstUpdatedAt = firstEntry?.updatedAt;
+
+    const secondEffects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "running",
+      message: "Running"
+    });
+
+    expect(firstEffects).toEqual([{ type: "persist" }]);
+    expect(secondEffects).toEqual([]);
+    expect(
+      Object.keys(state.workspaces[workspaceId].statusEntries).filter((entry) =>
+        entry.startsWith("agent:claude:")
+      )
+    ).toHaveLength(1);
+    expect(state.workspaces[workspaceId].statusEntries[key]?.updatedAt).toBe(
+      firstUpdatedAt
+    );
+  });
+
+  it("uses the resolved surface id for agent status keys", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?"
+    });
+    expect(
+      state.workspaces[workspaceId].statusEntries[`agent:claude:${surfaceId}`]
+    ).toBeDefined();
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "idle"
+    });
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      sessionId,
+      agent: "claude",
+      event: "idle"
+    });
+
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
+  it("bounds sidebar status entries and exposes only visible entries", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const workspace = state.workspaces[workspaceId];
+
+    workspace.statusText = "Manual status";
+    workspace.statusEntries = {
+      manual: {
+        key: "manual",
+        text: "Manual status",
+        variant: "info",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      },
+      alert: {
+        key: "alert",
+        text: "Needs attention",
+        variant: "attention",
+        updatedAt: "2020-01-01T00:00:00.000Z"
+      }
+    };
+    for (let index = 0; index < 17; index += 1) {
+      workspace.statusEntries[`info:${index}`] = {
+        key: `info:${index}`,
+        text: `Info ${index}`,
+        variant: "info",
+        updatedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`
+      };
+    }
+
+    applyAction(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      key: "info:17",
+      text: "Info 17"
+    });
+
+    expect(Object.keys(workspace.statusEntries)).toHaveLength(16);
+    expect(workspace.statusEntries.manual).toBeDefined();
+    expect(workspace.statusEntries.alert).toBeDefined();
+    expect(workspace.statusEntries["info:0"]).toBeUndefined();
+
+    const view = buildViewModel(state);
+    expect(view.activeWorkspace.statusEntries).toHaveLength(3);
+    expect(view.workspaceRows[0]?.statusEntries).toHaveLength(3);
+    expect(view.activeWorkspace.statusEntries.map((entry) => entry.key)).toEqual(
+      ["manual", "alert", "info:17"]
+    );
+  });
+
+  it("deduplicates overlapping terminal and agent needs-input notifications", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Claude",
+      message: "Needs input",
+      source: "terminal"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Needs input"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        source: "agent",
+        title: "Claude needs input",
+        message: "Needs input"
+      })
+    );
+    expect(state.surfaces[surfaceId].unreadCount).toBe(1);
+  });
+
+  it("drops transient agent sidebar status during restore", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Needs input"
+    });
+
+    const restored = cloneState(state);
+
+    expect(restored.workspaces[workspaceId].statusEntries).toEqual({});
+    expect(restored.notifications).toHaveLength(1);
+  });
+
+  it("prunes restored sidebar status entries", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const workspace = state.workspaces[workspaceId];
+
+    workspace.statusEntries = {};
+    for (let index = 0; index < 20; index += 1) {
+      workspace.statusEntries[`status:${index}`] = {
+        key: `status:${index}`,
+        text: `Status ${index}`,
+        variant: "info",
+        updatedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`
+      };
+    }
+
+    const restored = cloneState(state);
+
+    expect(
+      Object.keys(restored.workspaces[workspaceId].statusEntries)
+    ).toHaveLength(16);
+    expect(
+      restored.workspaces[workspaceId].statusEntries["status:19"]
+    ).toBeDefined();
+    expect(
+      restored.workspaces[workspaceId].statusEntries["status:0"]
+    ).toBeUndefined();
+  });
+
   it("turns terminal bells into a sound effect without creating notifications", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];

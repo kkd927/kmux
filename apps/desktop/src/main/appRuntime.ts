@@ -124,6 +124,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function runEffects(effects: AppEffect[]): void {
+    if (effects.length === 0) {
+      return;
+    }
+
     for (const effect of effects) {
       switch (effect.type) {
         case "session.spawn":
@@ -239,6 +243,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       "notification.create",
       "notification.list",
       "notification.clear",
+      "agent.event",
       "sidebar.set_status",
       "sidebar.clear_status",
       "sidebar.set_progress",

@@ -43,6 +43,16 @@ const { autoUpdater } = electronUpdater;
 let ptyHost: PtyHostManager | null = null;
 let socketServer: KmuxSocketServer | null = null;
 
+function ignoreExpectedPipeClose(error: NodeJS.ErrnoException): void {
+  if (error.code === "EPIPE") {
+    return;
+  }
+  throw error;
+}
+
+process.stdout.on("error", ignoreExpectedPipeClose);
+process.stderr.on("error", ignoreExpectedPipeClose);
+
 async function bootstrap(): Promise<void> {
   setDevelopmentDockIcon(currentDir);
   app.setAboutPanelOptions({

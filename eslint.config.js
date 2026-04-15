@@ -18,6 +18,15 @@ export default [
   js.configs.recommended,
   prettier,
   {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly"
+      }
+    }
+  },
+  {
     files: ["apps/desktop/build/**/*.cjs"],
     languageOptions: {
       globals: {
@@ -27,7 +36,7 @@ export default [
         require: "readonly",
         module: "readonly",
         __dirname: "readonly",
-        __filename: "readonly",
+        __filename: "readonly"
       }
     }
   },

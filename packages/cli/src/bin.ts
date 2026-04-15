@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { env } from "node:process";
 
@@ -8,16 +9,44 @@ import { Command } from "commander";
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 
+import { normalizeAgentHookInvocation } from "./agentHooks";
+
 const SOCKET_PATH = env.KMUX_SOCKET_PATH ?? `${env.HOME}/.kmux/control.sock`;
 
 function sendRpc(
   method: string,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
+  options: { timeoutMs?: number } = {}
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
     const requestId = makeId("rpc");
     let buffer = "";
+    let settled = false;
+    const timeout = options.timeoutMs
+      ? setTimeout(() => {
+          finish(new Error(`Timed out sending ${method}`));
+          socket.destroy();
+        }, options.timeoutMs)
+      : undefined;
+
+    const finish = (error?: Error, value?: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      if (!socket.destroyed) {
+        socket.end();
+      }
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value);
+      }
+    };
 
     socket.connect(SOCKET_PATH, () => {
       const payload: JsonRpcEnvelope = {
@@ -44,21 +73,50 @@ function sendRpc(
         if (message.id !== requestId) {
           continue;
         }
-        socket.end();
         if (message.error) {
-          reject(new Error(message.error.message));
+          finish(new Error(message.error.message));
         } else {
-          resolve(message.result);
+          finish(undefined, message.result);
         }
       }
     });
 
-    socket.on("error", reject);
+    socket.on("error", (error) => finish(error));
   });
 }
 
 function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function readJsonFromStdin(): Record<string, unknown> {
+  if (process.stdin.isTTY) {
+    return {};
+  }
+
+  const input = readFileSync(0, "utf8").trim();
+  if (!input) {
+    return {};
+  }
+
+  const parsed = JSON.parse(input);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
+}
+
+async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
+  try {
+    const payload = readJsonFromStdin();
+    const event = normalizeAgentHookInvocation(agent, hookEvent, payload, env);
+    if (event) {
+      await sendRpc("agent.event", { ...event }, { timeoutMs: 750 });
+    }
+  } catch {
+    // Agent hooks must never block or fail the agent command path.
+  }
+  print({});
 }
 
 const program = new Command();
@@ -236,6 +294,40 @@ sidebar
 sidebar
   .command("state")
   .action(async () => print(await sendRpc("sidebar.state")));
+
+const agent = program.command("agent");
+agent
+  .command("hook")
+  .argument("<agent>")
+  .argument("<event>")
+  .description("Normalize an agent hook payload from stdin and notify kmux")
+  .action(async (agentName: string, hookEvent: string) => {
+    await runAgentHook(agentName, hookEvent);
+  });
+agent
+  .command("event")
+  .argument("<agent>")
+  .argument("<event>")
+  .option("--workspace <workspaceId>")
+  .option("--pane <paneId>")
+  .option("--surface <surfaceId>")
+  .option("--session <sessionId>")
+  .option("--title <title>")
+  .option("--message <message>")
+  .action(async (agentName: string, eventName: string, options) =>
+    print(
+      await sendRpc("agent.event", {
+        workspaceId: options.workspace,
+        paneId: options.pane,
+        surfaceId: options.surface,
+        sessionId: options.session,
+        agent: agentName,
+        event: eventName,
+        title: options.title,
+        message: options.message
+      })
+    )
+  );
 
 const system = program.command("system");
 system.command("ping").action(async () => print(await sendRpc("system.ping")));
