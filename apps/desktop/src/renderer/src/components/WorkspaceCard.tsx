@@ -1,11 +1,12 @@
 import type {
   SidebarLogEntry,
   SidebarProgress,
+  SidebarStatusEntry,
   WorkspaceRowVm
 } from "@kmux/proto";
 
 import styles from "../styles/App.module.css";
-import {Codicon} from "./Codicon";
+import { Codicon } from "./Codicon";
 
 interface WorkspaceCardProps {
   row: WorkspaceRowVm;
@@ -35,12 +36,20 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
   const pathText = props.row.cwd?.trim() || "-";
   const branchText = props.row.branch?.trim() || "-";
   const showBranchIcon = Boolean(props.row.branch?.trim());
-  const statusText = (props.status ?? props.row.statusText)?.trim() ?? "";
-  const showStatus = Boolean(statusText);
+  const statusEntries = normalizeStatusEntries(props.row, props.status);
+  const visibleStatusEntries = (
+    props.expanded
+      ? statusEntries
+      : statusEntries.filter(
+          (entry) => entry.variant === "attention" || entry.variant === "error"
+        )
+  ).slice(0, 3);
+  const showStatus = visibleStatusEntries.length > 0;
   const showShortcut = Boolean(props.shortcutHint);
   const showMeta = props.expanded && props.row.ports.length > 0;
   const showAux =
-    props.expanded && Boolean(showStatus || props.progress || props.latestLog);
+    showStatus ||
+    (props.expanded && Boolean(props.progress || props.latestLog));
 
   return (
     <button
@@ -131,10 +140,7 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
             </div>
           </div>
           <div className={styles.workspaceSummaryRow}>
-            <span
-              className={styles.workspaceSummary}
-              data-workspace-summary=""
-            >
+            <span className={styles.workspaceSummary} data-workspace-summary="">
               {summaryText}
             </span>
           </div>
@@ -148,7 +154,10 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
             data-workspace-branch-row=""
           >
             {showBranchIcon ? (
-              <span className={styles.workspaceMetaIcon} data-workspace-branch-icon="">
+              <span
+                className={styles.workspaceMetaIcon}
+                data-workspace-branch-icon=""
+              >
                 <Codicon name="git-branch" />
               </span>
             ) : null}
@@ -181,7 +190,19 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
           {showAux ? (
             <div className={styles.workspaceAux}>
               {showStatus ? (
-                <div className={styles.statusPill}>{statusText}</div>
+                <div className={styles.statusPillGroup}>
+                  {visibleStatusEntries.map((entry) => (
+                    <div
+                      key={entry.key}
+                      className={styles.statusPill}
+                      data-variant={entry.variant}
+                    >
+                      {entry.label
+                        ? `${entry.label}: ${entry.text}`
+                        : entry.text}
+                    </div>
+                  ))}
+                </div>
               ) : null}
               {props.progress ? (
                 <div className={styles.workspaceProgress}>
@@ -211,4 +232,28 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
       </div>
     </button>
   );
+}
+
+function normalizeStatusEntries(
+  row: WorkspaceRowVm,
+  overrideStatus?: string
+): SidebarStatusEntry[] {
+  const rowStatusEntries = row.statusEntries ?? [];
+  if (rowStatusEntries.length > 0) {
+    return rowStatusEntries;
+  }
+
+  const statusText = (overrideStatus ?? row.statusText)?.trim();
+  if (!statusText) {
+    return [];
+  }
+
+  return [
+    {
+      key: "manual",
+      text: statusText,
+      variant: "info",
+      updatedAt: ""
+    }
+  ];
 }

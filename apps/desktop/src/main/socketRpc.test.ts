@@ -45,9 +45,9 @@ describe("socket rpc parsing", () => {
   });
 
   it("rejects unknown methods", () => {
-    expect(() =>
-      parseSocketRequest("workspace.rename", {}, "rpc_2")
-    ).toThrow(UnknownSocketMethodError);
+    expect(() => parseSocketRequest("workspace.rename", {}, "rpc_2")).toThrow(
+      UnknownSocketMethodError
+    );
   });
 
   it("validates method params strictly", () => {
@@ -97,6 +97,45 @@ describe("socket rpc parsing", () => {
         label: "Halfway"
       },
       authToken: "secret"
+    });
+  });
+
+  it("accepts agent event params for hook-driven input notifications", () => {
+    expect(
+      parseSocketRequest(
+        "agent.event",
+        {
+          workspaceId: "workspace_1",
+          paneId: "pane_1",
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          agent: "claude",
+          event: "needs_input",
+          title: "Claude needs input",
+          message: "Approve tool use?",
+          details: {
+            hook_event_name: "Notification"
+          }
+        },
+        "rpc_6"
+      )
+    ).toEqual({
+      id: "rpc_6",
+      method: "agent.event",
+      params: {
+        workspaceId: "workspace_1",
+        paneId: "pane_1",
+        surfaceId: "surface_1",
+        sessionId: "session_1",
+        agent: "claude",
+        event: "needs_input",
+        title: "Claude needs input",
+        message: "Approve tool use?",
+        details: {
+          hook_event_name: "Notification"
+        }
+      },
+      authToken: undefined
     });
   });
 });

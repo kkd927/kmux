@@ -4,6 +4,7 @@ import {
   sanitizeTerminalThemeSettings
 } from "@kmux/ui";
 import {
+  type AgentEventName,
   type ActiveWorkspaceVm,
   type Id,
   isoNow,
@@ -19,6 +20,7 @@ import {
   type ShellViewModel,
   type SidebarLogEntry,
   type SidebarProgress,
+  type SidebarStatusEntry,
   type SocketMode,
   type SplitAxis,
   type SplitDirection,
@@ -47,6 +49,7 @@ export interface WorkspaceState {
   branch?: string;
   ports: number[];
   statusText?: string;
+  statusEntries: Record<string, SidebarStatusEntry>;
   progress?: SidebarProgress;
   logs: SidebarLogEntry[];
 }
@@ -108,6 +111,13 @@ export const KMUX_BUILTIN_SYMBOL_FONT_FAMILY = '"kmux Symbols Nerd Font Mono"';
 export const DEFAULT_SIDEBAR_WIDTH = 320;
 export const MIN_SIDEBAR_WIDTH = 110;
 export const MAX_SIDEBAR_WIDTH = 320;
+const MANUAL_STATUS_KEY = "manual";
+const MAX_STATUS_TEXT_LENGTH = 256;
+const MAX_NOTIFICATION_MESSAGE_LENGTH = 512;
+const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
+const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
+const MAX_WORKSPACE_STATUS_ENTRIES = 16;
+const MAX_VIEW_STATUS_ENTRIES = 3;
 
 function defaultHomeDirectory(): string {
   const homeDirectory =
@@ -191,8 +201,16 @@ export type AppAction =
       attention?: boolean;
       unreadDelta?: number;
     }
-  | { type: "sidebar.setStatus"; workspaceId: Id; text: string }
-  | { type: "sidebar.clearStatus"; workspaceId: Id }
+  | {
+      type: "sidebar.setStatus";
+      workspaceId: Id;
+      text: string;
+      key?: string;
+      label?: string;
+      variant?: SidebarStatusEntry["variant"];
+      surfaceId?: Id;
+    }
+  | { type: "sidebar.clearStatus"; workspaceId: Id; key?: string }
   | { type: "sidebar.setProgress"; workspaceId: Id; progress: SidebarProgress }
   | { type: "sidebar.clearProgress"; workspaceId: Id }
   | {
@@ -210,6 +228,18 @@ export type AppAction =
       title: string;
       message: string;
       source?: NotificationItem["source"];
+    }
+  | {
+      type: "agent.event";
+      workspaceId: Id;
+      paneId?: Id;
+      surfaceId?: Id;
+      sessionId?: Id;
+      agent: string;
+      event: AgentEventName;
+      title?: string;
+      message?: string;
+      details?: Record<string, unknown>;
     }
   | { type: "notification.clear"; notificationId?: Id }
   | { type: "notification.jumpLatestUnread" }
@@ -371,6 +401,7 @@ export function createInitialState(
         pinned: true,
         cwdSummary: "~/",
         ports: [],
+        statusEntries: {},
         logs: []
       }
     },
@@ -499,18 +530,9 @@ export function applyAction(state: AppState, action: AppAction): AppEffect[] {
     case "surface.metadata":
       return updateSurfaceMetadata(state, action);
     case "sidebar.setStatus":
-      if (state.workspaces[action.workspaceId]) {
-        state.workspaces[action.workspaceId].statusText = action.text.slice(
-          0,
-          256
-        );
-      }
-      return [{ type: "persist" }];
+      return setSidebarStatus(state, action);
     case "sidebar.clearStatus":
-      if (state.workspaces[action.workspaceId]) {
-        state.workspaces[action.workspaceId].statusText = undefined;
-      }
-      return [{ type: "persist" }];
+      return clearSidebarStatus(state, action.workspaceId, action.key);
     case "sidebar.setProgress":
       if (state.workspaces[action.workspaceId]) {
         state.workspaces[action.workspaceId].progress = {
@@ -544,6 +566,8 @@ export function applyAction(state: AppState, action: AppAction): AppEffect[] {
       return [{ type: "persist" }];
     case "notification.create":
       return createNotification(state, action);
+    case "agent.event":
+      return applyAgentEvent(state, action);
     case "notification.clear":
       return clearNotifications(state, action.notificationId);
     case "notification.jumpLatestUnread":
@@ -623,6 +647,7 @@ function createWorkspace(
     pinned: false,
     cwdSummary: workspaceCwd,
     ports: [],
+    statusEntries: {},
     logs: []
   };
   state.panes[paneId] = {
@@ -1237,19 +1262,196 @@ function updateSurfaceMetadata(
     : [{ type: "persist" }];
 }
 
+function setSidebarStatus(
+  state: AppState,
+  action: Extract<AppAction, { type: "sidebar.setStatus" }>
+): AppEffect[] {
+  const workspace = state.workspaces[action.workspaceId];
+  if (!workspace) {
+    return [];
+  }
+
+  const key = normalizeStatusKey(action.key);
+  const text = normalizeStatusText(action.text);
+  const label = normalizeOptionalText(action.label, 64);
+  const variant = action.variant ?? "info";
+  const surfaceId = normalizeOptionalText(action.surfaceId, 128);
+  workspace.statusEntries ??= {};
+  const existing = workspace.statusEntries[key];
+  const nextManualStatus =
+    key === MANUAL_STATUS_KEY ? text || undefined : workspace.statusText;
+  const manualStatusChanged =
+    key === MANUAL_STATUS_KEY && workspace.statusText !== nextManualStatus;
+
+  if (!text) {
+    const hadEntry = Boolean(existing);
+    const hadManualStatus =
+      key === MANUAL_STATUS_KEY && workspace.statusText !== undefined;
+    delete workspace.statusEntries[key];
+    if (key === MANUAL_STATUS_KEY) {
+      workspace.statusText = undefined;
+    }
+    return hadEntry || hadManualStatus || pruneWorkspaceStatusEntries(workspace)
+      ? [{ type: "persist" }]
+      : [];
+  }
+
+  if (
+    existing &&
+    existing.text === text &&
+    existing.label === label &&
+    existing.variant === variant &&
+    existing.surfaceId === surfaceId
+  ) {
+    if (manualStatusChanged) {
+      workspace.statusText = nextManualStatus;
+    }
+    const pruned = pruneWorkspaceStatusEntries(workspace);
+    return manualStatusChanged || pruned ? [{ type: "persist" }] : [];
+  }
+
+  if (manualStatusChanged) {
+    workspace.statusText = nextManualStatus;
+  }
+  workspace.statusEntries[key] = {
+    key,
+    text,
+    label,
+    variant,
+    updatedAt: isoNow(),
+    surfaceId
+  };
+  pruneWorkspaceStatusEntries(workspace);
+  return [{ type: "persist" }];
+}
+
+function clearSidebarStatus(
+  state: AppState,
+  workspaceId: Id,
+  keyInput?: string
+): AppEffect[] {
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
+    return [];
+  }
+
+  const key = normalizeStatusKey(keyInput);
+  workspace.statusEntries ??= {};
+  const hadEntry = Boolean(workspace.statusEntries[key]);
+  const hadManualStatus =
+    key === MANUAL_STATUS_KEY && workspace.statusText !== undefined;
+  delete workspace.statusEntries[key];
+  if (key === MANUAL_STATUS_KEY) {
+    workspace.statusText = undefined;
+  }
+  return hadEntry || hadManualStatus || pruneWorkspaceStatusEntries(workspace)
+    ? [{ type: "persist" }]
+    : [];
+}
+
+type AgentTarget = {
+  workspace?: WorkspaceState;
+  pane?: PaneState;
+  surface?: SurfaceState;
+};
+
+function applyAgentEvent(
+  state: AppState,
+  action: Extract<AppAction, { type: "agent.event" }>
+): AppEffect[] {
+  const target = resolveAgentTarget(state, action);
+  if (!target.workspace) {
+    return [];
+  }
+
+  const agentName = normalizeAgentName(action.agent);
+  const displayName = agentDisplayName(agentName);
+  const statusScopeId = agentStatusScopeId(target, action);
+  const statusKey = agentStatusKey(agentName, statusScopeId);
+
+  if (action.event === "needs_input") {
+    const text =
+      normalizeStatusText(action.message) || `${displayName} needs input`;
+    setSidebarStatus(state, {
+      type: "sidebar.setStatus",
+      workspaceId: target.workspace.id,
+      key: statusKey,
+      label: displayName,
+      text,
+      variant: "attention",
+      surfaceId: target.surface?.id
+    });
+    return createNotification(state, {
+      type: "notification.create",
+      workspaceId: target.workspace.id,
+      paneId: target.pane?.id,
+      surfaceId: target.surface?.id,
+      title:
+        normalizeOptionalText(action.title, 120) ??
+        `${displayName} needs input`,
+      message: text,
+      source: "agent"
+    });
+  }
+
+  if (action.event === "running") {
+    return setSidebarStatus(state, {
+      type: "sidebar.setStatus",
+      workspaceId: target.workspace.id,
+      key: statusKey,
+      label: displayName,
+      text: normalizeStatusText(action.message) || "Running",
+      variant: "muted",
+      surfaceId: target.surface?.id
+    });
+  }
+
+  if (action.event === "idle" || action.event === "session_end") {
+    return clearAgentStatus(target.workspace, agentName, statusScopeId)
+      ? [{ type: "persist" }]
+      : [];
+  }
+
+  return [];
+}
+
 function createNotification(
   state: AppState,
   action: Extract<AppAction, { type: "notification.create" }>
 ): AppEffect[] {
+  const source = action.source ?? "socket";
+  const message = action.message.slice(0, MAX_NOTIFICATION_MESSAGE_LENGTH);
+  const now = isoNow();
+  const duplicate = findRecentDuplicateNotification(state, {
+    workspaceId: action.workspaceId,
+    surfaceId: action.surfaceId,
+    title: action.title,
+    message,
+    source
+  });
+  if (duplicate) {
+    if (source === "agent" && duplicate.source === "terminal") {
+      duplicate.source = "agent";
+      duplicate.title = action.title;
+      duplicate.message = message;
+      duplicate.createdAt = now;
+    }
+    duplicate.read = false;
+    if (duplicate.surfaceId) {
+      syncSurfaceNotificationState(state, duplicate.surfaceId);
+    }
+    return [{ type: "persist" }];
+  }
+
   const notification: NotificationItem = {
     id: makeId("notification"),
     workspaceId: action.workspaceId,
     paneId: action.paneId,
     surfaceId: action.surfaceId,
     title: action.title,
-    message: action.message.slice(0, 512),
-    source: action.source ?? "socket",
-    createdAt: isoNow(),
+    message,
+    source,
+    createdAt: now,
     read: false
   };
   state.notifications.unshift(notification);
@@ -1258,6 +1460,165 @@ function createNotification(
     state.surfaces[action.surfaceId].unreadCount += 1;
   }
   return [{ type: "notify.desktop", notification }, { type: "persist" }];
+}
+
+function normalizeStatusKey(keyInput?: string): string {
+  const key = (keyInput ?? MANUAL_STATUS_KEY).trim();
+  if (!key) {
+    return MANUAL_STATUS_KEY;
+  }
+  return key.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 96);
+}
+
+function normalizeStatusText(text: string | undefined): string {
+  return (text ?? "").trim().slice(0, MAX_STATUS_TEXT_LENGTH);
+}
+
+function normalizeOptionalText(
+  text: string | undefined,
+  maxLength: number
+): string | undefined {
+  const normalized = text?.trim().slice(0, maxLength);
+  return normalized || undefined;
+}
+
+function normalizeAgentName(agent: string): string {
+  return normalizeStatusKey(agent.toLowerCase()).slice(0, 48) || "agent";
+}
+
+function agentDisplayName(agent: string): string {
+  if (agent === "claude") {
+    return "Claude";
+  }
+  if (agent === "codex") {
+    return "Codex";
+  }
+  if (agent === "gemini") {
+    return "Gemini";
+  }
+  return agent
+    .split(/[-_:]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function agentStatusScopeId(
+  target: AgentTarget,
+  action: Pick<
+    Extract<AppAction, { type: "agent.event" }>,
+    "surfaceId" | "sessionId"
+  >
+): string {
+  return (
+    target.surface?.id ?? action.surfaceId ?? action.sessionId ?? "workspace"
+  );
+}
+
+function agentStatusKey(agent: string, scopeId: string): string {
+  return normalizeStatusKey(`agent:${agent}:${scopeId}`);
+}
+
+function clearAgentStatus(
+  workspace: WorkspaceState,
+  agent: string,
+  scopeId: string
+): boolean {
+  workspace.statusEntries ??= {};
+  const key = agentStatusKey(agent, scopeId);
+  if (!workspace.statusEntries[key]) {
+    return false;
+  }
+  delete workspace.statusEntries[key];
+  return true;
+}
+
+function resolveAgentTarget(
+  state: AppState,
+  action: Extract<AppAction, { type: "agent.event" }>
+): AgentTarget {
+  const sessionSurfaceId = action.sessionId
+    ? state.sessions[action.sessionId]?.surfaceId
+    : undefined;
+  const surface =
+    (action.surfaceId ? state.surfaces[action.surfaceId] : undefined) ??
+    (sessionSurfaceId ? state.surfaces[sessionSurfaceId] : undefined);
+  const pane =
+    (surface ? state.panes[surface.paneId] : undefined) ??
+    (action.paneId ? state.panes[action.paneId] : undefined);
+  const workspace =
+    (pane ? state.workspaces[pane.workspaceId] : undefined) ??
+    state.workspaces[action.workspaceId];
+  return { workspace, pane, surface };
+}
+
+function findRecentDuplicateNotification(
+  state: AppState,
+  candidate: Pick<
+    NotificationItem,
+    "workspaceId" | "surfaceId" | "title" | "message" | "source"
+  >
+): NotificationItem | undefined {
+  const nowMs = Date.now();
+  const candidateTitle = normalizeNotificationText(candidate.title);
+  const candidateMessage = normalizeNotificationText(candidate.message);
+  const candidateInputRequest = isInputRequestNotification(
+    candidateTitle,
+    candidateMessage
+  );
+
+  for (const notification of state.notifications.slice(
+    0,
+    MAX_NOTIFICATION_DEDUPE_SCAN
+  )) {
+    if (
+      notification.workspaceId !== candidate.workspaceId ||
+      notification.surfaceId !== candidate.surfaceId
+    ) {
+      continue;
+    }
+    const createdAtMs = Date.parse(notification.createdAt);
+    if (
+      !Number.isFinite(createdAtMs) ||
+      nowMs - createdAtMs > NOTIFICATION_DEDUPE_WINDOW_MS
+    ) {
+      continue;
+    }
+
+    const notificationTitle = normalizeNotificationText(notification.title);
+    const notificationMessage = normalizeNotificationText(notification.message);
+    if (
+      notificationTitle === candidateTitle &&
+      notificationMessage === candidateMessage
+    ) {
+      return notification;
+    }
+
+    if (
+      candidate.source === "agent" &&
+      notification.source === "terminal" &&
+      candidateInputRequest &&
+      isInputRequestNotification(notificationTitle, notificationMessage)
+    ) {
+      return notification;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeNotificationText(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isInputRequestNotification(title: string, message: string): boolean {
+  const text = `${title} ${message}`;
+  return (
+    text.includes("needs input") ||
+    text.includes("need input") ||
+    text.includes("waiting for input") ||
+    text.includes("tool permission")
+  );
 }
 
 function clearNotifications(state: AppState, notificationId?: Id): AppEffect[] {
@@ -1406,6 +1767,7 @@ function buildPtySpec(
   sessionId: Id
 ): PtySessionSpec {
   const session = state.sessions[sessionId];
+  const paneId = state.surfaces[surfaceId]?.paneId;
   return {
     sessionId,
     surfaceId,
@@ -1416,7 +1778,9 @@ function buildPtySpec(
     env: {
       KMUX_SOCKET_MODE: state.settings.socketMode,
       KMUX_WORKSPACE_ID: workspaceId,
+      ...(paneId ? { KMUX_PANE_ID: paneId } : {}),
       KMUX_SURFACE_ID: surfaceId,
+      KMUX_SESSION_ID: sessionId,
       KMUX_AUTH_TOKEN: session.authToken,
       TERM_PROGRAM: "kmux"
     }
@@ -1506,6 +1870,7 @@ export function buildViewModel(state: AppState): ShellViewModel {
   const workspacePaneIds = workspacePaneIdsById.get(workspace.id) ?? [];
   const activeWorkspaceSurfaceIds =
     workspaceSurfaceIdsById.get(workspace.id) ?? [];
+  const activeWorkspaceStatusEntries = workspaceStatusEntries(workspace);
   const activeWorkspace: ActiveWorkspaceVm = {
     id: workspace.id,
     name: workspace.name,
@@ -1547,6 +1912,7 @@ export function buildViewModel(state: AppState): ShellViewModel {
     ),
     activePaneId: workspace.activePaneId,
     sidebarStatus: workspace.statusText,
+    statusEntries: activeWorkspaceStatusEntries,
     progress: workspace.progress,
     logs: [...workspace.logs]
   };
@@ -1572,6 +1938,7 @@ export function buildViewModel(state: AppState): ShellViewModel {
         branch: entry.branch,
         ports: entry.ports,
         statusText: entry.statusText,
+        statusEntries: workspaceStatusEntries(entry),
         unreadCount: surfaces.reduce(
           (sum, surface) => sum + surface.unreadCount,
           0
@@ -1590,6 +1957,60 @@ export function buildViewModel(state: AppState): ShellViewModel {
       state.settings.terminalTypography
     )
   };
+}
+
+function workspaceStatusEntries(
+  workspace: WorkspaceState
+): SidebarStatusEntry[] {
+  return sortedWorkspaceStatusEntries(workspace).slice(
+    0,
+    MAX_VIEW_STATUS_ENTRIES
+  );
+}
+
+function sortedWorkspaceStatusEntries(
+  workspace: WorkspaceState
+): SidebarStatusEntry[] {
+  return Object.values(workspace.statusEntries ?? {}).sort(compareStatusEntries);
+}
+
+function compareStatusEntries(
+  left: SidebarStatusEntry,
+  right: SidebarStatusEntry
+): number {
+  const priorityDelta =
+    statusEntryPriority(left) - statusEntryPriority(right);
+  if (priorityDelta !== 0) {
+    return priorityDelta;
+  }
+  const updatedAtDelta = right.updatedAt.localeCompare(left.updatedAt);
+  return updatedAtDelta !== 0
+    ? updatedAtDelta
+    : left.key.localeCompare(right.key);
+}
+
+function statusEntryPriority(entry: SidebarStatusEntry): number {
+  if (entry.key === MANUAL_STATUS_KEY) {
+    return 0;
+  }
+  if (entry.variant === "error" || entry.variant === "attention") {
+    return 1;
+  }
+  return 2;
+}
+
+function pruneWorkspaceStatusEntries(workspace: WorkspaceState): boolean {
+  const entries = sortedWorkspaceStatusEntries(workspace);
+  if (entries.length <= MAX_WORKSPACE_STATUS_ENTRIES) {
+    return false;
+  }
+
+  workspace.statusEntries = Object.fromEntries(
+    entries
+      .slice(0, MAX_WORKSPACE_STATUS_ENTRIES)
+      .map((entry) => [entry.key, entry])
+  );
+  return true;
 }
 
 function firstWorkspaceSurface(
@@ -1666,6 +2087,7 @@ function sanitizeState(state: AppState): AppState {
   }
 
   for (const workspace of Object.values(state.workspaces)) {
+    sanitizeWorkspaceStatusEntries(workspace);
     const paneIds = listPaneIds(workspace).filter(
       (paneId) => state.panes[paneId]?.workspaceId === workspace.id
     );
@@ -1685,6 +2107,55 @@ function sanitizeState(state: AppState): AppState {
   }
 
   return state;
+}
+
+function sanitizeWorkspaceStatusEntries(workspace: WorkspaceState): void {
+  const legacyStatusText = normalizeStatusText(workspace.statusText);
+  const rawEntries =
+    typeof workspace.statusEntries === "object" && workspace.statusEntries
+      ? workspace.statusEntries
+      : {};
+  const nextEntries: Record<string, SidebarStatusEntry> = {};
+
+  for (const [rawKey, rawEntry] of Object.entries(rawEntries)) {
+    if (!rawEntry || typeof rawEntry !== "object") {
+      continue;
+    }
+    const entry = rawEntry as Partial<SidebarStatusEntry>;
+    const key = normalizeStatusKey(entry.key ?? rawKey);
+    if (key.startsWith("agent:")) {
+      continue;
+    }
+    const text = normalizeStatusText(entry.text);
+    if (!text) {
+      continue;
+    }
+    nextEntries[key] = {
+      key,
+      text,
+      label: normalizeOptionalText(entry.label, 64),
+      variant:
+        entry.variant === "attention" ||
+        entry.variant === "muted" ||
+        entry.variant === "error"
+          ? entry.variant
+          : "info",
+      updatedAt: normalizeOptionalText(entry.updatedAt, 64) ?? isoNow(),
+      surfaceId: normalizeOptionalText(entry.surfaceId, 128)
+    };
+  }
+
+  if (legacyStatusText && !nextEntries[MANUAL_STATUS_KEY]) {
+    nextEntries[MANUAL_STATUS_KEY] = {
+      key: MANUAL_STATUS_KEY,
+      text: legacyStatusText,
+      variant: "info",
+      updatedAt: isoNow()
+    };
+  }
+  workspace.statusText = legacyStatusText || undefined;
+  workspace.statusEntries = nextEntries;
+  pruneWorkspaceStatusEntries(workspace);
 }
 
 function sanitizeSessionLaunchConfig(

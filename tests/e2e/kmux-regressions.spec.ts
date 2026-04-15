@@ -875,6 +875,73 @@ test("sidebar status/progress/log updates from cli are reflected and cleared in 
       )
     ).toBeTruthy();
 
+    const agentMessage = "Approve tool use?";
+    const activePaneId = afterLog.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      afterLog.activeWorkspace.panes[activePaneId].activeSurfaceId;
+    await runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "agent",
+        "event",
+        "claude",
+        "needs_input",
+        "--workspace",
+        workspaceId,
+        "--surface",
+        activeSurfaceId,
+        "--message",
+        agentMessage
+      ]
+    );
+    const afterAgentNeedsInput = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.statusEntries.some(
+          (entry) =>
+            entry.key === `agent:claude:${activeSurfaceId}` &&
+            entry.variant === "attention" &&
+            entry.text === agentMessage
+        ) &&
+        view.notifications.some(
+          (notification) =>
+            notification.source === "agent" &&
+            notification.message === agentMessage
+        ),
+      "agent needs-input event should update sidebar state and notifications"
+    );
+    expect(
+      afterAgentNeedsInput.activeWorkspace.statusEntries.some(
+        (entry) => entry.key === `agent:claude:${activeSurfaceId}`
+      )
+    ).toBeTruthy();
+
+    await runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "agent",
+        "event",
+        "claude",
+        "idle",
+        "--workspace",
+        workspaceId,
+        "--surface",
+        activeSurfaceId
+      ]
+    );
+    await waitForView(
+      page,
+      (view) =>
+        !view.activeWorkspace.statusEntries.some(
+          (entry) => entry.key === `agent:claude:${activeSurfaceId}`
+        ),
+      "agent idle event should clear only the agent sidebar status"
+    );
+
     await runCliJson(
       launched.cliPath,
       launched.workspaceRoot,

@@ -3,6 +3,19 @@ import { z } from "zod";
 const emptyParamsSchema = z.object({}).strict();
 const splitDirectionSchema = z.enum(["left", "right", "up", "down"]);
 const logLevelSchema = z.enum(["info", "warn", "error"]);
+const sidebarStatusVariantSchema = z.enum([
+  "info",
+  "attention",
+  "muted",
+  "error"
+]);
+const agentEventSchema = z.enum([
+  "session_start",
+  "running",
+  "needs_input",
+  "idle",
+  "session_end"
+]);
 
 const socketEnvelopeSchema = z.object({
   jsonrpc: z.literal("2.0"),
@@ -76,12 +89,30 @@ const socketParamSchemas = {
   "sidebar.set_status": z
     .object({
       workspaceId: z.string().min(1).optional(),
-      text: z.string()
+      surfaceId: z.string().min(1).optional(),
+      key: z.string().min(1).optional(),
+      label: z.string().optional(),
+      text: z.string(),
+      variant: sidebarStatusVariantSchema.optional()
     })
     .strict(),
   "sidebar.clear_status": z
     .object({
-      workspaceId: z.string().min(1).optional()
+      workspaceId: z.string().min(1).optional(),
+      key: z.string().min(1).optional()
+    })
+    .strict(),
+  "agent.event": z
+    .object({
+      workspaceId: z.string().min(1).optional(),
+      paneId: z.string().min(1).optional(),
+      surfaceId: z.string().min(1).optional(),
+      sessionId: z.string().min(1).optional(),
+      agent: z.string().min(1),
+      event: agentEventSchema,
+      title: z.string().optional(),
+      message: z.string().optional(),
+      details: z.record(z.string(), z.unknown()).optional()
     })
     .strict(),
   "sidebar.set_progress": z
