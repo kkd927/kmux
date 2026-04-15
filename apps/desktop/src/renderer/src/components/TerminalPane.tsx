@@ -21,6 +21,7 @@ import type { ColorTheme } from "@kmux/ui";
 import { Codicon } from "./Codicon";
 import {
   applyTerminalWebglPreference,
+  pasteClipboardIntoTerminal,
   type DisposableAddon
 } from "../terminalRenderer";
 import styles from "../styles/TerminalPane.module.css";
@@ -119,6 +120,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     );
     containerRef.current.dataset.terminalBaseY = String(
       terminal.buffer.active.baseY
+    );
+    containerRef.current.dataset.terminalBracketedPasteMode = String(
+      terminal.modes.bracketedPasteMode
     );
   }
 
@@ -256,12 +260,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     window.kmux.writeClipboardText(selection);
   }
 
-  async function pasteClipboard(surfaceId: string): Promise<void> {
-    const text = window.kmux.readClipboardText();
-    if (!text) {
-      return;
-    }
-    await window.kmux.sendText(surfaceId, text);
+  function pasteClipboard(terminal: Terminal): void {
+    pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: () => window.kmux.readClipboardText()
+    });
   }
 
   useEffect(() => {
@@ -331,7 +334,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         event.preventDefault();
         event.stopPropagation();
         if (!copyModeRef.current) {
-          void pasteClipboard(currentSurface.id);
+          pasteClipboard(terminal);
         }
         return;
       }

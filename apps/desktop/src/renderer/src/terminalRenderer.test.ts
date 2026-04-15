@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { applyTerminalWebglPreference } from "./terminalRenderer";
+import {
+  applyTerminalWebglPreference,
+  pasteClipboardIntoTerminal
+} from "./terminalRenderer";
 
 describe("terminal renderer helpers", () => {
   it("loads the WebGL addon once when enabled", () => {
@@ -70,5 +73,35 @@ describe("terminal renderer helpers", () => {
 
     expect(nextAddon).toBeNull();
     expect(onLoadError).toHaveBeenCalledWith(loadError);
+  });
+
+  it("does not paste when the clipboard is empty", () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+
+    const didPaste = pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: () => ""
+    });
+
+    expect(didPaste).toBe(false);
+    expect(terminal.paste).not.toHaveBeenCalled();
+  });
+
+  it("delegates multiline clipboard text to xterm paste unchanged", () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const text = "alpha\nbeta\n";
+
+    const didPaste = pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: () => text
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledTimes(1);
+    expect(terminal.paste).toHaveBeenCalledWith(text);
   });
 });

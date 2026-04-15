@@ -10,6 +10,10 @@ import {
   waitForView
 } from "./helpers";
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 test("mouse resize controls update pane layout like a real user interaction", async () => {
   const launched = await launchKmux("kmux-e2e-pane-interactions-");
 
@@ -286,6 +290,118 @@ test("closing the active tab focuses the previous tab in the same pane", async (
         `[data-pane-id="${paneId}"] [data-surface-id="${firstSurfaceId}"] [role="tab"]`
       )
     ).toHaveAttribute("aria-selected", "true");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("terminal paste shortcut preserves bracketed paste markers", async () => {
+  const launched = await launchKmux("kmux-e2e-bracketed-paste-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+    const probeScript = `
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+      process.stdin.setEncoding("utf8");
+      process.stdin.resume();
+      process.stdout.write("\\x1b[?2004hKMUX_BRACKET_READY\\r\\n");
+      let data = "";
+      let finished = false;
+      function finish(reason) {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(false);
+        }
+        const encoded = Buffer.from(data, "utf8").toString("base64");
+        process.stdout.write(
+          "\\x1b[?2004l\\r\\nKMUX_BRACKET_RESULT:" +
+            encoded +
+            ":" +
+            reason +
+            "\\r\\n",
+          () => process.exit(reason === "end-marker" ? 0 : 1)
+        );
+      }
+      const timeout = setTimeout(() => finish("timeout"), 4000);
+      process.stdin.on("data", (chunk) => {
+        data += chunk;
+        if (data.includes("\\x1b[201~")) {
+          clearTimeout(timeout);
+          finish("end-marker");
+        }
+      });
+    `;
+    const probeCommand = `${shellQuote(
+      process.execPath
+    )} -e "eval(Buffer.from('${Buffer.from(
+      probeScript,
+      "utf8"
+    ).toString("base64")}','base64').toString('utf8'))"\r`;
+
+    await dispatch(page, {
+      type: "settings.update",
+      patch: {
+        ...initial.settings,
+        socketMode: "allowAll"
+      }
+    });
+
+    runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "surface",
+        "send-text",
+        "--surface",
+        activeSurfaceId,
+        "--text",
+        probeCommand
+      ]
+    );
+
+    await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      "KMUX_BRACKET_READY",
+      6000
+    );
+    const terminal = page.getByTestId(`terminal-${activeSurfaceId}`);
+    await expect(terminal).toHaveAttribute(
+      "data-terminal-bracketed-paste-mode",
+      "true"
+    );
+    await page.evaluate(() => {
+      window.kmux.writeClipboardText("alpha\nbeta");
+    });
+
+    const terminalInput = page.locator("textarea.xterm-helper-textarea");
+    await terminalInput.focus();
+    await page.keyboard.press("Meta+V");
+
+    const snapshot = await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      "KMUX_BRACKET_RESULT:",
+      8000
+    );
+    const match = snapshot.match(
+      /KMUX_BRACKET_RESULT:([A-Za-z0-9+/=]+):(end-marker|timeout)/
+    );
+    expect(match).not.toBeNull();
+
+    const received = Buffer.from(match![1], "base64").toString("utf8");
+    expect(match![2]).toBe("end-marker");
+    expect(received).toBe("\x1b[200~alpha\rbeta\x1b[201~");
   } finally {
     await closeKmux(launched);
   }
