@@ -6,12 +6,21 @@ export interface AddonHost<TAddon extends DisposableAddon> {
   loadAddon(addon: TAddon): void;
 }
 
+export interface TerminalPasteHost {
+  paste(data: string): void;
+}
+
 interface ApplyTerminalWebglPreferenceOptions<TAddon extends DisposableAddon> {
   terminal: AddonHost<TAddon>;
   currentAddon: TAddon | null;
   useWebgl: boolean;
   createAddon: () => TAddon;
   onLoadError?: (error: unknown) => void;
+}
+
+interface PasteClipboardIntoTerminalOptions {
+  terminal: TerminalPasteHost;
+  readClipboardText: () => string;
 }
 
 export function applyTerminalWebglPreference<TAddon extends DisposableAddon>(
@@ -34,4 +43,16 @@ export function applyTerminalWebglPreference<TAddon extends DisposableAddon>(
     options.onLoadError?.(error);
     return null;
   }
+}
+
+export function pasteClipboardIntoTerminal(
+  options: PasteClipboardIntoTerminalOptions
+): boolean {
+  const text = options.readClipboardText();
+  if (!text) {
+    return false;
+  }
+
+  options.terminal.paste(text);
+  return true;
 }
