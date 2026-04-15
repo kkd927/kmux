@@ -28,6 +28,7 @@
     "build:pty-host": "tsup apps/desktop/src/pty-host/index.ts --platform=node --format=cjs --target=node20 --out-dir apps/desktop/dist/pty-host --clean",
     "build:cli": "tsup packages/cli/src/bin.ts --platform=node --format=cjs --target=node20 --out-dir packages/cli/dist --clean",
     "rebuild:electron": "electron-rebuild -f -w node-pty",
+    "postinstall": "node scripts/ensure-node-pty-spawn-helper.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",

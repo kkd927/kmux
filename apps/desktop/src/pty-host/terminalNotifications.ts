@@ -26,7 +26,19 @@ function splitOscPayload(data: string): [string, string] {
 export function buildOsc9Notification(
   data: string,
   fallbackTitle: string
-): TerminalNotificationEventPayload {
+): TerminalNotificationEventPayload | null {
+  const match = data.match(/^(\d+);/);
+  if (match) {
+    const subtype = Number(match[1]);
+    if (subtype !== 1) {
+      return null;
+    }
+    return {
+      protocol: 9,
+      title: normalizeText(fallbackTitle),
+      message: normalizeText(data.slice(match[0].length))
+    };
+  }
   return {
     protocol: 9,
     title: normalizeText(fallbackTitle),

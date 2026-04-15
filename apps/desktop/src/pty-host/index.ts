@@ -4,19 +4,33 @@ import type {
   Terminal as HeadlessTerminal
 } from "@xterm/headless";
 import Headless from "@xterm/headless";
-import {SerializeAddon} from "@xterm/addon-serialize";
+import { SerializeAddon } from "@xterm/addon-serialize";
 
-import type {Id, PtyEvent, PtyRequest, SurfaceSnapshotPayload, TerminalKeyInput} from "@kmux/proto";
+import type {
+  Id,
+  PtyEvent,
+  PtyRequest,
+  SurfaceSnapshotPayload,
+  TerminalKeyInput
+} from "@kmux/proto";
 import type * as PtyModule from "node-pty";
-import {loadNodePty} from "./nodePtyLoader";
+import { loadNodePty } from "./nodePtyLoader";
 import {
   buildOsc9Notification,
   buildOsc777Notification,
   parseOsc99Notification,
   type Osc99NotificationState
 } from "./terminalNotifications";
-import {resolveDefaultShellArgs, shouldStripShellManagedEnv} from "./shellLaunch";
-import {buildSessionEnv} from "./sessionEnv";
+import { resolveOsc7Cwd } from "./osc7";
+import {
+  prepareShellIntegrationLaunch,
+  shouldApplyShellIntegration
+} from "./shellIntegration";
+import {
+  resolveDefaultShellArgs,
+  shouldStripShellManagedEnv
+} from "./shellLaunch";
+import { buildSessionEnv } from "./sessionEnv";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -86,14 +100,6 @@ function encodeKey(input: TerminalKeyInput): string {
   }
 }
 
-function parseOsc7(data: string): string | undefined {
-  if (!data.startsWith("file://")) {
-    return undefined;
-  }
-  const url = new URL(data);
-  return decodeURIComponent(url.pathname);
-}
-
 function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
   return {
     surfaceId: record.surfaceId,
@@ -129,27 +135,36 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   const pty = resolvePtyModule();
   const shell = request.spec.launch.shell || process.env.SHELL || "/bin/zsh";
   const args =
-    request.spec.launch.args ?? resolveDefaultShellArgs(shell, process.platform);
+    request.spec.launch.args ??
+    resolveDefaultShellArgs(shell, process.platform);
   const stripShellManagedEnv = shouldStripShellManagedEnv(
     shell,
     request.spec.launch.args,
     process.platform
   );
+  const env = buildSessionEnv(
+    process.env,
+    request.spec.launch.env,
+    request.spec.env,
+    {
+      stripShellManagedEnv
+    }
+  );
+  const preparedLaunch = prepareShellIntegrationLaunch(shell, args, env, {
+    enabled: shouldApplyShellIntegration(
+      shell,
+      request.spec.launch.args,
+      process.platform
+    )
+  });
   let ptyProcess: PtyModule.IPty;
   try {
-    ptyProcess = pty.spawn(shell, args, {
+    ptyProcess = pty.spawn(preparedLaunch.shellPath, preparedLaunch.args, {
       name: "xterm-256color",
       cols: request.spec.cols,
       rows: request.spec.rows,
       cwd: request.spec.launch.cwd ?? process.env.HOME,
-      env: buildSessionEnv(
-        process.env,
-        request.spec.launch.env,
-        request.spec.env,
-        {
-          stripShellManagedEnv
-        }
-      )
+      env: preparedLaunch.env
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -195,7 +210,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   sessions.set(record.sessionId, record);
 
   terminal.parser.registerOscHandler(7, (data: string) => {
-    const cwd = parseOsc7(data);
+    console.log(`[OSC 7] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    const cwd = resolveOsc7Cwd(record.cwd, data);
     if (cwd) {
       record.cwd = cwd;
       send({
@@ -209,6 +225,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.onTitleChange((title: string) => {
+    console.log(`[TitleChange] surface=${record.surfaceId} old=${record.title} new=${JSON.stringify(title)}`);
     record.title = title;
     send({
       type: "metadata",
@@ -219,6 +236,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.onBell(() => {
+    console.log(`[Bell] surface=${record.surfaceId} title=${record.title}`);
     send({
       type: "bell",
       surfaceId: record.surfaceId,
@@ -228,17 +246,21 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.parser.registerOscHandler(9, (data: string) => {
+    console.log(`[OSC 9] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
     const notification = buildOsc9Notification(data, record.title);
-    sendTerminalNotification(
-      record,
-      notification.protocol,
-      notification.title,
-      notification.message
-    );
+    if (notification) {
+      sendTerminalNotification(
+        record,
+        notification.protocol,
+        notification.title,
+        notification.message
+      );
+    }
     return true;
   });
   terminal.parser.registerOscHandler(99, (data: string) => {
-    const {nextState, notification} = parseOsc99Notification(
+    console.log(`[OSC 99] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    const { nextState, notification } = parseOsc99Notification(
       data,
       record.osc99State,
       record.title
@@ -255,7 +277,12 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.parser.registerOscHandler(777, (data: string) => {
-    const notification = buildOsc777Notification(data, record.title, record.cwd);
+    console.log(`[OSC 777] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    const notification = buildOsc777Notification(
+      data,
+      record.title,
+      record.cwd
+    );
     if (notification) {
       sendTerminalNotification(
         record,

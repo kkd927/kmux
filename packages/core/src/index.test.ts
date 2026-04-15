@@ -540,6 +540,15 @@ describe("core reducer", () => {
       ])
     );
 
+    const duplicateCwdEffects = applyAction(state, {
+      type: "surface.metadata",
+      surfaceId,
+      cwd: "/tmp/kmux"
+    });
+    expect(
+      duplicateCwdEffects.some((effect) => effect.type === "metadata.refresh")
+    ).toBe(false);
+
     const effectsWithDerivedValues = applyAction(state, {
       type: "surface.metadata",
       surfaceId,
