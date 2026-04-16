@@ -42,6 +42,7 @@ function createHarness(options?: {
   dialogs: UpdaterDialogs & {
     showUpToDate: ReturnType<typeof vi.fn>;
     promptForDownload: ReturnType<typeof vi.fn>;
+    promptForInstall: ReturnType<typeof vi.fn>;
     showError: ReturnType<typeof vi.fn>;
   };
   notifier: UpdaterNotifier & {
@@ -59,6 +60,7 @@ function createHarness(options?: {
   const dialogs = {
     showUpToDate: vi.fn(async () => undefined),
     promptForDownload: vi.fn(async () => false),
+    promptForInstall: vi.fn(async () => false),
     showError: vi.fn(async () => undefined)
   };
   const notifier = {
@@ -155,7 +157,28 @@ describe("updater controller", () => {
     });
   });
 
-  it("tracks download completion and background completion notifications", async () => {
+  it("prompts to install immediately after a foreground download completes", async () => {
+    const harness = createHarness();
+    harness.dialogs.promptForDownload.mockResolvedValue(true);
+    harness.dialogs.promptForInstall.mockResolvedValue(true);
+
+    await harness.controller.checkForUpdates("foreground");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    harness.updater.emit("update-downloaded", { version: "0.1.12" });
+    await Promise.resolve();
+
+    expect(harness.dialogs.promptForInstall).toHaveBeenCalledWith("0.1.12");
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    expect(harness.notifier.notifyUpdateDownloaded).not.toHaveBeenCalled();
+    expect(harness.controller.getState()).toEqual({
+      status: "downloaded",
+      version: "0.1.12"
+    });
+  });
+
+  it("tracks background download completion and background completion notifications", async () => {
     const harness = createHarness();
 
     await harness.controller.checkForUpdates("background");
@@ -179,6 +202,7 @@ describe("updater controller", () => {
     expect(harness.notifier.notifyUpdateDownloaded).toHaveBeenCalledWith(
       "0.1.12"
     );
+    expect(harness.dialogs.promptForInstall).not.toHaveBeenCalled();
     expect(harness.controller.getState()).toEqual({
       status: "downloaded",
       version: "0.1.12"

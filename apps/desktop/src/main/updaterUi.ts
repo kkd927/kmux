@@ -24,12 +24,25 @@ export function createNativeUpdaterDialogs(
     async promptForDownload(version: string): Promise<boolean> {
       const result = await showMessageBox(options.getWindow(), {
         type: "info",
-        buttons: ["Download", "Later"],
+        buttons: ["Download and Install", "Later"],
         defaultId: 0,
         cancelId: 1,
         message: `${options.appName} ${version} is available`,
         detail:
-          "Download the latest stable release now? You can install it after the download finishes from the app menu."
+          "Download and install the latest stable release? You will be asked to restart once the download finishes."
+      });
+      return result.response === 0;
+    },
+    async promptForInstall(version?: string): Promise<boolean> {
+      const versionLabel = version ? ` ${version}` : "";
+      const result = await showMessageBox(options.getWindow(), {
+        type: "info",
+        buttons: ["Install and Restart", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+        message: `${options.appName}${versionLabel} is ready to install`,
+        detail:
+          "The update has finished downloading. Install and restart now?"
       });
       return result.response === 0;
     },

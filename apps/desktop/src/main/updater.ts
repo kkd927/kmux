@@ -47,6 +47,7 @@ export interface UpdaterDriver {
 export interface UpdaterDialogs {
   showUpToDate(currentVersion: string): Promise<void>;
   promptForDownload(version: string): Promise<boolean>;
+  promptForInstall(version?: string): Promise<boolean>;
   showError(message: string): Promise<void>;
 }
 
@@ -218,6 +219,10 @@ export function createUpdaterController(
         status: "downloaded",
         version
       });
+      if (source === "foreground") {
+        void promptForInstall(version);
+        return;
+      }
       if (source === "background" && version) {
         options.notifier.notifyUpdateDownloaded(version);
       }
@@ -354,6 +359,13 @@ export function createUpdaterController(
     const shouldDownload = await options.dialogs.promptForDownload(version);
     if (shouldDownload) {
       await downloadUpdate("foreground");
+    }
+  }
+
+  async function promptForInstall(version?: string): Promise<void> {
+    const shouldInstall = await options.dialogs.promptForInstall(version);
+    if (shouldInstall) {
+      quitAndInstall();
     }
   }
 
