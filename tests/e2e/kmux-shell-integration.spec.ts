@@ -232,3 +232,69 @@ test("kmux preserves zsh login startup files while wrapping zsh", async () => {
     await closeKmux(launched);
   }
 });
+
+test("kmux restores zsh history before loading the user zshrc", async () => {
+  const sandbox = createSandbox("kmux-e2e-shell-integration-history-");
+  writeFileSync(
+    sandbox.shellHistoryPath,
+    ": 1710000000:0;echo kmux-history-proof\n",
+    "utf8"
+  );
+
+  const launched = await launchKmuxWithSandbox(sandbox, {
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      SHELL: "/bin/zsh"
+    }
+  });
+
+  try {
+    const { page } = launched;
+    const runningView = await waitForView(
+      page,
+      (view) => {
+        const activePaneId = view.activeWorkspace.activePaneId;
+        const activeSurfaceId =
+          view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
+        return (
+          !!activeSurfaceId &&
+          view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
+            "running"
+        );
+      },
+      "initial zsh shell should reach a running session state",
+      10_000
+    );
+
+    const activePaneId = runningView.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      runningView.activeWorkspace.panes[activePaneId].activeSurfaceId;
+
+    await page.evaluate(
+      ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
+      {
+        surfaceId: activeSurfaceId,
+        text:
+          'print -r -- "__KMUX_HISTORY__ HISTFILE=$HISTFILE COUNT=${#history} MATCH=${history[(r)echo kmux-history-proof*]}"\r'
+      }
+    );
+
+    await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      `__KMUX_HISTORY__ HISTFILE=${sandbox.shellHistoryPath}`,
+      10_000
+    );
+
+    const snapshot = await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      "MATCH=echo kmux-history-proof",
+      10_000
+    );
+
+    expect(snapshot).toMatch(/COUNT=[1-9][0-9]*/);
+  } finally {
+    await closeKmux(launched);
+  }
+});

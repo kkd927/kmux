@@ -49,6 +49,7 @@ describe("shell integration launch preparation", () => {
       __KMUX_OSC7_INSTALLED: "1",
       HOME: "/Users/test",
       KMUX_BASH_INTEGRATION_SCRIPT: "/tmp/kmux.bash",
+      KMUX_ORIGINAL_HISTFILE: "/Users/test/.zsh_history",
       KMUX_SHELL_INTEGRATION: "1"
     };
     const prepared = prepareShellIntegrationLaunch(
@@ -80,6 +81,9 @@ describe("shell integration launch preparation", () => {
     expect(prepared.shellPath).toBe("/bin/zsh");
     expect(prepared.args).toEqual(["-l"]);
     expect(prepared.env.KMUX_SHELL_INTEGRATION).toBe("1");
+    expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
+      "/Users/test/.config/zsh/.zsh_history"
+    );
     expect(prepared.env.KMUX_ORIGINAL_ZDOTDIR).toBe("/Users/test/.config/zsh");
     expect(prepared.env.ZDOTDIR).toMatch(/kmux-zsh-/);
 
@@ -94,9 +98,15 @@ describe("shell integration launch preparation", () => {
     expect(zshrcWrapper).toContain(
       'export ZDOTDIR="${_kmux_restored_zdotdir:-$KMUX_ORIGINAL_ZDOTDIR}"'
     );
+    expect(zshrcWrapper).toContain(
+      'export HISTFILE="${KMUX_ORIGINAL_HISTFILE:-${_kmux_restored_zdotdir:-$KMUX_ORIGINAL_ZDOTDIR}/.zsh_history}"'
+    );
     expect(existsSync(join(wrapperDir, ".zlogin"))).toBe(false);
     expect(readFileSync(join(wrapperDir, ".zshenv"), "utf8")).toContain(
       'export KMUX_ORIGINAL_ZDOTDIR="$ZDOTDIR"'
+    );
+    expect(readFileSync(join(wrapperDir, ".zprofile"), "utf8")).toContain(
+      'export KMUX_ORIGINAL_HISTFILE="$HISTFILE"'
     );
 
     const integrationScript = prepared.env.KMUX_ZSH_INTEGRATION_SCRIPT;
@@ -108,6 +118,22 @@ describe("shell integration launch preparation", () => {
     );
     expect(integrationContents).toContain("typeset -g __KMUX_OSC7_INSTALLED=1");
     expect(integrationContents).not.toContain("typeset -gx");
+  });
+
+  it("preserves explicit HISTFILE overrides when wrapping zsh", () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HISTFILE: "/Users/test/.local/share/zsh/history",
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
+      "/Users/test/.local/share/zsh/history"
+    );
   });
 
   it("wraps bash launches with a temporary home directory", () => {
