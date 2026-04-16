@@ -20,6 +20,7 @@ let cleanupRegistered = false;
 const SHELL_INTEGRATION_ENV_KEYS = [
   "KMUX_BASH_INTEGRATION_SCRIPT",
   "KMUX_FISH_INTEGRATION_SCRIPT",
+  "KMUX_ORIGINAL_HISTFILE",
   "KMUX_ORIGINAL_HOME",
   "KMUX_ORIGINAL_XDG_CONFIG_HOME",
   "KMUX_ORIGINAL_ZDOTDIR",
@@ -113,14 +114,17 @@ function prepareZshShellLaunch(
   }
 
   const wrapperDir = ensureZshWrapperDir();
+  const originalZdotdir = env.ZDOTDIR?.trim() || homeDir;
 
   return {
     shellPath,
     args,
     env: {
       ...env,
+      KMUX_ORIGINAL_HISTFILE:
+        env.HISTFILE?.trim() || join(originalZdotdir, ".zsh_history"),
       KMUX_SHELL_INTEGRATION: "1",
-      KMUX_ORIGINAL_ZDOTDIR: env.ZDOTDIR?.trim() || homeDir,
+      KMUX_ORIGINAL_ZDOTDIR: originalZdotdir,
       KMUX_ZSH_INTEGRATION_SCRIPT: join(wrapperDir, "kmux.zsh"),
       ZDOTDIR: wrapperDir
     }
@@ -303,10 +307,20 @@ function buildZshWrapper(
     );
     lines.push('    export KMUX_ORIGINAL_ZDOTDIR="$ZDOTDIR"');
     lines.push("  fi");
+    lines.push('  if [[ -n "${HISTFILE:-}" ]]; then');
+    lines.push('    export KMUX_ORIGINAL_HISTFILE="$HISTFILE"');
+    lines.push("  fi");
   }
 
   if (options.restoreOriginalZdotdir) {
     lines.push('  _kmux_restored_zdotdir="${ZDOTDIR:-$KMUX_ORIGINAL_ZDOTDIR}"');
+    lines.push(
+      '  if [[ "${HISTFILE:-}" == "$_kmux_wrapper_zdotdir/.zsh_history" ]]; then'
+    );
+    lines.push(
+      '    export HISTFILE="${KMUX_ORIGINAL_HISTFILE:-${_kmux_restored_zdotdir:-$KMUX_ORIGINAL_ZDOTDIR}/.zsh_history}"'
+    );
+    lines.push("  fi");
   }
 
   if (options.sourceIntegrationScript) {
