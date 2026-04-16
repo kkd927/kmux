@@ -20,8 +20,11 @@ import type { ColorTheme } from "@kmux/ui";
 
 import { Codicon } from "./Codicon";
 import {
+  applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
   pasteClipboardIntoTerminal,
+  resolveTerminalEnterRewrite,
+  type PendingTerminalEnterRewrite,
   type DisposableAddon
 } from "../terminalRenderer";
 import styles from "../styles/TerminalPane.module.css";
@@ -66,6 +69,10 @@ type SearchAddonWithInternals = SearchAddon & {
   ) => boolean;
 };
 
+type PendingEnterRewrite = PendingTerminalEnterRewrite & {
+  timeout: ReturnType<typeof setTimeout>;
+};
+
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
     props.surfaces.find((surface) => surface.id === props.activeSurfaceId) ??
@@ -76,6 +83,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const webglAddonRef = useRef<DisposableAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingEnterRewriteRef = useRef<PendingEnterRewrite | null>(null);
   const [query, setQuery] = useState("");
   const [copyMode, setCopyMode] = useState(false);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
@@ -280,7 +288,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
       fontWeight: 400,
       cursorBlink: true,
-      macOptionIsMeta: true,
+      macOptionIsMeta: false,
       scrollback: 5000,
       minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
       theme: terminalTheme
@@ -292,11 +300,43 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     searchRef.current = search;
     terminal.loadAddon(fit);
     terminal.loadAddon(search);
+    const clearPendingEnterRewrite = () => {
+      const pending = pendingEnterRewriteRef.current;
+      if (pending) {
+        clearTimeout(pending.timeout);
+        pendingEnterRewriteRef.current = null;
+      }
+    };
+    const queueEnterRewrite = (
+      event: KeyboardEvent,
+      surfaceId: string
+    ): void => {
+      const rewrite = resolveTerminalEnterRewrite(event);
+      if (!rewrite) {
+        return;
+      }
+      clearPendingEnterRewrite();
+      const timeout = setTimeout(() => {
+        const pending = pendingEnterRewriteRef.current;
+        if (
+          pending?.surfaceId === surfaceId &&
+          pending.sequence === rewrite.sequence
+        ) {
+          pendingEnterRewriteRef.current = null;
+        }
+      }, 100);
+      pendingEnterRewriteRef.current = {
+        surfaceId,
+        sequence: rewrite.sequence,
+        timeout
+      };
+    };
     const handleTerminalShortcut = (event: KeyboardEvent) => {
       const currentSurface = activeSurfaceRef.current;
       if (!currentSurface) {
         return;
       }
+      queueEnterRewrite(event, currentSurface.id);
       if (matchesTerminalShortcut(event, "terminal.copyMode")) {
         event.preventDefault();
         event.stopPropagation();
@@ -423,7 +463,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const disposeData = terminal.onData((data) => {
       const currentSurface = activeSurfaceRef.current;
       if (currentSurface) {
-        void window.kmux.sendText(currentSurface.id, data);
+        const rewrite = applyPendingTerminalEnterRewrite(
+          currentSurface.id,
+          data,
+          pendingEnterRewriteRef.current
+        );
+        if (rewrite.clearPending) {
+          clearPendingEnterRewrite();
+        }
+        void window.kmux.sendText(currentSurface.id, rewrite.data);
       }
     });
     const disposeWriteParsed = terminal.onWriteParsed(() => {
@@ -439,6 +487,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
       container.removeEventListener("keydown", handleTerminalShortcut, true);
+      clearPendingEnterRewrite();
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
       terminal.dispose();
@@ -574,6 +623,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   useEffect(() => {
     setCopyMode(false);
+    const pending = pendingEnterRewriteRef.current;
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pendingEnterRewriteRef.current = null;
+    }
   }, [activeSurface.id]);
 
   useEffect(() => {

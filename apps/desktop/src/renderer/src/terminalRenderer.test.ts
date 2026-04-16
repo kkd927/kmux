@@ -1,9 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  TERMINAL_CTRL_ENTER_SEQUENCE,
+  TERMINAL_SHIFT_ENTER_SEQUENCE
+} from "@kmux/proto";
+import {
+  applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
-  pasteClipboardIntoTerminal
+  pasteClipboardIntoTerminal,
+  resolveTerminalEnterRewrite
 } from "./terminalRenderer";
+import type { TerminalKeyboardEventLike } from "./terminalRenderer";
+
+function keyboardEvent(
+  overrides: Partial<TerminalKeyboardEventLike> = {}
+): TerminalKeyboardEventLike {
+  return {
+    code: "Enter",
+    key: "Enter",
+    keyCode: 13,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    ...overrides
+  };
+}
 
 describe("terminal renderer helpers", () => {
   it("loads the WebGL addon once when enabled", () => {
@@ -103,5 +126,121 @@ describe("terminal renderer helpers", () => {
     expect(didPaste).toBe(true);
     expect(terminal.paste).toHaveBeenCalledTimes(1);
     expect(terminal.paste).toHaveBeenCalledWith(text);
+  });
+
+  it("rewrites Ctrl and Shift Enter to modified terminal sequences", () => {
+    expect(resolveTerminalEnterRewrite(keyboardEvent({ ctrlKey: true }))).toEqual(
+      {
+        sequence: TERMINAL_CTRL_ENTER_SEQUENCE
+      }
+    );
+    expect(
+      resolveTerminalEnterRewrite(keyboardEvent({ shiftKey: true }))
+    ).toEqual({
+      sequence: TERMINAL_SHIFT_ENTER_SEQUENCE
+    });
+  });
+
+  it("does not queue rewrites for IME process-key Enter", () => {
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          ctrlKey: true,
+          isComposing: true,
+          keyCode: 229
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          shiftKey: true,
+          keyCode: 229
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("leaves Alt Enter to xterm's native IME path", () => {
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          altKey: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          code: "AltLeft",
+          key: "Alt",
+          keyCode: 18,
+          altKey: true
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("does not rewrite non-Enter, Meta-modified, or mixed-modifier input", () => {
+    expect(
+      resolveTerminalEnterRewrite(keyboardEvent({ keyCode: 229 }))
+    ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({ ctrlKey: true, shiftKey: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(keyboardEvent({ metaKey: true }))
+    ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
+          shiftKey: true
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("applies pending Enter rewrites only to the originating surface CR", () => {
+    expect(
+      applyPendingTerminalEnterRewrite("surface_1", "가나다\r", {
+        surfaceId: "surface_1",
+        sequence: TERMINAL_SHIFT_ENTER_SEQUENCE
+      })
+    ).toEqual({
+      data: `가나다${TERMINAL_SHIFT_ENTER_SEQUENCE}`,
+      clearPending: true
+    });
+    expect(
+      applyPendingTerminalEnterRewrite("surface_2", "\r", {
+        surfaceId: "surface_1",
+        sequence: TERMINAL_SHIFT_ENTER_SEQUENCE
+      })
+    ).toEqual({
+      data: "\r",
+      clearPending: true
+    });
+    expect(
+      applyPendingTerminalEnterRewrite("surface_1", "가나다", {
+        surfaceId: "surface_1",
+        sequence: TERMINAL_SHIFT_ENTER_SEQUENCE
+      })
+    ).toEqual({
+      data: "가나다",
+      clearPending: false
+    });
+    expect(
+      applyPendingTerminalEnterRewrite("surface_1", "\u001b\r", {
+        surfaceId: "surface_1",
+        sequence: TERMINAL_SHIFT_ENTER_SEQUENCE
+      })
+    ).toEqual({
+      data: "\u001b\r",
+      clearPending: true
+    });
   });
 });

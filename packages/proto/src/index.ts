@@ -89,6 +89,9 @@ export interface TerminalKeyInput {
   shiftKey?: boolean;
 }
 
+export const TERMINAL_CTRL_ENTER_SEQUENCE = "\u001b[13;5u";
+export const TERMINAL_SHIFT_ENTER_SEQUENCE = "\u001b[13;2u";
+
 export interface SurfaceSnapshotPayload {
   surfaceId: Id;
   sessionId: Id;

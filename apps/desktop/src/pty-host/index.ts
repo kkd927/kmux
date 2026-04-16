@@ -10,11 +10,11 @@ import type {
   Id,
   PtyEvent,
   PtyRequest,
-  SurfaceSnapshotPayload,
-  TerminalKeyInput
+  SurfaceSnapshotPayload
 } from "@kmux/proto";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
+import { encodeTerminalKeyInput } from "./terminalInput";
 import {
   buildOsc9Notification,
   buildOsc777Notification,
@@ -74,29 +74,6 @@ const sessions = new Map<Id, SessionRecord>();
 function send(message: PtyEvent): void {
   if (process.send) {
     process.send(message);
-  }
-}
-
-function encodeKey(input: TerminalKeyInput): string {
-  switch (input.key) {
-    case "Enter":
-      return "\r";
-    case "Backspace":
-      return "\u007f";
-    case "Tab":
-      return "\t";
-    case "ArrowUp":
-      return "\u001b[A";
-    case "ArrowDown":
-      return "\u001b[B";
-    case "ArrowRight":
-      return "\u001b[C";
-    case "ArrowLeft":
-      return "\u001b[D";
-    case "Escape":
-      return "\u001b";
-    default:
-      return input.text ?? input.key;
   }
 }
 
@@ -365,7 +342,9 @@ process.on("message", (request: PtyRequest) => {
       sessions.get(request.sessionId)?.pty.write(request.text);
       break;
     case "input:key":
-      sessions.get(request.sessionId)?.pty.write(encodeKey(request.input));
+      sessions
+        .get(request.sessionId)
+        ?.pty.write(encodeTerminalKeyInput(request.input));
       break;
     case "snapshot": {
       const record = sessions.get(request.sessionId);
