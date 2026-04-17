@@ -42,6 +42,19 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("maps Claude permission requests to needs_input events", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "PermissionRequest", {
+        message: "Approve tool use?"
+      })
+    ).toMatchObject({
+      agent: "claude",
+      event: "needs_input",
+      title: "Claude needs input",
+      message: "Approve tool use?"
+    });
+  });
+
   it("only treats Gemini tool-permission notifications as needs_input", () => {
     expect(
       normalizeAgentHookInvocation("gemini", "Notification", {
@@ -62,10 +75,40 @@ describe("agent hook normalization", () => {
     ).toBeNull();
   });
 
-  it("does not infer Codex stop hooks as input requests", () => {
+  it("extracts Gemini tool permission names from notification details", () => {
+    expect(
+      normalizeAgentHookInvocation("gemini", "Notification", {
+        notification_type: "ToolPermission",
+        details: {
+          tool_name: "run_shell_command"
+        }
+      })
+    ).toMatchObject({
+      agent: "gemini",
+      event: "needs_input",
+      title: "Gemini needs input",
+      message: "Tool permission requested: run_shell_command"
+    });
+  });
+
+  it("treats Claude stop hooks as turn completion events", () => {
+    expect(normalizeAgentHookInvocation("claude", "stop")).toMatchObject({
+      agent: "claude",
+      event: "turn_complete"
+    });
+  });
+
+  it("treats Gemini after-agent hooks as turn completion events", () => {
+    expect(normalizeAgentHookInvocation("gemini", "AfterAgent")).toMatchObject({
+      agent: "gemini",
+      event: "turn_complete"
+    });
+  });
+
+  it("treats Codex stop hooks as turn completion events", () => {
     expect(normalizeAgentHookInvocation("codex", "stop")).toMatchObject({
       agent: "codex",
-      event: "idle"
+      event: "turn_complete"
     });
   });
 });

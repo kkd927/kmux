@@ -13,6 +13,7 @@ const agentEventSchema = z.enum([
   "session_start",
   "running",
   "needs_input",
+  "turn_complete",
   "idle",
   "session_end"
 ]);

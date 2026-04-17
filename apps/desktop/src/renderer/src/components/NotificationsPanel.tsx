@@ -41,11 +41,7 @@ export function NotificationsPanel(
         </div>
         <div className={styles.notificationList}>
           {props.notifications.map((notification) => (
-            <div
-              key={notification.id}
-              className={styles.notificationItem}
-              data-read={notification.read}
-            >
+            <div key={notification.id} className={styles.notificationItem}>
               <div>{notification.title}</div>
               <div>{notification.message}</div>
               <div>{formatClock(notification.createdAt)}</div>

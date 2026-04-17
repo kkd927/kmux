@@ -338,11 +338,6 @@
   color: var(--text-tertiary);
 }
 
-.attention {
-  color: var(--warning);
-  font-weight: 600;
-}
-
 .terminal {
   flex: 1;
   min-height: 0;

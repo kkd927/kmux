@@ -831,9 +831,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               {port}
             </span>
           ))}
-          {activeSurface.attention ? (
-            <span className={styles.attention}>attention</span>
-          ) : null}
         </div>
       ) : null}
       <div className={styles.terminal}>

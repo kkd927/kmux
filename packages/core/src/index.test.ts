@@ -114,6 +114,7 @@ describe("core reducer", () => {
 
     applyAction(state, { type: "surface.focus", surfaceId });
     expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+    expect(state.notifications).toHaveLength(0);
   });
 
   it("records agent needs-input events as a status entry and notification", () => {
@@ -142,7 +143,7 @@ describe("core reducer", () => {
       expect.objectContaining({
         key: `agent:claude:${surfaceId}`,
         label: "Claude",
-        text: "Approve tool use?",
+        text: "needs input",
         variant: "attention",
         surfaceId
       })
@@ -171,8 +172,8 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "needs_input",
-      message: "Approve tool use?"
+      event: "running",
+      message: "Running"
     });
     applyAction(state, {
       type: "agent.event",
@@ -183,10 +184,102 @@ describe("core reducer", () => {
     });
 
     expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.notifications).toHaveLength(0);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+  });
+
+  it("creates a notification when an agent turn completes", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "running",
+      message: "Running"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "turn_complete"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        workspaceId,
+        surfaceId,
+        source: "agent",
+        title: "Claude finished",
+        message: "Finished"
+      })
+    );
+    expect(state.surfaces[surfaceId].unreadCount).toBe(1);
+  });
+
+  it("does not create a notification when an agent session ends", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "running",
+      message: "Running"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "session_end"
+    });
+
+    expect(state.notifications).toHaveLength(0);
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+  });
+
+  it("deduplicates overlapping agent completion notifications", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "running",
+      message: "Running"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "turn_complete"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "turn_complete"
+    });
+
     expect(state.notifications).toHaveLength(1);
   });
 
-  it("treats repeated agent running events as no-ops", () => {
+  it("ignores agent running events for sidebar state", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -199,9 +292,6 @@ describe("core reducer", () => {
       event: "running",
       message: "Running"
     });
-    const key = `agent:claude:${surfaceId}`;
-    const firstEntry = state.workspaces[workspaceId].statusEntries[key];
-    const firstUpdatedAt = firstEntry?.updatedAt;
 
     const secondEffects = applyAction(state, {
       type: "agent.event",
@@ -212,16 +302,9 @@ describe("core reducer", () => {
       message: "Running"
     });
 
-    expect(firstEffects).toEqual([{ type: "persist" }]);
+    expect(firstEffects).toEqual([]);
     expect(secondEffects).toEqual([]);
-    expect(
-      Object.keys(state.workspaces[workspaceId].statusEntries).filter((entry) =>
-        entry.startsWith("agent:claude:")
-      )
-    ).toHaveLength(1);
-    expect(state.workspaces[workspaceId].statusEntries[key]?.updatedAt).toBe(
-      firstUpdatedAt
-    );
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
   });
 
   it("uses the resolved surface id for agent status keys", () => {
@@ -932,7 +1015,85 @@ describe("core reducer", () => {
     );
     expect(state.workspaces[alertsWorkspaceId].activePaneId).toBe(alertsPaneId);
     expect(state.panes[alertsPaneId].activeSurfaceId).toBe(alertsSurfaceId);
-    expect(state.notifications[0]?.read).toBe(true);
+    expect(state.notifications).toHaveLength(0);
+  });
+
+  it("clears stale unread notifications when the target surface is missing", () => {
+    const state = createInitialState();
+    const originalWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    applyAction(state, { type: "workspace.create", name: "alerts" });
+
+    const alertsWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const alertsPaneId = state.workspaces[alertsWorkspaceId].activePaneId;
+    const alertsSurfaceId = state.panes[alertsPaneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "workspace.select",
+      workspaceId: originalWorkspaceId
+    });
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId: alertsWorkspaceId,
+      paneId: alertsPaneId,
+      surfaceId: alertsSurfaceId,
+      title: "stale alert",
+      message: "jump target disappeared"
+    });
+
+    delete state.surfaces[alertsSurfaceId];
+
+    const effects = applyAction(state, { type: "notification.jumpLatestUnread" });
+
+    expect(effects).toEqual([{ type: "persist" }]);
+    expect(state.windows[state.activeWindowId].activeWorkspaceId).toBe(
+      alertsWorkspaceId
+    );
+    expect(state.notifications).toHaveLength(0);
+  });
+
+  it("drops legacy read notifications during restore", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "First",
+      message: "read entry"
+    });
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Second",
+      message: "unread entry"
+    });
+
+    (
+      state.notifications[1] as (typeof state.notifications)[number] & {
+        read?: boolean;
+      }
+    ).read = true;
+
+    const restored = cloneState(state);
+
+    expect(restored.notifications).toHaveLength(1);
+    expect(restored.notifications[0]).toEqual(
+      expect.objectContaining({
+        title: "Second",
+        message: "unread entry"
+      })
+    );
+    expect("read" in restored.notifications[0]!).toBe(false);
+    expect(restored.surfaces[surfaceId]?.unreadCount).toBe(1);
   });
 
   it("preserves terminal notification sources during restore", () => {

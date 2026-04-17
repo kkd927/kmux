@@ -259,8 +259,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
     const afterJump = await getView(page);
     expect(
       afterJump.notifications.some(
-        (notification) =>
-          notification.title === "alerts jump" && !notification.read
+        (notification) => notification.title === "alerts jump"
       )
     ).toBeFalsy();
   } finally {
