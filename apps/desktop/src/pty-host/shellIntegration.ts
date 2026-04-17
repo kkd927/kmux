@@ -776,7 +776,7 @@ function buildCodexWrapperScript(): string {
     "    hooks: [",
     "      {",
     "        type: 'command',",
-    "        command: `${managedHookMarker}; [ -n \"${KMUX_SOCKET_PATH:-}\" ] || exit 0; [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] || exit 0; [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ] || exit 0; \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" codex ${eventName} || true`,",
+    "        command: managedHookMarker + '; [ -n \"${KMUX_SOCKET_PATH:-}\" ] || exit 0; [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] || exit 0; [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ] || exit 0; \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" codex ' + eventName + ' || true',",
     "      },",
     "    ],",
     "  };",
