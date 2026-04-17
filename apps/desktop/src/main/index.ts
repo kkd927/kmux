@@ -12,9 +12,12 @@ import {
 } from "@kmux/persistence";
 
 import { createAppRuntime } from "./appRuntime";
+import { ensureClaudeHooksInstalled } from "./claudeIntegration";
+import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
+import { resolveCliRuntimePaths } from "./cliRuntime";
 import { resolveShellEnvironment } from "./shellEnvironment";
 import { KmuxSocketServer } from "./socketServer";
 import { buildApplicationMenuTemplate } from "./appMenu";
@@ -38,6 +41,12 @@ import { AppStore } from "./store";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
+const cliRuntimePaths = resolveCliRuntimePaths({
+  currentDir,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  processExecPath: process.execPath
+});
 const { autoUpdater } = electronUpdater;
 
 let ptyHost: PtyHostManager | null = null;
@@ -55,6 +64,9 @@ process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
   setDevelopmentDockIcon(currentDir);
+  if (cliRuntimePaths.warning) {
+    console.warn(cliRuntimePaths.warning);
+  }
   app.setAboutPanelOptions({
     applicationName: app.getName(),
     applicationVersion: app.getVersion(),
@@ -69,10 +81,25 @@ async function bootstrap(): Promise<void> {
     preferredShell: savedSettings?.shell,
     env: process.env
   });
+  const claudeIntegrationResult = ensureClaudeHooksInstalled(
+    resolvedShellEnv.baseEnv.HOME ?? homedir()
+  );
+  if (claudeIntegrationResult.warning) {
+    console.warn(claudeIntegrationResult.warning);
+  }
+  const geminiIntegrationResult = ensureGeminiHooksInstalled(
+    resolvedShellEnv.baseEnv.HOME ?? homedir()
+  );
+  if (geminiIntegrationResult.warning) {
+    console.warn(geminiIntegrationResult.warning);
+  }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
 
   const runtime = createAppRuntime({
-    paths,
+    paths: {
+      ...paths,
+      ...cliRuntimePaths
+    },
     snapshotStore,
     windowStateStore,
     settingsStore,

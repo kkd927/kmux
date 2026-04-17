@@ -1370,14 +1370,15 @@ function applyAgentEvent(
   const statusKey = agentStatusKey(agentName, statusScopeId);
 
   if (action.event === "needs_input") {
-    const text =
-      normalizeStatusText(action.message) || `${displayName} needs input`;
+    const statusText = "needs input";
+    const notificationMessage =
+      normalizeStatusText(action.message) || statusText;
     setSidebarStatus(state, {
       type: "sidebar.setStatus",
       workspaceId: target.workspace.id,
       key: statusKey,
       label: displayName,
-      text,
+      text: statusText,
       variant: "attention",
       surfaceId: target.surface?.id
     });
@@ -1389,24 +1390,35 @@ function applyAgentEvent(
       title:
         normalizeOptionalText(action.title, 120) ??
         `${displayName} needs input`,
-      message: text,
+      message: notificationMessage,
       source: "agent"
     });
   }
 
   if (action.event === "running") {
-    return setSidebarStatus(state, {
-      type: "sidebar.setStatus",
+    return [];
+  }
+
+  if (action.event === "idle") {
+    return clearAgentStatus(target.workspace, agentName, statusScopeId)
+      ? [{ type: "persist" }]
+      : [];
+  }
+
+  if (action.event === "turn_complete") {
+    clearAgentStatus(target.workspace, agentName, statusScopeId);
+    return createNotification(state, {
+      type: "notification.create",
       workspaceId: target.workspace.id,
-      key: statusKey,
-      label: displayName,
-      text: normalizeStatusText(action.message) || "Running",
-      variant: "muted",
-      surfaceId: target.surface?.id
+      paneId: target.pane?.id,
+      surfaceId: target.surface?.id,
+      title: `${displayName} finished`,
+      message: normalizeStatusText(action.message) || "Finished",
+      source: "agent"
     });
   }
 
-  if (action.event === "idle" || action.event === "session_end") {
+  if (action.event === "session_end") {
     return clearAgentStatus(target.workspace, agentName, statusScopeId)
       ? [{ type: "persist" }]
       : [];
@@ -1436,7 +1448,6 @@ function createNotification(
       duplicate.message = message;
       duplicate.createdAt = now;
     }
-    duplicate.read = false;
     if (duplicate.surfaceId) {
       syncSurfaceNotificationState(state, duplicate.surfaceId);
     }
@@ -1451,8 +1462,7 @@ function createNotification(
     title: action.title,
     message,
     source,
-    createdAt: now,
-    read: false
+    createdAt: now
   };
   state.notifications.unshift(notification);
   if (action.surfaceId && state.surfaces[action.surfaceId]) {
@@ -1643,18 +1653,32 @@ function clearNotifications(state: AppState, notificationId?: Id): AppEffect[] {
 }
 
 function jumpLatestUnread(state: AppState): AppEffect[] {
-  const latest = state.notifications.find((item) => !item.read);
+  const latest = state.notifications[0];
   if (!latest) {
     return [];
   }
-  latest.read = true;
-  if (latest.workspaceId) {
-    selectWorkspace(state, latest.workspaceId);
-  }
-  if (latest.surfaceId) {
+
+  const targetSurface = latest.surfaceId
+    ? state.surfaces[latest.surfaceId]
+    : undefined;
+  const targetPane = targetSurface
+    ? state.panes[targetSurface.paneId]
+    : undefined;
+
+  if (
+    latest.surfaceId &&
+    targetSurface &&
+    targetPane &&
+    state.workspaces[targetPane.workspaceId]
+  ) {
     return focusSurface(state, latest.surfaceId);
   }
-  return [{ type: "persist" }];
+
+  if (latest.workspaceId && state.workspaces[latest.workspaceId]) {
+    selectWorkspace(state, latest.workspaceId);
+  }
+
+  return clearNotifications(state, latest.id);
 }
 
 function markNotificationsRead(
@@ -1663,15 +1687,14 @@ function markNotificationsRead(
   paneId: Id,
   surfaceId: Id
 ): void {
-  for (const notification of state.notifications) {
-    if (
-      notification.workspaceId === workspaceId &&
-      notification.paneId === paneId &&
-      notification.surfaceId === surfaceId
-    ) {
-      notification.read = true;
-    }
-  }
+  state.notifications = state.notifications.filter(
+    (notification) =>
+      !(
+        notification.workspaceId === workspaceId &&
+        notification.paneId === paneId &&
+        notification.surfaceId === surfaceId
+      )
+  );
   syncSurfaceNotificationState(state, surfaceId);
 }
 
@@ -1681,7 +1704,7 @@ function syncSurfaceNotificationState(state: AppState, surfaceId: Id): void {
     return;
   }
   const unreadCount = state.notifications.reduce((count, notification) => {
-    if (!notification.read && notification.surfaceId === surfaceId) {
+    if (notification.surfaceId === surfaceId) {
       return count + 1;
     }
     return count;
@@ -1950,8 +1973,7 @@ export function buildViewModel(state: AppState): ShellViewModel {
     }),
     activeWorkspace,
     notifications: [...state.notifications],
-    unreadNotifications: state.notifications.filter((item) => !item.read)
-      .length,
+    unreadNotifications: state.notifications.length,
     settings: state.settings,
     terminalTypography: createPendingResolvedTerminalTypographyVm(
       state.settings.terminalTypography
@@ -2098,12 +2120,30 @@ function sanitizeState(state: AppState): AppState {
   }
 
   state.settings = sanitizeSettings(state.settings as LegacyKmuxSettings);
+  state.notifications = Array.isArray(state.notifications)
+    ? state.notifications.flatMap((notification) => {
+        if (!notification || typeof notification !== "object") {
+          return [];
+        }
+        const { read, ...sanitized } = notification as NotificationItem & {
+          read?: boolean;
+        };
+        if (read === true) {
+          return [];
+        }
+        return [sanitized as NotificationItem];
+      })
+    : [];
 
   for (const session of Object.values(state.sessions)) {
     session.launch = sanitizeSessionLaunchConfig(
       session.launch,
       state.settings.shell
     );
+  }
+
+  for (const surface of Object.values(state.surfaces)) {
+    syncSurfaceNotificationState(state, surface.id);
   }
 
   return state;

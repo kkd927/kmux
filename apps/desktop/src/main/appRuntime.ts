@@ -33,6 +33,10 @@ import {
 interface AppRuntimeOptions {
   paths: {
     socketPath: string;
+    cliPath?: string;
+    cliTsxLoaderPath?: string;
+    cliWorkingDirectory?: string;
+    nodePath: string;
   };
   snapshotStore: SnapshotFileStore;
   windowStateStore: WindowStateFileStore;
@@ -137,6 +141,16 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
               ...effect.spec,
               env: {
                 ...effect.spec.env,
+                ...(options.paths.cliPath
+                  ? { KMUX_CLI_PATH: options.paths.cliPath }
+                  : {}),
+                ...(options.paths.cliTsxLoaderPath
+                  ? { KMUX_CLI_TSX_LOADER_PATH: options.paths.cliTsxLoaderPath }
+                  : {}),
+                ...(options.paths.cliWorkingDirectory
+                  ? { KMUX_CLI_CWD: options.paths.cliWorkingDirectory }
+                  : {}),
+                KMUX_NODE_PATH: options.paths.nodePath,
                 KMUX_SOCKET_PATH: options.paths.socketPath
               }
             }

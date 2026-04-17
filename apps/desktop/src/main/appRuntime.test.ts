@@ -34,7 +34,8 @@ function createRuntime(notificationSound: boolean) {
   initialState.settings.notificationSound = notificationSound;
   const runtime = createAppRuntime({
     paths: {
-      socketPath: "/tmp/kmux.sock"
+      socketPath: "/tmp/kmux.sock",
+      nodePath: "/Applications/kmux.app/Contents/MacOS/kmux"
     },
     snapshotStore: {
       path: "/tmp/kmux-snapshot.json",

@@ -17,6 +17,7 @@ export type AgentEventName =
   | "session_start"
   | "running"
   | "needs_input"
+  | "turn_complete"
   | "idle"
   | "session_end";
 export type TerminalNotificationProtocol = 9 | 99 | 777;
@@ -77,7 +78,6 @@ export interface NotificationItem {
   message: string;
   source: NotificationSource;
   createdAt: string;
-  read: boolean;
 }
 
 export interface TerminalKeyInput {

@@ -1102,10 +1102,6 @@
   border-color: var(--border-soft);
 }
 
-.notificationItem[data-read="true"] {
-  opacity: 0.62;
-}
-
 .modalHeader {
   display: flex;
   align-items: center;

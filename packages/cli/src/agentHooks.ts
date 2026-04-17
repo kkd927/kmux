@@ -101,6 +101,9 @@ function mapAgentHookEvent(
     if (hookEvent === "notification" || hookEvent === "notify") {
       return "needs_input";
     }
+    if (hookEvent === "permission-request") {
+      return "needs_input";
+    }
     if (
       hookEvent === "pre-tool-use" &&
       stringField(payload, "tool_name") === "AskUserQuestion"
@@ -115,7 +118,7 @@ function mapAgentHookEvent(
       return "running";
     }
     if (hookEvent === "stop" || hookEvent === "idle") {
-      return "idle";
+      return "turn_complete";
     }
     if (hookEvent === "session-end") {
       return "session_end";
@@ -136,7 +139,7 @@ function mapAgentHookEvent(
       return "running";
     }
     if (hookEvent === "after-agent" || hookEvent === "idle") {
-      return "idle";
+      return "turn_complete";
     }
     if (hookEvent === "session-end") {
       return "session_end";
@@ -155,7 +158,7 @@ function mapAgentHookEvent(
       return "running";
     }
     if (hookEvent === "stop" || hookEvent === "idle") {
-      return "idle";
+      return "turn_complete";
     }
     if (hookEvent === "session-end") {
       return "session_end";
@@ -188,11 +191,16 @@ function extractHookMessage(
   }
 
   if (agent === "gemini") {
-    const toolName = stringField(payload, "tool_name");
+    const details = recordField(payload, "details");
+    const toolName = firstString(
+      stringField(payload, "tool_name"),
+      stringField(details, "tool_name"),
+      stringField(details, "toolName")
+    );
     if (toolName) {
       return `Tool permission requested: ${toolName}`;
     }
-    return "Tool permission requested";
+    return firstString(stringField(payload, "message"), "Tool permission requested");
   }
 
   return firstString(

@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { resolveDefaultShellArgs } from "./shellLaunch";
@@ -18,6 +24,7 @@ let cachedBashWrapperDir: string | null = null;
 let cachedFishWrapperDir: string | null = null;
 let cleanupRegistered = false;
 const SHELL_INTEGRATION_ENV_KEYS = [
+  "KMUX_AGENT_BIN_DIR",
   "KMUX_BASH_INTEGRATION_SCRIPT",
   "KMUX_FISH_INTEGRATION_SCRIPT",
   "KMUX_ORIGINAL_HISTFILE",
@@ -121,6 +128,7 @@ function prepareZshShellLaunch(
     args,
     env: {
       ...env,
+      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
       KMUX_ORIGINAL_HISTFILE:
         env.HISTFILE?.trim() || join(originalZdotdir, ".zsh_history"),
       KMUX_SHELL_INTEGRATION: "1",
@@ -153,6 +161,7 @@ function prepareBashShellLaunch(
     env: {
       ...env,
       HOME: wrapperDir,
+      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
       KMUX_BASH_INTEGRATION_SCRIPT: join(wrapperDir, "kmux.bash"),
       KMUX_SHELL_INTEGRATION: "1",
       KMUX_ORIGINAL_HOME: homeDir
@@ -181,6 +190,7 @@ function prepareFishShellLaunch(
     args,
     env: {
       ...env,
+      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
       KMUX_FISH_INTEGRATION_SCRIPT: join(wrapperDir, "fish", "kmux.fish"),
       KMUX_ORIGINAL_XDG_CONFIG_HOME:
         env.XDG_CONFIG_HOME?.trim() || join(homeDir, ".config"),
@@ -196,6 +206,7 @@ function ensureZshWrapperDir(): string {
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-zsh-"));
+  writeAgentWrappers(wrapperDir);
   writeFileSync(
     join(wrapperDir, ".zshenv"),
     buildZshWrapper(".zshenv"),
@@ -231,6 +242,7 @@ function ensureBashWrapperDir(): string {
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-bash-"));
+  writeAgentWrappers(wrapperDir);
   writeFileSync(
     join(wrapperDir, ".bash_profile"),
     buildBashProfileWrapper(),
@@ -254,6 +266,7 @@ function ensureFishWrapperDir(): string {
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-fish-"));
+  writeAgentWrappers(wrapperDir);
   const fishConfigDir = join(wrapperDir, "fish");
   mkdirSync(fishConfigDir, { recursive: true });
   writeFileSync(join(fishConfigDir, "config.fish"), buildFishWrapper(), "utf8");
@@ -283,6 +296,21 @@ function registerCleanup(): void {
       }
     });
   }
+}
+
+function writeAgentWrappers(wrapperDir: string): void {
+  const binDir = join(wrapperDir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  writeExecutableFile(
+    join(binDir, "kmux-agent-hook"),
+    buildAgentHookHelperScript()
+  );
+  writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
+}
+
+function writeExecutableFile(path: string, contents: string): void {
+  writeFileSync(path, contents, "utf8");
+  chmodSync(path, 0o755);
 }
 
 function buildZshWrapper(
@@ -354,6 +382,16 @@ function buildZshIntegrationScript(): string {
     "",
     "autoload -Uz add-zsh-hook",
     "",
+    "function _kmux_prepend_agent_bin() {",
+    "  emulate -L zsh",
+    '  local agent_bin="${KMUX_AGENT_BIN_DIR:-}"',
+    '  [[ -n "$agent_bin" && -d "$agent_bin" ]] || return 0',
+    '  case ":${PATH:-}:" in',
+    '    *":${agent_bin}:"*) ;;',
+    '    *) path=("$agent_bin" $path); export PATH ;;',
+    "  esac",
+    "}",
+    "",
     "function _kmux_percent_encode() {",
     "  emulate -L zsh",
     "  local LC_ALL=C",
@@ -386,6 +424,9 @@ function buildZshIntegrationScript(): string {
     '  path_part="$(_kmux_percent_encode "$pwd_path")"',
     "  printf '\\e]7;%s\\a' \"file://${host_part}${path_part}\"",
     "}",
+    "",
+    "_kmux_prepend_agent_bin",
+    "unfunction _kmux_prepend_agent_bin",
     "",
     "add-zsh-hook precmd _kmux_emit_osc7",
     ""
@@ -432,6 +473,15 @@ function buildBashIntegrationScript(): string {
     '[[ "$-" == *i* ]] || return 0',
     '[[ -z "${__KMUX_OSC7_INSTALLED:-}" ]] || return 0',
     "__KMUX_OSC7_INSTALLED=1",
+    "",
+    "_kmux_prepend_agent_bin() {",
+    '  local agent_bin="${KMUX_AGENT_BIN_DIR:-}"',
+    '  [[ -n "$agent_bin" && -d "$agent_bin" ]] || return 0',
+    '  case ":${PATH:-}:" in',
+    '    *":${agent_bin}:"*) ;;',
+    '    *) PATH="$agent_bin${PATH:+:$PATH}" ;;',
+    "  esac",
+    "}",
     "",
     "_kmux_percent_encode() {",
     "  local LC_ALL=C",
@@ -488,6 +538,9 @@ function buildBashIntegrationScript(): string {
     "esac",
     "unset _kmux_prompt_decl",
     "",
+    "_kmux_prepend_agent_bin",
+    "unset -f _kmux_prepend_agent_bin",
+    "",
     "_kmux_emit_osc7",
     ""
   ].join("\n");
@@ -521,6 +574,10 @@ function buildFishIntegrationScript(): string {
     "set -q __KMUX_OSC7_INSTALLED; and return 0",
     "set -g __KMUX_OSC7_INSTALLED 1",
     "",
+    'if set -q KMUX_AGENT_BIN_DIR; and test -d "$KMUX_AGENT_BIN_DIR"',
+    '  contains -- "$KMUX_AGENT_BIN_DIR" $PATH; or set -gx PATH "$KMUX_AGENT_BIN_DIR" $PATH',
+    "end",
+    "",
     "function __kmux_percent_encode",
     '  string escape --style=url -- $argv[1] | string replace -a "%2F" "/"',
     "end",
@@ -539,6 +596,237 @@ function buildFishIntegrationScript(): string {
     "end",
     "",
     "__kmux_emit_osc7",
+    ""
+  ].join("\n");
+}
+
+function buildPathFilteringHelperLines(): string[] {
+  return [
+    "kmux_filter_path() {",
+    '  _kmux_input_path="${1-}"',
+    '  _kmux_result=""',
+    "  _kmux_result_set=0",
+    "  while :; do",
+    '    case "$_kmux_input_path" in',
+    "      *:*)",
+    '        _kmux_segment="${_kmux_input_path%%:*}"',
+    '        _kmux_input_path="${_kmux_input_path#*:}"',
+    "        ;;",
+    "      *)",
+    '        _kmux_segment="$_kmux_input_path"',
+    '        _kmux_input_path=""',
+    "        ;;",
+    "    esac",
+    '    if [ "$_kmux_segment" != "$KMUX_AGENT_BIN_DIR" ]; then',
+    '      if [ "$_kmux_result_set" -eq 0 ]; then',
+    '        _kmux_result="$_kmux_segment"',
+    "        _kmux_result_set=1",
+    "      else",
+    '        _kmux_result="${_kmux_result}:$_kmux_segment"',
+    "      fi",
+    "    fi",
+    '    [ -n "$_kmux_input_path" ] || break',
+    "  done",
+    '  printf "%s" "$_kmux_result"',
+    "}",
+    ""
+  ];
+}
+
+function buildNodeRuntimeResolverLines(): string[] {
+  return [
+    "kmux_resolve_node_runtime() {",
+    '  if [ -n "${KMUX_NODE_PATH:-}" ] && [ -x "${KMUX_NODE_PATH}" ]; then',
+    '    printf "%s" "$KMUX_NODE_PATH"',
+    "    return 0",
+    "  fi",
+    "  if command -v node >/dev/null 2>&1; then",
+    "    command -v node",
+    "    return 0",
+    "  fi",
+    "  return 1",
+    "}",
+    ""
+  ];
+}
+
+function buildAgentHookHelperScript(): string {
+  return [
+    "#!/bin/sh",
+    'if [ "$#" -lt 2 ]; then',
+    "  exit 0",
+    "fi",
+    "",
+    'KMUX_AGENT_HOOK_OUTPUT_MODE="${KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}"',
+    'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
+    ...buildPathFilteringHelperLines(),
+    ...buildNodeRuntimeResolverLines(),
+    'PATH="$(kmux_filter_path "${PATH:-}")"',
+    "export PATH",
+    "kmux_run_cli_hook_with_runtime() {",
+    '  _kmux_runtime="$1"',
+    "  shift",
+    '  [ -n "${KMUX_CLI_PATH:-}" ] && [ -f "${KMUX_CLI_PATH}" ] || return 1',
+    '  [ -n "$_kmux_runtime" ] || return 1',
+    "  (",
+    '    if [ -n "${KMUX_CLI_CWD:-}" ] && [ -d "${KMUX_CLI_CWD}" ]; then',
+    '      cd "${KMUX_CLI_CWD}" || exit 1',
+    "    fi",
+    '    case "${KMUX_CLI_PATH}" in',
+    "      *.ts|*.cts|*.mts)",
+    '        [ -n "${KMUX_CLI_TSX_LOADER_PATH:-}" ] && [ -f "${KMUX_CLI_TSX_LOADER_PATH}" ] || exit 1',
+    '        if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    '          env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" --import "$KMUX_CLI_TSX_LOADER_PATH" "$KMUX_CLI_PATH" agent hook "$@" 2>/dev/null',
+    "          exit $?",
+    "        fi",
+    '        env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" --import "$KMUX_CLI_TSX_LOADER_PATH" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1',
+    "        exit $?",
+    "        ;;",
+    "      *)",
+    '        if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    '          env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" "$KMUX_CLI_PATH" agent hook "$@" 2>/dev/null',
+    "          exit $?",
+    "        fi",
+    '        env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1',
+    "        exit $?",
+    "        ;;",
+    "    esac",
+    "  )",
+    "}",
+    "",
+    "kmux_dispatch_cli_hook() {",
+    '  case "${KMUX_CLI_PATH:-}" in',
+    "    *.ts|*.cts|*.mts)",
+    "      if command -v node >/dev/null 2>&1; then",
+    '        kmux_run_cli_hook_with_runtime "$(command -v node)" "$@" && return 0',
+    "      fi",
+    "      ;;",
+    "  esac",
+    '  KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
+    '  [ -n "$KMUX_NODE_RUNTIME" ] || return 1',
+    '  kmux_run_cli_hook_with_runtime "$KMUX_NODE_RUNTIME" "$@"',
+    "}",
+    "",
+    'if kmux_dispatch_cli_hook "$@"; then',
+    "  exit 0",
+    "fi",
+    "",
+    "if command -v kmux >/dev/null 2>&1; then",
+    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    '    kmux agent hook "$@" 2>/dev/null && exit 0',
+    "  else",
+    '    kmux agent hook "$@" >/dev/null 2>&1 && exit 0',
+    "  fi",
+    "fi",
+    "",
+    'if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    '  printf "{}\\n"',
+    "fi",
+    "",
+    "exit 0",
+    ""
+  ].join("\n");
+}
+
+function buildCodexWrapperScript(): string {
+  return [
+    "#!/bin/sh",
+    "set -u",
+    "",
+    'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
+    ...buildPathFilteringHelperLines(),
+    ...buildNodeRuntimeResolverLines(),
+    'PATH="$(kmux_filter_path "${PATH:-}")"',
+    "export PATH",
+    "",
+    'KMUX_REAL_CODEX="$(command -v codex 2>/dev/null || true)"',
+    'if [ -z "$KMUX_REAL_CODEX" ] || [ "$KMUX_REAL_CODEX" = "$0" ]; then',
+    "  exit 127",
+    "fi",
+    "",
+    'KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
+    'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"',
+    "",
+    'KMUX_USE_CODEX_HOOKS="0"',
+    'if [ -n "$KMUX_CODEX_HOME" ] && [ -n "$KMUX_NODE_RUNTIME" ]; then',
+    '  KMUX_OUTPUT_HOOKS_FILE="$KMUX_CODEX_HOME/hooks.json" \\',
+    "  env ELECTRON_RUN_AS_NODE=1 \"$KMUX_NODE_RUNTIME\" <<'EOF'",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "",
+    "const outputPath = process.env.KMUX_OUTPUT_HOOKS_FILE;",
+    "const managedHookMarker = 'KMUX_MANAGED_CODEX_HOOK=1';",
+    "",
+    "if (!outputPath) {",
+    "  process.exit(0);",
+    "}",
+    "",
+    "function asObject(value) {",
+    "  return value && typeof value === 'object' && !Array.isArray(value)",
+    "    ? value",
+    "    : {};",
+    "}",
+    "",
+    "function asArray(value) {",
+    "  return Array.isArray(value) ? value : [];",
+    "}",
+    "",
+    "function buildHookDefinition(eventName) {",
+    "  return {",
+    "    hooks: [",
+    "      {",
+    "        type: 'command',",
+    "        command: `${managedHookMarker}; [ -n \"${KMUX_SOCKET_PATH:-}\" ] || exit 0; [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] || exit 0; [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ] || exit 0; \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" codex ${eventName} || true`,",
+    "      },",
+    "    ],",
+    "  };",
+    "}",
+    "",
+    "function readHooks(filePath) {",
+    "  try {",
+    "    return asObject(JSON.parse(fs.readFileSync(filePath, 'utf8')));",
+    "  } catch {",
+    "    return {};",
+    "  }",
+    "}",
+    "",
+    "function isManagedHook(hook) {",
+    "  return hook && typeof hook === 'object' && !Array.isArray(hook)",
+    "    && Array.isArray(hook.hooks)",
+    "    && hook.hooks.some((entry) =>",
+    "      entry && typeof entry === 'object' && entry.type === 'command'",
+    "      && typeof entry.command === 'string'",
+    "      && entry.command.includes(managedHookMarker)",
+    "      && entry.command.includes(' codex Stop')",
+    "    );",
+    "}",
+    "",
+    "const baseHooksConfig = readHooks(outputPath);",
+    "const baseHooks = asObject(baseHooksConfig.hooks);",
+    "const mergedHooks = {",
+    "  ...baseHooksConfig,",
+    "  hooks: {",
+    "    ...baseHooks,",
+    "    Stop: [",
+    "      ...asArray(baseHooks.Stop).filter((hook) => !isManagedHook(hook)),",
+    "      buildHookDefinition('Stop'),",
+    "    ],",
+    "  },",
+    "};",
+    "",
+    "fs.mkdirSync(path.dirname(outputPath), { recursive: true });",
+    "fs.writeFileSync(outputPath, JSON.stringify(mergedHooks), 'utf8');",
+    "EOF",
+    '  KMUX_USE_CODEX_HOOKS="1"',
+    "fi",
+    "",
+    "KMUX_EXIT_CODE=0",
+    'if [ "$KMUX_USE_CODEX_HOOKS" = "1" ]; then',
+    '  "$KMUX_REAL_CODEX" --enable codex_hooks "$@" || KMUX_EXIT_CODE=$?',
+    "else",
+    '  "$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?',
+    "fi",
+    'exit "$KMUX_EXIT_CODE"',
     ""
   ].join("\n");
 }
