@@ -158,6 +158,43 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("requests a settled snapshot when hydrating an attached surface", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 0,
+      vt: "",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    };
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    await bridge.attachSurface(77, surfaceId);
+
+    expect(ptyHost.snapshot).toHaveBeenCalledWith(
+      surface.sessionId,
+      surfaceId,
+      expect.objectContaining({
+        settleForMs: expect.any(Number)
+      })
+    );
+  });
+
   it("forwards settled snapshot options to the pty-host", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -184,5 +221,26 @@ describe("terminal bridge", () => {
         timeoutMs: 5000
       }
     );
+  });
+
+  it("notifies usage runtime listeners when terminal input text is sent", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const onSurfaceInputText = vi.fn();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never,
+      onSurfaceInputText
+    });
+
+    bridge.sendText(surfaceId, "codex exec\r");
+
+    expect(onSurfaceInputText).toHaveBeenCalledWith(surfaceId, "codex exec\r");
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "codex exec\r");
   });
 });

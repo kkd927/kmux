@@ -45,6 +45,7 @@ interface AppRuntimeOptions {
   refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
   fontInventoryProvider?: FontInventoryProvider;
+  onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
 }
 
 export interface AppRuntime {
@@ -195,6 +196,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   function dispatchAppAction(action: AppAction): void {
     const previousSettings = store?.getState().settings.terminalTypography;
     const effects = store?.dispatch(action) ?? [];
+    const currentState = store?.getState();
+    if (currentState) {
+      options.onDidDispatchAppAction?.(action, currentState);
+    }
     const nextSettings = store?.getState().settings.terminalTypography;
     if (
       previousSettings &&

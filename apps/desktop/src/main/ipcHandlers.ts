@@ -12,13 +12,15 @@ import type {
   TerminalColorPalette,
   TerminalKeyInput,
   TerminalTypographyProbeReport,
-  TerminalTypographySettings
+  TerminalTypographySettings,
+  UsageViewSnapshot
 } from "@kmux/proto";
 
 import {buildNativeWorkspaceContextMenu} from "./workspaceContextMenu";
 
 interface IpcHandlersOptions {
   getView: () => ShellViewModel;
+  getUsageView: () => UsageViewSnapshot;
   dispatchAppAction: (action: AppAction) => void;
   attachSurface: (
     contentsId: number,
@@ -46,13 +48,18 @@ interface IpcHandlersOptions {
     suggestedName: string,
     palette: TerminalColorPalette
   ) => Promise<boolean>;
+  setUsageDashboardOpen: (open: boolean) => void;
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
   ipcMain.handle("kmux:view:get", () => options.getView());
+  ipcMain.handle("kmux:usage:get", () => options.getUsageView());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {
     options.dispatchAppAction(action);
     return options.getView();
+  });
+  ipcMain.handle("kmux:usage:dashboard-open", (_event, open: boolean) => {
+    options.setUsageDashboardOpen(Boolean(open));
   });
   ipcMain.handle(
     "kmux:attach-surface",

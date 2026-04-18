@@ -25,6 +25,7 @@ import {
 import { AppOverlays } from "./components/AppOverlays";
 import { Codicon } from "./components/Codicon";
 import { PaneTree } from "./components/PaneTree";
+import { UsageDashboard } from "./components/UsageDashboard";
 import {
   applyProbeIssuesToResolvedTypography,
   probeResolvedTerminalTypography
@@ -51,11 +52,13 @@ type ActiveShortcutContext = {
   activePaneId: string;
   activeSurfaceId: string;
 };
+type RightPanelKind = "usage" | null;
 type OverlayState = {
   paletteOpen: boolean;
   notificationsOpen: boolean;
   settingsOpen: boolean;
   searchSurfaceId: string | null;
+  rightPanelKind: RightPanelKind;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
 };
@@ -72,6 +75,7 @@ export function App(): JSX.Element {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [activeRightPanel, setActiveRightPanel] = useState<RightPanelKind>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchSurfaceId, setSearchSurfaceId] = useState<string | null>(null);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
@@ -103,6 +107,7 @@ export function App(): JSX.Element {
   );
   const [pendingWorkspaceClose, setPendingWorkspaceClose] =
     useState<PendingWorkspaceClose | null>(null);
+  const usageDashboardOpen = activeRightPanel === "usage";
   const viewRef = useRef<ShellViewModel | null>(view);
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const overlayStateRef = useRef<OverlayState>({
@@ -110,6 +115,7 @@ export function App(): JSX.Element {
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
+    rightPanelKind: activeRightPanel,
     workspaceContextMenuOpen: false,
     workspaceCloseConfirmOpen: false
   });
@@ -132,6 +138,10 @@ export function App(): JSX.Element {
       setSettingsThemeNotice(null);
     }
   }, [settingsOpen]);
+
+  useEffect(() => {
+    void window.kmux.setUsageDashboardOpen(usageDashboardOpen);
+  }, [usageDashboardOpen]);
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !view) {
@@ -321,6 +331,7 @@ export function App(): JSX.Element {
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
+    rightPanelKind: activeRightPanel,
     workspaceContextMenuOpen: Boolean(workspaceContextMenu),
     workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose)
   };
@@ -342,6 +353,7 @@ export function App(): JSX.Element {
     setSearchSurfaceId,
     setSettingsOpen,
     setNotificationsOpen,
+    setRightPanelKind: setActiveRightPanel,
     closePalette,
     openPalette,
     openSettingsModal,
@@ -714,6 +726,19 @@ export function App(): JSX.Element {
             ) : null}
           </button>
           <button
+            aria-label="Toggle usage dashboard"
+            className={`${styles.titleActionButton} ${styles.titleActionGhost} ${
+              usageDashboardOpen ? styles.titleActionActive : ""
+            }`}
+            onClick={() =>
+              setActiveRightPanel((current) =>
+                current === "usage" ? null : "usage"
+              )
+            }
+          >
+            <Codicon name="layout-sidebar-right" />
+          </button>
+          <button
             aria-label="Open settings"
             className={`${styles.titleActionButton} ${styles.titleActionGhost}`}
             onClick={() => openSettingsModal()}
@@ -847,6 +872,25 @@ export function App(): JSX.Element {
             onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
           />
         </main>
+        {usageDashboardOpen ? (
+          <UsageDashboard
+            onJumpToSurface={(workspaceId, surfaceId) => {
+              if (!surfaceId) {
+                return;
+              }
+              void (async () => {
+                await dispatch({
+                  type: "workspace.select",
+                  workspaceId
+                });
+                await dispatch({
+                  type: "surface.focus",
+                  surfaceId
+                });
+              })();
+            }}
+          />
+        ) : null}
       </div>
       <AppOverlays
         isMac={isMac}

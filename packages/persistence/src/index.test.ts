@@ -125,4 +125,105 @@ describe("file-store persistence", () => {
       snapshot: secondState
     });
   });
+
+  it("roundtrips usage history with a versioned envelope", async () => {
+    const usageHistoryPath = join(sandboxDir, "usage-history.json");
+    const persistenceModule = (await import("./index")) as {
+      createUsageHistoryStore?: (path: string, pricingRevision?: string) => {
+        load(): unknown;
+        save(value: unknown): void;
+      };
+    };
+
+    expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
+
+    const store = persistenceModule.createUsageHistoryStore!(
+      usageHistoryPath,
+      "pricing-revision-a"
+    );
+    const days = [
+      {
+        dayKey: "2026-04-15",
+        totalCostUsd: 2.4,
+        reportedCostUsd: 1.6,
+        estimatedCostUsd: 0.8,
+        unknownCostTokens: 320,
+        totalTokens: 2480,
+        activeSessionCount: 3,
+        vendors: [
+          {
+            vendor: "claude",
+            totalCostUsd: 1.9,
+            totalTokens: 1880,
+            activeSessionCount: 2
+          },
+          {
+            vendor: "codex",
+            totalCostUsd: 0.5,
+            totalTokens: 600,
+            activeSessionCount: 1
+          }
+        ]
+      }
+    ];
+
+    store.save(days);
+
+    expect(store.load()).toEqual(days);
+    expect(JSON.parse(readFileSync(usageHistoryPath, "utf8"))).toEqual({
+      version: 1,
+      pricingRevision: "pricing-revision-a",
+      days
+    });
+  });
+
+  it("treats usage history as stale when the pricing revision changes", async () => {
+    const usageHistoryPath = join(sandboxDir, "usage-history-pricing-revision.json");
+    const persistenceModule = (await import("./index")) as {
+      createUsageHistoryStore?: (path: string, pricingRevision?: string) => {
+        load(): unknown;
+        save(value: unknown): void;
+      };
+    };
+
+    expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
+
+    const initialStore = persistenceModule.createUsageHistoryStore!(
+      usageHistoryPath,
+      "pricing-revision-a"
+    );
+    const days = [
+      {
+        dayKey: "2026-04-16",
+        totalCostUsd: 4.2,
+        reportedCostUsd: 3.1,
+        estimatedCostUsd: 1.1,
+        unknownCostTokens: 0,
+        totalTokens: 4200,
+        activeSessionCount: 2,
+        vendors: []
+      }
+    ];
+    initialStore.save(days);
+
+    const repricedStore = persistenceModule.createUsageHistoryStore!(
+      usageHistoryPath,
+      "pricing-revision-b"
+    );
+
+    expect(repricedStore.load()).toEqual([]);
+  });
+
+  it("returns the dedicated usage history path in the default app paths", async () => {
+    const configDir = join(sandboxDir, "config");
+    const runtimeDir = join(sandboxDir, "runtime");
+    const { defaultAppPaths } = await import("./index");
+
+    expect(
+      defaultAppPaths("/Users/example", {
+        KMUX_CONFIG_DIR: configDir,
+        KMUX_RUNTIME_DIR: runtimeDir
+      }).usageHistoryPath
+    ).toBe(join(configDir, "usage-history.json"));
+  });
 });

@@ -10,6 +10,7 @@ export type NotificationSource =
   | "socket"
   | "status"
   | "system";
+export type UsageVendor = "claude" | "codex" | "gemini" | "unknown";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
 export type SidebarStatusVariant = "info" | "attention" | "muted" | "error";
@@ -23,6 +24,17 @@ export type AgentEventName =
 export type TerminalNotificationProtocol = 9 | 99 | 777;
 export type TerminalThemeVariant = "dark" | "light";
 export type TerminalThemeProfileSource = "builtin" | "itermcolors" | "custom";
+export type UsageSessionState =
+  | "active"
+  | "waiting"
+  | "warning"
+  | "overBudget"
+  | "unknown";
+export type UsageAlertSeverity = "none" | "warning" | "urgent";
+export type UsageAttributionState = "bound" | "aggregate_only";
+export type BudgetAlertScope = "global" | "vendor" | "workspace" | "surface";
+export type BudgetAlertKind = "burn_spike";
+export type UsageCostSource = "reported" | "estimated" | "partial";
 
 export interface SessionLaunchConfig {
   cwd?: string;
@@ -327,6 +339,156 @@ export interface ActiveWorkspaceVm {
   logs: SidebarLogEntry[];
 }
 
+export interface SurfaceUsageVm {
+  surfaceId: Id;
+  workspaceId: Id;
+  surfaceTitle: string;
+  workspaceName: string;
+  vendor: UsageVendor;
+  model?: string;
+  sessionCostUsd: number;
+  sessionTokens: number;
+  todayCostUsd: number;
+  todayTokens: number;
+  state: UsageSessionState;
+  alertSeverity: UsageAlertSeverity;
+  attributionState: UsageAttributionState;
+  costSource?: UsageCostSource;
+  updatedAt: string;
+}
+
+export interface WorkspaceUsageVm {
+  workspaceId: Id;
+  workspaceName: string;
+  todayCostUsd: number;
+  todayTokens: number;
+  activeCount: number;
+  warningCount: number;
+  costSource?: UsageCostSource;
+}
+
+export interface DirectoryHotspotVm {
+  directoryPath: string;
+  directoryLabel: string;
+  todayCostUsd: number;
+  todayTokens: number;
+  costSource?: UsageCostSource;
+}
+
+export interface VendorUsageVm {
+  vendor: UsageVendor;
+  todayCostUsd: number;
+  todayTokens: number;
+  activeCount: number;
+  costSource?: UsageCostSource;
+}
+
+export interface ModelUsageVm {
+  vendor: UsageVendor;
+  modelId: string;
+  modelLabel: string;
+  todayCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  totalTokens: number;
+  activeSessionCount: number;
+  costSource: UsageCostSource;
+}
+
+export interface UsageTokenBreakdownVm {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  thinkingTokens: number;
+  totalTokens: number;
+}
+
+export interface UsageTokenCostBreakdownVm {
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheReadCostUsd: number;
+  cacheWriteCostUsd: number;
+  thinkingCostUsd: number;
+  hasUnknownInputCost: boolean;
+  hasUnknownOutputCost: boolean;
+  hasUnknownCacheReadCost: boolean;
+  hasUnknownCacheWriteCost: boolean;
+  hasUnknownThinkingCost: boolean;
+}
+
+export interface UsageDailyActivityVm {
+  dayKey: string;
+  totalCostUsd: number;
+  totalTokens: number;
+  activeSessionCount: number;
+  costSource: UsageCostSource;
+}
+
+export interface UsagePricingCoverageVm {
+  fullyPriced: boolean;
+  hasEstimatedCosts: boolean;
+  hasMissingPricing: boolean;
+  reportedCostUsd: number;
+  estimatedCostUsd: number;
+  unknownCostTokens: number;
+}
+
+export type SubscriptionUsageWindowKind = "session" | "weekly" | "model";
+
+export interface SubscriptionUsageRowVm {
+  key: string;
+  label: string;
+  usedPercent: number;
+  resetLabel: string;
+  resetsAt?: string;
+  windowKind: SubscriptionUsageWindowKind;
+}
+
+export interface SubscriptionProviderUsageVm {
+  provider: UsageVendor;
+  providerLabel: string;
+  planLabel: string;
+  source: string;
+  updatedAt: string;
+  rows: SubscriptionUsageRowVm[];
+}
+
+export interface BudgetAlertVm {
+  id: Id;
+  scope: BudgetAlertScope;
+  scopeId: string;
+  severity: UsageAlertSeverity;
+  kind: BudgetAlertKind;
+  message: string;
+  createdAt: string;
+  workspaceId?: Id;
+  surfaceId?: Id;
+}
+
+export interface UsageViewSnapshot {
+  dayKey: string;
+  updatedAt: string;
+  totalTodayCostUsd: number;
+  totalTodayTokens: number;
+  activeSessionCount: number;
+  unattributedTodayCostUsd: number;
+  unattributedTodayTokens: number;
+  surfaces: Record<Id, SurfaceUsageVm>;
+  workspaces: WorkspaceUsageVm[];
+  directoryHotspots: DirectoryHotspotVm[];
+  vendors: VendorUsageVm[];
+  topSessions: SurfaceUsageVm[];
+  alerts: BudgetAlertVm[];
+  models?: ModelUsageVm[];
+  todayTokenBreakdown?: UsageTokenBreakdownVm;
+  todayTokenCostBreakdown?: UsageTokenCostBreakdownVm;
+  dailyActivity?: UsageDailyActivityVm[];
+  pricingCoverage?: UsagePricingCoverageVm;
+  subscriptionUsage: SubscriptionProviderUsageVm[];
+}
+
 export interface ShellViewModel {
   windowId: Id;
   title: string;
@@ -338,6 +500,58 @@ export interface ShellViewModel {
   unreadNotifications: number;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
+}
+
+export function createEmptyUsageViewSnapshot(
+  dayKey = "1970-01-01",
+  updatedAt = new Date(0).toISOString()
+): UsageViewSnapshot {
+  return {
+    dayKey,
+    updatedAt,
+    totalTodayCostUsd: 0,
+    totalTodayTokens: 0,
+    activeSessionCount: 0,
+    unattributedTodayCostUsd: 0,
+    unattributedTodayTokens: 0,
+    surfaces: {},
+    workspaces: [],
+    directoryHotspots: [],
+    vendors: [],
+    topSessions: [],
+    alerts: [],
+    models: [],
+    todayTokenBreakdown: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      thinkingTokens: 0,
+      totalTokens: 0
+    },
+    todayTokenCostBreakdown: {
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      cacheReadCostUsd: 0,
+      cacheWriteCostUsd: 0,
+      thinkingCostUsd: 0,
+      hasUnknownInputCost: false,
+      hasUnknownOutputCost: false,
+      hasUnknownCacheReadCost: false,
+      hasUnknownCacheWriteCost: false,
+      hasUnknownThinkingCost: false
+    },
+    dailyActivity: [],
+    pricingCoverage: {
+      fullyPriced: true,
+      hasEstimatedCosts: false,
+      hasMissingPricing: false,
+      reportedCostUsd: 0,
+      estimatedCostUsd: 0,
+      unknownCostTokens: 0
+    },
+    subscriptionUsage: []
+  };
 }
 
 export interface ShellIdentity {
