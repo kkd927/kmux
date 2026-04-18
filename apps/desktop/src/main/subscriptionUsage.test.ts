@@ -1,14 +1,8 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {dirname, join} from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
   createSubscriptionAuthDetectors,
@@ -131,6 +125,41 @@ describe("subscription usage fetchers", () => {
       })
     );
     expect(codexRpcProbe).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the desktop app version to the Codex RPC probe fallback", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      last_refresh: "2026-04-17T00:00:00.000Z",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_123"
+      }
+    });
+    const fetchImpl = vi.fn(async () => new Response("denied", { status: 401 }));
+    const codexRpcProbe = vi.fn(async () => ({
+      planType: "plus",
+      windows: [
+        {
+          key: "session" as const,
+          usedPercent: 38,
+          resetsAtMs: Date.parse("2026-04-18T03:00:00.000Z")
+        }
+      ]
+    }));
+
+    await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      codexRpcProbe,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    const desktopPackage = JSON.parse(
+      readFileSync(join(process.cwd(), "apps", "desktop", "package.json"), "utf8")
+    ) as { version: string };
+    expect(codexRpcProbe).toHaveBeenCalledWith(desktopPackage.version);
   });
 
   it("skips Codex fallback probes when there is no local auth token", async () => {
