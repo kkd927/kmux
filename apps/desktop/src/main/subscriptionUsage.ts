@@ -1,18 +1,16 @@
-import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
-import { promisify } from "node:util";
-import { createInterface } from "node:readline";
+import {execFile, spawn} from "node:child_process";
+import {existsSync, readdirSync, readFileSync, realpathSync} from "node:fs";
+import {createRequire} from "node:module";
+import {readFile, writeFile} from "node:fs/promises";
+import {homedir} from "node:os";
+import {delimiter, dirname, join} from "node:path";
+import {promisify} from "node:util";
+import {createInterface} from "node:readline";
 
-import type {
-  SubscriptionProviderUsageVm,
-  SubscriptionUsageRowVm,
-  UsageVendor
-} from "@kmux/proto";
+import type {SubscriptionProviderUsageVm, SubscriptionUsageRowVm, UsageVendor} from "@kmux/proto";
 
 const execFileAsync = promisify(execFile);
+const requireForMeta = createRequire(import.meta.url);
 
 type KnownSubscriptionProvider = Exclude<UsageVendor, "unknown">;
 type FetchLike = typeof fetch;
@@ -60,7 +58,7 @@ export interface CodexSubscriptionUsageOptions {
   now?: () => number;
   fetchImpl?: FetchLike;
   readTextFile?: ReadTextFile;
-  codexRpcProbe?: () => Promise<CodexProbeResult | null>;
+  codexRpcProbe?: (appVersion: string) => Promise<CodexProbeResult | null>;
   codexStatusProbe?: () => Promise<CodexProbeResult | null>;
 }
 
@@ -238,9 +236,11 @@ export async function fetchCodexSubscriptionUsage(
     // Fall back to the local paths below.
   }
 
-  const codexRpcProbe = options.codexRpcProbe ?? (() => probeCodexViaRpc(options.env));
+  const appVersion = resolveDesktopAppVersion();
+  const codexRpcProbe =
+    options.codexRpcProbe ?? ((resolvedAppVersion: string) => probeCodexViaRpc(options.env, resolvedAppVersion));
   try {
-    const rpcUsage = await codexRpcProbe();
+    const rpcUsage = await codexRpcProbe(appVersion);
     if (rpcUsage) {
       return normalizeCodexUsageFromProbe(rpcUsage, "rpc", now());
     }
@@ -851,7 +851,8 @@ export function formatResetLabel(
 }
 
 async function probeCodexViaRpc(
-  env: NodeJS.ProcessEnv | undefined
+  env: NodeJS.ProcessEnv | undefined,
+  appVersion: string
 ): Promise<CodexProbeResult | null> {
   const child = spawn("codex", ["-s", "read-only", "-a", "untrusted", "app-server"], {
     env: {
@@ -924,7 +925,7 @@ async function probeCodexViaRpc(
       await waitForResponse("initialize", {
         clientInfo: {
           name: "kmux",
-          version: "0.1.13"
+          version: appVersion
         }
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
@@ -959,6 +960,17 @@ async function probeCodexViaRpc(
   } finally {
     rl.close();
     child.kill();
+  }
+}
+
+function resolveDesktopAppVersion(): string {
+  try {
+    const packageJson = requireForMeta("../../package.json") as { version?: unknown };
+    return typeof packageJson.version === "string" && packageJson.version.trim()
+      ? packageJson.version
+      : "0.0.0";
+  } catch {
+    return "0.0.0";
   }
 }
 
