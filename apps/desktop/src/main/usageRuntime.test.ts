@@ -613,7 +613,7 @@ describe("usage runtime", () => {
 
   it("rolls the snapshot day forward and synthesizes a zero-usage today activity cell at local midnight", async () => {
     const state = createInitialState();
-    let nowMs = new Date("2026-04-17T23:58:00.000+09:00").getTime();
+    let nowMs = new Date(2026, 3, 17, 23, 58, 0, 0).getTime();
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
@@ -624,7 +624,7 @@ describe("usage runtime", () => {
               sourceCount: 1,
               samples: [
                 buildSample({
-                  timestampMs: new Date("2026-04-17T22:15:00.000+09:00").getTime(),
+                  timestampMs: new Date(2026, 3, 17, 22, 15, 0, 0).getTime(),
                   totalTokens: 300,
                   estimatedCostUsd: 1.2
                 })
@@ -640,7 +640,7 @@ describe("usage runtime", () => {
 
     await runtime.refreshNow();
 
-    nowMs = new Date("2026-04-18T00:02:00.000+09:00").getTime();
+    nowMs = new Date(2026, 3, 18, 0, 2, 0, 0).getTime();
     await runtime.refreshNow();
 
     const snapshot = runtime.getSnapshot();
