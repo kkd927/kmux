@@ -6,6 +6,7 @@ type CodiconName =
   | "gear"
   | "git-branch"
   | "layout-sidebar-left"
+  | "layout-sidebar-right"
   | "split-horizontal"
   | "split-vertical"
   | "terminal";

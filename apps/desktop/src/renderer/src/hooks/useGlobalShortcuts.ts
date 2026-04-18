@@ -4,11 +4,14 @@ import type {AppAction} from "@kmux/core";
 import type {ActiveWorkspaceVm, ShellViewModel} from "@kmux/proto";
 import {normalizeShortcut} from "@kmux/ui";
 
+type RightPanelKind = "usage" | null;
+
 interface OverlayState {
   paletteOpen: boolean;
   notificationsOpen: boolean;
   settingsOpen: boolean;
   searchSurfaceId: string | null;
+  rightPanelKind: RightPanelKind;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
 }
@@ -29,6 +32,7 @@ interface UseGlobalShortcutsOptions {
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
   setSettingsOpen: Dispatch<SetStateAction<boolean>>;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
+  setRightPanelKind: Dispatch<SetStateAction<RightPanelKind>>;
   closePalette: () => void;
   openPalette: () => void;
   openSettingsModal: () => void;
@@ -63,6 +67,7 @@ export function useGlobalShortcuts(
         notificationsOpen: currentNotificationsOpen,
         settingsOpen: currentSettingsOpen,
         searchSurfaceId: currentSearchSurfaceId,
+        rightPanelKind: currentRightPanelKind,
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
         workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen
       } = currentOptions.overlayStateRef.current;
@@ -90,6 +95,11 @@ export function useGlobalShortcuts(
         if (currentNotificationsOpen) {
           event.preventDefault();
           currentOptions.setNotificationsOpen(false);
+          return;
+        }
+        if (currentRightPanelKind) {
+          event.preventDefault();
+          currentOptions.setRightPanelKind(null);
           return;
         }
         if (currentPaletteOpen) {
@@ -181,6 +191,13 @@ export function useGlobalShortcuts(
       if (matchShortcut(currentView, event, "notifications.toggle")) {
         event.preventDefault();
         currentOptions.setNotificationsOpen((open) => !open);
+        return;
+      }
+      if (matchShortcut(currentView, event, "usage.dashboard.toggle")) {
+        event.preventDefault();
+        currentOptions.setRightPanelKind((current) =>
+          current === "usage" ? null : "usage"
+        );
         return;
       }
       if (matchShortcut(currentView, event, "settings.toggle")) {

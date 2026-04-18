@@ -7,6 +7,7 @@ import type {
   ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellViewModel,
+  UsageViewSnapshot,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
   SurfaceExitPayload,
@@ -24,6 +25,9 @@ const api = {
   getView(): Promise<ShellViewModel> {
     return ipcRenderer.invoke("kmux:view:get");
   },
+  getUsageView(): Promise<UsageViewSnapshot> {
+    return ipcRenderer.invoke("kmux:usage:get");
+  },
   dispatch(action: AppAction): Promise<ShellViewModel> {
     return ipcRenderer.invoke("kmux:dispatch", action);
   },
@@ -32,6 +36,14 @@ const api = {
       listener(view);
     ipcRenderer.on("kmux:view", handler);
     return () => ipcRenderer.off("kmux:view", handler);
+  },
+  subscribeUsage(listener: (snapshot: UsageViewSnapshot) => void): () => void {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: UsageViewSnapshot
+    ) => listener(snapshot);
+    ipcRenderer.on("kmux:usage", handler);
+    return () => ipcRenderer.off("kmux:usage", handler);
   },
   subscribeTerminal(listener: (event: TerminalEvent) => void): () => void {
     const handler = (
@@ -116,6 +128,9 @@ const api = {
   },
   identify(): Promise<ShellIdentity> {
     return ipcRenderer.invoke("kmux:identify");
+  },
+  setUsageDashboardOpen(open: boolean): Promise<void> {
+    return ipcRenderer.invoke("kmux:usage:dashboard-open", open);
   }
 };
 

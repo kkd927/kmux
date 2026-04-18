@@ -5,8 +5,13 @@ import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
 import {
+  USAGE_PRICING_REVISION
+} from "@kmux/metadata";
+
+import {
   createSettingsStore,
   createSnapshotStore,
+  createUsageHistoryStore,
   createWindowStateStore,
   defaultAppPaths
 } from "@kmux/persistence";
@@ -24,6 +29,7 @@ import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
 import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
+import { createUsageRuntime } from "./usageRuntime";
 import {
   createNativeUpdaterDialogs,
   createNativeUpdaterNotifier
@@ -76,6 +82,10 @@ async function bootstrap(): Promise<void> {
   const snapshotStore = createSnapshotStore(paths.statePath);
   const windowStateStore = createWindowStateStore(paths.windowStatePath);
   const settingsStore = createSettingsStore(paths.settingsPath);
+  const usageHistoryStore = createUsageHistoryStore(
+    paths.usageHistoryPath,
+    USAGE_PRICING_REVISION
+  );
   const savedSettings = settingsStore.load();
   const resolvedShellEnv = await resolveShellEnvironment({
     preferredShell: savedSettings?.shell,
@@ -94,6 +104,7 @@ async function bootstrap(): Promise<void> {
     console.warn(geminiIntegrationResult.warning);
   }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
+  let usageRuntime!: ReturnType<typeof createUsageRuntime>;
 
   const runtime = createAppRuntime({
     paths: {
@@ -108,6 +119,9 @@ async function bootstrap(): Promise<void> {
     fontInventoryProvider: createFontInventoryProvider(
       resolvedShellEnv.baseEnv
     ),
+    onDidDispatchAppAction: (action) => {
+      usageRuntime?.handleAppAction(action);
+    },
     persistWindowState: (window) => {
       persistWindowState({
         windowStateStore,
@@ -126,6 +140,13 @@ async function bootstrap(): Promise<void> {
     env: resolvedShellEnv.baseEnv
   });
 
+  usageRuntime = createUsageRuntime({
+    getState: runtime.getState,
+    dispatchAppAction: runtime.dispatchAppAction,
+    env: resolvedShellEnv.baseEnv,
+    historyStore: usageHistoryStore
+  });
+
   const initial = runtime.restoreInitialState();
   runtime.setStore(new AppStore(initial));
 
@@ -135,6 +156,9 @@ async function bootstrap(): Promise<void> {
   const terminalBridge = createTerminalBridge({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
+    onSurfaceInputText: (surfaceId, text) => {
+      usageRuntime.handleTerminalInput(surfaceId, text);
+    },
     getPtyHost: () => ptyHost
   });
 
@@ -153,6 +177,7 @@ async function bootstrap(): Promise<void> {
 
   registerIpcHandlers({
     getView: runtime.getView,
+    getUsageView: usageRuntime.getSnapshot,
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,
     snapshotSurface: terminalBridge.snapshotSurface,
@@ -165,7 +190,8 @@ async function bootstrap(): Promise<void> {
     previewTerminalTypography: runtime.previewTerminalTypography,
     reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,
     importTerminalThemePalette: importItermcolorsPalette,
-    exportTerminalThemePalette: exportItermcolorsPalette
+    exportTerminalThemePalette: exportItermcolorsPalette,
+    setUsageDashboardOpen: usageRuntime.setDashboardOpen
   });
 
   const mainWindow = createMainWindow({
@@ -220,6 +246,7 @@ async function bootstrap(): Promise<void> {
   });
   updateApplicationMenu();
   runtime.broadcastView();
+  usageRuntime.start();
   runtime.respawnRestoredSessions();
   mainWindow.once("ready-to-show", () => {
     updater.startBackgroundChecks();
@@ -232,6 +259,7 @@ async function bootstrap(): Promise<void> {
         unsubscribeUpdater();
         updater.dispose();
         runtime.shutdown();
+        usageRuntime.shutdown();
 
         const server = socketServer;
         socketServer = null;

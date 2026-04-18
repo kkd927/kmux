@@ -9,10 +9,11 @@ import {
 import { dirname, join } from "node:path";
 
 import type { AppState } from "@kmux/core";
-import type { KmuxSettings } from "@kmux/proto";
+import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
 const SNAPSHOT_STORE_VERSION = 1;
 const WINDOW_STATE_STORE_VERSION = 1;
+const USAGE_HISTORY_STORE_VERSION = 1;
 
 export interface PersistedWindowState {
   width: number;
@@ -33,6 +34,12 @@ interface WindowStateEnvelope {
   windowState: PersistedWindowState;
 }
 
+interface UsageHistoryEnvelope {
+  version: number;
+  pricingRevision?: string;
+  days: UsageHistoryDayRecord[];
+}
+
 export interface SnapshotFileStore {
   path: string;
   load(): AppState | null;
@@ -49,6 +56,30 @@ export interface SettingsFileStore {
   path: string;
   load(): KmuxSettings | null;
   save(settings: KmuxSettings): void;
+}
+
+export interface UsageHistoryVendorRecord {
+  vendor: Exclude<UsageVendor, "unknown">;
+  totalCostUsd: number;
+  totalTokens: number;
+  activeSessionCount: number;
+}
+
+export interface UsageHistoryDayRecord {
+  dayKey: string;
+  totalCostUsd: number;
+  reportedCostUsd: number;
+  estimatedCostUsd: number;
+  unknownCostTokens: number;
+  totalTokens: number;
+  activeSessionCount: number;
+  vendors: UsageHistoryVendorRecord[];
+}
+
+export interface UsageHistoryFileStore {
+  path: string;
+  load(): UsageHistoryDayRecord[];
+  save(days: UsageHistoryDayRecord[]): void;
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
@@ -172,6 +203,49 @@ export function createSettingsStore(settingsPath: string): SettingsFileStore {
   };
 }
 
+export function createUsageHistoryStore(
+  usageHistoryPath: string,
+  pricingRevision?: string
+): UsageHistoryFileStore {
+  mkdirSync(dirname(usageHistoryPath), { recursive: true });
+
+  return {
+    path: usageHistoryPath,
+    load() {
+      const envelope = readJsonFile<Partial<UsageHistoryEnvelope>>(usageHistoryPath);
+      if (!envelope) {
+        return [];
+      }
+      if (envelope.version !== USAGE_HISTORY_STORE_VERSION) {
+        warnInvalidFile(
+          usageHistoryPath,
+          `unsupported version ${String(envelope.version)}`
+        );
+        return [];
+      }
+      if (!Array.isArray(envelope.days)) {
+        warnInvalidFile(usageHistoryPath, "missing usage history payload");
+        return [];
+      }
+      if (pricingRevision && envelope.pricingRevision !== pricingRevision) {
+        warnInvalidFile(usageHistoryPath, "stale usage pricing revision");
+        return [];
+      }
+      return envelope.days as UsageHistoryDayRecord[];
+    },
+    save(days) {
+      atomicWrite(
+        usageHistoryPath,
+        JSON.stringify({
+          version: USAGE_HISTORY_STORE_VERSION,
+          pricingRevision,
+          days
+        } satisfies UsageHistoryEnvelope)
+      );
+    }
+  };
+}
+
 export function defaultAppPaths(
   homeDir: string,
   env: NodeJS.ProcessEnv = process.env
@@ -179,6 +253,7 @@ export function defaultAppPaths(
   statePath: string;
   windowStatePath: string;
   settingsPath: string;
+  usageHistoryPath: string;
   socketPath: string;
 } {
   const configDir = env.KMUX_CONFIG_DIR ?? join(homeDir, ".config", "kmux");
@@ -187,6 +262,7 @@ export function defaultAppPaths(
     statePath: join(configDir, "state.json"),
     windowStatePath: join(configDir, "window-state.json"),
     settingsPath: join(configDir, "settings.json"),
+    usageHistoryPath: join(configDir, "usage-history.json"),
     socketPath: join(runtimeDir, "control.sock")
   };
 }

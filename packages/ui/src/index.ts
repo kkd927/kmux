@@ -31,6 +31,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "surface.prev": "Ctrl+Shift+Tab",
   "command.palette": "Meta+Shift+P",
   "notifications.toggle": "Meta+I",
+  "usage.dashboard.toggle": "Meta+Shift+U",
   "settings.toggle": "Meta+,",
   "terminal.search": "Meta+F",
   "terminal.search.next": "Meta+G",

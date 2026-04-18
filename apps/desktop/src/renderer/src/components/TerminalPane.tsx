@@ -19,6 +19,7 @@ import {
 import type { ColorTheme } from "@kmux/ui";
 
 import { Codicon } from "./Codicon";
+import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
@@ -700,11 +701,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                     <Codicon name="terminal" />
                   </span>
                   <span className={styles.tabLabel}>{surface.title}</span>
-                  {surface.attention ? (
-                    <span className={styles.attentionDot} />
-                  ) : null}
+                  <SurfaceUsageAlertDot
+                    surfaceId={surface.id}
+                    fallbackVisible={surface.attention || surface.unreadCount > 0}
+                  />
                   {surface.unreadCount > 0 ? (
-                    <span className={styles.badge}>{surface.unreadCount}</span>
+                    <span
+                      className={styles.badge}
+                      data-testid={`surface-unread-badge-${surface.id}`}
+                    >
+                      {surface.unreadCount}
+                    </span>
                   ) : null}
                 </button>
                 <button
@@ -722,35 +729,37 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             );
           })}
         </div>
-        <div className={styles.controls}>
-          <button
-            title="New tab"
-            aria-label="Create new tab"
-            onClick={() => props.onCreateSurface(props.paneId)}
-          >
-            <Codicon name="add" />
-          </button>
-          <button
-            title="Split right"
-            aria-label="Split active pane right"
-            onClick={() => props.onSplitRight(props.paneId)}
-          >
-            <Codicon name="split-horizontal" />
-          </button>
-          <button
-            title="Split down"
-            aria-label="Split active pane down"
-            onClick={() => props.onSplitDown(props.paneId)}
-          >
-            <Codicon name="split-vertical" />
-          </button>
-          <button
-            title="Close pane"
-            aria-label="Close active pane"
-            onClick={() => props.onClosePane(props.paneId)}
-          >
-            <Codicon name="close" />
-          </button>
+        <div className={styles.headerTrailing}>
+          <div className={styles.controls}>
+            <button
+              title="New tab"
+              aria-label="Create new tab"
+              onClick={() => props.onCreateSurface(props.paneId)}
+            >
+              <Codicon name="add" />
+            </button>
+            <button
+              title="Split right"
+              aria-label="Split active pane right"
+              onClick={() => props.onSplitRight(props.paneId)}
+            >
+              <Codicon name="split-horizontal" />
+            </button>
+            <button
+              title="Split down"
+              aria-label="Split active pane down"
+              onClick={() => props.onSplitDown(props.paneId)}
+            >
+              <Codicon name="split-vertical" />
+            </button>
+            <button
+              title="Close pane"
+              aria-label="Close active pane"
+              onClick={() => props.onClosePane(props.paneId)}
+            >
+              <Codicon name="close" />
+            </button>
+          </div>
         </div>
       </div>
       {props.showSearch ? (

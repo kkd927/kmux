@@ -26,6 +26,13 @@
   gap: 0;
 }
 
+.headerTrailing {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .tabs {
   display: flex;
   align-items: stretch;
@@ -192,14 +199,6 @@
   font-size: 14px;
 }
 
-.attentionDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--warning);
-  flex: 0 0 auto;
-}
-
 .badge {
   display: inline-grid;
   place-items: center;
@@ -221,6 +220,14 @@
   padding: 0 4px;
   border-left: 1px solid var(--border-strong);
   background: var(--tab-bg);
+}
+
+.usageAlertDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
 .controls button,

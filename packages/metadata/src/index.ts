@@ -1,6 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+export * from "./aiCliProcess";
+export * from "./modelPricing";
+export * from "./usage";
+
 const execFileAsync = promisify(execFile);
 
 const branchCache = new Map<

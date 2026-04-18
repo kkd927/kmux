@@ -5,6 +5,7 @@ import type {
   ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellViewModel,
+  UsageViewSnapshot,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
@@ -17,8 +18,12 @@ declare global {
   interface Window {
     kmux: {
       getView(): Promise<ShellViewModel>;
+      getUsageView(): Promise<UsageViewSnapshot>;
       dispatch(action: AppAction): Promise<ShellViewModel>;
       subscribeView(listener: (view: ShellViewModel) => void): () => void;
+      subscribeUsage(
+        listener: (snapshot: UsageViewSnapshot) => void
+      ): () => void;
       subscribeTerminal(listener: (event: TerminalEvent) => void): () => void;
       attachSurface(surfaceId: string): Promise<SurfaceSnapshotPayload | null>;
       detachSurface(surfaceId: string): Promise<void>;
@@ -55,6 +60,7 @@ declare global {
         listener: (workspaceId: string) => void
       ): () => void;
       identify(): Promise<ShellIdentity>;
+      setUsageDashboardOpen(open: boolean): Promise<void>;
     };
     kmuxTest?: {
       snapshotSurface(

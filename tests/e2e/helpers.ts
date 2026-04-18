@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -157,7 +157,28 @@ export async function launchKmuxWithSandbox(
 }
 
 export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
-  await launched.app.close();
+  const appProcess = launched.app.process();
+  let closeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    await Promise.race([
+      launched.app.close(),
+      new Promise<never>((_, reject) => {
+        closeTimeout = setTimeout(() => {
+          reject(new Error("kmux app close timed out"));
+        }, 5_000);
+      })
+    ]);
+  } catch {
+    if (appProcess && appProcess.exitCode === null) {
+      appProcess.kill("SIGKILL");
+      await waitForProcessExit(appProcess, 5_000).catch(() => undefined);
+    }
+  } finally {
+    if (closeTimeout) {
+      clearTimeout(closeTimeout);
+    }
+  }
 }
 
 export async function closeKmux(launched: LaunchedKmux): Promise<void> {
@@ -166,6 +187,45 @@ export async function closeKmux(launched: LaunchedKmux): Promise<void> {
   } finally {
     destroySandbox(launched.sandbox);
   }
+}
+
+async function waitForProcessExit(
+  process: ChildProcess,
+  timeoutMs: number
+): Promise<void> {
+  if (process.exitCode !== null) {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      timeout = null;
+      cleanup();
+      reject(new Error("kmux process exit timed out"));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      process.off("exit", onExit);
+      process.off("error", onError);
+    };
+
+    const onExit = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onError = () => {
+      cleanup();
+      resolve();
+    };
+
+    process.once("exit", onExit);
+    process.once("error", onError);
+  });
 }
 
 export async function getView(page: Page): Promise<ShellViewModel> {

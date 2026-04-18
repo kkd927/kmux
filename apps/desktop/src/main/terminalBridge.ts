@@ -17,6 +17,7 @@ interface TerminalBridgeOptions {
   getState: () => AppState;
   dispatchAppAction: (action: AppAction) => void;
   getPtyHost: () => PtyHostManager | null;
+  onSurfaceInputText?: (surfaceId: Id, text: string) => void;
 }
 
 interface SurfaceAttachmentState {
@@ -25,6 +26,8 @@ interface SurfaceAttachmentState {
   pendingExit: SurfaceExitPayload | null;
   hydratePromise: Promise<SurfaceSnapshotPayload | null> | null;
 }
+
+const ATTACH_SNAPSHOT_SETTLE_MS = 120;
 
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
@@ -60,6 +63,7 @@ export function createTerminalBridge(
   function sendText(surfaceId: Id, text: string): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
+      options.onSurfaceInputText?.(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
     }
   }
@@ -126,7 +130,9 @@ export function createTerminalBridge(
     attached.set(surfaceId, attachment);
 
     attachment.hydratePromise = (async () => {
-      const snapshot = await snapshotSurface(surfaceId);
+      const snapshot = await snapshotSurface(surfaceId, {
+        settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
+      });
       const currentAttachment = attachedSurfacesByContents
         .get(contentsId)
         ?.get(surfaceId);

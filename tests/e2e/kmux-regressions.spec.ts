@@ -903,7 +903,7 @@ test("sidebar status/progress/log updates from cli are reflected and cleared in 
           (entry) =>
             entry.key === `agent:claude:${activeSurfaceId}` &&
             entry.variant === "attention" &&
-            entry.text === agentMessage
+            entry.text === "needs input"
         ) &&
         view.notifications.some(
           (notification) =>
