@@ -141,6 +141,80 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("promotes restored Codex input prompts even before vendor binding is known", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "unknown"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "CodexBar",
+      message: "Plan mode prompt: Depth"
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      title: "Codex needs input",
+      message: "Plan mode prompt: Depth",
+      details: expect.objectContaining({
+        uiOnly: true,
+        source: "terminal",
+        protocol: 9,
+        inferredFromUnknownVendor: true
+      })
+    });
+  });
+
+  it("keeps unknown non-Codex terminal prompts on the generic notification path", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "unknown"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "tool",
+      message: "Permission required"
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "notification.create",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      title: "tool",
+      message: "Permission required",
+      source: "terminal"
+    });
+  });
+
   it("marks visible Codex input-required terminal notifications as already visible", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
