@@ -155,61 +155,37 @@ describe("usage runtime", () => {
     );
   });
 
-  it("clears restored budget sidebar statuses and notifications from older usage dashboard builds", async () => {
+  it("ignores ui-only agent attention events for usage binding and active counts", () => {
     const state = createInitialState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
-    state.workspaces[workspaceId].statusEntries["usage:daily:vendor:codex"] = {
-      key: "usage:daily:vendor:codex",
-      text: "Codex daily budget 103% reached ($1.03 / $1.00)",
-      label: "Codex",
-      variant: "attention",
-      updatedAt: new Date("2026-04-17T10:55:00.000Z").toISOString()
-    };
-    state.notifications.push({
-      id: "notification_budget_legacy",
-      workspaceId,
-      title: "Codex budget alert",
-      message: "Codex daily budget 103% reached ($1.03 / $1.00)",
-      source: "status",
-      createdAt: new Date("2026-04-17T10:55:00.000Z").toISOString()
-    });
-    const dispatchedActions: AppAction[] = [];
-    const dispatchAppAction = (action: AppAction) => {
-      dispatchedActions.push(action);
-      applyAction(state, action);
-    };
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
 
     const runtime = createUsageRuntime({
       getState: () => state,
-      dispatchAppAction,
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      dispatchAppAction: vi.fn(),
+      adapters: [],
       emitSnapshot: vi.fn(),
-      now: () => new Date("2026-04-17T11:30:00.000Z").getTime()
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
     });
 
-    await runtime.refreshNow();
+    runtime.handleAppAction({
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId,
+      sessionId: state.surfaces[surfaceId].sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        source: "terminal"
+      }
+    });
 
-    expect(state.workspaces[workspaceId].statusEntries).not.toHaveProperty(
-      "usage:daily:vendor:codex"
-    );
-    expect(state.notifications).toEqual(
-      expect.not.arrayContaining([
-        expect.objectContaining({ id: "notification_budget_legacy" })
-      ])
-    );
-    expect(dispatchedActions).toContainEqual(
-      expect.objectContaining({
-        type: "sidebar.clearStatus",
-        workspaceId,
-        key: "usage:daily:vendor:codex"
-      })
-    );
-    expect(dispatchedActions).toContainEqual(
-      expect.objectContaining({
-        type: "notification.clear",
-        notificationId: "notification_budget_legacy"
-      })
-    );
+    expect(runtime.getSnapshot().activeSessionCount).toBe(0);
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toBeUndefined();
   });
 
   it("keeps session totals when a surface binds to an already-running vendor session", async () => {

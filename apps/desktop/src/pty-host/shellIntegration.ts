@@ -650,73 +650,164 @@ function buildNodeRuntimeResolverLines(): string[] {
   ];
 }
 
+function escapeForSingleQuotedShell(source: string): string {
+  return source.replace(/'/g, `'"'"'`);
+}
+
+function buildAgentHookInlineScript(): string {
+  return `
+const net = require("node:net");
+
+const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";
+
+function emitResponse() {
+  if (outputJson) {
+    process.stdout.write("{}\\n");
+  }
+}
+
+function finish() {
+  emitResponse();
+  process.exit(0);
+}
+
+function buildParams(payload) {
+  return {
+    agent: process.env.KMUX_HOOK_AGENT,
+    hookEvent: process.env.KMUX_HOOK_EVENT,
+    payload,
+    workspaceId: process.env.KMUX_WORKSPACE_ID || undefined,
+    paneId: process.env.KMUX_PANE_ID || undefined,
+    surfaceId: process.env.KMUX_SURFACE_ID || undefined,
+    sessionId: process.env.KMUX_SESSION_ID || undefined,
+    authToken: process.env.KMUX_AUTH_TOKEN || undefined,
+  };
+}
+
+function connectAndSend(payload) {
+  const socketPath = process.env.KMUX_SOCKET_PATH;
+  const agent = process.env.KMUX_HOOK_AGENT;
+  const hookEvent = process.env.KMUX_HOOK_EVENT;
+  if (!socketPath || !agent || !hookEvent) {
+    finish();
+    return;
+  }
+
+  const socket = net.createConnection(socketPath);
+  let settled = false;
+  let buffer = "";
+
+  const timeout = setTimeout(() => {
+    complete();
+  }, 750);
+
+  function complete() {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeout);
+    socket.destroy();
+    finish();
+  }
+
+  socket.on("connect", () => {
+    socket.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "hook_" + Date.now().toString(36),
+        method: "agent.hook",
+        params: buildParams(payload),
+      }) + "\\n"
+    );
+  });
+
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    if (buffer.includes("\\n")) {
+      complete();
+    }
+  });
+
+  socket.on("error", () => {
+    complete();
+  });
+
+  socket.on("close", () => {
+    complete();
+  });
+}
+
+function forwardFromStdin() {
+  if (process.stdin.isTTY) {
+    connectAndSend({});
+    return;
+  }
+
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+  });
+  process.stdin.on("error", () => {
+    finish();
+  });
+  process.stdin.on("end", () => {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      connectAndSend({});
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        connectAndSend(parsed);
+        return;
+      }
+    } catch {}
+    connectAndSend({});
+  });
+  process.stdin.resume();
+}
+
+forwardFromStdin();
+`.trim();
+}
+
 function buildAgentHookHelperScript(): string {
+  const inlineScript = escapeForSingleQuotedShell(
+    buildAgentHookInlineScript()
+  );
+
   return [
     "#!/bin/sh",
+    'KMUX_AGENT_HOOK_OUTPUT_MODE="${KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}"',
     'if [ "$#" -lt 2 ]; then',
+    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    '    printf "{}\\n"',
+    "  fi",
     "  exit 0",
     "fi",
     "",
-    'KMUX_AGENT_HOOK_OUTPUT_MODE="${KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}"',
     'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
     ...buildPathFilteringHelperLines(),
     ...buildNodeRuntimeResolverLines(),
     'PATH="$(kmux_filter_path "${PATH:-}")"',
     "export PATH",
-    "kmux_run_cli_hook_with_runtime() {",
-    '  _kmux_runtime="$1"',
-    "  shift",
-    '  [ -n "${KMUX_CLI_PATH:-}" ] && [ -f "${KMUX_CLI_PATH}" ] || return 1',
-    '  [ -n "$_kmux_runtime" ] || return 1',
-    "  (",
-    '    if [ -n "${KMUX_CLI_CWD:-}" ] && [ -d "${KMUX_CLI_CWD}" ]; then',
-    '      cd "${KMUX_CLI_CWD}" || exit 1',
-    "    fi",
-    '    case "${KMUX_CLI_PATH}" in',
-    "      *.ts|*.cts|*.mts)",
-    '        [ -n "${KMUX_CLI_TSX_LOADER_PATH:-}" ] && [ -f "${KMUX_CLI_TSX_LOADER_PATH}" ] || exit 1',
-    '        if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    '          env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" --import "$KMUX_CLI_TSX_LOADER_PATH" "$KMUX_CLI_PATH" agent hook "$@" 2>/dev/null',
-    "          exit $?",
-    "        fi",
-    '        env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" --import "$KMUX_CLI_TSX_LOADER_PATH" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1',
-    "        exit $?",
-    "        ;;",
-    "      *)",
-    '        if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    '          env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" "$KMUX_CLI_PATH" agent hook "$@" 2>/dev/null',
-    "          exit $?",
-    "        fi",
-    '        env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1',
-    "        exit $?",
-    "        ;;",
-    "    esac",
-    "  )",
-    "}",
-    "",
-    "kmux_dispatch_cli_hook() {",
-    '  case "${KMUX_CLI_PATH:-}" in',
-    "    *.ts|*.cts|*.mts)",
-    "      if command -v node >/dev/null 2>&1; then",
-    '        kmux_run_cli_hook_with_runtime "$(command -v node)" "$@" && return 0',
-    "      fi",
-    "      ;;",
-    "  esac",
+    "kmux_dispatch_hook() {",
     '  KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
     '  [ -n "$KMUX_NODE_RUNTIME" ] || return 1',
-    '  kmux_run_cli_hook_with_runtime "$KMUX_NODE_RUNTIME" "$@"',
+    '  [ -n "${KMUX_SOCKET_PATH:-}" ] || return 1',
+    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
+    `    env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e '${inlineScript}' 2>/dev/null`,
+    "    return $?",
+    "  fi",
+    `  env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e '${inlineScript}' >/dev/null 2>&1`,
+    "  return $?",
     "}",
     "",
-    'if kmux_dispatch_cli_hook "$@"; then',
+    'if kmux_dispatch_hook "$@"; then',
     "  exit 0",
-    "fi",
-    "",
-    "if command -v kmux >/dev/null 2>&1; then",
-    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    '    kmux agent hook "$@" 2>/dev/null && exit 0',
-    "  else",
-    '    kmux agent hook "$@" >/dev/null 2>&1 && exit 0',
-    "  fi",
     "fi",
     "",
     'if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',

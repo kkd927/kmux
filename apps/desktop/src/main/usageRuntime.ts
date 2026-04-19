@@ -6,13 +6,11 @@ import type { Id } from "@kmux/proto";
 import {
   createEmptyUsageViewSnapshot,
   isoNow,
-  type BudgetAlertVm,
   type ModelUsageVm,
   type SubscriptionProviderUsageVm,
   type UsageCostSource,
   type UsageDailyActivityVm,
   type UsageAttributionState,
-  type UsageAlertSeverity,
   type UsagePricingCoverageVm,
   type UsageSessionState,
   type UsageTokenCostBreakdownVm,
@@ -60,15 +58,7 @@ const AUTH_VISIBILITY_REFRESH_MS = 5 * 60 * 1000;
 const MANUAL_CLI_BIND_GRACE_MS = 5_000;
 const MANUAL_USAGE_CATCHUP_DELAYS_MS = [1_000, 3_000];
 const MANUAL_INPUT_BUFFER_LIMIT = 512;
-const BURN_SPIKE_MIN_COST_USD = 1.5;
-const BURN_SPIKE_SUPPRESSION_MS = 15 * 60 * 1000;
-const BURN_SPIKE_ACTIVE_MS = 10 * 60 * 1000;
 const USAGE_HISTORY_DAY_COUNT = 210;
-const DAILY_BUDGET_STATUS_KEY_PREFIX = "usage:daily:";
-const DAILY_BUDGET_STATUS_PATTERN = /\bdaily budget\b/i;
-const BUDGET_NOTIFICATION_PATTERN = /\bbudget\b/i;
-
-type StatusVariant = "attention" | "error";
 type SurfaceBindingSource = "agent" | "manual_cli";
 
 type SurfaceBinding = {
@@ -95,7 +85,6 @@ type DerivedSurface = {
   todayCostUsd: number;
   todayTokens: number;
   state: UsageSessionState;
-  alertSeverity: UsageAlertSeverity;
   updatedAtMs: number;
   attributionState: UsageAttributionState;
   costSource: UsageCostSource;
@@ -109,7 +98,6 @@ type DerivedWorkspace = {
   todayCostUsd: number;
   todayTokens: number;
   activeCount: number;
-  warningCount: number;
   costSource: UsageCostSource;
   reportedCostUsd: number;
   estimatedCostUsd: number;
@@ -157,22 +145,6 @@ type UsageSampleMatch = {
   surfaceId: Id;
   attribution: "session" | "path";
   attributionState: UsageAttributionState;
-};
-
-type SurfaceSpikeState = {
-  createdAtMs: number;
-  lastFiredAtMs: number;
-  activeUntilMs: number;
-  message: string;
-};
-
-type RuntimeStatusEntry = {
-  key: string;
-  workspaceId: Id;
-  text: string;
-  label: string;
-  variant: StatusVariant;
-  surfaceId?: Id;
 };
 
 type ManualCliCandidate = {
@@ -227,6 +199,7 @@ export interface UsageRuntime {
   start(): void;
   shutdown(): void;
   getSnapshot(): UsageViewSnapshot;
+  getSurfaceVendor(surfaceId: Id): UsageVendor;
   handleAppAction(action: AppAction): void;
   handleTerminalInput(surfaceId: Id, text: string): void;
   setDashboardOpen(open: boolean): void;
@@ -293,8 +266,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     Id,
     Set<ReturnType<typeof setTimeout>>
   >();
-  const runtimeStatuses = new Map<string, RuntimeStatusEntry>();
-  const burnStates = new Map<Id, SurfaceSpikeState>();
   const subscriptionUsage = new Map<
     SubscriptionProvider,
     SubscriptionProviderUsageVm
@@ -377,7 +348,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     const nextDelay = minPositiveDelay([
       getNextManualCliRefreshDelayMs(now()),
-      getNextBurnRefreshDelayMs(now()),
       dashboardOpen ? DASHBOARD_REFRESH_MS : BACKGROUND_USAGE_REFRESH_MS
     ]);
 
@@ -399,7 +369,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     refreshInFlight = (async () => {
       try {
-        pruneLegacyBudgetArtifacts();
         await refreshManualCliBindings();
         await refreshAdapters();
         rebuildSnapshot();
@@ -427,6 +396,14 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     })();
 
     return refreshInFlight;
+  }
+
+  function getSurfaceVendor(surfaceId: Id): UsageVendor {
+    const bindingVendor = bindings.get(surfaceId)?.vendor;
+    if (bindingVendor) {
+      return bindingVendor;
+    }
+    return manualCandidates.get(surfaceId)?.vendor ?? "unknown";
   }
 
   function scheduleSubscriptionRefresh(): void {
@@ -665,41 +642,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     return authVisibilityRefreshInFlight;
   }
 
-  function pruneLegacyBudgetArtifacts(): void {
-    const state = options.getState();
-    for (const workspace of Object.values(state.workspaces)) {
-      for (const [key, entry] of Object.entries(workspace.statusEntries ?? {})) {
-        if (!isLegacyDailyBudgetSidebarStatus(key, entry.text)) {
-          continue;
-        }
-        options.dispatchAppAction({
-          type: "sidebar.clearStatus",
-          workspaceId: workspace.id,
-          key
-        });
-      }
-      if (isLegacyDailyBudgetSidebarStatus("manual", workspace.statusText)) {
-        options.dispatchAppAction({
-          type: "sidebar.clearStatus",
-          workspaceId: workspace.id,
-          key: "manual"
-        });
-      }
-    }
-
-    for (const notification of state.notifications) {
-      if (
-        notification.source === "status" &&
-        isLegacyBudgetNotification(notification.title, notification.message)
-      ) {
-        options.dispatchAppAction({
-          type: "notification.clear",
-          notificationId: notification.id
-        });
-      }
-    }
-  }
-
   async function refreshAdapters(): Promise<void> {
     const nextDayKey = dayKeyFor(now());
     if (dayKey !== nextDayKey) {
@@ -799,7 +741,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           !isProcessAlive(existingBinding.vendorProcessId)
         ) {
           bindings.delete(surface.id);
-          burnStates.delete(surface.id);
         }
         continue;
       }
@@ -876,7 +817,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (binding) {
         if (binding.source === "manual_cli") {
           bindings.delete(binding.surfaceId);
-          burnStates.delete(binding.surfaceId);
         } else {
           binding.state = "unknown";
         }
@@ -953,6 +893,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   }
 
   function handleAgentEvent(action: Extract<AppAction, { type: "agent.event" }>): void {
+    if (action.details?.uiOnly === true) {
+      return;
+    }
     const vendor = normalizeVendor(action.agent);
     if (vendor === "unknown") {
       return;
@@ -1009,20 +952,17 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       const surface = state.surfaces[surfaceId];
       if (!surface) {
         bindings.delete(surfaceId);
-        burnStates.delete(surfaceId);
         continue;
       }
       const pane = state.panes[surface.paneId];
       if (!pane) {
         bindings.delete(surfaceId);
-        burnStates.delete(surfaceId);
         continue;
       }
       const session = state.sessions[surface.sessionId];
       if (!session || session.runtimeState === "exited") {
         if (binding.source === "manual_cli") {
           bindings.delete(surfaceId);
-          burnStates.delete(surfaceId);
         }
         continue;
       }
@@ -1045,7 +985,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     >();
     const modelTotals = new Map<string, DerivedModel>();
     const unboundSurfacePathIndex = buildUnboundSurfacePathIndex(state, bindings);
-    const recentCosts = new Map<Id, Array<{ timestampMs: number; costUsd: number }>>();
     let totalTodayCostUsd = 0;
     let totalTodayTokens = 0;
     let unattributedTodayCostUsd = 0;
@@ -1094,7 +1033,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         todayCostUsd: 0,
         todayTokens: 0,
         state: binding.state,
-        alertSeverity: "none",
         updatedAtMs: binding.lastAgentEventAtMs,
         attributionState: "bound",
         costSource: "reported",
@@ -1266,7 +1204,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           todayCostUsd: 0,
           todayTokens: 0,
           activeCount: 0,
-          warningCount: 0,
           costSource: "reported",
           reportedCostUsd: 0,
           estimatedCostUsd: 0,
@@ -1277,14 +1214,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       applyCostBreakdown(workspaceTotal, sample, sampleCostSource);
       workspaceTotals.set(workspaceId, workspaceTotal);
 
-      const timeline = recentCosts.get(surfaceAggregate.surfaceId) ?? [];
-      if (sampleCostUsd > 0) {
-        timeline.push({
-          timestampMs: sample.timestampMs,
-          costUsd: sampleCostUsd
-        });
-      }
-      recentCosts.set(surfaceAggregate.surfaceId, timeline);
     }
 
     for (const binding of bindings.values()) {
@@ -1295,7 +1224,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           todayCostUsd: 0,
           todayTokens: 0,
           activeCount: 0,
-          warningCount: 0,
           costSource: "reported",
           reportedCostUsd: 0,
           estimatedCostUsd: 0,
@@ -1324,50 +1252,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       vendorTotals.set(binding.vendor, vendorTotal);
     }
 
-    const desiredStatuses = new Map<string, RuntimeStatusEntry>();
-    const alerts: BudgetAlertVm[] = [];
-    const activeBurns = reconcileBurnAlerts(derivedSurfaces, recentCosts, now());
-    for (const [surfaceId, burn] of activeBurns.entries()) {
-      const surfaceAggregate = derivedSurfaces.get(surfaceId);
-      const binding = bindings.get(surfaceId);
-      if (!surfaceAggregate || !binding) {
-        continue;
-      }
-      surfaceAggregate.alertSeverity = maxSeverity(
-        surfaceAggregate.alertSeverity,
-        "warning"
-      );
-      alerts.push({
-        id: `usage_alert_burn_${surfaceId}_${burn.createdAtMs}`,
-        scope: "surface",
-        scopeId: surfaceId,
-        severity: "warning",
-        kind: "burn_spike",
-        message: burn.message,
-        createdAt: new Date(burn.createdAtMs).toISOString(),
-        workspaceId: binding.workspaceId,
-        surfaceId
-      });
-      desiredStatuses.set(`usage:burn:${surfaceId}`, {
-        key: `usage:burn:${surfaceId}`,
-        workspaceId: binding.workspaceId,
-        label: vendorLabel(binding.vendor),
-        text: burn.message,
-        variant: "attention",
-        surfaceId
-      });
-    }
-
-    for (const [workspaceId, workspaceTotal] of workspaceTotals.entries()) {
-      workspaceTotal.warningCount = Array.from(derivedSurfaces.values()).filter(
-        (surface) =>
-          surface.workspaceId === workspaceId &&
-          surface.alertSeverity !== "none"
-      ).length;
-    }
-
     for (const surface of derivedSurfaces.values()) {
-      surface.state = applyAlertSeverityToState(surface.state, surface.alertSeverity);
       surface.costSource = resolveCostSource(surface);
     }
     for (const workspace of workspaceTotals.values()) {
@@ -1379,8 +1264,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     for (const vendor of vendorTotals.values()) {
       vendor.costSource = resolveCostSource(vendor);
     }
-
-    syncRuntimeStatuses(desiredStatuses);
 
     const todayHistory = buildTodayHistoryRecord(
       dayKey,
@@ -1443,7 +1326,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
                 todayCostUsd: roundUsd(surface.todayCostUsd),
                 todayTokens: Math.round(surface.todayTokens),
                 state: surface.state,
-                alertSeverity: surface.alertSeverity,
                 attributionState: surface.attributionState,
                 costSource: surface.costSource,
                 updatedAt: new Date(surface.updatedAtMs || now()).toISOString()
@@ -1464,7 +1346,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             todayCostUsd: roundUsd(workspaceTotal.todayCostUsd),
             todayTokens: Math.round(workspaceTotal.todayTokens),
             activeCount: workspaceTotal.activeCount,
-            warningCount: workspaceTotal.warningCount,
             costSource: workspaceTotal.costSource
           }];
         })
@@ -1505,17 +1386,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             todayCostUsd: roundUsd(surface.todayCostUsd),
             todayTokens: Math.round(surface.todayTokens),
             state: surface.state,
-            alertSeverity: surface.alertSeverity,
             attributionState: surface.attributionState,
             costSource: surface.costSource,
             updatedAt: new Date(surface.updatedAtMs || now()).toISOString()
           };
         }),
-      alerts: alerts.sort(
-        (left, right) =>
-          severityRank(right.severity) - severityRank(left.severity) ||
-          right.createdAt.localeCompare(left.createdAt)
-      ),
       models,
       todayTokenBreakdown: {
         inputTokens: Math.round(todayTokenBreakdown.inputTokens),
@@ -1597,120 +1472,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         costSource: resolveHistoryCostSource(history)
       };
     });
-  }
-
-  function reconcileBurnAlerts(
-    derivedSurfaces: Map<Id, DerivedSurface>,
-    recentCosts: Map<Id, Array<{ timestampMs: number; costUsd: number }>>,
-    nowMs: number
-  ): Map<Id, SurfaceSpikeState> {
-    for (const [surfaceId, state] of burnStates.entries()) {
-      if (nowMs > state.activeUntilMs) {
-        burnStates.delete(surfaceId);
-      }
-    }
-
-    for (const [surfaceId, surface] of derivedSurfaces.entries()) {
-      const events = (recentCosts.get(surfaceId) ?? []).filter(
-        (event) => event.timestampMs >= nowMs - 20 * 60 * 1000
-      );
-      recentCosts.set(surfaceId, events);
-      const last5mCost = sumCosts(events, nowMs - 5 * 60 * 1000, nowMs);
-      const previous15mCost = sumCosts(
-        events,
-        nowMs - 20 * 60 * 1000,
-        nowMs - 5 * 60 * 1000
-      );
-      const spikeDetected =
-        last5mCost >= BURN_SPIKE_MIN_COST_USD &&
-        (previous15mCost <= 0 || last5mCost >= previous15mCost);
-      const existing = burnStates.get(surfaceId);
-
-      if (!spikeDetected) {
-        continue;
-      }
-
-      if (
-        existing &&
-        nowMs - existing.lastFiredAtMs < BURN_SPIKE_SUPPRESSION_MS
-      ) {
-        existing.activeUntilMs = Math.max(
-          existing.activeUntilMs,
-          nowMs + BURN_SPIKE_ACTIVE_MS
-        );
-        continue;
-      }
-
-      const message = `${vendorLabel(surface.vendor)} burn spike: ${formatUsd(
-        last5mCost
-      )} in the last 5m`;
-      burnStates.set(surfaceId, {
-        createdAtMs: nowMs,
-        lastFiredAtMs: nowMs,
-        activeUntilMs: nowMs + BURN_SPIKE_ACTIVE_MS,
-        message
-      });
-
-      const binding = bindings.get(surfaceId);
-      if (binding) {
-        options.dispatchAppAction({
-          type: "notification.create",
-          workspaceId: binding.workspaceId,
-          surfaceId,
-          title: `${vendorLabel(surface.vendor)} burn spike`,
-          message,
-          source: "status"
-        });
-      }
-    }
-
-    return burnStates;
-  }
-
-  function syncRuntimeStatuses(nextEntries: Map<string, RuntimeStatusEntry>): void {
-    for (const [key, current] of runtimeStatuses.entries()) {
-      const next = nextEntries.get(key);
-      if (
-        next &&
-        next.workspaceId === current.workspaceId &&
-        next.text === current.text &&
-        next.variant === current.variant &&
-        next.surfaceId === current.surfaceId &&
-        next.label === current.label
-      ) {
-        continue;
-      }
-      options.dispatchAppAction({
-        type: "sidebar.clearStatus",
-        workspaceId: current.workspaceId,
-        key
-      });
-      runtimeStatuses.delete(key);
-    }
-
-    for (const [key, next] of nextEntries.entries()) {
-      const current = runtimeStatuses.get(key);
-      if (
-        current &&
-        current.workspaceId === next.workspaceId &&
-        current.text === next.text &&
-        current.variant === next.variant &&
-        current.surfaceId === next.surfaceId &&
-        current.label === next.label
-      ) {
-        continue;
-      }
-      options.dispatchAppAction({
-        type: "sidebar.setStatus",
-        workspaceId: next.workspaceId,
-        key,
-        label: next.label,
-        text: next.text,
-        variant: next.variant,
-        surfaceId: next.surfaceId
-      });
-      runtimeStatuses.set(key, next);
-    }
   }
 
   function findBindingByKmuxSessionId(sessionId: Id): SurfaceBinding | undefined {
@@ -1799,17 +1560,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     return nextDelayMs;
   }
 
-  function getNextBurnRefreshDelayMs(nowMs: number): number | null {
-    let nextDelayMs: number | null = null;
-    for (const burn of burnStates.values()) {
-      const burnDelay = Math.max(0, burn.activeUntilMs - nowMs);
-      if (nextDelayMs === null || burnDelay < nextDelayMs) {
-        nextDelayMs = burnDelay;
-      }
-    }
-    return nextDelayMs;
-  }
-
   function buildSubscriptionUsageSnapshot(): SubscriptionProviderUsageVm[] {
     const visibleProviders = getVisibleSubscriptionProviders();
 
@@ -1849,6 +1599,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     start,
     shutdown,
     getSnapshot,
+    getSurfaceVendor,
     handleAppAction,
     handleTerminalInput,
     setDashboardOpen,
@@ -1989,7 +1740,6 @@ function createDerivedSurfaceForMatch(
     todayCostUsd: 0,
     todayTokens: 0,
     state: "unknown",
-    alertSeverity: "none",
     updatedAtMs: timestampMs,
     attributionState,
     costSource: "reported",
@@ -2015,11 +1765,7 @@ function minPositiveDelay(delays: Array<number | null>): number | null {
 function createSnapshotSignature(snapshot: UsageViewSnapshot): string {
   return JSON.stringify({
     ...snapshot,
-    updatedAt: "",
-    alerts: snapshot.alerts.map((alert) => ({
-      ...alert,
-      id: ""
-    }))
+    updatedAt: ""
   });
 }
 
@@ -2152,52 +1898,6 @@ function applyTerminalInput(
     submittedLines,
     interrupted
   };
-}
-
-function applyAlertSeverityToState(
-  state: UsageSessionState,
-  severity: UsageAlertSeverity
-): UsageSessionState {
-  if (severity === "urgent") {
-    return "overBudget";
-  }
-  if (severity === "warning" && state !== "waiting") {
-    return "warning";
-  }
-  if (severity === "warning" && state === "waiting") {
-    return "warning";
-  }
-  return state;
-}
-
-function sumCosts(
-  events: Array<{ timestampMs: number; costUsd: number }>,
-  fromMs: number,
-  toMs: number
-): number {
-  return events.reduce((sum, event) => {
-    if (event.timestampMs < fromMs || event.timestampMs >= toMs) {
-      return sum;
-    }
-    return sum + event.costUsd;
-  }, 0);
-}
-
-function maxSeverity(
-  left: UsageAlertSeverity,
-  right: UsageAlertSeverity
-): UsageAlertSeverity {
-  return severityRank(left) >= severityRank(right) ? left : right;
-}
-
-function severityRank(severity: UsageAlertSeverity): number {
-  if (severity === "urgent") {
-    return 2;
-  }
-  if (severity === "warning") {
-    return 1;
-  }
-  return 0;
 }
 
 function normalizeUsageSampleCostSource(
@@ -2459,28 +2159,6 @@ function buildRollingDayKeys(nowMs: number, count: number): string[] {
   return keys;
 }
 
-function isLegacyDailyBudgetSidebarStatus(
-  key: string | undefined,
-  text: string | undefined
-): boolean {
-  const normalizedText = text?.trim();
-  if (!normalizedText) {
-    return false;
-  }
-  const normalizedKey = key?.trim().toLowerCase() ?? "";
-  return (
-    normalizedKey.startsWith(DAILY_BUDGET_STATUS_KEY_PREFIX) ||
-    DAILY_BUDGET_STATUS_PATTERN.test(normalizedText)
-  );
-}
-
-function isLegacyBudgetNotification(
-  title: string | undefined,
-  message: string | undefined
-): boolean {
-  return BUDGET_NOTIFICATION_PATTERN.test(`${title ?? ""} ${message ?? ""}`.trim());
-}
-
 function startOfRollingDayRange(nowMs: number, count: number): number {
   const date = new Date(startOfLocalDay(nowMs));
   date.setDate(date.getDate() - (count - 1));
@@ -2510,23 +2188,6 @@ function resolveHistoryCostSource(
 
 function roundUsd(value: number): number {
   return Number(value.toFixed(6));
-}
-
-function formatUsd(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-function vendorLabel(vendor: UsageVendor): string {
-  if (vendor === "claude") {
-    return "Claude";
-  }
-  if (vendor === "codex") {
-    return "Codex";
-  }
-  if (vendor === "gemini") {
-    return "Gemini";
-  }
-  return "Usage";
 }
 
 function startOfLocalDay(nowMs: number): number {

@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 const GEMINI_SETTINGS_PATH_SEGMENTS = [".gemini", "settings.json"] as const;
 const KMUX_MANAGED_GEMINI_HOOK_MARKER = "KMUX_MANAGED_GEMINI_HOOK=1";
 
-type GeminiHookEvent = "AfterAgent" | "Notification";
+type GeminiHookEvent = "AfterAgent" | "BeforeAgent" | "Notification";
 type JsonObject = Record<string, unknown>;
 
 interface HookCommandDefinition extends JsonObject {
@@ -36,6 +36,7 @@ export interface GeminiIntegrationInstallResult {
 }
 
 const MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
+  { eventName: "BeforeAgent" },
   { eventName: "AfterAgent" },
   { eventName: "Notification", matcher: "ToolPermission" }
 ];

@@ -12,7 +12,7 @@ import type {
   ShellIdentity,
   SplitDirection
 } from "@kmux/proto";
-import { makeId } from "@kmux/proto";
+import { makeId, normalizeAgentHookInvocation } from "@kmux/proto";
 import { ZodError } from "zod";
 
 import {
@@ -22,6 +22,11 @@ import {
   type ParsedSocketRequest
 } from "./socketRpc";
 
+type AgentEventParams = Extract<
+  ParsedSocketRequest,
+  { method: "agent.event" }
+>["params"];
+
 interface SocketServerOptions {
   socketPath: string;
   getState: () => AppState;
@@ -29,6 +34,7 @@ interface SocketServerOptions {
   sendSurfaceText: (surfaceId: string, text: string) => void;
   sendSurfaceKey: (surfaceId: string, key: string) => void;
   identify: () => ShellIdentity;
+  isSurfaceVisibleToUser?: (surfaceId: string) => boolean;
 }
 
 export class KmuxSocketServer {
@@ -223,20 +229,24 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "agent.event":
-        logAgentEvent(request.params, activeWorkspaceId);
-        this.options.dispatch({
-          type: "agent.event",
-          workspaceId: request.params.workspaceId ?? activeWorkspaceId,
-          paneId: request.params.paneId,
-          surfaceId: request.params.surfaceId,
-          sessionId: request.params.sessionId,
-          agent: request.params.agent,
-          event: request.params.event,
-          title: request.params.title,
-          message: request.params.message,
-          details: request.params.details
-        });
-        return { ok: true };
+        return this.dispatchAgentEvent(request.params, activeWorkspaceId);
+      case "agent.hook": {
+        const event = normalizeAgentHookInvocation(
+          request.params.agent,
+          request.params.hookEvent,
+          request.params.payload ?? {},
+          {
+            KMUX_WORKSPACE_ID: request.params.workspaceId,
+            KMUX_PANE_ID: request.params.paneId,
+            KMUX_SURFACE_ID: request.params.surfaceId,
+            KMUX_SESSION_ID: request.params.sessionId
+          }
+        );
+        if (!event) {
+          return { ok: true, handled: false };
+        }
+        return this.dispatchAgentEvent(event, activeWorkspaceId);
+      }
       case "sidebar.set_progress":
         this.options.dispatch({
           type: "sidebar.setProgress",
@@ -295,10 +305,40 @@ export class KmuxSocketServer {
     };
     socket.write(`${JSON.stringify(response)}\n`);
   }
+
+  private dispatchAgentEvent(
+    params: AgentEventParams,
+    fallbackWorkspaceId: string
+  ): { ok: true } {
+    logAgentEvent(params, fallbackWorkspaceId);
+    const state = this.options.getState();
+    const surfaceId =
+      params.surfaceId ??
+      (params.sessionId ? state.sessions[params.sessionId]?.surfaceId : undefined);
+    const details = {
+      ...(params.details ?? {}),
+      ...(surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)
+        ? { visibleToUser: true }
+        : {})
+    };
+    this.options.dispatch({
+      type: "agent.event",
+      workspaceId: params.workspaceId ?? fallbackWorkspaceId,
+      paneId: params.paneId,
+      surfaceId: params.surfaceId,
+      sessionId: params.sessionId,
+      agent: params.agent,
+      event: params.event,
+      title: params.title,
+      message: params.message,
+      details: Object.keys(details).length > 0 ? details : undefined
+    });
+    return { ok: true };
+  }
 }
 
 function logAgentEvent(
-  params: Extract<ParsedSocketRequest, { method: "agent.event" }>["params"],
+  params: AgentEventParams,
   fallbackWorkspaceId: string
 ): void {
   const workspaceId = params.workspaceId ?? fallbackWorkspaceId;

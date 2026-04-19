@@ -9,8 +9,6 @@ import { Command } from "commander";
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 
-import { normalizeAgentHookInvocation } from "./agentHooks";
-
 const SOCKET_PATH = env.KMUX_SOCKET_PATH ?? `${env.HOME}/.kmux/control.sock`;
 
 function sendRpc(
@@ -109,10 +107,19 @@ function readJsonFromStdin(): Record<string, unknown> {
 async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
   try {
     const payload = readJsonFromStdin();
-    const event = normalizeAgentHookInvocation(agent, hookEvent, payload, env);
-    if (event) {
-      await sendRpc("agent.event", { ...event }, { timeoutMs: 750 });
-    }
+    await sendRpc(
+      "agent.hook",
+      {
+        agent,
+        hookEvent,
+        payload,
+        workspaceId: env.KMUX_WORKSPACE_ID,
+        paneId: env.KMUX_PANE_ID,
+        surfaceId: env.KMUX_SURFACE_ID,
+        sessionId: env.KMUX_SESSION_ID
+      },
+      { timeoutMs: 750 }
+    );
   } catch {
     // Agent hooks must never block or fail the agent command path.
   }
@@ -300,7 +307,7 @@ agent
   .command("hook")
   .argument("<agent>")
   .argument("<event>")
-  .description("Normalize an agent hook payload from stdin and notify kmux")
+  .description("Forward a raw agent hook payload from stdin to kmux")
   .action(async (agentName: string, hookEvent: string) => {
     await runAgentHook(agentName, hookEvent);
   });

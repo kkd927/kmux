@@ -1207,6 +1207,121 @@ test("repeated workspace switches preserve terminal snapshots", async () => {
   }
 });
 
+test("workspace switches restore busy alternate-screen terminal content", async () => {
+  const launched = await launchKmux("kmux-e2e-workspace-switch-alt-screen-");
+
+  try {
+    const page = launched.page;
+
+    await dispatch(page, {
+      type: "settings.update",
+      patch: {
+        terminalUseWebgl: false
+      }
+    });
+    await waitForView(
+      page,
+      (view) => view.settings.terminalUseWebgl === false,
+      "terminal WebGL renderer should disable for DOM text assertions"
+    );
+    await page.waitForFunction(() => {
+      const xterm = document.querySelector(".xterm");
+      return Boolean(
+        xterm &&
+          xterm.querySelectorAll("canvas").length === 0 &&
+          xterm.querySelectorAll(".xterm-rows > div").length > 0
+      );
+    });
+
+    const initial = await getView(page);
+
+    await dispatch(page, {
+      type: "workspace.create",
+      name: "beta"
+    });
+
+    const seeded = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === initial.workspaceRows.length + 1 &&
+        view.activeWorkspace.name === "beta",
+      "workspace fixture should be created before alternate-screen switching"
+    );
+
+    const fallbackWorkspaceId = initial.activeWorkspace.id;
+    const targetWorkspaceId = seeded.activeWorkspace.id;
+    const targetPaneId = seeded.activeWorkspace.activePaneId;
+    const targetSurfaceId =
+      seeded.activeWorkspace.panes[targetPaneId].activeSurfaceId;
+
+    await page.evaluate(
+      ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
+      {
+        surfaceId: targetSurfaceId,
+        text:
+          "python3 -c 'import sys,time;sys.stdout.write(\"\\x1b[?1049h\\x1b[2J\\x1b[H\");sys.stdout.write(\"KMUX ALT ROOT CAUSE\\nPersistent line A\\nPersistent line B\\n\");sys.stdout.flush();[(sys.stdout.write(f\"\\x1b[1;1Hspinner {i % 10}\"),sys.stdout.flush(),time.sleep(0.05)) for i in range(400)]'\r"
+      }
+    );
+
+    await page.waitForTimeout(600);
+
+    const preSwitchTerminalRows = page.locator(
+      `[data-active-surface-id="${targetSurfaceId}"] .xterm-rows`
+    );
+    await expect(preSwitchTerminalRows).toContainText("Persistent line A");
+    await expect(preSwitchTerminalRows).toContainText("Persistent line B");
+
+    await dispatch(page, {
+      type: "workspace.select",
+      workspaceId: fallbackWorkspaceId
+    });
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.id === fallbackWorkspaceId,
+      "fallback workspace should become active during alternate-screen switch"
+    );
+
+    await dispatch(page, {
+      type: "workspace.select",
+      workspaceId: targetWorkspaceId
+    });
+    await waitForView(
+      page,
+      (view) => view.activeWorkspace.id === targetWorkspaceId,
+      "target workspace should become active again during alternate-screen switch"
+    );
+
+    const terminalRows = page.locator(
+      `[data-active-surface-id="${targetSurfaceId}"] .xterm-rows`
+    );
+    let immediateDomText = "";
+    const immediateRestoreDeadline = Date.now() + 300;
+    while (Date.now() < immediateRestoreDeadline) {
+      immediateDomText = (await terminalRows.textContent()) ?? "";
+      if (
+        immediateDomText.includes("Persistent line A") &&
+        immediateDomText.includes("Persistent line B")
+      ) {
+        break;
+      }
+      await page.waitForTimeout(25);
+    }
+    const restoredSnapshot = await getSurfaceSnapshot(page, targetSurfaceId, {
+      timeoutMs: 1000
+    });
+
+    expect(immediateDomText).toContain("Persistent line A");
+    expect(immediateDomText).toContain("Persistent line B");
+    expect(restoredSnapshot?.vt).toContain("Persistent line A");
+    expect(restoredSnapshot?.vt).toContain("Persistent line B");
+
+    await expect(terminalRows).toContainText("Persistent line A");
+    await expect(terminalRows).toContainText("Persistent line B");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("closing the active workspace by shortcut keeps the app responsive and selects a remaining workspace", async () => {
   const launched = await launchKmux("kmux-e2e-workspace-close-active-");
 
