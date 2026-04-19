@@ -116,6 +116,17 @@ const socketParamSchemas = {
       details: z.record(z.string(), z.unknown()).optional()
     })
     .strict(),
+  "agent.hook": z
+    .object({
+      workspaceId: z.string().min(1).optional(),
+      paneId: z.string().min(1).optional(),
+      surfaceId: z.string().min(1).optional(),
+      sessionId: z.string().min(1).optional(),
+      agent: z.string().min(1),
+      hookEvent: z.string().min(1),
+      payload: z.record(z.string(), z.unknown()).optional()
+    })
+    .strict(),
   "sidebar.set_progress": z
     .object({
       workspaceId: z.string().min(1).optional(),

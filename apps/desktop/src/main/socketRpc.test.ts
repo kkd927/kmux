@@ -138,4 +138,35 @@ describe("socket rpc parsing", () => {
       authToken: undefined
     });
   });
+
+  it("accepts raw agent hook params for main-side normalization", () => {
+    expect(
+      parseSocketRequest(
+        "agent.hook",
+        {
+          workspaceId: "workspace_1",
+          surfaceId: "surface_1",
+          agent: "codex",
+          hookEvent: "Stop",
+          payload: {
+            message: "Done"
+          }
+        },
+        "rpc_7"
+      )
+    ).toEqual({
+      id: "rpc_7",
+      method: "agent.hook",
+      params: {
+        workspaceId: "workspace_1",
+        surfaceId: "surface_1",
+        agent: "codex",
+        hookEvent: "Stop",
+        payload: {
+          message: "Done"
+        }
+      },
+      authToken: undefined
+    });
+  });
 });

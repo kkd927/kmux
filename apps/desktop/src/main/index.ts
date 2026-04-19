@@ -22,7 +22,6 @@ import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
-import { resolveCliRuntimePaths } from "./cliRuntime";
 import { resolveShellEnvironment } from "./shellEnvironment";
 import { KmuxSocketServer } from "./socketServer";
 import { buildApplicationMenuTemplate } from "./appMenu";
@@ -47,12 +46,6 @@ import { AppStore } from "./store";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const cliRuntimePaths = resolveCliRuntimePaths({
-  currentDir,
-  isPackaged: app.isPackaged,
-  resourcesPath: process.resourcesPath,
-  processExecPath: process.execPath
-});
 const { autoUpdater } = electronUpdater;
 
 let ptyHost: PtyHostManager | null = null;
@@ -70,9 +63,6 @@ process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
   setDevelopmentDockIcon(currentDir);
-  if (cliRuntimePaths.warning) {
-    console.warn(cliRuntimePaths.warning);
-  }
   app.setAboutPanelOptions({
     applicationName: app.getName(),
     applicationVersion: app.getVersion(),
@@ -109,7 +99,7 @@ async function bootstrap(): Promise<void> {
   const runtime = createAppRuntime({
     paths: {
       ...paths,
-      ...cliRuntimePaths
+      nodePath: process.execPath
     },
     snapshotStore,
     windowStateStore,
@@ -147,6 +137,17 @@ async function bootstrap(): Promise<void> {
     historyStore: usageHistoryStore
   });
 
+  const isSurfaceVisibleToUser = (surfaceId: string): boolean => {
+    if (!BrowserWindow.getFocusedWindow()) {
+      return false;
+    }
+    const state = runtime.getState();
+    const activeWindow = state.windows[state.activeWindowId];
+    const activeWorkspace = state.workspaces[activeWindow.activeWorkspaceId];
+    const activePane = state.panes[activeWorkspace.activePaneId];
+    return activePane?.activeSurfaceId === surfaceId;
+  };
+
   const initial = runtime.restoreInitialState();
   runtime.setStore(new AppStore(initial));
 
@@ -156,6 +157,8 @@ async function bootstrap(): Promise<void> {
   const terminalBridge = createTerminalBridge({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
+    getSurfaceVendor: usageRuntime.getSurfaceVendor,
+    isSurfaceVisibleToUser,
     onSurfaceInputText: (surfaceId, text) => {
       usageRuntime.handleTerminalInput(surfaceId, text);
     },
@@ -171,7 +174,8 @@ async function bootstrap(): Promise<void> {
     dispatch: runtime.dispatchAppAction,
     sendSurfaceText: terminalBridge.sendText,
     sendSurfaceKey: terminalBridge.sendKey,
-    identify: runtime.identify
+    identify: runtime.identify,
+    isSurfaceVisibleToUser
   });
   await socketServer.start();
 

@@ -105,6 +105,14 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("treats Gemini before-agent hooks as running events", () => {
+    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toMatchObject({
+      agent: "gemini",
+      event: "running",
+      message: "Running"
+    });
+  });
+
   it("treats Codex stop hooks as turn completion events", () => {
     expect(normalizeAgentHookInvocation("codex", "stop")).toMatchObject({
       agent: "codex",

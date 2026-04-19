@@ -10,6 +10,7 @@ export type NotificationSource =
   | "socket"
   | "status"
   | "system";
+export type NotificationKind = "generic" | "needs_input" | "turn_complete";
 export type UsageVendor = "claude" | "codex" | "gemini" | "unknown";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
@@ -30,10 +31,7 @@ export type UsageSessionState =
   | "warning"
   | "overBudget"
   | "unknown";
-export type UsageAlertSeverity = "none" | "warning" | "urgent";
 export type UsageAttributionState = "bound" | "aggregate_only";
-export type BudgetAlertScope = "global" | "vendor" | "workspace" | "surface";
-export type BudgetAlertKind = "burn_spike";
 export type UsageCostSource = "reported" | "estimated" | "partial";
 
 export interface SessionLaunchConfig {
@@ -89,6 +87,8 @@ export interface NotificationItem {
   title: string;
   message: string;
   source: NotificationSource;
+  kind?: NotificationKind;
+  agent?: string;
   createdAt: string;
 }
 
@@ -351,7 +351,6 @@ export interface SurfaceUsageVm {
   todayCostUsd: number;
   todayTokens: number;
   state: UsageSessionState;
-  alertSeverity: UsageAlertSeverity;
   attributionState: UsageAttributionState;
   costSource?: UsageCostSource;
   updatedAt: string;
@@ -363,7 +362,6 @@ export interface WorkspaceUsageVm {
   todayCostUsd: number;
   todayTokens: number;
   activeCount: number;
-  warningCount: number;
   costSource?: UsageCostSource;
 }
 
@@ -455,18 +453,6 @@ export interface SubscriptionProviderUsageVm {
   rows: SubscriptionUsageRowVm[];
 }
 
-export interface BudgetAlertVm {
-  id: Id;
-  scope: BudgetAlertScope;
-  scopeId: string;
-  severity: UsageAlertSeverity;
-  kind: BudgetAlertKind;
-  message: string;
-  createdAt: string;
-  workspaceId?: Id;
-  surfaceId?: Id;
-}
-
 export interface UsageViewSnapshot {
   dayKey: string;
   updatedAt: string;
@@ -480,7 +466,6 @@ export interface UsageViewSnapshot {
   directoryHotspots: DirectoryHotspotVm[];
   vendors: VendorUsageVm[];
   topSessions: SurfaceUsageVm[];
-  alerts: BudgetAlertVm[];
   models?: ModelUsageVm[];
   todayTokenBreakdown?: UsageTokenBreakdownVm;
   todayTokenCostBreakdown?: UsageTokenCostBreakdownVm;
@@ -519,7 +504,6 @@ export function createEmptyUsageViewSnapshot(
     directoryHotspots: [],
     vendors: [],
     topSessions: [],
-    alerts: [],
     models: [],
     todayTokenBreakdown: {
       inputTokens: 0,
@@ -577,3 +561,5 @@ function createUuid(): string {
   }
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
+
+export * from "./agentHooks";

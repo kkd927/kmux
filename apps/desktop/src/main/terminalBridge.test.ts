@@ -77,6 +77,134 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("suppresses visible terminal notifications for the active surface", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      isSurfaceVisibleToUser: () => true
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 777,
+      title: "osc777 title",
+      message: "osc777 body"
+    });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+  });
+
+  it("promotes Codex input-required terminal notifications into ui-only agent events", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "codex"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "CodexBar",
+      message: "Plan mode prompt: Depth"
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      title: "Codex needs input",
+      message: "Plan mode prompt: Depth",
+      details: expect.objectContaining({
+        uiOnly: true,
+        source: "terminal",
+        protocol: 9
+      })
+    });
+  });
+
+  it("marks visible Codex input-required terminal notifications as already visible", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "codex",
+      isSurfaceVisibleToUser: () => true
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "CodexBar",
+      message: "Plan mode prompt: Depth"
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      title: "Codex needs input",
+      message: "Plan mode prompt: Depth",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true
+      })
+    });
+  });
+
+  it("suppresses non-attention Codex terminal chatter notifications", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "codex"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "kmux",
+      message: "Hi. What do you need changed in `kmux`?"
+    });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+  });
+
   it("flushes only post-snapshot chunks after attach hydration completes", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -158,7 +286,7 @@ describe("terminal bridge", () => {
     });
   });
 
-  it("requests a settled snapshot when hydrating an attached surface", async () => {
+  it("hydrates a first-time attached surface from a settled snapshot", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
@@ -192,6 +320,60 @@ describe("terminal bridge", () => {
       expect.objectContaining({
         settleForMs: expect.any(Number)
       })
+    );
+  });
+
+  it("hydrates a reattached surface from an immediate snapshot", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const firstSnapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "first",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const secondSnapshot = {
+      ...firstSnapshot,
+      sequence: 2,
+      vt: "second"
+    };
+    const ptyHost = {
+      snapshot: vi
+        .fn()
+        .mockResolvedValueOnce(firstSnapshot)
+        .mockResolvedValueOnce(secondSnapshot)
+    };
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    await bridge.attachSurface(77, surfaceId);
+    bridge.detachSurface(77, surfaceId);
+    await bridge.attachSurface(77, surfaceId);
+
+    expect(ptyHost.snapshot).toHaveBeenNthCalledWith(
+      1,
+      surface.sessionId,
+      surfaceId,
+      expect.objectContaining({
+        settleForMs: expect.any(Number)
+      })
+    );
+    expect(ptyHost.snapshot).toHaveBeenNthCalledWith(
+      2,
+      surface.sessionId,
+      surfaceId,
+      {}
     );
   });
 

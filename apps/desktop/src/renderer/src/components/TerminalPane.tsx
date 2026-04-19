@@ -93,6 +93,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const showSearchRef = useRef(props.showSearch);
   const shortcutsRef = useRef(props.settings.shortcuts);
   const onToggleSearchRef = useRef(props.onToggleSearch);
+  const skipInitialTypographySyncRef = useRef(true);
+  const skipInitialWebglSyncRef = useRef(true);
   const terminalPaletteSignature = [
     props.terminalTheme.palette.background,
     props.terminalTheme.palette.foreground,
@@ -448,9 +450,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
     fitAndSyncTerminal(terminal);
 
-    let resizeTimeout: ReturnType<typeof setTimeout>;
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
-      clearTimeout(resizeTimeout);
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
       resizeTimeout = setTimeout(() => {
         try {
           fitAndSyncTerminal(terminal);
@@ -484,6 +488,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     return () => {
       resizeObserver.disconnect();
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = null;
+      }
       disposeData.dispose();
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
@@ -501,6 +509,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
+      return;
+    }
+    if (skipInitialTypographySyncRef.current) {
+      skipInitialTypographySyncRef.current = false;
       return;
     }
 
@@ -527,6 +539,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
+      return;
+    }
+    if (skipInitialWebglSyncRef.current) {
+      skipInitialWebglSyncRef.current = false;
       return;
     }
 
@@ -586,12 +602,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
       terminalRef.current.reset();
-      writeTerminal(terminalRef.current, snapshot.vt, () => {
-        if (!terminalRef.current) {
-          return;
-        }
-        fitAndSyncTerminal(terminalRef.current);
-      });
+      // The visible terminal has already been fit before hydration starts.
+      // Re-fitting after replaying a restored snapshot can repaint shell prompts
+      // against a different canvas geometry and duplicate the first line.
+      writeTerminal(terminalRef.current, snapshot.vt);
     });
 
     return () => {
@@ -702,7 +716,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                   </span>
                   <span className={styles.tabLabel}>{surface.title}</span>
                   <SurfaceUsageAlertDot
-                    surfaceId={surface.id}
                     fallbackVisible={surface.attention || surface.unreadCount > 0}
                   />
                   {surface.unreadCount > 0 ? (

@@ -222,6 +222,159 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
+  it("clears stale agent needs-input notifications when the agent resumes running", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "running",
+      message: "Running"
+    });
+
+    expect(state.notifications).toHaveLength(0);
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+  });
+
+  it("replaces stale agent needs-input notifications with completion notifications", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "turn_complete",
+      message: "Finished"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        workspaceId,
+        surfaceId,
+        source: "agent",
+        title: "Codex finished",
+        message: "Finished"
+      })
+    );
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(1);
+  });
+
+  it("clears stale Gemini needs-input notifications when the agent resumes running", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "gemini",
+      event: "needs_input",
+      message: "Tool permission requested: WriteFile"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "gemini",
+      event: "running",
+      message: "Running"
+    });
+
+    expect(state.notifications).toHaveLength(0);
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+  });
+
+  it("keeps visible agent needs-input state in the sidebar without creating notifications", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?",
+      details: {
+        visibleToUser: true
+      }
+    });
+
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([
+      expect.objectContaining({
+        key: `agent:claude:${surfaceId}`,
+        text: "needs input",
+        variant: "attention"
+      })
+    ]);
+    expect(state.notifications).toHaveLength(0);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+    expect(state.surfaces[surfaceId].attention).toBe(false);
+  });
+
+  it("clears visible agent attention state without creating a completion notification", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?",
+      details: {
+        visibleToUser: true
+      }
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "turn_complete",
+      message: "Finished",
+      details: {
+        visibleToUser: true
+      }
+    });
+
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
+    expect(state.notifications).toHaveLength(0);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+    expect(state.surfaces[surfaceId].attention).toBe(false);
+  });
+
   it("does not create a notification when an agent session ends", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];

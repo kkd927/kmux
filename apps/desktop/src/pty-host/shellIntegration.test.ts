@@ -1,4 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -125,23 +129,18 @@ describe("shell integration launch preparation", () => {
     const agentHookHelper = join(wrapperDir, "bin", "kmux-agent-hook");
     expect(existsSync(agentHookHelper)).toBe(true);
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'kmux_dispatch_cli_hook() {'
+      'kmux_dispatch_hook() {'
     );
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'kmux_run_cli_hook_with_runtime "$(command -v node)" "$@" && return 0'
+      'env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e'
     );
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1'
-    );
-    expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'env ELECTRON_RUN_AS_NODE=1 "$_kmux_runtime" --import "$KMUX_CLI_TSX_LOADER_PATH" "$KMUX_CLI_PATH" agent hook "$@" >/dev/null 2>&1'
+      'method: "agent.hook"'
     );
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
       'PATH="$(kmux_filter_path "${PATH:-}")"'
     );
-    expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'cd "${KMUX_CLI_CWD}" || exit 1'
-    );
+    expect(readFileSync(agentHookHelper, "utf8")).not.toContain("KMUX_CLI_PATH");
     expect(existsSync(join(wrapperDir, "bin", "kmux-claude-launcher.cjs"))).toBe(
       false
     );
@@ -269,5 +268,112 @@ describe("shell integration launch preparation", () => {
     );
     expect(integrationContents).toContain("set -g __KMUX_OSC7_INSTALLED 1");
     expect(integrationContents).not.toContain("set -gx __KMUX_OSC7");
+  });
+
+  it("forwards raw agent hooks directly to the kmux socket", async () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    const wrapperDir = prepared.env.ZDOTDIR;
+    expect(wrapperDir).toBeTruthy();
+    if (!wrapperDir) {
+      throw new Error("expected ZDOTDIR wrapper to be set");
+    }
+
+    const agentHookHelper = join(wrapperDir, "bin", "kmux-agent-hook");
+    const socketDir = mkdtempSync(join(tmpdir(), "kmux-hook-test-"));
+    const socketPath = join(socketDir, "hook.sock");
+    let request:
+      | {
+          jsonrpc?: string;
+          method?: string;
+          params?: Record<string, unknown>;
+          id?: string;
+        }
+      | undefined;
+
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          request = JSON.parse(line) as typeof request;
+          socket.write(
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              id: request?.id,
+              result: { ok: true }
+            })}\n`
+          );
+          socket.end();
+        }
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+
+    try {
+      const child = spawn(agentHookHelper, ["codex", "Stop"], {
+        env: {
+          ...process.env,
+          KMUX_AGENT_HOOK_OUTPUT_MODE: "json",
+          KMUX_NODE_PATH: process.execPath,
+          KMUX_SOCKET_PATH: socketPath,
+          KMUX_WORKSPACE_ID: "workspace_1",
+          KMUX_SURFACE_ID: "surface_1",
+          KMUX_SESSION_ID: "session_1"
+        },
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.stdin.end(JSON.stringify({ message: "Done" }));
+
+      const [exitCode] = (await once(child, "close")) as [number | null];
+      expect(exitCode).toBe(0);
+      expect(stdout.trim()).toBe("{}");
+      expect(stderr).toBe("");
+      expect(request).toMatchObject({
+        jsonrpc: "2.0",
+        method: "agent.hook",
+        params: {
+          agent: "codex",
+          hookEvent: "Stop",
+          workspaceId: "workspace_1",
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          payload: {
+            message: "Done"
+          }
+        }
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(socketDir, { recursive: true, force: true });
+    }
   });
 });

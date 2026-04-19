@@ -161,28 +161,6 @@ export function UsageDashboard(_props: UsageDashboardProps): JSX.Element {
           )}
         </section>
 
-        {snapshot.alerts.length > 0 ? (
-          <section className={styles.usageCard}>
-            <CardHeader
-              title="Alerts"
-              description="Burn and runtime notices"
-            />
-            <div className={styles.usageAlertList}>
-              {snapshot.alerts.map((alert) => (
-                <div
-                  key={alert.id}
-                  className={styles.usageAlertRow}
-                  data-severity={alert.severity}
-                >
-                  <div className={styles.usageAlertTitle}>{alert.message}</div>
-                  <div className={styles.usageAlertMeta}>
-                    {alert.kind === "burn_spike" ? "Burn spike" : "Runtime notice"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
       </div>
     </RightSidebarHost>
   );

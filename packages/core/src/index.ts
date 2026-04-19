@@ -228,6 +228,8 @@ export type AppAction =
       title: string;
       message: string;
       source?: NotificationItem["source"];
+      kind?: NotificationItem["kind"];
+      agent?: NotificationItem["agent"];
     }
   | {
       type: "agent.event";
@@ -1368,12 +1370,13 @@ function applyAgentEvent(
   const displayName = agentDisplayName(agentName);
   const statusScopeId = agentStatusScopeId(target, action);
   const statusKey = agentStatusKey(agentName, statusScopeId);
+  const visibleToUser = action.details?.visibleToUser === true;
 
   if (action.event === "needs_input") {
     const statusText = "needs input";
     const notificationMessage =
       normalizeStatusText(action.message) || statusText;
-    setSidebarStatus(state, {
+    const statusEffects = setSidebarStatus(state, {
       type: "sidebar.setStatus",
       workspaceId: target.workspace.id,
       key: statusKey,
@@ -1382,6 +1385,18 @@ function applyAgentEvent(
       variant: "attention",
       surfaceId: target.surface?.id
     });
+    if (visibleToUser) {
+      const clearedNotifications = clearNotificationsMatching(state, {
+        workspaceId: target.workspace.id,
+        surfaceId: target.surface?.id,
+        source: "agent",
+        kind: "needs_input",
+        agent: agentName
+      });
+      return statusEffects.length > 0 || clearedNotifications
+        ? [{ type: "persist" }]
+        : [];
+    }
     return createNotification(state, {
       type: "notification.create",
       workspaceId: target.workspace.id,
@@ -1391,22 +1406,43 @@ function applyAgentEvent(
         normalizeOptionalText(action.title, 120) ??
         `${displayName} needs input`,
       message: notificationMessage,
-      source: "agent"
+      source: "agent",
+      kind: "needs_input",
+      agent: agentName
     });
   }
 
   if (action.event === "running") {
-    return [];
+    return clearAgentAttentionUi(
+      state,
+      target.workspace,
+      agentName,
+      statusScopeId,
+      target.surface?.id
+    );
   }
 
   if (action.event === "idle") {
-    return clearAgentStatus(target.workspace, agentName, statusScopeId)
-      ? [{ type: "persist" }]
-      : [];
+    return clearAgentAttentionUi(
+      state,
+      target.workspace,
+      agentName,
+      statusScopeId,
+      target.surface?.id
+    );
   }
 
   if (action.event === "turn_complete") {
-    clearAgentStatus(target.workspace, agentName, statusScopeId);
+    const clearEffects = clearAgentAttentionUi(
+      state,
+      target.workspace,
+      agentName,
+      statusScopeId,
+      target.surface?.id
+    );
+    if (visibleToUser) {
+      return clearEffects;
+    }
     return createNotification(state, {
       type: "notification.create",
       workspaceId: target.workspace.id,
@@ -1414,14 +1450,20 @@ function applyAgentEvent(
       surfaceId: target.surface?.id,
       title: `${displayName} finished`,
       message: normalizeStatusText(action.message) || "Finished",
-      source: "agent"
+      source: "agent",
+      kind: "turn_complete",
+      agent: agentName
     });
   }
 
   if (action.event === "session_end") {
-    return clearAgentStatus(target.workspace, agentName, statusScopeId)
-      ? [{ type: "persist" }]
-      : [];
+    return clearAgentAttentionUi(
+      state,
+      target.workspace,
+      agentName,
+      statusScopeId,
+      target.surface?.id
+    );
   }
 
   return [];
@@ -1439,13 +1481,17 @@ function createNotification(
     surfaceId: action.surfaceId,
     title: action.title,
     message,
-    source
+    source,
+    kind: action.kind,
+    agent: action.agent
   });
   if (duplicate) {
     if (source === "agent" && duplicate.source === "terminal") {
       duplicate.source = "agent";
       duplicate.title = action.title;
       duplicate.message = message;
+      duplicate.kind = action.kind;
+      duplicate.agent = action.agent;
       duplicate.createdAt = now;
     }
     if (duplicate.surfaceId) {
@@ -1462,6 +1508,8 @@ function createNotification(
     title: action.title,
     message,
     source,
+    kind: action.kind,
+    agent: action.agent,
     createdAt: now
   };
   state.notifications.unshift(notification);
@@ -1543,9 +1591,30 @@ function clearAgentStatus(
   return true;
 }
 
+function clearAgentAttentionUi(
+  state: AppState,
+  workspace: WorkspaceState,
+  agent: string,
+  scopeId: string,
+  surfaceId?: Id
+): AppEffect[] {
+  const clearedStatus = clearAgentStatus(workspace, agent, scopeId);
+  const clearedNotifications = clearNotificationsMatching(state, {
+    workspaceId: workspace.id,
+    surfaceId,
+    source: "agent",
+    kind: "needs_input",
+    agent
+  });
+  return clearedStatus || clearedNotifications ? [{ type: "persist" }] : [];
+}
+
 function resolveAgentTarget(
   state: AppState,
-  action: Extract<AppAction, { type: "agent.event" }>
+  action: Pick<
+    Extract<AppAction, { type: "agent.event" }>,
+    "workspaceId" | "paneId" | "surfaceId" | "sessionId"
+  >
 ): AgentTarget {
   const sessionSurfaceId = action.sessionId
     ? state.sessions[action.sessionId]?.surfaceId
@@ -1566,7 +1635,7 @@ function findRecentDuplicateNotification(
   state: AppState,
   candidate: Pick<
     NotificationItem,
-    "workspaceId" | "surfaceId" | "title" | "message" | "source"
+    "workspaceId" | "surfaceId" | "title" | "message" | "source" | "kind" | "agent"
   >
 ): NotificationItem | undefined {
   const nowMs = Date.now();
@@ -1597,7 +1666,13 @@ function findRecentDuplicateNotification(
 
     const notificationTitle = normalizeNotificationText(notification.title);
     const notificationMessage = normalizeNotificationText(notification.message);
+    const notificationKind = notification.kind ?? "generic";
+    const candidateKind = candidate.kind ?? "generic";
+    const notificationAgent = notification.agent ?? "";
+    const candidateAgent = candidate.agent ?? "";
     if (
+      notificationKind === candidateKind &&
+      notificationAgent === candidateAgent &&
       notificationTitle === candidateTitle &&
       notificationMessage === candidateMessage
     ) {
@@ -1615,6 +1690,47 @@ function findRecentDuplicateNotification(
   }
 
   return undefined;
+}
+
+function clearNotificationsMatching(
+  state: AppState,
+  candidate: Pick<
+    NotificationItem,
+    "workspaceId" | "surfaceId" | "source" | "kind" | "agent"
+  >
+): boolean {
+  const removedSurfaceIds = new Set<Id>();
+  const nextNotifications = state.notifications.filter((notification) => {
+    if (notification.workspaceId !== candidate.workspaceId) {
+      return true;
+    }
+    if (candidate.surfaceId && notification.surfaceId !== candidate.surfaceId) {
+      return true;
+    }
+    if ((notification.source ?? "socket") !== candidate.source) {
+      return true;
+    }
+    if ((notification.kind ?? "generic") !== (candidate.kind ?? "generic")) {
+      return true;
+    }
+    if ((notification.agent ?? "") !== (candidate.agent ?? "")) {
+      return true;
+    }
+    if (notification.surfaceId) {
+      removedSurfaceIds.add(notification.surfaceId);
+    }
+    return false;
+  });
+
+  if (nextNotifications.length === state.notifications.length) {
+    return false;
+  }
+
+  state.notifications = nextNotifications;
+  for (const surfaceId of removedSurfaceIds) {
+    syncSurfaceNotificationState(state, surfaceId);
+  }
+  return true;
 }
 
 function normalizeNotificationText(text: string): string {

@@ -8,7 +8,8 @@ import type {
     SurfaceChunkPayload,
     SurfaceExitPayload,
     SurfaceSnapshotPayload,
-    TerminalKeyInput
+    TerminalKeyInput,
+    UsageVendor
 } from "@kmux/proto";
 
 import type {PtyHostManager} from "./ptyHost";
@@ -18,6 +19,8 @@ interface TerminalBridgeOptions {
   dispatchAppAction: (action: AppAction) => void;
   getPtyHost: () => PtyHostManager | null;
   onSurfaceInputText?: (surfaceId: Id, text: string) => void;
+  getSurfaceVendor?: (surfaceId: Id) => UsageVendor;
+  isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
 }
 
 interface SurfaceAttachmentState {
@@ -28,6 +31,19 @@ interface SurfaceAttachmentState {
 }
 
 const ATTACH_SNAPSHOT_SETTLE_MS = 120;
+const CODEX_INPUT_PATTERNS = [
+  /\bplan mode prompt:/i,
+  /\benter to submit answer\b/i,
+  /\btab to add notes\b/i,
+  /\besc to interrupt\b/i,
+  /\bapproval\b/i,
+  /\bapprove\b/i,
+  /\bpermission\b/i,
+  /\bquestion \d+\/\d+\b/i,
+  /\bunanswered\b/i,
+  /\bneeds input\b/i,
+  /\bwaiting for input\b/i
+] as const;
 
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
@@ -54,6 +70,7 @@ export function createTerminalBridge(
     number,
     Map<Id, SurfaceAttachmentState>
   >();
+  const hydratedSurfaceIds = new Set<Id>();
 
   function surfaceSessionId(surfaceId: Id): Id | null {
     const surface = options.getState().surfaces[surfaceId];
@@ -130,9 +147,14 @@ export function createTerminalBridge(
     attached.set(surfaceId, attachment);
 
     attachment.hydratePromise = (async () => {
-      const snapshot = await snapshotSurface(surfaceId, {
-        settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
-      });
+      const snapshot = await snapshotSurface(
+        surfaceId,
+        hydratedSurfaceIds.has(surfaceId)
+          ? {}
+          : {
+              settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
+            }
+      );
       const currentAttachment = attachedSurfacesByContents
         .get(contentsId)
         ?.get(surfaceId);
@@ -142,6 +164,7 @@ export function createTerminalBridge(
 
       attachment.status = "ready";
       attachment.hydratePromise = null;
+      hydratedSurfaceIds.add(surfaceId);
       flushQueuedTerminalEvents(contentsId, surfaceId, snapshot?.sequence ?? 0);
       return snapshot;
     })();
@@ -279,13 +302,44 @@ export function createTerminalBridge(
         if (!pane) {
           return;
         }
+        const title = event.title ?? surface.title;
+        const message = event.message ?? surface.cwd ?? "Terminal notification";
+        const vendor = options.getSurfaceVendor?.(event.surfaceId) ?? "unknown";
+        const visibleToUser =
+          options.isSurfaceVisibleToUser?.(event.surfaceId) ?? false;
+        if (vendor === "codex") {
+          if (isCodexInputAttention(title, message)) {
+            options.dispatchAppAction({
+              type: "agent.event",
+              workspaceId: pane.workspaceId,
+              paneId: surface.paneId,
+              surfaceId: event.surfaceId,
+              sessionId: event.sessionId,
+              agent: "codex",
+              event: "needs_input",
+              title: "Codex needs input",
+              message,
+              details: {
+                uiOnly: true,
+                ...(visibleToUser ? { visibleToUser: true } : {}),
+                source: "terminal",
+                protocol: event.protocol,
+                terminalTitle: title
+              }
+            });
+          }
+          return;
+        }
+        if (visibleToUser) {
+          return;
+        }
         options.dispatchAppAction({
           type: "notification.create",
           workspaceId: pane.workspaceId,
           paneId: surface.paneId,
           surfaceId: event.surfaceId,
-          title: event.title ?? surface.title,
-          message: event.message ?? surface.cwd ?? "Terminal notification",
+          title,
+          message,
           source: "terminal"
         });
         return;
@@ -320,4 +374,12 @@ export function createTerminalBridge(
     detachSurface,
     handlePtyEvent
   };
+}
+
+function isCodexInputAttention(title: string, message: string): boolean {
+  const normalized = `${title}\n${message}`.trim();
+  if (!normalized) {
+    return false;
+  }
+  return CODEX_INPUT_PATTERNS.some((pattern) => pattern.test(normalized));
 }
