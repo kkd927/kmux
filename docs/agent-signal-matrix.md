@@ -137,6 +137,8 @@ OSC policy:
 - promote those to synthetic `agent.event(needs_input)`
 - mark them with `details.uiOnly = true`
 - suppress other Codex terminal notifications instead of showing generic chatter
+- if the surface vendor is still `unknown`, only a stricter Codex-specific subset such as `Plan mode prompt:` and answer/selection prompts may be promoted
+- this fallback exists for restored Codex sessions where the app has not yet rebound usage/vendor state but Codex is already waiting for input
 
 Usage policy:
 

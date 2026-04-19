@@ -285,6 +285,49 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
+  it("replaces stale completion notifications when the same agent immediately needs input again", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "turn_complete",
+      message: "Finished"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Implement this plan?"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        workspaceId,
+        surfaceId,
+        source: "agent",
+        kind: "needs_input",
+        title: "Codex needs input",
+        message: "Plan mode prompt: Implement this plan?"
+      })
+    );
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([
+      expect.objectContaining({
+        key: `agent:codex:${surfaceId}`,
+        text: "needs input",
+        variant: "attention"
+      })
+    ]);
+    expect(state.surfaces[surfaceId].unreadCount).toBe(1);
+  });
+
   it("clears stale Gemini needs-input notifications when the agent resumes running", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];

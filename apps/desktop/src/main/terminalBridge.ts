@@ -45,6 +45,15 @@ const CODEX_INPUT_PATTERNS = [
   /\bwaiting for input\b/i
 ] as const;
 
+const CODEX_STRICT_INPUT_PATTERNS = [
+  /\bplan mode prompt:/i,
+  /\benter to submit answer\b/i,
+  /\btab to add notes\b/i,
+  /\besc to interrupt\b/i,
+  /\bquestion \d+\/\d+\b/i,
+  /\bunanswered\b/i
+] as const;
+
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
   sendText(surfaceId: Id, text: string): void;
@@ -307,27 +316,35 @@ export function createTerminalBridge(
         const vendor = options.getSurfaceVendor?.(event.surfaceId) ?? "unknown";
         const visibleToUser =
           options.isSurfaceVisibleToUser?.(event.surfaceId) ?? false;
+        const inferredCodexAttention =
+          vendor === "codex"
+            ? isCodexInputAttention(title, message)
+            : isStrictCodexInputAttention(title, message);
+        if (inferredCodexAttention) {
+          options.dispatchAppAction({
+            type: "agent.event",
+            workspaceId: pane.workspaceId,
+            paneId: surface.paneId,
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            agent: "codex",
+            event: "needs_input",
+            title: "Codex needs input",
+            message,
+            details: {
+              uiOnly: true,
+              ...(visibleToUser ? { visibleToUser: true } : {}),
+              ...(vendor === "unknown"
+                ? { inferredFromUnknownVendor: true }
+                : {}),
+              source: "terminal",
+              protocol: event.protocol,
+              terminalTitle: title
+            }
+          });
+          return;
+        }
         if (vendor === "codex") {
-          if (isCodexInputAttention(title, message)) {
-            options.dispatchAppAction({
-              type: "agent.event",
-              workspaceId: pane.workspaceId,
-              paneId: surface.paneId,
-              surfaceId: event.surfaceId,
-              sessionId: event.sessionId,
-              agent: "codex",
-              event: "needs_input",
-              title: "Codex needs input",
-              message,
-              details: {
-                uiOnly: true,
-                ...(visibleToUser ? { visibleToUser: true } : {}),
-                source: "terminal",
-                protocol: event.protocol,
-                terminalTitle: title
-              }
-            });
-          }
           return;
         }
         if (visibleToUser) {
@@ -382,4 +399,12 @@ function isCodexInputAttention(title: string, message: string): boolean {
     return false;
   }
   return CODEX_INPUT_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isStrictCodexInputAttention(title: string, message: string): boolean {
+  const normalized = `${title}\n${message}`.trim();
+  if (!normalized) {
+    return false;
+  }
+  return CODEX_STRICT_INPUT_PATTERNS.some((pattern) => pattern.test(normalized));
 }

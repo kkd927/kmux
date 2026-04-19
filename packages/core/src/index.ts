@@ -1376,6 +1376,16 @@ function applyAgentEvent(
     const statusText = "needs input";
     const notificationMessage =
       normalizeStatusText(action.message) || statusText;
+    const clearedCompletionNotification = clearLatestNotificationMatching(
+      state,
+      {
+        workspaceId: target.workspace.id,
+        surfaceId: target.surface?.id,
+        source: "agent",
+        kind: "turn_complete",
+        agent: agentName
+      }
+    );
     const statusEffects = setSidebarStatus(state, {
       type: "sidebar.setStatus",
       workspaceId: target.workspace.id,
@@ -1393,7 +1403,9 @@ function applyAgentEvent(
         kind: "needs_input",
         agent: agentName
       });
-      return statusEffects.length > 0 || clearedNotifications
+      return statusEffects.length > 0 ||
+        clearedNotifications ||
+        clearedCompletionNotification
         ? [{ type: "persist" }]
         : [];
     }
@@ -1729,6 +1741,45 @@ function clearNotificationsMatching(
   state.notifications = nextNotifications;
   for (const surfaceId of removedSurfaceIds) {
     syncSurfaceNotificationState(state, surfaceId);
+  }
+  return true;
+}
+
+function clearLatestNotificationMatching(
+  state: AppState,
+  candidate: Pick<
+    NotificationItem,
+    "workspaceId" | "surfaceId" | "source" | "kind" | "agent"
+  >
+): boolean {
+  const removed = state.notifications.find((notification) => {
+    if (notification.workspaceId !== candidate.workspaceId) {
+      return false;
+    }
+    if (candidate.surfaceId && notification.surfaceId !== candidate.surfaceId) {
+      return false;
+    }
+    if ((notification.source ?? "socket") !== candidate.source) {
+      return false;
+    }
+    if ((notification.kind ?? "generic") !== (candidate.kind ?? "generic")) {
+      return false;
+    }
+    if ((notification.agent ?? "") !== (candidate.agent ?? "")) {
+      return false;
+    }
+    return true;
+  });
+
+  if (!removed) {
+    return false;
+  }
+
+  state.notifications = state.notifications.filter(
+    (notification) => notification.id !== removed.id
+  );
+  if (removed.surfaceId) {
+    syncSurfaceNotificationState(state, removed.surfaceId);
   }
   return true;
 }
