@@ -117,6 +117,44 @@ describe("core reducer", () => {
     expect(state.notifications).toHaveLength(0);
   });
 
+  it("clears active-surface unread notifications when selecting a workspace", () => {
+    const state = createInitialState();
+    const originalWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    applyAction(state, { type: "workspace.create", name: "alerts" });
+
+    const alertsWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const alertsPaneId = state.workspaces[alertsWorkspaceId].activePaneId;
+    const alertsSurfaceId = state.panes[alertsPaneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "workspace.select",
+      workspaceId: originalWorkspaceId
+    });
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId: alertsWorkspaceId,
+      paneId: alertsPaneId,
+      surfaceId: alertsSurfaceId,
+      title: "Need attention",
+      message: "workspace row click should clear this"
+    });
+
+    expect(state.surfaces[alertsSurfaceId].unreadCount).toBe(1);
+    expect(state.notifications).toHaveLength(1);
+
+    applyAction(state, {
+      type: "workspace.select",
+      workspaceId: alertsWorkspaceId
+    });
+
+    expect(state.surfaces[alertsSurfaceId].unreadCount).toBe(0);
+    expect(state.surfaces[alertsSurfaceId].attention).toBe(false);
+    expect(state.notifications).toHaveLength(0);
+  });
+
   it("records agent needs-input events as a status entry and notification", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -186,6 +224,73 @@ describe("core reducer", () => {
     expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([]);
     expect(state.notifications).toHaveLength(0);
     expect(state.surfaces[surfaceId].unreadCount).toBe(0);
+  });
+
+  it("keeps other Codex surface attention when one surface clears", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+    const firstSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.create",
+      paneId
+    });
+
+    const secondSurfaceId = state.panes[paneId].activeSurfaceId;
+    expect(secondSurfaceId).not.toBe(firstSurfaceId);
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: firstSurfaceId,
+      sessionId: state.surfaces[firstSurfaceId].sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "First prompt"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: secondSurfaceId,
+      sessionId: state.surfaces[secondSurfaceId].sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Second prompt"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: firstSurfaceId,
+      sessionId: state.surfaces[firstSurfaceId].sessionId,
+      agent: "codex",
+      event: "idle",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([
+      expect.objectContaining({
+        key: `agent:codex:${secondSurfaceId}`,
+        label: "Codex",
+        text: "needs input",
+        variant: "attention",
+        surfaceId: secondSurfaceId
+      })
+    ]);
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        surfaceId: secondSurfaceId,
+        kind: "needs_input",
+        agent: "codex"
+      })
+    );
   });
 
   it("creates a notification when an agent turn completes", () => {
@@ -382,6 +487,51 @@ describe("core reducer", () => {
     expect(state.notifications).toHaveLength(0);
     expect(state.surfaces[surfaceId].unreadCount).toBe(0);
     expect(state.surfaces[surfaceId].attention).toBe(false);
+  });
+
+  it("adds a bell effect for hidden agent needs-input when bell sounds are enabled", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    state.settings.notificationSound = true;
+
+    const effects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Implement this plan?"
+    });
+
+    expect(effects).toEqual([
+      { type: "bell.sound" },
+      expect.objectContaining({ type: "notify.desktop" }),
+      { type: "persist" }
+    ]);
+  });
+
+  it("keeps visible agent needs-input silent even when bell sounds are enabled", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+
+    state.settings.notificationSound = true;
+
+    const effects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Approve tool use?",
+      details: {
+        visibleToUser: true
+      }
+    });
+
+    expect(effects).toEqual([{ type: "persist" }]);
   });
 
   it("clears visible agent attention state without creating a completion notification", () => {
@@ -822,6 +972,30 @@ describe("core reducer", () => {
     expect(state.settings.terminalUseWebgl).toBe(false);
   });
 
+  it("defaults warn-before-quit to enabled and preserves explicit updates", () => {
+    const state = createInitialState();
+
+    expect(state.settings.warnBeforeQuit).toBe(true);
+
+    applyAction(state, {
+      type: "settings.update",
+      patch: {
+        warnBeforeQuit: false
+      }
+    });
+
+    expect(state.settings.warnBeforeQuit).toBe(false);
+
+    applyAction(state, {
+      type: "settings.update",
+      patch: {
+        warnBeforeQuit: undefined
+      }
+    });
+
+    expect(state.settings.warnBeforeQuit).toBe(false);
+  });
+
   it("merges terminal typography patches without dropping existing preferences", () => {
     const state = createInitialState();
     const originalTextFontFamily =
@@ -893,6 +1067,20 @@ describe("core reducer", () => {
     const restored = cloneState(legacyState as typeof state);
 
     expect(restored.settings.terminalUseWebgl).toBe(true);
+  });
+
+  it("migrates missing warn-before-quit settings to the default", () => {
+    const state = createInitialState();
+    const legacyState = structuredClone(state) as typeof state & {
+      settings: Record<string, unknown>;
+    };
+
+    delete (legacyState.settings as { warnBeforeQuit?: boolean })
+      .warnBeforeQuit;
+
+    const restored = cloneState(legacyState as typeof state);
+
+    expect(restored.settings.warnBeforeQuit).toBe(true);
   });
 
   it("normalizes legacy empty shell args during restore", () => {

@@ -34,9 +34,17 @@ import {
   createNativeUpdaterNotifier
 } from "./updaterUi";
 import {
+  createMainLifecycleController,
+  showQuitConfirmationDialog
+} from "./mainLifecycle";
+import {
   exportItermcolorsPalette,
   importItermcolorsPalette
 } from "./itermcolors";
+import {
+  DIAGNOSTICS_LOG_PATH_ENV,
+  logDiagnostics
+} from "../shared/diagnostics";
 import {
   createMainWindow,
   persistWindowState,
@@ -62,6 +70,11 @@ process.stdout.on("error", ignoreExpectedPipeClose);
 process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
+  logDiagnostics("main.bootstrap", {
+    packaged: app.isPackaged,
+    version: app.getVersion(),
+    diagnosticsLogPath: process.env[DIAGNOSTICS_LOG_PATH_ENV]
+  });
   setDevelopmentDockIcon(currentDir);
   app.setAboutPanelOptions({
     applicationName: app.getName(),
@@ -81,6 +94,16 @@ async function bootstrap(): Promise<void> {
     preferredShell: savedSettings?.shell,
     env: process.env
   });
+  logDiagnostics("main.shell-environment.resolved", {
+    shellPath: resolvedShellEnv.shellPath,
+    source: resolvedShellEnv.source
+  });
+  const diagnosticsLogPath = process.env[DIAGNOSTICS_LOG_PATH_ENV];
+  if (diagnosticsLogPath) {
+    resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV] = diagnosticsLogPath;
+  } else {
+    delete resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV];
+  }
   const claudeIntegrationResult = ensureClaudeHooksInstalled(
     resolvedShellEnv.baseEnv.HOME ?? homedir()
   );
@@ -165,6 +188,9 @@ async function bootstrap(): Promise<void> {
     getPtyHost: () => ptyHost
   });
 
+  logDiagnostics("main.pty-host.starting", {
+    diagnosticsLogPath: resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV]
+  });
   ptyHost.start(resolvedShellEnv.baseEnv);
   ptyHost.on("event", terminalBridge.handlePtyEvent);
 
@@ -198,30 +224,57 @@ async function bootstrap(): Promise<void> {
     setUsageDashboardOpen: usageRuntime.setDashboardOpen
   });
 
-  const mainWindow = createMainWindow({
-    currentDir,
-    loadWindowState: () => windowStateStore.load(),
-    onClose: (window) => {
-      persistWindowState({
-        windowStateStore,
-        window,
-        getSidebarWidth: () => {
-          const state = runtime.getState();
-          return state.windows[state.activeWindowId]?.sidebarWidth;
-        }
-      });
+  let currentMainWindow: BrowserWindow | null = null;
+  const getCurrentWindow = (): BrowserWindow | null => {
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    if (focusedWindow) {
+      return focusedWindow;
     }
-  });
-  runtime.setMainWindow(mainWindow);
+    if (currentMainWindow && !currentMainWindow.isDestroyed()) {
+      return currentMainWindow;
+    }
+    return null;
+  };
+  let updater!: ReturnType<typeof createUpdaterController>;
+  const openMainWindow = (_reason: "initial" | "activate"): void => {
+    const window = createMainWindow({
+      currentDir,
+      loadWindowState: () => windowStateStore.load(),
+      onClose: (closingWindow) => {
+        persistWindowState({
+          windowStateStore,
+          window: closingWindow,
+          getSidebarWidth: () => {
+            const state = runtime.getState();
+            return state.windows[state.activeWindowId]?.sidebarWidth;
+          }
+        });
+      }
+    });
+    currentMainWindow = window;
+    runtime.setMainWindow(window);
+    window.webContents.once("did-finish-load", () => {
+      runtime.broadcastView();
+    });
+    window.once("ready-to-show", () => {
+      updater.startBackgroundChecks();
+    });
+    window.once("closed", () => {
+      if (currentMainWindow === window) {
+        currentMainWindow = null;
+        runtime.setMainWindow(null);
+      }
+    });
+  };
   if (process.arch === "arm64") {
     autoUpdater.channel = "latest-arm64";
   }
   autoUpdater.allowDowngrade = false;
-  const updater = createUpdaterController({
+  updater = createUpdaterController({
     driver: autoUpdater,
     dialogs: createNativeUpdaterDialogs({
       appName: app.getName(),
-      getWindow: () => BrowserWindow.getFocusedWindow() ?? mainWindow
+      getWindow: getCurrentWindow
     }),
     notifier: createNativeUpdaterNotifier({
       appName: app.getName()
@@ -231,35 +284,11 @@ async function bootstrap(): Promise<void> {
     isPackaged: app.isPackaged,
     env: process.env
   });
-  const updateApplicationMenu = () => {
-    const template = buildApplicationMenuTemplate({
-      appName: app.getName(),
-      isMac: process.platform === "darwin",
-      isDevelopment: !app.isPackaged,
-      updaterState: updater.getState(),
-      actions: {
-        checkForUpdates: () => updater.checkForUpdates("foreground"),
-        downloadUpdate: () => updater.downloadUpdate("foreground"),
-        quitAndInstall: () => updater.quitAndInstall()
-      }
-    });
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-  };
-  const unsubscribeUpdater = updater.subscribe(() => {
-    updateApplicationMenu();
-  });
-  updateApplicationMenu();
-  runtime.broadcastView();
-  usageRuntime.start();
-  runtime.respawnRestoredSessions();
-  mainWindow.once("ready-to-show", () => {
-    updater.startBackgroundChecks();
-  });
-
   let shutdownPromise: Promise<void> | null = null;
-  const shutdownOnce = (): Promise<void> => {
+  const shutdown = (): Promise<void> => {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
+        logDiagnostics("main.shutdown.begin", {});
         unsubscribeUpdater();
         updater.dispose();
         runtime.shutdown();
@@ -280,9 +309,58 @@ async function bootstrap(): Promise<void> {
 
     return shutdownPromise;
   };
-
-  app.on("before-quit", () => {
-    void shutdownOnce();
+  const lifecycle = createMainLifecycleController({
+    isMac: process.platform === "darwin",
+    app,
+    getWindowCount: () => BrowserWindow.getAllWindows().length,
+    openMainWindow,
+    getCurrentWindow,
+    getWarnBeforeQuit: () => runtime.getState().settings.warnBeforeQuit,
+    setWarnBeforeQuit: (value) => {
+      runtime.dispatchAppAction({
+        type: "settings.update",
+        patch: {
+          warnBeforeQuit: value
+        }
+      });
+    },
+    confirmQuit: showQuitConfirmationDialog,
+    shutdown
+  });
+  openMainWindow("initial");
+  const updateApplicationMenu = () => {
+    const template = buildApplicationMenuTemplate({
+      appName: app.getName(),
+      isMac: process.platform === "darwin",
+      isDevelopment: !app.isPackaged,
+      updaterState: updater.getState(),
+      actions: {
+        checkForUpdates: () => updater.checkForUpdates("foreground"),
+        downloadUpdate: () => updater.downloadUpdate("foreground"),
+        quitAndInstall: () => {
+          lifecycle.allowQuit();
+          updater.quitAndInstall();
+        }
+      }
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+  const unsubscribeUpdater = updater.subscribe(() => {
+    updateApplicationMenu();
+  });
+  updateApplicationMenu();
+  runtime.broadcastView();
+  usageRuntime.start();
+  runtime.respawnRestoredSessions();
+  app.on("before-quit", (event) => {
+    logDiagnostics("main.before-quit", {});
+    lifecycle.handleBeforeQuit(event);
+  });
+  app.on("activate", () => {
+    lifecycle.handleActivate();
+  });
+  app.on("window-all-closed", () => {
+    lifecycle.handleWindowAllClosed();
   });
 }
 
@@ -293,7 +371,3 @@ app
     console.error(error);
     app.quit();
   });
-
-app.on("window-all-closed", () => {
-  app.quit();
-});

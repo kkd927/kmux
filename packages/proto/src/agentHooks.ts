@@ -1,4 +1,4 @@
-import type { AgentEventName, Id } from "./index";
+import type { AgentEventName, Id, NotificationItem } from "./index";
 
 export interface AgentHookEnvironment {
   KMUX_WORKSPACE_ID?: string;
@@ -19,6 +19,17 @@ export interface NormalizedAgentEvent {
   details?: Record<string, unknown>;
 }
 
+export interface NormalizedHookNotification {
+  workspaceId?: Id;
+  paneId?: Id;
+  surfaceId?: Id;
+  sessionId?: Id;
+  agent: string;
+  source: NotificationItem["source"];
+  title: string;
+  message: string;
+}
+
 type HookPayload = Record<string, unknown>;
 
 export function normalizeAgentHookInvocation(
@@ -36,17 +47,7 @@ export function normalizeAgentHookInvocation(
     return null;
   }
 
-  const surfaceId = firstString(
-    stringField(payload, "surface_id"),
-    stringField(payload, "surfaceId"),
-    environment.KMUX_SURFACE_ID
-  );
-  const sessionId = firstString(
-    stringField(payload, "session_id"),
-    stringField(payload, "sessionId"),
-    environment.KMUX_SESSION_ID,
-    surfaceId
-  );
+  const target = resolveHookTarget(payload, environment);
   const message = extractHookMessage(agent, event, payload);
   const displayName = agentDisplayName(agent);
 
@@ -57,23 +58,56 @@ export function normalizeAgentHookInvocation(
   }
 
   return {
-    workspaceId: firstString(
-      stringField(payload, "workspace_id"),
-      stringField(payload, "workspaceId"),
-      environment.KMUX_WORKSPACE_ID
-    ),
-    paneId: firstString(
-      stringField(payload, "pane_id"),
-      stringField(payload, "paneId"),
-      environment.KMUX_PANE_ID
-    ),
-    surfaceId,
-    sessionId,
+    workspaceId: target.workspaceId,
+    paneId: target.paneId,
+    surfaceId: target.surfaceId,
+    sessionId: target.sessionId,
     agent,
     event,
     title: event === "needs_input" ? `${displayName} needs input` : undefined,
     message,
     details
+  };
+}
+
+export function normalizeHookNotificationInvocation(
+  agentInput: string,
+  hookEventInput: string,
+  payload: HookPayload = {},
+  environment: AgentHookEnvironment = {}
+): NormalizedHookNotification | null {
+  const agent = normalizeAgentName(agentInput);
+  const hookEvent = normalizeHookEventName(
+    hookEventInput || stringField(payload, "hook_event_name") || ""
+  );
+  if (!isClaudeNotificationHook(agent, hookEvent)) {
+    return null;
+  }
+
+  const target = resolveHookTarget(payload, environment);
+  const title =
+    firstString(stringField(payload, "title"), agentDisplayName(agent)) ??
+    agentDisplayName(agent);
+  const message =
+    firstString(
+    stringField(payload, "message"),
+    stringField(payload, "body"),
+    stringField(payload, "text"),
+    stringField(payload, "prompt"),
+    stringField(payload, "reason"),
+    title,
+    "Notification"
+    ) ?? title;
+
+  return {
+    workspaceId: target.workspaceId,
+    paneId: target.paneId,
+    surfaceId: target.surfaceId,
+    sessionId: target.sessionId,
+    agent,
+    source: "agent",
+    title,
+    message
   };
 }
 
@@ -98,9 +132,6 @@ function mapAgentHookEvent(
   payload: HookPayload
 ): AgentEventName | null {
   if (agent === "claude") {
-    if (hookEvent === "notification" || hookEvent === "notify") {
-      return "needs_input";
-    }
     if (hookEvent === "permission-request") {
       return "needs_input";
     }
@@ -169,6 +200,47 @@ function mapAgentHookEvent(
   }
 
   return null;
+}
+
+function isClaudeNotificationHook(agent: string, hookEvent: string): boolean {
+  return agent === "claude" && (hookEvent === "notification" || hookEvent === "notify");
+}
+
+function resolveHookTarget(
+  payload: HookPayload,
+  environment: AgentHookEnvironment
+): {
+  workspaceId?: Id;
+  paneId?: Id;
+  surfaceId?: Id;
+  sessionId?: Id;
+} {
+  const surfaceId = firstString(
+    stringField(payload, "surface_id"),
+    stringField(payload, "surfaceId"),
+    environment.KMUX_SURFACE_ID
+  );
+  const sessionId = firstString(
+    stringField(payload, "session_id"),
+    stringField(payload, "sessionId"),
+    environment.KMUX_SESSION_ID,
+    surfaceId
+  );
+
+  return {
+    workspaceId: firstString(
+      stringField(payload, "workspace_id"),
+      stringField(payload, "workspaceId"),
+      environment.KMUX_WORKSPACE_ID
+    ),
+    paneId: firstString(
+      stringField(payload, "pane_id"),
+      stringField(payload, "paneId"),
+      environment.KMUX_PANE_ID
+    ),
+    surfaceId,
+    sessionId
+  };
 }
 
 function extractHookMessage(

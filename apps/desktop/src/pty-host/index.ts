@@ -31,6 +31,7 @@ import {
   shouldStripShellManagedEnv
 } from "./shellLaunch";
 import { buildSessionEnv } from "./sessionEnv";
+import { logDiagnostics } from "../shared/diagnostics";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -71,6 +72,11 @@ interface SessionRecord {
 
 const sessions = new Map<Id, SessionRecord>();
 
+logDiagnostics("pty-host.bootstrap", {
+  pid: process.pid,
+  cwd: process.cwd()
+});
+
 function send(message: PtyEvent): void {
   if (process.send) {
     process.send(message);
@@ -98,6 +104,13 @@ function sendTerminalNotification(
   title?: string,
   message?: string
 ): void {
+  logDiagnostics("pty-host.terminal.notification.sent", {
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    protocol,
+    title,
+    message
+  });
   send({
     type: "terminal.notification",
     surfaceId: record.surfaceId,
@@ -189,6 +202,13 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   terminal.parser.registerOscHandler(7, (data: string) => {
     console.log(`[OSC 7] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
     const cwd = resolveOsc7Cwd(record.cwd, data);
+    logDiagnostics("pty-host.osc.7", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      title: record.title,
+      data,
+      resolvedCwd: cwd ?? null
+    });
     if (cwd) {
       record.cwd = cwd;
       send({
@@ -213,6 +233,12 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
   terminal.onBell(() => {
     console.log(`[Bell] surface=${record.surfaceId} title=${record.title}`);
+    logDiagnostics("pty-host.bell", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      title: record.title,
+      cwd: record.cwd
+    });
     send({
       type: "bell",
       surfaceId: record.surfaceId,
@@ -224,6 +250,13 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   terminal.parser.registerOscHandler(9, (data: string) => {
     console.log(`[OSC 9] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
     const notification = buildOsc9Notification(data, record.title);
+    logDiagnostics("pty-host.osc.9", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      title: record.title,
+      data,
+      parsed: Boolean(notification)
+    });
     if (notification) {
       sendTerminalNotification(
         record,
@@ -241,6 +274,13 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       record.osc99State,
       record.title
     );
+    logDiagnostics("pty-host.osc.99", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      title: record.title,
+      data,
+      parsed: Boolean(notification)
+    });
     record.osc99State = nextState;
     if (notification) {
       sendTerminalNotification(
@@ -259,6 +299,13 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       record.title,
       record.cwd
     );
+    logDiagnostics("pty-host.osc.777", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      title: record.title,
+      data,
+      parsed: Boolean(notification)
+    });
     if (notification) {
       sendTerminalNotification(
         record,

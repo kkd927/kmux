@@ -258,6 +258,7 @@ export function createDefaultSettings(
   return {
     socketMode: mode,
     startupRestore: true,
+    warnBeforeQuit: true,
     notificationDesktop: true,
     notificationSound: false,
     terminalUseWebgl: true,
@@ -334,6 +335,10 @@ export function mergeSettings(
   return {
     ...current,
     ...nextPatch,
+    warnBeforeQuit:
+      typeof nextPatch.warnBeforeQuit === "boolean"
+        ? nextPatch.warnBeforeQuit
+        : current.warnBeforeQuit,
     terminalUseWebgl: sanitizeTerminalUseWebgl(
       nextPatch.terminalUseWebgl ?? current.terminalUseWebgl
     ),
@@ -693,11 +698,16 @@ function createWorkspace(
 
 function selectWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
   const window = state.windows[state.activeWindowId];
-  if (!state.workspaces[workspaceId]) {
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
     return [];
   }
-  window.activeWorkspaceId = workspaceId;
-  return [{ type: "persist" }];
+  const activePane = state.panes[workspace.activePaneId];
+  if (!activePane) {
+    window.activeWorkspaceId = workspaceId;
+    return [{ type: "persist" }];
+  }
+  return focusPane(state, activePane.id);
 }
 
 function selectWorkspaceRelative(state: AppState, delta: number): AppEffect[] {
@@ -962,9 +972,11 @@ function focusPane(state: AppState, paneId: Id): AppEffect[] {
   const workspace = state.workspaces[pane.workspaceId];
   workspace.activePaneId = paneId;
   const surface = state.surfaces[pane.activeSurfaceId];
-  surface.attention = false;
-  surface.unreadCount = 0;
-  markNotificationsRead(state, pane.workspaceId, paneId, pane.activeSurfaceId);
+  if (surface) {
+    surface.attention = false;
+    surface.unreadCount = 0;
+    markNotificationsRead(state, pane.workspaceId, paneId, pane.activeSurfaceId);
+  }
   return [{ type: "persist" }];
 }
 
@@ -1409,7 +1421,7 @@ function applyAgentEvent(
         ? [{ type: "persist" }]
         : [];
     }
-    return createNotification(state, {
+    const notificationEffects = createNotification(state, {
       type: "notification.create",
       workspaceId: target.workspace.id,
       paneId: target.pane?.id,
@@ -1422,6 +1434,13 @@ function applyAgentEvent(
       kind: "needs_input",
       agent: agentName
     });
+    // History: Codex needs-input used to arrive as BEL-only notifications under
+    // TERM_PROGRAM=kmux. We now promote those prompts through structured agent
+    // notifications, so preserve the audible cue here for all hidden
+    // needs-input events when Bell sounds are enabled.
+    return state.settings.notificationSound
+      ? [{ type: "bell.sound" }, ...notificationEffects]
+      : notificationEffects;
   }
 
   if (action.event === "running") {

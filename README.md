@@ -233,7 +233,7 @@ apps/
 packages/
   core/              # Domain state, reducers, layout transforms
   proto/             # IPC and socket contracts
-  persistence/       # SQLite-backed persistence
+  persistence/       # File-store persistence helpers and app paths
   metadata/          # Git, ports, cwd detection
   cli/               # kmux automation CLI
   ui/                # Shared UI tokens and helpers

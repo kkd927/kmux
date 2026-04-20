@@ -39,10 +39,29 @@ describe("ensureClaudeHooksInstalled", () => {
 
     expect(settings.hooks.PermissionRequest).toHaveLength(1);
     expect(settings.hooks.Notification).toHaveLength(1);
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionEnd).toHaveLength(1);
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
     expect(settings.hooks.Stop).toHaveLength(1);
     expect(settings.hooks.PreToolUse).toHaveLength(1);
-    expect(settings.hooks.PreToolUse[0].matcher).toBe("AskUserQuestion");
+    expect(settings.hooks.PreToolUse[0].matcher).toBeUndefined();
     expect(JSON.stringify(settings)).toContain("KMUX_MANAGED_CLAUDE_HOOK=1");
+    expect(settings.hooks.UserPromptSubmit[0].hooks).toEqual([
+      expect.objectContaining({
+        type: "command",
+        command: expect.stringContaining(
+          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude UserPromptSubmit || true'
+        )
+      })
+    ]);
+    expect(settings.hooks.SessionEnd[0].hooks).toEqual([
+      expect.objectContaining({
+        type: "command",
+        command: expect.stringContaining(
+          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude SessionEnd || true'
+        )
+      })
+    ]);
     expect(settings.hooks.Stop[0].hooks).toEqual([
       expect.objectContaining({
         type: "command",
@@ -90,6 +109,9 @@ describe("ensureClaudeHooksInstalled", () => {
 
     expect(firstResult.changed).toBe(true);
     expect(secondResult.changed).toBe(false);
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionEnd).toHaveLength(1);
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
     expect(settings.hooks.Stop).toHaveLength(2);
     expect(settings.hooks.Stop[0].hooks[0]?.command).toBe("echo user-stop-hook");
     expect(

@@ -15,6 +15,9 @@ type ClaudeHookEvent =
   | "PermissionRequest"
   | "Notification"
   | "PreToolUse"
+  | "SessionEnd"
+  | "SessionStart"
+  | "UserPromptSubmit"
   | "Stop";
 
 type JsonObject = Record<string, unknown>;
@@ -43,7 +46,10 @@ export interface ClaudeIntegrationInstallResult {
 const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
   { eventName: "Notification" },
-  { eventName: "PreToolUse", matcher: "AskUserQuestion" },
+  { eventName: "PreToolUse" },
+  { eventName: "SessionStart" },
+  { eventName: "SessionEnd" },
+  { eventName: "UserPromptSubmit" },
   { eventName: "Stop" }
 ];
 

@@ -102,6 +102,73 @@ test("BEL stays silent in the notification center while OSC terminal notificatio
   }
 });
 
+test("clicking a workspace row clears unread for that workspace's active surface", async () => {
+  const launched = await launchKmux("kmux-e2e-workspace-row-read-", {
+    env: {
+      KMUX_E2E_WINDOW_MODE: "visible"
+    }
+  });
+
+  try {
+    const { page } = launched;
+    const initial = await getView(page);
+    const originalWorkspaceId = initial.activeWorkspace.id;
+
+    const created = await dispatch(page, {
+      type: "workspace.create",
+      name: "alerts"
+    });
+    const alertsWorkspaceId = created.activeWorkspace.id;
+    const alertsPaneId = created.activeWorkspace.activePaneId;
+    const alertsSurfaceId =
+      created.activeWorkspace.panes[alertsPaneId].activeSurfaceId;
+
+    await dispatch(page, {
+      type: "workspace.select",
+      workspaceId: originalWorkspaceId
+    });
+    await dispatch(page, {
+      type: "notification.create",
+      workspaceId: alertsWorkspaceId,
+      paneId: alertsPaneId,
+      surfaceId: alertsSurfaceId,
+      title: "workspace row clears unread",
+      message: "selecting the workspace should mark this read"
+    });
+
+    await waitForView(
+      page,
+      (view) =>
+        view.notifications.some(
+          (notification) =>
+            notification.workspaceId === alertsWorkspaceId &&
+            notification.surfaceId === alertsSurfaceId &&
+            notification.title === "workspace row clears unread"
+        ),
+      "hidden workspace notification should be created"
+    );
+
+    await page.locator(`[data-workspace-id="${alertsWorkspaceId}"]`).click();
+
+    const afterClick = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.id === alertsWorkspaceId &&
+        !view.notifications.some(
+          (notification) =>
+            notification.workspaceId === alertsWorkspaceId &&
+            notification.surfaceId === alertsSurfaceId &&
+            notification.title === "workspace row clears unread"
+        ),
+      "workspace click should immediately clear the active-surface notification"
+    );
+
+    expect(afterClick.unreadNotifications).toBe(0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("active-surface agent and terminal notifications stay in-band while hidden surfaces still notify", async () => {
   const launched = await launchKmux("kmux-e2e-vis-notify-", {
     env: {

@@ -1,10 +1,11 @@
 import {expect, test} from "@playwright/test";
 
 import {
-    createSandbox,
-    destroySandbox,
-    dispatch,
-    getView,
+  closeKmuxApp,
+  createSandbox,
+  destroySandbox,
+  dispatch,
+  getView,
     launchKmuxWithSandbox,
     runCliJson,
     waitForSurfaceSnapshotContains,
@@ -170,7 +171,7 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       )
     ).toBe(true);
 
-    await launched.app.close();
+    await closeKmuxApp(launched);
 
     relaunch = await launchKmuxWithSandbox(sandbox, {
       executablePath: packagedExecutablePath
@@ -216,9 +217,9 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     );
     expect(restoredSnapshot).toContain(restoredMarker);
   } finally {
-    await launched.app.close().catch(() => {});
+    await closeKmuxApp(launched).catch(() => {});
     if (relaunch) {
-      await relaunch.app.close().catch(() => {});
+      await closeKmuxApp(relaunch).catch(() => {});
     }
     destroySandbox(sandbox);
   }

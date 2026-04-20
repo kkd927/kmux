@@ -1,5 +1,7 @@
-import { createInitialState } from "@kmux/core";
+import { applyAction, createInitialState } from "@kmux/core";
 import { vi } from "vitest";
+
+import type { AppState } from "@kmux/core";
 
 const { beep, browserWindows, showNotification } = vi.hoisted(() => ({
   beep: vi.fn(),
@@ -29,9 +31,13 @@ vi.mock("electron", () => ({
 import { AppStore } from "./store";
 import { createAppRuntime } from "./appRuntime";
 
-function createRuntime(notificationSound: boolean) {
+function createRuntime(
+  notificationSound: boolean,
+  snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null
+) {
   const initialState = createInitialState("/bin/zsh");
   initialState.settings.notificationSound = notificationSound;
+  const snapshotSave = vi.fn();
   const runtime = createAppRuntime({
     paths: {
       socketPath: "/tmp/kmux.sock",
@@ -39,8 +45,9 @@ function createRuntime(notificationSound: boolean) {
     },
     snapshotStore: {
       path: "/tmp/kmux-snapshot.json",
-      load: () => null,
-      save: vi.fn()
+      load: () => snapshotRecord?.snapshot ?? null,
+      loadRecord: () => snapshotRecord ?? null,
+      save: snapshotSave
     },
     windowStateStore: {
       path: "/tmp/kmux-window.json",
@@ -59,7 +66,11 @@ function createRuntime(notificationSound: boolean) {
 
   runtime.setStore(new AppStore(initialState));
 
-  return runtime;
+  return Object.assign(runtime, {
+    __test__: {
+      snapshotSave
+    }
+  });
 }
 
 function createMockWindow(): (typeof browserWindows)[number] {
@@ -89,6 +100,79 @@ describe("app runtime bell sound effects", () => {
     createRuntime(false).runEffects([{ type: "bell.sound" }]);
 
     expect(beep).not.toHaveBeenCalled();
+  });
+});
+
+describe("app runtime restore", () => {
+  it("clears restored notifications after an unclean shutdown", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const workspaceId = Object.keys(snapshot.workspaces)[0];
+    const paneId = Object.keys(snapshot.panes)[0];
+    const surfaceId = Object.keys(snapshot.surfaces)[0];
+
+    applyAction(snapshot, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Codex needs input",
+      message: "Waiting for input",
+      source: "agent",
+      kind: "needs_input",
+      agent: "codex"
+    });
+
+    const runtime = createRuntime(false, {
+      snapshot,
+      cleanShutdown: false
+    });
+
+    const restored = runtime.restoreInitialState();
+
+    expect(restored.notifications).toEqual([]);
+    expect(restored.surfaces[surfaceId]).toEqual(
+      expect.objectContaining({
+        unreadCount: 0,
+        attention: false
+      })
+    );
+  });
+
+  it("clears notifications from the persisted snapshot on clean shutdown", () => {
+    const runtime = createRuntime(false);
+    const state = runtime.getState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+    const surfaceId = Object.keys(state.surfaces)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Codex needs input",
+      message: "Waiting for input",
+      source: "agent",
+      kind: "needs_input",
+      agent: "codex"
+    });
+
+    runtime.shutdown();
+
+    expect(runtime.__test__.snapshotSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notifications: [],
+        surfaces: expect.objectContaining({
+          [surfaceId]: expect.objectContaining({
+            unreadCount: 0,
+            attention: false
+          })
+        })
+      }),
+      {
+        cleanShutdown: true
+      }
+    );
   });
 });
 

@@ -13,6 +13,7 @@ import type {
 } from "@kmux/proto";
 
 import type {PtyHostManager} from "./ptyHost";
+import { logDiagnostics } from "../shared/diagnostics";
 
 interface TerminalBridgeOptions {
   getState: () => AppState;
@@ -86,9 +87,60 @@ export function createTerminalBridge(
     return surface ? surface.sessionId : null;
   }
 
+  function clearVisibleCodexNeedsInput(
+    surfaceId: Id,
+    dismissKey: "escape" | "ctrl-c" | "ctrl-d"
+  ): void {
+    const state = options.getState();
+    const surface = state.surfaces[surfaceId];
+    if (!surface) {
+      return;
+    }
+    const pane = state.panes[surface.paneId];
+    if (!pane) {
+      return;
+    }
+    const visibleToUser = options.isSurfaceVisibleToUser?.(surfaceId) ?? false;
+    if (!visibleToUser) {
+      return;
+    }
+    const workspace = state.workspaces[pane.workspaceId];
+    const statusKey = `agent:codex:${surfaceId}`;
+    if (workspace?.statusEntries?.[statusKey]?.text !== "needs input") {
+      return;
+    }
+    logDiagnostics("main.terminal.codex-input-dismissed", {
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      dismissKey
+    });
+    options.dispatchAppAction({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "idle",
+      message: "Dismissed input prompt",
+      details: {
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        dismissKey
+      }
+    });
+  }
+
   function sendText(surfaceId: Id, text: string): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
+      const dismissKey = codexDismissKeyFromText(text);
+      if (dismissKey) {
+        clearVisibleCodexNeedsInput(surfaceId, dismissKey);
+      }
       options.onSurfaceInputText?.(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
     }
@@ -97,6 +149,10 @@ export function createTerminalBridge(
   function sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
+      const dismissKey = codexDismissKeyFromKeyInput(input);
+      if (dismissKey) {
+        clearVisibleCodexNeedsInput(surfaceId, dismissKey);
+      }
       options.getPtyHost()?.sendKey(sessionId, input);
     }
   }
@@ -293,7 +349,18 @@ export function createTerminalBridge(
         });
         return;
       case "bell": {
+        logDiagnostics("main.terminal.bell.received", {
+          surfaceId: event.surfaceId,
+          sessionId: event.sessionId,
+          title: event.title,
+          cwd: event.cwd
+        });
         if (!options.getState().surfaces[event.surfaceId]) {
+          logDiagnostics("main.terminal.bell.dropped", {
+            reason: "missing-surface",
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId
+          });
           return;
         }
         options.dispatchAppAction({
@@ -304,23 +371,53 @@ export function createTerminalBridge(
       case "terminal.notification": {
         const state = options.getState();
         const surface = state.surfaces[event.surfaceId];
+        const vendor = options.getSurfaceVendor?.(event.surfaceId) ?? "unknown";
+        const visibleToUser =
+          options.isSurfaceVisibleToUser?.(event.surfaceId) ?? false;
+        logDiagnostics("main.terminal.notification.received", {
+          surfaceId: event.surfaceId,
+          sessionId: event.sessionId,
+          protocol: event.protocol,
+          title: event.title,
+          message: event.message,
+          vendor,
+          visibleToUser
+        });
         if (!surface) {
+          logDiagnostics("main.terminal.notification.dropped", {
+            reason: "missing-surface",
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol
+          });
           return;
         }
         const pane = state.panes[surface.paneId];
         if (!pane) {
+          logDiagnostics("main.terminal.notification.dropped", {
+            reason: "missing-pane",
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol
+          });
           return;
         }
         const title = event.title ?? surface.title;
         const message = event.message ?? surface.cwd ?? "Terminal notification";
-        const vendor = options.getSurfaceVendor?.(event.surfaceId) ?? "unknown";
-        const visibleToUser =
-          options.isSurfaceVisibleToUser?.(event.surfaceId) ?? false;
         const inferredCodexAttention =
           vendor === "codex"
             ? isCodexInputAttention(title, message)
             : isStrictCodexInputAttention(title, message);
         if (inferredCodexAttention) {
+          logDiagnostics("main.terminal.notification.codex-promoted", {
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol,
+            vendor,
+            visibleToUser,
+            title,
+            message
+          });
           options.dispatchAppAction({
             type: "agent.event",
             workspaceId: pane.workspaceId,
@@ -345,11 +442,32 @@ export function createTerminalBridge(
           return;
         }
         if (vendor === "codex") {
+          logDiagnostics("main.terminal.notification.codex-suppressed", {
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol,
+            title,
+            message
+          });
           return;
         }
         if (visibleToUser) {
+          logDiagnostics("main.terminal.notification.visible-suppressed", {
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol,
+            title,
+            message
+          });
           return;
         }
+        logDiagnostics("main.terminal.notification.generic-dispatch", {
+          surfaceId: event.surfaceId,
+          sessionId: event.sessionId,
+          protocol: event.protocol,
+          title,
+          message
+        });
         options.dispatchAppAction({
           type: "notification.create",
           workspaceId: pane.workspaceId,
@@ -407,4 +525,35 @@ function isStrictCodexInputAttention(title: string, message: string): boolean {
     return false;
   }
   return CODEX_STRICT_INPUT_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function codexDismissKeyFromText(
+  text: string
+): "escape" | "ctrl-c" | "ctrl-d" | null {
+  if (text === "\u001b") {
+    return "escape";
+  }
+  if (text === "\u0003") {
+    return "ctrl-c";
+  }
+  if (text === "\u0004") {
+    return "ctrl-d";
+  }
+  return null;
+}
+
+function codexDismissKeyFromKeyInput(
+  input: TerminalKeyInput
+): "escape" | "ctrl-c" | "ctrl-d" | null {
+  const key = input.key.trim().toLowerCase();
+  if (key === "escape") {
+    return "escape";
+  }
+  if (input.ctrlKey && key === "c") {
+    return "ctrl-c";
+  }
+  if (input.ctrlKey && key === "d") {
+    return "ctrl-d";
+  }
+  return input.text ? codexDismissKeyFromText(input.text) : null;
 }
