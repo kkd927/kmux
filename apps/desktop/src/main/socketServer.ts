@@ -3,9 +3,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
-  listWorkspaceSurfaceIds,
   type AppAction,
-  type AppState
+  type AppState,
+  listWorkspaceSurfaceIds
 } from "@kmux/core";
 import type {
   JsonRpcEnvelope,
@@ -20,16 +20,33 @@ import {
 import { ZodError } from "zod";
 
 import {
-  UnknownSocketMethodError,
+  type ParsedSocketRequest,
   parseSocketEnvelope,
   parseSocketRequest,
-  type ParsedSocketRequest
+  UnknownSocketMethodError
 } from "./socketRpc";
 
 type AgentEventParams = Extract<
   ParsedSocketRequest,
   { method: "agent.event" }
 >["params"];
+
+const RECENT_TURN_COMPLETE_DEDUPE_MS = 5 * 60 * 1000;
+
+function hasRecentTurnCompleteNotification(
+  state: AppState,
+  agent: string,
+  surfaceId: string
+): boolean {
+  const cutoff = Date.now() - RECENT_TURN_COMPLETE_DEDUPE_MS;
+  return state.notifications.some(
+    (notification) =>
+      notification.kind === "turn_complete" &&
+      notification.agent === agent &&
+      notification.surfaceId === surfaceId &&
+      Date.parse(notification.createdAt) >= cutoff
+  );
+}
 
 interface SocketServerOptions {
   socketPath: string;
@@ -332,7 +349,9 @@ export class KmuxSocketServer {
     const state = this.options.getState();
     const surfaceId =
       params.surfaceId ??
-      (params.sessionId ? state.sessions[params.sessionId]?.surfaceId : undefined);
+      (params.sessionId
+        ? state.sessions[params.sessionId]?.surfaceId
+        : undefined);
     const details = {
       ...(params.details ?? {}),
       ...(surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)
@@ -355,7 +374,9 @@ export class KmuxSocketServer {
   }
 
   private dispatchHookNotification(
-    params: ReturnType<typeof normalizeHookNotificationInvocation> extends infer TResult
+    params: ReturnType<
+      typeof normalizeHookNotificationInvocation
+    > extends infer TResult
       ? Exclude<TResult, null>
       : never,
     fallbackWorkspaceId: string
@@ -363,8 +384,16 @@ export class KmuxSocketServer {
     const state = this.options.getState();
     const surfaceId =
       params.surfaceId ??
-      (params.sessionId ? state.sessions[params.sessionId]?.surfaceId : undefined);
+      (params.sessionId
+        ? state.sessions[params.sessionId]?.surfaceId
+        : undefined);
     if (surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)) {
+      return { ok: true };
+    }
+    if (
+      surfaceId &&
+      hasRecentTurnCompleteNotification(state, params.agent, surfaceId)
+    ) {
       return { ok: true };
     }
     const paneId =

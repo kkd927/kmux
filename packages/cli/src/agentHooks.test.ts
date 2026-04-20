@@ -62,6 +62,25 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("maps Claude PostToolUse AskUserQuestion completions to running events", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "PostToolUse", {
+        tool_name: "AskUserQuestion"
+      })
+    ).toMatchObject({
+      agent: "claude",
+      event: "running"
+    });
+  });
+
+  it("ignores Claude PostToolUse for other tools", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "PostToolUse", {
+        tool_name: "Read"
+      })
+    ).toBeNull();
+  });
+
   it("maps Claude permission requests to needs_input events", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PermissionRequest", {
@@ -126,11 +145,13 @@ describe("agent hook normalization", () => {
   });
 
   it("treats Gemini before-agent hooks as running events", () => {
-    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toMatchObject({
-      agent: "gemini",
-      event: "running",
-      message: "Running"
-    });
+    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toMatchObject(
+      {
+        agent: "gemini",
+        event: "running",
+        message: "Running"
+      }
+    );
   });
 
   it("treats Codex stop hooks as turn completion events", () => {
