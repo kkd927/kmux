@@ -158,6 +158,7 @@ describe("shell environment resolver", () => {
 
   it("uses the cached environment as fallback when the probe fails", async () => {
     const cachePath = join(sandboxDir, "fallback-cache.json");
+    const eightDaysAgoMs = Date.now() - 8 * 24 * 60 * 60 * 1000;
     writeFileSync(
       cachePath,
       JSON.stringify({
@@ -167,7 +168,7 @@ describe("shell environment resolver", () => {
           SHELL: "/bin/zsh",
           FOO: "bar"
         },
-        cachedAt: Date.now()
+        cachedAt: eightDaysAgoMs
       })
     );
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -191,6 +192,85 @@ describe("shell environment resolver", () => {
     });
     expect(warning).toHaveBeenCalled();
     warning.mockRestore();
+  });
+
+  it("returns fresh cache immediately without probing (SWR hit)", async () => {
+    const cachePath = join(sandboxDir, "swr-hit.json");
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        shellPath: "/bin/zsh",
+        baseEnv: {
+          PATH: "/cached/path",
+          SHELL: "/bin/zsh"
+        },
+        cachedAt: Date.now()
+      })
+    );
+    const execMock = vi.fn(async () => ({
+      stdout:
+        "__TOKEN__{\"PATH\":\"/new/path\",\"SHELL\":\"/bin/zsh\"}__TOKEN__",
+      stderr: ""
+    }));
+    let backgroundRevalidation: Promise<void> | null = null;
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      cachePath,
+      exec: execMock,
+      onBackgroundRevalidation: (promise) => {
+        backgroundRevalidation = promise;
+      }
+    });
+
+    expect(resolved.source).toBe("cached");
+    expect(resolved.shellPath).toBe("/bin/zsh");
+    expect(resolved.baseEnv).toEqual({
+      PATH: "/cached/path",
+      SHELL: "/bin/zsh"
+    });
+    expect(backgroundRevalidation).not.toBeNull();
+    await backgroundRevalidation;
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const refreshed = JSON.parse(readFileSync(cachePath, "utf8")) as {
+      baseEnv: Record<string, string>;
+    };
+    expect(refreshed.baseEnv.PATH).toBe("/new/path");
+  });
+
+  it("re-probes synchronously when cached entry is older than TTL", async () => {
+    const cachePath = join(sandboxDir, "swr-stale.json");
+    const stalePastMs = Date.now() - 60 * 60 * 1000;
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        shellPath: "/bin/zsh",
+        baseEnv: { PATH: "/stale/path", SHELL: "/bin/zsh" },
+        cachedAt: stalePastMs
+      })
+    );
+    const execMock = vi.fn(async () => ({
+      stdout:
+        "__TOKEN__{\"PATH\":\"/fresh/path\",\"SHELL\":\"/bin/zsh\"}__TOKEN__",
+      stderr: ""
+    }));
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin" },
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      cachePath,
+      cacheTtlMs: 30 * 60 * 1000,
+      exec: execMock
+    });
+
+    expect(resolved.source).toBe("resolved");
+    expect(resolved.baseEnv.PATH).toBe("/fresh/path");
+    expect(execMock).toHaveBeenCalledTimes(1);
   });
 
   it("ignores cached entries that were recorded for a different shell", async () => {
