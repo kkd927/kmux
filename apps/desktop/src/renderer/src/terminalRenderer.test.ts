@@ -8,7 +8,8 @@ import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
   pasteClipboardIntoTerminal,
-  resolveTerminalEnterRewrite
+  resolveTerminalEnterRewrite,
+  shouldSwallowImeCompositionMetaKey
 } from "./terminalRenderer";
 import type { TerminalKeyboardEventLike } from "./terminalRenderer";
 
@@ -203,6 +204,125 @@ describe("terminal renderer helpers", () => {
         })
       )
     ).toBeNull();
+  });
+
+  it("swallows bare Meta keydown during IME composition", () => {
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "MetaLeft",
+          key: "Meta",
+          keyCode: 91,
+          metaKey: true,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(true);
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "MetaRight",
+          key: "Meta",
+          keyCode: 93,
+          metaKey: true,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(true);
+  });
+
+  it("does not swallow Meta when not composing", () => {
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "MetaLeft",
+          key: "Meta",
+          keyCode: 91,
+          metaKey: true,
+          type: "keydown"
+        }),
+        false
+      )
+    ).toBe(false);
+  });
+
+  it("does not swallow Cmd-combined shortcuts or non-keydown events", () => {
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "KeyC",
+          key: "c",
+          keyCode: 67,
+          metaKey: true,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "MetaLeft",
+          key: "Meta",
+          keyCode: 91,
+          metaKey: true,
+          shiftKey: true,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "MetaLeft",
+          key: "Meta",
+          keyCode: 91,
+          metaKey: true,
+          type: "keyup"
+        }),
+        true
+      )
+    ).toBe(false);
+  });
+
+  it("does not swallow other keys (Enter, letters, IME process) even when composing", () => {
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "Enter",
+          key: "Enter",
+          keyCode: 13,
+          shiftKey: true,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
+    expect(
+      shouldSwallowImeCompositionMetaKey(
+        keyboardEvent({
+          code: "",
+          key: "Process",
+          keyCode: 229,
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
   });
 
   it("applies pending Enter rewrites only to the originating surface CR", () => {
