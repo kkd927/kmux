@@ -982,7 +982,12 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
     expect(claudeFetcher).toHaveBeenCalledTimes(3);
 
+    // Claude live cadence is 5 minutes (see getSubscriptionRefreshMs) so 60s elapsed
+    // alone must not trigger a fourth fetch; only after the full 5 minutes should it.
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(claudeFetcher).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000);
     expect(claudeFetcher).toHaveBeenCalledTimes(4);
 
     runtime.shutdown();
