@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
+const DEFAULT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface CachedShellEnvEnvelope {
   shellPath: string;
@@ -50,6 +51,8 @@ interface ResolveShellEnvironmentOptions {
   randomToken?: string;
   exec?: ShellCommandExecutor;
   cachePath?: string;
+  cacheTtlMs?: number;
+  onBackgroundRevalidation?: (promise: Promise<void>) => void;
 }
 
 export function resolveShellPath(
@@ -128,9 +131,38 @@ export async function resolveShellEnvironment(
   );
   const baseEnv = sanitizeInheritedEnv(inheritedEnv);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const processExecPath = options.processExecPath ?? process.execPath;
   const marker = options.randomToken ?? `__kmux_shell_env__${randomUUID()}`;
   const exec = options.exec ?? defaultShellCommandExecutor;
+
+  if (options.cachePath) {
+    const envelope = readCachedShellEnvEnvelope(options.cachePath);
+    if (
+      envelope &&
+      envelope.shellPath === shellPath &&
+      isCacheFresh(envelope.cachedAt, cacheTtlMs)
+    ) {
+      const revalidation = revalidateShellEnvInBackground({
+        shellPath,
+        probeEnv: baseEnv,
+        timeoutMs,
+        processExecPath,
+        marker,
+        exec,
+        cachePath: options.cachePath
+      });
+      options.onBackgroundRevalidation?.(revalidation);
+      return {
+        shellPath,
+        baseEnv: {
+          ...envelope.baseEnv,
+          SHELL: envelope.baseEnv.SHELL ?? shellPath
+        },
+        source: "cached"
+      };
+    }
+  }
 
   try {
     const {stdout} = await exec(
@@ -162,13 +194,13 @@ export async function resolveShellEnvironment(
       error
     );
     if (options.cachePath) {
-      const cached = readCachedShellEnv(options.cachePath, shellPath);
-      if (cached) {
+      const envelope = readCachedShellEnvEnvelope(options.cachePath);
+      if (envelope && envelope.shellPath === shellPath) {
         return {
           shellPath,
           baseEnv: {
-            ...cached,
-            SHELL: cached.SHELL ?? shellPath
+            ...envelope.baseEnv,
+            SHELL: envelope.baseEnv.SHELL ?? shellPath
           },
           source: "cached"
         };
@@ -185,10 +217,51 @@ export async function resolveShellEnvironment(
   }
 }
 
-function readCachedShellEnv(
-  cachePath: string,
-  shellPath: string
-): NodeJS.ProcessEnv | null {
+function isCacheFresh(cachedAt: number | undefined, ttlMs: number): boolean {
+  if (typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
+    return false;
+  }
+  const age = Date.now() - cachedAt;
+  return age >= 0 && age < ttlMs;
+}
+
+async function revalidateShellEnvInBackground(options: {
+  shellPath: string;
+  probeEnv: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  processExecPath: string;
+  marker: string;
+  exec: ShellCommandExecutor;
+  cachePath: string;
+}): Promise<void> {
+  try {
+    const {stdout} = await options.exec(
+      options.shellPath,
+      buildShellEnvProbeArgs(options.shellPath, options.processExecPath, options.marker),
+      {
+        env: options.probeEnv,
+        timeout: options.timeoutMs,
+        maxBuffer: DEFAULT_MAX_BUFFER
+      }
+    );
+    const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, options.marker));
+    resolvedEnv.SHELL ??= options.shellPath;
+    writeCachedShellEnv(options.cachePath, {
+      shellPath: options.shellPath,
+      baseEnv: resolvedEnv,
+      cachedAt: Date.now()
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[shell-env] background revalidation failed for ${options.shellPath}: ${message}`
+    );
+  }
+}
+
+function readCachedShellEnvEnvelope(
+  cachePath: string
+): CachedShellEnvEnvelope | null {
   let raw: string;
   try {
     raw = readFileSync(cachePath, "utf8");
@@ -200,7 +273,6 @@ function readCachedShellEnv(
     if (
       !parsed ||
       typeof parsed.shellPath !== "string" ||
-      parsed.shellPath !== shellPath ||
       !parsed.baseEnv ||
       typeof parsed.baseEnv !== "object"
     ) {
@@ -212,7 +284,11 @@ function readCachedShellEnv(
         env[key] = value;
       }
     }
-    return env;
+    return {
+      shellPath: parsed.shellPath,
+      baseEnv: env,
+      cachedAt: typeof parsed.cachedAt === "number" ? parsed.cachedAt : 0
+    };
   } catch {
     return null;
   }
