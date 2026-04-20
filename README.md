@@ -9,12 +9,9 @@ Split panes. Tabbed surfaces. Sidebar status. Automation-ready.
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
 [![macOS](https://img.shields.io/badge/platform-macOS-000?logo=apple&logoColor=fff)](https://github.com/kkd927/kmux/releases/latest)
-[![Electron](https://img.shields.io/badge/electron-39-47848F?logo=electron&logoColor=fff)](https://www.electronjs.org/)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=fff)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/typescript-5.8-3178C6?logo=typescript&logoColor=fff)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-a78bfa)](./CONTRIBUTING.md)
 
-[**Download**](https://github.com/kkd927/kmux/releases/latest) · [**Getting Started**](#-getting-started) · [**Shortcuts**](#-keyboard-shortcuts) · [**Docs**](./docs/product-spec.md) · [**Contributing**](./CONTRIBUTING.md)
+[**Download**](https://github.com/kkd927/kmux/releases/latest) · [**Shortcuts**](#-keyboard-shortcuts)
 
 <br>
 
