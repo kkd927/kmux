@@ -449,7 +449,11 @@ export interface UsagePricingCoverageVm {
   unknownCostTokens: number;
 }
 
-export type SubscriptionUsageWindowKind = "session" | "weekly" | "model";
+export type SubscriptionUsageWindowKind =
+  | "session"
+  | "weekly"
+  | "model"
+  | "spend";
 
 export interface SubscriptionUsageRowVm {
   key: string;
@@ -458,6 +462,9 @@ export interface SubscriptionUsageRowVm {
   resetLabel: string;
   resetsAt?: string;
   windowKind: SubscriptionUsageWindowKind;
+  usedAmountUsd?: number;
+  limitAmountUsd?: number;
+  currency?: string;
 }
 
 export interface SubscriptionProviderUsageVm {

@@ -13,6 +13,10 @@ import {
 
 const sandboxDirs: string[] = [];
 
+const skipKeychain = async (): Promise<{ stdout: string; stderr: string }> => {
+  throw new Error("tests force the Claude credentials file fallback");
+};
+
 afterEach(() => {
   for (const sandboxDir of sandboxDirs.splice(0)) {
     rmSync(sandboxDir, { force: true, recursive: true });
@@ -278,6 +282,7 @@ describe("subscription usage fetchers", () => {
     const usage = await fetchClaudeSubscriptionUsage({
       homeDir,
       fetchImpl,
+      execFileImpl: skipKeychain,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
 
@@ -321,6 +326,7 @@ describe("subscription usage fetchers", () => {
     const usage = await fetchClaudeSubscriptionUsage({
       homeDir,
       fetchImpl,
+      execFileImpl: skipKeychain,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
 
@@ -342,10 +348,224 @@ describe("subscription usage fetchers", () => {
     const usage = await fetchClaudeSubscriptionUsage({
       homeDir,
       fetchImpl: vi.fn(),
+      execFileImpl: skipKeychain,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
 
     expect(usage).toBeNull();
+  });
+
+  it("emits a Claude Enterprise monthly spend row from extra_usage when five-hour and seven-day windows are null", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".claude", ".credentials.json"], {
+      claudeAiOauth: {
+        accessToken: "claude-access-token",
+        refreshToken: "claude-refresh-token",
+        expiresAt: Date.parse("2026-04-19T00:00:00.000Z"),
+        scopes: ["user:profile", "org:read"],
+        rateLimitTier: "claude_enterprise"
+      }
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: null,
+          seven_day: null,
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 100000,
+            used_credits: 63598,
+            utilization: 63.598,
+            currency: "USD"
+          }
+        }),
+        { status: 200 }
+      )
+    );
+
+    const usage = await fetchClaudeSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      execFileImpl: skipKeychain,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "claude",
+        providerLabel: "Claude Code",
+        planLabel: "Enterprise",
+        source: "oauth_usage",
+        rows: [
+          expect.objectContaining({
+            key: "monthly",
+            label: "Monthly",
+            usedPercent: 64,
+            windowKind: "spend",
+            usedAmountUsd: 635.98,
+            limitAmountUsd: 1000,
+            currency: "USD",
+            resetsAt: "2026-05-01T00:00:00.000Z"
+          })
+        ]
+      })
+    );
+  });
+
+  it("labels the plan as Enterprise when rateLimitTier is absent but extra_usage.is_enabled is true", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".claude", ".credentials.json"], {
+      claudeAiOauth: {
+        accessToken: "claude-access-token",
+        expiresAt: Date.parse("2026-04-19T00:00:00.000Z"),
+        scopes: ["user:profile"]
+      }
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: null,
+          seven_day: null,
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 50000,
+            used_credits: 12500,
+            utilization: 25,
+            currency: "USD"
+          }
+        }),
+        { status: 200 }
+      )
+    );
+
+    const usage = await fetchClaudeSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      execFileImpl: skipKeychain,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage?.planLabel).toBe("Enterprise");
+  });
+
+  it("prefers server-provided extra_usage.resets_at over the computed next-month fallback", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".claude", ".credentials.json"], {
+      claudeAiOauth: {
+        accessToken: "claude-access-token",
+        expiresAt: Date.parse("2026-04-19T00:00:00.000Z"),
+        scopes: ["user:profile"],
+        rateLimitTier: "claude_enterprise"
+      }
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: null,
+          seven_day: null,
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 100000,
+            used_credits: 0,
+            utilization: 0,
+            currency: "USD",
+            resets_at: "2026-05-15T12:00:00.000Z"
+          }
+        }),
+        { status: 200 }
+      )
+    );
+
+    const usage = await fetchClaudeSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      execFileImpl: skipKeychain,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows[0]?.resetsAt).toBe("2026-05-15T12:00:00.000Z");
+  });
+
+  it("throws on transient Claude OAuth usage failures so the runtime can back off and keep the prior snapshot", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".claude", ".credentials.json"], {
+      claudeAiOauth: {
+        accessToken: "claude-access-token",
+        expiresAt: Date.parse("2026-04-19T00:00:00.000Z"),
+        scopes: ["user:profile"],
+        rateLimitTier: "claude_pro"
+      }
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ error: { type: "rate_limit_error" } }),
+        { status: 429 }
+      )
+    );
+
+    await expect(
+      fetchClaudeSubscriptionUsage({
+        homeDir,
+        fetchImpl,
+        execFileImpl: skipKeychain,
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      })
+    ).rejects.toThrow(/transient status 429/i);
+
+    const fiveHundredFetch = vi.fn(async () => new Response("boom", { status: 503 }));
+    await expect(
+      fetchClaudeSubscriptionUsage({
+        homeDir,
+        fetchImpl: fiveHundredFetch,
+        execFileImpl: skipKeychain,
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      })
+    ).rejects.toThrow(/transient status 503/i);
+  });
+
+  it("omits the monthly spend row when extra_usage.is_enabled is false", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".claude", ".credentials.json"], {
+      claudeAiOauth: {
+        accessToken: "claude-access-token",
+        expiresAt: Date.parse("2026-04-19T00:00:00.000Z"),
+        scopes: ["user:profile"],
+        rateLimitTier: "claude_max"
+      }
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: {
+            utilization: 0.4,
+            resets_at: "2026-04-18T05:00:00.000Z"
+          },
+          seven_day: null,
+          extra_usage: {
+            is_enabled: false,
+            monthly_limit: 100000,
+            used_credits: 0,
+            utilization: 0,
+            currency: "USD"
+          }
+        }),
+        { status: 200 }
+      )
+    );
+
+    const usage = await fetchClaudeSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      execFileImpl: skipKeychain,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows).toEqual([
+      expect.objectContaining({
+        key: "session",
+        windowKind: "session"
+      })
+    ]);
   });
 
   it("maps Gemini paid quotas to native model-family rows", async () => {

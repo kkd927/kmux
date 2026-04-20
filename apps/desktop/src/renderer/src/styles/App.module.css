@@ -1527,7 +1527,7 @@
 
 .rightSidebarTitle {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.125rem;
   line-height: 1.05;
   color: var(--usage-title);
   font-weight: 600;
@@ -1553,7 +1553,7 @@
 
 .rightSidebarSubtitle {
   position: relative;
-  font-size: 0.688rem;
+  font-size: 0.875rem;
   line-height: 1.2;
   color: var(--usage-body);
   pointer-events: none;
@@ -2382,12 +2382,14 @@
   grid-template-columns: minmax(0, 1fr) minmax(136px, 192px);
   gap: 14px;
   align-items: start;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--usage-card-border);
+  padding: 6px 0;
+}
+
+.subscriptionUsageRow:first-child {
+  padding-top: 0;
 }
 
 .subscriptionUsageRow:last-child {
-  border-bottom: none;
   padding-bottom: 0;
 }
 
@@ -2403,7 +2405,7 @@
 
 .subscriptionUsageMeta {
   margin-top: 4px;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--usage-body);
   white-space: nowrap;
 }
@@ -2415,7 +2417,7 @@
   align-items: center;
   align-self: start;
   min-width: 0;
-  margin-top: 8px;
+  min-height: 1.25rem;
 }
 
 .subscriptionUsageBar {

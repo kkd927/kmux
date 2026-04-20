@@ -6,7 +6,7 @@ import {
   type CSSProperties
 } from "react";
 
-import type { UsageViewSnapshot } from "@kmux/proto";
+import type { SubscriptionUsageRowVm, UsageViewSnapshot } from "@kmux/proto";
 
 import { RightSidebarHost } from "./RightSidebarHost";
 import { useUsageSnapshot } from "../hooks/useUsageView";
@@ -224,11 +224,9 @@ function SubscriptionWindowsCard(props: {
                 data-testid={`subscription-row-${providerUsage.provider}-${row.key}`}
               >
                 <div className={styles.subscriptionUsageCopy}>
-                  <div className={styles.subscriptionUsageLabel}>
-                    {`${providerUsage.providerLabel} · ${row.label}`}
-                  </div>
+                  <div className={styles.subscriptionUsageLabel}>{row.label}</div>
                   <div className={styles.subscriptionUsageMeta}>
-                    {`${formatSubscriptionUsedPercent(row.usedPercent)} used · ${row.resetLabel}`}
+                    {formatSubscriptionRowMeta(row)}
                   </div>
                 </div>
                 <div className={styles.subscriptionUsageMeter}>
@@ -429,6 +427,34 @@ function formatSubscriptionUsedPercent(usedPercent: number): string {
     return "< 1%";
   }
   return `${Math.round(usedPercent)}%`;
+}
+
+function formatSubscriptionRowMeta(row: SubscriptionUsageRowVm): string {
+  if (
+    row.windowKind === "spend" &&
+    typeof row.usedAmountUsd === "number" &&
+    typeof row.limitAmountUsd === "number"
+  ) {
+    const currency = row.currency ?? "USD";
+    const used = formatSubscriptionAmount(row.usedAmountUsd, currency);
+    const limit = formatSubscriptionAmount(row.limitAmountUsd, currency);
+    return `${used} / ${limit} · ${row.resetLabel}`;
+  }
+  return row.resetLabel;
+}
+
+function formatSubscriptionAmount(amount: number, currency: string): string {
+  const hasFraction = Math.round(amount * 100) % 100 !== 0;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: hasFraction ? 2 : 0,
+      maximumFractionDigits: 2
+    }).format(amount);
+  } catch {
+    return hasFraction ? `$${amount.toFixed(2)}` : `$${amount.toFixed(0)}`;
+  }
 }
 
 function TopModelsCard(props: {
@@ -834,9 +860,6 @@ function buildSubtitle(
   })}`];
   if (pricingCoverage?.hasEstimatedCosts) {
     segments.push("includes estimated subscription spend");
-  }
-  if (pricingCoverage?.hasMissingPricing) {
-    segments.push("pricing map is partial");
   }
   return segments.join(" · ");
 }
