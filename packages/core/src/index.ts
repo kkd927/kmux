@@ -105,7 +105,7 @@ type LegacyKmuxSettings = Partial<KmuxSettings> & LegacyTypographyFields;
 
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY =
-  '"JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace';
+  'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
 export const DEFAULT_TERMINAL_LINE_HEIGHT = 1;
 export const KMUX_BUILTIN_SYMBOL_FONT_FAMILY = '"kmux Symbols Nerd Font Mono"';
 export const DEFAULT_SIDEBAR_WIDTH = 320;

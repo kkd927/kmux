@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 
@@ -346,11 +347,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
+    const unicode11 = new Unicode11Addon();
     terminalRef.current = terminal;
     fitRef.current = fit;
     searchRef.current = search;
     terminal.loadAddon(fit);
     terminal.loadAddon(search);
+    terminal.loadAddon(unicode11);
+    terminal.unicode.activeVersion = "11";
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
