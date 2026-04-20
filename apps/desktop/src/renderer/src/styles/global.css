@@ -13,7 +13,7 @@
   --kmux-ui-font-size: 13px;
   --kmux-ui-line-height: 1.35;
   --kmux-terminal-font-family:
-    "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas,
+    ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular",
     "kmux Symbols Nerd Font Mono", monospace;
   --kmux-terminal-font-size: 13px;
   --kmux-terminal-line-height: 1;

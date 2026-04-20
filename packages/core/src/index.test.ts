@@ -1043,7 +1043,7 @@ describe("core reducer", () => {
     });
 
     expect(state.settings.terminalTypography.preferredTextFontFamily).toContain(
-      "JetBrains Mono"
+      "ui-monospace"
     );
     expect(state.settings.terminalTypography.fontSize).toBe(13);
     expect(state.settings.terminalTypography.lineHeight).toBe(1);
