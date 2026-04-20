@@ -13,6 +13,7 @@ export interface TerminalKeyboardEventLike {
   metaKey: boolean;
   shiftKey: boolean;
   isComposing?: boolean;
+  type?: string;
 }
 
 export interface TerminalEnterRewrite {
@@ -74,4 +75,32 @@ export function resolveTerminalEnterRewrite(
   }
 
   return { sequence };
+}
+
+// xterm.js's CompositionHelper only whitelists keyCodes 16/17/18/20/229 as
+// modifier keys to ignore during IME composition. Meta (Cmd on macOS, keyCode
+// 91/93/224) is not in that list, so a bare Cmd keydown while composing Hangul
+// triggers _finalizeComposition(false) and flushes the partially-composed
+// syllable into the PTY. The OS-level IME is still alive and continues to
+// update the textarea, producing a second send and visible duplication.
+// Swallowing bare Cmd keydowns during composition via
+// attachCustomKeyEventHandler keeps xterm from entering that path while
+// leaving the DOM/OS free to react to Cmd normally (no preventDefault).
+export function shouldSwallowImeCompositionMetaKey(
+  event: TerminalKeyboardEventLike,
+  isComposing: boolean
+): boolean {
+  if (!isComposing) {
+    return false;
+  }
+  if (event.type !== undefined && event.type !== "keydown") {
+    return false;
+  }
+  if (event.key !== "Meta") {
+    return false;
+  }
+  if (event.ctrlKey || event.altKey || event.shiftKey) {
+    return false;
+  }
+  return true;
 }

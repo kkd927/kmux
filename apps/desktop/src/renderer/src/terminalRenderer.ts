@@ -1,5 +1,6 @@
 export {
   resolveTerminalEnterRewrite,
+  shouldSwallowImeCompositionMetaKey,
   type TerminalEnterRewrite,
   type TerminalKeyboardEventLike
 } from "../../terminalKeyboard";

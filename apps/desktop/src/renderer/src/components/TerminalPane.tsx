@@ -25,6 +25,7 @@ import {
   applyTerminalWebglPreference,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  shouldSwallowImeCompositionMetaKey,
   type PendingTerminalEnterRewrite,
   type DisposableAddon
 } from "../terminalRenderer";
@@ -479,6 +480,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
     terminal.open(container);
+    const imeCompositionRef = { current: false };
+    const handleCompositionStart = (): void => {
+      imeCompositionRef.current = true;
+    };
+    const handleCompositionEnd = (): void => {
+      imeCompositionRef.current = false;
+    };
+    const xtermTextarea = terminal.textarea;
+    if (xtermTextarea) {
+      xtermTextarea.addEventListener("compositionstart", handleCompositionStart);
+      xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
+    }
+    terminal.attachCustomKeyEventHandler((event) =>
+      !shouldSwallowImeCompositionMetaKey(event, imeCompositionRef.current)
+    );
     syncTerminalViewportBackground();
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
@@ -541,6 +557,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
       container.removeEventListener("keydown", handleTerminalShortcut, true);
+      if (xtermTextarea) {
+        xtermTextarea.removeEventListener(
+          "compositionstart",
+          handleCompositionStart
+        );
+        xtermTextarea.removeEventListener(
+          "compositionend",
+          handleCompositionEnd
+        );
+      }
       clearPendingEnterRewrite();
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
