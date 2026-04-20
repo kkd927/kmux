@@ -1,14 +1,21 @@
 import {execFile} from "node:child_process";
 import {randomUUID} from "node:crypto";
+import {mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync} from "node:fs";
 import {userInfo} from "node:os";
-import {basename} from "node:path";
+import {basename, dirname} from "node:path";
 import {promisify} from "node:util";
 
 const execFileAsync = promisify(execFile);
 
 const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
+
+interface CachedShellEnvEnvelope {
+  shellPath: string;
+  baseEnv: NodeJS.ProcessEnv;
+  cachedAt: number;
+}
 
 const PLATFORM_FALLBACK_SHELLS: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "/bin/zsh",
@@ -18,7 +25,7 @@ const PLATFORM_FALLBACK_SHELLS: Partial<Record<NodeJS.Platform, string>> = {
 export interface ResolvedShellEnv {
   shellPath: string;
   baseEnv: NodeJS.ProcessEnv;
-  source: "resolved" | "fallback";
+  source: "resolved" | "cached" | "fallback";
 }
 
 export interface ShellCommandExecutorOptions {
@@ -42,6 +49,7 @@ interface ResolveShellEnvironmentOptions {
   processExecPath?: string;
   randomToken?: string;
   exec?: ShellCommandExecutor;
+  cachePath?: string;
 }
 
 export function resolveShellPath(
@@ -136,6 +144,13 @@ export async function resolveShellEnvironment(
     );
     const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, marker));
     resolvedEnv.SHELL ??= shellPath;
+    if (options.cachePath) {
+      writeCachedShellEnv(options.cachePath, {
+        shellPath,
+        baseEnv: resolvedEnv,
+        cachedAt: Date.now()
+      });
+    }
     return {
       shellPath,
       baseEnv: resolvedEnv,
@@ -143,9 +158,22 @@ export async function resolveShellEnvironment(
     };
   } catch (error) {
     console.warn(
-      `[shell-env] failed to resolve shell environment via ${shellPath}; falling back to process.env`,
+      `[shell-env] failed to resolve shell environment via ${shellPath}; falling back to cached env or process.env`,
       error
     );
+    if (options.cachePath) {
+      const cached = readCachedShellEnv(options.cachePath, shellPath);
+      if (cached) {
+        return {
+          shellPath,
+          baseEnv: {
+            ...cached,
+            SHELL: cached.SHELL ?? shellPath
+          },
+          source: "cached"
+        };
+      }
+    }
     return {
       shellPath,
       baseEnv: {
@@ -154,6 +182,65 @@ export async function resolveShellEnvironment(
       },
       source: "fallback"
     };
+  }
+}
+
+function readCachedShellEnv(
+  cachePath: string,
+  shellPath: string
+): NodeJS.ProcessEnv | null {
+  let raw: string;
+  try {
+    raw = readFileSync(cachePath, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<CachedShellEnvEnvelope>;
+    if (
+      !parsed ||
+      typeof parsed.shellPath !== "string" ||
+      parsed.shellPath !== shellPath ||
+      !parsed.baseEnv ||
+      typeof parsed.baseEnv !== "object"
+    ) {
+      return null;
+    }
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(parsed.baseEnv)) {
+      if (typeof value === "string") {
+        env[key] = value;
+      }
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedShellEnv(
+  cachePath: string,
+  envelope: CachedShellEnvEnvelope
+): void {
+  try {
+    mkdirSync(dirname(cachePath), { recursive: true });
+    const tmpPath = `${cachePath}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(envelope));
+    try {
+      renameSync(tmpPath, cachePath);
+    } catch (renameError) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // ignore
+      }
+      throw renameError;
+    }
+  } catch (error) {
+    console.warn(
+      `[shell-env] failed to persist shell environment cache at ${cachePath}`,
+      error
+    );
   }
 }
 

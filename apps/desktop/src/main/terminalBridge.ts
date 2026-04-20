@@ -60,7 +60,7 @@ export interface TerminalBridge {
   sendText(surfaceId: Id, text: string): void;
   sendKey(surfaceId: Id, key: string): void;
   sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void;
-  resizeSurface(surfaceId: Id, cols: number, rows: number): void;
+  resizeSurface(surfaceId: Id, cols: number, rows: number): Promise<void>;
   snapshotSurface(
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
@@ -87,7 +87,9 @@ export function createTerminalBridge(
     return surface ? surface.sessionId : null;
   }
 
-  function clearVisibleCodexNeedsInput(
+  const VISIBLE_DISMISS_AGENTS = ["codex", "claude"] as const;
+
+  function clearVisibleAgentNeedsInput(
     surfaceId: Id,
     dismissKey: "escape" | "ctrl-c" | "ctrl-d"
   ): void {
@@ -105,33 +107,35 @@ export function createTerminalBridge(
       return;
     }
     const workspace = state.workspaces[pane.workspaceId];
-    const statusKey = `agent:codex:${surfaceId}`;
-    if (workspace?.statusEntries?.[statusKey]?.text !== "needs input") {
-      return;
-    }
-    logDiagnostics("main.terminal.codex-input-dismissed", {
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      dismissKey
-    });
-    options.dispatchAppAction({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "codex",
-      event: "idle",
-      message: "Dismissed input prompt",
-      details: {
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        dismissKey
+    for (const agent of VISIBLE_DISMISS_AGENTS) {
+      const statusKey = `agent:${agent}:${surfaceId}`;
+      if (workspace?.statusEntries?.[statusKey]?.text !== "needs input") {
+        continue;
       }
-    });
+      logDiagnostics(`main.terminal.${agent}-input-dismissed`, {
+        workspaceId: pane.workspaceId,
+        paneId: surface.paneId,
+        surfaceId,
+        sessionId: surface.sessionId,
+        dismissKey
+      });
+      options.dispatchAppAction({
+        type: "agent.event",
+        workspaceId: pane.workspaceId,
+        paneId: surface.paneId,
+        surfaceId,
+        sessionId: surface.sessionId,
+        agent,
+        event: "idle",
+        message: "Dismissed input prompt",
+        details: {
+          uiOnly: true,
+          visibleToUser: true,
+          source: "terminal-input",
+          dismissKey
+        }
+      });
+    }
   }
 
   function sendText(surfaceId: Id, text: string): void {
@@ -139,7 +143,7 @@ export function createTerminalBridge(
     if (sessionId) {
       const dismissKey = codexDismissKeyFromText(text);
       if (dismissKey) {
-        clearVisibleCodexNeedsInput(surfaceId, dismissKey);
+        clearVisibleAgentNeedsInput(surfaceId, dismissKey);
       }
       options.onSurfaceInputText?.(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
@@ -151,7 +155,7 @@ export function createTerminalBridge(
     if (sessionId) {
       const dismissKey = codexDismissKeyFromKeyInput(input);
       if (dismissKey) {
-        clearVisibleCodexNeedsInput(surfaceId, dismissKey);
+        clearVisibleAgentNeedsInput(surfaceId, dismissKey);
       }
       options.getPtyHost()?.sendKey(sessionId, input);
     }
@@ -161,11 +165,16 @@ export function createTerminalBridge(
     sendKeyInput(surfaceId, { key });
   }
 
-  function resizeSurface(surfaceId: Id, cols: number, rows: number): void {
+  async function resizeSurface(
+    surfaceId: Id,
+    cols: number,
+    rows: number
+  ): Promise<void> {
     const sessionId = surfaceSessionId(surfaceId);
-    if (sessionId) {
-      options.getPtyHost()?.resize(sessionId, cols, rows);
+    if (!sessionId) {
+      return;
     }
+    await options.getPtyHost()?.resize(sessionId, cols, rows);
   }
 
   async function snapshotSurface(

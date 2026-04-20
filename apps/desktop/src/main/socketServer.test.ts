@@ -311,6 +311,71 @@ describe("kmux socket server agent hooks", () => {
     }
   });
 
+  it("suppresses Claude Notification hooks that duplicate an existing needs_input alert", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    state.notifications.unshift({
+      id: "notification_needs_input",
+      workspaceId: activeWorkspaceId,
+      surfaceId: "surface_1",
+      title: "Claude needs input",
+      message: "Continue? (Yes, No)",
+      source: "agent",
+      kind: "needs_input",
+      agent: "claude",
+      createdAt: new Date(Date.now() - 5_000).toISOString()
+    });
+
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+            .activeSurfaceId,
+        capabilities: []
+      })
+    });
+
+    await server.start();
+
+    try {
+      const response = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_dedupe_needs_input",
+        method: "agent.hook",
+        params: {
+          agent: "claude",
+          hookEvent: "Notification",
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          payload: {
+            message: "Claude Code needs your attention"
+          }
+        }
+      });
+
+      expect(response.result).toEqual({ ok: true });
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("still forwards Claude Notification hooks when the turn_complete alert is older than the dedupe window", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
     tempDirs.push(tempDir);

@@ -1398,6 +1398,13 @@ function applyAgentEvent(
         agent: agentName
       }
     );
+    const clearedGenericReminders = clearNotificationsMatching(state, {
+      workspaceId: target.workspace.id,
+      surfaceId: target.surface?.id,
+      source: "agent",
+      kind: "generic",
+      agent: agentName
+    });
     const statusEffects = setSidebarStatus(state, {
       type: "sidebar.setStatus",
       workspaceId: target.workspace.id,
@@ -1417,7 +1424,8 @@ function applyAgentEvent(
       });
       return statusEffects.length > 0 ||
         clearedNotifications ||
-        clearedCompletionNotification
+        clearedCompletionNotification ||
+        clearedGenericReminders
         ? [{ type: "persist" }]
         : [];
     }
@@ -1637,7 +1645,16 @@ function clearAgentAttentionUi(
     kind: "needs_input",
     agent
   });
-  return clearedStatus || clearedNotifications ? [{ type: "persist" }] : [];
+  const clearedGenericReminders = clearNotificationsMatching(state, {
+    workspaceId: workspace.id,
+    surfaceId,
+    source: "agent",
+    kind: "generic",
+    agent
+  });
+  return clearedStatus || clearedNotifications || clearedGenericReminders
+    ? [{ type: "persist" }]
+    : [];
 }
 
 function resolveAgentTarget(

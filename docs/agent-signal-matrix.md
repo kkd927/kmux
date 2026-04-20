@@ -76,16 +76,18 @@ Flow:
 
 - renderer terminal input
 - [`apps/desktop/src/main/terminalBridge.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/terminalBridge.ts)
-- synthetic `agent.event(idle)` for a matching visible Codex `needs_input` state
+- synthetic `agent.event(idle)` for every agent (`codex`, `claude`) that has a matching visible `needs_input` status on the focused surface
 
 Primary use:
 
-- clear visible UI-only Codex attention when the prompt is dismissed locally with `Esc`, `Ctrl-C`, or `Ctrl-D`
+- clear visible `needs_input` attention when the user dismisses the prompt locally with `Esc`, `Ctrl-C`, or `Ctrl-D`
+- required for agents that do not emit a reliable hook-based cancel signal — Codex has no hook-based `needs_input` at all, and Claude does not fire `PostToolUse` when `AskUserQuestion` or `PermissionRequest` is declined
 
 Not allowed:
 
-- usage binding from this fallback
-- cross-surface or cross-agent clearing
+- usage binding from this fallback (events are marked `details.uiOnly = true`)
+- cross-surface clearing — a keypress on one surface must never clear status on a different surface
+- clearing a different agent's status on the same surface — only agents that currently own a `needs input` status entry for this `surfaceId` are affected
 
 ## Vendor Matrix
 
@@ -106,18 +108,25 @@ Installed hooks:
 Canonical notification signals:
 
 - hook `PermissionRequest` / `PreToolUse AskUserQuestion` -> `agent.event(needs_input)`
-- hook `PostToolUse AskUserQuestion` -> `agent.event(running)` (clears `needs_input` when the user accepts or declines via `Esc`)
+- hook `PostToolUse AskUserQuestion` -> `agent.event(running)` (clears `needs_input` on accepted tool completion; Claude does not fire `PostToolUse` when the prompt is cancelled via `Esc`, so the visible-input fallback in `terminalBridge.ts` covers that case)
 - hook `Notification` -> generic `notification.create` with `source = "agent"` and no structured `kind`
-- a generic `Notification` hook is suppressed in `main` before reducer dispatch when a recent (`< 5min`) structured `turn_complete` notification for the same agent and surface still exists. Claude reissues an idle reminder (e.g. "Claude is waiting for your input") via `Notification` shortly after `Stop`, and this dedupe avoids double-notifying the same lifecycle moment. The check is structural (`kind + agent + surfaceId + createdAt`), not message-based.
+- a generic `Notification` hook is suppressed in `main` before reducer dispatch when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same agent and surface still exists. Claude emits generic reminders ("Claude Code needs your attention", "Claude is waiting for your input") on top of its own structured signals, and this dedupe avoids double-notifying the same lifecycle moment. The check is structural (`kind + agent + surfaceId + createdAt`), not message-based.
+- the reducer performs the reverse cleanup: when a structured `needs_input` arrives, or when `clearAgentAttentionUi` runs (on `running`/`idle`/`turn_complete`/`session_end`), any generic `source = "agent"` notification for the same agent and surface is removed. This covers the case where the generic hook arrived first and the structured hook arrived afterwards.
 - hook `PreToolUse` / `UserPromptSubmit` -> `agent.event(running)`
 - hook `SessionStart` -> `agent.event(session_start)`
 - hook `SessionEnd` -> `agent.event(session_end)`
 - hook `Stop` -> `agent.event(turn_complete)`
+- visible-surface `Esc` / `Ctrl-C` / `Ctrl-D` dismiss input -> synthetic `agent.event(idle)` with `details.uiOnly = true` (shared behavior — see the Visible terminal input fallback signal path)
+
+Important:
+
+- Claude does not fire `PostToolUse` when an `AskUserQuestion` or `PermissionRequest` prompt is cancelled (e.g. the user hits `Esc`) — the tool invocation is blocked at the pre-stage, so there is no post-stage hook. The visible-input fallback is the only signal `kmux` has to clear `needs_input` in that case, so do not remove or weaken it without a replacement.
 
 Usage consumption:
 
 - real `agent.event` values are consumed by [`apps/desktop/src/main/usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts)
 - generic Claude `Notification` hook entries must not affect usage binding or waiting state
+- visible-input fallback events carry `details.uiOnly = true` and are ignored by `usageRuntime` (same rule as Codex)
 
 OSC policy:
 
@@ -186,7 +195,7 @@ OSC policy:
 Usage policy:
 
 - [`usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
-- this prevents Codex OSC-derived attention or visible-input clear fallbacks from creating bindings, waiting state, or active session count changes
+- this prevents UI-only promotions (Codex OSC-derived attention, visible-input clear fallbacks for any agent, and similar synthetic events) from creating bindings, waiting state, or active session count changes
 
 ## Notification Semantics
 
@@ -208,14 +217,14 @@ Other notification shapes:
 
 Reducer behavior in [`packages/core/src/index.ts`](/Users/kkd927/Projects/kmux/packages/core/src/index.ts):
 
-- `agent.event(needs_input)` creates an agent notification with `kind = "needs_input"`
+- `agent.event(needs_input)` creates an agent notification with `kind = "needs_input"` and clears any generic `source = "agent"` reminder for the same agent/surface so the structured entry replaces stale previews
 - `agent.event(turn_complete)` creates an agent notification with `kind = "turn_complete"`
-- `running`, `idle`, and `session_end` clear stale `needs_input` status and notifications for the same agent/surface
+- `running`, `idle`, and `session_end` clear stale `needs_input` status, structured `needs_input` notifications, and generic `source = "agent"` reminders for the same agent/surface
 - `turn_complete` also clears stale `needs_input` UI before creating the completion notification
 
 Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/socketServer.ts):
 
-- a generic hook-driven `notification.create` (no structured `kind`) is dropped in `dispatchHookNotification` when a recent (`< 5min`) structured `turn_complete` notification for the same `agent + surfaceId` is still present. This prevents Claude's post-`Stop` idle reminder from stacking on top of the completion notification.
+- a generic hook-driven `notification.create` (no structured `kind`) is dropped in `dispatchHookNotification` when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same `agent + surfaceId` is still present. This prevents Claude's "Claude Code needs your attention" / "Claude is waiting for your input" reminders from stacking on top of the structured needs-input or completion notification that already exists.
 
 This cleanup is structural and must not rely only on title/message string matching.
 

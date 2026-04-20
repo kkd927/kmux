@@ -51,6 +51,8 @@ export function resolvePtyHostLaunchOptions(
   };
 }
 
+const RESIZE_ACK_TIMEOUT_MS = 2000;
+
 export class PtyHostManager extends EventEmitter {
   private child: ChildProcess | null = null;
   private stopping = false;
@@ -59,6 +61,7 @@ export class PtyHostManager extends EventEmitter {
     string,
     (payload: SurfaceSnapshotPayload | null) => void
   >();
+  private readonly pendingResizes = new Map<string, () => void>();
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
 
   constructor(private readonly forkProcess: typeof fork = fork) {
@@ -91,6 +94,14 @@ export class PtyHostManager extends EventEmitter {
         }
         return;
       }
+      if (event.type === "resize:ack") {
+        const resolver = this.pendingResizes.get(event.requestId);
+        if (resolver) {
+          this.pendingResizes.delete(event.requestId);
+          resolver();
+        }
+        return;
+      }
       if (event.type === "spawned") {
         this.readySessions.add(event.sessionId);
         this.flushQueuedRequests(event.sessionId);
@@ -114,6 +125,7 @@ export class PtyHostManager extends EventEmitter {
       }
       this.readySessions.clear();
       this.queuedRequests.clear();
+      this.flushPendingResizes();
       if (expectedExit) {
         return;
       }
@@ -140,6 +152,7 @@ export class PtyHostManager extends EventEmitter {
     this.child = null;
     this.readySessions.clear();
     this.queuedRequests.clear();
+    this.flushPendingResizes();
   }
 
   send(message: PtyRequest): void {
@@ -192,8 +205,37 @@ export class PtyHostManager extends EventEmitter {
     });
   }
 
-  resize(sessionId: Id, cols: number, rows: number): void {
-    this.sendWhenReady(sessionId, { type: "resize", sessionId, cols, rows });
+  resize(sessionId: Id, cols: number, rows: number): Promise<void> {
+    const requestId = makeId("resize");
+    const request: PtyRequest = {
+      type: "resize",
+      sessionId,
+      cols,
+      rows,
+      requestId
+    };
+    return new Promise((resolve) => {
+      this.pendingResizes.set(requestId, resolve);
+      const timeout = setTimeout(() => {
+        const pending = this.pendingResizes.get(requestId);
+        if (pending) {
+          this.pendingResizes.delete(requestId);
+          pending();
+        }
+      }, RESIZE_ACK_TIMEOUT_MS);
+      if (typeof timeout === "object" && timeout && "unref" in timeout) {
+        timeout.unref();
+      }
+      this.sendWhenReady(sessionId, request);
+    });
+  }
+
+  private flushPendingResizes(): void {
+    const resolvers = Array.from(this.pendingResizes.values());
+    this.pendingResizes.clear();
+    for (const resolve of resolvers) {
+      resolve();
+    }
   }
 
   sendText(sessionId: Id, text: string): void {

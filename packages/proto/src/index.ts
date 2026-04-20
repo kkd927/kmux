@@ -109,6 +109,8 @@ export interface SurfaceSnapshotPayload {
   sessionId: Id;
   sequence: number;
   vt: string;
+  cols: number;
+  rows: number;
   title: string;
   cwd?: string;
   branch?: string;
@@ -158,7 +160,13 @@ export interface PtySessionSpec {
 export type PtyRequest =
   | { type: "spawn"; spec: PtySessionSpec }
   | { type: "close"; sessionId: Id }
-  | { type: "resize"; sessionId: Id; cols: number; rows: number }
+  | {
+      type: "resize";
+      sessionId: Id;
+      cols: number;
+      rows: number;
+      requestId?: Id;
+    }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
   | {
@@ -183,6 +191,13 @@ export type PtyEvent =
       protocol: TerminalNotificationProtocol;
       title?: string;
       message?: string;
+    }
+  | {
+      type: "resize:ack";
+      sessionId: Id;
+      requestId: Id;
+      cols: number;
+      rows: number;
     }
   | { type: "exit"; payload: SurfaceExitPayload }
   | { type: "error"; sessionId?: Id; message: string };

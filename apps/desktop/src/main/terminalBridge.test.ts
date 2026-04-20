@@ -607,4 +607,138 @@ describe("terminal bridge", () => {
       key: "Escape"
     });
   });
+
+  it("clears visible Claude needs-input attention when escape text dismisses the prompt", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Continue? (Yes, No)"
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendText(surfaceId, "\u001b");
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "idle",
+      message: "Dismissed input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        dismissKey: "escape"
+      })
+    });
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
+  });
+
+  it("clears visible Claude needs-input attention when escape key input is sent", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Continue? (Yes, No)"
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "Escape" });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "idle",
+      message: "Dismissed input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        dismissKey: "escape"
+      })
+    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
+      key: "Escape"
+    });
+  });
+
+  it("does not clear Claude needs-input attention when the surface is not visible", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Continue? (Yes, No)"
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => false
+    });
+
+    bridge.sendText(surfaceId, "\u001b");
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
+  });
 });

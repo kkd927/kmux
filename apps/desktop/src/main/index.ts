@@ -92,7 +92,8 @@ async function bootstrap(): Promise<void> {
   const savedSettings = settingsStore.load();
   const resolvedShellEnv = await resolveShellEnvironment({
     preferredShell: savedSettings?.shell,
-    env: process.env
+    env: process.env,
+    cachePath: paths.shellEnvCachePath
   });
   logDiagnostics("main.shell-environment.resolved", {
     shellPath: resolvedShellEnv.shellPath,

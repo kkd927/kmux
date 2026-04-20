@@ -274,6 +274,7 @@ export function defaultAppPaths(
   windowStatePath: string;
   settingsPath: string;
   usageHistoryPath: string;
+  shellEnvCachePath: string;
   socketPath: string;
 } {
   const configDir = env.KMUX_CONFIG_DIR ?? join(homeDir, ".config", "kmux");
@@ -283,6 +284,7 @@ export function defaultAppPaths(
     windowStatePath: join(configDir, "window-state.json"),
     settingsPath: join(configDir, "settings.json"),
     usageHistoryPath: join(configDir, "usage-history.json"),
+    shellEnvCachePath: join(configDir, "shell-env.json"),
     socketPath: join(runtimeDir, "control.sock")
   };
 }

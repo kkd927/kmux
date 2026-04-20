@@ -251,4 +251,17 @@ describe("file-store persistence", () => {
       }).usageHistoryPath
     ).toBe(join(configDir, "usage-history.json"));
   });
+
+  it("returns the dedicated shell env cache path in the default app paths", async () => {
+    const configDir = join(sandboxDir, "config");
+    const runtimeDir = join(sandboxDir, "runtime");
+    const { defaultAppPaths } = await import("./index");
+
+    expect(
+      defaultAppPaths("/Users/example", {
+        KMUX_CONFIG_DIR: configDir,
+        KMUX_RUNTIME_DIR: runtimeDir
+      }).shellEnvCachePath
+    ).toBe(join(configDir, "shell-env.json"));
+  });
 });
