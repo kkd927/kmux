@@ -15,6 +15,7 @@ type ClaudeHookEvent =
   | "PermissionRequest"
   | "Notification"
   | "PreToolUse"
+  | "PostToolUse"
   | "SessionEnd"
   | "SessionStart"
   | "UserPromptSubmit"
@@ -47,6 +48,7 @@ const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
   { eventName: "Notification" },
   { eventName: "PreToolUse" },
+  { eventName: "PostToolUse" },
   { eventName: "SessionStart" },
   { eventName: "SessionEnd" },
   { eventName: "UserPromptSubmit" },

@@ -97,6 +97,7 @@ Installed hooks:
 - `PermissionRequest`
 - `Notification`
 - `PreToolUse`
+- `PostToolUse`
 - `SessionStart`
 - `SessionEnd`
 - `UserPromptSubmit`
@@ -105,7 +106,9 @@ Installed hooks:
 Canonical notification signals:
 
 - hook `PermissionRequest` / `PreToolUse AskUserQuestion` -> `agent.event(needs_input)`
+- hook `PostToolUse AskUserQuestion` -> `agent.event(running)` (clears `needs_input` when the user accepts or declines via `Esc`)
 - hook `Notification` -> generic `notification.create` with `source = "agent"` and no structured `kind`
+- a generic `Notification` hook is suppressed in `main` before reducer dispatch when a recent (`< 5min`) structured `turn_complete` notification for the same agent and surface still exists. Claude reissues an idle reminder (e.g. "Claude is waiting for your input") via `Notification` shortly after `Stop`, and this dedupe avoids double-notifying the same lifecycle moment. The check is structural (`kind + agent + surfaceId + createdAt`), not message-based.
 - hook `PreToolUse` / `UserPromptSubmit` -> `agent.event(running)`
 - hook `SessionStart` -> `agent.event(session_start)`
 - hook `SessionEnd` -> `agent.event(session_end)`
@@ -209,6 +212,10 @@ Reducer behavior in [`packages/core/src/index.ts`](/Users/kkd927/Projects/kmux/p
 - `agent.event(turn_complete)` creates an agent notification with `kind = "turn_complete"`
 - `running`, `idle`, and `session_end` clear stale `needs_input` status and notifications for the same agent/surface
 - `turn_complete` also clears stale `needs_input` UI before creating the completion notification
+
+Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/socketServer.ts):
+
+- a generic hook-driven `notification.create` (no structured `kind`) is dropped in `dispatchHookNotification` when a recent (`< 5min`) structured `turn_complete` notification for the same `agent + surfaceId` is still present. This prevents Claude's post-`Stop` idle reminder from stacking on top of the completion notification.
 
 This cleanup is structural and must not rely only on title/message string matching.
 

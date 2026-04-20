@@ -90,13 +90,13 @@ export function normalizeHookNotificationInvocation(
     agentDisplayName(agent);
   const message =
     firstString(
-    stringField(payload, "message"),
-    stringField(payload, "body"),
-    stringField(payload, "text"),
-    stringField(payload, "prompt"),
-    stringField(payload, "reason"),
-    title,
-    "Notification"
+      stringField(payload, "message"),
+      stringField(payload, "body"),
+      stringField(payload, "text"),
+      stringField(payload, "prompt"),
+      stringField(payload, "reason"),
+      title,
+      "Notification"
     ) ?? title;
 
   return {
@@ -140,6 +140,12 @@ function mapAgentHookEvent(
       stringField(payload, "tool_name") === "AskUserQuestion"
     ) {
       return "needs_input";
+    }
+    if (
+      hookEvent === "post-tool-use" &&
+      stringField(payload, "tool_name") === "AskUserQuestion"
+    ) {
+      return "running";
     }
     if (
       hookEvent === "pre-tool-use" ||
@@ -203,7 +209,10 @@ function mapAgentHookEvent(
 }
 
 function isClaudeNotificationHook(agent: string, hookEvent: string): boolean {
-  return agent === "claude" && (hookEvent === "notification" || hookEvent === "notify");
+  return (
+    agent === "claude" &&
+    (hookEvent === "notification" || hookEvent === "notify")
+  );
 }
 
 function resolveHookTarget(
@@ -272,7 +281,10 @@ function extractHookMessage(
     if (toolName) {
       return `Tool permission requested: ${toolName}`;
     }
-    return firstString(stringField(payload, "message"), "Tool permission requested");
+    return firstString(
+      stringField(payload, "message"),
+      "Tool permission requested"
+    );
   }
 
   return firstString(
