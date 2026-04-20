@@ -89,6 +89,8 @@ function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
     sessionId: record.sessionId,
     sequence: record.sequence,
     vt: record.serialize.serialize({ scrollback: 5000 }),
+    cols: record.cols,
+    rows: record.rows,
     title: record.title,
     cwd: record.cwd,
     branch: undefined,
@@ -371,18 +373,33 @@ process.on("message", (request: PtyRequest) => {
     case "resize":
       {
         const record = sessions.get(request.sessionId);
-        if (
-          !record ||
-          request.cols <= 0 ||
-          request.rows <= 0 ||
-          (record.cols === request.cols && record.rows === request.rows)
-        ) {
+        if (!record || request.cols <= 0 || request.rows <= 0) {
+          if (request.requestId) {
+            send({
+              type: "resize:ack",
+              sessionId: request.sessionId,
+              requestId: request.requestId,
+              cols: record?.cols ?? 0,
+              rows: record?.rows ?? 0
+            });
+          }
           break;
         }
-        record.cols = request.cols;
-        record.rows = request.rows;
-        record.terminal.resize(request.cols, request.rows);
-        record.pty.resize(request.cols, request.rows);
+        if (record.cols !== request.cols || record.rows !== request.rows) {
+          record.cols = request.cols;
+          record.rows = request.rows;
+          record.terminal.resize(request.cols, request.rows);
+          record.pty.resize(request.cols, request.rows);
+        }
+        if (request.requestId) {
+          send({
+            type: "resize:ack",
+            sessionId: request.sessionId,
+            requestId: request.requestId,
+            cols: record.cols,
+            rows: record.rows
+          });
+        }
       }
       break;
     case "input:text":

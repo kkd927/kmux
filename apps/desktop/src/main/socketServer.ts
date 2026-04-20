@@ -31,17 +31,18 @@ type AgentEventParams = Extract<
   { method: "agent.event" }
 >["params"];
 
-const RECENT_TURN_COMPLETE_DEDUPE_MS = 5 * 60 * 1000;
+const RECENT_STRUCTURED_AGENT_DEDUPE_MS = 5 * 60 * 1000;
 
-function hasRecentTurnCompleteNotification(
+function hasRecentStructuredAgentNotification(
   state: AppState,
   agent: string,
   surfaceId: string
 ): boolean {
-  const cutoff = Date.now() - RECENT_TURN_COMPLETE_DEDUPE_MS;
+  const cutoff = Date.now() - RECENT_STRUCTURED_AGENT_DEDUPE_MS;
   return state.notifications.some(
     (notification) =>
-      notification.kind === "turn_complete" &&
+      (notification.kind === "turn_complete" ||
+        notification.kind === "needs_input") &&
       notification.agent === agent &&
       notification.surfaceId === surfaceId &&
       Date.parse(notification.createdAt) >= cutoff
@@ -392,7 +393,7 @@ export class KmuxSocketServer {
     }
     if (
       surfaceId &&
-      hasRecentTurnCompleteNotification(state, params.agent, surfaceId)
+      hasRecentStructuredAgentNotification(state, params.agent, surfaceId)
     ) {
       return { ok: true };
     }

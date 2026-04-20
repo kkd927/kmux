@@ -95,6 +95,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const onToggleSearchRef = useRef(props.onToggleSearch);
   const skipInitialTypographySyncRef = useRef(true);
   const skipInitialWebglSyncRef = useRef(true);
+  const resizeGenerationRef = useRef(0);
   const terminalPaletteSignature = [
     props.terminalTheme.palette.background,
     props.terminalTheme.palette.foreground,
@@ -163,15 +164,51 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
   }
 
-  function fitAndSyncTerminal(terminal: Terminal): void {
-    fitRef.current?.fit();
+  async function fitAndSyncTerminal(terminal: Terminal): Promise<void> {
+    const fit = fitRef.current;
+    if (!fit) {
+      return;
+    }
+    const dims = fit.proposeDimensions();
+    if (
+      !dims ||
+      !Number.isFinite(dims.cols) ||
+      !Number.isFinite(dims.rows) ||
+      dims.cols <= 0 ||
+      dims.rows <= 0
+    ) {
+      return;
+    }
+    if (dims.cols === terminal.cols && dims.rows === terminal.rows) {
+      syncTerminalMetrics(terminal);
+      return;
+    }
+    const generation = ++resizeGenerationRef.current;
     const currentSurface = activeSurfaceRef.current;
     if (currentSurface) {
-      void window.kmux.resizeSurface(
-        currentSurface.id,
-        terminal.cols,
-        terminal.rows
-      );
+      try {
+        await window.kmux.resizeSurface(
+          currentSurface.id,
+          dims.cols,
+          dims.rows
+        );
+      } catch {
+        // ignore; a superseding resize or teardown is already in flight
+      }
+    }
+    if (
+      generation !== resizeGenerationRef.current ||
+      terminalRef.current !== terminal
+    ) {
+      return;
+    }
+    if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
+      try {
+        terminal.resize(dims.cols, dims.rows);
+      } catch {
+        // terminal may have been disposed mid-await
+        return;
+      }
     }
     syncTerminalMetrics(terminal);
   }
@@ -458,7 +495,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
     });
-    fitAndSyncTerminal(terminal);
+    void fitAndSyncTerminal(terminal);
 
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
@@ -466,11 +503,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         clearTimeout(resizeTimeout);
       }
       resizeTimeout = setTimeout(() => {
-        try {
-          fitAndSyncTerminal(terminal);
-        } catch {
+        void fitAndSyncTerminal(terminal).catch(() => {
           // ignore resize errors during unmount
-        }
+        });
       }, 30);
     });
     resizeObserver.observe(containerRef.current);
@@ -537,7 +572,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    fitAndSyncTerminal(terminal);
+    void fitAndSyncTerminal(terminal);
   }, [
     props.terminalTypography.resolvedFontFamily,
     props.settings.terminalTypography.fontSize,
@@ -575,7 +610,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    fitAndSyncTerminal(terminal);
+    void fitAndSyncTerminal(terminal);
   }, [props.settings.terminalUseWebgl]);
 
   useEffect(() => {
@@ -616,8 +651,26 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!mounted || !snapshot || !terminalRef.current) {
         return;
       }
-      terminalRef.current.reset();
-      writeTerminal(terminalRef.current, snapshot.vt);
+      const terminal = terminalRef.current;
+      if (
+        snapshot.cols > 0 &&
+        snapshot.rows > 0 &&
+        (terminal.cols !== snapshot.cols || terminal.rows !== snapshot.rows)
+      ) {
+        try {
+          terminal.resize(snapshot.cols, snapshot.rows);
+        } catch {
+          // terminal may have been disposed mid-await
+          return;
+        }
+      }
+      terminal.reset();
+      writeTerminal(terminal, snapshot.vt, () => {
+        if (!mounted || terminalRef.current !== terminal) {
+          return;
+        }
+        void fitAndSyncTerminal(terminal);
+      });
     })();
 
     return () => {

@@ -1,4 +1,8 @@
-import {describe, expect, it, vi} from "vitest";
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+
+import {afterAll, beforeAll, describe, expect, it, vi} from "vitest";
 
 import {
   buildShellEnvProbeArgs,
@@ -9,6 +13,16 @@ import {
 } from "./shellEnvironment";
 
 describe("shell environment resolver", () => {
+  let sandboxDir: string;
+
+  beforeAll(() => {
+    sandboxDir = mkdtempSync(join(tmpdir(), "kmux-shell-env-"));
+  });
+
+  afterAll(() => {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  });
+
   it("prefers configured shell over inherited and fallback values", () => {
     expect(
       resolveShellPath(
@@ -111,5 +125,115 @@ describe("shell environment resolver", () => {
       "-Command",
       expect.stringContaining("$env:ELECTRON_RUN_AS_NODE='1'; & '/usr/local/bin/node' -e '")
     ]);
+  });
+
+  it("persists the resolved environment to the cache path on success", async () => {
+    const cachePath = join(sandboxDir, "persist-success.json");
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      cachePath,
+      exec: vi.fn(async () => ({
+        stdout:
+          "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\"}__TOKEN__",
+        stderr: ""
+      }))
+    });
+
+    expect(resolved.source).toBe("resolved");
+    const persisted = JSON.parse(readFileSync(cachePath, "utf8")) as {
+      shellPath: string;
+      baseEnv: Record<string, string>;
+      cachedAt: number;
+    };
+    expect(persisted.shellPath).toBe("/bin/zsh");
+    expect(persisted.baseEnv).toEqual({
+      PATH: "/usr/local/bin",
+      SHELL: "/bin/zsh"
+    });
+    expect(typeof persisted.cachedAt).toBe("number");
+  });
+
+  it("uses the cached environment as fallback when the probe fails", async () => {
+    const cachePath = join(sandboxDir, "fallback-cache.json");
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        shellPath: "/bin/zsh",
+        baseEnv: {
+          PATH: "/opt/homebrew/bin:/usr/local/bin",
+          SHELL: "/bin/zsh",
+          FOO: "bar"
+        },
+        cachedAt: Date.now()
+      })
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      processExecPath: "/usr/local/bin/node",
+      cachePath,
+      exec: vi.fn(async () => {
+        throw new Error("boom");
+      })
+    });
+
+    expect(resolved.source).toBe("cached");
+    expect(resolved.shellPath).toBe("/bin/zsh");
+    expect(resolved.baseEnv).toEqual({
+      PATH: "/opt/homebrew/bin:/usr/local/bin",
+      SHELL: "/bin/zsh",
+      FOO: "bar"
+    });
+    expect(warning).toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
+  it("ignores cached entries that were recorded for a different shell", async () => {
+    const cachePath = join(sandboxDir, "mismatched-shell.json");
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        shellPath: "/bin/bash",
+        baseEnv: { PATH: "/bash/only" },
+        cachedAt: Date.now()
+      })
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      cachePath,
+      exec: vi.fn(async () => {
+        throw new Error("boom");
+      })
+    });
+
+    expect(resolved.source).toBe("fallback");
+    expect(resolved.baseEnv.PATH).toBe("/usr/bin");
+    warning.mockRestore();
+  });
+
+  it("falls back when the cache file is malformed", async () => {
+    const cachePath = join(sandboxDir, "malformed.json");
+    writeFileSync(cachePath, "not json");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin" },
+      cachePath,
+      exec: vi.fn(async () => {
+        throw new Error("boom");
+      })
+    });
+
+    expect(resolved.source).toBe("fallback");
+    warning.mockRestore();
   });
 });

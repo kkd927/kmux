@@ -200,6 +200,105 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
+  it("clears stale generic agent reminders when a structured needs_input event arrives", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Claude",
+      message: "Claude Code needs your attention",
+      source: "agent",
+      agent: "claude"
+    });
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0].kind).toBeUndefined();
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId,
+      sessionId: state.surfaces[surfaceId].sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Continue? (Yes, No)"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({
+        kind: "needs_input",
+        agent: "claude",
+        surfaceId
+      })
+    );
+  });
+
+  it("clears stale generic agent reminders when the agent transitions to idle", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Claude",
+      message: "Claude Code needs your attention",
+      source: "agent",
+      agent: "claude"
+    });
+    expect(state.notifications).toHaveLength(1);
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "idle"
+    });
+
+    expect(state.notifications).toHaveLength(0);
+  });
+
+  it("does not clear generic reminders belonging to a different agent when idle fires", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId,
+      title: "Gemini",
+      message: "Gemini needs your attention",
+      source: "agent",
+      agent: "gemini"
+    });
+    expect(state.notifications).toHaveLength(1);
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      agent: "claude",
+      event: "idle"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0].agent).toBe("gemini");
+  });
+
   it("clears only the matching agent status entry when the agent becomes idle", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
