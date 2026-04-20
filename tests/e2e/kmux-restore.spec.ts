@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import {
+  closeKmuxApp,
   createSandbox,
   destroySandbox,
   dispatch,
@@ -56,7 +57,7 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
       }
     });
 
-    await firstLaunch.app.close();
+    await closeKmuxApp(firstLaunch);
 
     expect(existsSync(join(sandbox.configDir, "state.json"))).toBe(true);
     expect(existsSync(join(sandbox.configDir, "window-state.json"))).toBe(true);
@@ -85,7 +86,7 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
       }
     });
 
-    await relaunch.app.close();
+    await closeKmuxApp(relaunch);
 
     finalRelaunch = await launchKmuxWithSandbox(sandbox);
     const reset = await waitForView(
@@ -98,12 +99,12 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
       reset.workspaceRows.some((row) => row.name === "restore workspace")
     ).toBeFalsy();
   } finally {
-    await firstLaunch.app.close().catch(() => {});
+    await closeKmuxApp(firstLaunch).catch(() => {});
     if (relaunch) {
-      await relaunch.app.close().catch(() => {});
+      await closeKmuxApp(relaunch).catch(() => {});
     }
     if (finalRelaunch) {
-      await finalRelaunch.app.close().catch(() => {});
+      await closeKmuxApp(finalRelaunch).catch(() => {});
     }
     destroySandbox(sandbox);
   }

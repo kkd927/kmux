@@ -33,8 +33,32 @@ describe("file-store persistence", () => {
     store.save(state);
 
     expect(store.load()).toEqual(state);
+    expect(store.loadRecord()).toEqual({
+      snapshot: state,
+      cleanShutdown: false
+    });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
       version: 1,
+      cleanShutdown: false,
+      snapshot: state
+    });
+  });
+
+  it("persists clean shutdown metadata on the final snapshot save", () => {
+    const statePath = join(sandboxDir, "state-clean.json");
+    const store = createSnapshotStore(statePath);
+    const state = createInitialState("/bin/zsh");
+
+    store.save(state, { cleanShutdown: true });
+
+    expect(store.load()).toEqual(state);
+    expect(store.loadRecord()).toEqual({
+      snapshot: state,
+      cleanShutdown: true
+    });
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
+      version: 1,
+      cleanShutdown: true,
       snapshot: state
     });
   });
@@ -122,6 +146,7 @@ describe("file-store persistence", () => {
     expect(store.load()).toEqual(secondState);
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
       version: 1,
+      cleanShutdown: false,
       snapshot: secondState
     });
   });

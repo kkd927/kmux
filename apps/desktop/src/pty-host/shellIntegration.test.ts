@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,6 +157,21 @@ describe("shell integration launch preparation", () => {
       'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'codex.wrapper.invoke'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'KMUX_DEBUG_LOG_PATH'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'TERM_SESSION_ID="${TERM_SESSION_ID:-}"'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'KMUX_WRAPPER_STDIN_TTY="0"'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'KMUX_WRAPPER_TTY_PATH="$(tty 2>/dev/null || true)"'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'env ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" <<'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
@@ -158,14 +180,23 @@ describe("shell integration launch preparation", () => {
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
       'export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"'
     );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
-      '"SessionStart": ['
-    );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
-      '"UserPromptSubmit": ['
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      "const managedEvents = ['SessionStart', 'UserPromptSubmit', 'Stop'];"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      '"$KMUX_REAL_CODEX" --enable codex_hooks "$@" || KMUX_EXIT_CODE=$?'
+      "kmux_has_notification_method_override() {"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      "Codex downgrade needs_input notifications to BEL-only beeps"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'set -- --enable codex_hooks "$@"'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'set -- --config tui.notification_method=osc9 "$@"'
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      '"$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?'
     );
     expect(existsSync(join(wrapperDir, "bin", "gemini"))).toBe(false);
   });
@@ -374,6 +405,99 @@ describe("shell integration launch preparation", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(socketDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forces Codex to use osc9 notifications unless the caller overrides it", async () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    const wrapperDir = prepared.env.ZDOTDIR;
+    expect(wrapperDir).toBeTruthy();
+    if (!wrapperDir) {
+      throw new Error("expected ZDOTDIR wrapper to be set");
+    }
+
+    const wrapperCodex = join(wrapperDir, "bin", "codex");
+    const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
+    const fakeCodex = join(fakeCodexDir, "codex");
+    const capturePath = join(fakeCodexDir, "argv.txt");
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
+
+    writeFileSync(
+      fakeCodex,
+      [
+        "#!/bin/sh",
+        'capture_path="${KMUX_CAPTURE_ARGS_FILE:?}"',
+        ': >"$capture_path"',
+        'for arg in "$@"; do',
+        '  printf "%s\\n" "$arg" >>"$capture_path"',
+        "done",
+        "exit 0",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    async function runWrapper(args: string[]): Promise<string[]> {
+      const child = spawn(wrapperCodex, args, {
+        env: {
+          ...process.env,
+          HOME: fakeHome,
+          PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
+          KMUX_CAPTURE_ARGS_FILE: capturePath,
+          KMUX_NODE_PATH: process.execPath,
+          TERM_PROGRAM: "kmux"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+
+      const [exitCode] = (await once(child, "close")) as [number | null];
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      return readFileSync(capturePath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+    }
+
+    try {
+      const defaultArgs = await runWrapper(["status"]);
+      expect(defaultArgs).toEqual([
+        "--config",
+        "tui.notification_method=osc9",
+        "--enable",
+        "codex_hooks",
+        "status"
+      ]);
+
+      const explicitArgs = await runWrapper([
+        "--config",
+        "tui.notification_method=bel",
+        "status"
+      ]);
+      expect(explicitArgs).toEqual([
+        "--enable",
+        "codex_hooks",
+        "--config",
+        "tui.notification_method=bel",
+        "status"
+      ]);
+    } finally {
+      rmSync(fakeCodexDir, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
     }
   });
 });

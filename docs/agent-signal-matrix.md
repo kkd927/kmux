@@ -1,6 +1,6 @@
 # Agent Signal Matrix
 
-Date: 2026-04-19
+Date: 2026-04-20
 
 ## Purpose
 
@@ -34,13 +34,14 @@ Flow:
 - socket `agent.hook` or `agent.event`
 - [`apps/desktop/src/main/socketServer.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/socketServer.ts)
 - [`packages/proto/src/agentHooks.ts`](/Users/kkd927/Projects/kmux/packages/proto/src/agentHooks.ts)
-- reducer `agent.event`
+- reducer `agent.event` or `notification.create`
 
 Primary use:
 
 - structured lifecycle
 - sidebar status
 - completion notifications
+- generic hook-backed notifications
 - usage binding, unless the event is explicitly marked UI-only
 
 ### Terminal OSC path
@@ -65,6 +66,27 @@ Not allowed:
 
 - direct usage binding from raw terminal notifications
 
+### Visible terminal input fallback
+
+Producer:
+
+- user terminal input on the visible surface
+
+Flow:
+
+- renderer terminal input
+- [`apps/desktop/src/main/terminalBridge.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/terminalBridge.ts)
+- synthetic `agent.event(idle)` for a matching visible Codex `needs_input` state
+
+Primary use:
+
+- clear visible UI-only Codex attention when the prompt is dismissed locally with `Esc`, `Ctrl-C`, or `Ctrl-D`
+
+Not allowed:
+
+- usage binding from this fallback
+- cross-surface or cross-agent clearing
+
 ## Vendor Matrix
 
 ### Claude
@@ -74,21 +96,30 @@ Installed hooks:
 - [`apps/desktop/src/main/claudeIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/claudeIntegration.ts)
 - `PermissionRequest`
 - `Notification`
-- `PreToolUse` with matcher `AskUserQuestion`
+- `PreToolUse`
+- `SessionStart`
+- `SessionEnd`
+- `UserPromptSubmit`
 - `Stop`
 
 Canonical notification signals:
 
-- hook `PermissionRequest` / `Notification` / `PreToolUse AskUserQuestion` -> `agent.event(needs_input)`
+- hook `PermissionRequest` / `PreToolUse AskUserQuestion` -> `agent.event(needs_input)`
+- hook `Notification` -> generic `notification.create` with `source = "agent"` and no structured `kind`
+- hook `PreToolUse` / `UserPromptSubmit` -> `agent.event(running)`
+- hook `SessionStart` -> `agent.event(session_start)`
+- hook `SessionEnd` -> `agent.event(session_end)`
 - hook `Stop` -> `agent.event(turn_complete)`
 
 Usage consumption:
 
 - real `agent.event` values are consumed by [`apps/desktop/src/main/usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts)
+- generic Claude `Notification` hook entries must not affect usage binding or waiting state
 
 OSC policy:
 
-- raw terminal notifications may still exist, but reducer dedupe prefers the agent event when both overlap
+- raw terminal notifications may still exist
+- if a Claude input request also arrives as a structured `agent.event`, reducer dedupe prefers the structured signal over terminal chatter
 
 ### Gemini
 
@@ -97,6 +128,8 @@ Installed hooks:
 - [`apps/desktop/src/main/geminiIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/geminiIntegration.ts)
 - `BeforeAgent`
 - `AfterAgent`
+- `SessionStart`
+- `SessionEnd`
 - `Notification` with matcher `ToolPermission`
 
 Canonical notification signals:
@@ -104,6 +137,8 @@ Canonical notification signals:
 - hook `Notification matcher=ToolPermission` -> `agent.event(needs_input)`
 - hook `BeforeAgent` -> `agent.event(running)`
 - hook `AfterAgent` -> `agent.event(turn_complete)`
+- hook `SessionStart` -> `agent.event(session_start)`
+- hook `SessionEnd` -> `agent.event(session_end)`
 
 Usage consumption:
 
@@ -118,12 +153,17 @@ OSC policy:
 Installed hooks:
 
 - [`apps/desktop/src/pty-host/shellIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/pty-host/shellIntegration.ts)
-- `Stop` only
+- `SessionStart`
+- `UserPromptSubmit`
+- `Stop`
 
 Canonical notification signals:
 
+- hook `SessionStart` -> `agent.event(session_start)`
+- hook `UserPromptSubmit` -> `agent.event(running)`
 - hook `Stop` -> `agent.event(turn_complete)`
 - filtered terminal OSC attention -> synthetic `agent.event(needs_input)` with `details.uiOnly = true`
+- visible-surface `Esc` / `Ctrl-C` / `Ctrl-D` dismiss input -> synthetic `agent.event(idle)` with `details.uiOnly = true`
 
 Important:
 
@@ -143,7 +183,7 @@ OSC policy:
 Usage policy:
 
 - [`usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
-- this prevents Codex OSC-derived attention from creating bindings, waiting state, or active session count changes
+- this prevents Codex OSC-derived attention or visible-input clear fallbacks from creating bindings, waiting state, or active session count changes
 
 ## Notification Semantics
 
@@ -157,6 +197,11 @@ Current structured kinds:
 
 - `needs_input`
 - `turn_complete`
+
+Other notification shapes:
+
+- hook-driven generic notifications may use `source = "agent"` with no structured `kind`
+- these generic entries do not create sidebar attention or usage state on their own
 
 Reducer behavior in [`packages/core/src/index.ts`](/Users/kkd927/Projects/kmux/packages/core/src/index.ts):
 
@@ -175,6 +220,7 @@ Notification creation and desktop delivery are not the same thing as signal coll
 - For `agent.event`, `main` marks this with `details.visibleToUser = true`.
 - Visible `needs_input` should still update sidebar status, but it should not create a notification-center entry or unread badge.
 - Visible `turn_complete` should clear stale attention state, but it should not create a completion notification.
+- Visible hook-driven generic notifications should be suppressed before they become notification-center entries.
 - Visible generic terminal notifications should be suppressed before they become notification-center entries.
 
 This keeps hook and OSC semantics separate while making delivery behavior consistent for the active surface.

@@ -25,6 +25,7 @@ import type {
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
+import { logDiagnostics } from "../shared/diagnostics";
 import {
   type FontInventoryProvider,
   TerminalTypographyController
@@ -117,7 +118,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       if (!store) {
         return;
       }
-      options.snapshotStore.save(store.getState());
+      options.snapshotStore.save(store.getState(), {
+        cleanShutdown: false
+      });
       options.settingsStore.save(store.getState().settings);
       if (mainWindow && !mainWindow.isDestroyed()) {
         options.persistWindowState(mainWindow);
@@ -159,6 +162,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           );
           break;
         case "notify.desktop":
+          logDiagnostics("main.effect.notify.desktop", {
+            enabled: getState().settings.notificationDesktop,
+            title: effect.notification.title,
+            message: effect.notification.message
+          });
           if (getState().settings.notificationDesktop) {
             new Notification({
               title: effect.notification.title,
@@ -167,6 +175,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           }
           break;
         case "bell.sound":
+          logDiagnostics("main.effect.bell.sound", {
+            enabled: getState().settings.notificationSound
+          });
           if (getState().settings.notificationSound) {
             shell.beep();
           }
@@ -184,6 +195,42 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   function dispatchAppAction(action: AppAction): void {
     const previousSettings = store?.getState().settings.terminalTypography;
     const effects = store?.dispatch(action) ?? [];
+    if (
+      action.type === "agent.event" ||
+      action.type === "notification.create" ||
+      action.type === "terminal.bell"
+    ) {
+      logDiagnostics("main.action.dispatched", {
+        actionType: action.type,
+        effectTypes: effects.map((effect) => effect.type),
+        workspaceId: "workspaceId" in action ? action.workspaceId : undefined,
+        paneId: "paneId" in action ? action.paneId : undefined,
+        surfaceId: "surfaceId" in action ? action.surfaceId : undefined,
+        sessionId: "sessionId" in action ? action.sessionId : undefined,
+        agent: action.type === "agent.event" ? action.agent : undefined,
+        event: action.type === "agent.event" ? action.event : undefined,
+        source:
+          action.type === "agent.event"
+            ? action.details?.source
+            : action.type === "notification.create"
+              ? action.source
+              : undefined,
+        uiOnly:
+          action.type === "agent.event" ? action.details?.uiOnly === true : undefined,
+        visibleToUser:
+          action.type === "agent.event"
+            ? action.details?.visibleToUser === true
+            : undefined,
+        title:
+          action.type === "notification.create" || action.type === "agent.event"
+            ? action.title
+            : undefined,
+        message:
+          action.type === "notification.create" || action.type === "agent.event"
+            ? action.message
+            : undefined
+      });
+    }
     const currentState = store?.getState();
     if (currentState) {
       options.onDidDispatchAppAction?.(action, currentState);
@@ -200,7 +247,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function restoreInitialState(): AppState {
-    const snapshot = options.snapshotStore.load();
+    const snapshotRecord = options.snapshotStore.loadRecord();
+    const snapshot = snapshotRecord?.snapshot ?? null;
     const savedWindowState = options.windowStateStore.load();
     const settings =
       options.settingsStore.load() ??
@@ -219,6 +267,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           delete session.pid;
           delete session.exitCode;
         }
+      }
+      if (snapshotRecord && !snapshotRecord.cleanShutdown) {
+        clearSnapshotNotifications(initial);
       }
     }
 
@@ -335,7 +386,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      options.snapshotStore.save(store.getState());
+      const shutdownSnapshot = cloneState(store.getState());
+      clearSnapshotNotifications(shutdownSnapshot);
+      options.snapshotStore.save(shutdownSnapshot, {
+        cleanShutdown: true
+      });
       options.settingsStore.save(store.getState().settings);
     }
   }
@@ -346,6 +401,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       terminalTypographyController.setSettings(
         nextStore.getState().settings.terminalTypography
       );
+      if (nextStore.getState().settings.startupRestore) {
+        options.snapshotStore.save(nextStore.getState(), {
+          cleanShutdown: false
+        });
+      }
     },
     setPtyHost(nextPtyHost) {
       ptyHost = nextPtyHost;
@@ -367,6 +427,17 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     respawnRestoredSessions,
     shutdown
   };
+}
+
+function clearSnapshotNotifications(state: AppState): void {
+  if (state.notifications.length === 0) {
+    return;
+  }
+  state.notifications = [];
+  for (const surface of Object.values(state.surfaces)) {
+    surface.unreadCount = 0;
+    surface.attention = false;
+  }
 }
 
 function areTerminalTypographySettingsEqual(

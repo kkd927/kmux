@@ -26,7 +26,17 @@ export interface PersistedWindowState {
 
 interface SnapshotEnvelope {
   version: number;
+  cleanShutdown?: boolean;
   snapshot: AppState;
+}
+
+export interface SnapshotRecord {
+  snapshot: AppState;
+  cleanShutdown: boolean;
+}
+
+export interface SnapshotSaveOptions {
+  cleanShutdown?: boolean;
 }
 
 interface WindowStateEnvelope {
@@ -43,7 +53,8 @@ interface UsageHistoryEnvelope {
 export interface SnapshotFileStore {
   path: string;
   load(): AppState | null;
-  save(snapshot: AppState): void;
+  loadRecord(): SnapshotRecord | null;
+  save(snapshot: AppState, options?: SnapshotSaveOptions): void;
 }
 
 export interface WindowStateFileStore {
@@ -121,31 +132,40 @@ function atomicWrite(filePath: string, content: string): void {
 }
 
 export function createSnapshotStore(statePath: string): SnapshotFileStore {
+  const loadRecord = (): SnapshotRecord | null => {
+    const envelope = readJsonFile<Partial<SnapshotEnvelope>>(statePath);
+    if (!envelope) {
+      return null;
+    }
+    if (envelope.version !== SNAPSHOT_STORE_VERSION) {
+      warnInvalidFile(
+        statePath,
+        `unsupported version ${String(envelope.version)}`
+      );
+      return null;
+    }
+    if (!envelope.snapshot) {
+      warnInvalidFile(statePath, "missing snapshot payload");
+      return null;
+    }
+    return {
+      snapshot: envelope.snapshot,
+      cleanShutdown: envelope.cleanShutdown === true
+    };
+  };
+
   return {
     path: statePath,
     load() {
-      const envelope = readJsonFile<Partial<SnapshotEnvelope>>(statePath);
-      if (!envelope) {
-        return null;
-      }
-      if (envelope.version !== SNAPSHOT_STORE_VERSION) {
-        warnInvalidFile(
-          statePath,
-          `unsupported version ${String(envelope.version)}`
-        );
-        return null;
-      }
-      if (!envelope.snapshot) {
-        warnInvalidFile(statePath, "missing snapshot payload");
-        return null;
-      }
-      return envelope.snapshot;
+      return loadRecord()?.snapshot ?? null;
     },
-    save(snapshot) {
+    loadRecord,
+    save(snapshot, options = {}) {
       atomicWrite(
         statePath,
         JSON.stringify({
           version: SNAPSHOT_STORE_VERSION,
+          cleanShutdown: options.cleanShutdown === true,
           snapshot
         } satisfies SnapshotEnvelope)
       );

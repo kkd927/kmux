@@ -12,7 +12,11 @@ import type {
   ShellIdentity,
   SplitDirection
 } from "@kmux/proto";
-import { makeId, normalizeAgentHookInvocation } from "@kmux/proto";
+import {
+  makeId,
+  normalizeAgentHookInvocation,
+  normalizeHookNotificationInvocation
+} from "@kmux/proto";
 import { ZodError } from "zod";
 
 import {
@@ -242,10 +246,24 @@ export class KmuxSocketServer {
             KMUX_SESSION_ID: request.params.sessionId
           }
         );
-        if (!event) {
-          return { ok: true, handled: false };
+        if (event) {
+          return this.dispatchAgentEvent(event, activeWorkspaceId);
         }
-        return this.dispatchAgentEvent(event, activeWorkspaceId);
+        const notification = normalizeHookNotificationInvocation(
+          request.params.agent,
+          request.params.hookEvent,
+          request.params.payload ?? {},
+          {
+            KMUX_WORKSPACE_ID: request.params.workspaceId,
+            KMUX_PANE_ID: request.params.paneId,
+            KMUX_SURFACE_ID: request.params.surfaceId,
+            KMUX_SESSION_ID: request.params.sessionId
+          }
+        );
+        if (notification) {
+          return this.dispatchHookNotification(notification, activeWorkspaceId);
+        }
+        return { ok: true, handled: false };
       }
       case "sidebar.set_progress":
         this.options.dispatch({
@@ -332,6 +350,35 @@ export class KmuxSocketServer {
       title: params.title,
       message: params.message,
       details: Object.keys(details).length > 0 ? details : undefined
+    });
+    return { ok: true };
+  }
+
+  private dispatchHookNotification(
+    params: ReturnType<typeof normalizeHookNotificationInvocation> extends infer TResult
+      ? Exclude<TResult, null>
+      : never,
+    fallbackWorkspaceId: string
+  ): { ok: true } {
+    const state = this.options.getState();
+    const surfaceId =
+      params.surfaceId ??
+      (params.sessionId ? state.sessions[params.sessionId]?.surfaceId : undefined);
+    if (surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)) {
+      return { ok: true };
+    }
+    const paneId =
+      params.paneId ??
+      (surfaceId ? state.surfaces[surfaceId]?.paneId : undefined);
+    this.options.dispatch({
+      type: "notification.create",
+      workspaceId: params.workspaceId ?? fallbackWorkspaceId,
+      paneId,
+      surfaceId,
+      title: params.title,
+      message: params.message,
+      source: params.source,
+      agent: params.agent
     });
     return { ok: true };
   }

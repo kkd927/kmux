@@ -329,6 +329,19 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                 />
               </label>
               <label>
+                Warn before quit
+                <input
+                  aria-label="Warn before quit"
+                  type="checkbox"
+                  checked={props.settingsDraft.warnBeforeQuit}
+                  onChange={(event) => {
+                    updateSettingsDraft(props.setSettingsDraft, {
+                      warnBeforeQuit: event.currentTarget.checked
+                    });
+                  }}
+                />
+              </label>
+              <label>
                 Desktop notifications
                 <input
                   aria-label="Desktop notifications"

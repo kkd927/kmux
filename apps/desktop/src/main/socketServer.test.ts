@@ -181,4 +181,124 @@ describe("kmux socket server agent hooks", () => {
       await server.stop();
     }
   });
+
+  it("routes Claude notification hooks to generic kmux notifications", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+            .activeSurfaceId,
+        capabilities: []
+      })
+    });
+
+    await server.start();
+
+    try {
+      const response = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_3",
+        method: "agent.hook",
+        params: {
+          agent: "claude",
+          hookEvent: "Notification",
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          payload: {
+            title: "Task complete",
+            message: "Task completed successfully"
+          }
+        }
+      });
+
+      expect(response.result).toEqual({ ok: true });
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "notification.create",
+        workspaceId: activeWorkspaceId,
+        paneId: undefined,
+        surfaceId: "surface_1",
+        title: "Task complete",
+        message: "Task completed successfully",
+        source: "agent",
+        agent: "claude"
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("suppresses visible Claude notification hooks because the notification is already in band", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+            .activeSurfaceId,
+        capabilities: []
+      }),
+      isSurfaceVisibleToUser: () => true
+    });
+
+    await server.start();
+
+    try {
+      const response = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_4",
+        method: "agent.hook",
+        params: {
+          agent: "claude",
+          hookEvent: "Notification",
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          payload: {
+            title: "Task complete",
+            message: "Task completed successfully"
+          }
+        }
+      });
+
+      expect(response.result).toEqual({ ok: true });
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+    }
+  });
 });

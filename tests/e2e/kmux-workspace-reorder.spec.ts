@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  closeKmuxApp,
   createSandbox,
   destroySandbox,
   dispatch,
@@ -134,7 +135,7 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "alpha"
     ]);
 
-    await firstLaunch.app.close();
+    await closeKmuxApp(firstLaunch);
 
     relaunch = await launchKmuxWithSandbox(sandbox);
     const restored = await waitForView(
@@ -154,9 +155,9 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "alpha"
     ]);
   } finally {
-    await firstLaunch.app.close().catch(() => {});
+    await closeKmuxApp(firstLaunch).catch(() => {});
     if (relaunch) {
-      await relaunch.app.close().catch(() => {});
+      await closeKmuxApp(relaunch).catch(() => {});
     }
     destroySandbox(sandbox);
   }

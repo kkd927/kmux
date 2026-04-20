@@ -161,6 +161,12 @@ export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
   let closeTimeout: ReturnType<typeof setTimeout> | null = null;
 
   try {
+    await dispatch(launched.page, {
+      type: "settings.update",
+      patch: {
+        warnBeforeQuit: false
+      }
+    }).catch(() => undefined);
     await Promise.race([
       launched.app.close(),
       new Promise<never>((_, reject) => {

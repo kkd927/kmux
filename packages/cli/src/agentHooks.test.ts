@@ -1,7 +1,10 @@
-import { normalizeAgentHookInvocation } from "./agentHooks";
+import {
+  normalizeAgentHookInvocation,
+  normalizeHookNotificationInvocation
+} from "./agentHooks";
 
 describe("agent hook normalization", () => {
-  it("maps Claude notification hooks to needs_input events", () => {
+  it("does not treat Claude notification hooks as needs_input events", () => {
     expect(
       normalizeAgentHookInvocation(
         "claude",
@@ -12,14 +15,31 @@ describe("agent hook normalization", () => {
           KMUX_SURFACE_ID: "surface_1"
         }
       )
+    ).toBeNull();
+  });
+
+  it("normalizes Claude notification hooks as generic kmux notifications", () => {
+    expect(
+      normalizeHookNotificationInvocation(
+        "claude",
+        "notification",
+        {
+          title: "Task complete",
+          message: "Task completed successfully"
+        },
+        {
+          KMUX_WORKSPACE_ID: "workspace_1",
+          KMUX_SURFACE_ID: "surface_1"
+        }
+      )
     ).toMatchObject({
       workspaceId: "workspace_1",
       surfaceId: "surface_1",
       sessionId: "surface_1",
       agent: "claude",
-      event: "needs_input",
-      title: "Claude needs input",
-      message: "Needs input"
+      source: "agent",
+      title: "Task complete",
+      message: "Task completed successfully"
     });
   });
 

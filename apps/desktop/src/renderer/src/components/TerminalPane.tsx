@@ -176,6 +176,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     syncTerminalMetrics(terminal);
   }
 
+  async function waitForTerminalFonts(): Promise<void> {
+    if (typeof document === "undefined" || !("fonts" in document)) {
+      return;
+    }
+    if (document.fonts.status === "loaded") {
+      return;
+    }
+    await document.fonts.ready;
+  }
+
   function matchesTerminalShortcut(
     event: Pick<
       KeyboardEvent,
@@ -597,16 +607,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     });
 
-    void window.kmux.attachSurface(activeSurface.id).then((snapshot) => {
+    void (async () => {
+      await waitForTerminalFonts();
+      if (!mounted || !terminalRef.current) {
+        return;
+      }
+      const snapshot = await window.kmux.attachSurface(activeSurface.id);
       if (!mounted || !snapshot || !terminalRef.current) {
         return;
       }
       terminalRef.current.reset();
-      // The visible terminal has already been fit before hydration starts.
-      // Re-fitting after replaying a restored snapshot can repaint shell prompts
-      // against a different canvas geometry and duplicate the first line.
       writeTerminal(terminalRef.current, snapshot.vt);
-    });
+    })();
 
     return () => {
       mounted = false;

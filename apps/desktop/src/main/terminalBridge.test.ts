@@ -1,5 +1,5 @@
 import { afterEach } from "vitest";
-import { createInitialState, type AppAction } from "@kmux/core";
+import { applyAction, createInitialState, type AppAction } from "@kmux/core";
 import { vi } from "vitest";
 
 const browserWindows: Array<{
@@ -498,5 +498,113 @@ describe("terminal bridge", () => {
 
     expect(onSurfaceInputText).toHaveBeenCalledWith(surfaceId, "codex exec\r");
     expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "codex exec\r");
+  });
+
+  it("clears visible Codex needs-input attention when escape text dismisses the prompt", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendText(surfaceId, "\u001b");
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "idle",
+      message: "Dismissed input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        dismissKey: "escape"
+      })
+    });
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
+  });
+
+  it("clears visible Codex needs-input attention when escape key input is sent", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "Escape" });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "idle",
+      message: "Dismissed input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        dismissKey: "escape"
+      })
+    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
+      key: "Escape"
+    });
   });
 });
