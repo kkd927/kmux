@@ -30,6 +30,7 @@ import {
   type PendingTerminalEnterRewrite,
   type DisposableAddon
 } from "../terminalRenderer";
+import { hydrateAttachedTerminal } from "../terminalAttachHydration";
 import styles from "../styles/TerminalPane.module.css";
 
 interface TerminalPaneProps {
@@ -673,33 +674,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
 
     void (async () => {
-      await waitForTerminalFonts();
-      if (!mounted || !terminalRef.current) {
-        return;
-      }
-      const snapshot = await window.kmux.attachSurface(activeSurface.id);
-      if (!mounted || !snapshot || !terminalRef.current) {
-        return;
-      }
       const terminal = terminalRef.current;
-      if (
-        snapshot.cols > 0 &&
-        snapshot.rows > 0 &&
-        (terminal.cols !== snapshot.cols || terminal.rows !== snapshot.rows)
-      ) {
-        try {
-          terminal.resize(snapshot.cols, snapshot.rows);
-        } catch {
-          // terminal may have been disposed mid-await
-          return;
-        }
+      if (!terminal) {
+        return;
       }
-      terminal.reset();
-      writeTerminal(terminal, snapshot.vt, () => {
-        if (!mounted || terminalRef.current !== terminal) {
-          return;
-        }
-        void fitAndSyncTerminal(terminal);
+      await hydrateAttachedTerminal({
+        terminal,
+        isMounted: () => mounted,
+        isTerminalActive: (candidate) => terminalRef.current === candidate,
+        waitForTerminalFonts,
+        fitAndSyncTerminal,
+        attachSurface: () => window.kmux.attachSurface(activeSurface.id),
+        writeTerminal
       });
     })();
 
