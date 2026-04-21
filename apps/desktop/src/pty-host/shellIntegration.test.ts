@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -340,16 +341,19 @@ describe("shell integration launch preparation", () => {
             continue;
           }
           request = JSON.parse(line) as typeof request;
-          socket.write(
-            `${JSON.stringify({
-              jsonrpc: "2.0",
-              id: request?.id,
-              result: { ok: true }
-            })}\n`
-          );
-          socket.end();
+          setTimeout(() => {
+            socket.write(
+              `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: request?.id,
+                result: { ok: true }
+              })}\n`
+            );
+            socket.end();
+          }, 900);
         }
       });
+      socket.on("error", () => {});
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -361,6 +365,8 @@ describe("shell integration launch preparation", () => {
     });
 
     try {
+      expect(AGENT_HOOK_RPC_TIMEOUT_MS).toBeGreaterThan(900);
+      const startedAt = Date.now();
       const child = spawn(agentHookHelper, ["codex", "Stop"], {
         env: {
           ...process.env,
@@ -385,7 +391,9 @@ describe("shell integration launch preparation", () => {
       child.stdin.end(JSON.stringify({ message: "Done" }));
 
       const [exitCode] = (await once(child, "close")) as [number | null];
+      const elapsedMs = Date.now() - startedAt;
       expect(exitCode).toBe(0);
+      expect(elapsedMs).toBeGreaterThanOrEqual(850);
       expect(stdout.trim()).toBe("{}");
       expect(stderr).toBe("");
       expect(request).toMatchObject({

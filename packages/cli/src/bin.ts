@@ -7,7 +7,7 @@ import { env } from "node:process";
 import { Command } from "commander";
 
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
-import { makeId } from "@kmux/proto";
+import { AGENT_HOOK_RPC_TIMEOUT_MS, makeId } from "@kmux/proto";
 
 const SOCKET_PATH = env.KMUX_SOCKET_PATH ?? `${env.HOME}/.kmux/control.sock`;
 
@@ -118,7 +118,7 @@ async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
         surfaceId: env.KMUX_SURFACE_ID,
         sessionId: env.KMUX_SESSION_ID
       },
-      { timeoutMs: 750 }
+      { timeoutMs: AGENT_HOOK_RPC_TIMEOUT_MS }
     );
   } catch {
     // Agent hooks must never block or fail the agent command path.
