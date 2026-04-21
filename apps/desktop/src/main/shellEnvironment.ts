@@ -7,7 +7,11 @@ import {promisify} from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
+const BLOCKED_INHERITED_ENV_KEYS = [
+  "ELECTRON_RUN_AS_NODE",
+  // Injected by BSD `script` when we wrap the macOS probe to allocate a TTY.
+  "SCRIPT"
+] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 const DEFAULT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -33,6 +37,11 @@ export interface ShellCommandExecutorOptions {
   env: NodeJS.ProcessEnv;
   maxBuffer: number;
   timeout: number;
+}
+
+export interface ShellProbeInvocation {
+  command: string;
+  args: string[];
 }
 
 export type ShellCommandExecutor = (
@@ -90,7 +99,33 @@ export function buildShellEnvProbeArgs(
     return ["-Login", "-Command", command];
   }
 
-  return ["-i", "-l", "-c", command];
+  switch (basename(shellPath).toLowerCase()) {
+    case "bash":
+      return ["--login", "-i", "-c", command];
+    default:
+      return ["-i", "-l", "-c", command];
+  }
+}
+
+export function buildShellEnvProbeInvocation(
+  shellPath: string,
+  processExecPath: string,
+  marker: string,
+  platform: NodeJS.Platform = process.platform
+): ShellProbeInvocation {
+  const args = buildShellEnvProbeArgs(shellPath, processExecPath, marker);
+
+  if (isPowerShell(shellPath) || platform !== "darwin") {
+    return {
+      command: shellPath,
+      args
+    };
+  }
+
+  return {
+    command: "/usr/bin/script",
+    args: ["-q", "/dev/null", shellPath, ...args]
+  };
 }
 
 export function parseShellEnvOutput(
@@ -123,10 +158,11 @@ export async function resolveShellEnvironment(
   options: ResolveShellEnvironmentOptions = {}
 ): Promise<ResolvedShellEnv> {
   const inheritedEnv = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
   const shellPath = resolveShellPath(
     options.preferredShell,
     inheritedEnv,
-    options.platform,
+    platform,
     options.userShell
   );
   const baseEnv = sanitizeInheritedEnv(inheritedEnv);
@@ -145,6 +181,7 @@ export async function resolveShellEnvironment(
     ) {
       const revalidation = revalidateShellEnvInBackground({
         shellPath,
+        platform,
         probeEnv: baseEnv,
         timeoutMs,
         processExecPath,
@@ -165,9 +202,15 @@ export async function resolveShellEnvironment(
   }
 
   try {
-    const {stdout} = await exec(
+    const invocation = buildShellEnvProbeInvocation(
       shellPath,
-      buildShellEnvProbeArgs(shellPath, processExecPath, marker),
+      processExecPath,
+      marker,
+      platform
+    );
+    const {stdout} = await exec(
+      invocation.command,
+      invocation.args,
       {
         env: baseEnv,
         timeout: timeoutMs,
@@ -176,6 +219,7 @@ export async function resolveShellEnvironment(
     );
     const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, marker));
     resolvedEnv.SHELL ??= shellPath;
+    adjustShlvlForScriptWrap(resolvedEnv, invocation);
     if (options.cachePath) {
       writeCachedShellEnv(options.cachePath, {
         shellPath,
@@ -227,6 +271,7 @@ function isCacheFresh(cachedAt: number | undefined, ttlMs: number): boolean {
 
 async function revalidateShellEnvInBackground(options: {
   shellPath: string;
+  platform: NodeJS.Platform;
   probeEnv: NodeJS.ProcessEnv;
   timeoutMs: number;
   processExecPath: string;
@@ -235,9 +280,15 @@ async function revalidateShellEnvInBackground(options: {
   cachePath: string;
 }): Promise<void> {
   try {
-    const {stdout} = await options.exec(
+    const invocation = buildShellEnvProbeInvocation(
       options.shellPath,
-      buildShellEnvProbeArgs(options.shellPath, options.processExecPath, options.marker),
+      options.processExecPath,
+      options.marker,
+      options.platform
+    );
+    const {stdout} = await options.exec(
+      invocation.command,
+      invocation.args,
       {
         env: options.probeEnv,
         timeout: options.timeoutMs,
@@ -246,6 +297,7 @@ async function revalidateShellEnvInBackground(options: {
     );
     const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, options.marker));
     resolvedEnv.SHELL ??= options.shellPath;
+    adjustShlvlForScriptWrap(resolvedEnv, invocation);
     writeCachedShellEnv(options.cachePath, {
       shellPath: options.shellPath,
       baseEnv: resolvedEnv,
@@ -341,6 +393,27 @@ function sanitizeInheritedEnv(
   return nextEnv;
 }
 
+// The `/usr/bin/script` wrapper we use on macOS to allocate a TTY adds one
+// extra process layer between kmux and the probe shell, so SHLVL comes back
+// one higher than a Terminal.app session would report. Decrement it here so
+// every terminal kmux spawns starts at the SHLVL the user expects.
+function adjustShlvlForScriptWrap(
+  env: NodeJS.ProcessEnv,
+  invocation: ShellProbeInvocation
+): void {
+  if (invocation.command !== "/usr/bin/script") {
+    return;
+  }
+  const raw = env.SHLVL;
+  if (!raw) {
+    return;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    env.SHLVL = String(parsed - 1);
+  }
+}
+
 function buildShellEnvProbeCommand(
   shellPath: string,
   processExecPath: string,
@@ -356,7 +429,12 @@ function buildShellEnvProbeCommand(
     return `$env:ELECTRON_RUN_AS_NODE='1'; & ${powershellQuote(processExecPath)} -e ${powershellQuote(script)}`;
   }
 
-  return `ELECTRON_RUN_AS_NODE=1 ${posixQuote(processExecPath)} -e ${posixQuote(script)}`;
+  // `exec 2>/dev/null` fires once the -c body starts, so the Node probe never
+  // mixes its own stderr into the shared TTY stdout we parse below. Stderr
+  // emitted earlier during .zshrc/.zprofile sourcing still goes to the TTY,
+  // but the marker-based parser slices strictly between the two markers the
+  // probe writes after that point, so it tolerates any surrounding noise.
+  return `exec 2>/dev/null; ELECTRON_RUN_AS_NODE=1 ${posixQuote(processExecPath)} -e ${posixQuote(script)}`;
 }
 
 function isPowerShell(shellPath: string): boolean {
