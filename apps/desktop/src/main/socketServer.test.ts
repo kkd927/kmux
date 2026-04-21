@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -41,9 +42,91 @@ describe("kmux socket server agent hooks", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("ignores broken-pipe reply errors from disconnected clients", () => {
+    const state = createInitialState("/bin/zsh");
+    const server = new KmuxSocketServer({
+      socketPath: "/tmp/kmux-socket-server-test.sock",
+      getState: () => state,
+      dispatch: vi.fn(),
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath: "/tmp/kmux-socket-server-test.sock",
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId:
+          state.windows[state.activeWindowId].activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[
+            state.workspaces[
+              state.windows[state.activeWindowId].activeWorkspaceId
+            ].activePaneId
+          ].activeSurfaceId,
+        capabilities: []
+      })
+    });
+
+    const socket = {
+      destroyed: false,
+      writable: true,
+      writableEnded: false,
+      write: vi.fn(() => {
+        const error = new Error("write EPIPE") as Error & { code?: string };
+        error.code = "EPIPE";
+        throw error;
+      })
+    } as unknown as Socket;
+
+    expect(() =>
+      (
+        server as unknown as {
+          reply: (socket: Socket, id: unknown, result?: unknown) => void;
+        }
+      ).reply(socket, "rpc_epipe", { ok: true })
+    ).not.toThrow();
+  });
+
+  it("logs unexpected client socket errors instead of crashing the main process", () => {
+    const state = createInitialState("/bin/zsh");
+    const server = new KmuxSocketServer({
+      socketPath: "/tmp/kmux-socket-server-test.sock",
+      getState: () => state,
+      dispatch: vi.fn(),
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath: "/tmp/kmux-socket-server-test.sock",
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId:
+          state.windows[state.activeWindowId].activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[
+            state.workspaces[
+              state.windows[state.activeWindowId].activeWorkspaceId
+            ].activePaneId
+          ].activeSurfaceId,
+        capabilities: []
+      })
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const socket = new EventEmitter() as Socket;
+
+    (
+      server as unknown as {
+        handleConnection: (socket: Socket) => void;
+      }
+    ).handleConnection(socket);
+
+    const error = new Error("boom");
+    expect(() => socket.emit("error", error)).not.toThrow();
+    expect(warn).toHaveBeenCalledWith("[socket-server]", error);
   });
 
   it("normalizes raw agent hooks in main before dispatching reducer events", async () => {

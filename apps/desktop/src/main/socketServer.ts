@@ -49,6 +49,32 @@ function hasRecentStructuredAgentNotification(
   );
 }
 
+function isIgnorableSocketReplyError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  const code = "code" in error && typeof error.code === "string"
+    ? error.code
+    : "";
+  const message =
+    "message" in error && typeof error.message === "string"
+      ? error.message
+      : "";
+
+  return (
+    code === "EPIPE" ||
+    code === "ECONNRESET" ||
+    code === "ERR_STREAM_DESTROYED" ||
+    message.includes("write EPIPE") ||
+    message.includes("stream is destroyed")
+  );
+}
+
+function isReplySocketWritable(socket: Socket): boolean {
+  return !socket.destroyed && socket.writable && !socket.writableEnded;
+}
+
 interface SocketServerOptions {
   socketPath: string;
   getState: () => AppState;
@@ -84,6 +110,12 @@ export class KmuxSocketServer {
 
   private handleConnection(socket: Socket): void {
     let buffer = "";
+    socket.on("error", (error) => {
+      if (isIgnorableSocketReplyError(error)) {
+        return;
+      }
+      console.warn("[socket-server]", error);
+    });
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
       const lines = buffer.split("\n");
@@ -339,7 +371,18 @@ export class KmuxSocketServer {
       result,
       error
     };
-    socket.write(`${JSON.stringify(response)}\n`);
+    if (!isReplySocketWritable(socket)) {
+      return;
+    }
+    const payload = `${JSON.stringify(response)}\n`;
+    try {
+      socket.write(payload);
+    } catch (writeError) {
+      if (isIgnorableSocketReplyError(writeError)) {
+        return;
+      }
+      throw writeError;
+    }
   }
 
   private dispatchAgentEvent(

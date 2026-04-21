@@ -7,6 +7,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+
+import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
+
 import { resolveDefaultShellArgs } from "./shellLaunch";
 
 export interface PreparedShellLaunch {
@@ -699,7 +702,7 @@ function connectAndSend(payload) {
 
   const timeout = setTimeout(() => {
     complete();
-  }, 750);
+  }, ${AGENT_HOOK_RPC_TIMEOUT_MS});
 
   function complete() {
     if (settled) {

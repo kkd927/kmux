@@ -34,6 +34,8 @@ export type UsageSessionState =
 export type UsageAttributionState = "bound" | "aggregate_only";
 export type UsageCostSource = "reported" | "estimated" | "partial";
 
+export const AGENT_HOOK_RPC_TIMEOUT_MS = 1500;
+
 export interface SessionLaunchConfig {
   cwd?: string;
   shell?: string;
