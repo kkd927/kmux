@@ -6,6 +6,7 @@ import {afterAll, beforeAll, describe, expect, it, vi} from "vitest";
 
 import {
   buildShellEnvProbeArgs,
+  buildShellEnvProbeInvocation,
   parseShellEnvOutput,
   resolveShellEnvironment,
   resolveShellPath,
@@ -57,10 +58,12 @@ describe("shell environment resolver", () => {
     });
   });
 
-  it("uses a login interactive probe and returns resolved env output", async () => {
+  it("uses a TTY-backed login interactive probe on macOS and returns resolved env output", async () => {
+    let receivedCommand = "";
     let receivedArgs: string[] = [];
     let receivedEnv: NodeJS.ProcessEnv = {};
-    const exec: ShellCommandExecutor = vi.fn(async (_command, args, options) => {
+    const exec: ShellCommandExecutor = vi.fn(async (command, args, options) => {
+      receivedCommand = command;
       receivedArgs = args;
       receivedEnv = options.env;
       return {
@@ -76,13 +79,23 @@ describe("shell environment resolver", () => {
         PATH: "/usr/bin",
         ELECTRON_RUN_AS_NODE: "1"
       },
+      platform: "darwin",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       exec
     });
 
-    expect(receivedArgs.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
-    expect(receivedArgs[3]).toContain("ELECTRON_RUN_AS_NODE=1");
+    expect(receivedCommand).toBe("/usr/bin/script");
+    expect(receivedArgs.slice(0, 6)).toEqual([
+      "-q",
+      "/dev/null",
+      "/bin/zsh",
+      "-i",
+      "-l",
+      "-c"
+    ]);
+    expect(receivedArgs[6]).toContain("ELECTRON_RUN_AS_NODE=1");
+    expect(receivedArgs[6]).toContain("exec 2>/dev/null");
     expect(receivedEnv.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(resolved).toEqual({
       shellPath: "/bin/zsh",
@@ -92,6 +105,45 @@ describe("shell environment resolver", () => {
       },
       source: "resolved"
     });
+  });
+
+  it("drops SCRIPT and decrements SHLVL injected by the macOS TTY wrapper", async () => {
+    const exec: ShellCommandExecutor = vi.fn(async () => ({
+      stdout:
+        "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SCRIPT\":\"/dev/null\",\"SHLVL\":\"3\"}__TOKEN__",
+      stderr: ""
+    }));
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin" },
+      platform: "darwin",
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      exec
+    });
+
+    expect(resolved.baseEnv.SCRIPT).toBeUndefined();
+    expect(resolved.baseEnv.SHLVL).toBe("2");
+  });
+
+  it("leaves SHLVL untouched when the probe is not wrapped in script", async () => {
+    const exec: ShellCommandExecutor = vi.fn(async () => ({
+      stdout:
+        "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SHLVL\":\"3\"}__TOKEN__",
+      stderr: ""
+    }));
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: { PATH: "/usr/bin" },
+      platform: "linux",
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      exec
+    });
+
+    expect(resolved.baseEnv.SHLVL).toBe("3");
   });
 
   it("falls back to sanitized inherited env when probe execution fails", async () => {
@@ -125,6 +177,47 @@ describe("shell environment resolver", () => {
       "-Command",
       expect.stringContaining("$env:ELECTRON_RUN_AS_NODE='1'; & '/usr/local/bin/node' -e '")
     ]);
+  });
+
+  it("wraps the macOS probe in script to allocate a TTY", () => {
+    expect(
+      buildShellEnvProbeInvocation(
+        "/bin/zsh",
+        "/usr/local/bin/node",
+        "__TOKEN__",
+        "darwin"
+      )
+    ).toEqual({
+      command: "/usr/bin/script",
+      args: [
+        "-q",
+        "/dev/null",
+        "/bin/zsh",
+        "-i",
+        "-l",
+        "-c",
+        expect.stringContaining("exec 2>/dev/null")
+      ]
+    });
+  });
+
+  it("keeps the direct interactive login probe off macOS", () => {
+    expect(
+      buildShellEnvProbeInvocation(
+        "/bin/zsh",
+        "/usr/local/bin/node",
+        "__TOKEN__",
+        "linux"
+      )
+    ).toEqual({
+      command: "/bin/zsh",
+      args: [
+        "-i",
+        "-l",
+        "-c",
+        expect.stringContaining("ELECTRON_RUN_AS_NODE=1")
+      ]
+    });
   });
 
   it("persists the resolved environment to the cache path on success", async () => {
