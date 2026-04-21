@@ -25,7 +25,11 @@ export default defineConfig({
       outDir: "out/main",
       rollupOptions: {
         input: {
-          index: resolve(currentDir, "src/main/index.ts")
+          index: resolve(currentDir, "src/main/index.ts"),
+          shellEnvProbeWorker: resolve(
+            currentDir,
+            "src/main/shellEnvProbeWorker.ts"
+          )
         }
       }
     }
