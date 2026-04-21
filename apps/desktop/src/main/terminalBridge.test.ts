@@ -741,4 +741,311 @@ describe("terminal bridge", () => {
     expect(dispatchAppAction).not.toHaveBeenCalled();
     expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
   });
+
+  it("clears visible Codex needs-input attention when Enter text submits the prompt", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendText(surfaceId, "\r");
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "idle",
+      message: "Submitted input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        submitKey: "enter"
+      })
+    });
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\r");
+  });
+
+  it("clears visible Codex needs-input attention when Enter key input submits the prompt", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "Enter" });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "idle",
+      message: "Submitted input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        submitKey: "enter"
+      })
+    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
+      key: "Enter"
+    });
+  });
+
+  it("clears visible Gemini needs-input attention when Enter submits the prompt", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "gemini",
+      event: "needs_input",
+      message: "Tool permission requested: WriteFile"
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "Enter" });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "gemini",
+      event: "idle",
+      message: "Submitted input prompt",
+      details: expect.objectContaining({
+        uiOnly: true,
+        visibleToUser: true,
+        source: "terminal-input",
+        submitKey: "enter"
+      })
+    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
+      key: "Enter"
+    });
+  });
+
+  it("does not clear Claude needs-input on Enter submit (Claude is covered by hooks)", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Continue? (Yes, No)"
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "Enter" });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
+      key: "Enter"
+    });
+  });
+
+  it("does not clear Codex needs-input on arrow keys (navigation should not submit)", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendKey: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendKeyInput(surfaceId, { key: "ArrowDown" });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+  });
+
+  it("does not clear Codex needs-input via submit when the surface is not visible", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => false
+    });
+
+    bridge.sendText(surfaceId, "\r");
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+  });
+
+  it("does not clear Codex needs-input on multi-char text that merely ends with a newline (paste / programmatic send)", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const ptyHost = {
+      sendText: vi.fn()
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Plan mode prompt: Depth",
+      details: {
+        uiOnly: true,
+        visibleToUser: true
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      isSurfaceVisibleToUser: () => true
+    });
+
+    bridge.sendText(surfaceId, "foo\nbar\n");
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "foo\nbar\n");
+  });
 });

@@ -73,12 +73,26 @@ describe("agent hook normalization", () => {
     });
   });
 
-  it("ignores Claude PostToolUse for other tools", () => {
+  it("maps Claude PostToolUse for other tools to running events", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PostToolUse", {
         tool_name: "Read"
       })
-    ).toBeNull();
+    ).toMatchObject({
+      agent: "claude",
+      event: "running"
+    });
+  });
+
+  it("maps Claude PostToolUse ExitPlanMode to running so plan-mode approval clears needs_input", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "PostToolUse", {
+        tool_name: "ExitPlanMode"
+      })
+    ).toMatchObject({
+      agent: "claude",
+      event: "running"
+    });
   });
 
   it("maps Claude permission requests to needs_input events", () => {
@@ -152,6 +166,17 @@ describe("agent hook normalization", () => {
         message: "Running"
       }
     );
+  });
+
+  it("maps Gemini BeforeTool / AfterTool hooks to running so tool-permission approval clears needs_input", () => {
+    expect(normalizeAgentHookInvocation("gemini", "BeforeTool")).toMatchObject({
+      agent: "gemini",
+      event: "running"
+    });
+    expect(normalizeAgentHookInvocation("gemini", "AfterTool")).toMatchObject({
+      agent: "gemini",
+      event: "running"
+    });
   });
 
   it("treats Codex stop hooks as turn completion events", () => {

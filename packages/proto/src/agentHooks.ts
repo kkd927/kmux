@@ -142,13 +142,8 @@ function mapAgentHookEvent(
       return "needs_input";
     }
     if (
-      hookEvent === "post-tool-use" &&
-      stringField(payload, "tool_name") === "AskUserQuestion"
-    ) {
-      return "running";
-    }
-    if (
       hookEvent === "pre-tool-use" ||
+      hookEvent === "post-tool-use" ||
       hookEvent === "prompt-submit" ||
       hookEvent === "user-prompt-submit"
     ) {
@@ -172,7 +167,11 @@ function mapAgentHookEvent(
     ) {
       return "needs_input";
     }
-    if (hookEvent === "before-agent") {
+    if (
+      hookEvent === "before-agent" ||
+      hookEvent === "before-tool" ||
+      hookEvent === "after-tool"
+    ) {
       return "running";
     }
     if (hookEvent === "after-agent" || hookEvent === "idle") {

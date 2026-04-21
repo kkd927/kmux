@@ -88,10 +88,15 @@ export function createTerminalBridge(
   }
 
   const VISIBLE_DISMISS_AGENTS = ["codex", "claude"] as const;
+  const VISIBLE_SUBMIT_AGENTS = ["codex", "gemini"] as const;
+
+  type VisibleInputClearTrigger =
+    | { kind: "dismiss"; key: "escape" | "ctrl-c" | "ctrl-d" }
+    | { kind: "submit" };
 
   function clearVisibleAgentNeedsInput(
     surfaceId: Id,
-    dismissKey: "escape" | "ctrl-c" | "ctrl-d"
+    trigger: VisibleInputClearTrigger
   ): void {
     const state = options.getState();
     const surface = state.surfaces[surfaceId];
@@ -107,17 +112,31 @@ export function createTerminalBridge(
       return;
     }
     const workspace = state.workspaces[pane.workspaceId];
-    for (const agent of VISIBLE_DISMISS_AGENTS) {
+    const agents =
+      trigger.kind === "dismiss"
+        ? VISIBLE_DISMISS_AGENTS
+        : VISIBLE_SUBMIT_AGENTS;
+    const diagnosticSuffix =
+      trigger.kind === "dismiss" ? "dismissed" : "submitted";
+    const promptMessage =
+      trigger.kind === "dismiss"
+        ? "Dismissed input prompt"
+        : "Submitted input prompt";
+    for (const agent of agents) {
       const statusKey = `agent:${agent}:${surfaceId}`;
       if (workspace?.statusEntries?.[statusKey]?.text !== "needs input") {
         continue;
       }
-      logDiagnostics(`main.terminal.${agent}-input-dismissed`, {
+      const triggerInfo =
+        trigger.kind === "dismiss"
+          ? { dismissKey: trigger.key }
+          : { submitKey: "enter" as const };
+      logDiagnostics(`main.terminal.${agent}-input-${diagnosticSuffix}`, {
         workspaceId: pane.workspaceId,
         paneId: surface.paneId,
         surfaceId,
         sessionId: surface.sessionId,
-        dismissKey
+        ...triggerInfo
       });
       options.dispatchAppAction({
         type: "agent.event",
@@ -127,12 +146,12 @@ export function createTerminalBridge(
         sessionId: surface.sessionId,
         agent,
         event: "idle",
-        message: "Dismissed input prompt",
+        message: promptMessage,
         details: {
           uiOnly: true,
           visibleToUser: true,
           source: "terminal-input",
-          dismissKey
+          ...triggerInfo
         }
       });
     }
@@ -143,7 +162,12 @@ export function createTerminalBridge(
     if (sessionId) {
       const dismissKey = codexDismissKeyFromText(text);
       if (dismissKey) {
-        clearVisibleAgentNeedsInput(surfaceId, dismissKey);
+        clearVisibleAgentNeedsInput(surfaceId, {
+          kind: "dismiss",
+          key: dismissKey
+        });
+      } else if (isSubmitText(text)) {
+        clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
       }
       options.onSurfaceInputText?.(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
@@ -155,7 +179,12 @@ export function createTerminalBridge(
     if (sessionId) {
       const dismissKey = codexDismissKeyFromKeyInput(input);
       if (dismissKey) {
-        clearVisibleAgentNeedsInput(surfaceId, dismissKey);
+        clearVisibleAgentNeedsInput(surfaceId, {
+          kind: "dismiss",
+          key: dismissKey
+        });
+      } else if (isSubmitKeyInput(input)) {
+        clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
       }
       options.getPtyHost()?.sendKey(sessionId, input);
     }
@@ -565,4 +594,18 @@ function codexDismissKeyFromKeyInput(
     return "ctrl-d";
   }
   return input.text ? codexDismissKeyFromText(input.text) : null;
+}
+
+function isSubmitText(text: string): boolean {
+  // Strict equality (like dismissKey detection) — must be a pure Enter keystroke,
+  // not a multi-char paste / programmatic send that happens to end with a newline.
+  return text === "\r" || text === "\n" || text === "\r\n";
+}
+
+function isSubmitKeyInput(input: TerminalKeyInput): boolean {
+  const key = input.key.trim().toLowerCase();
+  if (key === "enter" || key === "return") {
+    return true;
+  }
+  return input.text ? isSubmitText(input.text) : false;
 }
