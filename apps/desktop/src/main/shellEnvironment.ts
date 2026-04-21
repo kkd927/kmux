@@ -1,17 +1,14 @@
-import {execFile} from "node:child_process";
+import {execFile, fork} from "node:child_process";
 import {randomUUID} from "node:crypto";
 import {mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync} from "node:fs";
 import {userInfo} from "node:os";
-import {basename, dirname} from "node:path";
+import {basename, dirname, join, resolve, sep} from "node:path";
+import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const BLOCKED_INHERITED_ENV_KEYS = [
-  "ELECTRON_RUN_AS_NODE",
-  // Injected by BSD `script` when we wrap the macOS probe to allocate a TTY.
-  "SCRIPT"
-] as const;
+const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 const DEFAULT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -26,6 +23,27 @@ const PLATFORM_FALLBACK_SHELLS: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "/bin/zsh",
   linux: "/bin/bash"
 };
+
+interface ShellEnvProbeWorkerRequest {
+  type: "probe";
+  shellPath: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+interface ShellEnvProbeWorkerResult {
+  type: "result";
+  stdout: string;
+}
+
+interface ShellEnvProbeWorkerError {
+  type: "error";
+  message: string;
+}
+
+type ShellEnvProbeWorkerMessage =
+  | ShellEnvProbeWorkerResult
+  | ShellEnvProbeWorkerError;
 
 export interface ResolvedShellEnv {
   shellPath: string;
@@ -44,11 +62,28 @@ export interface ShellProbeInvocation {
   args: string[];
 }
 
+export interface ShellProbeLaunchOptions {
+  cwd: string;
+  entry: string;
+  execArgv: string[];
+}
+
+export interface ShellPtyProbeOptions {
+  shellPath: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+}
+
 export type ShellCommandExecutor = (
   command: string,
   args: string[],
   options: ShellCommandExecutorOptions
 ) => Promise<{stdout: string; stderr: string}>;
+
+export type ShellPtyProbe = (
+  options: ShellPtyProbeOptions
+) => Promise<string>;
 
 interface ResolveShellEnvironmentOptions {
   preferredShell?: string;
@@ -59,6 +94,7 @@ interface ResolveShellEnvironmentOptions {
   processExecPath?: string;
   randomToken?: string;
   exec?: ShellCommandExecutor;
+  ptyProbe?: ShellPtyProbe;
   cachePath?: string;
   cacheTtlMs?: number;
   onBackgroundRevalidation?: (promise: Promise<void>) => void;
@@ -107,24 +143,52 @@ export function buildShellEnvProbeArgs(
   }
 }
 
+export function shouldUsePtyShellEnvProbe(
+  shellPath: string,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform === "darwin" && !isPowerShell(shellPath);
+}
+
 export function buildShellEnvProbeInvocation(
   shellPath: string,
   processExecPath: string,
   marker: string,
-  platform: NodeJS.Platform = process.platform
+  _platform: NodeJS.Platform = process.platform
 ): ShellProbeInvocation {
-  const args = buildShellEnvProbeArgs(shellPath, processExecPath, marker);
+  return {
+    command: shellPath,
+    args: buildShellEnvProbeArgs(shellPath, processExecPath, marker)
+  };
+}
 
-  if (isPowerShell(shellPath) || platform !== "darwin") {
+export function resolveShellEnvProbeLaunchOptions(
+  currentDir: string,
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+  resourcesPath: string | undefined = process.resourcesPath
+): ShellProbeLaunchOptions {
+  const asarSegment = `${sep}app.asar${sep}`;
+  if (currentDir.includes(asarSegment)) {
     return {
-      command: shellPath,
-      args
+      entry: join(currentDir, "shellEnvProbeWorker.js"),
+      cwd: resourcesPath ?? resolve(currentDir, "../../../.."),
+      execArgv: []
+    };
+  }
+
+  const repoRoot = resolve(currentDir, "../../../..");
+  if (nodeEnv === "production") {
+    return {
+      entry: resolve(currentDir, "shellEnvProbeWorker.js"),
+      cwd: repoRoot,
+      execArgv: []
     };
   }
 
   return {
-    command: "/usr/bin/script",
-    args: ["-q", "/dev/null", shellPath, ...args]
+    entry: resolve(repoRoot, "apps/desktop/src/main/shellEnvProbeWorker.ts"),
+    cwd: repoRoot,
+    execArgv: ["--import", "tsx"]
   };
 }
 
@@ -171,6 +235,7 @@ export async function resolveShellEnvironment(
   const processExecPath = options.processExecPath ?? process.execPath;
   const marker = options.randomToken ?? `__kmux_shell_env__${randomUUID()}`;
   const exec = options.exec ?? defaultShellCommandExecutor;
+  const ptyProbe = options.ptyProbe ?? defaultShellPtyProbe;
 
   if (options.cachePath) {
     const envelope = readCachedShellEnvEnvelope(options.cachePath);
@@ -187,6 +252,7 @@ export async function resolveShellEnvironment(
         processExecPath,
         marker,
         exec,
+        ptyProbe,
         cachePath: options.cachePath
       });
       options.onBackgroundRevalidation?.(revalidation);
@@ -202,24 +268,16 @@ export async function resolveShellEnvironment(
   }
 
   try {
-    const invocation = buildShellEnvProbeInvocation(
+    const resolvedEnv = await probeShellEnvironment({
       shellPath,
+      platform,
+      probeEnv: baseEnv,
+      timeoutMs,
       processExecPath,
       marker,
-      platform
-    );
-    const {stdout} = await exec(
-      invocation.command,
-      invocation.args,
-      {
-        env: baseEnv,
-        timeout: timeoutMs,
-        maxBuffer: DEFAULT_MAX_BUFFER
-      }
-    );
-    const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, marker));
-    resolvedEnv.SHELL ??= shellPath;
-    adjustShlvlForScriptWrap(resolvedEnv, invocation);
+      exec,
+      ptyProbe
+    });
     if (options.cachePath) {
       writeCachedShellEnv(options.cachePath, {
         shellPath,
@@ -261,6 +319,55 @@ export async function resolveShellEnvironment(
   }
 }
 
+async function probeShellEnvironment(options: {
+  shellPath: string;
+  platform: NodeJS.Platform;
+  probeEnv: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  processExecPath: string;
+  marker: string;
+  exec: ShellCommandExecutor;
+  ptyProbe: ShellPtyProbe;
+}): Promise<NodeJS.ProcessEnv> {
+  let stdout = "";
+
+  if (shouldUsePtyShellEnvProbe(options.shellPath, options.platform)) {
+    stdout = await options.ptyProbe({
+      shellPath: options.shellPath,
+      args: buildShellEnvProbeArgs(
+        options.shellPath,
+        options.processExecPath,
+        options.marker
+      ),
+      env: options.probeEnv,
+      timeoutMs: options.timeoutMs
+    });
+  } else {
+    const invocation = buildShellEnvProbeInvocation(
+      options.shellPath,
+      options.processExecPath,
+      options.marker,
+      options.platform
+    );
+    const result = await options.exec(
+      invocation.command,
+      invocation.args,
+      {
+        env: options.probeEnv,
+        timeout: options.timeoutMs,
+        maxBuffer: DEFAULT_MAX_BUFFER
+      }
+    );
+    stdout = result.stdout;
+  }
+
+  const resolvedEnv = sanitizeInheritedEnv(
+    parseShellEnvOutput(stdout, options.marker)
+  );
+  resolvedEnv.SHELL ??= options.shellPath;
+  return resolvedEnv;
+}
+
 function isCacheFresh(cachedAt: number | undefined, ttlMs: number): boolean {
   if (typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
     return false;
@@ -277,27 +384,20 @@ async function revalidateShellEnvInBackground(options: {
   processExecPath: string;
   marker: string;
   exec: ShellCommandExecutor;
+  ptyProbe: ShellPtyProbe;
   cachePath: string;
 }): Promise<void> {
   try {
-    const invocation = buildShellEnvProbeInvocation(
-      options.shellPath,
-      options.processExecPath,
-      options.marker,
-      options.platform
-    );
-    const {stdout} = await options.exec(
-      invocation.command,
-      invocation.args,
-      {
-        env: options.probeEnv,
-        timeout: options.timeoutMs,
-        maxBuffer: DEFAULT_MAX_BUFFER
-      }
-    );
-    const resolvedEnv = sanitizeInheritedEnv(parseShellEnvOutput(stdout, options.marker));
-    resolvedEnv.SHELL ??= options.shellPath;
-    adjustShlvlForScriptWrap(resolvedEnv, invocation);
+    const resolvedEnv = await probeShellEnvironment({
+      shellPath: options.shellPath,
+      platform: options.platform,
+      probeEnv: options.probeEnv,
+      timeoutMs: options.timeoutMs,
+      processExecPath: options.processExecPath,
+      marker: options.marker,
+      exec: options.exec,
+      ptyProbe: options.ptyProbe
+    });
     writeCachedShellEnv(options.cachePath, {
       shellPath: options.shellPath,
       baseEnv: resolvedEnv,
@@ -393,27 +493,6 @@ function sanitizeInheritedEnv(
   return nextEnv;
 }
 
-// The `/usr/bin/script` wrapper we use on macOS to allocate a TTY adds one
-// extra process layer between kmux and the probe shell, so SHLVL comes back
-// one higher than a Terminal.app session would report. Decrement it here so
-// every terminal kmux spawns starts at the SHLVL the user expects.
-function adjustShlvlForScriptWrap(
-  env: NodeJS.ProcessEnv,
-  invocation: ShellProbeInvocation
-): void {
-  if (invocation.command !== "/usr/bin/script") {
-    return;
-  }
-  const raw = env.SHLVL;
-  if (!raw) {
-    return;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    env.SHLVL = String(parsed - 1);
-  }
-}
-
 function buildShellEnvProbeCommand(
   shellPath: string,
   processExecPath: string,
@@ -429,11 +508,10 @@ function buildShellEnvProbeCommand(
     return `$env:ELECTRON_RUN_AS_NODE='1'; & ${powershellQuote(processExecPath)} -e ${powershellQuote(script)}`;
   }
 
-  // `exec 2>/dev/null` fires once the -c body starts, so the Node probe never
-  // mixes its own stderr into the shared TTY stdout we parse below. Stderr
-  // emitted earlier during .zshrc/.zprofile sourcing still goes to the TTY,
-  // but the marker-based parser slices strictly between the two markers the
-  // probe writes after that point, so it tolerates any surrounding noise.
+  // Once the -c body starts, the probe's own stderr is redirected away from
+  // the PTY stream we parse below. Noise emitted while the shell is sourcing
+  // startup files can still surround the markers, so the parser slices only
+  // the payload between those markers.
   return `exec 2>/dev/null; ELECTRON_RUN_AS_NODE=1 ${posixQuote(processExecPath)} -e ${posixQuote(script)}`;
 }
 
@@ -460,4 +538,95 @@ async function defaultShellCommandExecutor(
     encoding: "utf8"
   });
   return {stdout, stderr};
+}
+
+async function defaultShellPtyProbe(
+  options: ShellPtyProbeOptions
+): Promise<string> {
+  const currentDir = dirname(fileURLToPath(import.meta.url));
+  const launchOptions = resolveShellEnvProbeLaunchOptions(currentDir);
+
+  return await new Promise((resolvePromise, rejectPromise) => {
+    const child = fork(launchOptions.entry, [], {
+      cwd: launchOptions.cwd,
+      execArgv: launchOptions.execArgv,
+      env: process.env,
+      stdio: ["ignore", "ignore", "inherit", "ipc"]
+    });
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      settle(() => {
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+        rejectPromise(
+          new Error(`shell env PTY probe timed out after ${options.timeoutMs}ms`)
+        );
+      });
+    }, options.timeoutMs);
+    if (typeof timeout === "object" && timeout && "unref" in timeout) {
+      timeout.unref();
+    }
+
+    const settle = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      child.removeAllListeners("message");
+      child.removeAllListeners("error");
+      child.removeAllListeners("exit");
+      callback();
+    };
+
+    child.on("message", (message: ShellEnvProbeWorkerMessage) => {
+      if (!message || typeof message !== "object" || !("type" in message)) {
+        return;
+      }
+      if (message.type === "result") {
+        settle(() => {
+          resolvePromise(message.stdout);
+        });
+        return;
+      }
+      if (message.type === "error") {
+        settle(() => {
+          rejectPromise(new Error(message.message));
+        });
+      }
+    });
+
+    child.on("error", (error) => {
+      settle(() => {
+        rejectPromise(error);
+      });
+    });
+
+    child.on("exit", (code, signal) => {
+      settle(() => {
+        rejectPromise(
+          new Error(
+            `shell env PTY probe worker exited before returning a result (code ${code ?? "null"}, signal ${signal ?? "none"})`
+          )
+        );
+      });
+    });
+
+    try {
+      child.send({
+        type: "probe",
+        shellPath: options.shellPath,
+        args: options.args,
+        env: options.env
+      } satisfies ShellEnvProbeWorkerRequest);
+    } catch (error) {
+      settle(() => {
+        rejectPromise(error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+  });
 }

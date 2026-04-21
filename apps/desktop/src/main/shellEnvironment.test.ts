@@ -9,8 +9,11 @@ import {
   buildShellEnvProbeInvocation,
   parseShellEnvOutput,
   resolveShellEnvironment,
+  resolveShellEnvProbeLaunchOptions,
   resolveShellPath,
-  type ShellCommandExecutor
+  shouldUsePtyShellEnvProbe,
+  type ShellCommandExecutor,
+  type ShellPtyProbe
 } from "./shellEnvironment";
 
 describe("shell environment resolver", () => {
@@ -58,19 +61,14 @@ describe("shell environment resolver", () => {
     });
   });
 
-  it("uses a TTY-backed login interactive probe on macOS and returns resolved env output", async () => {
-    let receivedCommand = "";
-    let receivedArgs: string[] = [];
-    let receivedEnv: NodeJS.ProcessEnv = {};
-    const exec: ShellCommandExecutor = vi.fn(async (command, args, options) => {
-      receivedCommand = command;
-      receivedArgs = args;
-      receivedEnv = options.env;
-      return {
-        stdout:
-          "shell noise\n__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\"}__TOKEN__",
-        stderr: ""
-      };
+  it("uses a PTY-backed login interactive probe on macOS and returns resolved env output", async () => {
+    let receivedOptions: Parameters<ShellPtyProbe>[0] | null = null;
+    const ptyProbe: ShellPtyProbe = vi.fn(async (options) => {
+      receivedOptions = options;
+      return "shell noise\n__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\"}__TOKEN__";
+    });
+    const exec: ShellCommandExecutor = vi.fn(async () => {
+      throw new Error("exec path should not run on macOS PTY probes");
     });
 
     const resolved = await resolveShellEnvironment({
@@ -82,21 +80,18 @@ describe("shell environment resolver", () => {
       platform: "darwin",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
-      exec
+      exec,
+      ptyProbe
     });
 
-    expect(receivedCommand).toBe("/usr/bin/script");
-    expect(receivedArgs.slice(0, 6)).toEqual([
-      "-q",
-      "/dev/null",
-      "/bin/zsh",
-      "-i",
-      "-l",
-      "-c"
-    ]);
-    expect(receivedArgs[6]).toContain("ELECTRON_RUN_AS_NODE=1");
-    expect(receivedArgs[6]).toContain("exec 2>/dev/null");
-    expect(receivedEnv.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(receivedOptions).not.toBeNull();
+    expect(receivedOptions?.shellPath).toBe("/bin/zsh");
+    expect(receivedOptions?.args.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
+    expect(receivedOptions?.args[3]).toContain("ELECTRON_RUN_AS_NODE=1");
+    expect(receivedOptions?.args[3]).toContain("exec 2>/dev/null");
+    expect(receivedOptions?.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(receivedOptions?.timeoutMs).toBe(15_000);
+    expect(exec).not.toHaveBeenCalled();
     expect(resolved).toEqual({
       shellPath: "/bin/zsh",
       baseEnv: {
@@ -107,12 +102,49 @@ describe("shell environment resolver", () => {
     });
   });
 
-  it("drops SCRIPT and decrements SHLVL injected by the macOS TTY wrapper", async () => {
-    const exec: ShellCommandExecutor = vi.fn(async () => ({
-      stdout:
-        "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SCRIPT\":\"/dev/null\",\"SHLVL\":\"3\"}__TOKEN__",
-      stderr: ""
-    }));
+  it("uses the direct shell invocation path off macOS", async () => {
+    let receivedCommand = "";
+    let receivedArgs: string[] = [];
+    let receivedEnv: NodeJS.ProcessEnv = {};
+    const exec: ShellCommandExecutor = vi.fn(async (command, args, options) => {
+      receivedCommand = command;
+      receivedArgs = args;
+      receivedEnv = options.env;
+      return {
+        stdout:
+          "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SHLVL\":\"3\"}__TOKEN__",
+        stderr: ""
+      };
+    });
+    const ptyProbe: ShellPtyProbe = vi.fn(async () => {
+      throw new Error("PTY path should not run off macOS");
+    });
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: {
+        PATH: "/usr/bin",
+        ELECTRON_RUN_AS_NODE: "1"
+      },
+      platform: "linux",
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      exec,
+      ptyProbe
+    });
+
+    expect(receivedCommand).toBe("/bin/zsh");
+    expect(receivedArgs.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
+    expect(receivedArgs[3]).toContain("ELECTRON_RUN_AS_NODE=1");
+    expect(receivedEnv.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(ptyProbe).not.toHaveBeenCalled();
+    expect(resolved.baseEnv.SHLVL).toBe("3");
+  });
+
+  it("keeps shell-provided SHLVL untouched when the PTY probe returns it", async () => {
+    const ptyProbe: ShellPtyProbe = vi.fn(async () => {
+      return "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SHLVL\":\"3\"}__TOKEN__";
+    });
 
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
@@ -120,33 +152,13 @@ describe("shell environment resolver", () => {
       platform: "darwin",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
-      exec
-    });
-
-    expect(resolved.baseEnv.SCRIPT).toBeUndefined();
-    expect(resolved.baseEnv.SHLVL).toBe("2");
-  });
-
-  it("leaves SHLVL untouched when the probe is not wrapped in script", async () => {
-    const exec: ShellCommandExecutor = vi.fn(async () => ({
-      stdout:
-        "__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\",\"SHLVL\":\"3\"}__TOKEN__",
-      stderr: ""
-    }));
-
-    const resolved = await resolveShellEnvironment({
-      preferredShell: "/bin/zsh",
-      env: { PATH: "/usr/bin" },
-      platform: "linux",
-      processExecPath: "/usr/local/bin/node",
-      randomToken: "__TOKEN__",
-      exec
+      ptyProbe
     });
 
     expect(resolved.baseEnv.SHLVL).toBe("3");
   });
 
-  it("falls back to sanitized inherited env when probe execution fails", async () => {
+  it("falls back to sanitized inherited env when the PTY probe fails", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const resolved = await resolveShellEnvironment({
       env: {
@@ -155,7 +167,7 @@ describe("shell environment resolver", () => {
       },
       platform: "darwin",
       userShell: "/bin/bash",
-      exec: vi.fn(async () => {
+      ptyProbe: vi.fn(async () => {
         throw new Error("boom");
       })
     });
@@ -179,29 +191,16 @@ describe("shell environment resolver", () => {
     ]);
   });
 
-  it("wraps the macOS probe in script to allocate a TTY", () => {
-    expect(
-      buildShellEnvProbeInvocation(
-        "/bin/zsh",
-        "/usr/local/bin/node",
-        "__TOKEN__",
-        "darwin"
-      )
-    ).toEqual({
-      command: "/usr/bin/script",
-      args: [
-        "-q",
-        "/dev/null",
-        "/bin/zsh",
-        "-i",
-        "-l",
-        "-c",
-        expect.stringContaining("exec 2>/dev/null")
-      ]
-    });
+  it("uses the PTY probe only for darwin POSIX shells", () => {
+    expect(shouldUsePtyShellEnvProbe("/bin/zsh", "darwin")).toBe(true);
+    expect(shouldUsePtyShellEnvProbe("/bin/bash", "darwin")).toBe(true);
+    expect(shouldUsePtyShellEnvProbe("/bin/zsh", "linux")).toBe(false);
+    expect(shouldUsePtyShellEnvProbe("/usr/local/bin/pwsh", "darwin")).toBe(
+      false
+    );
   });
 
-  it("keeps the direct interactive login probe off macOS", () => {
+  it("builds a direct shell invocation for non-PTY execution paths", () => {
     expect(
       buildShellEnvProbeInvocation(
         "/bin/zsh",
@@ -215,8 +214,49 @@ describe("shell environment resolver", () => {
         "-i",
         "-l",
         "-c",
-        expect.stringContaining("ELECTRON_RUN_AS_NODE=1")
+        expect.stringContaining("exec 2>/dev/null")
       ]
+    });
+  });
+
+  it("resolves the packaged PTY worker next to the bundled main output", () => {
+    expect(
+      resolveShellEnvProbeLaunchOptions(
+        "/Applications/kmux.app/Contents/Resources/app.asar/out/main",
+        "production",
+        "/Applications/kmux.app/Contents/Resources"
+      )
+    ).toEqual({
+      entry:
+        "/Applications/kmux.app/Contents/Resources/app.asar/out/main/shellEnvProbeWorker.js",
+      cwd: "/Applications/kmux.app/Contents/Resources",
+      execArgv: []
+    });
+  });
+
+  it("resolves the production PTY worker from out/main when unpackaged", () => {
+    expect(
+      resolveShellEnvProbeLaunchOptions(
+        "/Users/test/kmux/apps/desktop/out/main",
+        "production"
+      )
+    ).toEqual({
+      entry: "/Users/test/kmux/apps/desktop/out/main/shellEnvProbeWorker.js",
+      cwd: "/Users/test/kmux",
+      execArgv: []
+    });
+  });
+
+  it("resolves the source PTY worker through tsx during development", () => {
+    expect(
+      resolveShellEnvProbeLaunchOptions(
+        "/Users/test/kmux/apps/desktop/src/main",
+        "development"
+      )
+    ).toEqual({
+      entry: "/Users/test/kmux/apps/desktop/src/main/shellEnvProbeWorker.ts",
+      cwd: "/Users/test/kmux",
+      execArgv: ["--import", "tsx"]
     });
   });
 
@@ -225,6 +265,7 @@ describe("shell environment resolver", () => {
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      platform: "linux",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       cachePath,
@@ -249,7 +290,7 @@ describe("shell environment resolver", () => {
     expect(typeof persisted.cachedAt).toBe("number");
   });
 
-  it("uses the cached environment as fallback when the probe fails", async () => {
+  it("uses the cached environment as fallback when the PTY probe fails", async () => {
     const cachePath = join(sandboxDir, "fallback-cache.json");
     const eightDaysAgoMs = Date.now() - 8 * 24 * 60 * 60 * 1000;
     writeFileSync(
@@ -269,9 +310,10 @@ describe("shell environment resolver", () => {
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      platform: "darwin",
       processExecPath: "/usr/local/bin/node",
       cachePath,
-      exec: vi.fn(async () => {
+      ptyProbe: vi.fn(async () => {
         throw new Error("boom");
       })
     });
@@ -287,7 +329,7 @@ describe("shell environment resolver", () => {
     warning.mockRestore();
   });
 
-  it("returns fresh cache immediately without probing (SWR hit)", async () => {
+  it("returns fresh cache immediately without probing synchronously on an SWR hit", async () => {
     const cachePath = join(sandboxDir, "swr-hit.json");
     writeFileSync(
       cachePath,
@@ -300,20 +342,19 @@ describe("shell environment resolver", () => {
         cachedAt: Date.now()
       })
     );
-    const execMock = vi.fn(async () => ({
-      stdout:
-        "__TOKEN__{\"PATH\":\"/new/path\",\"SHELL\":\"/bin/zsh\"}__TOKEN__",
-      stderr: ""
-    }));
+    const ptyProbe = vi.fn(async () => {
+      return "__TOKEN__{\"PATH\":\"/new/path\",\"SHELL\":\"/bin/zsh\"}__TOKEN__";
+    });
     let backgroundRevalidation: Promise<void> | null = null;
 
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      platform: "darwin",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       cachePath,
-      exec: execMock,
+      ptyProbe,
       onBackgroundRevalidation: (promise) => {
         backgroundRevalidation = promise;
       }
@@ -327,14 +368,14 @@ describe("shell environment resolver", () => {
     });
     expect(backgroundRevalidation).not.toBeNull();
     await backgroundRevalidation;
-    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(ptyProbe).toHaveBeenCalledTimes(1);
     const refreshed = JSON.parse(readFileSync(cachePath, "utf8")) as {
       baseEnv: Record<string, string>;
     };
     expect(refreshed.baseEnv.PATH).toBe("/new/path");
   });
 
-  it("re-probes synchronously when cached entry is older than TTL", async () => {
+  it("re-probes synchronously when the cached entry is older than the TTL", async () => {
     const cachePath = join(sandboxDir, "swr-stale.json");
     const stalePastMs = Date.now() - 60 * 60 * 1000;
     writeFileSync(
@@ -354,6 +395,7 @@ describe("shell environment resolver", () => {
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin" },
+      platform: "linux",
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       cachePath,
@@ -381,8 +423,9 @@ describe("shell environment resolver", () => {
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" },
+      platform: "darwin",
       cachePath,
-      exec: vi.fn(async () => {
+      ptyProbe: vi.fn(async () => {
         throw new Error("boom");
       })
     });
@@ -400,8 +443,9 @@ describe("shell environment resolver", () => {
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
       env: { PATH: "/usr/bin" },
+      platform: "darwin",
       cachePath,
-      exec: vi.fn(async () => {
+      ptyProbe: vi.fn(async () => {
         throw new Error("boom");
       })
     });
