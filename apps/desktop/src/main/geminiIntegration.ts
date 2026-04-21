@@ -13,7 +13,9 @@ const KMUX_MANAGED_GEMINI_HOOK_MARKER = "KMUX_MANAGED_GEMINI_HOOK=1";
 
 type GeminiHookEvent =
   | "AfterAgent"
+  | "AfterTool"
   | "BeforeAgent"
+  | "BeforeTool"
   | "Notification"
   | "SessionEnd"
   | "SessionStart";
@@ -43,6 +45,8 @@ export interface GeminiIntegrationInstallResult {
 const MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
   { eventName: "BeforeAgent" },
   { eventName: "AfterAgent" },
+  { eventName: "BeforeTool" },
+  { eventName: "AfterTool" },
   { eventName: "SessionStart" },
   { eventName: "SessionEnd" },
   { eventName: "Notification", matcher: "ToolPermission" }
