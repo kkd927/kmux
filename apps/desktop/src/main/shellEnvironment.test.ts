@@ -13,7 +13,8 @@ import {
   resolveShellPath,
   shouldUsePtyShellEnvProbe,
   type ShellCommandExecutor,
-  type ShellPtyProbe
+  type ShellPtyProbe,
+  type ShellPtyProbeOptions
 } from "./shellEnvironment";
 
 describe("shell environment resolver", () => {
@@ -62,9 +63,7 @@ describe("shell environment resolver", () => {
   });
 
   it("uses a PTY-backed login interactive probe on macOS and returns resolved env output", async () => {
-    let receivedOptions: Parameters<ShellPtyProbe>[0] | null = null;
-    const ptyProbe: ShellPtyProbe = vi.fn(async (options) => {
-      receivedOptions = options;
+    const ptyProbe = vi.fn(async (options: ShellPtyProbeOptions) => {
       return "shell noise\n__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\"}__TOKEN__";
     });
     const exec: ShellCommandExecutor = vi.fn(async () => {
@@ -84,13 +83,17 @@ describe("shell environment resolver", () => {
       ptyProbe
     });
 
-    expect(receivedOptions).not.toBeNull();
-    expect(receivedOptions?.shellPath).toBe("/bin/zsh");
-    expect(receivedOptions?.args.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
-    expect(receivedOptions?.args[3]).toContain("ELECTRON_RUN_AS_NODE=1");
-    expect(receivedOptions?.args[3]).toContain("exec 2>/dev/null");
-    expect(receivedOptions?.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
-    expect(receivedOptions?.timeoutMs).toBe(15_000);
+    const receivedOptions = ptyProbe.mock.calls[0]?.[0];
+    expect(receivedOptions).toBeDefined();
+    if (!receivedOptions) {
+      throw new Error("expected PTY probe options to be captured");
+    }
+    expect(receivedOptions.shellPath).toBe("/bin/zsh");
+    expect(receivedOptions.args.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
+    expect(receivedOptions.args[3]).toContain("ELECTRON_RUN_AS_NODE=1");
+    expect(receivedOptions.args[3]).toContain("exec 2>/dev/null");
+    expect(receivedOptions.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(receivedOptions.timeoutMs).toBe(15_000);
     expect(exec).not.toHaveBeenCalled();
     expect(resolved).toEqual({
       shellPath: "/bin/zsh",
