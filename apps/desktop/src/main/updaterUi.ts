@@ -65,13 +65,13 @@ export function createNativeUpdaterNotifier(
     notifyUpdateAvailable(version: string): void {
       showNotification(
         `${options.appName} update available`,
-        `Version ${version} is ready to download from the ${options.appName} menu.`
+        `Version ${version} is ready to download from the title bar or the ${options.appName} menu.`
       );
     },
     notifyUpdateDownloaded(version: string): void {
       showNotification(
         `${options.appName} update ready`,
-        `Version ${version} is ready to install from the ${options.appName} menu.`
+        `Version ${version} is ready to install from the title bar or the ${options.appName} menu.`
       );
     }
   };

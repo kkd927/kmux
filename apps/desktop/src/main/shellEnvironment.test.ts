@@ -63,7 +63,7 @@ describe("shell environment resolver", () => {
   });
 
   it("uses a PTY-backed login interactive probe on macOS and returns resolved env output", async () => {
-    const ptyProbe = vi.fn(async (options: ShellPtyProbeOptions) => {
+    const ptyProbe = vi.fn(async (_options: ShellPtyProbeOptions) => {
       return "shell noise\n__TOKEN__{\"PATH\":\"/usr/local/bin\",\"SHELL\":\"/bin/zsh\"}__TOKEN__";
     });
     const exec: ShellCommandExecutor = vi.fn(async () => {

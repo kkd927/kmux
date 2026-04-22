@@ -10,7 +10,8 @@ import type {
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
-  TerminalKeyInput
+  TerminalKeyInput,
+  UpdaterState
 } from "@kmux/proto";
 import type { TerminalEvent } from "../../preload/index";
 
@@ -19,11 +20,13 @@ declare global {
     kmux: {
       getView(): Promise<ShellViewModel>;
       getUsageView(): Promise<UsageViewSnapshot>;
+      getUpdaterState(): Promise<UpdaterState>;
       dispatch(action: AppAction): Promise<ShellViewModel>;
       subscribeView(listener: (view: ShellViewModel) => void): () => void;
       subscribeUsage(
         listener: (snapshot: UsageViewSnapshot) => void
       ): () => void;
+      subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
       subscribeTerminal(listener: (event: TerminalEvent) => void): () => void;
       attachSurface(surfaceId: string): Promise<SurfaceSnapshotPayload | null>;
       detachSurface(surfaceId: string): Promise<void>;
@@ -61,6 +64,8 @@ declare global {
       ): () => void;
       identify(): Promise<ShellIdentity>;
       setUsageDashboardOpen(open: boolean): Promise<void>;
+      downloadAvailableUpdate(): Promise<void>;
+      installDownloadedUpdate(): Promise<void>;
     };
     kmuxTest?: {
       snapshotSurface(

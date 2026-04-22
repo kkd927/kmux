@@ -25,6 +25,7 @@ import {
 import { AppOverlays } from "./components/AppOverlays";
 import { Codicon } from "./components/Codicon";
 import { PaneTree } from "./components/PaneTree";
+import { TitlebarUpdateAction } from "./components/TitlebarUpdateAction";
 import { UsageDashboard } from "./components/UsageDashboard";
 import {
   applyProbeIssuesToResolvedTypography,
@@ -713,6 +714,9 @@ export function App(): JSX.Element {
           </div>
         </div>
         <div className={styles.titleActions}>
+          <TitlebarUpdateAction
+            className={`${styles.titleActionButton} ${styles.titleActionGhost} ${styles.titleActionTextButton}`}
+          />
           <button
             aria-label="Toggle notifications"
             className={`${styles.titleActionButton} ${styles.titleActionGhost}`}

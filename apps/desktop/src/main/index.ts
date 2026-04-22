@@ -174,6 +174,8 @@ async function bootstrap(): Promise<void> {
 
   const initial = runtime.restoreInitialState();
   runtime.setStore(new AppStore(initial));
+  let updater!: ReturnType<typeof createUpdaterController>;
+  let lifecycle!: ReturnType<typeof createMainLifecycleController>;
 
   ptyHost = new PtyHostManager();
   runtime.setPtyHost(ptyHost);
@@ -209,6 +211,7 @@ async function bootstrap(): Promise<void> {
   registerIpcHandlers({
     getView: runtime.getView,
     getUsageView: usageRuntime.getSnapshot,
+    getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,
     snapshotSurface: terminalBridge.snapshotSurface,
@@ -222,7 +225,12 @@ async function bootstrap(): Promise<void> {
     reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,
     importTerminalThemePalette: importItermcolorsPalette,
     exportTerminalThemePalette: exportItermcolorsPalette,
-    setUsageDashboardOpen: usageRuntime.setDashboardOpen
+    setUsageDashboardOpen: usageRuntime.setDashboardOpen,
+    downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
+    installDownloadedUpdate: () => {
+      lifecycle.allowQuit();
+      updater.quitAndInstall();
+    }
   });
 
   let currentMainWindow: BrowserWindow | null = null;
@@ -236,7 +244,6 @@ async function bootstrap(): Promise<void> {
     }
     return null;
   };
-  let updater!: ReturnType<typeof createUpdaterController>;
   const openMainWindow = (_reason: "initial" | "activate"): void => {
     const window = createMainWindow({
       currentDir,
@@ -256,6 +263,7 @@ async function bootstrap(): Promise<void> {
     runtime.setMainWindow(window);
     window.webContents.once("did-finish-load", () => {
       runtime.broadcastView();
+      broadcastUpdaterState();
     });
     window.once("ready-to-show", () => {
       updater.startBackgroundChecks();
@@ -285,6 +293,12 @@ async function bootstrap(): Promise<void> {
     isPackaged: app.isPackaged,
     env: process.env
   });
+  const broadcastUpdaterState = (): void => {
+    const state = updater.getState();
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("kmux:updater", state);
+    }
+  };
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (): Promise<void> => {
     if (!shutdownPromise) {
@@ -310,7 +324,7 @@ async function bootstrap(): Promise<void> {
 
     return shutdownPromise;
   };
-  const lifecycle = createMainLifecycleController({
+  lifecycle = createMainLifecycleController({
     isMac: process.platform === "darwin",
     app,
     getWindowCount: () => BrowserWindow.getAllWindows().length,
@@ -348,8 +362,10 @@ async function bootstrap(): Promise<void> {
   };
   const unsubscribeUpdater = updater.subscribe(() => {
     updateApplicationMenu();
+    broadcastUpdaterState();
   });
   updateApplicationMenu();
+  broadcastUpdaterState();
   runtime.broadcastView();
   usageRuntime.start();
   runtime.respawnRestoredSessions();
