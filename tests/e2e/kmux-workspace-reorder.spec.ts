@@ -9,27 +9,26 @@ import {
   waitForView
 } from "./helpers";
 
-test("sidebar workspace drag reorder updates order and survives relaunch", async () => {
+test("sidebar workspace drag reorder updates order and survives live window reopen", async () => {
   const sandbox = createSandbox("kmux-e2e-workspace-reorder-");
-  let firstLaunch = await launchKmuxWithSandbox(sandbox);
-  let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
+  let launched = await launchKmuxWithSandbox(sandbox);
 
   try {
-    await dispatch(firstLaunch.page, {
+    await dispatch(launched.page, {
       type: "workspace.create",
       name: "alpha"
     });
-    await dispatch(firstLaunch.page, {
+    await dispatch(launched.page, {
       type: "workspace.create",
       name: "beta"
     });
-    await dispatch(firstLaunch.page, {
+    await dispatch(launched.page, {
       type: "workspace.create",
       name: "gamma"
     });
 
     const seeded = await waitForView(
-      firstLaunch.page,
+      launched.page,
       (view) =>
         view.workspaceRows.length >= 4 &&
         view.workspaceRows[0]?.name === "hq" &&
@@ -45,13 +44,13 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     if (!betaId) {
       throw new Error("beta workspace should exist before pinning");
     }
-    await dispatch(firstLaunch.page, {
+    await dispatch(launched.page, {
       type: "workspace.pin.toggle",
       workspaceId: betaId
     });
 
     const pinned = await waitForView(
-      firstLaunch.page,
+      launched.page,
       (view) =>
         view.workspaceRows[0]?.name === "hq" &&
         view.workspaceRows[1]?.name === "beta" &&
@@ -60,10 +59,10 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "pinning beta should promote it into the pinned section"
     );
 
-    const source = firstLaunch.page.locator(
+    const source = launched.page.locator(
       '[data-workspace-id="' + pinned.workspaceRows[3].workspaceId + '"]'
     );
-    const target = firstLaunch.page.locator(
+    const target = launched.page.locator(
       '[data-workspace-id="' + pinned.workspaceRows[2].workspaceId + '"]'
     );
     const targetBox = await target.boundingBox();
@@ -80,7 +79,7 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     });
 
     const reorderedUnpinned = await waitForView(
-      firstLaunch.page,
+      launched.page,
       (view) =>
         view.workspaceRows[0]?.name === "hq" &&
         view.workspaceRows[1]?.name === "beta" &&
@@ -93,10 +92,10 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       reorderedUnpinned.workspaceRows.map((row) => row.name).slice(0, 4)
     ).toEqual(["hq", "beta", "gamma", "alpha"]);
 
-    const pinnedSource = firstLaunch.page.locator(
+    const pinnedSource = launched.page.locator(
       '[data-workspace-id="' + reorderedUnpinned.workspaceRows[1].workspaceId + '"]'
     );
-    const pinnedTarget = firstLaunch.page.locator(
+    const pinnedTarget = launched.page.locator(
       '[data-workspace-id="' + reorderedUnpinned.workspaceRows[0].workspaceId + '"]'
     );
     const pinnedTargetBox = await pinnedTarget.boundingBox();
@@ -119,7 +118,7 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
     });
 
     const reordered = await waitForView(
-      firstLaunch.page,
+      launched.page,
       (view) =>
         view.workspaceRows[0]?.name === "beta" &&
         view.workspaceRows[1]?.name === "hq" &&
@@ -135,17 +134,29 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "alpha"
     ]);
 
-    await closeKmuxApp(firstLaunch);
+    const pageClose = launched.page.waitForEvent("close");
+    await launched.page.evaluate(() => window.kmux.windowControl("close"));
+    await pageClose;
 
-    relaunch = await launchKmuxWithSandbox(sandbox);
+    const reopenedWindow = launched.app.waitForEvent("window");
+    await launched.app.evaluate(({ app }) => {
+      app.emit("activate");
+    });
+    const reopenedPage = await reopenedWindow;
+    await reopenedPage.waitForLoadState("domcontentloaded");
+    launched = {
+      ...launched,
+      page: reopenedPage
+    };
+
     const restored = await waitForView(
-      relaunch.page,
+      reopenedPage,
       (view) =>
         view.workspaceRows[0]?.name === "beta" &&
         view.workspaceRows[1]?.name === "hq" &&
         view.workspaceRows[2]?.name === "gamma" &&
         view.workspaceRows[3]?.name === "alpha",
-      "workspace order should persist after relaunch"
+      "workspace order should persist while the app stays alive across window reopen"
     );
 
     expect(restored.workspaceRows.map((row) => row.name).slice(0, 4)).toEqual([
@@ -155,10 +166,7 @@ test("sidebar workspace drag reorder updates order and survives relaunch", async
       "alpha"
     ]);
   } finally {
-    await closeKmuxApp(firstLaunch).catch(() => {});
-    if (relaunch) {
-      await closeKmuxApp(relaunch).catch(() => {});
-    }
+    await closeKmuxApp(launched).catch(() => {});
     destroySandbox(sandbox);
   }
 });

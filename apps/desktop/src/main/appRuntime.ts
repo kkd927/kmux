@@ -254,9 +254,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.settingsStore.load() ??
       createDefaultSettings("kmuxOnly", options.defaultShellPath);
     const shouldRestoreSnapshot =
-      snapshot !== null &&
-      settings.startupRestore &&
-      snapshotRecord?.cleanShutdown !== true;
+      snapshot !== null && snapshotRecord?.cleanShutdown !== true;
     const initial =
       shouldRestoreSnapshot
         ? cloneState(snapshot)
@@ -405,11 +403,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       terminalTypographyController.setSettings(
         nextStore.getState().settings.terminalTypography
       );
-      if (nextStore.getState().settings.startupRestore) {
-        options.snapshotStore.save(nextStore.getState(), {
-          cleanShutdown: false
-        });
-      }
+      options.snapshotStore.save(nextStore.getState(), {
+        cleanShutdown: false
+      });
     },
     setPtyHost(nextPtyHost) {
       ptyHost = nextPtyHost;

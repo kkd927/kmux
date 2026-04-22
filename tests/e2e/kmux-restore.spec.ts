@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import process from "node:process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -8,22 +9,39 @@ import {
   createSandbox,
   destroySandbox,
   dispatch,
+  forceKillKmuxApp,
   getView,
   launchKmuxWithSandbox,
   waitForView
 } from "./helpers";
 
-test("startupRestore governs snapshot reuse across relaunches", async () => {
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ESRCH"
+    ) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+test("unclean shutdown reuses the saved workspace snapshot on relaunch", async () => {
   const sandbox = createSandbox("kmux-restore-");
   let firstLaunch = await launchKmuxWithSandbox(sandbox);
   let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
-  let finalRelaunch:
-    | Awaited<ReturnType<typeof launchKmuxWithSandbox>>
-    | undefined;
 
   try {
     const initial = await getView(firstLaunch.page);
     const initialWorkspaceCount = initial.workspaceRows.length;
+    const appPid = firstLaunch.app.process().pid;
 
     await dispatch(firstLaunch.page, {
       type: "workspace.create",
@@ -43,24 +61,51 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
       paneId: afterWorkspace.activeWorkspace.activePaneId,
       direction: "right"
     });
-    const afterSplit = await waitForView(
+    await waitForView(
       firstLaunch.page,
       (view) => Object.keys(view.activeWorkspace.panes).length === 2,
       "split should be reflected before relaunch"
     );
 
-    await dispatch(firstLaunch.page, {
-      type: "settings.update",
-      patch: {
-        ...afterSplit.settings,
-        startupRestore: true
-      }
-    });
-
-    await closeKmuxApp(firstLaunch);
-
     expect(existsSync(join(sandbox.configDir, "state.json"))).toBe(true);
-    expect(existsSync(join(sandbox.configDir, "window-state.json"))).toBe(true);
+    await expect
+      .poll(() => {
+        if (!existsSync(join(sandbox.configDir, "state.json"))) {
+          return false;
+        }
+        const stateJson = JSON.parse(
+          readFileSync(join(sandbox.configDir, "state.json"), "utf8")
+        ) as {
+          snapshot?: {
+            workspaces?: Record<string, { name?: string }>;
+            panes?: Record<string, { workspaceId?: string }>;
+            windows?: Record<string, { activeWorkspaceId?: string }>;
+            activeWindowId?: string;
+          };
+        };
+        const workspaceNames = Object.values(
+          stateJson.snapshot?.workspaces ?? {}
+        ).map((workspace) => workspace.name);
+        const activeWindowId = stateJson.snapshot?.activeWindowId;
+        const activeWorkspaceId =
+          (activeWindowId
+            ? stateJson.snapshot?.windows?.[activeWindowId]?.activeWorkspaceId
+            : undefined) ?? "";
+        const paneCount = Object.values(stateJson.snapshot?.panes ?? {}).filter(
+          (pane) => pane.workspaceId === activeWorkspaceId
+        ).length;
+        return (
+          workspaceNames.includes("restore workspace") && paneCount === 2
+        );
+      })
+      .toBe(true);
+
+    if (typeof appPid === "number") {
+      await forceKillKmuxApp(firstLaunch);
+      await expect
+        .poll(() => (isProcessAlive(appPid) ? "alive" : "exited"))
+        .toBe("exited");
+    }
 
     relaunch = await launchKmuxWithSandbox(sandbox);
     const restored = await waitForView(
@@ -71,40 +116,16 @@ test("startupRestore governs snapshot reuse across relaunches", async () => {
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.sessionState === "running"
         ),
-      "restore-enabled relaunch should reuse the saved workspace layout"
+      "crash recovery relaunch should reuse the saved workspace layout"
     );
     expect(
       restored.workspaceRows.some((row) => row.name === "restore workspace")
     ).toBeTruthy();
     expect(Object.keys(restored.activeWorkspace.panes)).toHaveLength(2);
-
-    await dispatch(relaunch.page, {
-      type: "settings.update",
-      patch: {
-        ...restored.settings,
-        startupRestore: false
-      }
-    });
-
-    await closeKmuxApp(relaunch);
-
-    finalRelaunch = await launchKmuxWithSandbox(sandbox);
-    const reset = await waitForView(
-      finalRelaunch.page,
-      (view) =>
-        view.workspaceRows.every((row) => row.name !== "restore workspace"),
-      "restore-disabled relaunch should ignore the saved snapshot"
-    );
-    expect(
-      reset.workspaceRows.some((row) => row.name === "restore workspace")
-    ).toBeFalsy();
   } finally {
     await closeKmuxApp(firstLaunch).catch(() => {});
     if (relaunch) {
       await closeKmuxApp(relaunch).catch(() => {});
-    }
-    if (finalRelaunch) {
-      await closeKmuxApp(finalRelaunch).catch(() => {});
     }
     destroySandbox(sandbox);
   }

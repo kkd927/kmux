@@ -95,6 +95,31 @@ describe("file-store persistence", () => {
     expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(settings);
   });
 
+  it("strips legacy startupRestore settings when loading from disk", () => {
+    const settingsPath = join(sandboxDir, "legacy-settings.json");
+    const settings = createInitialState("/bin/zsh").settings as unknown as Record<
+      string,
+      unknown
+    >;
+
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        ...settings,
+        startupRestore: false
+      })
+    );
+
+    const restored = createSettingsStore(settingsPath).load() as Record<
+      string,
+      unknown
+    > | null;
+
+    expect(restored).not.toBeNull();
+    expect(restored?.warnBeforeQuit).toBe(settings.warnBeforeQuit);
+    expect("startupRestore" in (restored ?? {})).toBe(false);
+  });
+
   it("returns null when files are missing", () => {
     expect(
       createSnapshotStore(join(sandboxDir, "missing-state.json")).load()

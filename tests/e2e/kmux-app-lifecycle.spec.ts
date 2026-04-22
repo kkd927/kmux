@@ -128,7 +128,7 @@ test("closing the last window keeps kmux alive and live-reopens the same session
   }
 });
 
-test("explicit quit tears down background services and preserves cold restore when warn-before-quit is disabled", async () => {
+test("explicit quit tears down background services and starts the next launch fresh when warn-before-quit is disabled", async () => {
   const sandbox = createSandbox("kmux-e2e-explicit-quit-");
   let launched = await launchKmuxWithSandbox(sandbox);
   let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
@@ -150,8 +150,7 @@ test("explicit quit tears down background services and preserves cold restore wh
       type: "settings.update",
       patch: {
         socketMode: "allowAll",
-        warnBeforeQuit: false,
-        startupRestore: true
+        warnBeforeQuit: false
       }
     });
     await waitForView(
@@ -189,22 +188,22 @@ test("explicit quit tears down background services and preserves cold restore wh
     }
 
     relaunch = await launchKmuxWithSandbox(sandbox);
-    const restored = await waitForView(
+    const relaunched = await waitForView(
       relaunch.page,
       (view) =>
         view.settings.socketMode === "allowAll" &&
         view.settings.warnBeforeQuit === false &&
-        view.workspaceRows.some((row) => row.name === restoreWorkspaceName) &&
+        view.workspaceRows.every((row) => row.name !== restoreWorkspaceName) &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.sessionState === "running"
         ),
-      "cold restore should still work after an explicit quit"
+      "clean relaunch should start fresh after an explicit quit"
     );
 
-    expect(restored.workspaceRows.some((row) => row.name === restoreWorkspaceName)).toBe(
-      true
-    );
-    expect(restored.settings.warnBeforeQuit).toBe(false);
+    expect(
+      relaunched.workspaceRows.some((row) => row.name === restoreWorkspaceName)
+    ).toBe(false);
+    expect(relaunched.settings.warnBeforeQuit).toBe(false);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
   } finally {
     if (relaunch) {
@@ -244,8 +243,7 @@ test("explicit quit clears persisted notifications before the next relaunch", as
     await dispatch(launched.page, {
       type: "settings.update",
       patch: {
-        warnBeforeQuit: false,
-        startupRestore: true
+        warnBeforeQuit: false
       }
     });
 

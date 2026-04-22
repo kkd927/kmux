@@ -309,7 +309,6 @@ export interface TerminalTypographyProbeReport {
 
 export interface KmuxSettings {
   socketMode: SocketMode;
-  startupRestore: boolean;
   warnBeforeQuit: boolean;
   notificationDesktop: boolean;
   notificationSound: boolean;

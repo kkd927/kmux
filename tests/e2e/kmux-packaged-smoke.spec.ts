@@ -1,4 +1,4 @@
-import {expect, test} from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import {
   closeKmuxApp,
@@ -6,10 +6,10 @@ import {
   destroySandbox,
   dispatch,
   getView,
-    launchKmuxWithSandbox,
-    runCliJson,
-    waitForSurfaceSnapshotContains,
-    waitForView
+  launchKmuxWithSandbox,
+  runCliJson,
+  waitForSurfaceSnapshotContains,
+  waitForView
 } from "./helpers";
 
 const packagedExecutablePath = process.env.KMUX_PACKAGED_EXECUTABLE_PATH;
@@ -19,7 +19,7 @@ test.skip(
   "KMUX_PACKAGED_EXECUTABLE_PATH is required for packaged smoke tests"
 );
 
-test("packaged kmux smoke flow validates launch, shell attach, CLI, notifications, and restore", async () => {
+test("packaged kmux smoke flow validates launch, shell attach, CLI, notifications, and clean relaunch", async () => {
   const sandbox = createSandbox("kmux-packaged-smoke-");
   const launched = await launchKmuxWithSandbox(sandbox, {
     executablePath: packagedExecutablePath
@@ -52,16 +52,14 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       type: "settings.update",
       patch: {
         ...afterWorkspace.settings,
-        socketMode: "allowAll",
-        startupRestore: true
+        socketMode: "allowAll"
       }
     });
 
     const configured = await waitForView(
       page,
-      (view) =>
-        view.settings.socketMode === "allowAll" && view.settings.startupRestore,
-      "packaged smoke should enable socket mode and restore"
+      (view) => view.settings.socketMode === "allowAll",
+      "packaged smoke should enable allow-all socket mode"
     );
 
     const activePaneId = configured.activeWorkspace.activePaneId;
@@ -176,46 +174,45 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     relaunch = await launchKmuxWithSandbox(sandbox, {
       executablePath: packagedExecutablePath
     });
-    const restored = await waitForView(
+    const relaunched = await waitForView(
       relaunch.page,
       (view) =>
-        view.workspaceRows.some(
-          (row) => row.name === "packaged smoke workspace"
+        view.workspaceRows.every(
+          (row) => row.name !== "packaged smoke workspace"
         ) &&
-        view.activeWorkspace.name === "packaged smoke workspace" &&
-        view.settings.startupRestore &&
+        view.settings.socketMode === "allowAll" &&
         view.activeWorkspace.surfaces[
           view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
             .activeSurfaceId
         ]?.sessionState === "running",
-      "packaged relaunch should restore the workspace snapshot",
+      "packaged relaunch should start fresh while preserving persisted settings",
       15_000
     );
 
     expect(
-      restored.workspaceRows.some(
+      relaunched.workspaceRows.some(
         (row) => row.name === "packaged smoke workspace"
       )
-    ).toBe(true);
-    const restoredSurfaceId =
-      restored.activeWorkspace.panes[restored.activeWorkspace.activePaneId]
+    ).toBe(false);
+    const relaunchedSurfaceId =
+      relaunched.activeWorkspace.panes[relaunched.activeWorkspace.activePaneId]
         .activeSurfaceId;
-    const restoredMarker = "packaged-smoke-restored-ok";
+    const relaunchedMarker = "packaged-smoke-relaunched-ok";
     runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
       "surface",
       "send-text",
       "--surface",
-      restoredSurfaceId,
+      relaunchedSurfaceId,
       "--text",
-      `echo ${restoredMarker}\r`
+      `echo ${relaunchedMarker}\r`
     ]);
-    const restoredSnapshot = await waitForSurfaceSnapshotContains(
+    const relaunchedSnapshot = await waitForSurfaceSnapshotContains(
       relaunch.page,
-      restoredSurfaceId,
-      restoredMarker,
+      relaunchedSurfaceId,
+      relaunchedMarker,
       15_000
     );
-    expect(restoredSnapshot).toContain(restoredMarker);
+    expect(relaunchedSnapshot).toContain(relaunchedMarker);
   } finally {
     await closeKmuxApp(launched).catch(() => {});
     if (relaunch) {
