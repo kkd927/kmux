@@ -99,6 +99,7 @@ type LegacyTypographyFields = {
   terminalFontFamily?: string;
   terminalFontSize?: number;
   terminalLineHeight?: number;
+  startupRestore?: boolean;
 };
 
 type LegacyKmuxSettings = Partial<KmuxSettings> & LegacyTypographyFields;
@@ -257,7 +258,6 @@ export function createDefaultSettings(
 ): KmuxSettings {
   return {
     socketMode: mode,
-    startupRestore: true,
     warnBeforeQuit: true,
     notificationDesktop: true,
     notificationSound: false,
@@ -325,6 +325,7 @@ export function mergeSettings(
     terminalFontFamily: _legacyTerminalFontFamily,
     terminalFontSize: _legacyTerminalFontSize,
     terminalLineHeight: _legacyTerminalLineHeight,
+    startupRestore: _legacyStartupRestore,
     ...nextPatch
   } = patch;
   const shortcuts = sanitizeShortcuts({

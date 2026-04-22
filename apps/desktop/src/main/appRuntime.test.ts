@@ -2,6 +2,7 @@ import { applyAction, createInitialState } from "@kmux/core";
 import { vi } from "vitest";
 
 import type { AppState } from "@kmux/core";
+import type { KmuxSettings } from "@kmux/proto";
 
 const { beep, browserWindows, showNotification } = vi.hoisted(() => ({
   beep: vi.fn(),
@@ -33,7 +34,10 @@ import { createAppRuntime } from "./appRuntime";
 
 function createRuntime(
   notificationSound: boolean,
-  snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null
+  options: {
+    snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null;
+    settings?: KmuxSettings | null;
+  } = {}
 ) {
   const initialState = createInitialState("/bin/zsh");
   initialState.settings.notificationSound = notificationSound;
@@ -45,8 +49,8 @@ function createRuntime(
     },
     snapshotStore: {
       path: "/tmp/kmux-snapshot.json",
-      load: () => snapshotRecord?.snapshot ?? null,
-      loadRecord: () => snapshotRecord ?? null,
+      load: () => options.snapshotRecord?.snapshot ?? null,
+      loadRecord: () => options.snapshotRecord ?? null,
       save: snapshotSave
     },
     windowStateStore: {
@@ -56,7 +60,7 @@ function createRuntime(
     },
     settingsStore: {
       path: "/tmp/kmux-settings.json",
-      load: () => null,
+      load: () => options.settings ?? null,
       save: vi.fn()
     },
     defaultShellPath: "/bin/zsh",
@@ -123,8 +127,10 @@ describe("app runtime restore", () => {
     });
 
     const runtime = createRuntime(false, {
-      snapshot,
-      cleanShutdown: false
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: false
+      }
     });
 
     const restored = runtime.restoreInitialState();
@@ -136,6 +142,38 @@ describe("app runtime restore", () => {
         attention: false
       })
     );
+  });
+
+  it("restores an unclean snapshot even when legacy settings disable startupRestore", () => {
+    const snapshot = createInitialState("/bin/zsh");
+
+    applyAction(snapshot, {
+      type: "workspace.create",
+      name: "project"
+    });
+
+    const restoredWorkspaceId =
+      snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
+    const legacySettings = {
+      ...snapshot.settings,
+      startupRestore: false
+    } as KmuxSettings & { startupRestore: boolean };
+
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: false
+      },
+      settings: legacySettings as unknown as KmuxSettings
+    });
+
+    const restored = runtime.restoreInitialState();
+
+    expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
+    expect(
+      "startupRestore" in
+        (restored.settings as unknown as Record<string, unknown>)
+    ).toBe(false);
   });
 
   it("starts fresh instead of restoring a clean-shutdown snapshot", () => {
@@ -150,8 +188,10 @@ describe("app runtime restore", () => {
       snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
 
     const runtime = createRuntime(false, {
-      snapshot,
-      cleanShutdown: true
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true
+      }
     });
 
     const restored = runtime.restoreInitialState();

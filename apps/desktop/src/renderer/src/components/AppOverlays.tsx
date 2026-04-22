@@ -316,19 +316,6 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                 </select>
               </label>
               <label>
-                Restore after unexpected shutdown
-                <input
-                  aria-label="Restore after unexpected shutdown"
-                  type="checkbox"
-                  checked={props.settingsDraft.startupRestore}
-                  onChange={(event) => {
-                    updateSettingsDraft(props.setSettingsDraft, {
-                      startupRestore: event.currentTarget.checked
-                    });
-                  }}
-                />
-              </label>
-              <label>
                 Warn before quit
                 <input
                   aria-label="Warn before quit"

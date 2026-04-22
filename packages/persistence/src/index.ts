@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { AppState } from "@kmux/core";
+import { sanitizeSettings, type AppState } from "@kmux/core";
 import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
 const SNAPSHOT_STORE_VERSION = 1;
@@ -215,7 +215,11 @@ export function createSettingsStore(settingsPath: string): SettingsFileStore {
   return {
     path: settingsPath,
     load() {
-      return readJsonFile<KmuxSettings>(settingsPath);
+      const settings = readJsonFile<KmuxSettings>(settingsPath);
+      if (!settings) {
+        return null;
+      }
+      return sanitizeSettings(settings);
     },
     save(settings) {
       atomicWrite(settingsPath, JSON.stringify(settings, null, 2));

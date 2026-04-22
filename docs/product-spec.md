@@ -1,6 +1,6 @@
 # kmux Product Spec
 
-Date: 2026-04-09
+Date: 2026-04-22
 
 ## 1. Product Definition
 
@@ -47,7 +47,7 @@ Hard rules:
 - Create a workspace from an open folder
 - Toggle the sidebar
 - Workspace switcher
-- Persist ordering
+- Preserve ordering while the app process remains alive, including close-window and reopen-on-activate flows
 
 ### 3.2 Pane / Surface
 
@@ -95,12 +95,20 @@ Hard rules:
 - `sidebar.set_status/clear_status/set_progress/clear_progress/log/clear_log/sidebar_state`
 - `system.ping/capabilities/identify`
 
+### 3.6 App Lifecycle / Restore
+
+- Closing the last app window on macOS must keep the app process, PTY sessions, socket server, and in-memory workspace state alive
+- Reopening the app from the Dock or `activate` flow while the process is still alive must restore the same live workspace, pane, surface, notification, and focus state without a cold boot
+- Explicit app quit, including `Cmd+Q`, must shut down background services and start the next launch from a fresh workspace session
+- Clean relaunch must preserve persisted settings and window chrome state, but must not reuse the previous workspace layout, pane graph, surface tabs, or session set
+- Snapshot persistence exists for crash or unclean shutdown recovery only; a clean shutdown must not restore the previous working set on the next launch
+
 ## 4. Validation Criteria
 
 - Preserve a polished window chrome, sidebar, pane header, split geometry, and dark palette baseline with strong readability.
 - Treat pane body content as a functional verification target; it may be masked in visual diffing.
 - Pass `npm run test` and `npm run build`.
-- After launch, verify workspace, split, surface, notification, socket, and restore behavior.
+- After launch, verify workspace, split, surface, notification, socket, close-window continuity, clean-quit fresh launch, and crash-recovery behavior.
 - If a problem is found, fix it and rerun validation.
 
 ## 5. Repository Shape
@@ -133,6 +141,6 @@ packages/
 ## 7. Priorities
 
 1. The app launches and visible terminals attach correctly.
-2. Workspace, pane, and surface state plus persistence remain consistent.
+2. Workspace, pane, and surface state remain consistent across live app interactions, while persisted settings, window state, and crash recovery remain predictable.
 3. Automation and notifications work correctly.
 4. The UI remains visually coherent, polished, and easy to read at normal working sizes.

@@ -1182,6 +1182,22 @@ describe("core reducer", () => {
     expect(restored.settings.warnBeforeQuit).toBe(true);
   });
 
+  it("drops legacy startup restore settings during state restore", () => {
+    const state = createInitialState();
+    const legacyState = structuredClone(state) as typeof state & {
+      settings: Record<string, unknown>;
+    };
+
+    legacyState.settings.startupRestore = false;
+
+    const restored = cloneState(legacyState as typeof state);
+
+    expect(
+      "startupRestore" in
+        (restored.settings as unknown as Record<string, unknown>)
+    ).toBe(false);
+  });
+
   it("normalizes legacy empty shell args during restore", () => {
     const state = createInitialState("/bin/zsh");
     const sessionId = Object.keys(state.sessions)[0];

@@ -115,6 +115,7 @@ export function createSandbox(prefix: string): KmuxSandbox {
 }
 
 export function destroySandbox(sandbox: KmuxSandbox): void {
+  killSandboxProcesses(sandbox);
   rmSync(sandbox.profileRoot, { force: true, recursive: true });
 }
 
@@ -176,8 +177,8 @@ export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
       })
     ]);
   } catch {
-    if (appProcess && appProcess.exitCode === null) {
-      appProcess.kill("SIGKILL");
+    if (appProcess?.pid) {
+      killProcessTreeByPid(appProcess.pid);
       await waitForProcessExit(appProcess, 5_000).catch(() => undefined);
     }
   } finally {
@@ -185,6 +186,16 @@ export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
       clearTimeout(closeTimeout);
     }
   }
+}
+
+export async function forceKillKmuxApp(launched: LaunchedKmux): Promise<void> {
+  const appProcess = launched.app.process();
+  if (!appProcess?.pid || appProcess.exitCode !== null) {
+    return;
+  }
+
+  killProcessTreeByPid(appProcess.pid);
+  await waitForProcessExit(appProcess, 5_000).catch(() => undefined);
 }
 
 export async function closeKmux(launched: LaunchedKmux): Promise<void> {
@@ -232,6 +243,100 @@ async function waitForProcessExit(
     process.once("exit", onExit);
     process.once("error", onError);
   });
+}
+
+function listProcesses(): Array<{ pid: number; ppid: number; command: string }> {
+  const output = execFileSync("ps", ["-ax", "-o", "pid=,ppid=,command="], {
+    encoding: "utf8"
+  });
+
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const match = line.match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (!match) {
+        return [];
+      }
+
+      return [
+        {
+          pid: Number(match[1]),
+          ppid: Number(match[2]),
+          command: match[3]
+        }
+      ];
+    });
+}
+
+function descendantProcessIds(rootPid: number): number[] {
+  const processes = listProcesses();
+  const childrenByParent = new Map<number, number[]>();
+  for (const processInfo of processes) {
+    const siblings = childrenByParent.get(processInfo.ppid) ?? [];
+    siblings.push(processInfo.pid);
+    childrenByParent.set(processInfo.ppid, siblings);
+  }
+
+  const descendants: number[] = [];
+  const stack = [...(childrenByParent.get(rootPid) ?? [])];
+  while (stack.length > 0) {
+    const nextPid = stack.pop();
+    if (!nextPid) {
+      continue;
+    }
+    descendants.push(nextPid);
+    stack.push(...(childrenByParent.get(nextPid) ?? []));
+  }
+
+  return descendants;
+}
+
+function killPid(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Process may already be gone.
+  }
+}
+
+function killProcessTreeByPid(rootPid: number): void {
+  for (const pid of descendantProcessIds(rootPid).reverse()) {
+    killPid(pid);
+  }
+  killPid(rootPid);
+}
+
+function killSandboxProcesses(sandbox: KmuxSandbox): void {
+  const markers = [
+    sandbox.profileRoot,
+    sandbox.configDir,
+    sandbox.runtimeDir,
+    sandbox.shellHomeDir,
+    sandbox.xdgConfigHome,
+    sandbox.socketPath
+  ];
+
+  const matchedPids = listProcesses()
+    .filter(
+      (processInfo) =>
+        processInfo.pid !== process.pid &&
+        markers.some((marker) => processInfo.command.includes(marker))
+    )
+    .map((processInfo) => processInfo.pid);
+
+  const sandboxPids = new Set<number>();
+  for (const pid of matchedPids) {
+    sandboxPids.add(pid);
+    for (const descendantPid of descendantProcessIds(pid)) {
+      sandboxPids.add(descendantPid);
+    }
+  }
+
+  for (const pid of [...sandboxPids].sort((left, right) => right - left)) {
+    killPid(pid);
+  }
 }
 
 export async function getView(page: Page): Promise<ShellViewModel> {
