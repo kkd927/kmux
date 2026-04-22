@@ -3,9 +3,11 @@ import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
@@ -136,19 +138,25 @@ describe("shell integration launch preparation", () => {
     expect(integrationContents).not.toContain("typeset -gx");
     const agentHookHelper = join(wrapperDir, "bin", "kmux-agent-hook");
     expect(existsSync(agentHookHelper)).toBe(true);
+    const agentHookRunner = join(wrapperDir, "bin", "kmux-agent-hook.cjs");
+    expect(existsSync(agentHookRunner)).toBe(true);
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
       'kmux_dispatch_hook() {'
     );
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e'
+      '"$KMUX_NODE_RUNTIME" "$KMUX_AGENT_HELPER_PATH" "$@"'
     );
-    expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'method: "agent.hook"'
-    );
+    expect(readFileSync(agentHookHelper, "utf8")).not.toContain(' -e ');
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
       'PATH="$(kmux_filter_path "${PATH:-}")"'
     );
     expect(readFileSync(agentHookHelper, "utf8")).not.toContain("KMUX_CLI_PATH");
+    expect(readFileSync(agentHookRunner, "utf8")).toContain(
+      'method: "agent.hook"'
+    );
+    expect(readFileSync(agentHookRunner, "utf8")).toContain(
+      'const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";'
+    );
     expect(existsSync(join(wrapperDir, "bin", "kmux-claude-launcher.cjs"))).toBe(
       false
     );
@@ -503,6 +511,146 @@ describe("shell integration launch preparation", () => {
         "tui.notification_method=bel",
         "status"
       ]);
+    } finally {
+      rmSync(fakeCodexDir, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite unchanged Codex hooks.json across repeated wrapper runs", async () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    const wrapperDir = prepared.env.ZDOTDIR;
+    expect(wrapperDir).toBeTruthy();
+    if (!wrapperDir) {
+      throw new Error("expected ZDOTDIR wrapper to be set");
+    }
+
+    const wrapperCodex = join(wrapperDir, "bin", "codex");
+    const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
+    const fakeCodex = join(fakeCodexDir, "codex");
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
+    const hooksPath = join(fakeHome, ".codex", "hooks.json");
+    const capturePath = join(fakeCodexDir, "argv.txt");
+
+    writeFileSync(
+      fakeCodex,
+      [
+        "#!/bin/sh",
+        'capture_path="${KMUX_CAPTURE_ARGS_FILE:?}"',
+        ': >"$capture_path"',
+        'for arg in "$@"; do',
+        '  printf "%s\\n" "$arg" >>"$capture_path"',
+        "done",
+        "exit 0",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    async function runWrapper(): Promise<void> {
+      const child = spawn(wrapperCodex, ["status"], {
+        env: {
+          ...process.env,
+          HOME: fakeHome,
+          PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
+          KMUX_CAPTURE_ARGS_FILE: capturePath,
+          KMUX_NODE_PATH: process.execPath,
+          TERM_PROGRAM: "kmux"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      const [exitCode] = (await once(child, "close")) as [number | null];
+      expect(exitCode).toBe(0);
+    }
+
+    try {
+      await runWrapper();
+      const firstContents = readFileSync(hooksPath, "utf8");
+      const firstMtimeMs = statSync(hooksPath).mtimeMs;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await runWrapper();
+      expect(readFileSync(hooksPath, "utf8")).toBe(firstContents);
+      expect(statSync(hooksPath).mtimeMs).toBe(firstMtimeMs);
+    } finally {
+      rmSync(fakeCodexDir, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves invalid Codex hooks.json untouched and skips codex_hooks enablement", async () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    const wrapperDir = prepared.env.ZDOTDIR;
+    expect(wrapperDir).toBeTruthy();
+    if (!wrapperDir) {
+      throw new Error("expected ZDOTDIR wrapper to be set");
+    }
+
+    const wrapperCodex = join(wrapperDir, "bin", "codex");
+    const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
+    const fakeCodex = join(fakeCodexDir, "codex");
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
+    const hooksDir = join(fakeHome, ".codex");
+    const hooksPath = join(hooksDir, "hooks.json");
+    const capturePath = join(fakeCodexDir, "argv.txt");
+
+    writeFileSync(
+      fakeCodex,
+      [
+        "#!/bin/sh",
+        'capture_path="${KMUX_CAPTURE_ARGS_FILE:?}"',
+        ': >"$capture_path"',
+        'for arg in "$@"; do',
+        '  printf "%s\\n" "$arg" >>"$capture_path"',
+        "done",
+        "exit 0",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(hooksPath, "{broken json\n", "utf8");
+
+    try {
+      const child = spawn(wrapperCodex, ["status"], {
+        env: {
+          ...process.env,
+          HOME: fakeHome,
+          PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
+          KMUX_CAPTURE_ARGS_FILE: capturePath,
+          KMUX_NODE_PATH: process.execPath,
+          TERM_PROGRAM: "kmux"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+
+      const [exitCode] = (await once(child, "close")) as [number | null];
+      expect(exitCode).toBe(0);
+      expect(readFileSync(hooksPath, "utf8")).toBe("{broken json\n");
+      expect(
+        readFileSync(capturePath, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+      ).toEqual(["--config", "tui.notification_method=osc9", "status"]);
     } finally {
       rmSync(fakeCodexDir, { recursive: true, force: true });
       rmSync(fakeHome, { recursive: true, force: true });
