@@ -87,6 +87,8 @@ async function main() {
     env: {
       ...process.env,
       CI: "1",
+      KMUX_E2E_DISABLE_QUIT_CONFIRM:
+        process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir
     },
