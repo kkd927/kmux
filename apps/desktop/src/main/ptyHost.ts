@@ -12,11 +12,13 @@ import type {
   TerminalKeyInput
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
+import { PTY_STDOUT_LOGS_ENV } from "../shared/diagnostics";
 
 export interface PtyHostLaunchOptions {
   cwd: string;
   entry: string;
   execArgv: string[];
+  enableStdoutLogs: boolean;
 }
 
 export function resolvePtyHostLaunchOptions(
@@ -31,7 +33,8 @@ export function resolvePtyHostLaunchOptions(
     return {
       entry: join(resourcesPath, "app.asar.unpacked/dist/pty-host/index.cjs"),
       cwd: resourcesPath,
-      execArgv: []
+      execArgv: [],
+      enableStdoutLogs: false
     };
   }
 
@@ -40,14 +43,16 @@ export function resolvePtyHostLaunchOptions(
     return {
       entry: resolve(repoRoot, "apps/desktop/dist/pty-host/index.cjs"),
       cwd: repoRoot,
-      execArgv: []
+      execArgv: [],
+      enableStdoutLogs: false
     };
   }
 
   return {
     entry: resolve(repoRoot, "apps/desktop/src/pty-host/index.ts"),
     cwd: repoRoot,
-    execArgv: ["--import", "tsx"]
+    execArgv: ["--import", "tsx"],
+    enableStdoutLogs: true
   };
 }
 
@@ -75,11 +80,15 @@ export class PtyHostManager extends EventEmitter {
 
     const currentDir = dirname(fileURLToPath(import.meta.url));
     const launchOptions = resolvePtyHostLaunchOptions(currentDir);
+    const childEnv = {
+      ...env,
+      [PTY_STDOUT_LOGS_ENV]: launchOptions.enableStdoutLogs ? "1" : "0"
+    };
 
     const child = this.forkProcess(launchOptions.entry, [], {
       cwd: launchOptions.cwd,
       execArgv: launchOptions.execArgv,
-      env,
+      env: childEnv,
       stdio: ["inherit", "inherit", "inherit", "ipc"]
     });
     this.child = child;

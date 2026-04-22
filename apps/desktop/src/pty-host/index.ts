@@ -31,7 +31,10 @@ import {
   shouldStripShellManagedEnv
 } from "./shellLaunch";
 import { buildSessionEnv } from "./sessionEnv";
-import { logDiagnostics } from "../shared/diagnostics";
+import {
+  PTY_STDOUT_LOGS_ENV,
+  logDiagnostics
+} from "../shared/diagnostics";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -71,11 +74,20 @@ interface SessionRecord {
 }
 
 const sessions = new Map<Id, SessionRecord>();
+const shouldMirrorRawTerminalEventsToStdout =
+  process.env[PTY_STDOUT_LOGS_ENV] === "1";
 
 logDiagnostics("pty-host.bootstrap", {
   pid: process.pid,
   cwd: process.cwd()
 });
+
+function logRawTerminalEvent(message: string): void {
+  if (!shouldMirrorRawTerminalEventsToStdout) {
+    return;
+  }
+  console.log(message);
+}
 
 function send(message: PtyEvent): void {
   if (process.send) {
@@ -202,7 +214,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   sessions.set(record.sessionId, record);
 
   terminal.parser.registerOscHandler(7, (data: string) => {
-    console.log(`[OSC 7] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    logRawTerminalEvent(
+      `[OSC 7] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
+    );
     const cwd = resolveOsc7Cwd(record.cwd, data);
     logDiagnostics("pty-host.osc.7", {
       surfaceId: record.surfaceId,
@@ -234,7 +248,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.onBell(() => {
-    console.log(`[Bell] surface=${record.surfaceId} title=${record.title}`);
+    logRawTerminalEvent(
+      `[Bell] surface=${record.surfaceId} title=${record.title}`
+    );
     logDiagnostics("pty-host.bell", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
@@ -250,7 +266,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.parser.registerOscHandler(9, (data: string) => {
-    console.log(`[OSC 9] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    logRawTerminalEvent(
+      `[OSC 9] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
+    );
     const notification = buildOsc9Notification(data, record.title);
     logDiagnostics("pty-host.osc.9", {
       surfaceId: record.surfaceId,
@@ -270,7 +288,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.parser.registerOscHandler(99, (data: string) => {
-    console.log(`[OSC 99] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    logRawTerminalEvent(
+      `[OSC 99] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
+    );
     const { nextState, notification } = parseOsc99Notification(
       data,
       record.osc99State,
@@ -295,7 +315,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.parser.registerOscHandler(777, (data: string) => {
-    console.log(`[OSC 777] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`);
+    logRawTerminalEvent(
+      `[OSC 777] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
+    );
     const notification = buildOsc777Notification(
       data,
       record.title,
