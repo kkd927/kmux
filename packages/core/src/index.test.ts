@@ -1446,7 +1446,11 @@ describe("core reducer", () => {
     });
 
     expect(state.surfaces[surfaceId].branch).toBe("main");
-    expect(state.workspaces[workspaceId].branch).toBe("main");
+    expect(
+      buildViewModel(state).workspaceRows.find(
+        (row) => row.workspaceId === workspaceId
+      )?.branch
+    ).toBe("main");
 
     applyAction(state, {
       type: "surface.metadata",
@@ -1455,7 +1459,60 @@ describe("core reducer", () => {
     });
 
     expect(state.surfaces[surfaceId].branch).toBeUndefined();
-    expect(state.workspaces[workspaceId].branch).toBeUndefined();
+    expect(
+      buildViewModel(state).workspaceRows.find(
+        (row) => row.workspaceId === workspaceId
+      )?.branch
+    ).toBeUndefined();
+  });
+
+  it("keeps the workspace name independent while deriving representative metadata and aggregated ports", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const representativeSurfaceId = state.panes[paneId].activeSurfaceId;
+    const workspaceName = state.workspaces[workspaceId].name;
+
+    applyAction(state, { type: "surface.create", paneId });
+    const backgroundSurfaceId = state.panes[paneId].activeSurfaceId;
+    applyAction(state, {
+      type: "surface.focus",
+      surfaceId: representativeSurfaceId
+    });
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: representativeSurfaceId,
+      title: "repo / shell",
+      cwd: "/repo/front",
+      branch: "main",
+      ports: [3000, 3001]
+    });
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: backgroundSurfaceId,
+      title: "background / logs",
+      cwd: "/repo/background",
+      branch: "feature/background",
+      ports: [5173, 3000, 8080]
+    });
+
+    const vm = buildViewModel(state);
+    const row = vm.workspaceRows.find(
+      (workspaceRow) => workspaceRow.workspaceId === workspaceId
+    );
+
+    expect(vm.activeWorkspace.name).toBe(workspaceName);
+    expect(vm.title).toBe(`${workspaceName} cli/unix socket`);
+    expect(row).toEqual(
+      expect.objectContaining({
+        name: workspaceName,
+        summary: "repo / shell",
+        cwd: "/repo/front",
+        branch: "main",
+        ports: [3000, 3001, 5173]
+      })
+    );
   });
 
   it("refreshes derived metadata when a session starts running", () => {
@@ -1768,7 +1825,7 @@ describe("core reducer", () => {
 
     applyAction(state, { type: "workspace.pin.toggle", workspaceId: betaId! });
     expect(buildViewModel(state).workspaceRows.map((row) => row.name)).toEqual([
-      "hq",
+      "new workspace",
       "beta",
       "alpha",
       "gamma"
@@ -1776,7 +1833,7 @@ describe("core reducer", () => {
 
     applyAction(state, { type: "workspace.pin.toggle", workspaceId: gammaId! });
     expect(buildViewModel(state).workspaceRows.map((row) => row.name)).toEqual([
-      "hq",
+      "new workspace",
       "beta",
       "gamma",
       "alpha"
@@ -1789,8 +1846,8 @@ describe("core reducer", () => {
     applyAction(state, { type: "workspace.create", name: "beta" });
     applyAction(state, { type: "workspace.create", name: "gamma" });
 
-    const hqId = buildViewModel(state).workspaceRows.find(
-      (row) => row.name === "hq"
+    const defaultWorkspaceId = buildViewModel(state).workspaceRows.find(
+      (row) => row.name === "new workspace"
     )?.workspaceId;
     const gammaId = buildViewModel(state).workspaceRows.find(
       (row) => row.name === "gamma"
@@ -1799,12 +1856,15 @@ describe("core reducer", () => {
       (row) => row.name === "alpha"
     )?.workspaceId;
 
-    expect(hqId).toBeTruthy();
+    expect(defaultWorkspaceId).toBeTruthy();
     expect(gammaId).toBeTruthy();
     expect(alphaId).toBeTruthy();
 
     applyAction(state, { type: "workspace.pin.toggle", workspaceId: gammaId! });
-    applyAction(state, { type: "workspace.select", workspaceId: hqId! });
+    applyAction(state, {
+      type: "workspace.select",
+      workspaceId: defaultWorkspaceId!
+    });
     applyAction(state, { type: "workspace.selectRelative", delta: 1 });
 
     expect(state.windows[state.activeWindowId].activeWorkspaceId).toBe(gammaId);
@@ -1843,7 +1903,7 @@ describe("core reducer", () => {
       toIndex: 0
     });
     expect(buildViewModel(state).workspaceRows.map((row) => row.name)).toEqual([
-      "hq",
+      "new workspace",
       "beta",
       "gamma",
       "alpha"
@@ -1856,7 +1916,7 @@ describe("core reducer", () => {
     });
     expect(buildViewModel(state).workspaceRows.map((row) => row.name)).toEqual([
       "beta",
-      "hq",
+      "new workspace",
       "gamma",
       "alpha"
     ]);
@@ -1868,7 +1928,7 @@ describe("core reducer", () => {
     });
     expect(buildViewModel(state).workspaceRows.map((row) => row.name)).toEqual([
       "beta",
-      "hq",
+      "new workspace",
       "alpha",
       "gamma"
     ]);

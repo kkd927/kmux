@@ -31,7 +31,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
       launched.page,
       (view) =>
         view.workspaceRows.length >= 4 &&
-        view.workspaceRows[0]?.name === "hq" &&
+        view.workspaceRows[0]?.name === "new workspace" &&
         view.workspaceRows[1]?.name === "alpha" &&
         view.workspaceRows[2]?.name === "beta" &&
         view.workspaceRows[3]?.name === "gamma",
@@ -52,7 +52,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
     const pinned = await waitForView(
       launched.page,
       (view) =>
-        view.workspaceRows[0]?.name === "hq" &&
+        view.workspaceRows[0]?.name === "new workspace" &&
         view.workspaceRows[1]?.name === "beta" &&
         view.workspaceRows[2]?.name === "alpha" &&
         view.workspaceRows[3]?.name === "gamma",
@@ -81,7 +81,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
     const reorderedUnpinned = await waitForView(
       launched.page,
       (view) =>
-        view.workspaceRows[0]?.name === "hq" &&
+        view.workspaceRows[0]?.name === "new workspace" &&
         view.workspaceRows[1]?.name === "beta" &&
         view.workspaceRows[2]?.name === "gamma" &&
         view.workspaceRows[3]?.name === "alpha",
@@ -90,7 +90,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
 
     expect(
       reorderedUnpinned.workspaceRows.map((row) => row.name).slice(0, 4)
-    ).toEqual(["hq", "beta", "gamma", "alpha"]);
+    ).toEqual(["new workspace", "beta", "gamma", "alpha"]);
 
     const pinnedSource = launched.page.locator(
       '[data-workspace-id="' + reorderedUnpinned.workspaceRows[1].workspaceId + '"]'
@@ -121,7 +121,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
       launched.page,
       (view) =>
         view.workspaceRows[0]?.name === "beta" &&
-        view.workspaceRows[1]?.name === "hq" &&
+        view.workspaceRows[1]?.name === "new workspace" &&
         view.workspaceRows[2]?.name === "gamma" &&
         view.workspaceRows[3]?.name === "alpha",
       "workspace order should update inside the pinned section"
@@ -129,7 +129,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
 
     expect(reordered.workspaceRows.map((row) => row.name).slice(0, 4)).toEqual([
       "beta",
-      "hq",
+      "new workspace",
       "gamma",
       "alpha"
     ]);
@@ -153,7 +153,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
       reopenedPage,
       (view) =>
         view.workspaceRows[0]?.name === "beta" &&
-        view.workspaceRows[1]?.name === "hq" &&
+        view.workspaceRows[1]?.name === "new workspace" &&
         view.workspaceRows[2]?.name === "gamma" &&
         view.workspaceRows[3]?.name === "alpha",
       "workspace order should persist while the app stays alive across window reopen"
@@ -161,7 +161,7 @@ test("sidebar workspace drag reorder updates order and survives live window reop
 
     expect(restored.workspaceRows.map((row) => row.name).slice(0, 4)).toEqual([
       "beta",
-      "hq",
+      "new workspace",
       "gamma",
       "alpha"
     ]);

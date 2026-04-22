@@ -140,6 +140,8 @@ export async function launchKmuxWithSandbox(
       ...process.env,
       NODE_ENV: "test",
       KMUX_E2E_WINDOW_MODE: process.env.KMUX_E2E_WINDOW_MODE ?? "background",
+      KMUX_E2E_DISABLE_QUIT_CONFIRM:
+        process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir,
       KMUX_TEST_FONT_FAMILIES:
@@ -162,12 +164,6 @@ export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
   let closeTimeout: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    await dispatch(launched.page, {
-      type: "settings.update",
-      patch: {
-        warnBeforeQuit: false
-      }
-    }).catch(() => undefined);
     await Promise.race([
       launched.app.close(),
       new Promise<never>((_, reject) => {

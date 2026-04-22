@@ -225,6 +225,30 @@ describe("main lifecycle controller", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it("can disable quit confirmation entirely for automated sessions", () => {
+    const shutdown = vi.fn(async () => undefined);
+    const confirmQuit = vi.fn();
+    const controller = createMainLifecycleController({
+      isMac: true,
+      shouldConfirmQuit: false,
+      app: { quit: vi.fn() },
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => true,
+      setWarnBeforeQuit: vi.fn(),
+      confirmQuit,
+      shutdown
+    });
+
+    const event = createEvent();
+    controller.handleBeforeQuit(event);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(confirmQuit).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
   it("can bypass the quit dialog for trusted quit paths", () => {
     const shutdown = vi.fn(async () => undefined);
     const confirmQuit = vi.fn();

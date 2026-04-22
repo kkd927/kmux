@@ -16,7 +16,7 @@ test("workspace sidebar context menu exposes key workspace management actions", 
       page,
       (view) =>
         view.workspaceRows.length >= 4 &&
-        view.workspaceRows.some((row) => row.name === "hq") &&
+        view.workspaceRows.some((row) => row.name === "new workspace") &&
         view.workspaceRows.some((row) => row.name === "alpha") &&
         view.workspaceRows.some((row) => row.name === "beta") &&
         view.workspaceRows.some((row) => row.name === "gamma"),
@@ -26,11 +26,11 @@ test("workspace sidebar context menu exposes key workspace management actions", 
     const betaId = seeded.workspaceRows.find(
       (row) => row.name === "beta"
     )?.workspaceId;
-    const hqId = seeded.workspaceRows.find(
-      (row) => row.name === "hq"
+    const defaultWorkspaceId = seeded.workspaceRows.find(
+      (row) => row.name === "new workspace"
     )?.workspaceId;
     expect(betaId).toBeTruthy();
-    expect(hqId).toBeTruthy();
+    expect(defaultWorkspaceId).toBeTruthy();
 
     const betaRow = page.locator(`[data-workspace-id="${betaId!}"]`);
     await betaRow.click({ button: "right" });
@@ -86,15 +86,20 @@ test("workspace sidebar context menu exposes key workspace management actions", 
       "move to top should reorder the workspace row"
     );
 
-    const hqRow = page.locator(`[data-workspace-id="${hqId!}"]`);
-    await hqRow.click({ button: "right" });
+    const defaultWorkspaceRow = page.locator(
+      `[data-workspace-id="${defaultWorkspaceId!}"]`
+    );
+    await defaultWorkspaceRow.click({ button: "right" });
     await page
       .getByRole("menuitem", { name: "Close Workspace", exact: true })
       .click();
 
     await waitForView(
       page,
-      (view) => view.workspaceRows.every((row) => row.workspaceId !== hqId),
+      (view) =>
+        view.workspaceRows.every(
+          (row) => row.workspaceId !== defaultWorkspaceId
+        ),
       "close workspace should remove the targeted workspace row"
     );
 

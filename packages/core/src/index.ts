@@ -396,7 +396,7 @@ export function createInitialState(
       [workspaceId]: {
         id: workspaceId,
         windowId,
-        name: "hq",
+        name: "new workspace",
         rootNodeId: nodeId,
         nodeMap: {
           [nodeId]: {
@@ -426,7 +426,7 @@ export function createInitialState(
         id: surfaceId,
         paneId,
         sessionId,
-        title: "hq",
+        title: "new workspace",
         titleLocked: false,
         cwd: defaultHomeDirectory(),
         ports: [],
@@ -1232,28 +1232,18 @@ function updateSurfaceMetadata(
 
   if (action.cwd !== undefined && action.cwd !== surface.cwd) {
     surface.cwd = action.cwd;
-    state.workspaces[state.panes[surface.paneId].workspaceId].cwdSummary =
-      action.cwd;
     shouldRefreshDerivedMetadata = true;
   }
   if (action.title !== undefined) {
     if (!surface.titleLocked) {
       surface.title = action.title;
     }
-    const workspaceId = state.panes[surface.paneId].workspaceId;
-    if (!state.workspaces[workspaceId].nameLocked) {
-      state.workspaces[workspaceId].name = action.title;
-    }
   }
   if ("branch" in action) {
-    const branch = action.branch ?? undefined;
-    surface.branch = branch;
-    state.workspaces[state.panes[surface.paneId].workspaceId].branch = branch;
+    surface.branch = action.branch ?? undefined;
   }
   if (action.ports !== undefined) {
     surface.ports = action.ports.slice(0, 3);
-    state.workspaces[state.panes[surface.paneId].workspaceId].ports =
-      surface.ports.slice(0, 3);
   }
   if (action.attention !== undefined) {
     surface.attention = action.attention;
@@ -2151,8 +2141,7 @@ export function buildViewModel(state: AppState): ShellViewModel {
     sidebarWidth: window.sidebarWidth,
     workspaceRows: orderedWorkspaceIds.map((workspaceId) => {
       const entry = state.workspaces[workspaceId];
-      const representativeSurfaceTitle =
-        firstWorkspaceSurface(state, entry)?.title ?? "Waiting for input";
+      const representativeSurface = firstWorkspaceSurface(state, entry);
       const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
         (surfaceId) => state.surfaces[surfaceId]
       );
@@ -2160,10 +2149,13 @@ export function buildViewModel(state: AppState): ShellViewModel {
         workspaceId,
         name: entry.name,
         nameLocked: Boolean(entry.nameLocked),
-        summary: representativeSurfaceTitle,
-        cwd: entry.cwdSummary,
-        branch: entry.branch,
-        ports: entry.ports,
+        summary: workspaceSummary(representativeSurface),
+        cwd: representativeSurface?.cwd ?? entry.cwdSummary,
+        branch: representativeSurface?.branch,
+        ports: aggregateWorkspacePorts(
+          surfaces,
+          state.panes[entry.activePaneId]?.activeSurfaceId
+        ),
         statusText: entry.statusText,
         statusEntries: workspaceStatusEntries(entry),
         unreadCount: surfaces.reduce(
@@ -2268,6 +2260,46 @@ function firstPaneIdInTreeOrder(workspace: WorkspaceState): Id | null {
   }
 
   return walk(workspace.rootNodeId);
+}
+
+function workspaceSummary(representativeSurface: SurfaceState | null): string {
+  const representativeTitle = representativeSurface?.title.trim();
+  return representativeTitle || "Waiting for input";
+}
+
+function aggregateWorkspacePorts(
+  surfaces: SurfaceState[],
+  activeSurfaceId?: Id
+): number[] {
+  const seen = new Set<number>();
+  const aggregate: number[] = [];
+  const activeSurface = activeSurfaceId
+    ? surfaces.find((surface) => surface.id === activeSurfaceId)
+    : undefined;
+
+  function pushPort(port: number): void {
+    if (!Number.isFinite(port) || seen.has(port) || aggregate.length >= 3) {
+      return;
+    }
+    seen.add(port);
+    aggregate.push(port);
+  }
+
+  for (const port of activeSurface?.ports ?? []) {
+    pushPort(port);
+  }
+
+  const otherPorts = surfaces
+    .filter((surface) => surface.id !== activeSurface?.id)
+    .flatMap((surface) => surface.ports)
+    .filter((port) => Number.isFinite(port) && !seen.has(port))
+    .sort((left, right) => left - right);
+
+  for (const port of otherPorts) {
+    pushPort(port);
+  }
+
+  return aggregate;
 }
 
 function sanitizeState(state: AppState): AppState {
