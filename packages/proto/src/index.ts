@@ -15,6 +15,14 @@ export type UsageVendor = "claude" | "codex" | "gemini" | "unknown";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
 export type SidebarStatusVariant = "info" | "attention" | "muted" | "error";
+export type UpdaterStatus =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "error";
 export type AgentEventName =
   | "session_start"
   | "running"
@@ -63,6 +71,12 @@ export interface SidebarStatusEntry {
   variant: SidebarStatusVariant;
   updatedAt: string;
   surfaceId?: Id;
+}
+
+export interface UpdaterState {
+  status: UpdaterStatus;
+  version?: string;
+  errorMessage?: string;
 }
 
 export interface WorkspaceRowVm {

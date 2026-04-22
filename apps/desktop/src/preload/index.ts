@@ -14,7 +14,8 @@ import type {
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
-  TerminalKeyInput
+  TerminalKeyInput,
+  UpdaterState
 } from "@kmux/proto";
 
 export type TerminalEvent =
@@ -27,6 +28,9 @@ const api = {
   },
   getUsageView(): Promise<UsageViewSnapshot> {
     return ipcRenderer.invoke("kmux:usage:get");
+  },
+  getUpdaterState(): Promise<UpdaterState> {
+    return ipcRenderer.invoke("kmux:updater:get");
   },
   dispatch(action: AppAction): Promise<ShellViewModel> {
     return ipcRenderer.invoke("kmux:dispatch", action);
@@ -44,6 +48,14 @@ const api = {
     ) => listener(snapshot);
     ipcRenderer.on("kmux:usage", handler);
     return () => ipcRenderer.off("kmux:usage", handler);
+  },
+  subscribeUpdater(listener: (state: UpdaterState) => void): () => void {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: UpdaterState
+    ) => listener(state);
+    ipcRenderer.on("kmux:updater", handler);
+    return () => ipcRenderer.off("kmux:updater", handler);
   },
   subscribeTerminal(listener: (event: TerminalEvent) => void): () => void {
     const handler = (
@@ -131,6 +143,12 @@ const api = {
   },
   setUsageDashboardOpen(open: boolean): Promise<void> {
     return ipcRenderer.invoke("kmux:usage:dashboard-open", open);
+  },
+  downloadAvailableUpdate(): Promise<void> {
+    return ipcRenderer.invoke("kmux:updater:download");
+  },
+  installDownloadedUpdate(): Promise<void> {
+    return ipcRenderer.invoke("kmux:updater:install");
   }
 };
 

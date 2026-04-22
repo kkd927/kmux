@@ -1,6 +1,11 @@
 import type { MenuItemConstructorOptions } from "electron";
 
-import type { UpdaterState } from "./updater";
+import type { UpdaterState } from "@kmux/proto";
+
+import {
+  getUpdaterMenuLabel as getSharedUpdaterMenuLabel,
+  isUpdaterBusy
+} from "../shared/updaterPresentation";
 
 interface AppMenuActions {
   checkForUpdates(): Promise<void>;
@@ -63,25 +68,7 @@ export function buildApplicationMenuTemplate(
 }
 
 export function getUpdaterMenuLabel(state: UpdaterState): string {
-  switch (state.status) {
-    case "checking":
-      return "Checking for Updates…";
-    case "available":
-      return formatUpdaterLabel("Download Update", state.version);
-    case "downloading":
-      return formatUpdaterLabel("Downloading Update", state.version);
-    case "downloaded":
-      return formatUpdaterLabel(
-        "Install Update",
-        state.version,
-        " and Relaunch"
-      );
-    case "disabled":
-    case "error":
-    case "idle":
-    default:
-      return "Check for Updates…";
-  }
+  return getSharedUpdaterMenuLabel(state);
 }
 
 function buildUpdaterMenuItem(
@@ -90,7 +77,7 @@ function buildUpdaterMenuItem(
 ): MenuItemConstructorOptions {
   return {
     label: getUpdaterMenuLabel(state),
-    enabled: state.status !== "disabled" && !isBusy(state),
+    enabled: state.status !== "disabled" && !isUpdaterBusy(state),
     click: () => {
       if (state.status === "available") {
         void actions.downloadUpdate();
@@ -159,21 +146,6 @@ function buildWindowMenu(isMac: boolean): MenuItemConstructorOptions[] {
         ]
       : [roleItem("close")])
   ];
-}
-
-function isBusy(state: UpdaterState): boolean {
-  return state.status === "checking" || state.status === "downloading";
-}
-
-function formatUpdaterLabel(
-  prefix: string,
-  version?: string,
-  suffix = ""
-): string {
-  if (version) {
-    return `${prefix} ${version}${suffix}…`;
-  }
-  return `${prefix}${suffix}…`;
 }
 
 function roleItem(

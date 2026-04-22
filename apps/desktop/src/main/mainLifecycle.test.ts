@@ -1,7 +1,18 @@
 import { vi } from "vitest";
 
+const { showMessageBox } = vi.hoisted(() => ({
+  showMessageBox: vi.fn()
+}));
+
+vi.mock("electron", () => ({
+  dialog: {
+    showMessageBox
+  }
+}));
+
 import {
   createMainLifecycleController,
+  showQuitConfirmationDialog,
   type QuitConfirmationResult
 } from "./mainLifecycle";
 
@@ -20,6 +31,10 @@ function createDeferredResult() {
 }
 
 describe("main lifecycle controller", () => {
+  beforeEach(() => {
+    showMessageBox.mockReset();
+  });
+
   it("keeps the app alive when the last macOS window closes", () => {
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
@@ -230,5 +245,21 @@ describe("main lifecycle controller", () => {
 
     expect(confirmQuit).not.toHaveBeenCalled();
     expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells users that quit clears current workspaces for the next launch", async () => {
+    showMessageBox.mockResolvedValueOnce({
+      response: 0,
+      checkboxChecked: false
+    });
+
+    await showQuitConfirmationDialog(null);
+
+    expect(showMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail:
+          "This will close all windows and clear current workspaces for the next launch."
+      })
+    );
   });
 });

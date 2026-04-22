@@ -1,19 +1,8 @@
+import type { UpdaterState } from "@kmux/proto";
+
 export type UpdateCheckSource = "background" | "foreground";
-
-export type UpdaterStatus =
-  | "disabled"
-  | "idle"
-  | "checking"
-  | "available"
-  | "downloading"
-  | "downloaded"
-  | "error";
-
-export interface UpdaterState {
-  status: UpdaterStatus;
-  version?: string;
-  errorMessage?: string;
-}
+export type UpdateDownloadSource = UpdateCheckSource | "inline";
+export type { UpdaterState, UpdaterStatus } from "@kmux/proto";
 
 type UpdaterEventName =
   | "checking-for-update"
@@ -87,7 +76,7 @@ export interface UpdaterController {
   getState(): UpdaterState;
   subscribe(listener: (state: UpdaterState) => void): () => void;
   checkForUpdates(source?: UpdateCheckSource): Promise<void>;
-  downloadUpdate(source?: UpdateCheckSource): Promise<void>;
+  downloadUpdate(source?: UpdateDownloadSource): Promise<void>;
   quitAndInstall(): void;
   startBackgroundChecks(): void;
   dispose(): void;
@@ -95,7 +84,7 @@ export interface UpdaterController {
 
 type ActiveOperation =
   | { kind: "check"; source: UpdateCheckSource }
-  | { kind: "download"; source: UpdateCheckSource }
+  | { kind: "download"; source: UpdateDownloadSource }
   | null;
 
 const DEFAULT_INITIAL_DELAY_MS = 20_000;
@@ -289,7 +278,7 @@ export function createUpdaterController(
   }
 
   async function downloadUpdate(
-    source: UpdateCheckSource = "foreground"
+    source: UpdateDownloadSource = "foreground"
   ): Promise<void> {
     if (!enabled) {
       return;
@@ -378,7 +367,7 @@ export function createUpdaterController(
       status: "error",
       errorMessage: message
     });
-    if (source === "foreground") {
+    if (source !== "background") {
       void options.dialogs.showError(message);
     }
   }

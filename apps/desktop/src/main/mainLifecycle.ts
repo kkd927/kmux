@@ -114,7 +114,8 @@ export async function showQuitConfirmationDialog(
     defaultId: 0,
     cancelId: 1,
     message: "Quit kmux?",
-    detail: "This will close all windows and workspaces.",
+    detail:
+      "This will close all windows and clear current workspaces for the next launch.",
     checkboxLabel: "Don't warn again for Cmd+Q",
     checkboxChecked: false,
     normalizeAccessKeys: true

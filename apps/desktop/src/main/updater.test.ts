@@ -209,6 +209,43 @@ describe("updater controller", () => {
     });
   });
 
+  it("keeps inline download completion ready for an explicit restart click", async () => {
+    const harness = createHarness();
+
+    await harness.controller.checkForUpdates("background");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    await harness.controller.downloadUpdate("inline");
+    harness.updater.emit("update-downloaded", { version: "0.1.12" });
+    await Promise.resolve();
+
+    expect(harness.updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(harness.dialogs.promptForInstall).not.toHaveBeenCalled();
+    expect(harness.notifier.notifyUpdateDownloaded).not.toHaveBeenCalled();
+    expect(harness.controller.getState()).toEqual({
+      status: "downloaded",
+      version: "0.1.12"
+    });
+  });
+
+  it("shows inline download failures to the user", async () => {
+    const harness = createHarness();
+    harness.updater.downloadUpdate.mockRejectedValueOnce(new Error("disk full"));
+
+    await harness.controller.checkForUpdates("background");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    await harness.controller.downloadUpdate("inline");
+
+    expect(harness.dialogs.showError).toHaveBeenCalledWith("disk full");
+    expect(harness.controller.getState()).toEqual({
+      status: "error",
+      errorMessage: "disk full"
+    });
+  });
+
   it("shows foreground errors and recovers on retry", async () => {
     const harness = createHarness();
     harness.updater.checkForUpdates

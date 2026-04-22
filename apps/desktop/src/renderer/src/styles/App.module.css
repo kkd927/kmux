@@ -283,6 +283,13 @@
     border-color 80ms ease;
 }
 
+.titleActionTextButton {
+  min-width: 0;
+  padding: 0 8px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .titleActionButton :global(.codicon),
 .sidebarRailButton :global(.codicon),
 .sidebarHeaderIconButton :global(.codicon) {
@@ -290,12 +297,6 @@
   height: 16px;
   font-size: 16px;
   line-height: 1;
-}
-
-.titleActionPrimary {
-  background: var(--accent-soft);
-  color: var(--text-primary);
-  border-color: var(--list-active-border);
 }
 
 .titleActionGhost {
@@ -309,9 +310,17 @@
   border-color: var(--border-soft);
 }
 
-.titleActionPrimary:hover {
-  background: var(--list-active);
-  color: #ffffff;
+.titleActionButton:disabled {
+  cursor: default;
+  opacity: 0.74;
+}
+
+.titleActionButton:disabled:hover,
+.titleActionButton:disabled:focus-visible {
+  background: inherit;
+  color: inherit;
+  border-color: inherit;
+  box-shadow: none;
 }
 
 .titleActionButton:focus-visible,
@@ -330,6 +339,87 @@
   font-size: 0.692rem;
   line-height: 14px;
   font-weight: 700;
+}
+
+.titleUpdateIndicator {
+  display: flex;
+  align-items: center;
+  /* VS Code: cornerRadius-medium = 6px */
+  border-radius: 6px;
+  white-space: nowrap;
+  padding: 0 8px;
+  height: 22px;
+  box-sizing: border-box;
+  background-color: transparent;
+  border: 1px solid transparent;
+}
+
+.titleUpdateIndicator:hover {
+  /* VS Code: var(--vscode-toolbar-hoverBackground) */
+  background-color: rgba(90, 93, 94, 0.31);
+}
+
+.titleUpdateIndicatorLabel {
+  /* VS Code: var(--vscode-bodyFontSize-small) = 11px */
+  font-size: 11px;
+  position: relative;
+}
+
+.titleUpdateIndicatorProminent {
+  /* VS Code: var(--vscode-button-background) */
+  background-color: #0078d4;
+  /* VS Code: var(--vscode-button-foreground) */
+  color: #ffffff;
+  border-color: #0078d4;
+}
+
+.titleUpdateIndicatorProminent:hover {
+  /* VS Code: var(--vscode-button-hoverBackground) */
+  background-color: #026ec1;
+  border-color: #026ec1;
+}
+
+.titleUpdateIndicatorProgressIndefinite .titleUpdateIndicatorLabel::after,
+.titleUpdateIndicatorProgressPercent .titleUpdateIndicatorLabel::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 1px;
+  height: 1px;
+  border-radius: 1px;
+}
+
+.titleUpdateIndicatorProgressIndefinite .titleUpdateIndicatorLabel::after {
+  width: 100%;
+  /* VS Code: var(--vscode-progressBar-background) */
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    #0e70c0 80%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: title-update-indicator-shimmer 1.5s ease-in-out infinite;
+}
+
+.titleUpdateIndicatorProgressPercent .titleUpdateIndicatorLabel::after {
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    #0e70c0 var(--update-progress, 0%),
+    color-mix(in srgb, #0e70c0 25%, transparent) var(--update-progress, 0%)
+  );
+  transition: background 0.3s ease;
+}
+
+@keyframes title-update-indicator-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 .shell {
@@ -1419,7 +1509,6 @@
   }
 }
 
-
 /* Usage Dashboard Styles — TailAdmin-inspired */
 
 .rightSidebar {
@@ -1735,7 +1824,8 @@
   box-shadow: 0px 1px 2px rgba(16, 24, 40, 0.05);
 }
 
-:global(html[data-color-theme="dark"]) .usageSegmentedButton[data-active="true"] {
+:global(html[data-color-theme="dark"])
+  .usageSegmentedButton[data-active="true"] {
   background: #1d2939;
 }
 
@@ -2608,7 +2698,8 @@
   background: rgba(18, 183, 106, 0.1);
 }
 
-:global(html[data-color-theme="dark"]) .usageSourceBadge[data-source="estimated"] {
+:global(html[data-color-theme="dark"])
+  .usageSourceBadge[data-source="estimated"] {
   color: var(--usage-green);
   background: rgba(18, 183, 106, 0.15);
 }
@@ -2618,7 +2709,8 @@
   background: rgba(247, 144, 9, 0.1);
 }
 
-:global(html[data-color-theme="dark"]) .usageSourceBadge[data-source="partial"] {
+:global(html[data-color-theme="dark"])
+  .usageSourceBadge[data-source="partial"] {
   color: #fdb022;
   background: rgba(247, 144, 9, 0.15);
 }

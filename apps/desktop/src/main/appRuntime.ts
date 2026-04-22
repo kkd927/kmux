@@ -253,14 +253,18 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const settings =
       options.settingsStore.load() ??
       createDefaultSettings("kmuxOnly", options.defaultShellPath);
+    const shouldRestoreSnapshot =
+      snapshot !== null &&
+      settings.startupRestore &&
+      snapshotRecord?.cleanShutdown !== true;
     const initial =
-      snapshot && settings.startupRestore
+      shouldRestoreSnapshot
         ? cloneState(snapshot)
         : createInitialState(options.defaultShellPath);
 
     initial.settings = mergeSettings(initial.settings, settings ?? {});
 
-    if (settings.startupRestore) {
+    if (shouldRestoreSnapshot) {
       for (const session of Object.values(initial.sessions)) {
         if (session.runtimeState !== "exited") {
           session.runtimeState = "pending";
@@ -268,9 +272,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           delete session.exitCode;
         }
       }
-      if (snapshotRecord && !snapshotRecord.cleanShutdown) {
-        clearSnapshotNotifications(initial);
-      }
+      clearSnapshotNotifications(initial);
     }
 
     const activeWindow = initial.windows[initial.activeWindowId];
@@ -386,8 +388,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      const shutdownSnapshot = cloneState(store.getState());
-      clearSnapshotNotifications(shutdownSnapshot);
+      const shutdownSnapshot = createCleanShutdownSnapshot(
+        store.getState(),
+        options.defaultShellPath
+      );
       options.snapshotStore.save(shutdownSnapshot, {
         cleanShutdown: true
       });
@@ -438,6 +442,24 @@ function clearSnapshotNotifications(state: AppState): void {
     surface.unreadCount = 0;
     surface.attention = false;
   }
+}
+
+function createCleanShutdownSnapshot(
+  currentState: AppState,
+  defaultShellPath: string
+): AppState {
+  const cleanState = createInitialState(defaultShellPath);
+  cleanState.settings = mergeSettings(cleanState.settings, currentState.settings);
+
+  const currentWindow = currentState.windows[currentState.activeWindowId];
+  const cleanWindow = cleanState.windows[cleanState.activeWindowId];
+
+  if (currentWindow && cleanWindow) {
+    cleanWindow.sidebarVisible = currentWindow.sidebarVisible;
+    cleanWindow.sidebarWidth = currentWindow.sidebarWidth;
+  }
+
+  return cleanState;
 }
 
 function areTerminalTypographySettingsEqual(
