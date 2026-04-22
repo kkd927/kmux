@@ -73,10 +73,11 @@ Hard rules:
 
 ### 3.4 Sidebar / Notifications
 
-- Workspace row name
-- Cwd/path summary
-- Git branch
-- Up to three local ports
+- Workspace row name; user-managed label that defaults to `new workspace` until explicitly renamed
+- Representative surface summary/title
+- Cwd/path summary from the representative surface
+- Git branch from the representative surface
+- Up to three local ports aggregated across workspace surfaces, with the active surface taking precedence when selecting which ports to show
 - Unread badge
 - Pane attention ring
 - Status pill

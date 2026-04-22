@@ -326,6 +326,9 @@ async function bootstrap(): Promise<void> {
   };
   lifecycle = createMainLifecycleController({
     isMac: process.platform === "darwin",
+    // E2E cleanup should not depend on mutating persisted warn-before-quit
+    // settings or dismissing a native macOS dialog.
+    shouldConfirmQuit: process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM !== "1",
     app,
     getWindowCount: () => BrowserWindow.getAllWindows().length,
     openMainWindow,

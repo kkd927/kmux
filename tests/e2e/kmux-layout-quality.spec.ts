@@ -261,6 +261,68 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
   }
 });
 
+test("workspace sidebar keeps representative metadata stable across background tabs while aggregating active workspace ports", async () => {
+  const launched = await launchKmux("kmux-e2e-sidebar-representative-meta-");
+
+  try {
+    const { page, sandbox } = launched;
+    await page.setViewportSize({ width: 1277, height: 1179 });
+
+    const created = await dispatch(page, {
+      type: "workspace.create",
+      cwd: sandbox.profileRoot
+    });
+    const workspaceId = created.activeWorkspace.id;
+    const paneId = created.activeWorkspace.activePaneId;
+    const representativeSurfaceId =
+      created.activeWorkspace.panes[paneId].activeSurfaceId;
+
+    const withSecondSurface = await dispatch(page, {
+      type: "surface.create",
+      paneId
+    });
+    const backgroundSurfaceId =
+      withSecondSurface.activeWorkspace.panes[paneId].activeSurfaceId;
+
+    await dispatch(page, {
+      type: "surface.focus",
+      surfaceId: representativeSurfaceId
+    });
+    await dispatch(page, {
+      type: "surface.metadata",
+      surfaceId: representativeSurfaceId,
+      title: "repo / shell",
+      branch: "main",
+      ports: [3000, 3001]
+    });
+    const updated = await dispatch(page, {
+      type: "surface.metadata",
+      surfaceId: backgroundSurfaceId,
+      title: "background / logs",
+      branch: "feature/background",
+      ports: [5173, 3000, 8080]
+    });
+
+    const activeRow = page.locator(`[data-workspace-id="${workspaceId}"]`);
+
+    expect(updated.activeWorkspace.name).toBe("new workspace");
+    expect(
+      updated.workspaceRows.find((row) => row.workspaceId === workspaceId)?.ports
+    ).toEqual([3000, 3001, 5173]);
+
+    await expect(activeRow).toContainText("new workspace");
+    await expect(activeRow.locator("[data-workspace-summary]")).toHaveText(
+      "repo / shell"
+    );
+    await expect(activeRow.locator("[data-workspace-path]")).toHaveText(
+      sandbox.profileRoot
+    );
+    await expect(activeRow.locator("[data-workspace-branch]")).toHaveText("main");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("workspace create affordances keep default names while exposing command-number hints on meta hold", async () => {
   const launched = await launchKmux("kmux-e2e-workspace-default-labels-");
 
