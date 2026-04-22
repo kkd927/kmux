@@ -18,7 +18,8 @@ describe("resolvePtyHostLaunchOptions", () => {
       entry:
         "/Applications/kmux.app/Contents/Resources/app.asar.unpacked/dist/pty-host/index.cjs",
       cwd: "/Applications/kmux.app/Contents/Resources",
-      execArgv: []
+      execArgv: [],
+      enableStdoutLogs: false
     });
   });
 
@@ -31,7 +32,8 @@ describe("resolvePtyHostLaunchOptions", () => {
     expect(launch).toEqual({
       entry: "/Users/test/kmux/apps/desktop/dist/pty-host/index.cjs",
       cwd: "/Users/test/kmux",
-      execArgv: []
+      execArgv: [],
+      enableStdoutLogs: false
     });
   });
 
@@ -44,7 +46,8 @@ describe("resolvePtyHostLaunchOptions", () => {
     expect(launch).toEqual({
       entry: "/Users/test/kmux/apps/desktop/src/pty-host/index.ts",
       cwd: "/Users/test/kmux",
-      execArgv: ["--import", "tsx"]
+      execArgv: ["--import", "tsx"],
+      enableStdoutLogs: true
     });
   });
 
@@ -63,7 +66,67 @@ describe("resolvePtyHostLaunchOptions", () => {
       expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
       [],
       expect.objectContaining({
-        env: { PATH: "/usr/local/bin" }
+        env: {
+          PATH: "/usr/local/bin",
+          KMUX_PTY_STDOUT_LOGS: "1"
+        }
+      })
+    );
+  });
+
+  it("enables raw PTY stdout logging while running in development", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start({ PATH: "/usr/local/bin" });
+
+    expect(forkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PATH: "/usr/local/bin",
+          KMUX_PTY_STDOUT_LOGS: "1"
+        })
+      })
+    );
+  });
+
+  it("disables raw PTY stdout logging for the production build", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    process.env.NODE_ENV = "production";
+
+    try {
+      manager.start({ PATH: "/usr/local/bin" });
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
+
+    expect(forkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/dist/pty-host/index.cjs"),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PATH: "/usr/local/bin",
+          KMUX_PTY_STDOUT_LOGS: "0"
+        })
       })
     );
   });

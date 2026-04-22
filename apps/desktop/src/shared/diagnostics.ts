@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const DIAGNOSTICS_LOG_PATH_ENV = "KMUX_DEBUG_LOG_PATH";
+export const PTY_STDOUT_LOGS_ENV = "KMUX_PTY_STDOUT_LOGS";
 
 interface DiagnosticsFormatOptions {
   now?: Date;
