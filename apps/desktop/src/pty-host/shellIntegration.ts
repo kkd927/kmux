@@ -308,6 +308,11 @@ function writeAgentWrappers(wrapperDir: string): void {
     join(binDir, "kmux-agent-hook"),
     buildAgentHookHelperScript()
   );
+  writeFileSync(
+    join(binDir, "kmux-agent-hook.cjs"),
+    buildAgentHookRunnerScript(),
+    "utf8"
+  );
   writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
 }
 
@@ -653,11 +658,7 @@ function buildNodeRuntimeResolverLines(): string[] {
   ];
 }
 
-function escapeForSingleQuotedShell(source: string): string {
-  return source.replace(/'/g, `'"'"'`);
-}
-
-function buildAgentHookInlineScript(): string {
+function buildAgentHookRunnerScript(): string {
   return `
 const net = require("node:net");
 
@@ -778,10 +779,6 @@ forwardFromStdin();
 }
 
 function buildAgentHookHelperScript(): string {
-  const inlineScript = escapeForSingleQuotedShell(
-    buildAgentHookInlineScript()
-  );
-
   return [
     "#!/bin/sh",
     'KMUX_AGENT_HOOK_OUTPUT_MODE="${KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}"',
@@ -800,12 +797,13 @@ function buildAgentHookHelperScript(): string {
     "kmux_dispatch_hook() {",
     '  KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
     '  [ -n "$KMUX_NODE_RUNTIME" ] || return 1',
-    '  [ -n "${KMUX_SOCKET_PATH:-}" ] || return 1',
+    '  KMUX_AGENT_HELPER_PATH="${KMUX_AGENT_BIN_DIR}/kmux-agent-hook.cjs"',
+    '  [ -f "$KMUX_AGENT_HELPER_PATH" ] || return 1',
     '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    `    env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e '${inlineScript}' 2>/dev/null`,
+    '    env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" "$KMUX_AGENT_HELPER_PATH" "$@" 2>/dev/null',
     "    return $?",
     "  fi",
-    `  env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" -e '${inlineScript}' >/dev/null 2>&1`,
+    '  env KMUX_HOOK_AGENT="$1" KMUX_HOOK_EVENT="$2" ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" "$KMUX_AGENT_HELPER_PATH" "$@" >/dev/null 2>&1',
     "  return $?",
     "}",
     "",
@@ -951,8 +949,8 @@ function buildCodexWrapperScript(): string {
     "",
     'KMUX_USE_CODEX_HOOKS="0"',
     'if [ -n "$KMUX_CODEX_HOME" ] && [ -n "$KMUX_NODE_RUNTIME" ]; then',
-    '  KMUX_OUTPUT_HOOKS_FILE="$KMUX_CODEX_HOME/hooks.json" \\',
-    "  env ELECTRON_RUN_AS_NODE=1 \"$KMUX_NODE_RUNTIME\" <<'EOF'",
+    '  if KMUX_OUTPUT_HOOKS_FILE="$KMUX_CODEX_HOME/hooks.json" \\',
+    "    env ELECTRON_RUN_AS_NODE=1 \"$KMUX_NODE_RUNTIME\" <<'EOF'",
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "",
@@ -985,10 +983,17 @@ function buildCodexWrapperScript(): string {
     "}",
     "",
     "function readHooks(filePath) {",
+    "  if (!fs.existsSync(filePath)) {",
+    "    return { ok: true, config: {}, shouldWrite: true };",
+    "  }",
     "  try {",
-    "    return asObject(JSON.parse(fs.readFileSync(filePath, 'utf8')));",
+    "    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));",
+    "    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {",
+    "      return { ok: false };",
+    "    }",
+    "    return { ok: true, config: parsed, shouldWrite: false };",
     "  } catch {",
-    "    return {};",
+    "    return { ok: false };",
     "  }",
     "}",
     "",
@@ -1005,7 +1010,11 @@ function buildCodexWrapperScript(): string {
     "    );",
     "}",
     "",
-    "const baseHooksConfig = readHooks(outputPath);",
+    "const readResult = readHooks(outputPath);",
+    "if (!readResult.ok) {",
+    "  process.exit(1);",
+    "}",
+    "const baseHooksConfig = asObject(readResult.config);",
     "const baseHooks = asObject(baseHooksConfig.hooks);",
     "const managedHookEntries = Object.fromEntries(",
     "  managedEvents.map((eventName) => [",
@@ -1025,10 +1034,16 @@ function buildCodexWrapperScript(): string {
     "  },",
     "};",
     "",
-    "fs.mkdirSync(path.dirname(outputPath), { recursive: true });",
-    "fs.writeFileSync(outputPath, JSON.stringify(mergedHooks), 'utf8');",
+    "const existingSerialized = JSON.stringify(baseHooksConfig);",
+    "const mergedSerialized = JSON.stringify(mergedHooks);",
+    "if (readResult.shouldWrite || existingSerialized !== mergedSerialized) {",
+    "  fs.mkdirSync(path.dirname(outputPath), { recursive: true });",
+    "  fs.writeFileSync(outputPath, mergedSerialized, 'utf8');",
+    "}",
     "EOF",
-    '  KMUX_USE_CODEX_HOOKS="1"',
+    "  then",
+    '    KMUX_USE_CODEX_HOOKS="1"',
+    "  fi",
     "fi",
     "# History: kmux sets TERM_PROGRAM=kmux for child PTYs. Codex TUI currently",
     "# only auto-selects OSC 9 notifications for a small terminal allowlist",
