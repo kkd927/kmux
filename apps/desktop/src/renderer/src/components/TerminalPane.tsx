@@ -104,6 +104,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const pendingEnterRewriteRef = useRef<PendingEnterRewrite | null>(null);
   const [query, setQuery] = useState("");
   const [copyMode, setCopyMode] = useState(false);
+  const [runtimeGeneration, setRuntimeGeneration] = useState(0);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -112,6 +113,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const onToggleSearchRef = useRef(props.onToggleSearch);
   const skipInitialTypographySyncRef = useRef(true);
   const skipInitialWebglSyncRef = useRef(true);
+  const runtimeRecoveryPendingRef = useRef(false);
+  const webglContextLossSubscriptionRef = useRef<{
+    dispose(): void;
+  } | null>(null);
   const resizeGenerationRef = useRef(0);
   const writeProfileBucketRef = useRef(
     createSmoothnessProfileBucket<{
@@ -213,6 +218,33 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   function focusTerminalInput(): void {
     requestAnimationFrame(() => {
       terminalRef.current?.focus();
+    });
+  }
+
+  function scheduleRuntimeRecovery(terminal: Terminal): void {
+    if (
+      runtimeRecoveryPendingRef.current ||
+      terminalRef.current !== terminal
+    ) {
+      return;
+    }
+
+    runtimeRecoveryPendingRef.current = true;
+    setRuntimeGeneration((current) => current + 1);
+  }
+
+  function bindWebglContextLoss(
+    addon: DisposableAddon | null,
+    terminal: Terminal
+  ): void {
+    webglContextLossSubscriptionRef.current?.dispose();
+    webglContextLossSubscriptionRef.current = null;
+    if (!(addon instanceof WebglAddon)) {
+      return;
+    }
+
+    webglContextLossSubscriptionRef.current = addon.onContextLoss(() => {
+      scheduleRuntimeRecovery(terminal);
     });
   }
 
@@ -500,6 +532,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!containerRef.current) {
       return;
     }
+    runtimeRecoveryPendingRef.current = false;
     const container = containerRef.current;
 
     const terminal = new Terminal({
@@ -684,6 +717,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
     });
+    bindWebglContextLoss(webglAddonRef.current, terminal);
     void fitAndSyncTerminal(terminal);
 
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -741,6 +775,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
       clearPendingEnterRewrite();
+      webglContextLossSubscriptionRef.current?.dispose();
+      webglContextLossSubscriptionRef.current = null;
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
       terminal.dispose();
@@ -748,7 +784,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [props.paneId]);
+  }, [props.paneId, runtimeGeneration]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -802,6 +838,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
     });
+    bindWebglContextLoss(webglAddonRef.current, terminal);
     if (terminal.rows > 0) {
       terminal.refresh(0, terminal.rows - 1);
     }
@@ -810,7 +847,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       syncTerminalViewportBackground();
     });
     void fitAndSyncTerminal(terminal);
-  }, [props.settings.terminalUseWebgl]);
+  }, [props.settings.terminalUseWebgl, runtimeGeneration]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -870,7 +907,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       unsubscribe();
       void window.kmux.detachSurface(activeSurface.id);
     };
-  }, [activeSurface?.id, props.paneId]);
+  }, [activeSurface?.id, props.paneId, runtimeGeneration]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -916,7 +953,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     focusTerminalInput();
-  }, [activeSurface.id, props.focused, props.showSearch]);
+  }, [activeSurface.id, props.focused, props.showSearch, runtimeGeneration]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
