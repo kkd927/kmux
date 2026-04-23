@@ -1,16 +1,16 @@
 import { expect, test } from "@playwright/test";
-import type { ShellViewModel } from "@kmux/proto";
 
 import {
   closeKmux,
   dispatch,
   getView,
   launchKmux,
+  type TestShellView,
   waitForView
 } from "./helpers";
 
 function listPaneIdsInTreeOrder(
-  workspace: ShellViewModel["activeWorkspace"]
+  workspace: TestShellView["activeWorkspace"]
 ): string[] {
   const paneIds: string[] = [];
 
@@ -33,7 +33,7 @@ function listPaneIdsInTreeOrder(
   return paneIds;
 }
 
-function listSurfaceShortcutTargets(workspace: ShellViewModel["activeWorkspace"]): {
+function listSurfaceShortcutTargets(workspace: TestShellView["activeWorkspace"]): {
   paneId: string;
   surfaceId: string;
 }[] {

@@ -5,7 +5,7 @@ import type {
   ImportedTerminalThemePalette,
   KmuxSettings,
   ResolvedTerminalTypographyVm,
-  ShellViewModel,
+  ShellStoreSnapshot,
   TerminalThemeProfile,
   TerminalThemeVariant
 } from "@kmux/proto";
@@ -34,7 +34,7 @@ import {
 import { determineSurfaceCloseStrategy } from "./surfaceCloseStrategy";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
-import { useShellView } from "./hooks/useShellView";
+import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -49,7 +49,7 @@ import {
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
-  view: ShellViewModel;
+  view: ShellStoreSnapshot;
   activePaneId: string;
   activeSurfaceId: string;
 };
@@ -69,8 +69,36 @@ type PendingWorkspaceClose = {
   isLastWorkspace: boolean;
 };
 
+const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
+const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
+
 export function App(): JSX.Element {
-  const view = useShellView();
+  const shellReady = useShellSelector((snapshot) => snapshot !== null);
+  const sidebarVisible = useShellSelector(
+    (snapshot) => snapshot?.sidebarVisible ?? true
+  );
+  const sidebarWidth = useShellSelector(
+    (snapshot) => snapshot?.sidebarWidth ?? MAX_SIDEBAR_WIDTH
+  );
+  const workspaceRows = useShellSelector(
+    (snapshot) => snapshot?.workspaceRows ?? EMPTY_WORKSPACE_ROWS
+  );
+  const activeWorkspace = useShellSelector(
+    (snapshot) => snapshot?.activeWorkspace ?? null
+  );
+  const activeWorkspacePaneTree = useShellSelector(
+    (snapshot) => snapshot?.activeWorkspacePaneTree ?? null
+  );
+  const notifications = useShellSelector(
+    (snapshot) => snapshot?.notifications ?? EMPTY_NOTIFICATIONS
+  );
+  const unreadNotifications = useShellSelector(
+    (snapshot) => snapshot?.unreadNotifications ?? 0
+  );
+  const settings = useShellSelector((snapshot) => snapshot?.settings ?? null);
+  const terminalTypography = useShellSelector(
+    (snapshot) => snapshot?.terminalTypography ?? null
+  );
   const isMac = navigator.userAgent.includes("Mac");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -96,7 +124,7 @@ export function App(): JSX.Element {
   const [prefersDarkColorScheme, setPrefersDarkColorScheme] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const [settingsDraft, setSettingsDraft] = useState(view?.settings);
+  const [settingsDraft, setSettingsDraft] = useState(settings ?? undefined);
   const [availableTerminalFontFamilies, setAvailableTerminalFontFamilies] =
     useState<string[]>([]);
   const [
@@ -109,7 +137,7 @@ export function App(): JSX.Element {
   const [pendingWorkspaceClose, setPendingWorkspaceClose] =
     useState<PendingWorkspaceClose | null>(null);
   const usageDashboardOpen = activeRightPanel === "usage";
-  const viewRef = useRef<ShellViewModel | null>(view);
+  const viewRef = useShellSnapshotRef();
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const overlayStateRef = useRef<OverlayState>({
     paletteOpen,
@@ -120,19 +148,16 @@ export function App(): JSX.Element {
     workspaceContextMenuOpen: false,
     workspaceCloseConfirmOpen: false
   });
-
-  viewRef.current = view;
-
   useEffect(() => {
     setSettingsDraft(
-      view?.settings
+      settings
         ? {
-            ...view.settings,
-            shortcuts: omitDeprecatedShortcuts(view.settings.shortcuts)
+            ...settings,
+            shortcuts: omitDeprecatedShortcuts(settings.shortcuts)
           }
         : undefined
     );
-  }, [view?.settings]);
+  }, [settings]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -145,18 +170,18 @@ export function App(): JSX.Element {
   }, [usageDashboardOpen]);
 
   useEffect(() => {
-    if (!pendingWorkspaceClose || !view) {
+    if (!pendingWorkspaceClose || !shellReady) {
       return;
     }
 
     if (
-      !view.workspaceRows.some(
+      !workspaceRows.some(
         (row) => row.workspaceId === pendingWorkspaceClose.workspaceId
       )
     ) {
       setPendingWorkspaceClose(null);
     }
-  }, [pendingWorkspaceClose, view]);
+  }, [pendingWorkspaceClose, shellReady, workspaceRows]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -194,37 +219,35 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!view?.settings) {
+    if (!settings || !terminalTypography) {
       return;
     }
     applyAppearanceSettings(
-      view.settings,
-      view.terminalTypography,
+      settings,
+      terminalTypography,
       prefersDarkColorScheme
     );
   }, [
-    view?.settings?.themeMode,
-    view?.settings?.terminalTypography?.fontSize,
-    view?.settings?.terminalTypography?.lineHeight,
-    view?.terminalTypography?.resolvedFontFamily,
+    settings?.themeMode,
+    settings?.terminalTypography?.fontSize,
+    settings?.terminalTypography?.lineHeight,
+    terminalTypography?.resolvedFontFamily,
     prefersDarkColorScheme
   ]);
 
   useEffect(() => {
-    if (!view?.terminalTypography?.stackHash) {
+    if (!terminalTypography?.stackHash) {
       return;
     }
 
-    const stackHash = view.terminalTypography.stackHash;
+    const stackHash = terminalTypography.stackHash;
     if (reportedTypographyStacksRef.current.has(stackHash)) {
       return;
     }
 
     let active = true;
     void (async () => {
-      const issues = await probeResolvedTerminalTypography(
-        view.terminalTypography
-      );
+      const issues = await probeResolvedTerminalTypography(terminalTypography);
       if (!active) {
         return;
       }
@@ -239,8 +262,8 @@ export function App(): JSX.Element {
       active = false;
     };
   }, [
-    view?.terminalTypography?.stackHash,
-    view?.terminalTypography?.resolvedFontFamily
+    terminalTypography?.stackHash,
+    terminalTypography?.resolvedFontFamily
   ]);
 
   useEffect(() => {
@@ -295,13 +318,12 @@ export function App(): JSX.Element {
   ]);
 
   const resolvedColorTheme = resolveColorTheme(
-    view?.settings?.themeMode ?? "dark",
+    settings?.themeMode ?? "dark",
     prefersDarkColorScheme
   );
   const resolvedTerminalTheme = useMemo(
-    () =>
-      resolveTerminalTheme(view?.settings?.terminalThemes, resolvedColorTheme),
-    [resolvedColorTheme, view?.settings?.terminalThemes]
+    () => resolveTerminalTheme(settings?.terminalThemes, resolvedColorTheme),
+    [resolvedColorTheme, settings?.terminalThemes]
   );
   const resolvedSettingsDraftTerminalTheme = useMemo(
     () =>
@@ -311,7 +333,7 @@ export function App(): JSX.Element {
     [resolvedColorTheme, settingsDraft]
   );
   const renderedSidebarWidth = clampSidebarWidthForWindow(
-    view?.sidebarWidth ?? MAX_SIDEBAR_WIDTH,
+    sidebarWidth,
     windowWidth
   );
 
@@ -323,7 +345,8 @@ export function App(): JSX.Element {
     openWorkspaceContextMenu,
     closeWorkspaceContextMenu
   } = useWorkspaceContextMenu({
-    view,
+    workspaceRows,
+    settings,
     beginWorkspaceRename
   });
 
@@ -365,7 +388,7 @@ export function App(): JSX.Element {
   });
 
   const paletteItems = useMemo(() => {
-    if (!view) {
+    if (!shellReady) {
       return [];
     }
 
@@ -464,7 +487,7 @@ export function App(): JSX.Element {
         item.label.toLowerCase().includes(paletteQuery.toLowerCase()) ||
         item.subtitle.toLowerCase().includes(paletteQuery.toLowerCase())
     );
-  }, [paletteQuery, view]);
+  }, [paletteQuery, shellReady]);
 
   useEffect(() => {
     if (!paletteOpen) {
@@ -484,7 +507,13 @@ export function App(): JSX.Element {
     }
   }, [paletteItems.length, paletteSelectedIndex]);
 
-  if (!view) {
+  if (
+    !shellReady ||
+    !activeWorkspace ||
+    !activeWorkspacePaneTree ||
+    !settings ||
+    !terminalTypography
+  ) {
     return <div className={styles.loading}>Booting kmux…</div>;
   }
 
@@ -723,9 +752,9 @@ export function App(): JSX.Element {
             onClick={() => setNotificationsOpen((open) => !open)}
           >
             <Codicon name="bell" />
-            {view.unreadNotifications > 0 ? (
+            {unreadNotifications > 0 ? (
               <span className={styles.titleActionCount}>
-                {view.unreadNotifications}
+                {unreadNotifications}
               </span>
             ) : null}
           </button>
@@ -752,9 +781,11 @@ export function App(): JSX.Element {
         </div>
       </div>
       <div className={styles.shell}>
-        {view.sidebarVisible ? (
+        {sidebarVisible ? (
           <WorkspaceSidebar
-            view={view}
+            workspaceRows={workspaceRows}
+            activeWorkspace={activeWorkspace}
+            sidebarWidth={sidebarWidth}
             renderedSidebarWidth={renderedSidebarWidth}
             showWorkspaceShortcutHints={showWorkspaceShortcutHints}
             editingWorkspaceId={editingWorkspaceId}
@@ -808,10 +839,10 @@ export function App(): JSX.Element {
                 clearWorkspaceDragState();
                 return;
               }
-              const sourceIndex = view.workspaceRows.findIndex(
+              const sourceIndex = workspaceRows.findIndex(
                 (entry) => entry.workspaceId === dragWorkspaceId
               );
-              const targetIndex = view.workspaceRows.findIndex(
+              const targetIndex = workspaceRows.findIndex(
                 (entry) => entry.workspaceId === workspaceId
               );
               if (sourceIndex === -1 || targetIndex === -1) {
@@ -842,9 +873,9 @@ export function App(): JSX.Element {
         ) : null}
         <main className={styles.main}>
           <PaneTree
-            workspace={view.activeWorkspace}
-            settings={view.settings}
-            terminalTypography={view.terminalTypography}
+            workspace={activeWorkspacePaneTree}
+            settings={settings}
+            terminalTypography={terminalTypography}
             terminalTheme={resolvedTerminalTheme}
             colorTheme={resolvedColorTheme}
             searchSurfaceId={searchSurfaceId}
@@ -915,7 +946,7 @@ export function App(): JSX.Element {
           void handleWorkspaceContextAction(action, workspaceId)
         }
         notificationsOpen={notificationsOpen}
-        notifications={view.notifications}
+        notifications={notifications}
         onCloseNotifications={() => setNotificationsOpen(false)}
         onJumpNotifications={() => {
           void dispatch({ type: "notification.jumpLatestUnread" });
@@ -933,7 +964,7 @@ export function App(): JSX.Element {
         settingsThemeNotice={settingsThemeNotice}
         availableTerminalFontFamilies={availableTerminalFontFamilies}
         terminalTypographyPreview={
-          settingsTerminalTypographyPreview ?? view.terminalTypography
+          settingsTerminalTypographyPreview ?? terminalTypography
         }
         terminalThemePreview={resolvedSettingsDraftTerminalTheme}
         onImportTerminalTheme={() => void handleImportTerminalTheme()}
@@ -1002,7 +1033,7 @@ export function App(): JSX.Element {
   }
 
   async function requestSurfaceClose(surfaceId: string): Promise<void> {
-    const latestView = await window.kmux.getView();
+    const latestView = await window.kmux.getShellState();
     const strategy = determineSurfaceCloseStrategy(latestView, surfaceId);
     if (strategy.kind === "close-surface") {
       await dispatch({ type: "surface.close", surfaceId });
@@ -1023,7 +1054,7 @@ export function App(): JSX.Element {
 
     setPendingWorkspaceClose(null);
 
-    const latestView = await window.kmux.getView();
+    const latestView = await window.kmux.getShellState();
     const workspaceExists = latestView.workspaceRows.some(
       (row) => row.workspaceId === nextPendingWorkspaceClose.workspaceId
     );
@@ -1044,23 +1075,23 @@ export function App(): JSX.Element {
   async function withLatestActiveShortcutContext(
     run: (context: ActiveShortcutContext) => void | Promise<void>
   ): Promise<void> {
-    const latestView = await window.kmux.getView();
-    const latestPaneId = latestView.activeWorkspace.activePaneId;
-    const latestPane = latestView.activeWorkspace.panes[latestPaneId];
+    const latestShellState = await window.kmux.getShellState();
+    const latestPaneId = latestShellState.activeWorkspacePaneTree.activePaneId;
+    const latestPane = latestShellState.activeWorkspacePaneTree.panes[latestPaneId];
     if (!latestPane) {
       return;
     }
     await run({
-      view: latestView,
+      view: latestShellState,
       activePaneId: latestPaneId,
       activeSurfaceId: latestPane.activeSurfaceId
     });
   }
 
   async function withLatestView(
-    run: (nextView: ShellViewModel) => void | Promise<void>
+    run: (nextView: ShellStoreSnapshot) => void | Promise<void>
   ): Promise<void> {
-    await run(await window.kmux.getView());
+    await run(await window.kmux.getShellState());
   }
 
   async function handleWorkspaceContextAction(
@@ -1070,7 +1101,7 @@ export function App(): JSX.Element {
     closeWorkspaceContextMenu();
 
     const resolveWorkspaceContext = async () =>
-      findWorkspaceContext(await window.kmux.getView(), workspaceId);
+      findWorkspaceContext(await window.kmux.getShellState(), workspaceId);
 
     await runSharedWorkspaceContextAction(
       workspaceId,
@@ -1078,13 +1109,10 @@ export function App(): JSX.Element {
       resolveWorkspaceContext,
       {
         rename: async (targetWorkspaceId) => {
-          const latestContext = await resolveWorkspaceContext();
-          if (!latestContext) {
-            return;
-          }
+          const latestShellState = await window.kmux.getShellState();
           beginWorkspaceRename(
             targetWorkspaceId,
-            latestContext.view.sidebarVisible
+            latestShellState.sidebarVisible
           );
         },
         dispatch

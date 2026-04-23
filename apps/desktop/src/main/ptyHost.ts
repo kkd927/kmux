@@ -13,6 +13,7 @@ import type {
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 import { PTY_STDOUT_LOGS_ENV } from "../shared/diagnostics";
+import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
 
 export interface PtyHostLaunchOptions {
   cwd: string;
@@ -82,7 +83,8 @@ export class PtyHostManager extends EventEmitter {
     const launchOptions = resolvePtyHostLaunchOptions(currentDir);
     const childEnv = {
       ...env,
-      [PTY_STDOUT_LOGS_ENV]: launchOptions.enableStdoutLogs ? "1" : "0"
+      [PTY_STDOUT_LOGS_ENV]: launchOptions.enableStdoutLogs ? "1" : "0",
+      [KMUX_PROFILE_LOG_PATH_ENV]: env[KMUX_PROFILE_LOG_PATH_ENV]
     };
 
     const child = this.forkProcess(launchOptions.entry, [], {

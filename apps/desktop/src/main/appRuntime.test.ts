@@ -2,7 +2,7 @@ import { applyAction, createInitialState } from "@kmux/core";
 import { vi } from "vitest";
 
 import type { AppState } from "@kmux/core";
-import type { KmuxSettings } from "@kmux/proto";
+import type { KmuxSettings, ShellPatch } from "@kmux/proto";
 
 const { beep, browserWindows, showNotification } = vi.hoisted(() => ({
   beep: vi.fn(),
@@ -30,14 +30,14 @@ vi.mock("electron", () => ({
 }));
 
 import { AppStore } from "./store";
-import { createAppRuntime } from "./appRuntime";
+import { createAppRuntime, type AppRuntimeOptions } from "./appRuntime";
 
 function createRuntime(
   notificationSound: boolean,
   options: {
     snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null;
     settings?: KmuxSettings | null;
-  } = {}
+  } & Partial<AppRuntimeOptions> = {}
 ) {
   const initialState = createInitialState("/bin/zsh");
   initialState.settings.notificationSound = notificationSound;
@@ -65,7 +65,8 @@ function createRuntime(
     },
     defaultShellPath: "/bin/zsh",
     refreshMetadata: vi.fn(),
-    persistWindowState: vi.fn()
+    persistWindowState: vi.fn(),
+    profileRecorder: options.profileRecorder
   });
 
   runtime.setStore(new AppStore(initialState));
@@ -84,6 +85,16 @@ function createMockWindow(): (typeof browserWindows)[number] {
     },
     setTitle: vi.fn()
   };
+}
+
+function getLastShellPatch(
+  window: (typeof browserWindows)[number]
+): ShellPatch | null {
+  const lastShellPatchCall = window.webContents.send.mock.calls
+    .slice()
+    .reverse()
+    .find(([channel]) => channel === "kmux:shell-patch");
+  return (lastShellPatchCall?.[1] as ShellPatch | undefined) ?? null;
 }
 
 beforeEach(() => {
@@ -279,8 +290,8 @@ describe("app runtime restore", () => {
   });
 });
 
-describe("app runtime view broadcasts", () => {
-  it("does not broadcast no-op reducer dispatches", () => {
+describe("app runtime shell patches", () => {
+  it("does not emit a patch for no-op reducer dispatches", () => {
     const runtime = createRuntime(false);
     const window = createMockWindow();
     browserWindows.push(window);
@@ -294,7 +305,7 @@ describe("app runtime view broadcasts", () => {
     expect(window.setTitle).not.toHaveBeenCalled();
   });
 
-  it("broadcasts when a reducer action changes app state", () => {
+  it("emits versioned patches with only the changed shell slices", () => {
     const runtime = createRuntime(false);
     const window = createMockWindow();
     browserWindows.push(window);
@@ -310,14 +321,232 @@ describe("app runtime view broadcasts", () => {
         text: "Busy"
       });
 
-      expect(window.webContents.send).toHaveBeenCalledTimes(1);
-      expect(window.setTitle).toHaveBeenCalledTimes(1);
+      expect(window.webContents.send).toHaveBeenCalledWith(
+        "kmux:shell-patch",
+        expect.objectContaining({
+          version: 1,
+          workspaceRowsPatch: expect.objectContaining({
+            upsert: expect.any(Array)
+          }),
+          activeWorkspace: expect.any(Object)
+        })
+      );
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          version: 1,
+          workspaceRowsPatch: expect.objectContaining({
+            upsert: expect.any(Array)
+          }),
+          activeWorkspace: expect.any(Object)
+        })
+      );
+      expect(getLastShellPatch(window)).not.toHaveProperty("settings");
+      expect(getLastShellPatch(window)).not.toHaveProperty("notifications");
+      expect(getLastShellPatch(window)).not.toHaveProperty("terminalTypography");
+      expect(getLastShellPatch(window)).not.toHaveProperty("workspaceRows");
+      expect(getLastShellPatch(window)).not.toHaveProperty(
+        "activeWorkspacePaneTree"
+      );
+      expect(window.setTitle).not.toHaveBeenCalled();
     } finally {
       runtime.shutdown();
     }
   });
 
-  it("does not broadcast repeated agent running events", () => {
+  it("increments shell patch versions when the active window slice changes", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      runtime.dispatchAppAction({
+        type: "workspace.sidebar.toggle"
+      });
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          version: 1,
+          sidebarVisible: false
+        })
+      );
+      expect(window.setTitle).not.toHaveBeenCalled();
+
+      window.webContents.send.mockClear();
+      window.setTitle.mockClear();
+
+      const workspaceId =
+        runtime.getState().windows[runtime.getState().activeWindowId]
+          .activeWorkspaceId;
+
+      runtime.dispatchAppAction({
+        type: "workspace.rename",
+        workspaceId,
+        name: "agent workspace"
+      });
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          version: 2,
+          title: "agent workspace cli/unix socket"
+        })
+      );
+      expect(window.setTitle).toHaveBeenCalledWith(
+        "agent workspace cli/unix socket"
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("emits terminal tree patches for surface metadata changes", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      const surfaceId = Object.keys(runtime.getState().surfaces)[0];
+
+      runtime.dispatchAppAction({
+        type: "surface.metadata",
+        surfaceId,
+        title: "codex",
+        cwd: "/tmp/kmux"
+      });
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          version: 1,
+          workspaceRowsPatch: expect.objectContaining({
+            upsert: expect.any(Array)
+          }),
+          activeWorkspacePaneTree: expect.any(Object)
+        })
+      );
+      expect(getLastShellPatch(window)).not.toHaveProperty("activeWorkspace");
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("builds shell snapshots with an activity-only active workspace slice", () => {
+    const runtime = createRuntime(false);
+
+    try {
+      const snapshot = runtime.getShellState();
+
+      expect(snapshot.activeWorkspace).toEqual(
+        expect.objectContaining({
+          id: expect.any(String),
+          name: expect.any(String),
+          statusEntries: expect.any(Array),
+          logs: expect.any(Array)
+        })
+      );
+      expect(snapshot.activeWorkspace).not.toHaveProperty("rootNodeId");
+      expect(snapshot.activeWorkspace).not.toHaveProperty("nodes");
+      expect(snapshot.activeWorkspace).not.toHaveProperty("panes");
+      expect(snapshot.activeWorkspace).not.toHaveProperty("surfaces");
+      expect(snapshot.activeWorkspace).not.toHaveProperty("activePaneId");
+      expect(snapshot.activeWorkspacePaneTree).toEqual(
+        expect.objectContaining({
+          rootNodeId: expect.any(String),
+          nodes: expect.any(Object),
+          panes: expect.any(Object),
+          surfaces: expect.any(Object),
+          activePaneId: expect.any(String)
+        })
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("emits notification patches when selecting a workspace clears unread state", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      const originalWorkspaceId =
+        runtime.getState().windows[runtime.getState().activeWindowId]
+          .activeWorkspaceId;
+
+      runtime.dispatchAppAction({
+        type: "workspace.create",
+        name: "alerts"
+      });
+      const alertsWorkspaceId =
+        runtime.getState().windows[runtime.getState().activeWindowId]
+          .activeWorkspaceId;
+      const alertsPaneId = runtime.getState().workspaces[alertsWorkspaceId].activePaneId;
+      const alertsSurfaceId =
+        runtime.getState().panes[alertsPaneId].activeSurfaceId;
+
+      runtime.dispatchAppAction({
+        type: "workspace.select",
+        workspaceId: originalWorkspaceId
+      });
+      runtime.dispatchAppAction({
+        type: "notification.create",
+        workspaceId: alertsWorkspaceId,
+        paneId: alertsPaneId,
+        surfaceId: alertsSurfaceId,
+        title: "workspace row clears unread",
+        message: "selecting the workspace should mark this read"
+      });
+
+      window.webContents.send.mockClear();
+
+      runtime.dispatchAppAction({
+        type: "workspace.select",
+        workspaceId: alertsWorkspaceId
+      });
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          notifications: [],
+          unreadNotifications: 0,
+          workspaceRowsPatch: expect.objectContaining({
+            upsert: expect.any(Array)
+          }),
+          activeWorkspacePaneTree: expect.any(Object)
+        })
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("emits settings-only patches unless terminal typography settings change", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      runtime.dispatchAppAction({
+        type: "settings.update",
+        patch: {
+          warnBeforeQuit: false
+        }
+      });
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          version: 1,
+          settings: expect.objectContaining({
+            warnBeforeQuit: false
+          })
+        })
+      );
+      expect(getLastShellPatch(window)).not.toHaveProperty(
+        "terminalTypography"
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("does not emit redundant patches for repeated agent running events", () => {
     const runtime = createRuntime(false);
     const window = createMockWindow();
     browserWindows.push(window);
@@ -359,6 +588,63 @@ describe("app runtime view broadcasts", () => {
           `agent:claude:${surfaceId}`
         ]?.updatedAt
       ).toBe(firstUpdatedAt);
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("does not emit shell patches for non-UI effect batches", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    runtime.runEffects([
+      {
+        type: "session.spawn",
+        spec: {
+          sessionId: "session_1",
+          surfaceId: "surface_1",
+          workspaceId: "workspace_1",
+          launch: {},
+          cols: 120,
+          rows: 30,
+          env: {}
+        }
+      }
+    ]);
+
+    expect(window.webContents.send).not.toHaveBeenCalled();
+    expect(window.setTitle).not.toHaveBeenCalled();
+  });
+
+  it("records shell patch profiling metrics when a recorder is provided", () => {
+    const record = vi.fn();
+    const runtime = createRuntime(false, {
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      runtime.dispatchAppAction({
+        type: "workspace.sidebar.toggle"
+      });
+
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "main",
+          name: "shell.patch.emit",
+          details: expect.objectContaining({
+            requestedGroups: ["window"],
+            changedKeys: expect.arrayContaining(["sidebarVisible"]),
+            payloadBytes: expect.any(Number),
+            durationMs: expect.any(Number)
+          })
+        })
+      );
     } finally {
       runtime.shutdown();
     }

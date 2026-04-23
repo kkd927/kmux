@@ -1,4 +1,4 @@
-import type { ShellViewModel } from "@kmux/proto";
+import type { ShellStoreSnapshot } from "@kmux/proto";
 
 export type SurfaceCloseStrategy =
   | {
@@ -11,17 +11,18 @@ export type SurfaceCloseStrategy =
     };
 
 export function determineSurfaceCloseStrategy(
-  view: ShellViewModel,
+  view: ShellStoreSnapshot,
   surfaceId: string
 ): SurfaceCloseStrategy {
-  const targetPane = Object.values(view.activeWorkspace.panes).find((pane) =>
+  const paneTree = view.activeWorkspacePaneTree;
+  const targetPane = Object.values(paneTree.panes).find((pane) =>
     pane.surfaceIds.includes(surfaceId)
   );
   if (!targetPane) {
     return { kind: "close-surface" };
   }
 
-  const totalSurfaceCount = Object.values(view.activeWorkspace.panes).reduce(
+  const totalSurfaceCount = Object.values(paneTree.panes).reduce(
     (count, pane) => count + pane.surfaceIds.length,
     0
   );

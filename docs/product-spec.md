@@ -137,6 +137,7 @@ packages/
 - `KMUX_WORKSPACE_ID`
 - `KMUX_SURFACE_ID`
 - `KMUX_AUTH_TOKEN`
+- `KMUX_PROFILE_LOG_PATH`
 - `TERM_PROGRAM=kmux`
 
 ## 7. Priorities

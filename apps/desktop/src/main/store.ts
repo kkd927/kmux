@@ -1,12 +1,10 @@
 import {
-  applyAction,
-  buildViewModel,
+  applyActionWithSummary,
   cloneState,
   type AppAction,
-  type AppEffect,
+  type ApplyActionResult,
   type AppState
 } from "@kmux/core";
-import type { ShellViewModel } from "@kmux/proto";
 
 export class AppStore {
   private state: AppState;
@@ -19,11 +17,7 @@ export class AppStore {
     return this.state;
   }
 
-  getView(): ShellViewModel {
-    return buildViewModel(this.state);
-  }
-
-  dispatch(action: AppAction): AppEffect[] {
-    return applyAction(this.state, action);
+  dispatch(action: AppAction): ApplyActionResult {
+    return applyActionWithSummary(this.state, action);
   }
 }

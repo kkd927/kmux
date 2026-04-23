@@ -1,9 +1,18 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { BrowserWindow, Notification, shell } from "electron";
 
 import {
   type AppAction,
   type AppEffect,
+  type AppMutationSummary,
   type AppState,
+  buildActiveWorkspaceActivityVm,
+  buildActiveWorkspacePaneTreeVm,
+  buildNotificationsVm,
+  buildShellSettingsVm,
+  buildShellWindowChromeVm,
+  buildWorkspaceRowsVm,
   cloneState,
   createDefaultSettings,
   createInitialState,
@@ -12,10 +21,13 @@ import {
 import type {
   Id,
   ResolvedTerminalTypographyVm,
+  ShellPatch,
   ShellIdentity,
-  ShellViewModel,
+  ShellStoreSnapshot,
   TerminalTypographyProbeReport,
-  TerminalTypographySettings
+  TerminalTypographySettings,
+  WorkspaceRowsPatch,
+  WorkspaceRowVm
 } from "@kmux/proto";
 import type {
   SettingsFileStore,
@@ -30,8 +42,12 @@ import {
   type FontInventoryProvider,
   TerminalTypographyController
 } from "./terminalTypography";
+import {
+  profileNowMs
+} from "../shared/nodeSmoothnessProfile";
+import type { SmoothnessProfileRecorder } from "../shared/smoothnessProfile";
 
-interface AppRuntimeOptions {
+export interface AppRuntimeOptions {
   paths: {
     socketPath: string;
     nodePath: string;
@@ -44,6 +60,7 @@ interface AppRuntimeOptions {
   persistWindowState: (window: BrowserWindow) => void;
   fontInventoryProvider?: FontInventoryProvider;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
+  profileRecorder?: SmoothnessProfileRecorder;
 }
 
 export interface AppRuntime {
@@ -51,10 +68,10 @@ export interface AppRuntime {
   setPtyHost(ptyHost: PtyHostManager | null): void;
   setMainWindow(window: BrowserWindow | null): void;
   getState(): AppState;
-  getView(): ShellViewModel;
+  getShellState(): ShellStoreSnapshot;
   dispatchAppAction(action: AppAction): void;
   runEffects(effects: AppEffect[]): void;
-  broadcastView(): void;
+  syncWindowTitles(): void;
   restoreInitialState(): AppState;
   capabilityList(): string[];
   identify(): ShellIdentity;
@@ -73,14 +90,16 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let mainWindow: BrowserWindow | null = null;
   let persistTimer: NodeJS.Timeout | null = null;
   let shuttingDown = false;
+  let shellState: ShellStoreSnapshot | null = null;
+  let suppressTerminalTypographyPatch = 0;
   const terminalTypographyController = new TerminalTypographyController({
     initialSettings: createDefaultSettings("kmuxOnly", options.defaultShellPath)
       .terminalTypography,
     fontInventoryProvider: options.fontInventoryProvider,
     shouldLogInventoryErrors: () => !shuttingDown,
     onDidChange: () => {
-      if (store) {
-        broadcastView();
+      if (store && suppressTerminalTypographyPatch === 0) {
+        emitShellPatch(new Set(["terminalTypography"]));
       }
     }
   });
@@ -92,21 +111,41 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     return store.getState();
   }
 
-  function getView(): ShellViewModel {
-    if (!store) {
-      throw new Error("Store not ready");
+  function getShellState(): ShellStoreSnapshot {
+    if (!shellState) {
+      shellState = buildShellStateSnapshot(0);
     }
+    return shellState;
+  }
+
+  function buildShellStateSnapshot(version: number): ShellStoreSnapshot {
+    const state = getState();
     return {
-      ...store.getView(),
+      version,
+      ...buildShellWindowChromeVm(state),
+      workspaceRows: buildWorkspaceRowsVm(state),
+      activeWorkspace: buildActiveWorkspaceActivityVm(state),
+      activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
+      notifications: buildNotificationsVm(state),
+      settings: buildShellSettingsVm(state),
       terminalTypography: terminalTypographyController.getViewModel()
     };
   }
 
-  function broadcastView(): void {
-    const view = getView();
+  function syncWindowTitles(): void {
+    const title = getShellState().title;
     for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send("kmux:view", view);
-      window.setTitle(view.title);
+      window.setTitle(title);
+    }
+  }
+
+  function broadcastShellPatch(patch: ShellPatch): void {
+    const nextTitle = getShellState().title;
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("kmux:shell-patch", patch);
+      if ("title" in patch) {
+        window.setTitle(nextTitle);
+      }
     }
   }
 
@@ -126,6 +165,173 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         options.persistWindowState(mainWindow);
       }
     }, 300);
+  }
+
+  function emitShellPatch(groups: Set<ShellGroup>): void {
+    if (!store || groups.size === 0) {
+      return;
+    }
+
+    const profileStartedAt = profileNowMs();
+    const currentShellState = getShellState();
+    const nextPatch: ShellPatch = {
+      version: currentShellState.version
+    };
+    const nextShellStatePatch: Partial<Omit<ShellStoreSnapshot, "version">> = {};
+    let didChange = false;
+
+    if (groups.has("window")) {
+      const nextWindowChrome = buildShellWindowChromeVm(getState());
+      if (!isDeepStrictEqual(currentShellState.windowId, nextWindowChrome.windowId)) {
+        nextPatch.windowId = nextWindowChrome.windowId;
+        nextShellStatePatch.windowId = nextWindowChrome.windowId;
+        didChange = true;
+      }
+      if (!isDeepStrictEqual(currentShellState.title, nextWindowChrome.title)) {
+        nextPatch.title = nextWindowChrome.title;
+        nextShellStatePatch.title = nextWindowChrome.title;
+        didChange = true;
+      }
+      if (
+        !isDeepStrictEqual(
+          currentShellState.sidebarVisible,
+          nextWindowChrome.sidebarVisible
+        )
+      ) {
+        nextPatch.sidebarVisible = nextWindowChrome.sidebarVisible;
+        nextShellStatePatch.sidebarVisible = nextWindowChrome.sidebarVisible;
+        didChange = true;
+      }
+      if (
+        !isDeepStrictEqual(
+          currentShellState.sidebarWidth,
+          nextWindowChrome.sidebarWidth
+        )
+      ) {
+        nextPatch.sidebarWidth = nextWindowChrome.sidebarWidth;
+        nextShellStatePatch.sidebarWidth = nextWindowChrome.sidebarWidth;
+        didChange = true;
+      }
+      if (
+        !isDeepStrictEqual(
+          currentShellState.unreadNotifications,
+          nextWindowChrome.unreadNotifications
+        )
+      ) {
+        nextPatch.unreadNotifications = nextWindowChrome.unreadNotifications;
+        nextShellStatePatch.unreadNotifications =
+          nextWindowChrome.unreadNotifications;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("workspaceRows")) {
+      const workspaceRows = buildWorkspaceRowsVm(getState());
+      if (!isDeepStrictEqual(currentShellState.workspaceRows, workspaceRows)) {
+        const workspaceRowsPatch = buildWorkspaceRowsPatch(
+          currentShellState.workspaceRows,
+          workspaceRows
+        );
+        if (workspaceRowsPatch) {
+          nextPatch.workspaceRowsPatch = workspaceRowsPatch;
+        } else {
+          nextPatch.workspaceRows = workspaceRows;
+        }
+        nextShellStatePatch.workspaceRows = workspaceRows;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("activeWorkspace")) {
+      const activeWorkspace = buildActiveWorkspaceActivityVm(getState());
+      if (
+        !isDeepStrictEqual(currentShellState.activeWorkspace, activeWorkspace)
+      ) {
+        nextPatch.activeWorkspace = activeWorkspace;
+        nextShellStatePatch.activeWorkspace = activeWorkspace;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("activeWorkspacePaneTree")) {
+      const activeWorkspacePaneTree = buildActiveWorkspacePaneTreeVm(getState());
+      if (
+        !isDeepStrictEqual(
+          currentShellState.activeWorkspacePaneTree,
+          activeWorkspacePaneTree
+        )
+      ) {
+        nextPatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
+        nextShellStatePatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("notifications")) {
+      const notifications = buildNotificationsVm(getState());
+      if (!isDeepStrictEqual(currentShellState.notifications, notifications)) {
+        nextPatch.notifications = notifications;
+        nextShellStatePatch.notifications = notifications;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("settings")) {
+      const settings = buildShellSettingsVm(getState());
+      if (!isDeepStrictEqual(currentShellState.settings, settings)) {
+        nextPatch.settings = settings;
+        nextShellStatePatch.settings = settings;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("terminalTypography")) {
+      const terminalTypography = terminalTypographyController.getViewModel();
+      if (
+        !isDeepStrictEqual(
+          currentShellState.terminalTypography,
+          terminalTypography
+        )
+      ) {
+        nextPatch.terminalTypography = terminalTypography;
+        nextShellStatePatch.terminalTypography = terminalTypography;
+        didChange = true;
+      }
+    }
+
+    if (!didChange) {
+      return;
+    }
+
+    const version = currentShellState.version + 1;
+    const outgoingPatch = {
+      ...nextPatch,
+      version
+    };
+    const updatedShellState = {
+      ...currentShellState,
+      ...nextShellStatePatch,
+      version
+    } satisfies ShellStoreSnapshot;
+    shellState = updatedShellState;
+    broadcastShellPatch(outgoingPatch);
+    if (options.profileRecorder?.enabled) {
+      const profileEndedAt = profileNowMs();
+      options.profileRecorder.record({
+        source: "main",
+        name: "shell.patch.emit",
+        at: profileEndedAt,
+        details: {
+          version,
+          requestedGroups: [...groups].sort(),
+          changedKeys: Object.keys(outgoingPatch).filter(
+            (key) => key !== "version"
+          ),
+          payloadBytes: Buffer.byteLength(JSON.stringify(outgoingPatch), "utf8"),
+          durationMs: profileEndedAt - profileStartedAt
+        }
+      });
+    }
   }
 
   function runEffects(effects: AppEffect[]): void {
@@ -189,12 +395,16 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           break;
       }
     }
-    broadcastView();
   }
 
   function dispatchAppAction(action: AppAction): void {
     const previousSettings = store?.getState().settings.terminalTypography;
-    const effects = store?.dispatch(action) ?? [];
+    const result = store?.dispatch(action) ?? {
+      effects: [],
+      mutation: {}
+    };
+    const effects = result.effects;
+    const shellGroups = shellGroupsFromMutation(result.mutation);
     if (
       action.type === "agent.event" ||
       action.type === "notification.create" ||
@@ -236,14 +446,24 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.onDidDispatchAppAction?.(action, currentState);
     }
     const nextSettings = store?.getState().settings.terminalTypography;
+    const terminalTypographySettingsChanged =
+      Boolean(previousSettings && nextSettings) &&
+      !areTerminalTypographySettingsEqual(previousSettings!, nextSettings!);
     if (
       previousSettings &&
       nextSettings &&
-      !areTerminalTypographySettingsEqual(previousSettings, nextSettings)
+      terminalTypographySettingsChanged
     ) {
-      terminalTypographyController.setSettings(nextSettings);
+      suppressTerminalTypographyPatch += 1;
+      try {
+        terminalTypographyController.setSettings(nextSettings);
+      } finally {
+        suppressTerminalTypographyPatch -= 1;
+      }
+      shellGroups.add("terminalTypography");
     }
     runEffects(effects);
+    emitShellPatch(shellGroups);
   }
 
   function restoreInitialState(): AppState {
@@ -400,9 +620,15 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   return {
     setStore(nextStore) {
       store = nextStore;
-      terminalTypographyController.setSettings(
-        nextStore.getState().settings.terminalTypography
-      );
+      suppressTerminalTypographyPatch += 1;
+      try {
+        terminalTypographyController.setSettings(
+          nextStore.getState().settings.terminalTypography
+        );
+      } finally {
+        suppressTerminalTypographyPatch -= 1;
+      }
+      shellState = buildShellStateSnapshot(0);
       options.snapshotStore.save(nextStore.getState(), {
         cleanShutdown: false
       });
@@ -414,10 +640,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       mainWindow = window;
     },
     getState,
-    getView,
+    getShellState,
     dispatchAppAction,
     runEffects,
-    broadcastView,
+    syncWindowTitles,
     restoreInitialState,
     capabilityList,
     identify,
@@ -456,6 +682,73 @@ function createCleanShutdownSnapshot(
   }
 
   return cleanState;
+}
+
+type ShellGroup =
+  | "window"
+  | "workspaceRows"
+  | "activeWorkspace"
+  | "activeWorkspacePaneTree"
+  | "notifications"
+  | "settings"
+  | "terminalTypography";
+
+function buildWorkspaceRowsPatch(
+  currentRows: WorkspaceRowVm[],
+  nextRows: WorkspaceRowVm[]
+): WorkspaceRowsPatch | null {
+  const currentById = new Map(
+    currentRows.map((row) => [row.workspaceId, row] as const)
+  );
+  const nextById = new Map(nextRows.map((row) => [row.workspaceId, row] as const));
+  const remove = currentRows
+    .map((row) => row.workspaceId)
+    .filter((workspaceId) => !nextById.has(workspaceId));
+  const upsert = nextRows.filter((row) => {
+    const current = currentById.get(row.workspaceId);
+    return !current || !isDeepStrictEqual(current, row);
+  });
+  const currentOrder = currentRows.map((row) => row.workspaceId);
+  const nextOrder = nextRows.map((row) => row.workspaceId);
+  const order = isDeepStrictEqual(currentOrder, nextOrder)
+    ? undefined
+    : nextOrder;
+
+  if (remove.length === 0 && upsert.length === 0 && !order) {
+    return null;
+  }
+
+  return {
+    ...(upsert.length > 0 ? { upsert } : {}),
+    ...(remove.length > 0 ? { remove } : {}),
+    ...(order ? { order } : {})
+  };
+}
+
+function shellGroupsFromMutation(mutation: AppMutationSummary): Set<ShellGroup> {
+  const groups = new Set<ShellGroup>();
+  if (mutation.window) {
+    groups.add("window");
+  }
+  if (mutation.workspaceRows) {
+    groups.add("workspaceRows");
+  }
+  if (mutation.activeWorkspaceActivity) {
+    groups.add("activeWorkspace");
+  }
+  if (mutation.activeWorkspacePaneTree) {
+    groups.add("activeWorkspacePaneTree");
+  }
+  if (mutation.notifications) {
+    groups.add("notifications");
+  }
+  if (mutation.settings) {
+    groups.add("settings");
+  }
+  if (mutation.terminalTypography) {
+    groups.add("terminalTypography");
+  }
+  return groups;
 }
 
 function areTerminalTypographySettingsEqual(

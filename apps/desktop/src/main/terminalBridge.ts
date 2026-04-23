@@ -14,6 +14,9 @@ import type {
 
 import type {PtyHostManager} from "./ptyHost";
 import { logDiagnostics } from "../shared/diagnostics";
+import { profileNowMs } from "../shared/nodeSmoothnessProfile";
+import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
+import type { SmoothnessProfileRecorder } from "../shared/smoothnessProfile";
 
 interface TerminalBridgeOptions {
   getState: () => AppState;
@@ -22,6 +25,7 @@ interface TerminalBridgeOptions {
   onSurfaceInputText?: (surfaceId: Id, text: string) => void;
   getSurfaceVendor?: (surfaceId: Id) => UsageVendor;
   isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
+  profileRecorder?: SmoothnessProfileRecorder;
 }
 
 interface SurfaceAttachmentState {
@@ -32,6 +36,8 @@ interface SurfaceAttachmentState {
 }
 
 const ATTACH_SNAPSHOT_SETTLE_MS = 120;
+const PROFILE_TERMINAL_BUCKET_MIN_CHUNKS = 100;
+const PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS = 1000;
 const CODEX_INPUT_PATTERNS = [
   /\bplan mode prompt:/i,
   /\benter to submit answer\b/i,
@@ -81,6 +87,45 @@ export function createTerminalBridge(
     Map<Id, SurfaceAttachmentState>
   >();
   const hydratedSurfaceIds = new Set<Id>();
+  const terminalIpcBucket = createSmoothnessProfileBucket<{
+    surfaceId: Id;
+    sessionId: Id;
+    startedAt: number;
+    chunks: number;
+    bytes: number;
+    sends: number;
+    maxSendDurationMs: number;
+  }>({
+    minEvents: PROFILE_TERMINAL_BUCKET_MIN_CHUNKS,
+    maxDurationMs: PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS,
+    now: profileNowMs,
+    createDetails: (key, startedAt) => {
+      const [surfaceId, sessionId] = key.split("\u0000") as [Id, Id];
+      return {
+        surfaceId,
+        sessionId,
+        startedAt,
+        chunks: 0,
+        bytes: 0,
+        sends: 0,
+        maxSendDurationMs: 0
+      };
+    },
+    onFlush: (details, durationMs, at) => {
+      if (!options.profileRecorder?.enabled) {
+        return;
+      }
+      options.profileRecorder.record({
+        source: "main",
+        name: "terminal.ipc.bucket",
+        at,
+        details: {
+          ...details,
+          durationMs
+        }
+      });
+    }
+  });
 
   function surfaceSessionId(surfaceId: Id): Id | null {
     const surface = options.getState().surfaces[surfaceId];
@@ -203,7 +248,38 @@ export function createTerminalBridge(
     if (!sessionId) {
       return;
     }
-    await options.getPtyHost()?.resize(sessionId, cols, rows);
+    const startedAt = profileNowMs();
+    const ptyHost = options.getPtyHost();
+    if (options.profileRecorder?.enabled) {
+      options.profileRecorder.record({
+        source: "main",
+        name: "terminal.resize.request",
+        at: startedAt,
+        details: {
+          surfaceId,
+          sessionId,
+          cols,
+          rows,
+          hasPtyHost: Boolean(ptyHost)
+        }
+      });
+    }
+    await ptyHost?.resize(sessionId, cols, rows);
+    if (options.profileRecorder?.enabled) {
+      const endedAt = profileNowMs();
+      options.profileRecorder.record({
+        source: "main",
+        name: "terminal.resize.ack",
+        at: endedAt,
+        details: {
+          surfaceId,
+          sessionId,
+          cols,
+          rows,
+          durationMs: endedAt - startedAt
+        }
+      });
+    }
   }
 
   async function snapshotSurface(
@@ -292,7 +368,23 @@ export function createTerminalBridge(
     const window = BrowserWindow.getAllWindows().find(
       (entry) => entry.webContents.id === contentsId
     );
+    const sendStartedAt = profileNowMs();
     window?.webContents.send("kmux:terminal-event", event);
+    if (options.profileRecorder?.enabled && event.type === "chunk") {
+      const now = profileNowMs();
+      terminalIpcBucket.record(
+        `${event.payload.surfaceId}\u0000${event.payload.sessionId}`,
+        (details) => {
+          details.chunks += 1;
+          details.bytes += Buffer.byteLength(event.payload.chunk, "utf8");
+          details.sends += 1;
+          details.maxSendDurationMs = Math.max(
+            details.maxSendDurationMs,
+            now - sendStartedAt
+          );
+        }
+      );
+    }
   }
 
   function surfaceAttachmentEntries(surfaceId: Id): Array<
@@ -321,6 +413,17 @@ export function createTerminalBridge(
     const queuedChunks = attachment.queuedChunks
       .filter((payload) => payload.sequence > snapshotSequence)
       .sort((left, right) => left.sequence - right.sequence);
+    options.profileRecorder?.record({
+      source: "main",
+      name: "terminal.attach.queue",
+      at: profileNowMs(),
+      details: {
+        contentsId,
+        surfaceId,
+        queuedChunks: queuedChunks.length,
+        snapshotSequence
+      }
+    });
     attachment.queuedChunks = [];
     for (const payload of queuedChunks) {
       sendTerminalEvent(contentsId, {

@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import type {AppAction} from "@kmux/core";
-import type {ShellViewModel} from "@kmux/proto";
+import type {ShellStoreSnapshot} from "@kmux/proto";
 
 export const MIN_SIDEBAR_WIDTH = 110;
 export const MAX_SIDEBAR_WIDTH = 320;
@@ -22,7 +22,7 @@ type SidebarResizeState = {
 };
 
 interface UseSidebarResizeOptions {
-  viewRef: MutableRefObject<ShellViewModel | null>;
+  viewRef: MutableRefObject<ShellStoreSnapshot | null>;
   renderedSidebarWidth: number;
   setSidebarResizeActive: Dispatch<SetStateAction<boolean>>;
   dispatch: (action: AppAction) => Promise<void>;

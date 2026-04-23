@@ -1,13 +1,14 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
 
 import type { AppAction } from "@kmux/core";
-import type { Id, ShellViewModel } from "@kmux/proto";
+import type { Id } from "@kmux/proto";
 
 import {
   buildWorkspaceContextMenuEntries,
   findWorkspaceContext,
   runWorkspaceContextAction
 } from "../shared/workspaceContextMenu";
+import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 
 function toElectronAccelerator(shortcut?: string): string | undefined {
   if (!shortcut) {
@@ -35,11 +36,14 @@ function toElectronAccelerator(shortcut?: string): string | undefined {
 
 export function buildNativeWorkspaceContextMenu(params: {
   workspaceId: Id;
-  getView(): ShellViewModel;
+  getContextView(): WorkspaceContextView;
   rename(workspaceId: Id): void;
   dispatch(action: AppAction): void;
 }): Menu | null {
-  const initialContext = findWorkspaceContext(params.getView(), params.workspaceId);
+  const initialContext = findWorkspaceContext(
+    params.getContextView(),
+    params.workspaceId
+  );
   if (!initialContext) {
     return null;
   }
@@ -58,7 +62,7 @@ export function buildNativeWorkspaceContextMenu(params: {
               void runWorkspaceContextAction(
                 params.workspaceId,
                 item.action,
-                () => findWorkspaceContext(params.getView(), params.workspaceId),
+                () => findWorkspaceContext(params.getContextView(), params.workspaceId),
                 {
                   rename: params.rename,
                   dispatch: params.dispatch

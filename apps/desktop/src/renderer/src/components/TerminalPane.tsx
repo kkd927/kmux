@@ -32,6 +32,12 @@ import {
 } from "../terminalRenderer";
 import { hydrateAttachedTerminal } from "../terminalAttachHydration";
 import styles from "../styles/TerminalPane.module.css";
+import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
+import {
+  isRendererSmoothnessProfileEnabled,
+  recordRendererSmoothnessProfileEvent
+} from "../smoothnessProfile";
+import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
 
 interface TerminalPaneProps {
   paneId: string;
@@ -77,10 +83,18 @@ type PendingEnterRewrite = PendingTerminalEnterRewrite & {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
+const UTF8_ENCODER = new TextEncoder();
+
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
     props.surfaces.find((surface) => surface.id === props.activeSurfaceId) ??
     props.surfaces[0];
+  useSmoothnessRenderCounter("terminal-pane.render", () => ({
+    paneId: props.paneId,
+    activeSurfaceId: activeSurface?.id,
+    surfaceCount: props.surfaces.length
+  }));
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -99,6 +113,41 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const skipInitialTypographySyncRef = useRef(true);
   const skipInitialWebglSyncRef = useRef(true);
   const resizeGenerationRef = useRef(0);
+  const writeProfileBucketRef = useRef(
+    createSmoothnessProfileBucket<{
+      paneId: string;
+      surfaceId: string;
+      startedAt: number;
+      writes: number;
+      bytes: number;
+      maxDurationMs: number;
+      maxQueueDepth: number;
+      queueDepth: number;
+    }>({
+      minEvents: PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES,
+      maxDurationMs: 1000,
+      now: () => performance.now(),
+      createDetails: (key, startedAt) => {
+        const [paneId, surfaceId] = key.split("\u0000");
+        return {
+          paneId,
+          surfaceId,
+          startedAt,
+          writes: 0,
+          bytes: 0,
+          maxDurationMs: 0,
+          maxQueueDepth: 0,
+          queueDepth: 0
+        };
+      },
+      onFlush: (details, durationMs) => {
+        recordRendererSmoothnessProfileEvent("terminal.write.bucket", {
+          ...details,
+          durationMs
+        });
+      }
+    })
+  );
   const terminalPaletteSignature = [
     props.terminalTheme.palette.background,
     props.terminalTheme.palette.foreground,
@@ -172,7 +221,32 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!fit) {
       return;
     }
+    const currentSurface = activeSurfaceRef.current;
+    const previousCols = terminal.cols;
+    const previousRows = terminal.rows;
+    const fitStartedAt = performance.now();
     const dims = fit.proposeDimensions();
+    const fitDurationMs = performance.now() - fitStartedAt;
+    const validDims = Boolean(
+      dims &&
+        Number.isFinite(dims.cols) &&
+        Number.isFinite(dims.rows) &&
+        dims.cols > 0 &&
+        dims.rows > 0
+    );
+    recordRendererSmoothnessProfileEvent("terminal.fit", {
+      paneId: props.paneId,
+      surfaceId: currentSurface?.id,
+      previousCols,
+      previousRows,
+      cols: dims?.cols ?? null,
+      rows: dims?.rows ?? null,
+      valid: validDims,
+      changed: validDims
+        ? dims!.cols !== previousCols || dims!.rows !== previousRows
+        : false,
+      durationMs: fitDurationMs
+    });
     if (
       !dims ||
       !Number.isFinite(dims.cols) ||
@@ -187,8 +261,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const generation = ++resizeGenerationRef.current;
-    const currentSurface = activeSurfaceRef.current;
     if (currentSurface) {
+      const requestStartedAt = performance.now();
+      recordRendererSmoothnessProfileEvent("terminal.resize.request", {
+        paneId: props.paneId,
+        surfaceId: currentSurface.id,
+        generation,
+        previousCols,
+        previousRows,
+        cols: dims.cols,
+        rows: dims.rows
+      });
+      let failed = false;
       try {
         await window.kmux.resizeSurface(
           currentSurface.id,
@@ -196,7 +280,20 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           dims.rows
         );
       } catch {
+        failed = true;
         // ignore; a superseding resize or teardown is already in flight
+      } finally {
+        recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
+          paneId: props.paneId,
+          surfaceId: currentSurface.id,
+          generation,
+          previousCols,
+          previousRows,
+          cols: dims.cols,
+          rows: dims.rows,
+          failed,
+          durationMs: performance.now() - requestStartedAt
+        });
       }
     }
     if (
@@ -206,9 +303,47 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
+      const applyStartedAt = performance.now();
       try {
         terminal.resize(dims.cols, dims.rows);
+        const applyEndedAt = performance.now();
+        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
+          paneId: props.paneId,
+          surfaceId: currentSurface?.id,
+          generation,
+          previousCols,
+          previousRows,
+          cols: dims.cols,
+          rows: dims.rows,
+          durationMs: applyEndedAt - applyStartedAt
+        });
+        requestAnimationFrame(() => {
+          if (terminalRef.current !== terminal) {
+            return;
+          }
+          recordRendererSmoothnessProfileEvent("terminal.reflow", {
+            paneId: props.paneId,
+            surfaceId: currentSurface?.id,
+            generation,
+            cols: dims.cols,
+            rows: dims.rows,
+            viewportY: terminal.buffer.active.viewportY,
+            baseY: terminal.buffer.active.baseY,
+            durationMs: performance.now() - applyEndedAt
+          });
+        });
       } catch {
+        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
+          paneId: props.paneId,
+          surfaceId: currentSurface?.id,
+          generation,
+          previousCols,
+          previousRows,
+          cols: dims.cols,
+          rows: dims.rows,
+          failed: true,
+          durationMs: performance.now() - applyStartedAt
+        });
         // terminal may have been disposed mid-await
         return;
       }
@@ -239,9 +374,36 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   function writeTerminal(
     terminal: Terminal,
     data: string,
-    afterWrite?: () => void
+    afterWrite?: () => void,
+    profileSurfaceId = activeSurfaceRef.current?.id
   ): void {
+    if (!isRendererSmoothnessProfileEnabled() || !profileSurfaceId) {
+      terminal.write(data, () => {
+        syncTerminalMetrics(terminal);
+        afterWrite?.();
+      });
+      return;
+    }
+    const bucketKey = `${props.paneId}\u0000${profileSurfaceId}`;
+    const startedAt = performance.now();
+    writeProfileBucketRef.current.update(bucketKey, (profile) => {
+      profile.writes += 1;
+      profile.bytes += UTF8_ENCODER.encode(data).byteLength;
+      profile.queueDepth += 1;
+      profile.maxQueueDepth = Math.max(
+        profile.maxQueueDepth,
+        profile.queueDepth
+      );
+    });
     terminal.write(data, () => {
+      const now = performance.now();
+      writeProfileBucketRef.current.record(bucketKey, (profile) => {
+        profile.queueDepth = Math.max(0, profile.queueDepth - 1);
+        profile.maxDurationMs = Math.max(
+          profile.maxDurationMs,
+          now - startedAt
+        );
+      });
       syncTerminalMetrics(terminal);
       afterWrite?.();
     });
@@ -327,6 +489,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       readClipboardText: () => window.kmux.readClipboardText()
     });
   }
+
+  useEffect(() => {
+    return () => {
+      writeProfileBucketRef.current.flushAll();
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -660,7 +828,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         event.type === "chunk" &&
         event.payload.surfaceId === activeSurface.id
       ) {
-        writeTerminal(terminalRef.current, event.payload.chunk);
+        writeTerminal(
+          terminalRef.current,
+          event.payload.chunk,
+          undefined,
+          event.payload.surfaceId
+        );
       }
       if (
         event.type === "exit" &&
@@ -668,7 +841,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       ) {
         writeTerminal(
           terminalRef.current,
-          `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`
+          `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`,
+          undefined,
+          event.payload.surfaceId
         );
       }
     });
@@ -685,7 +860,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         waitForTerminalFonts,
         fitAndSyncTerminal,
         attachSurface: () => window.kmux.attachSurface(activeSurface.id),
-        writeTerminal
+        writeTerminal: (terminal, data, afterWrite) =>
+          writeTerminal(terminal, data, afterWrite, activeSurface.id)
       });
     })();
 

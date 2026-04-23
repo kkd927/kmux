@@ -47,6 +47,7 @@ This now rebuilds `node-pty` only. Persistence uses JSON file stores under the k
 - `npm run smoke:packaged:mac`: mount the latest packaged DMG and run a packaged-app smoke spec
 - `npm run release:check:mac`: build the macOS DMG and run the packaged-app smoke spec
 - `npm run capture:scene`: capture the current app scene for visual review
+- `npm run profile:smoothness`: run the opt-in smoothness profiling workload and verify JSONL profile output
 
 ## Release Signing
 
@@ -61,6 +62,43 @@ Required repository secrets:
 - `APPLE_API_ISSUER`: App Store Connect issuer ID
 
 The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes the path through the `APPLE_API_KEY` environment variable so electron-builder can notarize the build.
+
+## Smoothness Profiling
+
+Use smoothness profiling when investigating terminal output jank, React rerender churn, or sidebar/metadata patch flooding during Claude Code, Codex, Gemini, or similar agent workloads.
+
+Profiling is disabled by default. Set `KMUX_PROFILE_LOG_PATH` to enable it:
+
+```bash
+KMUX_PROFILE_LOG_PATH=/tmp/kmux-smoothness.jsonl npm run dev
+```
+
+If `KMUX_PROFILE_LOG_PATH` points to a directory or a directory-like path, kmux writes `kmux-smoothness.jsonl` inside that directory:
+
+```bash
+KMUX_PROFILE_LOG_PATH=/tmp/kmux-profile npm run dev
+```
+
+The profile log is JSONL and may grow quickly. Do not commit generated profile logs. Summarize a captured profile with:
+
+```bash
+node scripts/analyze-smoothness-profile.mjs /tmp/kmux-smoothness.jsonl
+```
+
+The analyzer groups the main bottleneck signals:
+
+- `react-rerender`: prioritize pane tree revision or stable renderer slice work
+- `terminal-output`: prioritize stream batching, xterm write pacing, or backpressure
+- `terminal-resize`: inspect `terminal.fit`, `terminal.resize.request`, `terminal.resize.ack`, `terminal.resize.apply`, and `terminal.reflow` to separate fit calculation, IPC/PTY resize round-trip, synchronous xterm resize, and next-frame reflow cost
+- `patch-frequency`: prioritize shell patch coalescing or metadata frequency control
+
+To validate the profiling path itself, run:
+
+```bash
+npm run profile:smoothness
+```
+
+That command builds kmux, launches the Electron e2e workload with profiling enabled, generates terminal/sidebar churn, and verifies that the profile JSONL file is produced.
 
 ## Recommended Validation Flow
 

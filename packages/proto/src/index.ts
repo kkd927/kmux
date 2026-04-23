@@ -370,6 +370,24 @@ export interface ActiveWorkspaceVm {
   logs: SidebarLogEntry[];
 }
 
+export interface ActiveWorkspaceActivityVm {
+  id: Id;
+  name: string;
+  sidebarStatus?: string;
+  statusEntries: SidebarStatusEntry[];
+  progress?: SidebarProgress;
+  logs: SidebarLogEntry[];
+}
+
+export interface ActiveWorkspacePaneTreeVm {
+  id: Id;
+  rootNodeId: Id;
+  nodes: Record<Id, PaneTreeNode>;
+  panes: Record<Id, PaneVm>;
+  surfaces: Record<Id, SurfaceVm>;
+  activePaneId: Id;
+}
+
 export interface SurfaceUsageVm {
   surfaceId: Id;
   workspaceId: Id;
@@ -523,6 +541,43 @@ export interface ShellViewModel {
   unreadNotifications: number;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
+}
+
+export interface ShellStoreSnapshot {
+  version: number;
+  windowId: Id;
+  title: string;
+  sidebarVisible: boolean;
+  sidebarWidth: number;
+  workspaceRows: WorkspaceRowVm[];
+  activeWorkspace: ActiveWorkspaceActivityVm;
+  activeWorkspacePaneTree: ActiveWorkspacePaneTreeVm;
+  notifications: NotificationItem[];
+  unreadNotifications: number;
+  settings: KmuxSettings;
+  terminalTypography: ResolvedTerminalTypographyVm;
+}
+
+export interface WorkspaceRowsPatch {
+  upsert?: WorkspaceRowVm[];
+  remove?: Id[];
+  order?: Id[];
+}
+
+export interface ShellPatch {
+  version: number;
+  windowId?: Id;
+  title?: string;
+  sidebarVisible?: boolean;
+  sidebarWidth?: number;
+  workspaceRows?: WorkspaceRowVm[];
+  workspaceRowsPatch?: WorkspaceRowsPatch;
+  activeWorkspace?: ActiveWorkspaceActivityVm;
+  activeWorkspacePaneTree?: ActiveWorkspacePaneTreeVm;
+  notifications?: NotificationItem[];
+  unreadNotifications?: number;
+  settings?: KmuxSettings;
+  terminalTypography?: ResolvedTerminalTypographyVm;
 }
 
 export function createEmptyUsageViewSnapshot(

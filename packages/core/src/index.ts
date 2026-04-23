@@ -5,6 +5,8 @@ import {
 } from "@kmux/ui";
 import {
   type AgentEventName,
+  type ActiveWorkspaceActivityVm,
+  type ActiveWorkspacePaneTreeVm,
   type ActiveWorkspaceVm,
   type Id,
   isoNow,
@@ -25,6 +27,7 @@ import {
   type SplitAxis,
   type SplitDirection,
   type SurfaceVm,
+  type WorkspaceRowVm,
   type TerminalThemeSettings
 } from "@kmux/proto";
 
@@ -458,7 +461,36 @@ export function cloneState(snapshot: AppState): AppState {
   return sanitizeState(structuredClone(snapshot));
 }
 
+export interface AppMutationSummary {
+  window?: boolean;
+  workspaceRows?: boolean;
+  activeWorkspacePaneTree?: boolean;
+  activeWorkspaceActivity?: boolean;
+  notifications?: boolean;
+  settings?: boolean;
+  terminalTypography?: boolean;
+}
+
+export interface ApplyActionResult {
+  effects: AppEffect[];
+  mutation: AppMutationSummary;
+}
+
+export function applyActionWithSummary(
+  state: AppState,
+  action: AppAction
+): ApplyActionResult {
+  return {
+    effects: applyActionEffects(state, action),
+    mutation: mutationSummaryForAction(action)
+  };
+}
+
 export function applyAction(state: AppState, action: AppAction): AppEffect[] {
+  return applyActionWithSummary(state, action).effects;
+}
+
+function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
   switch (action.type) {
     case "state.restore":
       Object.assign(state, cloneState(action.snapshot));
@@ -616,6 +648,100 @@ export function applyAction(state: AppState, action: AppAction): AppEffect[] {
     default:
       return [];
   }
+}
+
+function mutationSummaryForAction(action: AppAction): AppMutationSummary {
+  switch (action.type) {
+    case "workspace.sidebar.toggle":
+    case "workspace.sidebar.setWidth":
+      return { window: true };
+    case "workspace.create":
+    case "workspace.select":
+    case "workspace.selectRelative":
+    case "workspace.selectIndex":
+    case "workspace.rename":
+    case "workspace.close":
+    case "workspace.closeOthers":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        notifications: true
+      };
+    case "workspace.pin.toggle":
+    case "workspace.move":
+      return { workspaceRows: true };
+    case "pane.focus":
+    case "pane.focusDirection":
+    case "surface.focus":
+    case "surface.focusRelative":
+    case "surface.focusIndex":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        notifications: true
+      };
+    case "notification.create":
+    case "agent.event":
+    case "notification.clear":
+    case "notification.jumpLatestUnread":
+    case "terminal.bell":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        notifications: true
+      };
+    case "pane.split":
+    case "pane.resize":
+    case "pane.setSplitRatio":
+    case "pane.close":
+    case "surface.create":
+    case "surface.rename":
+    case "surface.close":
+    case "surface.closeOthers":
+    case "surface.metadata":
+      return {
+        workspaceRows: true,
+        activeWorkspacePaneTree: true
+      };
+    case "sidebar.setStatus":
+    case "sidebar.clearStatus":
+    case "sidebar.setProgress":
+    case "sidebar.clearProgress":
+    case "sidebar.log":
+    case "sidebar.clearLog":
+      return {
+        workspaceRows: true,
+        activeWorkspaceActivity: true
+      };
+    case "session.started":
+    case "session.exited":
+      return { activeWorkspacePaneTree: true };
+    case "settings.update":
+      return { settings: true };
+    case "state.restore":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        notifications: true,
+        settings: true,
+        terminalTypography: true
+      };
+    default:
+      return assertNeverMutationAction(action);
+  }
+}
+
+function assertNeverMutationAction(action: never): AppMutationSummary {
+  void action;
+  return {};
 }
 
 function createWorkspace(
@@ -2063,34 +2189,108 @@ function listVisibleWorkspaceIds(
 }
 
 export function buildViewModel(state: AppState): ShellViewModel {
-  const window = state.windows[state.activeWindowId];
-  const orderedWorkspaceIds = listVisibleWorkspaceIds(state, window);
-  const workspace =
-    state.workspaces[window.activeWorkspaceId] ??
-    state.workspaces[orderedWorkspaceIds[0]] ??
-    state.workspaces[Object.keys(state.workspaces)[0]];
-  if (!workspace) {
-    throw new Error("Cannot build view model without an available workspace");
-  }
-  const workspacePaneIdsById = new Map(
-    orderedWorkspaceIds.map((workspaceId) => [
-      workspaceId,
-      listWorkspacePaneIds(state, workspaceId)
-    ])
-  );
+  return {
+    ...buildShellWindowChromeVm(state),
+    workspaceRows: buildWorkspaceRowsVm(state),
+    activeWorkspace: buildActiveWorkspaceVm(state),
+    notifications: buildNotificationsVm(state),
+    settings: buildShellSettingsVm(state),
+    terminalTypography: createPendingResolvedTerminalTypographyVm(
+      state.settings.terminalTypography
+    )
+  };
+}
+
+export function buildShellWindowChromeVm(
+  state: AppState
+): Pick<
+  ShellViewModel,
+  "windowId" | "title" | "sidebarVisible" | "sidebarWidth" | "unreadNotifications"
+> {
+  const { window, workspace } = resolveActiveWindowContext(state);
+
+  return {
+    windowId: window.id,
+    title: `${workspace.name} cli/unix socket`,
+    sidebarVisible: window.sidebarVisible,
+    sidebarWidth: window.sidebarWidth,
+    unreadNotifications: state.notifications.length
+  };
+}
+
+export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
+  const { window, orderedWorkspaceIds } = resolveActiveWindowContext(state);
   const workspaceSurfaceIdsById = new Map(
     orderedWorkspaceIds.map((workspaceId) => [
       workspaceId,
       listWorkspaceSurfaceIds(state, workspaceId)
     ])
   );
-  const workspacePaneIds = workspacePaneIdsById.get(workspace.id) ?? [];
-  const activeWorkspaceSurfaceIds =
-    workspaceSurfaceIdsById.get(workspace.id) ?? [];
-  const activeWorkspaceStatusEntries = workspaceStatusEntries(workspace);
-  const activeWorkspace: ActiveWorkspaceVm = {
+
+  return orderedWorkspaceIds.map((workspaceId) => {
+    const entry = state.workspaces[workspaceId];
+    const representativeSurface = representativeWorkspaceSurface(state, entry);
+    const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
+      (surfaceId) => state.surfaces[surfaceId]
+    );
+    return {
+      workspaceId,
+      name: entry.name,
+      nameLocked: Boolean(entry.nameLocked),
+      summary: workspaceSummary(representativeSurface),
+      cwd: representativeSurface?.cwd ?? entry.cwdSummary,
+      branch: representativeSurface?.branch,
+      ports: aggregateWorkspacePorts(
+        surfaces,
+        state.panes[entry.activePaneId]?.activeSurfaceId
+      ),
+      statusText: entry.statusText,
+      statusEntries: workspaceStatusEntries(entry).map((statusEntry) => ({
+        ...statusEntry
+      })),
+      unreadCount: surfaces.reduce((sum, surface) => sum + surface.unreadCount, 0),
+      attention: surfaces.some((surface) => surface.attention),
+      pinned: entry.pinned,
+      isActive: workspaceId === window.activeWorkspaceId
+    };
+  });
+}
+
+export function buildActiveWorkspaceActivityVm(
+  state: AppState
+): ActiveWorkspaceActivityVm {
+  const { workspace } = resolveActiveWindowContext(state);
+
+  return {
     id: workspace.id,
     name: workspace.name,
+    sidebarStatus: workspace.statusText,
+    statusEntries: workspaceStatusEntries(workspace).map((statusEntry) => ({
+      ...statusEntry
+    })),
+    progress: workspace.progress ? { ...workspace.progress } : undefined,
+    logs: workspace.logs.map((logEntry) => ({ ...logEntry }))
+  };
+}
+
+export function buildActiveWorkspaceVm(state: AppState): ActiveWorkspaceVm {
+  const paneTree = buildActiveWorkspacePaneTreeVm(state);
+  return { ...paneTree, ...buildActiveWorkspaceActivityVm(state) };
+}
+
+export function buildActiveWorkspacePaneTreeVm(
+  state: AppState
+): ActiveWorkspacePaneTreeVm {
+  const { workspace, orderedWorkspaceIds } = resolveActiveWindowContext(state);
+  const workspacePaneIds = listWorkspacePaneIds(state, workspace.id);
+  const activeWorkspaceSurfaceIds = listWorkspaceSurfaceIds(state, workspace.id);
+
+  if (!orderedWorkspaceIds.includes(workspace.id)) {
+    throw new Error("Cannot build active workspace view for a hidden workspace");
+  }
+
+  return {
+    id: workspace.id,
     rootNodeId: workspace.rootNodeId,
     nodes: structuredClone(workspace.nodeMap),
     panes: Object.fromEntries(
@@ -2127,53 +2327,37 @@ export function buildViewModel(state: AppState): ShellViewModel {
         ];
       })
     ),
-    activePaneId: workspace.activePaneId,
-    sidebarStatus: workspace.statusText,
-    statusEntries: activeWorkspaceStatusEntries,
-    progress: workspace.progress,
-    logs: [...workspace.logs]
+    activePaneId: workspace.activePaneId
   };
+}
+
+export function buildNotificationsVm(state: AppState): NotificationItem[] {
+  return state.notifications.map((notification) => ({ ...notification }));
+}
+
+export function buildShellSettingsVm(state: AppState): KmuxSettings {
+  return structuredClone(state.settings);
+}
+
+function resolveActiveWindowContext(state: AppState): {
+  window: WindowState;
+  orderedWorkspaceIds: Id[];
+  workspace: WorkspaceState;
+} {
+  const window = state.windows[state.activeWindowId];
+  const orderedWorkspaceIds = listVisibleWorkspaceIds(state, window);
+  const workspace =
+    state.workspaces[window.activeWorkspaceId] ??
+    state.workspaces[orderedWorkspaceIds[0]] ??
+    state.workspaces[Object.keys(state.workspaces)[0]];
+  if (!workspace) {
+    throw new Error("Cannot build view model without an available workspace");
+  }
 
   return {
-    windowId: window.id,
-    title: `${workspace.name} cli/unix socket`,
-    sidebarVisible: window.sidebarVisible,
-    sidebarWidth: window.sidebarWidth,
-    workspaceRows: orderedWorkspaceIds.map((workspaceId) => {
-      const entry = state.workspaces[workspaceId];
-      const representativeSurface = firstWorkspaceSurface(state, entry);
-      const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
-        (surfaceId) => state.surfaces[surfaceId]
-      );
-      return {
-        workspaceId,
-        name: entry.name,
-        nameLocked: Boolean(entry.nameLocked),
-        summary: workspaceSummary(representativeSurface),
-        cwd: representativeSurface?.cwd ?? entry.cwdSummary,
-        branch: representativeSurface?.branch,
-        ports: aggregateWorkspacePorts(
-          surfaces,
-          state.panes[entry.activePaneId]?.activeSurfaceId
-        ),
-        statusText: entry.statusText,
-        statusEntries: workspaceStatusEntries(entry),
-        unreadCount: surfaces.reduce(
-          (sum, surface) => sum + surface.unreadCount,
-          0
-        ),
-        attention: surfaces.some((surface) => surface.attention),
-        pinned: entry.pinned,
-        isActive: workspaceId === window.activeWorkspaceId
-      };
-    }),
-    activeWorkspace,
-    notifications: [...state.notifications],
-    unreadNotifications: state.notifications.length,
-    settings: state.settings,
-    terminalTypography: createPendingResolvedTerminalTypographyVm(
-      state.settings.terminalTypography
-    )
+    window,
+    orderedWorkspaceIds,
+    workspace
   };
 }
 
@@ -2231,10 +2415,16 @@ function pruneWorkspaceStatusEntries(workspace: WorkspaceState): boolean {
   return true;
 }
 
-function firstWorkspaceSurface(
+function representativeWorkspaceSurface(
   state: AppState,
   workspace: WorkspaceState
 ): SurfaceState | null {
+  const activePane = state.panes[workspace.activePaneId];
+  const activeSurfaceId = activePane?.activeSurfaceId;
+  if (activeSurfaceId && state.surfaces[activeSurfaceId]) {
+    return state.surfaces[activeSurfaceId];
+  }
+
   const paneId = firstPaneIdInTreeOrder(workspace);
   if (!paneId) {
     return null;

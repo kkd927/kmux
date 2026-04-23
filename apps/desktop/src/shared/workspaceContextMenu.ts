@@ -1,5 +1,5 @@
 import type { AppAction } from "@kmux/core";
-import type { Id, ShellViewModel, WorkspaceRowVm } from "@kmux/proto";
+import type { Id, KmuxSettings, WorkspaceRowVm } from "@kmux/proto";
 
 export type WorkspaceContextAction =
   | "rename"
@@ -25,8 +25,13 @@ export type WorkspaceContextMenuEntry =
       kind: "separator";
     };
 
+export interface WorkspaceContextView {
+  workspaceRows: WorkspaceRowVm[];
+  settings: Pick<KmuxSettings, "shortcuts">;
+}
+
 export interface WorkspaceContext {
-  view: ShellViewModel;
+  view: WorkspaceContextView;
   row: WorkspaceRowVm;
   index: number;
   groupStartIndex: number;
@@ -41,7 +46,7 @@ export interface WorkspaceContextActionRunner {
 }
 
 export function findWorkspaceContext(
-  view: ShellViewModel,
+  view: WorkspaceContextView,
   workspaceId: Id
 ): WorkspaceContext | null {
   const index = view.workspaceRows.findIndex(

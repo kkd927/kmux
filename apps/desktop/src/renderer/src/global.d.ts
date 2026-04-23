@@ -1,10 +1,12 @@
 import type { AppAction } from "@kmux/core";
+import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type {
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
+  ShellPatch,
   ShellIdentity,
-  ShellViewModel,
+  ShellStoreSnapshot,
   UsageViewSnapshot,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
@@ -18,11 +20,11 @@ import type { TerminalEvent } from "../../preload/index";
 declare global {
   interface Window {
     kmux: {
-      getView(): Promise<ShellViewModel>;
+      getShellState(): Promise<ShellStoreSnapshot>;
       getUsageView(): Promise<UsageViewSnapshot>;
       getUpdaterState(): Promise<UpdaterState>;
-      dispatch(action: AppAction): Promise<ShellViewModel>;
-      subscribeView(listener: (view: ShellViewModel) => void): () => void;
+      dispatch(action: AppAction): Promise<void>;
+      subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void;
       subscribeUsage(
         listener: (snapshot: UsageViewSnapshot) => void
       ): () => void;
@@ -66,6 +68,10 @@ declare global {
       setUsageDashboardOpen(open: boolean): Promise<void>;
       downloadAvailableUpdate(): Promise<void>;
       installDownloadedUpdate(): Promise<void>;
+      profileSmoothnessEnabled(): boolean;
+      recordSmoothnessProfileEvent(
+        event: SmoothnessProfileEvent
+      ): Promise<void>;
     };
     kmuxTest?: {
       snapshotSurface(
