@@ -6,12 +6,11 @@ import {normalizeShortcut} from "@kmux/ui";
 
 type RightPanelKind = "usage" | null;
 
-interface OverlayState {
+interface DismissibleUiState {
   paletteOpen: boolean;
   notificationsOpen: boolean;
   settingsOpen: boolean;
   searchSurfaceId: string | null;
-  rightPanelKind: RightPanelKind;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
 }
@@ -25,7 +24,7 @@ interface ActiveShortcutContext {
 interface UseGlobalShortcutsOptions {
   isMac: boolean;
   viewRef: MutableRefObject<ShellStoreSnapshot | null>;
-  overlayStateRef: MutableRefObject<OverlayState>;
+  dismissibleUiStateRef: MutableRefObject<DismissibleUiState>;
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
   closeWorkspaceContextMenu: () => void;
   closeWorkspaceCloseConfirm: () => void;
@@ -67,10 +66,9 @@ export function useGlobalShortcuts(
         notificationsOpen: currentNotificationsOpen,
         settingsOpen: currentSettingsOpen,
         searchSurfaceId: currentSearchSurfaceId,
-        rightPanelKind: currentRightPanelKind,
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
         workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen
-      } = currentOptions.overlayStateRef.current;
+      } = currentOptions.dismissibleUiStateRef.current;
       if (event.key === "Escape") {
         if (currentWorkspaceCloseConfirmOpen) {
           event.preventDefault();
@@ -95,11 +93,6 @@ export function useGlobalShortcuts(
         if (currentNotificationsOpen) {
           event.preventDefault();
           currentOptions.setNotificationsOpen(false);
-          return;
-        }
-        if (currentRightPanelKind) {
-          event.preventDefault();
-          currentOptions.setRightPanelKind(null);
           return;
         }
         if (currentPaletteOpen) {
