@@ -197,6 +197,122 @@ test("settings modal toggles the terminal WebGL renderer for comparison", async 
   }
 });
 
+test("active terminal automatically recovers after WebGL context loss", async () => {
+  const launched = await launchKmux("kmux-e2e-webgl-context-loss-", {
+    env: {
+      KMUX_E2E_WINDOW_MODE: "visible"
+    }
+  });
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+    const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
+
+    await page.waitForFunction((targetSurfaceId) => {
+      const viewport = document.querySelector(
+        `[data-testid="terminal-${targetSurfaceId}"]`
+      );
+      if (!(viewport instanceof HTMLElement)) {
+        return false;
+      }
+
+      return Array.from(viewport.querySelectorAll("canvas")).some((canvas) => {
+        const gl =
+          (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
+          (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
+          (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
+        return Boolean(gl?.getExtension("WEBGL_lose_context"));
+      });
+    }, surfaceId);
+
+    const triggered = await page.evaluate((targetSurfaceId) => {
+      const trackedWindow = window as Window & {
+        __kmuxLostWebglCanvas?: HTMLCanvasElement | null;
+      };
+      const viewport = document.querySelector(
+        `[data-testid="terminal-${targetSurfaceId}"]`
+      );
+      if (!(viewport instanceof HTMLElement)) {
+        return { triggered: false };
+      }
+
+      for (const canvas of Array.from(viewport.querySelectorAll("canvas"))) {
+        const gl =
+          (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
+          (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
+          (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
+        const loseContext = gl?.getExtension("WEBGL_lose_context");
+        if (!gl || !loseContext) {
+          continue;
+        }
+
+        trackedWindow.__kmuxLostWebglCanvas = canvas;
+        loseContext.loseContext();
+        return {
+          triggered: true,
+          contextLost: gl.isContextLost()
+        };
+      }
+
+      return { triggered: false };
+    }, surfaceId);
+
+    expect(triggered).toMatchObject({
+      triggered: true,
+      contextLost: true
+    });
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate((targetSurfaceId) => {
+            const trackedWindow = window as Window & {
+              __kmuxLostWebglCanvas?: HTMLCanvasElement | null;
+            };
+            const viewport = document.querySelector(
+              `[data-testid="terminal-${targetSurfaceId}"]`
+            );
+            const oldCanvas = trackedWindow.__kmuxLostWebglCanvas ?? null;
+            if (!(viewport instanceof HTMLElement)) {
+              return {
+                viewportReady: false,
+                oldCanvasConnected: Boolean(oldCanvas?.isConnected),
+                hasLiveReplacement: false
+              };
+            }
+
+            const liveReplacement = Array.from(
+              viewport.querySelectorAll("canvas")
+            ).find((canvas) => {
+              const gl =
+                (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
+                (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
+                (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
+              return Boolean(gl && !gl.isContextLost() && canvas !== oldCanvas);
+            });
+
+            return {
+              viewportReady: true,
+              oldCanvasConnected: Boolean(oldCanvas?.isConnected),
+              hasLiveReplacement: Boolean(liveReplacement)
+            };
+          }, surfaceId),
+        {
+          timeout: 10_000
+        }
+      )
+      .toMatchObject({
+        viewportReady: true,
+        oldCanvasConnected: false,
+        hasLiveReplacement: true
+      });
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("settings preview stays ready with the built-in glyph font when no compatible font is installed", async () => {
   const launched = await launchKmux("kmux-e2e-settings-typography-degraded-", {
     env: {
