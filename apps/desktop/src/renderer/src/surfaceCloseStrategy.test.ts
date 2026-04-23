@@ -1,7 +1,33 @@
-import { applyAction, buildViewModel, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  buildActiveWorkspaceActivityVm,
+  buildActiveWorkspacePaneTreeVm,
+  buildNotificationsVm,
+  buildShellSettingsVm,
+  buildShellWindowChromeVm,
+  buildWorkspaceRowsVm,
+  createPendingResolvedTerminalTypographyVm,
+  createInitialState
+} from "@kmux/core";
 import { describe, expect, it } from "vitest";
+import type { ShellStoreSnapshot } from "@kmux/proto";
 
 import { determineSurfaceCloseStrategy } from "./surfaceCloseStrategy";
+
+function buildShellState(state: ReturnType<typeof createInitialState>): ShellStoreSnapshot {
+  return {
+    version: 0,
+    ...buildShellWindowChromeVm(state),
+    workspaceRows: buildWorkspaceRowsVm(state),
+    activeWorkspace: buildActiveWorkspaceActivityVm(state),
+    activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
+    notifications: buildNotificationsVm(state),
+    settings: buildShellSettingsVm(state),
+    terminalTypography: createPendingResolvedTerminalTypographyVm(
+      state.settings.terminalTypography
+    )
+  };
+}
 
 describe("surface close strategy", () => {
   it("keeps the existing surface close flow when the workspace still has multiple tabs", () => {
@@ -13,7 +39,7 @@ describe("surface close strategy", () => {
     applyAction(state, { type: "surface.create", paneId });
 
     expect(
-      determineSurfaceCloseStrategy(buildViewModel(state), originalSurfaceId)
+      determineSurfaceCloseStrategy(buildShellState(state), originalSurfaceId)
     ).toEqual({ kind: "close-surface" });
   });
 
@@ -26,7 +52,7 @@ describe("surface close strategy", () => {
     applyAction(state, { type: "workspace.create", name: "alpha" });
     applyAction(state, { type: "workspace.select", workspaceId });
 
-    expect(determineSurfaceCloseStrategy(buildViewModel(state), surfaceId)).toEqual(
+    expect(determineSurfaceCloseStrategy(buildShellState(state), surfaceId)).toEqual(
       {
         kind: "confirm-workspace-close",
         workspaceId,
@@ -41,7 +67,7 @@ describe("surface close strategy", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
 
-    expect(determineSurfaceCloseStrategy(buildViewModel(state), surfaceId)).toEqual(
+    expect(determineSurfaceCloseStrategy(buildShellState(state), surfaceId)).toEqual(
       {
         kind: "confirm-workspace-close",
         workspaceId,

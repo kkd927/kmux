@@ -32,9 +32,14 @@ import {
 } from "./shellLaunch";
 import { buildSessionEnv } from "./sessionEnv";
 import {
-  PTY_STDOUT_LOGS_ENV,
   logDiagnostics
 } from "../shared/diagnostics";
+import {
+  createNodeSmoothnessProfileRecorder,
+  profileNowMs
+} from "../shared/nodeSmoothnessProfile";
+import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
+import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -74,24 +79,71 @@ interface SessionRecord {
 }
 
 const sessions = new Map<Id, SessionRecord>();
-const shouldMirrorRawTerminalEventsToStdout =
-  process.env[PTY_STDOUT_LOGS_ENV] === "1";
+const logRawTerminalEvent = createRawTerminalEventStdoutLogger();
+const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
+const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
+const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
+const ptyBucket = createSmoothnessProfileBucket<{
+  surfaceId: Id;
+  sessionId: Id;
+  startedAt: number;
+  chunks: number;
+  bytes: number;
+  maxChunkBytes: number;
+}>({
+  minEvents: PROFILE_PTY_BUCKET_MIN_CHUNKS,
+  maxDurationMs: PROFILE_PTY_BUCKET_MAX_DURATION_MS,
+  now: profileNowMs,
+  createDetails: (key, startedAt) => {
+    const [surfaceId, sessionId] = key.split("\u0000") as [Id, Id];
+    return {
+      surfaceId,
+      sessionId,
+      startedAt,
+      chunks: 0,
+      bytes: 0,
+      maxChunkBytes: 0
+    };
+  },
+  onFlush: (details, durationMs, at) => {
+    smoothnessProfile.record({
+      source: "pty-host",
+      name: "terminal.pty.bucket",
+      at,
+      details: {
+        ...details,
+        durationMs
+      }
+    });
+  }
+});
 
 logDiagnostics("pty-host.bootstrap", {
   pid: process.pid,
   cwd: process.cwd()
 });
 
-function logRawTerminalEvent(message: string): void {
-  if (!shouldMirrorRawTerminalEventsToStdout) {
-    return;
-  }
-  console.log(message);
-}
-
 function send(message: PtyEvent): void {
   if (process.send) {
     process.send(message);
+  }
+}
+
+function recordPtyChunk(record: SessionRecord, chunk: string): void {
+  if (!smoothnessProfile.enabled) {
+    return;
+  }
+  const bytes = Buffer.byteLength(chunk, "utf8");
+  ptyBucket.record(`${record.surfaceId}\u0000${record.sessionId}`, (details) => {
+    details.chunks += 1;
+    details.bytes += bytes;
+    details.maxChunkBytes = Math.max(details.maxChunkBytes, bytes);
+  });
+}
+
+function flushPtyProfileBucket(record: SessionRecord): void {
+  if (smoothnessProfile.enabled) {
+    ptyBucket.flush(`${record.surfaceId}\u0000${record.sessionId}`);
   }
 }
 
@@ -122,8 +174,16 @@ function sendTerminalNotification(
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
     protocol,
-    title,
-    message
+    hasTitle: Boolean(title),
+    hasMessage: Boolean(message)
+  });
+  logRawTerminalEvent({
+    kind: "notification",
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    protocol,
+    hasTitle: Boolean(title),
+    hasMessage: Boolean(message)
   });
   send({
     type: "terminal.notification",
@@ -214,16 +274,19 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   sessions.set(record.sessionId, record);
 
   terminal.parser.registerOscHandler(7, (data: string) => {
-    logRawTerminalEvent(
-      `[OSC 7] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
-    );
     const cwd = resolveOsc7Cwd(record.cwd, data);
     logDiagnostics("pty-host.osc.7", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      title: record.title,
-      data,
-      resolvedCwd: cwd ?? null
+      payloadLength: data.length,
+      resolvedCwd: cwd ? "<redacted>" : null
+    });
+    logRawTerminalEvent({
+      kind: "osc.7",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      payloadLength: data.length,
+      resolvedCwd: Boolean(cwd)
     });
     if (cwd) {
       record.cwd = cwd;
@@ -248,14 +311,18 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.onBell(() => {
-    logRawTerminalEvent(
-      `[Bell] surface=${record.surfaceId} title=${record.title}`
-    );
     logDiagnostics("pty-host.bell", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      title: record.title,
-      cwd: record.cwd
+      hasTitle: Boolean(record.title),
+      hasCwd: Boolean(record.cwd)
+    });
+    logRawTerminalEvent({
+      kind: "bell",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      hasTitle: Boolean(record.title),
+      hasCwd: Boolean(record.cwd)
     });
     send({
       type: "bell",
@@ -266,15 +333,18 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   terminal.parser.registerOscHandler(9, (data: string) => {
-    logRawTerminalEvent(
-      `[OSC 9] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
-    );
     const notification = buildOsc9Notification(data, record.title);
     logDiagnostics("pty-host.osc.9", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      title: record.title,
-      data,
+      payloadLength: data.length,
+      parsed: Boolean(notification)
+    });
+    logRawTerminalEvent({
+      kind: "osc.9",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      payloadLength: data.length,
       parsed: Boolean(notification)
     });
     if (notification) {
@@ -288,9 +358,6 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.parser.registerOscHandler(99, (data: string) => {
-    logRawTerminalEvent(
-      `[OSC 99] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
-    );
     const { nextState, notification } = parseOsc99Notification(
       data,
       record.osc99State,
@@ -299,8 +366,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     logDiagnostics("pty-host.osc.99", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      title: record.title,
-      data,
+      payloadLength: data.length,
+      parsed: Boolean(notification)
+    });
+    logRawTerminalEvent({
+      kind: "osc.99",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      payloadLength: data.length,
       parsed: Boolean(notification)
     });
     record.osc99State = nextState;
@@ -315,9 +388,6 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return true;
   });
   terminal.parser.registerOscHandler(777, (data: string) => {
-    logRawTerminalEvent(
-      `[OSC 777] surface=${record.surfaceId} title=${record.title} data=${JSON.stringify(data)}`
-    );
     const notification = buildOsc777Notification(
       data,
       record.title,
@@ -326,8 +396,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     logDiagnostics("pty-host.osc.777", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      title: record.title,
-      data,
+      payloadLength: data.length,
+      parsed: Boolean(notification)
+    });
+    logRawTerminalEvent({
+      kind: "osc.777",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      payloadLength: data.length,
       parsed: Boolean(notification)
     });
     if (notification) {
@@ -342,6 +418,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   ptyProcess.onData((chunk) => {
+    recordPtyChunk(record, chunk);
     record.sequence += 1;
     record.lastActivityAt = Date.now();
     terminal.write(chunk);
@@ -357,6 +434,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
   });
   ptyProcess.onExit(({ exitCode }) => {
+    flushPtyProfileBucket(record);
     disposeSettledSnapshotState(record);
     send({
       type: "exit",
@@ -387,6 +465,7 @@ process.on("message", (request: PtyRequest) => {
         if (!record) {
           break;
         }
+        flushPtyProfileBucket(record);
         disposeSettledSnapshotState(record);
         record.pty.kill();
         sessions.delete(request.sessionId);

@@ -1,15 +1,12 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  memo,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef
 } from "react";
 
-import type {
-  ActiveWorkspaceVm,
-  ShellViewModel,
-  WorkspaceRowVm
-} from "@kmux/proto";
+import type {ActiveWorkspaceActivityVm, WorkspaceRowVm} from "@kmux/proto";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
@@ -20,7 +17,9 @@ import styles from "../styles/App.module.css";
 import { WorkspaceCard } from "./WorkspaceCard";
 
 interface WorkspaceSidebarProps {
-  view: ShellViewModel;
+  workspaceRows: WorkspaceRowVm[];
+  activeWorkspace: ActiveWorkspaceActivityVm;
+  sidebarWidth: number;
   renderedSidebarWidth: number;
   showWorkspaceShortcutHints: boolean;
   editingWorkspaceId: string | null;
@@ -47,15 +46,17 @@ interface WorkspaceSidebarProps {
   ) => void;
 }
 
-export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
-  const rows = props.view.workspaceRows;
+export const WorkspaceSidebar = memo(function WorkspaceSidebar(
+  props: WorkspaceSidebarProps
+): JSX.Element {
+  const rows = props.workspaceRows;
   const sidebarRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => sidebarRef.current,
     getItemKey: (index) => rows[index]?.workspaceId ?? index,
     estimateSize: (index) =>
-      estimateWorkspaceRowHeight(rows[index], props.view.activeWorkspace),
+      estimateWorkspaceRowHeight(rows[index], props.activeWorkspace),
     overscan: 4,
     useAnimationFrameWithResizeObserver: true
   });
@@ -72,12 +73,12 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
   }, [
     rowVirtualizer,
     rows,
-    props.view.activeWorkspace.id,
-    props.view.activeWorkspace.sidebarStatus,
-    props.view.activeWorkspace.statusEntries.length,
-    props.view.activeWorkspace.progress?.label,
-    props.view.activeWorkspace.progress?.value,
-    props.view.activeWorkspace.logs[0]?.id,
+    props.activeWorkspace.id,
+    props.activeWorkspace.sidebarStatus,
+    props.activeWorkspace.statusEntries.length,
+    props.activeWorkspace.progress?.label,
+    props.activeWorkspace.progress?.value,
+    props.activeWorkspace.logs[0]?.id,
     props.showWorkspaceShortcutHints,
     props.editingWorkspaceId,
     props.renderedSidebarWidth
@@ -145,26 +146,24 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
                             : undefined
                         }
                         editing={props.editingWorkspaceId === row.workspaceId}
-                        expanded={
-                          row.workspaceId === props.view.activeWorkspace.id
-                        }
+                        expanded={row.workspaceId === props.activeWorkspace.id}
                         menuOpen={
                           props.workspaceContextMenuWorkspaceId ===
                           row.workspaceId
                         }
                         status={
-                          row.workspaceId === props.view.activeWorkspace.id
-                            ? props.view.activeWorkspace.sidebarStatus
+                          row.workspaceId === props.activeWorkspace.id
+                            ? props.activeWorkspace.sidebarStatus
                             : undefined
                         }
                         progress={
-                          row.workspaceId === props.view.activeWorkspace.id
-                            ? props.view.activeWorkspace.progress
+                          row.workspaceId === props.activeWorkspace.id
+                            ? props.activeWorkspace.progress
                             : undefined
                         }
                         latestLog={
-                          row.workspaceId === props.view.activeWorkspace.id
-                            ? props.view.activeWorkspace.logs[0]
+                          row.workspaceId === props.activeWorkspace.id
+                            ? props.activeWorkspace.logs[0]
                             : undefined
                         }
                         onSelect={() =>
@@ -216,7 +215,7 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
         aria-orientation="vertical"
         aria-valuemax={MAX_SIDEBAR_WIDTH}
         aria-valuemin={MIN_SIDEBAR_WIDTH}
-        aria-valuenow={props.view.sidebarWidth}
+        aria-valuenow={props.sidebarWidth}
         className={styles.sidebarResizer}
         data-active={props.sidebarResizeActive}
         data-testid="sidebar-resizer"
@@ -227,11 +226,30 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): JSX.Element {
       />
     </>
   );
+}, areWorkspaceSidebarPropsEqual);
+
+function areWorkspaceSidebarPropsEqual(
+  left: WorkspaceSidebarProps,
+  right: WorkspaceSidebarProps
+): boolean {
+  return (
+    left.workspaceRows === right.workspaceRows &&
+    left.activeWorkspace === right.activeWorkspace &&
+    left.sidebarWidth === right.sidebarWidth &&
+    left.renderedSidebarWidth === right.renderedSidebarWidth &&
+    left.showWorkspaceShortcutHints === right.showWorkspaceShortcutHints &&
+    left.editingWorkspaceId === right.editingWorkspaceId &&
+    left.workspaceContextMenuWorkspaceId === right.workspaceContextMenuWorkspaceId &&
+    left.dragWorkspaceId === right.dragWorkspaceId &&
+    left.dropWorkspaceId === right.dropWorkspaceId &&
+    left.dropPosition === right.dropPosition &&
+    left.sidebarResizeActive === right.sidebarResizeActive
+  );
 }
 
 function estimateWorkspaceRowHeight(
   row: WorkspaceRowVm | undefined,
-  activeWorkspace: ActiveWorkspaceVm | undefined
+  activeWorkspace: ActiveWorkspaceActivityVm | undefined
 ): number {
   if (!row) {
     return 100;

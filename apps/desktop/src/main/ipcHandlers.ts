@@ -6,7 +6,7 @@ import type {
   ImportedTerminalThemePalette,
   ResolvedTerminalTypographyVm,
   ShellIdentity,
-  ShellViewModel,
+  ShellStoreSnapshot,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalColorPalette,
@@ -18,9 +18,12 @@ import type {
 } from "@kmux/proto";
 
 import {buildNativeWorkspaceContextMenu} from "./workspaceContextMenu";
+import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
+import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 
 interface IpcHandlersOptions {
-  getView: () => ShellViewModel;
+  getShellState: () => ShellStoreSnapshot;
+  getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
   getUpdaterState: () => UpdaterState;
   dispatchAppAction: (action: AppAction) => void;
@@ -57,15 +60,15 @@ interface IpcHandlersOptions {
   setUsageDashboardOpen: (open: boolean) => void;
   downloadAvailableUpdate: () => Promise<void>;
   installDownloadedUpdate: () => void;
+  recordProfileEvent?: (event: SmoothnessProfileEvent) => void;
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
-  ipcMain.handle("kmux:view:get", () => options.getView());
+  ipcMain.handle("kmux:shell:get", () => options.getShellState());
   ipcMain.handle("kmux:usage:get", () => options.getUsageView());
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {
     options.dispatchAppAction(action);
-    return options.getView();
   });
   ipcMain.handle("kmux:usage:dashboard-open", (_event, open: boolean) => {
     options.setUsageDashboardOpen(Boolean(open));
@@ -75,6 +78,9 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle("kmux:updater:install", () => {
     options.installDownloadedUpdate();
+  });
+  ipcMain.handle("kmux:profile:event", (_event, event: SmoothnessProfileEvent) => {
+    options.recordProfileEvent?.(event);
   });
   ipcMain.handle(
     "kmux:attach-surface",
@@ -168,7 +174,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       const window = BrowserWindow.fromWebContents(event.sender);
       const menu = buildNativeWorkspaceContextMenu({
         workspaceId: payload.workspaceId,
-        getView: options.getView,
+        getContextView: options.getWorkspaceContextView,
         rename: (workspaceId) => {
           event.sender.send("kmux:workspace-rename-request", workspaceId);
         },

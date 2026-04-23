@@ -13,15 +13,22 @@ import {
 
 import type {
   JsonRpcEnvelope,
-  ShellViewModel,
+  ShellStoreSnapshot,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload
 } from "@kmux/proto";
 
+type TestActiveWorkspace =
+  ShellStoreSnapshot["activeWorkspace"] & ShellStoreSnapshot["activeWorkspacePaneTree"];
+
+export type TestShellView = Omit<ShellStoreSnapshot, "activeWorkspace"> & {
+  activeWorkspace: TestActiveWorkspace;
+};
+
 type KmuxWindow = {
   kmux: {
-    getView: () => Promise<ShellViewModel>;
-    dispatch: (action: unknown) => Promise<ShellViewModel>;
+    getShellState: () => Promise<ShellStoreSnapshot>;
+    dispatch: (action: unknown) => Promise<void>;
   };
   kmuxTest?: {
     snapshotSurface: (
@@ -335,28 +342,43 @@ function killSandboxProcesses(sandbox: KmuxSandbox): void {
   }
 }
 
-export async function getView(page: Page): Promise<ShellViewModel> {
-  return page.evaluate(() => (window as unknown as KmuxWindow).kmux.getView());
+function toTestShellView(snapshot: ShellStoreSnapshot): TestShellView {
+  return {
+    ...snapshot,
+    activeWorkspace: {
+      ...snapshot.activeWorkspacePaneTree,
+      ...snapshot.activeWorkspace
+    }
+  };
+}
+
+export async function getView(page: Page): Promise<TestShellView> {
+  return toTestShellView(
+    await page.evaluate(
+      () => (window as unknown as KmuxWindow).kmux.getShellState()
+    )
+  );
 }
 
 export async function dispatch(
   page: Page,
   action: unknown
-): Promise<ShellViewModel> {
-  return page.evaluate(
+): Promise<TestShellView> {
+  await page.evaluate(
     (payload) => (window as unknown as KmuxWindow).kmux.dispatch(payload),
     action
   );
+  return getView(page);
 }
 
 export async function waitForView(
   page: Page,
-  predicate: (view: ShellViewModel) => boolean,
+  predicate: (view: TestShellView) => boolean,
   message: string,
   timeoutMs = 5000
-): Promise<ShellViewModel> {
+): Promise<TestShellView> {
   const startTime = Date.now();
-  let lastState: ShellViewModel | null = null;
+  let lastState: TestShellView | null = null;
 
   while (Date.now() - startTime < timeoutMs) {
     const view = await getView(page);

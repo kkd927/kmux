@@ -1,7 +1,7 @@
 import {type Dispatch, type MutableRefObject, type SetStateAction, useEffect, useRef} from "react";
 
 import type {AppAction} from "@kmux/core";
-import type {ActiveWorkspaceVm, ShellViewModel} from "@kmux/proto";
+import type {ActiveWorkspacePaneTreeVm, ShellStoreSnapshot} from "@kmux/proto";
 import {normalizeShortcut} from "@kmux/ui";
 
 type RightPanelKind = "usage" | null;
@@ -17,14 +17,14 @@ interface OverlayState {
 }
 
 interface ActiveShortcutContext {
-  view: ShellViewModel;
+  view: ShellStoreSnapshot;
   activePaneId: string;
   activeSurfaceId: string;
 }
 
 interface UseGlobalShortcutsOptions {
   isMac: boolean;
-  viewRef: MutableRefObject<ShellViewModel | null>;
+  viewRef: MutableRefObject<ShellStoreSnapshot | null>;
   overlayStateRef: MutableRefObject<OverlayState>;
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
   closeWorkspaceContextMenu: () => void;
@@ -167,7 +167,7 @@ export function useGlobalShortcuts(
         event.stopPropagation();
         const latestView = currentOptions.viewRef.current;
         const shortcutTargets = latestView
-          ? listWorkspaceSurfaceShortcutTargets(latestView.activeWorkspace)
+          ? listWorkspaceSurfaceShortcutTargets(latestView.activeWorkspacePaneTree)
           : [];
         const targetSurfaceId = shortcutTargets[digitIndex] ?? null;
         if (!targetSurfaceId) {
@@ -494,7 +494,7 @@ export function useGlobalShortcuts(
 }
 
 function matchShortcut(
-  view: ShellViewModel,
+  view: ShellStoreSnapshot,
   event: KeyboardEvent,
   commandId: string
 ): boolean {
@@ -502,7 +502,7 @@ function matchShortcut(
 }
 
 function listWorkspaceSurfaceShortcutTargets(
-  workspace: ActiveWorkspaceVm
+  workspace: ActiveWorkspacePaneTreeVm
 ): string[] {
   return listWorkspacePaneIdsInTreeOrder(workspace).flatMap(
     (paneId) => workspace.panes[paneId]?.surfaceIds ?? []
@@ -510,7 +510,7 @@ function listWorkspaceSurfaceShortcutTargets(
 }
 
 function listWorkspacePaneIdsInTreeOrder(
-  workspace: ActiveWorkspaceVm
+  workspace: ActiveWorkspacePaneTreeVm
 ): string[] {
   const paneIds: string[] = [];
 

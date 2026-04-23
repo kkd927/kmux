@@ -1,5 +1,7 @@
+import { memo } from "react";
+
 import type {
-  ActiveWorkspaceVm,
+  ActiveWorkspacePaneTreeVm,
   Id,
   KmuxSettings,
   ResolvedTerminalThemeVm,
@@ -8,10 +10,12 @@ import type {
 import type { ColorTheme } from "@kmux/ui";
 
 import styles from "../styles/PaneTree.module.css";
+import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
+import { recordRendererSmoothnessProfileEvent } from "../smoothnessProfile";
 import { TerminalPane } from "./TerminalPane";
 
-interface PaneTreeProps {
-  workspace: ActiveWorkspaceVm;
+export interface PaneTreeProps {
+  workspace: ActiveWorkspacePaneTreeVm;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
@@ -29,12 +33,38 @@ interface PaneTreeProps {
   onToggleSearch: (surfaceId: string | null) => void;
 }
 
-export function PaneTree(props: PaneTreeProps): JSX.Element {
+export const PaneTree = memo(function PaneTree(
+  props: PaneTreeProps
+): JSX.Element {
+  useSmoothnessRenderCounter("pane-tree.render", () => ({
+    workspaceId: props.workspace.id,
+    paneCount: Object.keys(props.workspace.panes).length,
+    surfaceCount: Object.keys(props.workspace.surfaces).length
+  }));
   return (
     <div className={styles.tree}>
       <PaneNode nodeId={props.workspace.rootNodeId} {...props} />
     </div>
   );
+}, arePaneTreePropsEqual);
+
+function arePaneTreePropsEqual(
+  left: PaneTreeProps,
+  right: PaneTreeProps
+): boolean {
+  const equal =
+    left.workspace === right.workspace &&
+    left.settings === right.settings &&
+    left.terminalTypography === right.terminalTypography &&
+    left.terminalTheme === right.terminalTheme &&
+    left.colorTheme === right.colorTheme &&
+    left.searchSurfaceId === right.searchSurfaceId;
+  if (equal) {
+    recordRendererSmoothnessProfileEvent("pane-tree.memo-skip", {
+      workspaceId: left.workspace.id
+    });
+  }
+  return equal;
 }
 
 function PaneNode(

@@ -1,12 +1,18 @@
 import { clipboard, contextBridge, ipcRenderer } from "electron";
 
 import type { AppAction } from "@kmux/core";
+import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
+import {
+  KMUX_PROFILE_LOG_PATH_ENV,
+  isSmoothnessProfileEnabled
+} from "../shared/smoothnessProfile";
 import type {
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
+  ShellPatch,
   ShellIdentity,
-  ShellViewModel,
+  ShellStoreSnapshot,
   UsageViewSnapshot,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
@@ -23,8 +29,8 @@ export type TerminalEvent =
   | { type: "exit"; payload: SurfaceExitPayload };
 
 const api = {
-  getView(): Promise<ShellViewModel> {
-    return ipcRenderer.invoke("kmux:view:get");
+  getShellState(): Promise<ShellStoreSnapshot> {
+    return ipcRenderer.invoke("kmux:shell:get");
   },
   getUsageView(): Promise<UsageViewSnapshot> {
     return ipcRenderer.invoke("kmux:usage:get");
@@ -32,14 +38,14 @@ const api = {
   getUpdaterState(): Promise<UpdaterState> {
     return ipcRenderer.invoke("kmux:updater:get");
   },
-  dispatch(action: AppAction): Promise<ShellViewModel> {
+  dispatch(action: AppAction): Promise<void> {
     return ipcRenderer.invoke("kmux:dispatch", action);
   },
-  subscribeView(listener: (view: ShellViewModel) => void): () => void {
-    const handler = (_event: Electron.IpcRendererEvent, view: ShellViewModel) =>
-      listener(view);
-    ipcRenderer.on("kmux:view", handler);
-    return () => ipcRenderer.off("kmux:view", handler);
+  subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, patch: ShellPatch) =>
+      listener(patch);
+    ipcRenderer.on("kmux:shell-patch", handler);
+    return () => ipcRenderer.off("kmux:shell-patch", handler);
   },
   subscribeUsage(listener: (snapshot: UsageViewSnapshot) => void): () => void {
     const handler = (
@@ -149,6 +155,14 @@ const api = {
   },
   installDownloadedUpdate(): Promise<void> {
     return ipcRenderer.invoke("kmux:updater:install");
+  },
+  profileSmoothnessEnabled(): boolean {
+    return isSmoothnessProfileEnabled({
+      [KMUX_PROFILE_LOG_PATH_ENV]: process.env[KMUX_PROFILE_LOG_PATH_ENV]
+    });
+  },
+  recordSmoothnessProfileEvent(event: SmoothnessProfileEvent): Promise<void> {
+    return ipcRenderer.invoke("kmux:profile:event", event);
   }
 };
 

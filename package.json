@@ -35,6 +35,7 @@
     "smoke:dev": "node scripts/smoke-dev.mjs",
     "test:e2e": "npm run smoke:dev && npm run build && playwright test",
     "test:e2e:visible": "npm run smoke:dev && KMUX_E2E_WINDOW_MODE=visible npm run build && playwright test",
+    "profile:smoothness": "npm run smoke:dev && npm run build && KMUX_RUN_SMOOTHNESS_PROFILE=1 playwright test tests/e2e/kmux-smoothness-profile.spec.ts",
     "smoke:packaged:mac": "node scripts/smoke-packaged-mac.mjs",
     "release:check:mac": "npm run package:mac && npm run smoke:packaged:mac",
     "capture:scene": "npm run build && node scripts/capture-reference-scene.mjs",

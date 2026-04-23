@@ -1,6 +1,6 @@
 import {type RefObject, useEffect, useRef, useState} from "react";
 
-import type {ShellViewModel} from "@kmux/proto";
+import type {KmuxSettings, WorkspaceRowVm} from "@kmux/proto";
 
 import {
     buildWorkspaceContextMenuEntries,
@@ -16,7 +16,8 @@ export type WorkspaceContextMenuState = {
 };
 
 interface UseWorkspaceContextMenuOptions {
-  view: ShellViewModel | null;
+  workspaceRows: WorkspaceRowVm[];
+  settings: KmuxSettings | null;
   beginWorkspaceRename: (workspaceId: string) => void;
 }
 
@@ -50,14 +51,13 @@ export function useWorkspaceContextMenu(
   useEffect(() => {
     if (
       workspaceContextMenu &&
-      (!options.view ||
-        !options.view.workspaceRows.some(
-          (row) => row.workspaceId === workspaceContextMenu.workspaceId
-        ))
+      !options.workspaceRows.some(
+        (row) => row.workspaceId === workspaceContextMenu.workspaceId
+      )
     ) {
       setWorkspaceContextMenu(null);
     }
-  }, [options.view, workspaceContextMenu]);
+  }, [options.workspaceRows, workspaceContextMenu]);
 
   useEffect(() => {
     if (!workspaceContextMenu) {
@@ -74,8 +74,14 @@ export function useWorkspaceContextMenu(
   }, [workspaceContextMenu]);
 
   const workspaceContext =
-    workspaceContextMenu && options.view
-      ? findWorkspaceContext(options.view, workspaceContextMenu.workspaceId)
+    workspaceContextMenu && options.settings
+      ? findWorkspaceContext(
+          {
+            workspaceRows: options.workspaceRows,
+            settings: options.settings
+          },
+          workspaceContextMenu.workspaceId
+        )
       : null;
   const workspaceContextMenuItems = workspaceContext
     ? buildWorkspaceContextMenuEntries(workspaceContext)

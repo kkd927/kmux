@@ -34,7 +34,16 @@ try {
   await page.waitForLoadState("domcontentloaded");
   await page.setViewportSize({ width: 1277, height: 1179 });
 
-  const getView = () => page.evaluate(() => globalThis.window.kmux.getView());
+  const getView = () =>
+    page.evaluate(() => globalThis.window.kmux.getShellState()).then(
+      (snapshot) => ({
+        ...snapshot,
+        activeWorkspace: {
+          ...snapshot.activeWorkspacePaneTree,
+          ...snapshot.activeWorkspace
+        }
+      })
+    );
   const dispatch = (action) =>
     page.evaluate(
       (payload) => globalThis.window.kmux.dispatch(payload),

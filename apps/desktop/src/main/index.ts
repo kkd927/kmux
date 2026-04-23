@@ -4,9 +4,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
-import {
-  USAGE_PRICING_REVISION
-} from "@kmux/metadata";
+import { USAGE_PRICING_REVISION } from "@kmux/metadata";
 
 import {
   createSettingsStore,
@@ -45,6 +43,8 @@ import {
   DIAGNOSTICS_LOG_PATH_ENV,
   logDiagnostics
 } from "../shared/diagnostics";
+import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
+import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
 import {
   createMainWindow,
   persistWindowState,
@@ -70,10 +70,13 @@ process.stdout.on("error", ignoreExpectedPipeClose);
 process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
+  const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
     version: app.getVersion(),
-    diagnosticsLogPath: process.env[DIAGNOSTICS_LOG_PATH_ENV]
+    diagnosticsLogPath: process.env[DIAGNOSTICS_LOG_PATH_ENV],
+    smoothnessProfileEnabled: smoothnessProfile.enabled,
+    smoothnessProfileLogPath: process.env[KMUX_PROFILE_LOG_PATH_ENV]
   });
   setDevelopmentDockIcon(currentDir);
   app.setAboutPanelOptions({
@@ -104,6 +107,13 @@ async function bootstrap(): Promise<void> {
     resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV] = diagnosticsLogPath;
   } else {
     delete resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV];
+  }
+  const smoothnessProfileLogPath = process.env[KMUX_PROFILE_LOG_PATH_ENV];
+  if (smoothnessProfileLogPath) {
+    resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV] =
+      smoothnessProfileLogPath;
+  } else {
+    delete resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV];
   }
   const claudeIntegrationResult = ensureClaudeHooksInstalled(
     resolvedShellEnv.baseEnv.HOME ?? homedir()
@@ -136,6 +146,7 @@ async function bootstrap(): Promise<void> {
     onDidDispatchAppAction: (action) => {
       usageRuntime?.handleAppAction(action);
     },
+    profileRecorder: smoothnessProfile,
     persistWindowState: (window) => {
       persistWindowState({
         windowStateStore,
@@ -188,7 +199,8 @@ async function bootstrap(): Promise<void> {
     onSurfaceInputText: (surfaceId, text) => {
       usageRuntime.handleTerminalInput(surfaceId, text);
     },
-    getPtyHost: () => ptyHost
+    getPtyHost: () => ptyHost,
+    profileRecorder: smoothnessProfile
   });
 
   logDiagnostics("main.pty-host.starting", {
@@ -209,7 +221,14 @@ async function bootstrap(): Promise<void> {
   await socketServer.start();
 
   registerIpcHandlers({
-    getView: runtime.getView,
+    getShellState: runtime.getShellState,
+    getWorkspaceContextView: () => {
+      const shellState = runtime.getShellState();
+      return {
+        workspaceRows: shellState.workspaceRows,
+        settings: shellState.settings
+      };
+    },
     getUsageView: usageRuntime.getSnapshot,
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
@@ -230,7 +249,8 @@ async function bootstrap(): Promise<void> {
     installDownloadedUpdate: () => {
       lifecycle.allowQuit();
       updater.quitAndInstall();
-    }
+    },
+    recordProfileEvent: (event) => smoothnessProfile.record(event)
   });
 
   let currentMainWindow: BrowserWindow | null = null;
@@ -262,7 +282,7 @@ async function bootstrap(): Promise<void> {
     currentMainWindow = window;
     runtime.setMainWindow(window);
     window.webContents.once("did-finish-load", () => {
-      runtime.broadcastView();
+      runtime.syncWindowTitles();
       broadcastUpdaterState();
     });
     window.once("ready-to-show", () => {
@@ -369,7 +389,7 @@ async function bootstrap(): Promise<void> {
   });
   updateApplicationMenu();
   broadcastUpdaterState();
-  runtime.broadcastView();
+  runtime.syncWindowTitles();
   usageRuntime.start();
   runtime.respawnRestoredSessions();
   app.on("before-quit", (event) => {

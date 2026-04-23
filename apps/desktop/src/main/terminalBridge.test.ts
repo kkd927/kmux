@@ -360,6 +360,197 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("records attach queue profiling metrics when hydration flushes", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    let resolveSnapshot: ((value: typeof snapshot) => void) | undefined;
+    const record = vi.fn();
+    const ptyHost = {
+      snapshot: vi.fn(
+        () =>
+          new Promise<typeof snapshot>((resolve) => {
+            resolveSnapshot = resolve;
+          })
+      )
+    };
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send: vi.fn()
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never,
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+
+    const attachPromise = bridge.attachSurface(77, surfaceId);
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 2,
+        chunk: "queued"
+      }
+    });
+
+    const resolve = resolveSnapshot;
+    expect(resolve).toBeTypeOf("function");
+    if (!resolve) {
+      throw new Error("expected snapshot resolver to be set");
+    }
+    resolve(snapshot);
+    await attachPromise;
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "main",
+        name: "terminal.attach.queue",
+        details: expect.objectContaining({
+          contentsId: 77,
+          surfaceId,
+          queuedChunks: 1,
+          snapshotSequence: 1
+        })
+      })
+    );
+  });
+
+  it("records terminal IPC buckets with surface and session attribution", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const record = vi.fn();
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 0,
+      vt: "",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send: vi.fn()
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () =>
+        ({
+          snapshot: vi.fn().mockResolvedValue(snapshot)
+        }) as never,
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+
+    await bridge.attachSurface(77, surfaceId);
+
+    for (let index = 1; index <= 100; index += 1) {
+      bridge.handlePtyEvent({
+        type: "chunk",
+        payload: {
+          surfaceId,
+          sessionId: surface.sessionId,
+          sequence: index,
+          chunk: "x"
+        }
+      });
+    }
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "main",
+        name: "terminal.ipc.bucket",
+        details: expect.objectContaining({
+          surfaceId,
+          sessionId: surface.sessionId,
+          chunks: 100,
+          sends: 100,
+          bytes: 100
+        })
+      })
+    );
+  });
+
+  it("records resize request and ack profiling metrics", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const record = vi.fn();
+    const resize = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () =>
+        ({
+          resize
+        }) as never,
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+
+    await bridge.resizeSurface(surfaceId, 132, 43);
+
+    expect(resize).toHaveBeenCalledWith(surface.sessionId, 132, 43);
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "main",
+        name: "terminal.resize.request",
+        details: expect.objectContaining({
+          surfaceId,
+          sessionId: surface.sessionId,
+          cols: 132,
+          rows: 43
+        })
+      })
+    );
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "main",
+        name: "terminal.resize.ack",
+        details: expect.objectContaining({
+          surfaceId,
+          sessionId: surface.sessionId,
+          cols: 132,
+          rows: 43,
+          durationMs: expect.any(Number)
+        })
+      })
+    );
+  });
+
   it("hydrates a first-time attached surface from a settled snapshot", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];

@@ -6,6 +6,7 @@ import {
 
 import {
   applyAction,
+  applyActionWithSummary,
   buildViewModel,
   cloneState,
   createInitialState,
@@ -16,6 +17,51 @@ import {
 } from "./index";
 
 describe("core reducer", () => {
+  it("reports sidebar mutations as workspace row and active workspace activity only", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const result = applyActionWithSummary(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      text: "Busy"
+    });
+
+    expect(result.mutation).toEqual({
+      workspaceRows: true,
+      activeWorkspaceActivity: true
+    });
+  });
+
+  it("reports surface metadata mutations as terminal tree-affecting", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const result = applyActionWithSummary(state, {
+      type: "surface.metadata",
+      surfaceId,
+      title: "Codex"
+    });
+
+    expect(result.mutation).toEqual({
+      workspaceRows: true,
+      activeWorkspacePaneTree: true
+    });
+  });
+
+  it("reports shell chrome and settings mutations on their owned slices", () => {
+    const state = createInitialState();
+
+    expect(
+      applyActionWithSummary(state, { type: "workspace.sidebar.toggle" })
+        .mutation
+    ).toEqual({ window: true });
+    expect(
+      applyActionWithSummary(state, {
+        type: "settings.update",
+        patch: { warnBeforeQuit: false }
+      }).mutation
+    ).toEqual({ settings: true });
+  });
+
   it("creates and selects a new workspace", () => {
     const state = createInitialState();
     applyAction(state, { type: "workspace.create", name: "new" });
@@ -1511,6 +1557,60 @@ describe("core reducer", () => {
         cwd: "/repo/front",
         branch: "main",
         ports: [3000, 3001, 5173]
+      })
+    );
+  });
+
+  it("derives workspace row metadata from the active surface of the active pane before falling back to tree order", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const firstSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId });
+    const secondSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: firstSurfaceId,
+      title: "repo / shell",
+      cwd: "/repo/front",
+      branch: "main"
+    });
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: secondSurfaceId,
+      title: "agent / review",
+      cwd: "/repo/review",
+      branch: "feature/review"
+    });
+
+    let row = buildViewModel(state).workspaceRows.find(
+      (workspaceRow) => workspaceRow.workspaceId === workspaceId
+    );
+
+    expect(row).toEqual(
+      expect.objectContaining({
+        summary: "agent / review",
+        cwd: "/repo/review",
+        branch: "feature/review"
+      })
+    );
+
+    applyAction(state, {
+      type: "surface.focus",
+      surfaceId: firstSurfaceId
+    });
+
+    row = buildViewModel(state).workspaceRows.find(
+      (workspaceRow) => workspaceRow.workspaceId === workspaceId
+    );
+
+    expect(row).toEqual(
+      expect.objectContaining({
+        summary: "repo / shell",
+        cwd: "/repo/front",
+        branch: "main"
       })
     );
   });
