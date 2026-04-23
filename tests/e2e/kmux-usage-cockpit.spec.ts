@@ -10,10 +10,36 @@ import {
   createSandbox,
   dispatch,
   getView,
+  launchKmux,
   launchKmuxWithSandbox,
   waitForSurfaceSnapshotContains,
   waitForView
 } from "./helpers";
+
+test("usage right sidebar stays docked when Escape is pressed and closes only via its toggle", async () => {
+  const launched = await launchKmux("kmux-e2e-usage-escape-");
+
+  try {
+    const { page } = launched;
+    const initialView = await getView(page);
+    const paneId = initialView.activeWorkspace.activePaneId;
+    const surfaceId = initialView.activeWorkspace.panes[paneId].activeSurfaceId;
+    const terminal = page.getByTestId(`terminal-${surfaceId}`);
+    const rightPanel = page.getByTestId("usage-right-panel");
+
+    await terminal.click();
+    await page.keyboard.press("Meta+Shift+U");
+    await expect(rightPanel).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(rightPanel).toBeVisible();
+
+    await page.keyboard.press("Meta+Shift+U");
+    await expect(rightPanel).toHaveCount(0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
 
 test("manual codex CLI runs show usage only in the right sidebar without a header HUD", async () => {
   const sandbox = createSandbox("kmux-e2e-usage-manual-codex-");

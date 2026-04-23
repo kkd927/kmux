@@ -54,12 +54,11 @@ type ActiveShortcutContext = {
   activeSurfaceId: string;
 };
 type RightPanelKind = "usage" | null;
-type OverlayState = {
+type DismissibleUiState = {
   paletteOpen: boolean;
   notificationsOpen: boolean;
   settingsOpen: boolean;
   searchSurfaceId: string | null;
-  rightPanelKind: RightPanelKind;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
 };
@@ -139,12 +138,11 @@ export function App(): JSX.Element {
   const usageDashboardOpen = activeRightPanel === "usage";
   const viewRef = useShellSnapshotRef();
   const reportedTypographyStacksRef = useRef(new Set<string>());
-  const overlayStateRef = useRef<OverlayState>({
+  const dismissibleUiStateRef = useRef<DismissibleUiState>({
     paletteOpen,
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
-    rightPanelKind: activeRightPanel,
     workspaceContextMenuOpen: false,
     workspaceCloseConfirmOpen: false
   });
@@ -350,12 +348,11 @@ export function App(): JSX.Element {
     beginWorkspaceRename
   });
 
-  overlayStateRef.current = {
+  dismissibleUiStateRef.current = {
     paletteOpen,
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
-    rightPanelKind: activeRightPanel,
     workspaceContextMenuOpen: Boolean(workspaceContextMenu),
     workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose)
   };
@@ -370,7 +367,7 @@ export function App(): JSX.Element {
   useGlobalShortcuts({
     isMac,
     viewRef,
-    overlayStateRef,
+    dismissibleUiStateRef,
     setShowWorkspaceShortcutHints,
     closeWorkspaceContextMenu,
     closeWorkspaceCloseConfirm: () => setPendingWorkspaceClose(null),
