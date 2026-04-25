@@ -232,4 +232,195 @@ describe("resolvePtyHostLaunchOptions", () => {
 
     await expect(snapshotPromise).resolves.toBeNull();
   });
+
+  it("unrefs snapshot timeout handles", async () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+    const unref = vi.fn();
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((() => ({ unref })) as never);
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    try {
+      manager.start();
+      fakeChild.emit("message", {
+        type: "spawned",
+        sessionId: "session_1",
+        pid: 1234
+      });
+
+      const snapshotPromise = manager.snapshot("session_1", "surface_1", {
+        timeoutMs: 5000
+      });
+
+      expect(unref).toHaveBeenCalled();
+      manager.stop();
+      await expect(snapshotPromise).resolves.toBeNull();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("resolves pending snapshots with null when stopped", async () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session_1",
+      pid: 1234
+    });
+
+    const snapshotPromise = manager.snapshot("session_1", "surface_1", {
+      timeoutMs: 5000
+    });
+
+    manager.stop();
+
+    await expect(snapshotPromise).resolves.toBeNull();
+  });
+
+  it("resolves pending snapshots with null when the child exits", async () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session_1",
+      pid: 1234
+    });
+
+    const snapshotPromise = manager.snapshot("session_1", "surface_1", {
+      timeoutMs: 5000
+    });
+
+    fakeChild.emit("exit", 1);
+
+    await expect(snapshotPromise).resolves.toBeNull();
+  });
+
+  it("keeps only the latest queued resize before a session is ready", async () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    const send = vi.fn((message: unknown) => Boolean(message));
+    (fakeChild as ChildProcess & { send: typeof send }).send = send;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    const firstResize = manager.resize("session_1", 80, 24);
+    const secondResize = manager.resize("session_1", 120, 40);
+
+    expect(send).not.toHaveBeenCalled();
+
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session_1",
+      pid: 1234
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const [resizeRequest] = send.mock.calls[0] ?? [];
+    expect(resizeRequest).toEqual(
+      expect.objectContaining({
+        type: "resize",
+        sessionId: "session_1",
+        cols: 120,
+        rows: 40
+      })
+    );
+    if (
+      !resizeRequest ||
+      typeof resizeRequest !== "object" ||
+      !("requestId" in resizeRequest)
+    ) {
+      throw new Error("expected resize request to be sent");
+    }
+
+    fakeChild.emit("message", {
+      type: "resize:ack",
+      sessionId: "session_1",
+      requestId: resizeRequest.requestId,
+      cols: 120,
+      rows: 40
+    });
+
+    await expect(firstResize).resolves.toBeUndefined();
+    await expect(secondResize).resolves.toBeUndefined();
+  });
+
+  it("replaces queued resize in place so later input does not move ahead of resize", async () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    const send = vi.fn((message: unknown) => Boolean(message));
+    (fakeChild as ChildProcess & { send: typeof send }).send = send;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    const firstResize = manager.resize("session_1", 80, 24);
+    manager.sendText("session_1", "export PS1='kmux> '\r");
+    const secondResize = manager.resize("session_1", 120, 40);
+
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session_1",
+      pid: 1234
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        type: "resize",
+        sessionId: "session_1",
+        cols: 120,
+        rows: 40
+      })
+    );
+    expect(send.mock.calls[1]?.[0]).toEqual({
+      type: "input:text",
+      sessionId: "session_1",
+      text: "export PS1='kmux> '\r"
+    });
+
+    const resizeRequest = send.mock.calls[0]?.[0];
+    if (
+      !resizeRequest ||
+      typeof resizeRequest !== "object" ||
+      !("requestId" in resizeRequest)
+    ) {
+      throw new Error("expected resize request to be sent");
+    }
+    fakeChild.emit("message", {
+      type: "resize:ack",
+      sessionId: "session_1",
+      requestId: resizeRequest.requestId,
+      cols: 120,
+      rows: 40
+    });
+
+    await expect(firstResize).resolves.toBeUndefined();
+    await expect(secondResize).resolves.toBeUndefined();
+  });
 });

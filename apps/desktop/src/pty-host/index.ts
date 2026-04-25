@@ -40,6 +40,9 @@ import {
 } from "../shared/nodeSmoothnessProfile";
 import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
+import { OutputBatcher } from "./outputBatcher";
+import { prepareTerminalResize } from "./resizeRuntime";
+import { SnapshotCache } from "./snapshotCache";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -66,7 +69,9 @@ interface SessionRecord {
   pty: PtyModule.IPty;
   terminal: HeadlessTerminal;
   serialize: SerializeAddon;
+  snapshotCache: SnapshotCache;
   sequence: number;
+  parsedSequence: number;
   cols: number;
   rows: number;
   osc99State: Osc99NotificationState;
@@ -83,6 +88,18 @@ const logRawTerminalEvent = createRawTerminalEventStdoutLogger();
 const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
 const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
+const OUTPUT_BATCH_FLUSH_MS = 8;
+const OUTPUT_BATCH_MAX_BYTES = 64 * 1024;
+const outputBatcher = new OutputBatcher({
+  flushMs: OUTPUT_BATCH_FLUSH_MS,
+  maxBatchBytes: OUTPUT_BATCH_MAX_BYTES,
+  onFlush: (payload) => {
+    send({
+      type: "chunk",
+      payload
+    });
+  }
+});
 const ptyBucket = createSmoothnessProfileBucket<{
   surfaceId: Id;
   sessionId: Id;
@@ -148,11 +165,18 @@ function flushPtyProfileBucket(record: SessionRecord): void {
 }
 
 function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
+  outputBatcher.flush(record.sessionId);
+  const snapshotSequence = record.parsedSequence;
   return {
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
-    sequence: record.sequence,
-    vt: record.serialize.serialize({ scrollback: 5000 }),
+    sequence: snapshotSequence,
+    vt: record.snapshotCache.get({
+      sequence: snapshotSequence,
+      cols: record.cols,
+      rows: record.rows,
+      serialize: () => record.serialize.serialize({ scrollback: 5000 })
+    }),
     cols: record.cols,
     rows: record.rows,
     title: record.title,
@@ -263,7 +287,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     pty: ptyProcess,
     terminal,
     serialize,
+    snapshotCache: new SnapshotCache(),
     sequence: 0,
+    parsedSequence: 0,
     cols: request.spec.cols,
     rows: request.spec.rows,
     osc99State: {},
@@ -420,21 +446,22 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   ptyProcess.onData((chunk) => {
     recordPtyChunk(record, chunk);
     record.sequence += 1;
+    const chunkSequence = record.sequence;
     record.lastActivityAt = Date.now();
-    terminal.write(chunk);
+    terminal.write(chunk, () => {
+      record.parsedSequence = Math.max(record.parsedSequence, chunkSequence);
+    });
     scheduleSettledSnapshotCheck(record);
-    send({
-      type: "chunk",
-      payload: {
-        surfaceId: record.surfaceId,
-        sessionId: record.sessionId,
-        sequence: record.sequence,
-        chunk
-      }
+    outputBatcher.push({
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      sequence: chunkSequence,
+      chunk
     });
   });
   ptyProcess.onExit(({ exitCode }) => {
     flushPtyProfileBucket(record);
+    outputBatcher.flush(record.sessionId);
     disposeSettledSnapshotState(record);
     send({
       type: "exit",
@@ -466,6 +493,7 @@ process.on("message", (request: PtyRequest) => {
           break;
         }
         flushPtyProfileBucket(record);
+        outputBatcher.flush(record.sessionId);
         disposeSettledSnapshotState(record);
         record.pty.kill();
         sessions.delete(request.sessionId);
@@ -486,12 +514,12 @@ process.on("message", (request: PtyRequest) => {
           }
           break;
         }
-        if (record.cols !== request.cols || record.rows !== request.rows) {
-          record.cols = request.cols;
-          record.rows = request.rows;
-          record.terminal.resize(request.cols, request.rows);
-          record.pty.resize(request.cols, request.rows);
-        }
+        prepareTerminalResize({
+          record,
+          cols: request.cols,
+          rows: request.rows,
+          flushOutput: (sessionId) => outputBatcher.flush(sessionId)
+        });
         if (request.requestId) {
           send({
             type: "resize:ack",

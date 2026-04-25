@@ -78,6 +78,7 @@ yarn-error.log*
 
 # Project-local tooling
 /.codex/
+/.kmux/
 /AGENTS.md
 
 # Swap / patch leftovers

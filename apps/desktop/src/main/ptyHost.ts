@@ -65,7 +65,11 @@ export class PtyHostManager extends EventEmitter {
   private readonly readySessions = new Set<Id>();
   private readonly pendingSnapshots = new Map<
     string,
-    (payload: SurfaceSnapshotPayload | null) => void
+    {
+      sessionId: Id;
+      resolve: (payload: SurfaceSnapshotPayload | null) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
   >();
   private readonly pendingResizes = new Map<string, () => void>();
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
@@ -98,19 +102,11 @@ export class PtyHostManager extends EventEmitter {
 
     child.on("message", (event: PtyEvent) => {
       if (event.type === "snapshot") {
-        const resolver = this.pendingSnapshots.get(event.requestId);
-        if (resolver) {
-          this.pendingSnapshots.delete(event.requestId);
-          resolver(event.payload);
-        }
+        this.resolvePendingSnapshot(event.requestId, event.payload);
         return;
       }
       if (event.type === "resize:ack") {
-        const resolver = this.pendingResizes.get(event.requestId);
-        if (resolver) {
-          this.pendingResizes.delete(event.requestId);
-          resolver();
-        }
+        this.resolvePendingResize(event.requestId);
         return;
       }
       if (event.type === "spawned") {
@@ -123,6 +119,7 @@ export class PtyHostManager extends EventEmitter {
         if (sessionId) {
           this.readySessions.delete(sessionId);
           this.queuedRequests.delete(sessionId);
+          this.flushPendingSnapshotsForSession(sessionId);
         }
       }
       this.emit("event", event);
@@ -136,6 +133,7 @@ export class PtyHostManager extends EventEmitter {
       }
       this.readySessions.clear();
       this.queuedRequests.clear();
+      this.flushPendingSnapshots();
       this.flushPendingResizes();
       if (expectedExit) {
         return;
@@ -163,6 +161,7 @@ export class PtyHostManager extends EventEmitter {
     this.child = null;
     this.readySessions.clear();
     this.queuedRequests.clear();
+    this.flushPendingSnapshots();
     this.flushPendingResizes();
   }
 
@@ -203,16 +202,19 @@ export class PtyHostManager extends EventEmitter {
       requestId,
       ...(settleForMs > 0 ? { settleForMs } : {})
     } satisfies PtyRequest;
-    this.sendWhenReady(sessionId, request);
     return new Promise((resolve) => {
-      this.pendingSnapshots.set(requestId, resolve);
-      setTimeout(() => {
-        const pending = this.pendingSnapshots.get(requestId);
-        if (pending) {
-          this.pendingSnapshots.delete(requestId);
-          pending(null);
-        }
+      const timeout = setTimeout(() => {
+        this.resolvePendingSnapshot(requestId, null);
       }, timeoutMs);
+      if (typeof timeout === "object" && timeout && "unref" in timeout) {
+        timeout.unref();
+      }
+      this.pendingSnapshots.set(requestId, {
+        sessionId,
+        resolve,
+        timeout
+      });
+      this.sendWhenReady(sessionId, request);
     });
   }
 
@@ -228,11 +230,7 @@ export class PtyHostManager extends EventEmitter {
     return new Promise((resolve) => {
       this.pendingResizes.set(requestId, resolve);
       const timeout = setTimeout(() => {
-        const pending = this.pendingResizes.get(requestId);
-        if (pending) {
-          this.pendingResizes.delete(requestId);
-          pending();
-        }
+        this.resolvePendingResize(requestId);
       }, RESIZE_ACK_TIMEOUT_MS);
       if (typeof timeout === "object" && timeout && "unref" in timeout) {
         timeout.unref();
@@ -249,6 +247,48 @@ export class PtyHostManager extends EventEmitter {
     }
   }
 
+  private resolvePendingSnapshot(
+    requestId: string,
+    payload: SurfaceSnapshotPayload | null
+  ): void {
+    const pending = this.pendingSnapshots.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingSnapshots.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(payload);
+  }
+
+  private flushPendingSnapshots(): void {
+    const pendingSnapshots = Array.from(this.pendingSnapshots.values());
+    this.pendingSnapshots.clear();
+    for (const pending of pendingSnapshots) {
+      clearTimeout(pending.timeout);
+      pending.resolve(null);
+    }
+  }
+
+  private flushPendingSnapshotsForSession(sessionId: Id): void {
+    for (const [requestId, pending] of [...this.pendingSnapshots.entries()]) {
+      if (pending.sessionId !== sessionId) {
+        continue;
+      }
+      this.pendingSnapshots.delete(requestId);
+      clearTimeout(pending.timeout);
+      pending.resolve(null);
+    }
+  }
+
+  private resolvePendingResize(requestId: string): void {
+    const pending = this.pendingResizes.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingResizes.delete(requestId);
+    pending();
+  }
+
   sendText(sessionId: Id, text: string): void {
     this.sendWhenReady(sessionId, { type: "input:text", sessionId, text });
   }
@@ -263,6 +303,28 @@ export class PtyHostManager extends EventEmitter {
       return;
     }
     const queued = this.queuedRequests.get(sessionId) ?? [];
+    if (message.type === "resize") {
+      const nextQueued: PtyRequest[] = [];
+      let insertedReplacement = false;
+      for (const queuedRequest of queued) {
+        if (queuedRequest.type === "resize") {
+          if (queuedRequest.requestId) {
+            this.resolvePendingResize(queuedRequest.requestId);
+          }
+          if (!insertedReplacement) {
+            nextQueued.push(message);
+            insertedReplacement = true;
+          }
+          continue;
+        }
+        nextQueued.push(queuedRequest);
+      }
+      if (!insertedReplacement) {
+        nextQueued.push(message);
+      }
+      this.queuedRequests.set(sessionId, nextQueued);
+      return;
+    }
     queued.push(message);
     this.queuedRequests.set(sessionId, queued);
   }

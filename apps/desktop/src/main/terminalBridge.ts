@@ -4,6 +4,7 @@ import type {AppAction, AppState} from "@kmux/core";
 import type {
     Id,
     PtyEvent,
+    SurfaceChunkSegment,
     SurfaceSnapshotOptions,
     SurfaceChunkPayload,
     SurfaceExitPayload,
@@ -31,11 +32,17 @@ interface TerminalBridgeOptions {
 interface SurfaceAttachmentState {
   status: "hydrating" | "ready";
   queuedChunks: SurfaceChunkPayload[];
+  queuedBytes: number;
+  queueOverflowed: boolean;
+  overflowedThroughSequence: number | null;
   pendingExit: SurfaceExitPayload | null;
   hydratePromise: Promise<SurfaceSnapshotPayload | null> | null;
 }
 
 const ATTACH_SNAPSHOT_SETTLE_MS = 120;
+const ATTACH_QUEUE_MAX_CHUNKS = 1000;
+const ATTACH_QUEUE_MAX_BYTES = 2 * 1024 * 1024;
+const ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS = 2;
 const PROFILE_TERMINAL_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS = 1000;
 const CODEX_INPUT_PATTERNS = [
@@ -248,6 +255,7 @@ export function createTerminalBridge(
     if (!sessionId) {
       return;
     }
+
     const startedAt = profileNowMs();
     const ptyHost = options.getPtyHost();
     if (options.profileRecorder?.enabled) {
@@ -264,21 +272,24 @@ export function createTerminalBridge(
         }
       });
     }
-    await ptyHost?.resize(sessionId, cols, rows);
-    if (options.profileRecorder?.enabled) {
-      const endedAt = profileNowMs();
-      options.profileRecorder.record({
-        source: "main",
-        name: "terminal.resize.ack",
-        at: endedAt,
-        details: {
-          surfaceId,
-          sessionId,
-          cols,
-          rows,
-          durationMs: endedAt - startedAt
-        }
-      });
+    try {
+      await ptyHost?.resize(sessionId, cols, rows);
+    } finally {
+      if (options.profileRecorder?.enabled) {
+        const endedAt = profileNowMs();
+        options.profileRecorder.record({
+          source: "main",
+          name: "terminal.resize.ack",
+          at: endedAt,
+          details: {
+            surfaceId,
+            sessionId,
+            cols,
+            rows,
+            durationMs: endedAt - startedAt
+          }
+        });
+      }
     }
   }
 
@@ -320,13 +331,16 @@ export function createTerminalBridge(
     const attachment: SurfaceAttachmentState = {
       status: "hydrating",
       queuedChunks: [],
+      queuedBytes: 0,
+      queueOverflowed: false,
+      overflowedThroughSequence: null,
       pendingExit: null,
       hydratePromise: null
     };
     attached.set(surfaceId, attachment);
 
     attachment.hydratePromise = (async () => {
-      const snapshot = await snapshotSurface(
+      let snapshot = await snapshotSurface(
         surfaceId,
         hydratedSurfaceIds.has(surfaceId)
           ? {}
@@ -339,6 +353,34 @@ export function createTerminalBridge(
         ?.get(surfaceId);
       if (currentAttachment !== attachment) {
         return snapshot;
+      }
+      let recoverySnapshots = 0;
+      while (
+        shouldRecoverHydrationOverflow(attachment, snapshot) &&
+        recoverySnapshots < ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS
+      ) {
+        recoverySnapshots += 1;
+        snapshot = await snapshotSurface(surfaceId);
+        const latestAttachment = attachedSurfacesByContents
+          .get(contentsId)
+          ?.get(surfaceId);
+        if (latestAttachment !== attachment) {
+          return snapshot;
+        }
+      }
+      if (attachment.queueOverflowed) {
+        if (hydrationOverflowCoveredBySnapshot(attachment, snapshot)) {
+          clearHydrationOverflow(attachment);
+        } else {
+          recordDegradedAttachRecovery({
+            contentsId,
+            surfaceId,
+            recoverySnapshots,
+            snapshotSequence: snapshot?.sequence ?? null,
+            overflowedThroughSequence: attachment.overflowedThroughSequence
+          });
+          clearHydrationOverflow(attachment);
+        }
       }
 
       attachment.status = "ready";
@@ -411,8 +453,13 @@ export function createTerminalBridge(
     }
 
     const queuedChunks = attachment.queuedChunks
-      .filter((payload) => payload.sequence > snapshotSequence)
-      .sort((left, right) => left.sequence - right.sequence);
+      .map((payload) => trimHydrationChunkAfterSnapshot(payload, snapshotSequence))
+      .filter((payload): payload is SurfaceChunkPayload => Boolean(payload))
+      .sort(
+        (left, right) =>
+          chunkStartSequence(left) - chunkStartSequence(right) ||
+          left.sequence - right.sequence
+      );
     options.profileRecorder?.record({
       source: "main",
       name: "terminal.attach.queue",
@@ -421,10 +468,13 @@ export function createTerminalBridge(
         contentsId,
         surfaceId,
         queuedChunks: queuedChunks.length,
+        queuedBytes: attachment.queuedBytes,
+        queueOverflowed: attachment.queueOverflowed,
         snapshotSequence
       }
     });
     attachment.queuedChunks = [];
+    attachment.queuedBytes = 0;
     for (const payload of queuedChunks) {
       sendTerminalEvent(contentsId, {
         type: "chunk",
@@ -445,7 +495,7 @@ export function createTerminalBridge(
       payload.surfaceId
     )) {
       if (attachment.status === "hydrating") {
-        attachment.queuedChunks.push(payload);
+        queueHydrationChunk(attachment, payload);
         continue;
       }
       sendTerminalEvent(contentsId, {
@@ -453,6 +503,148 @@ export function createTerminalBridge(
         payload
       });
     }
+  }
+
+  function chunkStartSequence(payload: SurfaceChunkPayload): number {
+    return payload.fromSequence ?? payload.sequence;
+  }
+
+  function trimHydrationChunkAfterSnapshot(
+    payload: SurfaceChunkPayload,
+    snapshotSequence: number
+  ): SurfaceChunkPayload | null {
+    if (payload.sequence <= snapshotSequence) {
+      return null;
+    }
+    if (!payload.segments || payload.segments.length === 0) {
+      return payload;
+    }
+
+    let trimOffset = 0;
+    const segments: SurfaceChunkSegment[] = [];
+    for (const segment of payload.segments) {
+      if (segment.sequence > snapshotSequence) {
+        segments.push(segment);
+        continue;
+      }
+      trimOffset += segment.length;
+    }
+    if (segments.length === 0) {
+      return null;
+    }
+    if (segments.length === payload.segments.length) {
+      return payload;
+    }
+
+    return {
+      surfaceId: payload.surfaceId,
+      sessionId: payload.sessionId,
+      fromSequence: segments[0].sequence,
+      sequence: segments[segments.length - 1].sequence,
+      chunk: payload.chunk.slice(trimOffset),
+      segments
+    };
+  }
+
+  function recordDegradedAttachRecovery({
+    contentsId,
+    surfaceId,
+    recoverySnapshots,
+    snapshotSequence,
+    overflowedThroughSequence
+  }: {
+    contentsId: number;
+    surfaceId: Id;
+    recoverySnapshots: number;
+    snapshotSequence: number | null;
+    overflowedThroughSequence: number | null;
+  }): void {
+    const details = {
+      contentsId,
+      surfaceId,
+      recoverySnapshots,
+      maxRecoverySnapshots: ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS,
+      snapshotSequence,
+      overflowedThroughSequence,
+      policy: "fresh-snapshot-then-ready" as const
+    };
+    logDiagnostics("main.terminal.attach.queue.degraded", details);
+    options.profileRecorder?.record({
+      source: "main",
+      name: "terminal.attach.queue.degraded",
+      at: profileNowMs(),
+      details
+    });
+  }
+
+  function queueHydrationChunk(
+    attachment: SurfaceAttachmentState,
+    payload: SurfaceChunkPayload
+  ): void {
+    if (attachment.queueOverflowed) {
+      attachment.overflowedThroughSequence = Math.max(
+        attachment.overflowedThroughSequence ?? 0,
+        payload.sequence
+      );
+      return;
+    }
+    const chunkBytes = Buffer.byteLength(payload.chunk, "utf8");
+    const nextQueuedBytes = attachment.queuedBytes + chunkBytes;
+    if (
+      attachment.queuedChunks.length + 1 > ATTACH_QUEUE_MAX_CHUNKS ||
+      nextQueuedBytes > ATTACH_QUEUE_MAX_BYTES
+    ) {
+      attachment.overflowedThroughSequence = Math.max(
+        maxQueuedChunkSequence(attachment.queuedChunks),
+        payload.sequence
+      );
+      attachment.queuedChunks = [];
+      attachment.queuedBytes = 0;
+      attachment.queueOverflowed = true;
+      return;
+    }
+    attachment.queuedChunks.push(payload);
+    attachment.queuedBytes = nextQueuedBytes;
+  }
+
+  function shouldRecoverHydrationOverflow(
+    attachment: SurfaceAttachmentState,
+    snapshot: SurfaceSnapshotPayload | null
+  ): boolean {
+    if (!snapshot || attachment.pendingExit || !attachment.queueOverflowed) {
+      return false;
+    }
+    const overflowedThroughSequence = attachment.overflowedThroughSequence;
+    return (
+      overflowedThroughSequence !== null &&
+      snapshot.sequence < overflowedThroughSequence
+    );
+  }
+
+  function hydrationOverflowCoveredBySnapshot(
+    attachment: SurfaceAttachmentState,
+    snapshot: SurfaceSnapshotPayload | null
+  ): boolean {
+    const overflowedThroughSequence = attachment.overflowedThroughSequence;
+    return (
+      snapshot !== null &&
+      overflowedThroughSequence !== null &&
+      snapshot.sequence >= overflowedThroughSequence
+    );
+  }
+
+  function clearHydrationOverflow(attachment: SurfaceAttachmentState): void {
+    attachment.queueOverflowed = false;
+    attachment.overflowedThroughSequence = null;
+    attachment.queuedChunks = [];
+    attachment.queuedBytes = 0;
+  }
+
+  function maxQueuedChunkSequence(chunks: SurfaceChunkPayload[]): number {
+    return chunks.reduce(
+      (maxSequence, payload) => Math.max(maxSequence, payload.sequence),
+      0
+    );
   }
 
   function forwardTerminalExit(payload: SurfaceExitPayload): void {

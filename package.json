@@ -19,7 +19,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @kmux/desktop",
+    "dev": "node scripts/dev.mjs",
     "clean:desktop": "rm -rf apps/desktop/dist apps/desktop/out apps/desktop/release",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && npm run build:pty-host && npm run build:cli && npm run build --workspace @kmux/desktop",
