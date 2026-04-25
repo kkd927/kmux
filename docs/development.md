@@ -22,6 +22,17 @@ Start the desktop app in development mode:
 npm run dev
 ```
 
+The dev launcher uses a repo-local profile by default:
+
+```text
+.kmux/dev/config
+.kmux/dev/runtime
+```
+
+This keeps local development from reading or writing the installed app's
+`~/.config/kmux` workspace snapshot. Override `KMUX_CONFIG_DIR` or
+`KMUX_RUNTIME_DIR` when you intentionally want a different profile.
+
 Build the PTY host, CLI, and desktop app:
 
 ```bash
@@ -38,7 +49,7 @@ This now rebuilds `node-pty` only. Persistence uses JSON file stores under the k
 
 ## Key Scripts
 
-- `npm run dev`: start the desktop app in development mode
+- `npm run dev`: start the desktop app in development mode with an isolated local profile
 - `npm run build`: build the PTY host, CLI, and desktop app
 - `npm run test`: run Vitest
 - `npm run lint`: run ESLint

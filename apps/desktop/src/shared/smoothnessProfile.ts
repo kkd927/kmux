@@ -14,6 +14,7 @@ export type SmoothnessProfileEventName =
   | "terminal.ipc.bucket"
   | "terminal.pty.bucket"
   | "terminal.attach.queue"
+  | "terminal.attach.queue.degraded"
   | "terminal.fit"
   | "terminal.resize.request"
   | "terminal.resize.ack"

@@ -140,11 +140,18 @@ export interface SurfaceSnapshotOptions {
   timeoutMs?: number;
 }
 
+export interface SurfaceChunkSegment {
+  sequence: number;
+  length: number;
+}
+
 export interface SurfaceChunkPayload {
   surfaceId: Id;
   sessionId: Id;
+  fromSequence?: number;
   sequence: number;
   chunk: string;
+  segments?: SurfaceChunkSegment[];
 }
 
 export interface SurfaceExitPayload {
