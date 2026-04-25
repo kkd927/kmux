@@ -37,6 +37,7 @@ import type {
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
+import type { MetadataRefreshOptions } from "./metadataRuntime";
 import { logDiagnostics } from "../shared/diagnostics";
 import {
   type FontInventoryProvider,
@@ -56,7 +57,12 @@ export interface AppRuntimeOptions {
   windowStateStore: WindowStateFileStore;
   settingsStore: SettingsFileStore;
   defaultShellPath: string;
-  refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
+  refreshMetadata: (
+    surfaceId: Id,
+    cwd?: string,
+    pid?: number,
+    refreshOptions?: MetadataRefreshOptions
+  ) => void;
   persistWindowState: (window: BrowserWindow) => void;
   fontInventoryProvider?: FontInventoryProvider;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
@@ -364,7 +370,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           options.refreshMetadata(
             effect.surfaceId ?? "",
             effect.cwd,
-            effect.pid
+            effect.pid,
+            effect.branchOnly ? { branchOnly: true } : undefined
           );
           break;
         case "notify.desktop":
