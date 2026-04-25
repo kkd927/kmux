@@ -209,8 +209,9 @@ describe("updater controller", () => {
     });
   });
 
-  it("keeps inline download completion ready for an explicit restart click", async () => {
+  it("prompts to install immediately after an inline download completes", async () => {
     const harness = createHarness();
+    harness.dialogs.promptForInstall.mockResolvedValue(true);
 
     await harness.controller.checkForUpdates("background");
     harness.updater.emit("update-available", { version: "0.1.12" });
@@ -221,7 +222,8 @@ describe("updater controller", () => {
     await Promise.resolve();
 
     expect(harness.updater.downloadUpdate).toHaveBeenCalledTimes(1);
-    expect(harness.dialogs.promptForInstall).not.toHaveBeenCalled();
+    expect(harness.dialogs.promptForInstall).toHaveBeenCalledWith("0.1.12");
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
     expect(harness.notifier.notifyUpdateDownloaded).not.toHaveBeenCalled();
     expect(harness.controller.getState()).toEqual({
       status: "downloaded",

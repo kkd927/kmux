@@ -208,7 +208,7 @@ export function createUpdaterController(
         status: "downloaded",
         version
       });
-      if (source === "foreground") {
+      if (source === "foreground" || source === "inline") {
         void promptForInstall(version);
         return;
       }
