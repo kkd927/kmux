@@ -13,16 +13,21 @@ const branchCache = new Map<
 >();
 const portsCache = new Map<number, { value: number[]; expiresAt: number }>();
 
+export interface ResolveGitBranchOptions {
+  bypassCache?: boolean;
+}
+
 export async function resolveGitBranch(
   cwd?: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveGitBranchOptions = {}
 ): Promise<string | null> {
   if (!cwd) {
     return null;
   }
 
   const cached = branchCache.get(cwd);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!options.bypassCache && cached && cached.expiresAt > Date.now()) {
     return cached.value;
   }
 

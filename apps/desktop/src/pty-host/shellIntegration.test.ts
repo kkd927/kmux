@@ -132,6 +132,7 @@ describe("shell integration launch preparation", () => {
     expect(integrationContents).toContain(
       "add-zsh-hook precmd _kmux_emit_osc7"
     );
+    expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).toContain("_kmux_prepend_agent_bin");
     expect(integrationContents).toContain('local agent_bin="${KMUX_AGENT_BIN_DIR:-}"');
     expect(integrationContents).toContain("typeset -g __KMUX_OSC7_INSTALLED=1");
@@ -264,6 +265,9 @@ describe("shell integration launch preparation", () => {
     expect(readFileSync(integrationScript ?? "", "utf8")).toContain(
       '_kmux_prepend_agent_bin'
     );
+    expect(readFileSync(integrationScript ?? "", "utf8")).not.toContain(
+      "__KMUX_LAST_OSC7_PWD"
+    );
   });
 
   it("wraps fish launches with a temporary XDG config directory", () => {
@@ -307,6 +311,7 @@ describe("shell integration launch preparation", () => {
       "function __kmux_emit_osc7 --on-event fish_prompt"
     );
     expect(integrationContents).toContain("set -g __KMUX_OSC7_INSTALLED 1");
+    expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).not.toContain("set -gx __KMUX_OSC7");
   });
 

@@ -11,11 +11,11 @@ export function parseOsc7Cwd(data: string): string | undefined {
 }
 
 export function resolveOsc7Cwd(
-  currentCwd: string | undefined,
+  _currentCwd: string | undefined,
   data: string
 ): string | undefined {
   const nextCwd = parseOsc7Cwd(data);
-  if (!nextCwd || nextCwd === currentCwd) {
+  if (!nextCwd) {
     return undefined;
   }
   return nextCwd;

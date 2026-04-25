@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -20,6 +20,28 @@ test.skip(
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function createGitFixtureRepo(root: string): string {
+  const repoDir = join(root, "branch-refresh-repo");
+  mkdirSync(repoDir, { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], { cwd: repoDir, stdio: "ignore" });
+  writeFileSync(join(repoDir, "README.md"), "kmux\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=kmux",
+      "-c",
+      "user.email=kmux@example.invalid",
+      "commit",
+      "-m",
+      "initial"
+    ],
+    { cwd: repoDir, stdio: "ignore" }
+  );
+  return repoDir;
 }
 
 function resolveOptionalShellPath(shellName: string): string | undefined {
@@ -62,12 +84,13 @@ for (const shellCase of shellCases) {
     );
 
     try {
-      const { page, workspaceRoot, sandbox } = launched;
+      const { page, sandbox } = launched;
+      const repoDir = createGitFixtureRepo(sandbox.profileRoot);
       const expectedBranch = execFileSync(
         "git",
         ["rev-parse", "--abbrev-ref", "HEAD"],
         {
-          cwd: workspaceRoot,
+          cwd: repoDir,
           encoding: "utf8"
         }
       ).trim();
@@ -97,14 +120,14 @@ for (const shellCase of shellCases) {
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
         {
           surfaceId: activeSurfaceId,
-          text: `cd ${shellQuote(workspaceRoot)}; pwd\r`
+          text: `cd ${shellQuote(repoDir)}; pwd\r`
         }
       );
 
       await waitForSurfaceSnapshotContains(
         page,
         activeSurfaceId,
-        workspaceRoot,
+        repoDir,
         10_000
       );
 
@@ -116,8 +139,8 @@ for (const shellCase of shellCases) {
           );
           return (
             view.activeWorkspace.surfaces[activeSurfaceId]?.cwd ===
-              workspaceRoot &&
-            row?.cwd === workspaceRoot &&
+              repoDir &&
+            row?.cwd === repoDir &&
             row?.branch === expectedBranch
           );
         },
@@ -126,13 +149,47 @@ for (const shellCase of shellCases) {
       );
 
       expect(repoView.activeWorkspace.surfaces[activeSurfaceId]?.cwd).toBe(
-        workspaceRoot
+        repoDir
       );
       expect(
         repoView.workspaceRows.find(
           (entry) => entry.workspaceId === workspaceId
         )?.branch
       ).toBe(expectedBranch);
+
+      const switchedBranch = "kmux-e2e-branch-refresh";
+      await page.evaluate(
+        ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
+        {
+          surfaceId: activeSurfaceId,
+          text:
+            `git switch -c ${shellQuote(switchedBranch)}; ` +
+            "printf '__KMUX_BRANCH_SWITCHED__\\n'\r"
+        }
+      );
+
+      await waitForSurfaceSnapshotContains(
+        page,
+        activeSurfaceId,
+        "__KMUX_BRANCH_SWITCHED__",
+        10_000
+      );
+
+      await waitForView(
+        page,
+        (view) => {
+          const row = view.workspaceRows.find(
+            (entry) => entry.workspaceId === workspaceId
+          );
+          return (
+            view.activeWorkspace.surfaces[activeSurfaceId]?.cwd === repoDir &&
+            row?.cwd === repoDir &&
+            row?.branch === switchedBranch
+          );
+        },
+        "sidebar branch should refresh after same-cwd git branch switch",
+        10_000
+      );
 
       await page.evaluate(
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),

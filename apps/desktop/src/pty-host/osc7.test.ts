@@ -9,10 +9,13 @@ describe("OSC 7 cwd parsing", () => {
     );
   });
 
-  it("ignores malformed and duplicate cwd payloads", () => {
+  it("ignores malformed cwd payloads", () => {
     expect(parseOsc7Cwd("not-a-url")).toBeUndefined();
+  });
+
+  it("preserves duplicate cwd payloads as prompt ticks", () => {
     expect(resolveOsc7Cwd("/tmp/project", "file://localhost/tmp/project")).toBe(
-      undefined
+      "/tmp/project"
     );
   });
 });

@@ -64,7 +64,7 @@ function createRuntime(
       save: vi.fn()
     },
     defaultShellPath: "/bin/zsh",
-    refreshMetadata: vi.fn(),
+    refreshMetadata: options.refreshMetadata ?? vi.fn(),
     persistWindowState: vi.fn(),
     profileRecorder: options.profileRecorder
   });
@@ -104,6 +104,26 @@ beforeEach(() => {
 });
 
 describe("app runtime bell sound effects", () => {
+  it("forwards branch-only metadata refresh effects", () => {
+    const refreshMetadata = vi.fn();
+    const runtime = createRuntime(false, { refreshMetadata });
+
+    runtime.runEffects([
+      {
+        type: "metadata.refresh",
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1",
+        pid: 123,
+        cwd: "/tmp/kmux",
+        branchOnly: true
+      } as never
+    ]);
+
+    expect(refreshMetadata).toHaveBeenCalledWith("surface-1", "/tmp/kmux", 123, {
+      branchOnly: true
+    });
+  });
+
   it("plays a bell sound when enabled", () => {
     createRuntime(true).runEffects([{ type: "bell.sound" }]);
 
