@@ -349,11 +349,81 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  position: relative;
   background: var(--panel-bg);
   padding: 8px 0 8px 10px;
   font-family: var(--kmux-terminal-font-family);
   font-size: var(--kmux-terminal-font-size);
   line-height: var(--kmux-terminal-line-height);
+}
+
+.terminal::before {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid var(--focus-ring);
+  background: rgba(56, 139, 253, 0.14);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(56, 139, 253, 0.2);
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.terminal[data-surface-drop-direction="left"]::before,
+.terminal[data-surface-drop-direction="right"]::before {
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  opacity: 1;
+}
+
+.terminal[data-surface-drop-direction="left"]::before {
+  left: 0;
+}
+
+.terminal[data-surface-drop-direction="right"]::before {
+  right: 0;
+}
+
+.terminal[data-surface-drop-direction="down"]::before {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+  opacity: 1;
+}
+
+.surfaceDropPrompt {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 21;
+  transform: translateX(-50%);
+  max-width: min(80%, 360px);
+  padding: 6px 10px;
+  border: 1px solid rgba(121, 192, 255, 0.42);
+  border-radius: 4px;
+  background: rgba(13, 17, 23, 0.9);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  color: var(--text-primary);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+  letter-spacing: 0;
+  overflow: hidden;
+  pointer-events: none;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .terminalViewport {

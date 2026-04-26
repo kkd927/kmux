@@ -75,6 +75,29 @@ describe("socket rpc parsing", () => {
     ).toThrow(ZodError);
   });
 
+  it("accepts surface-scoped split params so moved sessions can resolve their current pane", () => {
+    expect(
+      parseSocketRequest(
+        "surface.split",
+        {
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          direction: "right"
+        },
+        "rpc_surface_split"
+      )
+    ).toEqual({
+      id: "rpc_surface_split",
+      method: "surface.split",
+      params: {
+        surfaceId: "surface_1",
+        sessionId: "session_1",
+        direction: "right"
+      },
+      authToken: undefined
+    });
+  });
+
   it("returns typed params without transport-only auth fields", () => {
     expect(
       parseSocketRequest(

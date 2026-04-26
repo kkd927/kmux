@@ -117,6 +117,125 @@ describe("core reducer", () => {
     expect(paneIds).toHaveLength(2);
   });
 
+  it("moves a surface into a right split without recreating its session", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const originalSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId, title: "runner" });
+    const movedSurfaceId = state.panes[paneId].activeSurfaceId;
+    const movedSessionId = state.surfaces[movedSurfaceId].sessionId;
+
+    const effects = applyAction(state, {
+      type: "surface.moveToSplit",
+      surfaceId: movedSurfaceId,
+      targetPaneId: paneId,
+      direction: "right"
+    });
+
+    const movedPaneId = state.surfaces[movedSurfaceId].paneId;
+    const paneIds = listPaneIds(state.workspaces[workspaceId]);
+
+    expect(effects).toEqual([{ type: "persist" }]);
+    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.spawn" }));
+    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.close" }));
+    expect(paneIds).toHaveLength(2);
+    expect(movedPaneId).not.toBe(paneId);
+    expect(state.panes[paneId].surfaceIds).toEqual([originalSurfaceId]);
+    expect(state.panes[movedPaneId].surfaceIds).toEqual([movedSurfaceId]);
+    expect(state.surfaces[movedSurfaceId].sessionId).toBe(movedSessionId);
+    expect(state.sessions[movedSessionId].surfaceId).toBe(movedSurfaceId);
+    expect(state.workspaces[workspaceId].activePaneId).toBe(movedPaneId);
+  });
+
+  it("collapses the source pane when moving its only surface to another split", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const targetPaneId = state.workspaces[workspaceId].activePaneId;
+
+    applyAction(state, {
+      type: "pane.split",
+      paneId: targetPaneId,
+      direction: "right"
+    });
+    const sourcePaneId = state.workspaces[workspaceId].activePaneId;
+    const movedSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+    const movedSessionId = state.surfaces[movedSurfaceId].sessionId;
+
+    const effects = applyAction(state, {
+      type: "surface.moveToSplit",
+      surfaceId: movedSurfaceId,
+      targetPaneId,
+      direction: "down"
+    });
+
+    const movedPaneId = state.surfaces[movedSurfaceId].paneId;
+    const paneIds = listPaneIds(state.workspaces[workspaceId]);
+
+    expect(effects).toEqual([{ type: "persist" }]);
+    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.spawn" }));
+    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.close" }));
+    expect(state.panes[sourcePaneId]).toBeUndefined();
+    expect(paneIds).toHaveLength(2);
+    expect(paneIds).toContain(targetPaneId);
+    expect(paneIds).toContain(movedPaneId);
+    expect(movedPaneId).not.toBe(sourcePaneId);
+    expect(state.panes[movedPaneId].activeSurfaceId).toBe(movedSurfaceId);
+    expect(state.surfaces[movedSurfaceId].sessionId).toBe(movedSessionId);
+    expect(state.sessions[movedSessionId].surfaceId).toBe(movedSurfaceId);
+    expect(state.workspaces[workspaceId].activePaneId).toBe(movedPaneId);
+  });
+
+  it("clears moved surface unread notifications when the split move focuses it", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+
+    applyAction(state, { type: "surface.create", paneId, title: "alerts" });
+    const movedSurfaceId = state.panes[paneId].activeSurfaceId;
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId: movedSurfaceId,
+      title: "hidden alert",
+      message: "move should focus and clear this"
+    });
+
+    expect(state.notifications).toHaveLength(1);
+    expect(state.surfaces[movedSurfaceId].unreadCount).toBe(1);
+
+    applyAction(state, {
+      type: "surface.moveToSplit",
+      surfaceId: movedSurfaceId,
+      targetPaneId: paneId,
+      direction: "right"
+    });
+
+    expect(state.notifications).toHaveLength(0);
+    expect(state.surfaces[movedSurfaceId].unreadCount).toBe(0);
+    expect(state.surfaces[movedSurfaceId].attention).toBe(false);
+  });
+
+  it("ignores a self split move for a pane with only one surface", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const before = structuredClone(state);
+
+    const effects = applyAction(state, {
+      type: "surface.moveToSplit",
+      surfaceId,
+      targetPaneId: paneId,
+      direction: "right"
+    });
+
+    expect(effects).toEqual([]);
+    expect(state).toEqual(before);
+  });
+
   it("drops deprecated pane zoom state from restored snapshots", () => {
     const state = createInitialState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;

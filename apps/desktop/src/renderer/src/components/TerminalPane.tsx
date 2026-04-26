@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -38,6 +38,16 @@ import {
   recordRendererSmoothnessProfileEvent
 } from "../smoothnessProfile";
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
+import {
+  canDropSurfaceTabOnPane,
+  decodeSurfaceTabDragPayload,
+  encodeSurfaceTabDragPayload,
+  resolveSurfaceTabDropDirection,
+  SURFACE_TAB_DRAG_MIME,
+  SURFACE_TAB_DROP_PROMPT,
+  type SurfaceTabDragPayload,
+  type SurfaceTabDropDirection
+} from "../surfaceTabDrag";
 
 interface TerminalPaneProps {
   paneId: string;
@@ -49,11 +59,19 @@ interface TerminalPaneProps {
   terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
   showSearch: boolean;
+  draggedSurfaceTab: SurfaceTabDragPayload | null;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
   onCreateSurface: (paneId: string) => void;
   onCloseSurface: (surfaceId: string) => void;
   onCloseOthers: (surfaceId: string) => void;
+  onMoveSurfaceToSplit: (
+    surfaceId: string,
+    targetPaneId: string,
+    direction: SurfaceTabDropDirection
+  ) => void;
+  onSurfaceTabDragStart: (payload: SurfaceTabDragPayload) => void;
+  onSurfaceTabDragEnd: () => void;
   onSplitRight: (paneId: string) => void;
   onSplitDown: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
@@ -105,6 +123,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [copyMode, setCopyMode] = useState(false);
   const [runtimeGeneration, setRuntimeGeneration] = useState(0);
+  const [surfaceDropDirection, setSurfaceDropDirection] =
+    useState<SurfaceTabDropDirection | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -940,6 +960,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [activeSurface.id]);
 
   useEffect(() => {
+    if (!props.draggedSurfaceTab) {
+      setSurfaceDropDirection(null);
+    }
+  }, [props.draggedSurfaceTab]);
+
+  useEffect(() => {
     if (!props.focused || props.showSearch) {
       return;
     }
@@ -962,6 +988,78 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     activeSurface.ports.length ||
     activeSurface.attention
   );
+  const showSurfaceDropPrompt = Boolean(
+    props.draggedSurfaceTab &&
+      canDropSurfaceTabOnPane(
+        props.draggedSurfaceTab,
+        props.paneId,
+        props.surfaces.length
+      )
+  );
+
+  const resolveDropDirection = (
+    event: DragEvent<HTMLDivElement>
+  ): SurfaceTabDropDirection | null =>
+    resolveSurfaceTabDropDirection(
+      event.currentTarget.getBoundingClientRect(),
+      event.clientX,
+      event.clientY
+    );
+
+  const currentDropPayload = (
+    event: DragEvent<HTMLDivElement>
+  ): SurfaceTabDragPayload | null =>
+    props.draggedSurfaceTab ??
+    decodeSurfaceTabDragPayload(
+      event.dataTransfer.getData(SURFACE_TAB_DRAG_MIME)
+    );
+
+  const handleSurfaceDragOver = (event: DragEvent<HTMLDivElement>): void => {
+    const payload = props.draggedSurfaceTab;
+    if (!payload) {
+      return;
+    }
+    const direction = resolveDropDirection(event);
+    if (
+      !direction ||
+      !canDropSurfaceTabOnPane(payload, props.paneId, props.surfaces.length)
+    ) {
+      setSurfaceDropDirection(null);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setSurfaceDropDirection((current) =>
+      current === direction ? current : direction
+    );
+  };
+
+  const handleSurfaceDragLeave = (event: DragEvent<HTMLDivElement>): void => {
+    const relatedTarget = event.relatedTarget;
+    if (
+      relatedTarget instanceof Node &&
+      event.currentTarget.contains(relatedTarget)
+    ) {
+      return;
+    }
+    setSurfaceDropDirection(null);
+  };
+
+  const handleSurfaceDrop = (event: DragEvent<HTMLDivElement>): void => {
+    const payload = currentDropPayload(event);
+    const direction = resolveDropDirection(event);
+    setSurfaceDropDirection(null);
+    props.onSurfaceTabDragEnd();
+    if (
+      !payload ||
+      !direction ||
+      !canDropSurfaceTabOnPane(payload, props.paneId, props.surfaces.length)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    props.onMoveSurfaceToSplit(payload.surfaceId, props.paneId, direction);
+  };
 
   return (
     <div
@@ -1003,6 +1101,24 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                   aria-selected={surface.id === props.activeSurfaceId}
                   aria-label={`Focus surface ${surface.title}`}
                   onClick={() => props.onFocusSurface(surface.id)}
+                  draggable
+                  onDragStart={(event) => {
+                    const payload = {
+                      surfaceId: surface.id,
+                      sourcePaneId: props.paneId
+                    };
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                      SURFACE_TAB_DRAG_MIME,
+                      encodeSurfaceTabDragPayload(payload)
+                    );
+                    event.dataTransfer.setData("text/plain", surface.id);
+                    props.onSurfaceTabDragStart(payload);
+                  }}
+                  onDragEnd={() => {
+                    setSurfaceDropDirection(null);
+                    props.onSurfaceTabDragEnd();
+                  }}
                   title={surface.cwd ?? surface.title}
                 >
                   <span className={styles.tabIcon}>
@@ -1149,7 +1265,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           ))}
         </div>
       ) : null}
-      <div className={styles.terminal}>
+      <div
+        className={styles.terminal}
+        data-surface-drop-direction={surfaceDropDirection ?? undefined}
+        onDragOver={handleSurfaceDragOver}
+        onDragLeave={handleSurfaceDragLeave}
+        onDrop={handleSurfaceDrop}
+      >
+        {showSurfaceDropPrompt ? (
+          <div className={styles.surfaceDropPrompt} role="status">
+            {SURFACE_TAB_DROP_PROMPT}
+          </div>
+        ) : null}
         <div
           ref={containerRef}
           className={styles.terminalViewport}
