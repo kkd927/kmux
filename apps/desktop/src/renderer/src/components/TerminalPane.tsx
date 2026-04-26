@@ -138,6 +138,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     dispose(): void;
   } | null>(null);
   const resizeGenerationRef = useRef(0);
+  // The xterm instance is pane-scoped, but PTY size is surface-scoped.
+  const surfaceResizeDimensionsRef = useRef(
+    new Map<string, { cols: number; rows: number }>()
+  );
   const writeProfileBucketRef = useRef(
     createSmoothnessProfileBucket<{
       paneId: string;
@@ -279,6 +283,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const fitStartedAt = performance.now();
     const dims = fit.proposeDimensions();
     const fitDurationMs = performance.now() - fitStartedAt;
+    const syncedSurfaceDimensions = currentSurface
+      ? surfaceResizeDimensionsRef.current.get(currentSurface.id)
+      : undefined;
+    const terminalSizeChanged = Boolean(
+      dims &&
+        Number.isFinite(dims.cols) &&
+        Number.isFinite(dims.rows) &&
+        dims.cols > 0 &&
+        dims.rows > 0 &&
+        (dims.cols !== previousCols || dims.rows !== previousRows)
+    );
+    const surfaceSizeSynced = Boolean(
+      currentSurface &&
+        dims &&
+        syncedSurfaceDimensions?.cols === dims.cols &&
+        syncedSurfaceDimensions?.rows === dims.rows
+    );
     const validDims = Boolean(
       dims &&
         Number.isFinite(dims.cols) &&
@@ -294,9 +315,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       cols: dims?.cols ?? null,
       rows: dims?.rows ?? null,
       valid: validDims,
-      changed: validDims
-        ? dims!.cols !== previousCols || dims!.rows !== previousRows
-        : false,
+      changed: validDims ? terminalSizeChanged : false,
+      surfaceSynced: validDims ? surfaceSizeSynced : false,
       durationMs: fitDurationMs
     });
     if (
@@ -308,11 +328,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) {
       return;
     }
-    if (dims.cols === terminal.cols && dims.rows === terminal.rows) {
+    if (!terminalSizeChanged && (!currentSurface || surfaceSizeSynced)) {
       syncTerminalMetrics(terminal);
       return;
     }
     const generation = ++resizeGenerationRef.current;
+    let resizedSurfaceId: string | null = null;
     if (currentSurface) {
       const requestStartedAt = performance.now();
       recordRendererSmoothnessProfileEvent("terminal.resize.request", {
@@ -331,6 +352,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           dims.cols,
           dims.rows
         );
+        resizedSurfaceId = currentSurface.id;
       } catch {
         failed = true;
         // ignore; a superseding resize or teardown is already in flight
@@ -353,6 +375,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       terminalRef.current !== terminal
     ) {
       return;
+    }
+    if (resizedSurfaceId) {
+      surfaceResizeDimensionsRef.current.set(resizedSurfaceId, {
+        cols: dims.cols,
+        rows: dims.rows
+      });
     }
     if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
       const applyStartedAt = performance.now();
