@@ -1,11 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   createDefaultSettings,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY
 } from "@kmux/core";
+import type { SurfaceSnapshotPayload } from "@kmux/proto";
 
 import {
   closeKmuxApp,
@@ -21,6 +22,35 @@ import {
   waitForSurfaceSnapshotContains,
   waitForView
 } from "./helpers";
+
+async function waitForSurfaceSnapshotMatching(
+  page: Page,
+  surfaceId: string,
+  predicate: (snapshot: SurfaceSnapshotPayload) => boolean,
+  message: string,
+  timeoutMs = 5000
+): Promise<SurfaceSnapshotPayload> {
+  const startTime = Date.now();
+  let lastSnapshot: SurfaceSnapshotPayload | null = null;
+
+  while (Date.now() - startTime < timeoutMs) {
+    const snapshot = await getSurfaceSnapshot(page, surfaceId, {
+      settleForMs: 100,
+      timeoutMs: 2000
+    });
+    if (snapshot && predicate(snapshot)) {
+      return snapshot;
+    }
+    lastSnapshot = snapshot;
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(
+    `${message}; timeout=${timeoutMs}ms; lastSnapshot=${JSON.stringify(
+      lastSnapshot
+    )}`
+  );
+}
 
 test("global workspace create shortcut is ignored when a settings input is focused", async () => {
   const launched = await launchKmux("kmux-e2e-settings-shortcut-");
@@ -781,6 +811,53 @@ test("terminal fit target stays separate from the padded shell frame", async () 
     expect(geometry?.framePaddingRight).toBe("0px");
     expect(geometry?.fitHeight).toBeGreaterThan(0);
     expect(geometry?.frameHeight).toBeGreaterThan(geometry?.fitHeight ?? 0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("new tab created from pane controls syncs the pty size to the fitted terminal", async () => {
+  const launched = await launchKmux("kmux-e2e-new-tab-fit-size-");
+
+  try {
+    const page = launched.page;
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const originalSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+
+    const fittedSnapshot = await waitForSurfaceSnapshotMatching(
+      page,
+      originalSurfaceId,
+      (snapshot) => snapshot.cols > 120 && snapshot.rows > 30,
+      "initial surface should resize beyond the pty spawn default"
+    );
+
+    await page.getByLabel("Create new tab").click();
+
+    const withNewTab = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[activePaneId].surfaceIds.length === 2,
+      "pane control should create a second surface"
+    );
+    const newSurfaceId =
+      withNewTab.activeWorkspace.panes[activePaneId].activeSurfaceId;
+    expect(newSurfaceId).not.toBe(originalSurfaceId);
+
+    const newTabSnapshot = await waitForSurfaceSnapshotMatching(
+      page,
+      newSurfaceId,
+      (snapshot) =>
+        snapshot.cols === fittedSnapshot.cols &&
+        snapshot.rows === fittedSnapshot.rows,
+      "new surface tab should inherit the pane's fitted pty size"
+    );
+
+    expect(newTabSnapshot.cols).toBe(fittedSnapshot.cols);
+    expect(newTabSnapshot.rows).toBe(fittedSnapshot.rows);
   } finally {
     await closeKmux(launched);
   }
