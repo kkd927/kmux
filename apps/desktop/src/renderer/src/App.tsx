@@ -46,6 +46,10 @@ import {
   runWorkspaceContextAction as runSharedWorkspaceContextAction,
   type WorkspaceContextAction
 } from "../../shared/workspaceContextMenu";
+import type {
+  SurfaceTabDragPayload,
+  SurfaceTabDropDirection
+} from "./surfaceTabDrag";
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
@@ -114,6 +118,8 @@ export function App(): JSX.Element {
   const [dropPosition, setDropPosition] = useState<"before" | "after" | null>(
     null
   );
+  const [draggedSurfaceTab, setDraggedSurfaceTab] =
+    useState<SurfaceTabDragPayload | null>(null);
   const [showWorkspaceShortcutHints, setShowWorkspaceShortcutHints] =
     useState(false);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
@@ -166,6 +172,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     void window.kmux.setUsageDashboardOpen(usageDashboardOpen);
   }, [usageDashboardOpen]);
+
+  useEffect(() => {
+    setDraggedSurfaceTab(null);
+  }, [activeWorkspacePaneTree?.id]);
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {
@@ -876,6 +886,7 @@ export function App(): JSX.Element {
             terminalTheme={resolvedTerminalTheme}
             colorTheme={resolvedColorTheme}
             searchSurfaceId={searchSurfaceId}
+            draggedSurfaceTab={draggedSurfaceTab}
             onSetSplitRatio={(splitNodeId, ratio) =>
               void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
             }
@@ -892,6 +903,20 @@ export function App(): JSX.Element {
             onCloseOthers={(surfaceId) =>
               void dispatch({ type: "surface.closeOthers", surfaceId })
             }
+            onMoveSurfaceToSplit={(
+              surfaceId: string,
+              targetPaneId: string,
+              direction: SurfaceTabDropDirection
+            ) =>
+              void dispatch({
+                type: "surface.moveToSplit",
+                surfaceId,
+                targetPaneId,
+                direction
+              })
+            }
+            onSurfaceTabDragStart={setDraggedSurfaceTab}
+            onSurfaceTabDragEnd={() => setDraggedSurfaceTab(null)}
             onSplitRight={(paneId) =>
               void dispatch({ type: "pane.split", paneId, direction: "right" })
             }

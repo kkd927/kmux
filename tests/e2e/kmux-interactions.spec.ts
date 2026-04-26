@@ -9,9 +9,71 @@ import {
   waitForSurfaceSnapshotContains,
   waitForView
 } from "./helpers";
+import type { TestShellView } from "./helpers";
+import { SURFACE_TAB_DROP_PROMPT } from "../../apps/desktop/src/renderer/src/surfaceTabDrag";
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function paneIdForSurface(
+  view: TestShellView,
+  surfaceId: string
+): string | undefined {
+  return Object.entries(view.activeWorkspace.panes).find(([, pane]) =>
+    pane.surfaceIds.includes(surfaceId)
+  )?.[0];
+}
+
+async function expectDropOverlayHalfSize(
+  page: Awaited<ReturnType<typeof launchKmux>>["page"],
+  surfaceId: string,
+  direction: "left" | "right" | "down"
+): Promise<void> {
+  const ratio = await page.evaluate(
+    ({ targetSurfaceId, dropDirection }) => {
+      const viewport = document.querySelector(
+        `[data-testid="terminal-${targetSurfaceId}"]`
+      );
+      const terminal = viewport?.parentElement;
+      if (!(terminal instanceof HTMLElement)) {
+        throw new Error("terminal drop target should exist");
+      }
+      terminal.setAttribute("data-surface-drop-direction", dropDirection);
+      const style = getComputedStyle(terminal, "::before");
+      const rect = terminal.getBoundingClientRect();
+      const size =
+        dropDirection === "down"
+          ? Number.parseFloat(style.height)
+          : Number.parseFloat(style.width);
+      terminal.removeAttribute("data-surface-drop-direction");
+      return size / (dropDirection === "down" ? rect.height : rect.width);
+    },
+    { targetSurfaceId: surfaceId, dropDirection: direction }
+  );
+
+  expect(ratio).toBeGreaterThan(0.48);
+  expect(ratio).toBeLessThan(0.52);
+}
+
+async function expectPanePairSplitEvenly(
+  page: Awaited<ReturnType<typeof launchKmux>>["page"],
+  firstPaneId: string,
+  secondPaneId: string,
+  axis: "horizontal" | "vertical"
+): Promise<void> {
+  const [firstBox, secondBox] = await Promise.all([
+    page.locator(`[data-pane-id="${firstPaneId}"]`).boundingBox(),
+    page.locator(`[data-pane-id="${secondPaneId}"]`).boundingBox()
+  ]);
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  const firstSize = axis === "horizontal" ? firstBox!.width : firstBox!.height;
+  const secondSize =
+    axis === "horizontal" ? secondBox!.width : secondBox!.height;
+  const ratio = firstSize / (firstSize + secondSize);
+  expect(ratio).toBeGreaterThan(0.48);
+  expect(ratio).toBeLessThan(0.52);
 }
 
 test("mouse resize controls update pane layout like a real user interaction", async () => {
@@ -76,6 +138,140 @@ test("mouse resize controls update pane layout like a real user interaction", as
     expect(Math.abs(secondDelta)).toBeGreaterThan(60);
     expect(Math.sign(firstDelta)).toBe(-Math.sign(secondDelta));
     await expect(page.getByLabel("Zoom active pane")).toHaveCount(0);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("surface tabs drag into pane edges to split existing terminals", async () => {
+  const launched = await launchKmux("kmux-e2e-surface-tab-drag-split-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const originalPaneId = initial.activeWorkspace.activePaneId;
+    const originalSurfaceId =
+      initial.activeWorkspace.panes[originalPaneId].activeSurfaceId;
+
+    await dispatch(page, {
+      type: "surface.create",
+      paneId: originalPaneId,
+      title: "drag-right"
+    });
+    const withSecondSurface = await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[originalPaneId].surfaceIds.length === 2,
+      "second surface should be ready for tab drag"
+    );
+    const rightSurfaceId =
+      withSecondSurface.activeWorkspace.panes[originalPaneId].activeSurfaceId;
+    expect(rightSurfaceId).not.toBe(originalSurfaceId);
+    await expectDropOverlayHalfSize(page, rightSurfaceId, "left");
+    await expectDropOverlayHalfSize(page, rightSurfaceId, "right");
+    await expectDropOverlayHalfSize(page, rightSurfaceId, "down");
+
+    await page.evaluate(
+      ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
+      {
+        surfaceId: rightSurfaceId,
+        text: "printf 'kmux-drag-split-kept\\n'\r"
+      }
+    );
+    await waitForSurfaceSnapshotContains(
+      page,
+      rightSurfaceId,
+      "kmux-drag-split-kept",
+      6000
+    );
+
+    const rightTab = page.locator(
+      `[data-pane-id="${originalPaneId}"] [data-surface-id="${rightSurfaceId}"] [role="tab"]`
+    );
+    const rightTarget = page.getByTestId(`terminal-${rightSurfaceId}`);
+    const rightTargetBox = await rightTarget.boundingBox();
+    expect(rightTargetBox).not.toBeNull();
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await rightTab.dispatchEvent("dragstart", { dataTransfer });
+    await expect(page.getByText(SURFACE_TAB_DROP_PROMPT)).toBeVisible();
+    await rightTab.dispatchEvent("dragend", { dataTransfer });
+    await expect(page.getByText(SURFACE_TAB_DROP_PROMPT)).toHaveCount(0);
+    await rightTab.dragTo(rightTarget, {
+      targetPosition: {
+        x: Math.max(20, rightTargetBox!.width - 24),
+        y: Math.max(24, rightTargetBox!.height * 0.25)
+      }
+    });
+
+    const afterRightDrop = await waitForView(
+      page,
+      (view) =>
+        Object.keys(view.activeWorkspace.panes).length === 2 &&
+        paneIdForSurface(view, rightSurfaceId) !== originalPaneId,
+      "dragging a tab to the right edge should move it into a split pane"
+    );
+    const rightPaneId = paneIdForSurface(afterRightDrop, rightSurfaceId);
+    expect(rightPaneId).toBeTruthy();
+    expect(
+      afterRightDrop.activeWorkspace.panes[originalPaneId].surfaceIds
+    ).toEqual([originalSurfaceId]);
+    await expectPanePairSplitEvenly(
+      page,
+      originalPaneId,
+      rightPaneId!,
+      "horizontal"
+    );
+    await waitForSurfaceSnapshotContains(
+      page,
+      rightSurfaceId,
+      "kmux-drag-split-kept",
+      6000
+    );
+
+    await dispatch(page, {
+      type: "surface.create",
+      paneId: rightPaneId,
+      title: "drag-down"
+    });
+    const withBottomSurface = await waitForView(
+      page,
+      (view) =>
+        rightPaneId !== undefined &&
+        view.activeWorkspace.panes[rightPaneId]?.surfaceIds.length === 2,
+      "third surface should be ready for bottom tab drag"
+    );
+    const bottomSurfaceId =
+      withBottomSurface.activeWorkspace.panes[rightPaneId!].activeSurfaceId;
+
+    const bottomTab = page.locator(
+      `[data-pane-id="${rightPaneId}"] [data-surface-id="${bottomSurfaceId}"] [role="tab"]`
+    );
+    const bottomTarget = page.getByTestId(`terminal-${bottomSurfaceId}`);
+    const bottomTargetBox = await bottomTarget.boundingBox();
+    expect(bottomTargetBox).not.toBeNull();
+    await bottomTab.dragTo(bottomTarget, {
+      targetPosition: {
+        x: Math.max(24, bottomTargetBox!.width * 0.5),
+        y: Math.max(24, bottomTargetBox!.height - 24)
+      }
+    });
+
+    const afterBottomDrop = await waitForView(
+      page,
+      (view) =>
+        Object.keys(view.activeWorkspace.panes).length === 3 &&
+        paneIdForSurface(view, bottomSurfaceId) !== rightPaneId,
+      "dragging a tab to the bottom edge should move it into a split pane"
+    );
+    const bottomPaneId = paneIdForSurface(afterBottomDrop, bottomSurfaceId);
+    expect(bottomPaneId).toBeTruthy();
+    expect(bottomPaneId).not.toBe(rightPaneId);
+    await expectPanePairSplitEvenly(
+      page,
+      rightPaneId!,
+      bottomPaneId!,
+      "vertical"
+    );
   } finally {
     await closeKmux(launched);
   }

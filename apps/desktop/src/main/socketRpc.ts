@@ -51,10 +51,16 @@ const socketParamSchemas = {
     .strict(),
   "surface.split": z
     .object({
-      paneId: z.string().min(1),
+      paneId: z.string().min(1).optional(),
+      surfaceId: z.string().min(1).optional(),
+      sessionId: z.string().min(1).optional(),
       direction: splitDirectionSchema
     })
-    .strict(),
+    .strict()
+    .refine(
+      (params) => params.paneId || params.surfaceId || params.sessionId,
+      "Expected paneId, surfaceId, or sessionId"
+    ),
   "surface.focus": z
     .object({
       surfaceId: z.string().min(1).optional()

@@ -161,15 +161,37 @@ surface
   .action(async (options) => print(await sendRpc("surface.list", options)));
 surface
   .command("split")
-  .requiredOption("--pane <paneId>")
+  .option("--pane <paneId>")
+  .option("--surface <surfaceId>")
+  .option("--session <sessionId>")
   .requiredOption("--direction <direction>")
-  .action(async (options) =>
-    print(
-      await sendRpc("surface.split", {
-        paneId: options.pane,
-        direction: options.direction
-      })
-    )
+  .action(
+    async (options: {
+      pane?: Id;
+      surface?: Id;
+      session?: Id;
+      direction: string;
+    }) => {
+      const paneMatchesSpawnEnv =
+        options.pane &&
+        env.KMUX_PANE_ID &&
+        options.pane === env.KMUX_PANE_ID &&
+        (options.surface ?? env.KMUX_SURFACE_ID);
+      const useStableCurrentSurface = !options.pane || paneMatchesSpawnEnv;
+
+      print(
+        await sendRpc("surface.split", {
+          direction: options.direction,
+          paneId: useStableCurrentSurface ? undefined : options.pane,
+          surfaceId: options.surface ?? (useStableCurrentSurface
+            ? env.KMUX_SURFACE_ID
+            : undefined),
+          sessionId: options.session ?? (useStableCurrentSurface
+            ? env.KMUX_SESSION_ID
+            : undefined)
+        })
+      );
+    }
   );
 surface
   .command("focus")

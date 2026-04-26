@@ -191,6 +191,12 @@ export type AppAction =
   | { type: "pane.close"; paneId: Id }
   | { type: "surface.create"; paneId: Id; title?: string; cwd?: string }
   | { type: "surface.focus"; surfaceId: Id }
+  | {
+      type: "surface.moveToSplit";
+      surfaceId: Id;
+      targetPaneId: Id;
+      direction: SplitDirection;
+    }
   | { type: "surface.focusRelative"; paneId: Id; delta: number }
   | { type: "surface.focusIndex"; paneId: Id; index: number }
   | { type: "surface.rename"; surfaceId: Id; title: string }
@@ -551,6 +557,13 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return createSurface(state, action.paneId, action.title, action.cwd);
     case "surface.focus":
       return focusSurface(state, action.surfaceId);
+    case "surface.moveToSplit":
+      return moveSurfaceToSplit(
+        state,
+        action.surfaceId,
+        action.targetPaneId,
+        action.direction
+      );
     case "surface.focusRelative":
       return focusSurfaceRelative(state, action.paneId, action.delta);
     case "surface.focusIndex":
@@ -694,6 +707,13 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
         window: true,
         workspaceRows: true,
         activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        notifications: true
+      };
+    case "surface.moveToSplit":
+      return {
+        window: true,
+        workspaceRows: true,
         activeWorkspacePaneTree: true,
         notifications: true
       };
@@ -1011,10 +1031,7 @@ function splitPane(
     return [];
   }
   const workspace = state.workspaces[pane.workspaceId];
-  const targetLeafId = Object.values(workspace.nodeMap).find(
-    (node): node is Extract<PaneTreeNode, { kind: "leaf" }> =>
-      node.kind === "leaf" && node.paneId === paneId
-  )?.id;
+  const targetLeafId = findLeafIdForPane(workspace, paneId);
   if (!targetLeafId) {
     return [];
   }
@@ -1022,36 +1039,7 @@ function splitPane(
   const newPaneId = makeId("pane");
   const newSurfaceId = makeId("surface");
   const newSessionId = makeId("session");
-  const newLeafId = makeId("node");
-  const splitId = makeId("node");
-  const axis: SplitAxis =
-    direction === "left" || direction === "right" ? "vertical" : "horizontal";
-  const splitNode =
-    direction === "left" || direction === "up"
-      ? {
-          id: splitId,
-          kind: "split" as const,
-          axis,
-          ratio: 0.5,
-          first: newLeafId,
-          second: targetLeafId
-        }
-      : {
-          id: splitId,
-          kind: "split" as const,
-          axis,
-          ratio: 0.5,
-          first: targetLeafId,
-          second: newLeafId
-        };
-
-  replaceNodeReference(workspace, targetLeafId, splitId);
-  workspace.nodeMap[splitId] = splitNode;
-  workspace.nodeMap[newLeafId] = {
-    id: newLeafId,
-    kind: "leaf",
-    paneId: newPaneId
-  };
+  insertPaneLeafSplit(workspace, targetLeafId, newPaneId, direction);
 
   state.panes[newPaneId] = {
     id: newPaneId,
@@ -1089,6 +1077,58 @@ function splitPane(
     },
     { type: "persist" }
   ];
+}
+
+function moveSurfaceToSplit(
+  state: AppState,
+  surfaceId: Id,
+  targetPaneId: Id,
+  direction: SplitDirection
+): AppEffect[] {
+  const surface = state.surfaces[surfaceId];
+  const targetPane = state.panes[targetPaneId];
+  if (!surface || !targetPane) {
+    return [];
+  }
+  const sourcePane = state.panes[surface.paneId];
+  if (!sourcePane || sourcePane.workspaceId !== targetPane.workspaceId) {
+    return [];
+  }
+  if (!sourcePane.surfaceIds.includes(surfaceId)) {
+    return [];
+  }
+  if (sourcePane.id === targetPane.id && sourcePane.surfaceIds.length === 1) {
+    return [];
+  }
+
+  const workspace = state.workspaces[targetPane.workspaceId];
+  const targetLeafId = findLeafIdForPane(workspace, targetPane.id);
+  const sourceLeafId = findLeafIdForPane(workspace, sourcePane.id);
+  if (!targetLeafId || !sourceLeafId) {
+    return [];
+  }
+
+  const newPaneId = makeId("pane");
+  state.panes[newPaneId] = {
+    id: newPaneId,
+    workspaceId: workspace.id,
+    surfaceIds: [],
+    activeSurfaceId: surfaceId
+  };
+  insertPaneLeafSplit(workspace, targetLeafId, newPaneId, direction);
+
+  removeSurfaceFromPane(sourcePane, surfaceId);
+  if (sourcePane.surfaceIds.length === 0) {
+    collapsePaneLeaf(workspace, sourceLeafId);
+    delete state.panes[sourcePane.id];
+  }
+
+  state.panes[newPaneId].surfaceIds = [surfaceId];
+  surface.paneId = newPaneId;
+  workspace.activePaneId = newPaneId;
+  markSurfaceNotificationsRead(state, workspace.id, surfaceId);
+
+  return [{ type: "persist" }];
 }
 
 function focusPane(state: AppState, paneId: Id): AppEffect[] {
@@ -2036,6 +2076,18 @@ function markNotificationsRead(
   syncSurfaceNotificationState(state, surfaceId);
 }
 
+function markSurfaceNotificationsRead(
+  state: AppState,
+  workspaceId: Id,
+  surfaceId: Id
+): void {
+  state.notifications = state.notifications.filter(
+    (notification) =>
+      !(notification.workspaceId === workspaceId && notification.surfaceId === surfaceId)
+  );
+  syncSurfaceNotificationState(state, surfaceId);
+}
+
 function syncSurfaceNotificationState(state: AppState, surfaceId: Id): void {
   const surface = state.surfaces[surfaceId];
   if (!surface) {
@@ -2049,6 +2101,84 @@ function syncSurfaceNotificationState(state: AppState, surfaceId: Id): void {
   }, 0);
   surface.unreadCount = unreadCount;
   surface.attention = unreadCount > 0;
+}
+
+function findLeafIdForPane(
+  workspace: WorkspaceState,
+  paneId: Id
+): Id | undefined {
+  return Object.values(workspace.nodeMap).find(
+    (node): node is Extract<PaneTreeNode, { kind: "leaf" }> =>
+      node.kind === "leaf" && node.paneId === paneId
+  )?.id;
+}
+
+function insertPaneLeafSplit(
+  workspace: WorkspaceState,
+  targetLeafId: Id,
+  paneId: Id,
+  direction: SplitDirection
+): void {
+  const newLeafId = makeId("node");
+  const splitId = makeId("node");
+  const axis: SplitAxis =
+    direction === "left" || direction === "right" ? "vertical" : "horizontal";
+  const splitNode =
+    direction === "left" || direction === "up"
+      ? {
+          id: splitId,
+          kind: "split" as const,
+          axis,
+          ratio: 0.5,
+          first: newLeafId,
+          second: targetLeafId
+        }
+      : {
+          id: splitId,
+          kind: "split" as const,
+          axis,
+          ratio: 0.5,
+          first: targetLeafId,
+          second: newLeafId
+        };
+
+  replaceNodeReference(workspace, targetLeafId, splitId);
+  workspace.nodeMap[splitId] = splitNode;
+  workspace.nodeMap[newLeafId] = {
+    id: newLeafId,
+    kind: "leaf",
+    paneId
+  };
+}
+
+function removeSurfaceFromPane(pane: PaneState, surfaceId: Id): void {
+  const surfaceIndex = pane.surfaceIds.indexOf(surfaceId);
+  if (surfaceIndex === -1) {
+    return;
+  }
+  pane.surfaceIds = pane.surfaceIds.filter((id) => id !== surfaceId);
+  if (pane.activeSurfaceId !== surfaceId || pane.surfaceIds.length === 0) {
+    return;
+  }
+  const nextActiveIndex = surfaceIndex > 0 ? surfaceIndex - 1 : 0;
+  pane.activeSurfaceId =
+    pane.surfaceIds[nextActiveIndex] ?? pane.surfaceIds[0];
+}
+
+function collapsePaneLeaf(workspace: WorkspaceState, leafId: Id): void {
+  const parentEntry = findParentSplit(workspace, leafId);
+  if (!parentEntry) {
+    delete workspace.nodeMap[leafId];
+    return;
+  }
+  const parent = workspace.nodeMap[parentEntry.parentId];
+  if (parent?.kind !== "split") {
+    return;
+  }
+  const siblingId = parent.first === leafId ? parent.second : parent.first;
+  replaceNodeReference(workspace, parent.id, siblingId);
+  delete workspace.nodeMap[parent.id];
+  delete workspace.nodeMap[leafId];
 }
 
 function findParentSplit(

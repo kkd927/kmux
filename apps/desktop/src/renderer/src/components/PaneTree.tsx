@@ -12,6 +12,10 @@ import type { ColorTheme } from "@kmux/ui";
 import styles from "../styles/PaneTree.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import { recordRendererSmoothnessProfileEvent } from "../smoothnessProfile";
+import type {
+  SurfaceTabDragPayload,
+  SurfaceTabDropDirection
+} from "../surfaceTabDrag";
 import { TerminalPane } from "./TerminalPane";
 
 export interface PaneTreeProps {
@@ -21,12 +25,20 @@ export interface PaneTreeProps {
   terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
   searchSurfaceId: string | null;
+  draggedSurfaceTab: SurfaceTabDragPayload | null;
   onSetSplitRatio: (splitNodeId: string, ratio: number) => void;
   onFocusPane: (paneId: string) => void;
   onFocusSurface: (surfaceId: string) => void;
   onCreateSurface: (paneId: string) => void;
   onCloseSurface: (surfaceId: string) => void;
   onCloseOthers: (surfaceId: string) => void;
+  onMoveSurfaceToSplit: (
+    surfaceId: string,
+    targetPaneId: string,
+    direction: SurfaceTabDropDirection
+  ) => void;
+  onSurfaceTabDragStart: (payload: SurfaceTabDragPayload) => void;
+  onSurfaceTabDragEnd: () => void;
   onSplitRight: (paneId: string) => void;
   onSplitDown: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
@@ -58,7 +70,8 @@ function arePaneTreePropsEqual(
     left.terminalTypography === right.terminalTypography &&
     left.terminalTheme === right.terminalTheme &&
     left.colorTheme === right.colorTheme &&
-    left.searchSurfaceId === right.searchSurfaceId;
+    left.searchSurfaceId === right.searchSurfaceId &&
+    left.draggedSurfaceTab === right.draggedSurfaceTab;
   if (equal) {
     recordRendererSmoothnessProfileEvent("pane-tree.memo-skip", {
       workspaceId: left.workspace.id
@@ -98,11 +111,15 @@ function PaneNode(
         terminalTheme={props.terminalTheme}
         colorTheme={props.colorTheme}
         showSearch={props.searchSurfaceId === pane.activeSurfaceId}
+        draggedSurfaceTab={props.draggedSurfaceTab}
         onFocusPane={props.onFocusPane}
         onFocusSurface={props.onFocusSurface}
         onCreateSurface={props.onCreateSurface}
         onCloseSurface={props.onCloseSurface}
         onCloseOthers={props.onCloseOthers}
+        onMoveSurfaceToSplit={props.onMoveSurfaceToSplit}
+        onSurfaceTabDragStart={props.onSurfaceTabDragStart}
+        onSurfaceTabDragEnd={props.onSurfaceTabDragEnd}
         onSplitRight={props.onSplitRight}
         onSplitDown={props.onSplitDown}
         onClosePane={props.onClosePane}

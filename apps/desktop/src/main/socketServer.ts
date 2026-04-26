@@ -30,6 +30,11 @@ type AgentEventParams = Extract<
   ParsedSocketRequest,
   { method: "agent.event" }
 >["params"];
+type SurfaceScopedPaneParams = {
+  paneId?: string;
+  surfaceId?: string;
+  sessionId?: string;
+};
 
 const RECENT_STRUCTURED_AGENT_DEDUPE_MS = 5 * 60 * 1000;
 
@@ -73,6 +78,32 @@ function isIgnorableSocketReplyError(error: unknown): boolean {
 
 function isReplySocketWritable(socket: Socket): boolean {
   return !socket.destroyed && socket.writable && !socket.writableEnded;
+}
+
+function resolveLivePaneIdForStableTarget(
+  state: AppState,
+  params: SurfaceScopedPaneParams,
+  authToken?: string
+): string | undefined {
+  const authSurfaceId = authToken
+    ? Object.values(state.sessions).find(
+        (session) => session.authToken === authToken
+      )?.surfaceId
+    : undefined;
+  const candidateSurfaceIds = [
+    params.surfaceId,
+    params.sessionId ? state.sessions[params.sessionId]?.surfaceId : undefined,
+    authSurfaceId
+  ];
+
+  for (const surfaceId of candidateSurfaceIds) {
+    const surface = surfaceId ? state.surfaces[surfaceId] : undefined;
+    if (surface && state.panes[surface.paneId]) {
+      return surface.paneId;
+    }
+  }
+
+  return undefined;
 }
 
 interface SocketServerOptions {
@@ -224,7 +255,14 @@ export class KmuxSocketServer {
       case "surface.split":
         this.options.dispatch({
           type: "pane.split",
-          paneId: request.params.paneId,
+          paneId:
+            resolveLivePaneIdForStableTarget(
+              state,
+              request.params,
+              request.authToken
+            ) ??
+            request.params.paneId ??
+            activePane.id,
           direction: request.params.direction as SplitDirection
         });
         return { ok: true };
@@ -405,7 +443,9 @@ export class KmuxSocketServer {
     this.options.dispatch({
       type: "agent.event",
       workspaceId: params.workspaceId ?? fallbackWorkspaceId,
-      paneId: params.paneId,
+      paneId: params.paneId
+        ? (resolveLivePaneIdForStableTarget(state, params) ?? params.paneId)
+        : undefined,
       surfaceId: params.surfaceId,
       sessionId: params.sessionId,
       agent: params.agent,
@@ -441,8 +481,7 @@ export class KmuxSocketServer {
       return { ok: true };
     }
     const paneId =
-      params.paneId ??
-      (surfaceId ? state.surfaces[surfaceId]?.paneId : undefined);
+      resolveLivePaneIdForStableTarget(state, params) ?? params.paneId;
     this.options.dispatch({
       type: "notification.create",
       workspaceId: params.workspaceId ?? fallbackWorkspaceId,

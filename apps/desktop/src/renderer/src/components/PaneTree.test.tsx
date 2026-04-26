@@ -101,12 +101,16 @@ function createPaneTreeProps(): PaneTreeProps {
     },
     colorTheme: "dark",
     searchSurfaceId: null,
+    draggedSurfaceTab: null,
     onSetSplitRatio: vi.fn(),
     onFocusPane: vi.fn(),
     onFocusSurface: vi.fn(),
     onCreateSurface: vi.fn(),
     onCloseSurface: vi.fn(),
     onCloseOthers: vi.fn(),
+    onMoveSurfaceToSplit: vi.fn(),
+    onSurfaceTabDragStart: vi.fn(),
+    onSurfaceTabDragEnd: vi.fn(),
     onSplitRight: vi.fn(),
     onSplitDown: vi.fn(),
     onClosePane: vi.fn(),
@@ -177,6 +181,30 @@ describe("PaneTree", () => {
                 title: "repo / codex"
               }
             }
+          }}
+        />
+      );
+    });
+
+    expect(terminalPaneRenderSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rerenders terminal panes when a surface tab drag starts", () => {
+    const props = createPaneTreeProps();
+
+    act(() => {
+      root.render(<PaneTree {...props} />);
+    });
+
+    expect(terminalPaneRenderSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.render(
+        <PaneTree
+          {...props}
+          draggedSurfaceTab={{
+            surfaceId: "surface_1",
+            sourcePaneId: "pane_1"
           }}
         />
       );

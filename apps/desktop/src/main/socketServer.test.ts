@@ -4,7 +4,7 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createInitialState } from "@kmux/core";
+import { applyAction, createInitialState } from "@kmux/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { KmuxSocketServer } from "./socketServer";
@@ -191,6 +191,135 @@ describe("kmux socket server agent hooks", () => {
           kmux_hook_event_arg: "Stop"
         }
       });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("resolves surface split through the live surface pane when a request also carries a stale pane id", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const stalePaneId = state.workspaces[activeWorkspaceId].activePaneId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: stalePaneId,
+      direction: "right"
+    });
+    const livePaneId = state.workspaces[activeWorkspaceId].activePaneId;
+    const liveSurfaceId = state.panes[livePaneId].activeSurfaceId;
+    expect(livePaneId).not.toBe(stalePaneId);
+
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId: liveSurfaceId,
+        capabilities: []
+      })
+    });
+
+    await server.start();
+
+    try {
+      const response = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_surface_split_current_pane",
+        method: "surface.split",
+        params: {
+          paneId: stalePaneId,
+          surfaceId: liveSurfaceId,
+          direction: "down"
+        }
+      });
+
+      expect(response.result).toEqual({ ok: true });
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "pane.split",
+        paneId: livePaneId,
+        direction: "down"
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("normalizes stale pane ids on hook notifications when a live surface target is available", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const stalePaneId = state.workspaces[activeWorkspaceId].activePaneId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: stalePaneId,
+      direction: "right"
+    });
+    const livePaneId = state.workspaces[activeWorkspaceId].activePaneId;
+    const liveSurfaceId = state.panes[livePaneId].activeSurfaceId;
+    expect(livePaneId).not.toBe(stalePaneId);
+
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId: liveSurfaceId,
+        capabilities: []
+      })
+    });
+
+    await server.start();
+
+    try {
+      const response = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_hook_notification_current_pane",
+        method: "agent.hook",
+        params: {
+          agent: "claude",
+          hookEvent: "Notification",
+          paneId: stalePaneId,
+          surfaceId: liveSurfaceId,
+          payload: {
+            title: "Task complete",
+            message: "Task completed successfully"
+          }
+        }
+      });
+
+      expect(response.result).toEqual({ ok: true });
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "notification.create",
+          paneId: livePaneId,
+          surfaceId: liveSurfaceId
+        })
+      );
     } finally {
       await server.stop();
     }
