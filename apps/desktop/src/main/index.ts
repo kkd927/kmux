@@ -17,6 +17,7 @@ import {
 import { createAppRuntime } from "./appRuntime";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { ensureGeminiHooksInstalled } from "./geminiIntegration";
+import { createExternalSessionIndexer } from "./externalSessions";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
@@ -146,6 +147,10 @@ async function bootstrap(): Promise<void> {
     onDidDispatchAppAction: (action) => {
       usageRuntime?.handleAppAction(action);
     },
+    externalSessionIndexer: createExternalSessionIndexer({
+      homeDir: resolvedShellEnv.baseEnv.HOME ?? homedir(),
+      env: resolvedShellEnv.baseEnv
+    }),
     profileRecorder: smoothnessProfile,
     persistWindowState: (window) => {
       persistWindowState({
@@ -230,6 +235,8 @@ async function bootstrap(): Promise<void> {
       };
     },
     getUsageView: usageRuntime.getSnapshot,
+    getExternalAgentSessions: runtime.getExternalAgentSessions,
+    resumeExternalAgentSession: runtime.resumeExternalAgentSession,
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,

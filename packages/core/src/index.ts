@@ -167,7 +167,12 @@ export type SettingsPatch = Partial<
 };
 
 export type AppAction =
-  | { type: "workspace.create"; name?: string; cwd?: string }
+  | {
+      type: "workspace.create";
+      name?: string;
+      cwd?: string;
+      launch?: SessionLaunchConfig;
+    }
   | { type: "workspace.select"; workspaceId: Id }
   | { type: "workspace.selectRelative"; delta: number }
   | { type: "workspace.selectIndex"; index: number }
@@ -189,7 +194,13 @@ export type AppAction =
     }
   | { type: "pane.setSplitRatio"; splitNodeId: Id; ratio: number }
   | { type: "pane.close"; paneId: Id }
-  | { type: "surface.create"; paneId: Id; title?: string; cwd?: string }
+  | {
+      type: "surface.create";
+      paneId: Id;
+      title?: string;
+      cwd?: string;
+      launch?: SessionLaunchConfig;
+    }
   | { type: "surface.focus"; surfaceId: Id }
   | {
       type: "surface.moveToSplit";
@@ -507,7 +518,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
         state,
         action.name ?? "new workspace",
         action.cwd,
-        !!action.name
+        !!action.name,
+        action.launch
       );
     case "workspace.select":
       return selectWorkspace(state, action.workspaceId);
@@ -554,7 +566,13 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
     case "pane.close":
       return closePane(state, action.paneId);
     case "surface.create":
-      return createSurface(state, action.paneId, action.title, action.cwd);
+      return createSurface(
+        state,
+        action.paneId,
+        action.title,
+        action.cwd,
+        action.launch
+      );
     case "surface.focus":
       return focusSurface(state, action.surfaceId);
     case "surface.moveToSplit":
@@ -769,7 +787,8 @@ function createWorkspace(
   state: AppState,
   name: string,
   cwd?: string,
-  nameLocked = false
+  nameLocked = false,
+  launch?: SessionLaunchConfig
 ): AppEffect[] {
   const window = state.windows[state.activeWindowId];
   const activeWorkspace = state.workspaces[window.activeWorkspaceId];
@@ -784,6 +803,17 @@ function createWorkspace(
   const nodeId = makeId("node");
   const workspaceName =
     name.trim() || `workspace ${window.workspaceOrder.length + 1}`;
+  const explicitLaunchTitle = launch?.title?.trim();
+  const sessionLaunch = sanitizeSessionLaunchConfig(
+    {
+      shell: state.settings.shell || process.env.SHELL,
+      ...launch,
+      cwd: launch?.cwd ?? workspaceCwd,
+      ...(explicitLaunchTitle ? { title: explicitLaunchTitle } : {})
+    },
+    state.settings.shell || process.env.SHELL
+  );
+  const surfaceTitle = explicitLaunchTitle || workspaceName;
 
   state.workspaces[workspaceId] = {
     id: workspaceId,
@@ -815,9 +845,9 @@ function createWorkspace(
     id: surfaceId,
     paneId,
     sessionId,
-    title: workspaceName,
-    titleLocked: false,
-    cwd: workspaceCwd,
+    title: surfaceTitle,
+    titleLocked: Boolean(explicitLaunchTitle),
+    cwd: sessionLaunch.cwd ?? workspaceCwd,
     ports: [],
     unreadCount: 0,
     attention: false
@@ -825,10 +855,7 @@ function createWorkspace(
   state.sessions[sessionId] = {
     id: sessionId,
     surfaceId,
-    launch: {
-      cwd: workspaceCwd,
-      shell: state.settings.shell || process.env.SHELL
-    },
+    launch: sessionLaunch,
     authToken: makeId("auth"),
     runtimeState: "pending"
   };
@@ -1265,7 +1292,8 @@ function createSurface(
   state: AppState,
   paneId: Id,
   title?: string,
-  cwd?: string
+  cwd?: string,
+  launch?: SessionLaunchConfig
 ): AppEffect[] {
   const pane = state.panes[paneId];
   if (!pane) {
@@ -1275,14 +1303,25 @@ function createSurface(
   const surfaceId = makeId("surface");
   const sessionId = makeId("session");
   const launchCwd = cwd ?? activeSurface(state, paneId)?.cwd;
+  const defaultTitle = title?.trim() || `tab ${pane.surfaceIds.length + 1}`;
+  const sessionLaunch = sanitizeSessionLaunchConfig(
+    {
+      shell: state.settings.shell || process.env.SHELL,
+      title,
+      ...launch,
+      cwd: launch?.cwd ?? launchCwd
+    },
+    state.settings.shell || process.env.SHELL
+  );
+  const surfaceTitle = sessionLaunch.title?.trim() || defaultTitle;
 
   state.surfaces[surfaceId] = {
     id: surfaceId,
     paneId,
     sessionId,
-    title: title?.trim() || `tab ${pane.surfaceIds.length + 1}`,
-    titleLocked: Boolean(title?.trim()),
-    cwd: launchCwd,
+    title: surfaceTitle,
+    titleLocked: Boolean(sessionLaunch.title?.trim()),
+    cwd: sessionLaunch.cwd ?? launchCwd,
     ports: [],
     unreadCount: 0,
     attention: false
@@ -1290,11 +1329,7 @@ function createSurface(
   state.sessions[sessionId] = {
     id: sessionId,
     surfaceId,
-    launch: {
-      cwd: launchCwd,
-      shell: state.settings.shell || process.env.SHELL,
-      title
-    },
+    launch: sessionLaunch,
     authToken: makeId("auth"),
     runtimeState: "pending"
   };

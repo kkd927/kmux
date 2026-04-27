@@ -93,6 +93,80 @@ describe("core reducer", () => {
     ).toBe(inheritedCwd);
   });
 
+  it("preserves the inherited cwd when a workspace launch carries cwd undefined", () => {
+    const state = createInitialState("/bin/zsh");
+    const originalWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const originalPaneId = state.workspaces[originalWorkspaceId].activePaneId;
+    const originalSurfaceId = state.panes[originalPaneId].activeSurfaceId;
+    const inheritedCwd = state.surfaces[originalSurfaceId].cwd;
+
+    applyAction(state, {
+      type: "workspace.create",
+      name: "Resume Codex session",
+      launch: {
+        cwd: undefined,
+        shell: "codex",
+        args: ["resume", "session-123"],
+        title: "Resume Codex session"
+      }
+    });
+
+    const createdWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const createdPaneId = state.workspaces[createdWorkspaceId].activePaneId;
+    const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
+    const createdSession =
+      state.sessions[state.surfaces[createdSurfaceId].sessionId];
+
+    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(inheritedCwd);
+    expect(state.surfaces[createdSurfaceId].cwd).toBe(inheritedCwd);
+    expect(createdSession.launch.cwd).toBe(inheritedCwd);
+    expect(createdSession.launch.shell).toBe("codex");
+  });
+
+  it("creates a workspace with an explicit initial session launch", () => {
+    const state = createInitialState("/bin/zsh");
+    const effects = applyAction(state, {
+      type: "workspace.create",
+      name: "Resume Codex session",
+      cwd: "/Users/test/project",
+      launch: {
+        cwd: "/Users/test/project",
+        shell: "codex",
+        args: ["resume", "session-123"],
+        title: "Resume Codex session"
+      }
+    });
+
+    const workspace = Object.values(state.workspaces).find(
+      (entry) => entry.name === "Resume Codex session"
+    );
+    expect(workspace).toBeTruthy();
+    const pane = state.panes[workspace!.activePaneId];
+    const surface = state.surfaces[pane.activeSurfaceId];
+    const session = state.sessions[surface.sessionId];
+
+    expect(surface.title).toBe("Resume Codex session");
+    expect(session.launch).toMatchObject({
+      cwd: "/Users/test/project",
+      shell: "codex",
+      args: ["resume", "session-123"],
+      title: "Resume Codex session"
+    });
+    expect(effects).toContainEqual(
+      expect.objectContaining({
+        type: "session.spawn",
+        spec: expect.objectContaining({
+          launch: expect.objectContaining({
+            shell: "codex",
+            args: ["resume", "session-123"]
+          })
+        })
+      })
+    );
+  });
+
   it("uses the configured shell path as the default session shell", () => {
     const state = createInitialState("/bin/zsh");
     const sessionId = Object.keys(state.sessions)[0];

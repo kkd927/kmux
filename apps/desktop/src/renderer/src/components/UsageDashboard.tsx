@@ -60,9 +60,10 @@ type LinearBreakdownRow = {
 
 interface UsageDashboardProps {
   onJumpToSurface: (workspaceId: string, surfaceId: string) => void;
+  embedded?: boolean;
 }
 
-export function UsageDashboard(_props: UsageDashboardProps): JSX.Element {
+export function UsageDashboard(props: UsageDashboardProps): JSX.Element {
   const snapshot = useUsageSnapshot();
   const models = snapshot.models ?? [];
   const dailyActivity = snapshot.dailyActivity ?? [];
@@ -91,77 +92,91 @@ export function UsageDashboard(_props: UsageDashboardProps): JSX.Element {
     () => buildSummaryCards(snapshot),
     [snapshot]
   );
+  const subtitle = buildSubtitle(snapshot.updatedAt, pricingCoverage);
+
+  const content = (
+    <div className={styles.usageDashboard} data-testid="usage-dashboard">
+      {props.embedded ? (
+        <div className={styles.usageDashboardStatus}>
+          <span className={styles.usageDashboardStatusText}>{subtitle}</span>
+        </div>
+      ) : null}
+
+      <section className={styles.usageMetricGrid}>
+        {summaryCards.map(({ key, ...card }) => (
+          <UsageMetricCard key={key} cardKey={key} {...card} />
+        ))}
+      </section>
+
+      {snapshot.subscriptionUsage.length > 0 ? (
+        <section
+          className={styles.usageCard}
+          data-testid="subscription-windows-card"
+        >
+          <SubscriptionWindowsCard
+            subscriptionUsage={snapshot.subscriptionUsage}
+          />
+        </section>
+      ) : null}
+
+      <UsageHeatmap
+        todayDayKey={snapshot.dayKey}
+        dailyActivity={dailyActivity}
+      />
+
+      <div className={styles.usageCardGrid}>
+        <section className={styles.usageCard}>
+          <CardHeader
+            title="Top Models"
+            description="Spend-ranked model mix for the current day"
+          />
+          {models.length === 0 ? (
+            <EmptyState text="No model usage captured yet." />
+          ) : (
+            <TopModelsCard models={models.slice(0, 4)} />
+          )}
+        </section>
+      </div>
+
+      <section className={styles.usageCard}>
+        <CardHeader
+          title="Token Mix"
+          description="Today's token distribution across categories"
+        />
+        <SalesCategoryCard
+          tokenBreakdown={tokenBreakdown}
+          tokenCostBreakdown={tokenCostBreakdown}
+        />
+      </section>
+
+      <section className={styles.usageCard}>
+        <CardHeader
+          title="Project Hotspots"
+          description="Current-day AI usage by tracked projects"
+        />
+        {(snapshot.directoryHotspots?.length ?? 0) === 0 ? (
+          <EmptyState text="No project usage is attributed yet." />
+        ) : (
+          <DirectoryHotspotsCard
+            directories={snapshot.directoryHotspots ?? []}
+          />
+        )}
+      </section>
+    </div>
+  );
+
+  if (props.embedded) {
+    return content;
+  }
 
   return (
     <RightSidebarHost
       title="Usage"
-      subtitle={buildSubtitle(snapshot.updatedAt, pricingCoverage)}
+      subtitle={subtitle}
       badge={snapshot.dayKey}
       testId="usage-right-panel"
     >
-      <div className={styles.usageDashboard} data-testid="usage-dashboard">
-        <section className={styles.usageMetricGrid}>
-          {summaryCards.map(({ key, ...card }) => (
-            <UsageMetricCard key={key} cardKey={key} {...card} />
-          ))}
-        </section>
-
-        {snapshot.subscriptionUsage.length > 0 ? (
-          <section
-            className={styles.usageCard}
-            data-testid="subscription-windows-card"
-          >
-            <SubscriptionWindowsCard
-              subscriptionUsage={snapshot.subscriptionUsage}
-            />
-          </section>
-        ) : null}
-
-        <UsageHeatmap
-          todayDayKey={snapshot.dayKey}
-          dailyActivity={dailyActivity}
-        />
-
-        <div className={styles.usageCardGrid}>
-          <section className={styles.usageCard}>
-            <CardHeader
-              title="Top Models"
-              description="Spend-ranked model mix for the current day"
-            />
-            {models.length === 0 ? (
-              <EmptyState text="No model usage captured yet." />
-            ) : (
-              <TopModelsCard models={models.slice(0, 4)} />
-            )}
-          </section>
-        </div>
-
-        <section className={styles.usageCard}>
-          <CardHeader
-            title="Token Mix"
-            description="Today's token distribution across categories"
-          />
-          <SalesCategoryCard
-            tokenBreakdown={tokenBreakdown}
-            tokenCostBreakdown={tokenCostBreakdown}
-          />
-        </section>
-
-        <section className={styles.usageCard}>
-          <CardHeader
-            title="Project Hotspots"
-            description="Current-day AI usage by tracked projects"
-          />
-          {(snapshot.directoryHotspots?.length ?? 0) === 0 ? (
-            <EmptyState text="No project usage is attributed yet." />
-          ) : (
-            <DirectoryHotspotsCard
-              directories={snapshot.directoryHotspots ?? []}
-            />
-          )}
-        </section>
-
-      </div>
+      {content}
     </RightSidebarHost>
   );
 }

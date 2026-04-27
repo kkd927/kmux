@@ -7,6 +7,8 @@ import {
   isSmoothnessProfileEnabled
 } from "../shared/smoothnessProfile";
 import type {
+  ExternalAgentSessionResumeResult,
+  ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
@@ -34,6 +36,14 @@ const api = {
   },
   getUsageView(): Promise<UsageViewSnapshot> {
     return ipcRenderer.invoke("kmux:usage:get");
+  },
+  getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot> {
+    return ipcRenderer.invoke("kmux:external-sessions:get");
+  },
+  resumeExternalAgentSession(
+    key: string
+  ): Promise<ExternalAgentSessionResumeResult> {
+    return ipcRenderer.invoke("kmux:external-sessions:resume", key);
   },
   getUpdaterState(): Promise<UpdaterState> {
     return ipcRenderer.invoke("kmux:updater:get");

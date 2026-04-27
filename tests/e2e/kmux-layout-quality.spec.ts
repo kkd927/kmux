@@ -422,7 +422,7 @@ test("workspace sidebar row heights stay stable when the sidebar is resized and 
   }
 });
 
-test("project chrome keeps active workspace and focused pane visually legible", async () => {
+test("project chrome keeps active workspace and focused surface visually legible", async () => {
   const launched = await launchKmux("kmux-e2e-intellij-chrome-");
 
   try {
@@ -481,6 +481,12 @@ test("project chrome keeps active workspace and focused pane visually legible", 
       const unfocused = document.querySelector<HTMLElement>(
         '[data-pane-id][data-focused="false"]'
       );
+      const activeTab = focused?.querySelector<HTMLElement>(
+        '[data-active="true"]'
+      );
+      const activeTabIndicator = activeTab
+        ? getComputedStyle(activeTab, "::before")
+        : null;
 
       return {
         focusedShadow: focused ? getComputedStyle(focused).boxShadow : "",
@@ -488,12 +494,19 @@ test("project chrome keeps active workspace and focused pane visually legible", 
         focusedBorder: focused ? getComputedStyle(focused).borderColor : "",
         unfocusedBorder: unfocused
           ? getComputedStyle(unfocused).borderColor
-          : ""
+          : "",
+        activeTabIndicatorHeight: activeTabIndicator?.height ?? "",
+        activeTabIndicatorBackground:
+          activeTabIndicator?.backgroundColor ?? "rgba(0, 0, 0, 0)"
       };
     });
 
-    expect(paneStyles.focusedShadow).not.toBe(paneStyles.unfocusedShadow);
-    expect(paneStyles.focusedBorder).not.toBe(paneStyles.unfocusedBorder);
+    expect(paneStyles.focusedShadow).toBe(paneStyles.unfocusedShadow);
+    expect(paneStyles.focusedBorder).toBe(paneStyles.unfocusedBorder);
+    expect(paneStyles.activeTabIndicatorHeight).toBe("2px");
+    expect(paneStyles.activeTabIndicatorBackground).not.toBe(
+      "rgba(0, 0, 0, 0)"
+    );
   } finally {
     await closeKmux(launched);
   }
