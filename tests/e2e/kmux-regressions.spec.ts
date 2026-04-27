@@ -511,7 +511,7 @@ test("settings modal switches between light and system themes and keeps terminal
 
     expect(lightAppearance.windowBg).toBe("#f7f7f5");
     expect(lightAppearance.sidebarBg).toBe("#e8f1f6");
-    expect(lightAppearance.viewportBg).toBe("rgb(255, 255, 255)");
+    expect(lightAppearance.viewportBg).toBe("rgb(247, 247, 245)");
     await expect
       .poll(async () =>
         Number((await terminal.getAttribute("data-terminal-base-y")) ?? "0")
@@ -553,7 +553,7 @@ test("settings modal switches between light and system themes and keeps terminal
     });
 
     expect(systemAppearance.windowBg).toBe("#181818");
-    expect(systemAppearance.viewportBg).toBe("rgb(31, 31, 31)");
+    expect(systemAppearance.viewportBg).toBe("rgb(24, 24, 24)");
     await expect
       .poll(async () =>
         Number((await terminal.getAttribute("data-terminal-base-y")) ?? "0")

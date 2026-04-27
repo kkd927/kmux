@@ -1,3 +1,9 @@
+import {
+  createXtermTheme,
+  THEMES,
+  type ColorTheme
+} from "@kmux/ui";
+
 export {
   resolveTerminalEnterRewrite,
   shouldSwallowImeCompositionMetaKey,
@@ -25,6 +31,16 @@ export interface PendingTerminalEnterRewrite {
 export interface TerminalEnterRewriteResult {
   data: string;
   clearPending: boolean;
+}
+
+export function createTerminalPaneXtermTheme(
+  palette: Parameters<typeof createXtermTheme>[0],
+  colorTheme: ColorTheme
+): ReturnType<typeof createXtermTheme> {
+  return {
+    ...createXtermTheme(palette, colorTheme),
+    background: THEMES[colorTheme].windowBg
+  };
 }
 
 interface ApplyTerminalWebglPreferenceOptions<TAddon extends DisposableAddon> {

@@ -1,4 +1,5 @@
 .pane {
+  --terminal-input-bg: var(--window-bg);
   container-type: inline-size;
   display: flex;
   flex-direction: column;
@@ -6,6 +7,7 @@
   min-height: 0;
   background: var(--panel-bg);
   border: 1px solid var(--border-strong);
+  border-top: 0;
   overflow: hidden;
   position: relative;
 }
@@ -19,6 +21,19 @@
   background: var(--tab-bg);
   border-bottom: 1px solid var(--border-strong);
   gap: 0;
+  position: relative;
+}
+
+.header::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--border-strong);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .headerTrailing {
@@ -61,14 +76,9 @@
   background: var(--tab-active-bg);
 }
 
-.tabItem[data-active="true"]::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  background: var(--tab-indicator);
+.tabItem[data-active="true"] {
+  box-shadow: inset 0 1px 0 var(--tab-indicator);
+  z-index: 2;
 }
 
 .tab,
@@ -318,7 +328,7 @@
   font-size: 0.769rem;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border-strong);
-  background: var(--panel-muted);
+  background: var(--terminal-input-bg);
 }
 
 .metaLabel {
@@ -345,7 +355,7 @@
   min-height: 0;
   overflow: hidden;
   position: relative;
-  background: var(--panel-bg);
+  background: var(--terminal-input-bg);
   padding: 8px 0 8px 10px;
   font-family: var(--kmux-terminal-font-family);
   font-size: var(--kmux-terminal-font-size);
@@ -437,10 +447,11 @@
 
 .terminalViewport :global(.xterm .xterm-helper-textarea) {
   font-family: var(--kmux-terminal-font-family);
+  background-color: var(--terminal-input-bg);
 }
 
 .terminalViewport :global(.xterm .xterm-viewport) {
-  background-color: var(--panel-bg) !important;
+  background-color: var(--terminal-input-bg) !important;
   border-radius: 0;
 }
 

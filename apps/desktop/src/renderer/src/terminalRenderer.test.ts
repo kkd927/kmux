@@ -7,11 +7,13 @@ import {
 import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
+  createTerminalPaneXtermTheme,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
   shouldSwallowImeCompositionMetaKey
 } from "./terminalRenderer";
 import type { TerminalKeyboardEventLike } from "./terminalRenderer";
+import { THEMES } from "@kmux/ui";
 
 function keyboardEvent(
   overrides: Partial<TerminalKeyboardEventLike> = {}
@@ -30,6 +32,24 @@ function keyboardEvent(
 }
 
 describe("terminal renderer helpers", () => {
+  it("uses the right sidebar background for xterm's input surface", () => {
+    const theme = createTerminalPaneXtermTheme(
+      {
+        background: "#111111",
+        foreground: "#eeeeee",
+        cursor: "#ffffff",
+        cursorText: "#111111",
+        selectionBackground: "#333333",
+        selectionForeground: "#eeeeee",
+        ansi: new Array(16).fill("#777777")
+      },
+      "dark"
+    );
+
+    expect(theme.background).toBe(THEMES.dark.windowBg);
+    expect(theme.foreground).toBe("#eeeeee");
+  });
+
   it("loads the WebGL addon once when enabled", () => {
     const addon = {
       dispose: vi.fn()
