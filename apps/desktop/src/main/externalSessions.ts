@@ -51,6 +51,7 @@ interface CandidateFile {
 }
 
 const DEFAULT_MAX_FILES_PER_VENDOR = 100;
+const SESSION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TITLE_LENGTH = 96;
 const MAX_JSONL_SCAN_BYTES = 256 * 1024;
 
@@ -65,27 +66,29 @@ export function createExternalSessionIndexer(
     options.maxFilesPerVendor ?? DEFAULT_MAX_FILES_PER_VENDOR;
   const canRunCommand = createCommandAvailability(options);
 
-  function listRecords(): ExternalSessionRecord[] {
+  function listRecords(currentNow: Date): ExternalSessionRecord[] {
+    const cutoffMs = currentNow.getTime() - SESSION_LOOKBACK_MS;
     const records = [
       ...listCodexSessions(options.homeDir, maxFilesPerVendor),
       ...listGeminiSessions(options.homeDir, maxFilesPerVendor),
       ...listClaudeSessions(options.homeDir, maxFilesPerVendor)
-    ];
+    ].filter((record) => record.updatedAtMs >= cutoffMs);
     records.sort((left, right) => right.updatedAtMs - left.updatedAtMs);
     return records;
   }
 
   return {
     listExternalAgentSessions() {
+      const currentNow = now();
       return {
-        sessions: listRecords().map((record) =>
-          toViewModel(record, now(), canResumeRecord(record, canRunCommand))
+        sessions: listRecords(currentNow).map((record) =>
+          toViewModel(record, currentNow, canResumeRecord(record, canRunCommand))
         ),
-        updatedAt: now().toISOString()
+        updatedAt: currentNow.toISOString()
       };
     },
     resolveExternalAgentSession(key) {
-      const record = listRecords().find((entry) => entry.key === key);
+      const record = listRecords(now()).find((entry) => entry.key === key);
       return record && canResumeRecord(record, canRunCommand)
         ? toResumeSpec(record)
         : null;
@@ -108,7 +111,8 @@ function listCodexSessions(
       let cwd: string | undefined;
       let createdAt: string | undefined;
       let updatedAt: string | undefined;
-      let title: string | undefined;
+      let metadataTitle: string | undefined;
+      let messageTitle: string | undefined;
 
       for (const record of records) {
         const object = asObject(record);
@@ -129,20 +133,20 @@ function listCodexSessions(
             updatedAt;
         }
         if (payload?.type === "thread_name_updated") {
-          title =
+          metadataTitle =
             sanitizeTitle(
               pickFirstString(payload, ["thread_name", "threadName", "name"])
-            ) ?? title;
+            ) ?? metadataTitle;
         }
         if (payload?.type === "user_message") {
-          title ??= sanitizeTitle(extractText(payload.message));
+          messageTitle ??= codexUserPromptTitle(payload.message);
         }
         if (
           object?.type === "response_item" &&
           payload?.type === "message" &&
           payload.role === "user"
         ) {
-          title ??= sanitizeTitle(extractText(payload.content));
+          messageTitle ??= codexUserPromptTitle(payload.content);
         }
       }
 
@@ -156,7 +160,7 @@ function listCodexSessions(
           cwd,
           createdAt,
           updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-          title,
+          title: metadataTitle ?? messageTitle,
           mtimeMs: candidate.mtimeMs
         })
       ];
@@ -205,15 +209,19 @@ function listClaudeSessions(
   maxFiles: number
 ): ExternalSessionRecord[] {
   const root = join(homeDir, ".claude", "projects");
-  return collectCandidateFiles(root, (path) => path.endsWith(".jsonl"))
+  return collectCandidateFiles(
+    root,
+    (path) => path.endsWith(".jsonl") && dirname(dirname(path)) === root
+  )
     .slice(0, maxFiles)
     .flatMap((candidate) => {
-      const records = parseJsonlPrefix(candidate.path);
+      const records = parseJsonlEdges(candidate.path);
       let sessionId: string | undefined;
       let cwd: string | undefined;
       let createdAt: string | undefined;
       let updatedAt: string | undefined;
-      let title: string | undefined;
+      let metadataTitle: string | undefined;
+      let promptTitle: string | undefined;
 
       for (const record of records) {
         const object = asObject(record);
@@ -231,9 +239,10 @@ function listClaudeSessions(
           createdAt ??= timestamp;
           updatedAt = maxIsoTimestamp(updatedAt, timestamp);
         }
+        metadataTitle = claudeSessionMetadataTitle(object) ?? metadataTitle;
         const type = pickFirstString(object, ["type", "role"]);
         if (type === "user" || type === "human") {
-          title ??= sanitizeTitle(extractText(object.message ?? object.content));
+          promptTitle ??= claudeUserPromptTitle(object);
         }
       }
 
@@ -247,7 +256,7 @@ function listClaudeSessions(
           cwd,
           createdAt,
           updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-          title,
+          title: metadataTitle ?? promptTitle,
           mtimeMs: candidate.mtimeMs
         })
       ];
@@ -344,6 +353,135 @@ function isGeminiConversationMessage(value: unknown): boolean {
   return Boolean(
     extractText(object?.content ?? object?.displayContent ?? object?.message)?.trim()
   );
+}
+
+function codexUserPromptTitle(value: unknown): string | undefined {
+  return sanitizeTitle(extractCodexPromptText(value));
+}
+
+function extractCodexPromptText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return cleanCodexPromptText(value);
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map(extractCodexPromptText).filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : undefined;
+  }
+  const object = asObject(value);
+  if (!object) {
+    return undefined;
+  }
+  const type = pickFirstString(object, ["type"]);
+  if (type === "input_text" || type === "text") {
+    return extractCodexPromptText(object.text);
+  }
+  return extractCodexPromptText(object.content ?? object.text ?? object.message);
+}
+
+function cleanCodexPromptText(value: string): string | undefined {
+  const cleaned = value
+    .replace(/<permissions instructions>[\s\S]*?<\/permissions instructions>/gi, "\n")
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "\n")
+    .replace(/<turn_aborted>[\s\S]*?<\/turn_aborted>/gi, "\n")
+    .replace(/<skill>[\s\S]*?<\/skill>/gi, "\n")
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "\n")
+    .trim();
+  return cleaned || undefined;
+}
+
+function claudeSessionMetadataTitle(
+  object: Record<string, unknown>
+): string | undefined {
+  const type = pickFirstString(object, ["type", "role"]);
+  if (type === "custom-title") {
+    return sanitizeTitle(
+      pickFirstString(object, ["customTitle", "custom_title", "title"])
+    );
+  }
+  if (
+    type === "summary" ||
+    type === "session-summary" ||
+    type === "session_summary" ||
+    type === "title"
+  ) {
+    return sanitizeTitle(
+      pickFirstString(object, [
+        "customTitle",
+        "custom_title",
+        "summary",
+        "title"
+      ])
+    );
+  }
+  if (type !== "user" && type !== "human" && type !== "assistant") {
+    return sanitizeTitle(
+      pickFirstString(object, [
+        "customTitle",
+        "custom_title",
+        "summary",
+        "title"
+      ])
+    );
+  }
+  return undefined;
+}
+
+function claudeUserPromptTitle(
+  object: Record<string, unknown>
+): string | undefined {
+  if (object.isMeta === true) {
+    return undefined;
+  }
+  const message = asObject(object.message);
+  return sanitizeTitle(
+    extractClaudePromptText(message?.content ?? object.content ?? object.message)
+  );
+}
+
+function extractClaudePromptText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return cleanClaudePromptText(value);
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map(extractClaudePromptText).filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : undefined;
+  }
+  const object = asObject(value);
+  if (!object) {
+    return undefined;
+  }
+  const type = pickFirstString(object, ["type"]);
+  if (type === "tool_result" || "tool_use_id" in object) {
+    return undefined;
+  }
+  if (type === "text") {
+    return extractClaudePromptText(object.text);
+  }
+  return extractClaudePromptText(object.content ?? object.text ?? object.message);
+}
+
+function cleanClaudePromptText(value: string): string | undefined {
+  const cleaned = value
+    .replace(
+      /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi,
+      "\n"
+    )
+    .replace(
+      /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi,
+      "\n"
+    )
+    .replace(
+      /<local-command-stderr>[\s\S]*?<\/local-command-stderr>/gi,
+      "\n"
+    )
+    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, "\n")
+    .replace(/<command-name>[\s\S]*?<\/command-name>/gi, "\n")
+    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, "\n")
+    .replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/gi, "\n")
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "\n")
+    .replace(/<system_reminder>[\s\S]*?<\/system_reminder>/gi, "\n")
+    .trim();
+  return cleaned || undefined;
 }
 
 function buildRecord(input: {
@@ -536,7 +674,17 @@ function collectCandidateFiles(
 }
 
 function parseJsonlPrefix(path: string): unknown[] {
-  return readFilePrefix(path)
+  return parseJsonlLines(readFilePrefix(path));
+}
+
+function parseJsonlEdges(path: string): unknown[] {
+  const prefix = readFilePrefix(path);
+  const suffix = readFileSuffix(path);
+  return parseJsonlLines(prefix === suffix ? prefix : `${prefix}\n${suffix}`);
+}
+
+function parseJsonlLines(contents: string): unknown[] {
+  return contents
     .split(/\r?\n/)
     .flatMap((line) => {
       const trimmed = line.trim();
@@ -554,6 +702,30 @@ function readFilePrefix(path: string): string {
     fd = openSync(path, "r");
     const buffer = Buffer.alloc(MAX_JSONL_SCAN_BYTES);
     const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+  }
+}
+
+function readFileSuffix(path: string): string {
+  let fd: number | null = null;
+  try {
+    const stats = statSync(path);
+    const readLength = Math.min(stats.size, MAX_JSONL_SCAN_BYTES);
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(readLength);
+    const bytesRead = readSync(
+      fd,
+      buffer,
+      0,
+      buffer.length,
+      Math.max(0, stats.size - readLength)
+    );
     return buffer.subarray(0, bytesRead).toString("utf8");
   } catch {
     return "";
@@ -683,11 +855,12 @@ function recentJsonlActivityTimestamp(
 
 function formatRelativeTime(now: Date, updatedAtMs: number): string {
   const deltaMs = Math.max(0, now.getTime() - updatedAtMs);
+  const second = 1000;
   const minute = 60 * 1000;
   const hour = 60 * minute;
   const day = 24 * hour;
   if (deltaMs < minute) {
-    return "now";
+    return `${Math.floor(deltaMs / second)}s`;
   }
   if (deltaMs < hour) {
     return `${Math.floor(deltaMs / minute)}m`;
@@ -695,8 +868,5 @@ function formatRelativeTime(now: Date, updatedAtMs: number): string {
   if (deltaMs < day) {
     return `${Math.floor(deltaMs / hour)}h`;
   }
-  if (deltaMs < 7 * day) {
-    return `${Math.floor(deltaMs / day)}d`;
-  }
-  return new Date(updatedAtMs).toISOString().slice(0, 10);
+  return `${Math.floor(deltaMs / day)}d`;
 }
