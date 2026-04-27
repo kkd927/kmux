@@ -19,6 +19,36 @@ describe("TerminalPane styles", () => {
     expect(focusedPaneRule).not.toContain("box-shadow");
     expect(focusedPaneRule).not.toContain("--focus-ring");
   });
+
+  it("matches the terminal input background to the right sidebar background token", () => {
+    expect(cssRule(".pane")).toContain(
+      "--terminal-input-bg: var(--window-bg)"
+    );
+    expect(cssRule(".meta")).toContain("background: var(--terminal-input-bg)");
+    expect(cssRule(".terminal")).toContain(
+      "background: var(--terminal-input-bg)"
+    );
+    expect(
+      cssRule(".terminalViewport :global(.xterm .xterm-helper-textarea)")
+    ).toContain("background-color: var(--terminal-input-bg)");
+    expect(
+      cssRule(".terminalViewport :global(.xterm .xterm-viewport)")
+    ).toContain("background-color: var(--terminal-input-bg) !important");
+  });
+
+  it("lets the active tab indicator replace the pane top border segment", () => {
+    expect(cssRule(".pane")).toContain("border-top: 0");
+    expect(cssRule(".header")).toContain("position: relative");
+    expect(cssRule(".header::before")).toContain(
+      "background: var(--border-strong)"
+    );
+
+    expect(cssRule('.tabItem[data-active="true"]')).toContain(
+      "box-shadow: inset 0 1px 0 var(--tab-indicator)"
+    );
+    expect(cssRule('.tabItem[data-active="true"]')).toContain("z-index: 2");
+    expect(cssRule('.tabItem[data-active="true"]::before')).toBe("");
+  });
 });
 
 function cssRule(selector: string): string {

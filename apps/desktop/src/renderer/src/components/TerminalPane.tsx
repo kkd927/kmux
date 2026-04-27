@@ -13,7 +13,6 @@ import type {
   SurfaceVm
 } from "@kmux/proto";
 import {
-  createXtermTheme,
   getTerminalSearchDecorations,
   normalizeShortcut
 } from "@kmux/ui";
@@ -24,6 +23,7 @@ import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
+  createTerminalPaneXtermTheme,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
   shouldSwallowImeCompositionMetaKey,
@@ -187,7 +187,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.terminalTheme.palette.ansi.join("\u0000")
   ].join("\u0001");
   const terminalTheme = useMemo(
-    () => createXtermTheme(props.terminalTheme.palette, props.colorTheme),
+    () =>
+      createTerminalPaneXtermTheme(
+        props.terminalTheme.palette,
+        props.colorTheme
+      ),
     [props.colorTheme, terminalPaletteSignature]
   );
   const terminalSearchDecorations = useMemo(
