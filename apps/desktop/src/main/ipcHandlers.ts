@@ -2,6 +2,8 @@ import {BrowserWindow, ipcMain} from "electron";
 
 import type {AppAction} from "@kmux/core";
 import type {
+  ExternalAgentSessionResumeResult,
+  ExternalAgentSessionsSnapshot,
   Id,
   ImportedTerminalThemePalette,
   ResolvedTerminalTypographyVm,
@@ -25,6 +27,10 @@ interface IpcHandlersOptions {
   getShellState: () => ShellStoreSnapshot;
   getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
+  getExternalAgentSessions: () => ExternalAgentSessionsSnapshot;
+  resumeExternalAgentSession: (
+    key: string
+  ) => ExternalAgentSessionResumeResult;
   getUpdaterState: () => UpdaterState;
   dispatchAppAction: (action: AppAction) => void;
   attachSurface: (
@@ -66,6 +72,12 @@ interface IpcHandlersOptions {
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
   ipcMain.handle("kmux:shell:get", () => options.getShellState());
   ipcMain.handle("kmux:usage:get", () => options.getUsageView());
+  ipcMain.handle("kmux:external-sessions:get", () =>
+    options.getExternalAgentSessions()
+  );
+  ipcMain.handle("kmux:external-sessions:resume", (_event, key: string) =>
+    options.resumeExternalAgentSession(key)
+  );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {
     options.dispatchAppAction(action);

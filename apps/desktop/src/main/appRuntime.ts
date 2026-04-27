@@ -19,8 +19,11 @@ import {
   mergeSettings
 } from "@kmux/core";
 import type {
+  ExternalAgentSessionResumeResult,
+  ExternalAgentSessionsSnapshot,
   Id,
   ResolvedTerminalTypographyVm,
+  SessionLaunchConfig,
   ShellPatch,
   ShellIdentity,
   ShellStoreSnapshot,
@@ -38,6 +41,7 @@ import type {
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
 import type { MetadataRefreshOptions } from "./metadataRuntime";
+import type { ExternalSessionResumeSpec } from "./externalSessions";
 import { logDiagnostics } from "../shared/diagnostics";
 import {
   type FontInventoryProvider,
@@ -67,6 +71,14 @@ export interface AppRuntimeOptions {
   fontInventoryProvider?: FontInventoryProvider;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
+  externalSessionIndexer?: ExternalSessionIndexerRuntime;
+}
+
+export interface ExternalSessionIndexerRuntime {
+  listExternalAgentSessions: () => ExternalAgentSessionsSnapshot;
+  resolveExternalAgentSession: (
+    key: string
+  ) => ExternalSessionResumeSpec | null;
 }
 
 export interface AppRuntime {
@@ -86,6 +98,8 @@ export interface AppRuntime {
     settings: TerminalTypographySettings
   ): Promise<ResolvedTerminalTypographyVm>;
   reportTerminalTypographyProbe(report: TerminalTypographyProbeReport): void;
+  getExternalAgentSessions(): ExternalAgentSessionsSnapshot;
+  resumeExternalAgentSession(key: string): ExternalAgentSessionResumeResult;
   respawnRestoredSessions(): void;
   shutdown(): void;
 }
@@ -574,6 +588,87 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     terminalTypographyController.reportProbe(report);
   }
 
+  function getExternalAgentSessions(): ExternalAgentSessionsSnapshot {
+    return (
+      options.externalSessionIndexer?.listExternalAgentSessions() ?? {
+        sessions: [],
+        updatedAt: new Date().toISOString()
+      }
+    );
+  }
+
+  function resumeExternalAgentSession(
+    key: string
+  ): ExternalAgentSessionResumeResult {
+    const spec = options.externalSessionIndexer?.resolveExternalAgentSession(key);
+    if (!spec) {
+      throw new Error("External session not found");
+    }
+    const existing = findOpenExternalAgentSession(spec.launch);
+    if (existing) {
+      dispatchAppAction({
+        type: "surface.focus",
+        surfaceId: existing.surfaceId
+      });
+      return existing;
+    }
+    dispatchAppAction({
+      type: "workspace.create",
+      name: spec.title,
+      cwd: spec.cwd,
+      launch: spec.launch
+    });
+    const state = getState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const paneId = workspace.activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    return { workspaceId, surfaceId };
+  }
+
+  function findOpenExternalAgentSession(
+    launch: SessionLaunchConfig
+  ): ExternalAgentSessionResumeResult | null {
+    const state = getState();
+    for (const session of Object.values(state.sessions)) {
+      if (!launchCommandsMatch(session.launch, launch)) {
+        continue;
+      }
+      const surface = state.surfaces[session.surfaceId];
+      if (!surface) {
+        continue;
+      }
+      const pane = state.panes[surface.paneId];
+      if (!pane) {
+        continue;
+      }
+      return {
+        workspaceId: pane.workspaceId,
+        surfaceId: surface.id
+      };
+    }
+    return null;
+  }
+
+  function launchCommandsMatch(
+    left: SessionLaunchConfig,
+    right: SessionLaunchConfig
+  ): boolean {
+    return left.shell === right.shell && arrayShallowEqual(left.args, right.args);
+  }
+
+  function arrayShallowEqual(
+    left: readonly string[] | undefined,
+    right: readonly string[] | undefined
+  ): boolean {
+    const leftItems = left ?? [];
+    const rightItems = right ?? [];
+    return (
+      leftItems.length === rightItems.length &&
+      leftItems.every((item, index) => item === rightItems[index])
+    );
+  }
+
   function respawnRestoredSessions(): void {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
@@ -657,6 +752,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     listTerminalFontFamilies,
     previewTerminalTypography,
     reportTerminalTypographyProbe,
+    getExternalAgentSessions,
+    resumeExternalAgentSession,
     respawnRestoredSessions,
     shutdown
   };

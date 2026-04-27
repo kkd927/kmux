@@ -4,7 +4,7 @@ import type {AppAction} from "@kmux/core";
 import type {ActiveWorkspacePaneTreeVm, ShellStoreSnapshot} from "@kmux/proto";
 import {normalizeShortcut} from "@kmux/ui";
 
-type RightPanelKind = "usage" | null;
+type RightPanelKind = "usage" | "sessions" | null;
 
 interface DismissibleUiState {
   paletteOpen: boolean;

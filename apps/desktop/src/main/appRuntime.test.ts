@@ -2,7 +2,11 @@ import { applyAction, createInitialState } from "@kmux/core";
 import { vi } from "vitest";
 
 import type { AppState } from "@kmux/core";
-import type { KmuxSettings, ShellPatch } from "@kmux/proto";
+import type {
+  ExternalAgentSessionsSnapshot,
+  KmuxSettings,
+  ShellPatch
+} from "@kmux/proto";
 
 const { beep, browserWindows, showNotification } = vi.hoisted(() => ({
   beep: vi.fn(),
@@ -66,7 +70,8 @@ function createRuntime(
     defaultShellPath: "/bin/zsh",
     refreshMetadata: options.refreshMetadata ?? vi.fn(),
     persistWindowState: vi.fn(),
-    profileRecorder: options.profileRecorder
+    profileRecorder: options.profileRecorder,
+    externalSessionIndexer: options.externalSessionIndexer
   });
 
   runtime.setStore(new AppStore(initialState));
@@ -135,6 +140,123 @@ describe("app runtime bell sound effects", () => {
     createRuntime(false).runEffects([{ type: "bell.sound" }]);
 
     expect(beep).not.toHaveBeenCalled();
+  });
+});
+
+describe("app runtime external sessions", () => {
+  it("lists and resumes an external agent session in a new workspace", () => {
+    const externalSnapshot: ExternalAgentSessionsSnapshot = {
+      updatedAt: "2026-04-26T12:00:00.000Z",
+      sessions: [
+        {
+          key: "codex:codex-session",
+          vendor: "codex",
+          vendorLabel: "CODEX",
+          title: "Fix terminal focus",
+          cwd: "/tmp/project",
+          updatedAt: "2026-04-26T11:00:00.000Z",
+          relativeTimeLabel: "1h",
+          canResume: true,
+          resumeCommandPreview: "codex resume codex-session"
+        }
+      ]
+    };
+    const runtime = createRuntime(false, {
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => externalSnapshot,
+        resolveExternalAgentSession: (key: string) =>
+          key === "codex:codex-session"
+            ? {
+                key,
+                vendor: "codex",
+                title: "Fix terminal focus",
+                cwd: "/tmp/project",
+                launch: {
+                  cwd: "/tmp/project",
+                  shell: "codex",
+                  args: ["resume", "codex-session"],
+                  title: "Fix terminal focus"
+                }
+              }
+            : null
+      }
+    });
+
+    expect(runtime.getExternalAgentSessions()).toBe(externalSnapshot);
+    const result = runtime.resumeExternalAgentSession("codex:codex-session");
+    const state = runtime.getState();
+    const workspace = state.workspaces[result.workspaceId];
+    const pane = state.panes[workspace.activePaneId];
+    const surface = state.surfaces[result.surfaceId];
+    const session = state.sessions[surface.sessionId];
+
+    expect(workspace.name).toBe("Fix terminal focus");
+    expect(pane.activeSurfaceId).toBe(result.surfaceId);
+    expect(session.launch).toMatchObject({
+      cwd: "/tmp/project",
+      shell: "codex",
+      args: ["resume", "codex-session"],
+      title: "Fix terminal focus"
+    });
+  });
+
+  it("focuses an already open external session instead of opening it again", () => {
+    const runtime = createRuntime(false, {
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => ({
+          updatedAt: "2026-04-26T12:00:00.000Z",
+          sessions: []
+        }),
+        resolveExternalAgentSession: (key: string) =>
+          key === "gemini:gemini-session"
+            ? {
+                key,
+                vendor: "gemini",
+                title: "Read image plan",
+                cwd: "/tmp/project",
+                launch: {
+                  cwd: "/tmp/project",
+                  shell: "gemini",
+                  args: ["--resume", "gemini-session"],
+                  title: "Read image plan"
+                }
+              }
+            : null
+      }
+    });
+
+    const firstResult = runtime.resumeExternalAgentSession(
+      "gemini:gemini-session"
+    );
+    const workspaceCountAfterOpen = Object.keys(
+      runtime.getState().workspaces
+    ).length;
+
+    runtime.dispatchAppAction({
+      type: "workspace.create",
+      name: "other workspace",
+      cwd: "/tmp/other"
+    });
+    expect(
+      runtime.getState().windows[runtime.getState().activeWindowId]
+        .activeWorkspaceId
+    ).not.toBe(firstResult.workspaceId);
+
+    const secondResult = runtime.resumeExternalAgentSession(
+      "gemini:gemini-session"
+    );
+    const state = runtime.getState();
+    const activeWorkspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const activeWorkspace = state.workspaces[activeWorkspaceId];
+    const activeSurfaceId =
+      state.panes[activeWorkspace.activePaneId].activeSurfaceId;
+
+    expect(secondResult).toEqual(firstResult);
+    expect(Object.keys(state.workspaces)).toHaveLength(
+      workspaceCountAfterOpen + 1
+    );
+    expect(activeWorkspaceId).toBe(firstResult.workspaceId);
+    expect(activeSurfaceId).toBe(firstResult.surfaceId);
   });
 });
 

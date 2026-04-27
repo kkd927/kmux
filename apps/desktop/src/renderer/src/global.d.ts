@@ -1,6 +1,8 @@
 import type { AppAction } from "@kmux/core";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type {
+  ExternalAgentSessionResumeResult,
+  ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
@@ -22,6 +24,10 @@ declare global {
     kmux: {
       getShellState(): Promise<ShellStoreSnapshot>;
       getUsageView(): Promise<UsageViewSnapshot>;
+      getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
+      resumeExternalAgentSession(
+        key: string
+      ): Promise<ExternalAgentSessionResumeResult>;
       getUpdaterState(): Promise<UpdaterState>;
       dispatch(action: AppAction): Promise<void>;
       subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void;

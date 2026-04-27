@@ -52,6 +52,31 @@ export interface SessionLaunchConfig {
   title?: string;
 }
 
+export type ExternalAgentSessionVendor = "codex" | "gemini" | "claude";
+
+export interface ExternalAgentSessionVm {
+  key: string;
+  vendor: ExternalAgentSessionVendor;
+  vendorLabel: "CODEX" | "GEMINI" | "CLAUDE";
+  title: string;
+  cwd?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  relativeTimeLabel: string;
+  canResume: boolean;
+  resumeCommandPreview: string;
+}
+
+export interface ExternalAgentSessionsSnapshot {
+  sessions: ExternalAgentSessionVm[];
+  updatedAt: string;
+}
+
+export interface ExternalAgentSessionResumeResult {
+  workspaceId: string;
+  surfaceId: string;
+}
+
 export interface SidebarProgress {
   value: number;
   label?: string;

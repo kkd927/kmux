@@ -25,8 +25,10 @@ import {
 import { AppOverlays } from "./components/AppOverlays";
 import { Codicon } from "./components/Codicon";
 import { PaneTree } from "./components/PaneTree";
+import { RightSidebarHost } from "./components/RightSidebarHost";
 import { TitlebarUpdateAction } from "./components/TitlebarUpdateAction";
 import { UsageDashboard } from "./components/UsageDashboard";
+import { ExternalSessionsPanelContainer } from "./components/ExternalSessionsPanel";
 import {
   applyProbeIssuesToResolvedTypography,
   probeResolvedTerminalTypography
@@ -57,7 +59,7 @@ type ActiveShortcutContext = {
   activePaneId: string;
   activeSurfaceId: string;
 };
-type RightPanelKind = "usage" | null;
+type RightPanelKind = "usage" | "sessions" | null;
 type DismissibleUiState = {
   paletteOpen: boolean;
   notificationsOpen: boolean;
@@ -74,6 +76,10 @@ type PendingWorkspaceClose = {
 
 const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
+const RIGHT_PANEL_TABS = [
+  { key: "usage", label: "Usage" },
+  { key: "sessions", label: "Sessions" }
+] as const;
 
 export function App(): JSX.Element {
   const shellReady = useShellSelector((snapshot) => snapshot !== null);
@@ -142,6 +148,7 @@ export function App(): JSX.Element {
   const [pendingWorkspaceClose, setPendingWorkspaceClose] =
     useState<PendingWorkspaceClose | null>(null);
   const usageDashboardOpen = activeRightPanel === "usage";
+  const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const dismissibleUiStateRef = useRef<DismissibleUiState>({
@@ -768,11 +775,11 @@ export function App(): JSX.Element {
           <button
             aria-label="Toggle usage dashboard"
             className={`${styles.titleActionButton} ${styles.titleActionGhost} ${
-              usageDashboardOpen ? styles.titleActionActive : ""
+              rightPanelOpen ? styles.titleActionActive : ""
             }`}
             onClick={() =>
               setActiveRightPanel((current) =>
-                current === "usage" ? null : "usage"
+                current === null ? "usage" : null
               )
             }
           >
@@ -929,24 +936,41 @@ export function App(): JSX.Element {
             onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
           />
         </main>
-        {usageDashboardOpen ? (
-          <UsageDashboard
-            onJumpToSurface={(workspaceId, surfaceId) => {
-              if (!surfaceId) {
-                return;
-              }
-              void (async () => {
-                await dispatch({
-                  type: "workspace.select",
-                  workspaceId
-                });
-                await dispatch({
-                  type: "surface.focus",
-                  surfaceId
-                });
-              })();
-            }}
-          />
+        {activeRightPanel ? (
+          <RightSidebarHost
+            title={activeRightPanel === "usage" ? "Usage" : "Sessions"}
+            tabs={[...RIGHT_PANEL_TABS]}
+            activeTab={activeRightPanel}
+            onSelectTab={(key) => setActiveRightPanel(key as RightPanelKind)}
+            testId={
+              activeRightPanel === "usage"
+                ? "usage-right-panel"
+                : "sessions-right-panel"
+            }
+          >
+            {activeRightPanel === "usage" ? (
+              <UsageDashboard
+                embedded
+                onJumpToSurface={(workspaceId, surfaceId) => {
+                  if (!surfaceId) {
+                    return;
+                  }
+                  void (async () => {
+                    await dispatch({
+                      type: "workspace.select",
+                      workspaceId
+                    });
+                    await dispatch({
+                      type: "surface.focus",
+                      surfaceId
+                    });
+                  })();
+                }}
+              />
+            ) : (
+              <ExternalSessionsPanelContainer />
+            )}
+          </RightSidebarHost>
         ) : null}
       </div>
       <AppOverlays

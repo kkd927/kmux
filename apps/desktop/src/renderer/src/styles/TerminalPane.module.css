@@ -10,11 +10,6 @@
   position: relative;
 }
 
-.pane[data-focused="true"] {
-  border-color: var(--list-active-border);
-  box-shadow: inset 0 0 0 1px var(--focus-ring);
-}
-
 .header {
   height: 34px;
   display: flex;
