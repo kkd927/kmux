@@ -110,6 +110,7 @@ describe("ExternalSessionsPanel", () => {
       (button) => button.textContent?.includes("Load more")
     );
     expect(moreButton).toBeTruthy();
+    expect(moreButton?.textContent).toBe("Load more (11)");
 
     act(() => {
       moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -153,12 +154,14 @@ describe("ExternalSessionsPanel", () => {
       (button) => button.textContent?.includes("Load more")
     );
     expect(moreButton).toBeTruthy();
+    expect(moreButton?.textContent).toBe("Load more (11)");
 
     act(() => {
       moreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(container.textContent).toContain("CODEX Session 91");
+    expect(container.textContent).not.toContain("Load more");
 
     const claudeFilter = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Claude"

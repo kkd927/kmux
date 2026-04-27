@@ -8,7 +8,7 @@ import type {
 import { useExternalAgentSessions } from "../hooks/useExternalAgentSessions";
 import styles from "../styles/App.module.css";
 
-const SESSION_PAGE_SIZE = 30;
+const SESSION_PAGE_SIZE = 20;
 const SESSION_VENDOR_FILTERS = [
   { key: "codex", label: "Codex" },
   { key: "gemini", label: "Gemini" },
