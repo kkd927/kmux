@@ -33,6 +33,29 @@ export interface TerminalEnterRewriteResult {
   clearPending: boolean;
 }
 
+export type TerminalWebglRecoveryReason = "hydrate" | "resize";
+
+export interface TerminalWebglRecoveryInput {
+  webglActive: boolean;
+  reason: TerminalWebglRecoveryReason;
+  resized: boolean;
+  previousCols: number;
+  previousRows: number;
+  cols: number;
+  rows: number;
+  resizeBurstCount: number;
+}
+
+export interface TerminalWebglRecoveryAction {
+  refresh: boolean;
+  recreate: boolean;
+}
+
+const TERMINAL_WEBGL_LARGE_COL_DELTA = 8;
+const TERMINAL_WEBGL_LARGE_ROW_DELTA = 2;
+const TERMINAL_WEBGL_TINY_COLS = 20;
+const TERMINAL_WEBGL_TINY_ROWS = 2;
+
 export function createTerminalPaneXtermTheme(
   palette: Parameters<typeof createXtermTheme>[0],
   colorTheme: ColorTheme
@@ -76,6 +99,33 @@ export function applyTerminalWebglPreference<TAddon extends DisposableAddon>(
     options.onLoadError?.(error);
     return null;
   }
+}
+
+export function resolveTerminalWebglRecovery(
+  input: TerminalWebglRecoveryInput
+): TerminalWebglRecoveryAction {
+  if (!input.webglActive) {
+    return { refresh: false, recreate: false };
+  }
+
+  if (input.reason === "hydrate") {
+    return { refresh: true, recreate: true };
+  }
+
+  const largeResize =
+    Math.abs(input.cols - input.previousCols) >=
+      TERMINAL_WEBGL_LARGE_COL_DELTA ||
+    Math.abs(input.rows - input.previousRows) >=
+      TERMINAL_WEBGL_LARGE_ROW_DELTA;
+  const tinyViewport =
+    input.cols <= TERMINAL_WEBGL_TINY_COLS ||
+    input.rows <= TERMINAL_WEBGL_TINY_ROWS;
+  const resizeChurn = input.resizeBurstCount > 1;
+
+  return {
+    refresh: true,
+    recreate: input.resized && (largeResize || tinyViewport || resizeChurn)
+  };
 }
 
 export function pasteClipboardIntoTerminal(

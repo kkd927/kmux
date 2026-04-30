@@ -25,6 +25,7 @@ import {
   applyTerminalWebglPreference,
   createTerminalPaneXtermTheme,
   pasteClipboardIntoTerminal,
+  resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
   shouldSwallowImeCompositionMetaKey,
   type PendingTerminalEnterRewrite,
@@ -110,6 +111,8 @@ type PendingEnterRewrite = PendingTerminalEnterRewrite & {
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
+const WEBGL_RECOVERY_RECREATE_DELAY_MS = 120;
+const WEBGL_RESIZE_BURST_WINDOW_MS = 350;
 
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
@@ -145,6 +148,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const webglContextLossSubscriptionRef = useRef<{
     dispose(): void;
   } | null>(null);
+  const webglRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const resizeBurstRef = useRef({ lastAt: 0, count: 0 });
   const resizeGenerationRef = useRef(0);
   const resizeSyncRef = useRef<ReturnType<typeof createTerminalResizeSync> | null>(
     null
@@ -293,6 +300,102 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
   }
 
+  function refreshTerminalRows(terminal: Terminal): void {
+    if (terminalRef.current !== terminal || terminal.rows <= 0) {
+      return;
+    }
+    try {
+      terminal.refresh(0, terminal.rows - 1);
+      syncTerminalViewportBackground();
+    } catch {
+      // terminal may have been disposed mid-recovery
+    }
+  }
+
+  function registerTerminalResizeBurst(): number {
+    const now = performance.now();
+    const previous = resizeBurstRef.current;
+    const count =
+      now - previous.lastAt <= WEBGL_RESIZE_BURST_WINDOW_MS
+        ? previous.count + 1
+        : 1;
+    resizeBurstRef.current = {
+      lastAt: now,
+      count
+    };
+    return count;
+  }
+
+  function recreateTerminalWebglAddon(terminal: Terminal): void {
+    if (
+      terminalRef.current !== terminal ||
+      !webglAddonRef.current ||
+      !props.settings.terminalUseWebgl ||
+      !props.useWebglForThisPane
+    ) {
+      return;
+    }
+
+    webglContextLossSubscriptionRef.current?.dispose();
+    webglContextLossSubscriptionRef.current = null;
+    webglAddonRef.current.dispose();
+    webglAddonRef.current = applyTerminalWebglPreference({
+      terminal,
+      currentAddon: null,
+      useWebgl: true,
+      createAddon: () => new WebglAddon(),
+      onLoadError: (error) => {
+        console.warn(
+          "Failed to reload the WebGL terminal renderer; falling back to the default renderer",
+          error
+        );
+      }
+    });
+    bindWebglContextLoss(webglAddonRef.current, terminal);
+    refreshTerminalRows(terminal);
+    requestAnimationFrame(() => {
+      refreshTerminalRows(terminal);
+    });
+  }
+
+  function scheduleWebglPaintRecovery(
+    terminal: Terminal,
+    options: {
+      reason: "hydrate" | "resize";
+      resized: boolean;
+      previousCols: number;
+      previousRows: number;
+      cols: number;
+      rows: number;
+      resizeBurstCount: number;
+    }
+  ): void {
+    const recovery = resolveTerminalWebglRecovery({
+      webglActive: Boolean(webglAddonRef.current),
+      ...options
+    });
+    if (!recovery.refresh) {
+      return;
+    }
+
+    refreshTerminalRows(terminal);
+    requestAnimationFrame(() => {
+      refreshTerminalRows(terminal);
+    });
+
+    if (!recovery.recreate) {
+      return;
+    }
+
+    if (webglRecoveryTimerRef.current) {
+      clearTimeout(webglRecoveryTimerRef.current);
+    }
+    webglRecoveryTimerRef.current = setTimeout(() => {
+      webglRecoveryTimerRef.current = null;
+      recreateTerminalWebglAddon(terminal);
+    }, WEBGL_RECOVERY_RECREATE_DELAY_MS);
+  }
+
   async function fitAndSyncTerminal(terminal: Terminal): Promise<void> {
     const fit = fitRef.current;
     if (!fit) {
@@ -368,6 +471,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           cols: dims.cols,
           rows: dims.rows,
           durationMs: applyEndedAt - applyStartedAt
+        });
+        scheduleWebglPaintRecovery(terminal, {
+          reason: "resize",
+          resized: true,
+          previousCols,
+          previousRows,
+          cols: dims.cols,
+          rows: dims.rows,
+          resizeBurstCount: registerTerminalResizeBurst()
         });
         requestAnimationFrame(() => {
           if (terminalRef.current !== terminal) {
@@ -865,6 +977,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
       clearPendingEnterRewrite();
+      if (webglRecoveryTimerRef.current) {
+        clearTimeout(webglRecoveryTimerRef.current);
+        webglRecoveryTimerRef.current = null;
+      }
       webglContextLossSubscriptionRef.current?.dispose();
       webglContextLossSubscriptionRef.current = null;
       webglAddonRef.current?.dispose();
@@ -1010,6 +1126,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               activeSurface.id,
               snapshot.sequence
             );
+            scheduleWebglPaintRecovery(terminal, {
+              reason: "hydrate",
+              resized: false,
+              previousCols: terminal.cols,
+              previousRows: terminal.rows,
+              cols: terminal.cols,
+              rows: terminal.rows,
+              resizeBurstCount: 1
+            });
           }
         });
       } else {
@@ -1028,6 +1153,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               activeSurface.id,
               snapshot.sequence
             );
+            scheduleWebglPaintRecovery(terminal, {
+              reason: "hydrate",
+              resized: false,
+              previousCols: terminal.cols,
+              previousRows: terminal.rows,
+              cols: terminal.cols,
+              rows: terminal.rows,
+              resizeBurstCount: 1
+            });
           }
         });
       }
