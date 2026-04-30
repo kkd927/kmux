@@ -702,6 +702,125 @@ describe("subscription usage fetchers", () => {
     ]);
   });
 
+  it("ignores Gemini sentinel quota buckets instead of showing false 100 percent usage", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".gemini", "oauth_creds.json"], {
+      access_token: "gemini-access-token",
+      refresh_token: "gemini-refresh-token",
+      expiry_date: Date.parse("2026-04-19T00:00:00.000Z"),
+      id_token: makeGoogleIdToken({ email: "user@gmail.com" })
+    });
+    writeJson(homeDir, [".gemini", "settings.json"], {
+      security: {
+        auth: {
+          selectedType: "oauth-personal"
+        }
+      }
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            }
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-2.5-pro",
+                remainingFraction: 0,
+                resetTime: "1970-01-01T00:00:00Z"
+              },
+              {
+                modelId: "gemini-2.5-flash",
+                remainingFraction: 0,
+                resetTime: "1970-01-01T00:00:00Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchGeminiSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toBeNull();
+  });
+
+  it("does not let Gemini sentinel quota buckets override valid buckets for the same model family", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".gemini", "oauth_creds.json"], {
+      access_token: "gemini-access-token",
+      refresh_token: "gemini-refresh-token",
+      expiry_date: Date.parse("2026-04-19T00:00:00.000Z"),
+      id_token: makeGoogleIdToken({ email: "user@gmail.com" })
+    });
+    writeJson(homeDir, [".gemini", "settings.json"], {
+      security: {
+        auth: {
+          selectedType: "oauth-personal"
+        }
+      }
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            }
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-3.1-pro-preview",
+                remainingFraction: 0,
+                resetTime: "1970-01-01T00:00:00Z"
+              },
+              {
+                modelId: "gemini-2.5-pro",
+                remainingFraction: 0.4,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchGeminiSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows).toEqual([
+      expect.objectContaining({
+        key: "pro",
+        label: "Pro",
+        usedPercent: 60,
+        resetLabel: "Resets in 1d 1h"
+      })
+    ]);
+  });
+
   it("shows Gemini workspace quota windows but hides free-tier accounts", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".gemini", "oauth_creds.json"], {

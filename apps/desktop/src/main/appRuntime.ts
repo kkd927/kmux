@@ -9,6 +9,8 @@ import {
   type AppState,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
+  buildAllWorkspacePaneTreesVm,
+  buildWorkspacePaneTreeVm,
   buildNotificationsVm,
   buildShellSettingsVm,
   buildShellWindowChromeVm,
@@ -19,6 +21,7 @@ import {
   mergeSettings
 } from "@kmux/core";
 import type {
+  ActiveWorkspacePaneTreeVm,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   Id,
@@ -29,6 +32,7 @@ import type {
   ShellStoreSnapshot,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
+  WorkspacePaneTreesPatch,
   WorkspaceRowsPatch,
   WorkspaceRowVm
 } from "@kmux/proto";
@@ -146,6 +150,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       workspaceRows: buildWorkspaceRowsVm(state),
       activeWorkspace: buildActiveWorkspaceActivityVm(state),
       activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
+      workspacePaneTrees: buildAllWorkspacePaneTreesVm(state),
       notifications: buildNotificationsVm(state),
       settings: buildShellSettingsVm(state),
       terminalTypography: terminalTypographyController.getViewModel()
@@ -283,6 +288,18 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       ) {
         nextPatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
         nextShellStatePatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
+        didChange = true;
+      }
+    }
+
+    if (groups.has("workspacePaneTrees")) {
+      const state = getState();
+      const currentTrees = currentShellState.workspacePaneTrees;
+      const nextTrees: Record<Id, ActiveWorkspacePaneTreeVm> = {};
+      const paneTreesPatch = buildWorkspacePaneTreesPatch(state, currentTrees, nextTrees);
+      if (paneTreesPatch) {
+        nextPatch.workspacePaneTreesPatch = paneTreesPatch;
+        nextShellStatePatch.workspacePaneTrees = nextTrees;
         didChange = true;
       }
     }
@@ -793,9 +810,43 @@ type ShellGroup =
   | "workspaceRows"
   | "activeWorkspace"
   | "activeWorkspacePaneTree"
+  | "workspacePaneTrees"
   | "notifications"
   | "settings"
   | "terminalTypography";
+
+function buildWorkspacePaneTreesPatch(
+  state: AppState,
+  currentTrees: Record<Id, ActiveWorkspacePaneTreeVm>,
+  nextTreesOut: Record<Id, ActiveWorkspacePaneTreeVm>
+): WorkspacePaneTreesPatch | null {
+  const currentIds = new Set(Object.keys(currentTrees));
+  const nextIds = new Set(Object.keys(state.workspaces));
+  const remove = [...currentIds].filter((id) => !nextIds.has(id));
+  const upsert: Record<Id, ActiveWorkspacePaneTreeVm> = {};
+
+  Object.assign(nextTreesOut, currentTrees);
+  for (const id of remove) {
+    delete nextTreesOut[id];
+  }
+
+  for (const id of nextIds) {
+    const nextTree = buildWorkspacePaneTreeVm(state, id);
+    nextTreesOut[id] = nextTree;
+    if (!isDeepStrictEqual(currentTrees[id], nextTree)) {
+      upsert[id] = nextTree;
+    }
+  }
+
+  if (remove.length === 0 && Object.keys(upsert).length === 0) {
+    return null;
+  }
+
+  return {
+    ...(Object.keys(upsert).length > 0 ? { upsert } : {}),
+    ...(remove.length > 0 ? { remove } : {})
+  };
+}
 
 function buildWorkspaceRowsPatch(
   currentRows: WorkspaceRowVm[],
@@ -842,6 +893,9 @@ function shellGroupsFromMutation(mutation: AppMutationSummary): Set<ShellGroup> 
   }
   if (mutation.activeWorkspacePaneTree) {
     groups.add("activeWorkspacePaneTree");
+  }
+  if (mutation.paneTreeWorkspaceIds && mutation.paneTreeWorkspaceIds.size > 0) {
+    groups.add("workspacePaneTrees");
   }
   if (mutation.notifications) {
     groups.add("notifications");

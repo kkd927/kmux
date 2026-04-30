@@ -12,6 +12,7 @@ import { useShellSelector } from "./useShellStore";
   .IS_REACT_ACT_ENVIRONMENT = true;
 
 const EMPTY_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
+const EMPTY_TREES: ShellStoreSnapshot["workspacePaneTrees"] = {};
 
 function createDeferred<T>(): {
   promise: Promise<T>;
@@ -85,6 +86,40 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
         }
       },
       activePaneId: "pane_1"
+    },
+    workspacePaneTrees: {
+      workspace_1: {
+        id: "workspace_1",
+        rootNodeId: "node_1",
+        nodes: {
+          node_1: {
+            id: "node_1",
+            kind: "leaf",
+            paneId: "pane_1"
+          }
+        },
+        panes: {
+          pane_1: {
+            id: "pane_1",
+            surfaceIds: ["surface_1"],
+            activeSurfaceId: "surface_1",
+            focused: true
+          }
+        },
+        surfaces: {
+          surface_1: {
+            id: "surface_1",
+            title: "repo / shell",
+            cwd: "/repo",
+            branch: "main",
+            ports: [3000],
+            unreadCount: 0,
+            attention: false,
+            sessionState: "running"
+          }
+        },
+        activePaneId: "pane_1"
+      }
     },
     notifications: [],
     settings: {
@@ -414,6 +449,78 @@ describe("useShellStore", () => {
         sidebarVisible: false,
         sidebarWidth: 320
       })
+    );
+  });
+
+  it("applies workspacePaneTreesPatch upsert correctly", async () => {
+    function PaneTreesProbe(): JSX.Element {
+      const trees = useShellSelector(
+        (snapshot) => snapshot?.workspacePaneTrees ?? EMPTY_TREES
+      );
+      return (
+        <div data-testid="trees">{Object.keys(trees).sort().join(",")}</div>
+      );
+    }
+
+    act(() => {
+      root.render(<PaneTreesProbe />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("[data-testid='trees']")?.textContent).toBe(
+      "workspace_1"
+    );
+
+    const snapshot = createShellSnapshot();
+    const workspace2Tree = {
+      ...snapshot.workspacePaneTrees["workspace_1"],
+      id: "workspace_2"
+    };
+
+    act(() => {
+      emitPatch?.({
+        version: 1,
+        workspacePaneTreesPatch: {
+          upsert: { workspace_2: workspace2Tree }
+        }
+      });
+    });
+
+    expect(container.querySelector("[data-testid='trees']")?.textContent).toBe(
+      "workspace_1,workspace_2"
+    );
+  });
+
+  it("applies workspacePaneTreesPatch remove correctly", async () => {
+    function PaneTreesProbe(): JSX.Element {
+      const trees = useShellSelector(
+        (snapshot) => snapshot?.workspacePaneTrees ?? EMPTY_TREES
+      );
+      return (
+        <div data-testid="trees">{Object.keys(trees).sort().join(",")}</div>
+      );
+    }
+
+    act(() => {
+      root.render(<PaneTreesProbe />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      emitPatch?.({
+        version: 1,
+        workspacePaneTreesPatch: {
+          remove: ["workspace_1"]
+        }
+      });
+    });
+
+    expect(container.querySelector("[data-testid='trees']")?.textContent).toBe(
+      ""
     );
   });
 });

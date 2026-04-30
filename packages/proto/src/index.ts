@@ -584,6 +584,7 @@ export interface ShellStoreSnapshot {
   workspaceRows: WorkspaceRowVm[];
   activeWorkspace: ActiveWorkspaceActivityVm;
   activeWorkspacePaneTree: ActiveWorkspacePaneTreeVm;
+  workspacePaneTrees: Record<Id, ActiveWorkspacePaneTreeVm>;
   notifications: NotificationItem[];
   unreadNotifications: number;
   settings: KmuxSettings;
@@ -596,6 +597,11 @@ export interface WorkspaceRowsPatch {
   order?: Id[];
 }
 
+export interface WorkspacePaneTreesPatch {
+  upsert?: Record<Id, ActiveWorkspacePaneTreeVm>;
+  remove?: Id[];
+}
+
 export interface ShellPatch {
   version: number;
   windowId?: Id;
@@ -606,6 +612,7 @@ export interface ShellPatch {
   workspaceRowsPatch?: WorkspaceRowsPatch;
   activeWorkspace?: ActiveWorkspaceActivityVm;
   activeWorkspacePaneTree?: ActiveWorkspacePaneTreeVm;
+  workspacePaneTreesPatch?: WorkspacePaneTreesPatch;
   notifications?: NotificationItem[];
   unreadNotifications?: number;
   settings?: KmuxSettings;

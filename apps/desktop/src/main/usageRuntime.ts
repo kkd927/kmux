@@ -46,25 +46,15 @@ import {
 const ACTIVE_REFRESH_MS = 10_000;
 const DASHBOARD_REFRESH_MS = 15_000;
 const BACKGROUND_USAGE_REFRESH_MS = 60_000;
-const SUBSCRIPTION_LIVE_REFRESH_MS = 60_000;
-const SUBSCRIPTION_RECENT_REFRESH_MS = 5 * 60 * 1000;
-const SUBSCRIPTION_CLAUDE_LIVE_REFRESH_MS = 5 * 60 * 1000;
-const SUBSCRIPTION_CLAUDE_RECENT_REFRESH_MS = 15 * 60 * 1000;
+const SUBSCRIPTION_LIVE_REFRESH_MS = 5 * 60 * 1000;
+const SUBSCRIPTION_RECENT_REFRESH_MS = 15 * 60 * 1000;
 const SUBSCRIPTION_FAILURE_BACKOFF_MS = [
   2 * 60 * 1000,
   5 * 60 * 1000,
   15 * 60 * 1000
 ];
 
-function getSubscriptionRefreshMs(
-  provider: SubscriptionProvider,
-  visibility: SubscriptionVisibility
-): number {
-  if (provider === "claude") {
-    return visibility === "live"
-      ? SUBSCRIPTION_CLAUDE_LIVE_REFRESH_MS
-      : SUBSCRIPTION_CLAUDE_RECENT_REFRESH_MS;
-  }
+function getSubscriptionRefreshMs(visibility: SubscriptionVisibility): number {
   return visibility === "live"
     ? SUBSCRIPTION_LIVE_REFRESH_MS
     : SUBSCRIPTION_RECENT_REFRESH_MS;
@@ -530,7 +520,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             }
             subscriptionPollStates.set(provider, {
               failureCount: 0,
-              nextPollAtMs: nowMs + getSubscriptionRefreshMs(provider, visibility),
+              nextPollAtMs: nowMs + getSubscriptionRefreshMs(visibility),
               visibility
             });
           } catch {

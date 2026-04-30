@@ -960,6 +960,7 @@
   min-height: 0;
   overflow: hidden;
   background: var(--window-bg);
+  position: relative;
 }
 
 .main > * {

@@ -2,6 +2,7 @@ import {
   applyAction,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
+  buildAllWorkspacePaneTreesVm,
   buildNotificationsVm,
   buildShellSettingsVm,
   buildShellWindowChromeVm,
@@ -21,6 +22,7 @@ function buildShellState(state: ReturnType<typeof createInitialState>): ShellSto
     workspaceRows: buildWorkspaceRowsVm(state),
     activeWorkspace: buildActiveWorkspaceActivityVm(state),
     activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
+    workspacePaneTrees: buildAllWorkspacePaneTreesVm(state),
     notifications: buildNotificationsVm(state),
     settings: buildShellSettingsVm(state),
     terminalTypography: createPendingResolvedTerminalTypographyVm(
