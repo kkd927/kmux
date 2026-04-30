@@ -31,6 +31,7 @@ import {
   type DisposableAddon
 } from "../terminalRenderer";
 import { hydrateAttachedTerminal } from "../terminalAttachHydration";
+import * as terminalInstanceStore from "../terminalInstanceStore";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import {
@@ -120,6 +121,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const searchRef = useRef<SearchAddon | null>(null);
   const webglAddonRef = useRef<DisposableAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingEnterRewriteRef = useRef<PendingEnterRewrite | null>(null);
   const [query, setQuery] = useState("");
@@ -211,16 +213,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   searchDecorationsRef.current = terminalSearchDecorations;
 
   function syncTerminalMetrics(terminal: Terminal | null): void {
-    if (!containerRef.current || !terminal) {
+    if (!wrapperRef.current || !terminal) {
       return;
     }
-    containerRef.current.dataset.terminalViewportY = String(
+    wrapperRef.current.dataset.terminalViewportY = String(
       terminal.buffer.active.viewportY
     );
-    containerRef.current.dataset.terminalBaseY = String(
+    wrapperRef.current.dataset.terminalBaseY = String(
       terminal.buffer.active.baseY
     );
-    containerRef.current.dataset.terminalBracketedPasteMode = String(
+    wrapperRef.current.dataset.terminalBracketedPasteMode = String(
       terminal.modes.bracketedPasteMode
     );
   }
@@ -583,34 +585,52 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!containerRef.current) {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) {
+      return;
+    }
+    const { instance } = terminalInstanceStore.acquire(props.paneId, () => {
+      const host = document.createElement("div");
+      host.style.cssText = "width:100%;height:100%;min-height:0;overflow:hidden;";
+      const terminal = new Terminal({
+        allowProposedApi: true,
+        fontFamily: props.terminalTypography.resolvedFontFamily,
+        fontSize: props.settings.terminalTypography.fontSize,
+        lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
+        fontWeight: 400,
+        cursorBlink: true,
+        macOptionIsMeta: false,
+        scrollback: 5000,
+        minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
+        theme: terminalTheme
+      });
+      const fit = new FitAddon();
+      const search = new SearchAddon();
+      const unicode11 = new Unicode11Addon();
+      terminal.loadAddon(fit);
+      terminal.loadAddon(search);
+      terminal.loadAddon(unicode11);
+      terminal.unicode.activeVersion = "11";
+      terminal.open(host);
+      return { host, terminal, fit, search, unicode11, lastHydratedSurfaceId: null };
+    });
+    containerRef.current = instance.host;
+    terminalRef.current = instance.terminal;
+    fitRef.current = instance.fit;
+    searchRef.current = instance.search;
+    wrapper.appendChild(instance.host);
+    return () => {
+      terminalInstanceStore.detach(props.paneId);
+    };
+  }, [props.paneId]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const terminal = terminalRef.current;
+    if (!container || !terminal) {
       return;
     }
     runtimeRecoveryPendingRef.current = false;
-    const container = containerRef.current;
-
-    const terminal = new Terminal({
-      allowProposedApi: true,
-      fontFamily: props.terminalTypography.resolvedFontFamily,
-      fontSize: props.settings.terminalTypography.fontSize,
-      lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
-      fontWeight: 400,
-      cursorBlink: true,
-      macOptionIsMeta: false,
-      scrollback: 5000,
-      minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
-      theme: terminalTheme
-    });
-    const fit = new FitAddon();
-    const search = new SearchAddon();
-    const unicode11 = new Unicode11Addon();
-    terminalRef.current = terminal;
-    fitRef.current = fit;
-    searchRef.current = search;
-    terminal.loadAddon(fit);
-    terminal.loadAddon(search);
-    terminal.loadAddon(unicode11);
-    terminal.unicode.activeVersion = "11";
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
@@ -739,7 +759,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
-    terminal.open(container);
     const imeCompositionRef = { current: false };
     const handleCompositionStart = (): void => {
       imeCompositionRef.current = true;
@@ -785,7 +804,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         });
       }, 30);
     });
-    resizeObserver.observe(containerRef.current);
+    resizeObserver.observe(container);
 
     const disposeData = terminal.onData((data) => {
       const currentSurface = activeSurfaceRef.current;
@@ -833,10 +852,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       webglContextLossSubscriptionRef.current = null;
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
-      terminal.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
-      searchRef.current = null;
     };
   }, [props.paneId, runtimeGeneration]);
 
@@ -944,16 +959,48 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!terminal) {
         return;
       }
-      await hydrateAttachedTerminal({
-        terminal,
-        isMounted: () => mounted,
-        isTerminalActive: (candidate) => terminalRef.current === candidate,
-        waitForTerminalFonts,
-        fitAndSyncTerminal,
-        attachSurface: () => window.kmux.attachSurface(activeSurface.id),
-        writeTerminal: (terminal, data, afterWrite) =>
-          writeTerminal(terminal, data, afterWrite, activeSurface.id)
-      });
+      const lastHydratedSurfaceId = terminalInstanceStore.getLastHydratedSurfaceId(props.paneId);
+      if (lastHydratedSurfaceId === activeSurface.id) {
+        // Terminal content already reflects this surface; re-attach without reset.
+        // attachSurface must come before fitAndSyncTerminal so that the SIGWINCH
+        // triggered by the resize is delivered to a live surface and received via
+        // subscribeTerminal (rather than buffered into a VT snapshot we would ignore).
+        await waitForTerminalFonts();
+        if (!mounted || terminalRef.current !== terminal) {
+          return;
+        }
+        const snapshot = await window.kmux.attachSurface(activeSurface.id);
+        if (!mounted || terminalRef.current !== terminal) {
+          return;
+        }
+        // Write output that arrived during the detach gap without resetting the
+        // terminal — reset would destroy the preserved screen content.
+        if (snapshot?.vt) {
+          writeTerminal(terminal, snapshot.vt, undefined, activeSurface.id);
+        }
+        // The wiring effect (deps: [paneId, runtimeGeneration]) may have already
+        // sent resizeSurface while the surface was detached (SIGWINCH buffered
+        // into the now-ignored VT snapshot).  Clear the cached synced size so
+        // fitAndSyncTerminal unconditionally re-sends resizeSurface now that the
+        // surface is live, causing the TUI app to redraw (and re-enable mouse
+        // mode) via subscribeTerminal.
+        surfaceResizeDimensionsRef.current.delete(activeSurface.id);
+        await fitAndSyncTerminal(terminal);
+      } else {
+        await hydrateAttachedTerminal({
+          terminal,
+          isMounted: () => mounted,
+          isTerminalActive: (candidate) => terminalRef.current === candidate,
+          waitForTerminalFonts,
+          fitAndSyncTerminal,
+          attachSurface: () => window.kmux.attachSurface(activeSurface.id),
+          writeTerminal: (terminal, data, afterWrite) =>
+            writeTerminal(terminal, data, afterWrite, activeSurface.id)
+        });
+        if (mounted && terminalRef.current === terminal) {
+          terminalInstanceStore.markSurfaceHydrated(props.paneId, activeSurface.id);
+        }
+      }
     })();
 
     return () => {
@@ -961,7 +1008,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       unsubscribe();
       void window.kmux.detachSurface(activeSurface.id);
     };
-  }, [activeSurface?.id, props.paneId, runtimeGeneration]);
+  }, [activeSurface?.id, props.paneId]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -1312,7 +1359,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           </div>
         ) : null}
         <div
-          ref={containerRef}
+          ref={wrapperRef}
           className={styles.terminalViewport}
           data-testid={`terminal-${activeSurface.id}`}
           aria-label={`Terminal surface ${activeSurface.title}`}
