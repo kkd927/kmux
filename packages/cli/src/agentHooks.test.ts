@@ -62,6 +62,22 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("maps Claude PreToolUse ExitPlanMode prompts to needs_input events", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "PreToolUse", {
+        tool_name: "ExitPlanMode",
+        tool_input: {
+          plan: "Implement the requested change"
+        }
+      })
+    ).toMatchObject({
+      agent: "claude",
+      event: "needs_input",
+      title: "Claude needs input",
+      message: "Plan ready for approval"
+    });
+  });
+
   it("maps Claude PostToolUse AskUserQuestion completions to running events", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PostToolUse", {

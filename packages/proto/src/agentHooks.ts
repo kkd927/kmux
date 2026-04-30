@@ -135,10 +135,8 @@ function mapAgentHookEvent(
     if (hookEvent === "permission-request") {
       return "needs_input";
     }
-    if (
-      hookEvent === "pre-tool-use" &&
-      stringField(payload, "tool_name") === "AskUserQuestion"
-    ) {
+    const toolName = stringField(payload, "tool_name");
+    if (hookEvent === "pre-tool-use" && isClaudeInputTool(toolName)) {
       return "needs_input";
     }
     if (
@@ -212,6 +210,10 @@ function isClaudeNotificationHook(agent: string, hookEvent: string): boolean {
     agent === "claude" &&
     (hookEvent === "notification" || hookEvent === "notify")
   );
+}
+
+function isClaudeInputTool(toolName: string | undefined): boolean {
+  return toolName === "AskUserQuestion" || toolName === "ExitPlanMode";
 }
 
 function resolveHookTarget(
@@ -297,6 +299,13 @@ function extractHookMessage(
 }
 
 function extractClaudeQuestion(payload: HookPayload): string | undefined {
+  if (stringField(payload, "tool_name") === "ExitPlanMode") {
+    return firstString(
+      stringField(payload, "message"),
+      "Plan ready for approval"
+    );
+  }
+
   const toolInput = recordField(payload, "tool_input");
   const questions = arrayField(toolInput, "questions");
   const firstQuestion = recordValue(questions[0]);
