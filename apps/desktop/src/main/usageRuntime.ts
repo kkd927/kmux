@@ -46,8 +46,11 @@ import {
 const ACTIVE_REFRESH_MS = 10_000;
 const DASHBOARD_REFRESH_MS = 15_000;
 const BACKGROUND_USAGE_REFRESH_MS = 60_000;
-const SUBSCRIPTION_LIVE_REFRESH_MS = 5 * 60 * 1000;
-const SUBSCRIPTION_RECENT_REFRESH_MS = 15 * 60 * 1000;
+const SUBSCRIPTION_LIVE_REFRESH_MS = 3 * 60 * 1000;
+const SUBSCRIPTION_RECENT_REFRESH_MS = 10 * 60 * 1000;
+const SUBSCRIPTION_INTERACTIVE_REFRESH_COOLDOWN_MS = 60_000;
+const SUBSCRIPTION_RESET_REFRESH_GRACE_MS = 30_000;
+const SUBSCRIPTION_STALE_RESET_RETRY_MS = 60_000;
 const SUBSCRIPTION_FAILURE_BACKOFF_MS = [
   2 * 60 * 1000,
   5 * 60 * 1000,
@@ -177,6 +180,47 @@ const DISCOVER_ONLY_DIRTY_OPTIONS = {
   markKnownSourcesDirty: false
 } as const;
 
+function getNextSubscriptionPollAtMs(
+  nowMs: number,
+  visibility: SubscriptionVisibility,
+  providerUsage: SubscriptionProviderUsageVm | null
+): number {
+  const cadencePollAtMs = nowMs + getSubscriptionRefreshMs(visibility);
+  const resetDrivenPollAtMs = getResetDrivenPollAtMs(providerUsage, nowMs, {
+    staleDelayMs: SUBSCRIPTION_STALE_RESET_RETRY_MS
+  });
+  return resetDrivenPollAtMs === null
+    ? cadencePollAtMs
+    : Math.min(cadencePollAtMs, resetDrivenPollAtMs);
+}
+
+function getResetDrivenPollAtMs(
+  providerUsage: SubscriptionProviderUsageVm | null | undefined,
+  nowMs: number,
+  options: { staleDelayMs?: number } = {}
+): number | null {
+  const resetTimes = providerUsage?.rows.flatMap((row) => {
+    if (!row.resetsAt) {
+      return [];
+    }
+    const resetAtMs = Date.parse(row.resetsAt);
+    return Number.isFinite(resetAtMs) ? [resetAtMs] : [];
+  }) ?? [];
+
+  if (resetTimes.length === 0) {
+    return null;
+  }
+  if (resetTimes.some((resetAtMs) => resetAtMs <= nowMs)) {
+    return nowMs + (options.staleDelayMs ?? 0);
+  }
+
+  let nextResetAtMs = Number.POSITIVE_INFINITY;
+  for (const resetAtMs of resetTimes) {
+    nextResetAtMs = Math.min(nextResetAtMs, resetAtMs);
+  }
+  return nextResetAtMs + SUBSCRIPTION_RESET_REFRESH_GRACE_MS;
+}
+
 type SubscriptionPollState = {
   failureCount: number;
   nextPollAtMs: number;
@@ -280,6 +324,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     SubscriptionProvider,
     SubscriptionPollState
   >();
+  const lastInteractiveSubscriptionRefreshAtMs = new Map<
+    SubscriptionProvider,
+    number
+  >();
   let authVisibleProviders = new Set<SubscriptionProvider>();
   let lastSubscriptionVisibilitySignature = "";
 
@@ -334,13 +382,17 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   }
 
   function setDashboardOpen(open: boolean): void {
+    const wasDashboardOpen = dashboardOpen;
     dashboardOpen = open;
     scheduleRefresh();
     if (!open) {
       scheduleSubscriptionRefresh();
       return;
     }
-    void refreshSubscriptionUsageNow({ forceAuthRefresh: true });
+    void refreshSubscriptionUsageNow({
+      forceAuthRefresh: true,
+      forceInteractiveRefresh: !wasDashboardOpen
+    });
   }
 
   function scheduleRefresh(): void {
@@ -445,6 +497,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (!state) {
         continue;
       }
+      if (state.failureCount === 0) {
+        const resetDrivenPollAtMs = getResetDrivenPollAtMs(
+          subscriptionUsage.get(provider),
+          nowMs
+        );
+        if (
+          resetDrivenPollAtMs !== null &&
+          resetDrivenPollAtMs < state.nextPollAtMs
+        ) {
+          state.nextPollAtMs = resetDrivenPollAtMs;
+        }
+      }
       const delayMs = Math.max(0, state.nextPollAtMs - nowMs);
       if (nextDelayMs === null || delayMs < nextDelayMs) {
         nextDelayMs = delayMs;
@@ -463,6 +527,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
   async function refreshSubscriptionUsageNow(options: {
     forceAuthRefresh?: boolean;
+    forceInteractiveRefresh?: boolean;
   } = {}): Promise<void> {
     if (!dashboardOpen) {
       return;
@@ -481,7 +546,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       const dueProviders = Array.from(visibleProviders.entries()).flatMap(
         ([provider, visibility]) => {
           const state = subscriptionPollStates.get(provider);
-          if (!state || state.nextPollAtMs <= nowMs || state.visibility !== visibility) {
+          const shouldForceInteractiveRefresh =
+            options.forceInteractiveRefresh === true &&
+            shouldForceInteractiveSubscriptionRefresh(provider, nowMs);
+          if (
+            !state ||
+            state.nextPollAtMs <= nowMs ||
+            state.visibility !== visibility ||
+            shouldForceInteractiveRefresh
+          ) {
             return [[provider, visibility] as const];
           }
           return [];
@@ -497,6 +570,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
       await Promise.all(
         dueProviders.map(async ([provider, visibility]) => {
+          if (options.forceInteractiveRefresh === true) {
+            lastInteractiveSubscriptionRefreshAtMs.set(provider, nowMs);
+          }
           const fetcher = subscriptionFetchers[provider];
           if (!fetcher) {
             return;
@@ -520,7 +596,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             }
             subscriptionPollStates.set(provider, {
               failureCount: 0,
-              nextPollAtMs: nowMs + getSubscriptionRefreshMs(visibility),
+              nextPollAtMs: getNextSubscriptionPollAtMs(
+                nowMs,
+                visibility,
+                nextUsage
+              ),
               visibility
             });
           } catch {
@@ -599,7 +679,23 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         subscriptionPollStates.delete(provider);
       }
     }
+    for (const provider of lastInteractiveSubscriptionRefreshAtMs.keys()) {
+      if (!visibleProviders.has(provider)) {
+        lastInteractiveSubscriptionRefreshAtMs.delete(provider);
+      }
+    }
     return didChange;
+  }
+
+  function shouldForceInteractiveSubscriptionRefresh(
+    provider: SubscriptionProvider,
+    nowMs: number
+  ): boolean {
+    const lastRefreshAtMs = lastInteractiveSubscriptionRefreshAtMs.get(provider);
+    return (
+      typeof lastRefreshAtMs !== "number" ||
+      nowMs - lastRefreshAtMs >= SUBSCRIPTION_INTERACTIVE_REFRESH_COOLDOWN_MS
+    );
   }
 
   async function refreshSubscriptionAuthVisibility(options: {

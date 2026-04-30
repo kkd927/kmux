@@ -693,7 +693,7 @@ describe("usage runtime", () => {
     );
   });
 
-  it("polls subscription usage every five minutes for live providers while the dashboard is open", async () => {
+  it("polls subscription usage every three minutes for live providers while the dashboard is open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
@@ -746,7 +746,7 @@ describe("usage runtime", () => {
 
     expect(subscriptionFetchers.codex).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000 + 58_000);
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1_000 + 58_000);
     expect(subscriptionFetchers.codex).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -755,7 +755,7 @@ describe("usage runtime", () => {
     runtime.shutdown();
   });
 
-  it("polls recent-only subscription providers every fifteen minutes and stops when the dashboard closes", async () => {
+  it("polls recent-only subscription providers every ten minutes and stops when the dashboard closes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
@@ -808,13 +808,138 @@ describe("usage runtime", () => {
 
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(15 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
 
     runtime.setDashboardOpen(false);
-    await vi.advanceTimersByTimeAsync(15 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
 
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
+
+    runtime.shutdown();
+  });
+
+  it("forces a subscription refresh on dashboard reopen while throttling repeated toggles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
+    const state = createInitialState();
+    const geminiFetcher = vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
+      provider: "gemini",
+      providerLabel: "Gemini",
+      planLabel: "Paid",
+      source: "quota_api",
+      updatedAt: new Date().toISOString(),
+      rows: [
+        {
+          key: "pro",
+          label: "Pro",
+          usedPercent: 42,
+          resetLabel: "Resets in 6h 0m",
+          resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
+          windowKind: "model"
+        }
+      ]
+    }));
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      emitSnapshot: vi.fn(),
+      subscriptionFetchers: {
+        gemini: geminiFetcher
+      },
+      subscriptionAuthDetectors: {
+        gemini: vi.fn(async () => true)
+      }
+    } as never);
+
+    runtime.start();
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    runtime.setDashboardOpen(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    runtime.setDashboardOpen(false);
+    await vi.advanceTimersByTimeAsync(31_000);
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(geminiFetcher).toHaveBeenCalledTimes(2);
+
+    runtime.shutdown();
+  });
+
+  it("refreshes subscription usage shortly after a reset even for recent-only providers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
+    const state = createInitialState();
+    const geminiFetcher = vi
+      .fn<() => Promise<SubscriptionProviderUsageVm>>()
+      .mockResolvedValueOnce({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 100,
+            resetLabel: "Resets in 2m",
+            resetsAt: new Date("2026-04-17T11:02:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+      .mockResolvedValue({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-04-17T11:02:30.000Z").toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 12,
+            resetLabel: "Resets in 6h 0m",
+            resetsAt: new Date("2026-04-17T17:02:30.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      });
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      emitSnapshot: vi.fn(),
+      subscriptionFetchers: {
+        gemini: geminiFetcher
+      },
+      subscriptionAuthDetectors: {
+        gemini: vi.fn(async () => true)
+      }
+    } as never);
+
+    runtime.start();
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1_000 + 29_000);
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(geminiFetcher).toHaveBeenCalledTimes(2);
 
     runtime.shutdown();
   });
@@ -982,12 +1107,12 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
     expect(claudeFetcher).toHaveBeenCalledTimes(3);
 
-    // Claude live cadence is 5 minutes (see getSubscriptionRefreshMs) so 60s elapsed
-    // alone must not trigger a fourth fetch; only after the full 5 minutes should it.
+    // Claude live cadence is 3 minutes (see getSubscriptionRefreshMs) so 60s elapsed
+    // alone must not trigger a fourth fetch; only after the full 3 minutes should it.
     await vi.advanceTimersByTimeAsync(60_000);
     expect(claudeFetcher).toHaveBeenCalledTimes(3);
 
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1_000);
     expect(claudeFetcher).toHaveBeenCalledTimes(4);
 
     runtime.shutdown();
