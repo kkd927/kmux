@@ -648,6 +648,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   ): ExternalAgentSessionResumeResult | null {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
+      if (session.runtimeState === "exited") {
+        continue;
+      }
       if (!launchCommandsMatch(session.launch, launch)) {
         continue;
       }
@@ -671,7 +674,20 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     left: SessionLaunchConfig,
     right: SessionLaunchConfig
   ): boolean {
-    return left.shell === right.shell && arrayShallowEqual(left.args, right.args);
+    const defaultShell = getState().settings.shell || options.defaultShellPath;
+    return (
+      effectiveLaunchShell(left, defaultShell) ===
+        effectiveLaunchShell(right, defaultShell) &&
+      arrayShallowEqual(left.args, right.args) &&
+      (left.initialInput ?? "") === (right.initialInput ?? "")
+    );
+  }
+
+  function effectiveLaunchShell(
+    launch: SessionLaunchConfig,
+    defaultShell: string
+  ): string | undefined {
+    return launch.shell ?? defaultShell;
   }
 
   function arrayShallowEqual(

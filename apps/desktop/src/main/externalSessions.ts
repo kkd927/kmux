@@ -544,8 +544,7 @@ function buildResumeLaunch(record: ExternalSessionRecord): SessionLaunchConfig {
   const command = resumeCommandParts(record);
   return {
     cwd: record.cwd,
-    shell: command[0],
-    args: command.slice(1),
+    initialInput: `${command.map(shellQuote).join(" ")}\r`,
     title: record.title
   };
 }
@@ -563,6 +562,13 @@ function resumeCommandParts(record: ExternalSessionRecord): string[] {
     case "claude":
       return ["claude", "--resume", record.sessionId];
   }
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function canResumeRecord(

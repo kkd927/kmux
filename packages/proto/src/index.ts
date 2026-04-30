@@ -48,6 +48,7 @@ export interface SessionLaunchConfig {
   cwd?: string;
   shell?: string;
   args?: string[];
+  initialInput?: string;
   env?: Record<string, string>;
   title?: string;
 }
