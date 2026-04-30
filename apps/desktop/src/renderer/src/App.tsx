@@ -197,7 +197,6 @@ export function App(): JSX.Element {
       return;
     }
     touchManyWebglLru(Object.keys(activeWorkspacePaneTree.panes));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePaneIdsKey, touchManyWebglLru]);
 
   const allWorkspacePaneIdsKey = useMemo(
@@ -222,7 +221,6 @@ export function App(): JSX.Element {
       }
     }
     prevAllPaneIdsRef.current = currentIds;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allWorkspacePaneIdsKey]);
 
   useEffect(() => {
