@@ -10,6 +10,7 @@ export interface TerminalInstance {
   search: SearchAddon;
   unicode11: Unicode11Addon;
   lastHydratedSurfaceId: string | null;
+  lastHydratedSurfaceSequence: number | null;
 }
 
 const store = new Map<string, TerminalInstance>();
@@ -50,10 +51,33 @@ export function getLastHydratedSurfaceId(paneId: string): string | null {
   return store.get(paneId)?.lastHydratedSurfaceId ?? null;
 }
 
-export function markSurfaceHydrated(paneId: string, surfaceId: string): void {
+export function getLastHydratedSurfaceSequence(paneId: string): number | null {
+  return store.get(paneId)?.lastHydratedSurfaceSequence ?? null;
+}
+
+export function markSurfaceHydrated(
+  paneId: string,
+  surfaceId: string,
+  sequence: number | null = null
+): void {
   const instance = store.get(paneId);
   if (instance) {
     instance.lastHydratedSurfaceId = surfaceId;
+    instance.lastHydratedSurfaceSequence = sequence;
+  }
+}
+
+export function markSurfaceRendered(
+  paneId: string,
+  surfaceId: string,
+  sequence: number
+): void {
+  const instance = store.get(paneId);
+  if (instance?.lastHydratedSurfaceId === surfaceId) {
+    instance.lastHydratedSurfaceSequence = Math.max(
+      instance.lastHydratedSurfaceSequence ?? 0,
+      sequence
+    );
   }
 }
 

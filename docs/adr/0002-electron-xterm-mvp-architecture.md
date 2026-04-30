@@ -35,7 +35,9 @@ Keep these architectural rules even in the Electron MVP:
 
 - renderer never owns PTYs directly
 - renderer never becomes the source of truth for workspace or pane state
-- hidden surfaces must not keep active DOM terminal mounts
+- the renderer may preserve pane-scoped terminal widget instances across workspace switches when this is needed for terminal continuity, but those widgets are caches only
+- hidden surface tabs within a pane must not remain attached to the pane widget stream
+- high-cost terminal renderer resources, especially WebGL renderers, must remain bounded by a recent-pane policy
 - sidebar updates must remain row-scoped and virtualized
 - transport messages must be typed and transport-neutral so the `pty-host` can later become an external daemon
 
@@ -52,7 +54,7 @@ Compared with those earlier exploratory directions, this decision intentionally 
 This decision does not discard the product rules that still matter regardless of UI stack:
 
 - stable workspace, pane, surface, and session identity
-- visible-only UI work
+- bounded renderer work and explicit warm terminal cache ownership
 - bounded sidebar update fan-out
 - centralized command routing
 - session lifetime separate from widget lifetime
@@ -132,6 +134,7 @@ Responsibilities:
 - command palette
 - focus visuals
 - visible `xterm.js` instances
+- warm pane-scoped `xterm.js` widget cache for workspace switching continuity
 - keyboard and pointer input capture
 
 Non-responsibilities:
@@ -140,7 +143,11 @@ Non-responsibilities:
 - no long-lived workspace source of truth
 - no metadata polling loops
 
-Only visible surfaces mount `xterm.js` DOM terminals. Hidden surfaces must be detached or disposed at the DOM layer.
+Renderer terminal widgets are pane-scoped UI caches. They may stay mounted while a workspace tree is hidden so that returning to the workspace does not destroy the terminal widget, blank the pane body, or force a full TUI redraw. This cache must not become product state: PTY sessions and headless terminal buffers stay in `pty-host`, and workspace/pane/surface identity stays in `electron-main`.
+
+Within a pane, only the active surface is attached to that pane's terminal widget. Hidden surface tabs must still detach from the widget stream and hydrate from their snapshot/stream when selected.
+
+WebGL-backed terminal renderers are treated as bounded high-cost resources. Panes outside the recent-pane WebGL policy must fall back to the default renderer while keeping terminal/session identity intact.
 
 ## Domain model
 
@@ -181,14 +188,16 @@ Rules:
    - monotonic stream sequence
 5. renderer creates a visible `xterm.js` instance, replays the snapshot, then applies incremental updates
 
-### Hidden detach
+### Hidden detach and warm workspace cache
 
-1. when a surface becomes hidden, renderer disposes or detaches the DOM terminal instance
-2. `pty-host` keeps:
+1. when a surface tab becomes hidden inside a pane, renderer detaches that surface from the pane widget stream
+2. when a workspace becomes inactive, renderer may keep its pane-scoped terminal widget mounted as a warm cache
+3. `pty-host` keeps:
    - PTY session alive
    - headless terminal state alive
    - scrollback and parser state alive
-3. no further DOM rendering work happens for that surface until it becomes visible again
+4. warm renderer widgets must be released when their pane leaves product state
+5. WebGL renderer usage is bounded separately from terminal widget lifetime
 
 ### Input path
 
@@ -227,7 +236,10 @@ Design rules:
 
 ### Pane area
 
-- mount `xterm.js` only for visible surfaces
+- preserve pane identity and pane-scoped terminal widgets across workspace switches when needed for continuity
+- attach only the active surface tab to a pane widget
+- release terminal widgets when panes are closed, moved out of state, or otherwise removed from the product model
+- bound WebGL renderer use to recent panes
 - keep pane identity stable across splits and resizes
 - centralize key routing above the terminal widgets
 - avoid remounting a visible terminal on simple focus changes
@@ -236,8 +248,8 @@ Design rules:
 
 Allowed work:
 
-- unmount old visible terminal widgets
-- mount new visible terminal widgets
+- hide inactive workspace pane trees while keeping their pane-scoped terminal widgets warm
+- reattach or hydrate the returning workspace's active surface without resetting preserved widget content when it is still valid
 - request snapshots for newly visible surfaces
 - update focus and selection state
 
@@ -246,6 +258,8 @@ Disallowed work:
 - full sidebar recomputation
 - reloading metadata for every workspace
 - recreating sessions for panes that already exist
+- letting warm renderer widgets mutate product state outside the main reducer
+- keeping unbounded high-cost renderer resources such as WebGL contexts
 
 ## Metadata strategy
 
@@ -295,7 +309,9 @@ Acceptance goals:
 
 - active pane focus should feel immediate
 - workspace switches should not show a blank intermediate state
-- hidden surfaces should contribute near-zero DOM work
+- warm hidden workspace widgets should remove workspace-switch flicker without becoming session owners
+- hidden surface tabs should stay detached from pane widget streams until selected
+- high-cost renderer resources should remain bounded under normal tens-of-workspaces use
 - sidebar scrolling should remain smooth under dozens of rows
 - CLI or automation commands should not block on renderer jank
 
@@ -305,7 +321,9 @@ Do not take these shortcuts even in the MVP:
 
 - do not run `node-pty` in the renderer
 - do not make the renderer the only holder of terminal buffer state
-- do not keep every hidden terminal mounted in the DOM
+- do not confuse warm renderer widgets with authoritative session state
+- do not keep unbounded WebGL-backed hidden terminals alive
+- do not keep hidden surface tabs attached to the active pane stream
 - do not couple pane identity to React component identity
 - do not let metadata polling directly mutate UI component state
 

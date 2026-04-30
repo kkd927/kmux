@@ -38,6 +38,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
 import { useWebglLru } from "./hooks/useWebglLru";
+import { useWorkspaceWebglLruSync } from "./hooks/useWorkspaceWebglLruSync";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -156,7 +157,11 @@ export function App(): JSX.Element {
   const usageDashboardOpen = activeRightPanel === "usage";
   const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
-  const { isPaneWebglEnabled, touch: touchWebglLru, touchMany: touchManyWebglLru, forget: forgetWebglLru } = useWebglLru();
+  const {
+    isPaneWebglEnabled,
+    touch: touchWebglLru,
+    forget: forgetWebglLru
+  } = useWebglLru();
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const dismissibleUiStateRef = useRef<DismissibleUiState>({
     paletteOpen,
@@ -191,37 +196,13 @@ export function App(): JSX.Element {
     setDraggedSurfaceTab(null);
   }, [activeWorkspacePaneTree?.id]);
 
-  const activePaneIdsKey = Object.keys(activeWorkspacePaneTree?.panes ?? {}).sort().join(",");
-  useEffect(() => {
-    if (!activeWorkspacePaneTree) {
-      return;
-    }
-    touchManyWebglLru(Object.keys(activeWorkspacePaneTree.panes));
-  }, [activePaneIdsKey, touchManyWebglLru]);
-
-  const allWorkspacePaneIdsKey = useMemo(
-    () =>
-      Object.values(workspacePaneTrees)
-        .flatMap((tree) => Object.keys(tree.panes))
-        .sort()
-        .join(","),
-    [workspacePaneTrees]
-  );
-  const prevAllPaneIdsRef = useRef(new Set<string>());
-  useEffect(() => {
-    const currentIds = new Set(
-      Object.values(workspacePaneTrees).flatMap((tree) =>
-        Object.keys(tree.panes)
-      )
-    );
-    for (const paneId of prevAllPaneIdsRef.current) {
-      if (!currentIds.has(paneId)) {
-        forgetWebglLru(paneId);
-        terminalInstanceStore.release(paneId);
-      }
-    }
-    prevAllPaneIdsRef.current = currentIds;
-  }, [allWorkspacePaneIdsKey]);
+  useWorkspaceWebglLruSync({
+    activeWorkspacePaneTree,
+    workspacePaneTrees,
+    touchPane: touchWebglLru,
+    forgetPane: forgetWebglLru,
+    releaseTerminalPane: terminalInstanceStore.release
+  });
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {

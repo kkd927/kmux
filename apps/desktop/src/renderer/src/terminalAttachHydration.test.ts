@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { hydrateAttachedTerminal } from "./terminalAttachHydration";
+import {
+  hydrateAttachedTerminal,
+  reattachPreservedTerminal
+} from "./terminalAttachHydration";
 
 describe("hydrateAttachedTerminal", () => {
   it("fits before requesting the attach snapshot", async () => {
@@ -29,6 +32,7 @@ describe("hydrateAttachedTerminal", () => {
         return {
           cols: 80,
           rows: 24,
+          sequence: 1,
           vt: "snapshot"
         };
       },
@@ -65,6 +69,7 @@ describe("hydrateAttachedTerminal", () => {
       attachSurface: async () => ({
         cols: 80,
         rows: 24,
+        sequence: 1,
         vt: "snapshot"
       }),
       writeTerminal: (_terminal, _data, afterWrite) => {
@@ -96,6 +101,7 @@ describe("hydrateAttachedTerminal", () => {
       attachSurface: async () => ({
         cols: 80,
         rows: 24,
+        sequence: 1,
         vt: "snapshot"
       }),
       writeTerminal: (_terminal, _data, afterWrite) => {
@@ -117,6 +123,7 @@ describe("hydrateAttachedTerminal", () => {
     const attachSurface = vi.fn(async () => ({
       cols: 120,
       rows: 40,
+      sequence: 1,
       vt: "snapshot"
     }));
 
@@ -134,5 +141,105 @@ describe("hydrateAttachedTerminal", () => {
 
     expect(attachSurface).not.toHaveBeenCalled();
     expect(terminal.reset).not.toHaveBeenCalled();
+  });
+});
+
+describe("reattachPreservedTerminal", () => {
+  it("reattaches without resetting or replaying an already rendered snapshot", async () => {
+    const order: string[] = [];
+    const terminal = {
+      cols: 120,
+      rows: 40,
+      resize: vi.fn(),
+      reset: vi.fn(() => {
+        order.push("reset");
+      })
+    };
+    const writeTerminal = vi.fn();
+
+    await reattachPreservedTerminal({
+      terminal,
+      isMounted: () => true,
+      isTerminalActive: () => true,
+      lastRenderedSequence: 12,
+      waitForTerminalFonts: async () => {
+        order.push("fonts");
+      },
+      attachSurface: async () => {
+        order.push("attach");
+        return {
+          cols: 120,
+          rows: 40,
+          sequence: 12,
+          vt: "full snapshot"
+        };
+      },
+      beforeFitAndSync: () => {
+        order.push("clear-resize-cache");
+      },
+      fitAndSyncTerminal: async () => {
+        order.push("fit");
+      },
+      writeTerminal
+    });
+
+    expect(order).toEqual(["fonts", "attach", "clear-resize-cache", "fit"]);
+    expect(terminal.reset).not.toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("resets before replaying the snapshot when the preserved terminal is behind", async () => {
+    const order: string[] = [];
+    const renderedSequences: number[] = [];
+    const terminal = {
+      cols: 120,
+      rows: 40,
+      resize: vi.fn(),
+      reset: vi.fn(() => {
+        order.push("reset");
+      })
+    };
+
+    await reattachPreservedTerminal({
+      terminal,
+      isMounted: () => true,
+      isTerminalActive: () => true,
+      lastRenderedSequence: 12,
+      waitForTerminalFonts: async () => {
+        order.push("fonts");
+      },
+      attachSurface: async () => {
+        order.push("attach");
+        return {
+          cols: 120,
+          rows: 40,
+          sequence: 13,
+          vt: "advanced snapshot"
+        };
+      },
+      beforeFitAndSync: () => {
+        order.push("clear-resize-cache");
+      },
+      fitAndSyncTerminal: async () => {
+        order.push("fit");
+      },
+      writeTerminal: (_terminal, data, afterWrite) => {
+        order.push(`write:${data}`);
+        afterWrite?.();
+      },
+      onSnapshotRendered: (snapshot) => {
+        renderedSequences.push(snapshot.sequence);
+      }
+    });
+
+    expect(order).toEqual([
+      "fonts",
+      "attach",
+      "reset",
+      "write:advanced snapshot",
+      "clear-resize-cache",
+      "fit"
+    ]);
+    expect(renderedSequences).toEqual([13]);
   });
 });
