@@ -53,6 +53,7 @@ import type {
   SurfaceTabDragPayload,
   SurfaceTabDropDirection
 } from "./surfaceTabDrag";
+import * as terminalInstanceStore from "./terminalInstanceStore";
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
@@ -198,6 +199,31 @@ export function App(): JSX.Element {
     touchManyWebglLru(Object.keys(activeWorkspacePaneTree.panes));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePaneIdsKey, touchManyWebglLru]);
+
+  const allWorkspacePaneIdsKey = useMemo(
+    () =>
+      Object.values(workspacePaneTrees)
+        .flatMap((tree) => Object.keys(tree.panes))
+        .sort()
+        .join(","),
+    [workspacePaneTrees]
+  );
+  const prevAllPaneIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const currentIds = new Set(
+      Object.values(workspacePaneTrees).flatMap((tree) =>
+        Object.keys(tree.panes)
+      )
+    );
+    for (const paneId of prevAllPaneIdsRef.current) {
+      if (!currentIds.has(paneId)) {
+        forgetWebglLru(paneId);
+        terminalInstanceStore.release(paneId);
+      }
+    }
+    prevAllPaneIdsRef.current = currentIds;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allWorkspacePaneIdsKey]);
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {
