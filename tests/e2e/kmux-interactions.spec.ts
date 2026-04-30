@@ -373,6 +373,57 @@ test("tab close button closes only the targeted tab while pane close still close
   }
 });
 
+test("pane close button closes a tab first when the split pane has multiple tabs", async () => {
+  const launched = await launchKmux("kmux-e2e-split-pane-close-tab-first-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+
+    await page.locator(`[data-pane-id="${paneId}"]`).getByLabel("Create new tab").click();
+    const withTwoTabs = await waitForView(
+      page,
+      (view) => view.activeWorkspace.panes[paneId].surfaceIds.length === 2,
+      "target pane should have two tabs before splitting"
+    );
+    const activeSurfaceId =
+      withTwoTabs.activeWorkspace.panes[paneId].activeSurfaceId;
+
+    await page
+      .locator(`[data-pane-id="${paneId}"]`)
+      .getByLabel("Split active pane right")
+      .click();
+    await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 2,
+      "workspace should have two panes before pane close"
+    );
+
+    await page
+      .locator(`[data-pane-id="${paneId}"]`)
+      .getByLabel("Close active pane")
+      .click();
+    await expect(page.getByTestId("workspace-close-confirm-dialog")).toHaveCount(
+      0
+    );
+
+    const afterClose = await waitForView(
+      page,
+      (view) =>
+        Object.keys(view.activeWorkspace.panes).length === 2 &&
+        view.activeWorkspace.panes[paneId]?.surfaceIds.length === 1,
+      "pane close button should close one tab before removing a split pane"
+    );
+
+    expect(afterClose.activeWorkspace.panes[paneId].surfaceIds).not.toContain(
+      activeSurfaceId
+    );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("last tab close button asks before closing the workspace", async () => {
   const launched = await launchKmux("kmux-e2e-last-tab-close-confirm-");
 
@@ -418,6 +469,59 @@ test("last tab close button asks before closing the workspace", async () => {
         view.workspaceRows.length === 1 &&
         view.workspaceRows.every((row) => row.workspaceId !== workspaceId),
       "confirming the last-tab dialog should close the targeted workspace"
+    );
+
+    expect(afterConfirm.activeWorkspace.id).not.toBe(workspaceId);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("last pane close button asks before closing the workspace", async () => {
+  const launched = await launchKmux("kmux-e2e-last-pane-close-confirm-");
+
+  try {
+    const page = launched.page;
+
+    await dispatch(page, { type: "workspace.create", name: "alpha" });
+    const seeded = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 2 && view.activeWorkspace.name === "alpha",
+      "workspace fixture should be ready before closing the last pane"
+    );
+    const workspaceId = seeded.activeWorkspace.id;
+    const paneId = seeded.activeWorkspace.activePaneId;
+    const dialog = page.getByTestId("workspace-close-confirm-dialog");
+    const closePaneButton = page
+      .locator(`[data-pane-id="${paneId}"]`)
+      .getByLabel("Close active pane");
+
+    await closePaneButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(
+      "This workspace only has one tab left. Closing it will close the workspace."
+    );
+
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const afterCancel = await getView(page);
+    expect(
+      afterCancel.workspaceRows.some((row) => row.workspaceId === workspaceId)
+    ).toBeTruthy();
+    expect(afterCancel.activeWorkspace.id).toBe(workspaceId);
+
+    await closePaneButton.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close Workspace" }).click();
+
+    const afterConfirm = await waitForView(
+      page,
+      (view) =>
+        view.workspaceRows.length === 1 &&
+        view.workspaceRows.every((row) => row.workspaceId !== workspaceId),
+      "confirming the last-pane dialog should close the targeted workspace"
     );
 
     expect(afterConfirm.activeWorkspace.id).not.toBe(workspaceId);

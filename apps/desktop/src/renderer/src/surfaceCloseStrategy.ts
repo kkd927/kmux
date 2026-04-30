@@ -10,6 +10,20 @@ export type SurfaceCloseStrategy =
       isLastWorkspace: boolean;
     };
 
+export type PaneCloseStrategy =
+  | {
+      kind: "close-pane";
+    }
+  | {
+      kind: "close-surface";
+      surfaceId: string;
+    }
+  | {
+      kind: "confirm-workspace-close";
+      workspaceId: string;
+      isLastWorkspace: boolean;
+    };
+
 export function determineSurfaceCloseStrategy(
   view: ShellStoreSnapshot,
   surfaceId: string
@@ -34,5 +48,42 @@ export function determineSurfaceCloseStrategy(
     kind: "confirm-workspace-close",
     workspaceId: view.activeWorkspace.id,
     isLastWorkspace: view.workspaceRows.length === 1
+  };
+}
+
+export function determinePaneCloseStrategy(
+  view: ShellStoreSnapshot,
+  paneId: string
+): PaneCloseStrategy {
+  const paneTree = view.activeWorkspacePaneTree;
+  const targetPane = paneTree.panes[paneId];
+  if (!targetPane) {
+    return { kind: "close-pane" };
+  }
+
+  const surfaceId = targetPane.activeSurfaceId ?? targetPane.surfaceIds[0];
+  if (!surfaceId) {
+    return { kind: "close-pane" };
+  }
+
+  if (targetPane.surfaceIds.length > 1) {
+    return {
+      kind: "close-surface",
+      surfaceId
+    };
+  }
+
+  if (Object.keys(paneTree.panes).length > 1) {
+    return { kind: "close-pane" };
+  }
+
+  const surfaceStrategy = determineSurfaceCloseStrategy(view, surfaceId);
+  if (surfaceStrategy.kind === "confirm-workspace-close") {
+    return surfaceStrategy;
+  }
+
+  return {
+    kind: "close-surface",
+    surfaceId
   };
 }
