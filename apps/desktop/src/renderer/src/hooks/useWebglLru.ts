@@ -55,7 +55,6 @@ export function useWebglLru(): WebglLru {
 
   const isPaneWebglEnabled = useCallback(
     (paneId: Id) => enabledSet.has(paneId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.mostRecent]
   );
 
