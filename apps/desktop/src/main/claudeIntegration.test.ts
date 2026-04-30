@@ -38,13 +38,15 @@ describe("ensureClaudeHooksInstalled", () => {
     };
 
     expect(settings.hooks.PermissionRequest).toHaveLength(1);
-    expect(settings.hooks.Notification).toHaveLength(1);
+    expect(settings.hooks.Notification).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
     expect(settings.hooks.Stop).toHaveLength(1);
     expect(settings.hooks.PreToolUse).toHaveLength(1);
-    expect(settings.hooks.PreToolUse[0].matcher).toBeUndefined();
+    expect(settings.hooks.PreToolUse[0].matcher).toBe(
+      "AskUserQuestion|ExitPlanMode"
+    );
     expect(settings.hooks.PostToolUse).toHaveLength(1);
     expect(settings.hooks.PostToolUse[0].matcher).toBeUndefined();
     expect(settings.hooks.PostToolUse[0].hooks).toEqual([
@@ -93,6 +95,21 @@ describe("ensureClaudeHooksInstalled", () => {
       JSON.stringify(
         {
           hooks: {
+            Notification: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command: "echo user-notification-hook"
+                  },
+                  {
+                    type: "command",
+                    command:
+                      'KMUX_MANAGED_CLAUDE_HOOK=1; "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude Notification || true'
+                  }
+                ]
+              }
+            ],
             Stop: [
               {
                 hooks: [
@@ -119,6 +136,13 @@ describe("ensureClaudeHooksInstalled", () => {
 
     expect(firstResult.changed).toBe(true);
     expect(secondResult.changed).toBe(false);
+    expect(settings.hooks.Notification).toHaveLength(1);
+    expect(settings.hooks.Notification[0].hooks).toEqual([
+      {
+        type: "command",
+        command: "echo user-notification-hook"
+      }
+    ]);
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks.UserPromptSubmit).toHaveLength(1);

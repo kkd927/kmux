@@ -46,13 +46,15 @@ export interface ClaudeIntegrationInstallResult {
 
 const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
-  { eventName: "Notification" },
-  { eventName: "PreToolUse" },
+  { eventName: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
   { eventName: "PostToolUse" },
   { eventName: "SessionStart" },
   { eventName: "SessionEnd" },
   { eventName: "UserPromptSubmit" },
   { eventName: "Stop" }
+];
+const DEPRECATED_MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
+  { eventName: "Notification" }
 ];
 
 function isPlainObject(value: unknown): value is JsonObject {
@@ -110,9 +112,34 @@ function isManagedClaudeHookCommand(
   );
 }
 
+function hasManagedClaudeHookCommand(
+  existingGroups: unknown,
+  eventName: ClaudeHookEvent
+): boolean {
+  return (Array.isArray(existingGroups) ? existingGroups : []).some(
+    (group) =>
+      isPlainObject(group) &&
+      Array.isArray(group.hooks) &&
+      group.hooks.some((hook) => isManagedClaudeHookCommand(hook, eventName))
+  );
+}
+
 function mergeManagedMatcherGroups(
   existingGroups: unknown,
   definition: ManagedClaudeHookDefinition
+): HookMatcherGroup[] {
+  const nextGroups = pruneManagedMatcherGroups(
+    existingGroups,
+    definition.eventName
+  );
+
+  nextGroups.push(buildManagedMatcherGroup(definition));
+  return nextGroups;
+}
+
+function pruneManagedMatcherGroups(
+  existingGroups: unknown,
+  eventName: ClaudeHookEvent
 ): HookMatcherGroup[] {
   const nextGroups: HookMatcherGroup[] = [];
   for (const group of Array.isArray(existingGroups) ? existingGroups : []) {
@@ -122,7 +149,7 @@ function mergeManagedMatcherGroups(
     }
 
     const filteredHooks = group.hooks.filter(
-      (hook) => !isManagedClaudeHookCommand(hook, definition.eventName)
+      (hook) => !isManagedClaudeHookCommand(hook, eventName)
     );
     if (filteredHooks.length === 0) {
       continue;
@@ -137,7 +164,6 @@ function mergeManagedMatcherGroups(
     });
   }
 
-  nextGroups.push(buildManagedMatcherGroup(definition));
   return nextGroups;
 }
 
@@ -183,9 +209,28 @@ export function ensureClaudeHooksInstalled(
     ? existingSettings.hooks
     : {};
   const nextHooks: JsonObject = { ...existingHooks };
+  for (const definition of DEPRECATED_MANAGED_CLAUDE_HOOKS) {
+    if (
+      !hasManagedClaudeHookCommand(
+        nextHooks[definition.eventName],
+        definition.eventName
+      )
+    ) {
+      continue;
+    }
+    const prunedGroups = pruneManagedMatcherGroups(
+      nextHooks[definition.eventName],
+      definition.eventName
+    );
+    if (prunedGroups.length === 0) {
+      delete nextHooks[definition.eventName];
+    } else {
+      nextHooks[definition.eventName] = prunedGroups;
+    }
+  }
   for (const definition of MANAGED_CLAUDE_HOOKS) {
     nextHooks[definition.eventName] = mergeManagedMatcherGroups(
-      existingHooks[definition.eventName],
+      nextHooks[definition.eventName],
       definition
     );
   }
