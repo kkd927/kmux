@@ -9,6 +9,7 @@ import {
   applyTerminalWebglPreference,
   createTerminalPaneXtermTheme,
   pasteClipboardIntoTerminal,
+  resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
   shouldSwallowImeCompositionMetaKey
 } from "./terminalRenderer";
@@ -117,6 +118,75 @@ describe("terminal renderer helpers", () => {
 
     expect(nextAddon).toBeNull();
     expect(onLoadError).toHaveBeenCalledWith(loadError);
+  });
+
+  it("recreates WebGL after hydration because snapshot replay can leave stale canvas paint", () => {
+    expect(
+      resolveTerminalWebglRecovery({
+        webglActive: true,
+        reason: "hydrate",
+        resized: false,
+        previousCols: 120,
+        previousRows: 30,
+        cols: 120,
+        rows: 30,
+        resizeBurstCount: 1
+      })
+    ).toEqual({
+      refresh: true,
+      recreate: true
+    });
+  });
+
+  it("uses refresh-only recovery for isolated small WebGL resizes", () => {
+    expect(
+      resolveTerminalWebglRecovery({
+        webglActive: true,
+        reason: "resize",
+        resized: true,
+        previousCols: 120,
+        previousRows: 30,
+        cols: 118,
+        rows: 30,
+        resizeBurstCount: 1
+      })
+    ).toEqual({
+      refresh: true,
+      recreate: false
+    });
+  });
+
+  it("recreates WebGL after large or churned resizes", () => {
+    expect(
+      resolveTerminalWebglRecovery({
+        webglActive: true,
+        reason: "resize",
+        resized: true,
+        previousCols: 58,
+        previousRows: 16,
+        cols: 27,
+        rows: 16,
+        resizeBurstCount: 1
+      })
+    ).toEqual({
+      refresh: true,
+      recreate: true
+    });
+    expect(
+      resolveTerminalWebglRecovery({
+        webglActive: true,
+        reason: "resize",
+        resized: true,
+        previousCols: 80,
+        previousRows: 24,
+        cols: 79,
+        rows: 24,
+        resizeBurstCount: 2
+      })
+    ).toEqual({
+      refresh: true,
+      recreate: true
+    });
   });
 
   it("does not paste when the clipboard is empty", () => {
