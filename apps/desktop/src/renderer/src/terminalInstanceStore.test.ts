@@ -21,7 +21,9 @@ import {
   release,
   releaseAll,
   getLastHydratedSurfaceId,
+  getLastHydratedSurfaceSequence,
   markSurfaceHydrated,
+  markSurfaceRendered,
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
@@ -35,7 +37,8 @@ function makeInstance(): TerminalInstance {
     fit: {} as TerminalInstance["fit"],
     search: {} as TerminalInstance["search"],
     unicode11: {} as TerminalInstance["unicode11"],
-    lastHydratedSurfaceId: null
+    lastHydratedSurfaceId: null,
+    lastHydratedSurfaceSequence: null
   };
 }
 
@@ -154,5 +157,27 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("is a no-op for unknown paneId", () => {
     expect(() => markSurfaceHydrated("unknown", "surface-abc")).not.toThrow();
+  });
+
+  it("tracks the rendered sequence for the hydrated surface", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-9", init);
+    markSurfaceHydrated("pane-9", "surface-abc", 12);
+    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(12);
+
+    markSurfaceRendered("pane-9", "surface-abc", 13);
+    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(13);
+    release("pane-9");
+  });
+
+  it("ignores rendered sequence updates for stale surfaces", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-10", init);
+    markSurfaceHydrated("pane-10", "surface-current", 12);
+
+    markSurfaceRendered("pane-10", "surface-stale", 13);
+
+    expect(getLastHydratedSurfaceSequence("pane-10")).toBe(12);
+    release("pane-10");
   });
 });

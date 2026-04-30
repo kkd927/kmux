@@ -7,7 +7,10 @@ export interface AttachedTerminalLike {
   reset(): void;
 }
 
-type TerminalSnapshotLike = Pick<SurfaceSnapshotPayload, "cols" | "rows" | "vt">;
+type TerminalSnapshotLike = Pick<
+  SurfaceSnapshotPayload,
+  "cols" | "rows" | "sequence" | "vt"
+>;
 
 interface HydrateAttachedTerminalOptions<TTerminal extends AttachedTerminalLike> {
   terminal: TTerminal;
@@ -21,6 +24,26 @@ interface HydrateAttachedTerminalOptions<TTerminal extends AttachedTerminalLike>
     data: string,
     afterWrite?: () => void
   ) => void;
+  onSnapshotRendered?: (snapshot: TerminalSnapshotLike) => void;
+}
+
+interface ReattachPreservedTerminalOptions<
+  TTerminal extends AttachedTerminalLike
+> {
+  terminal: TTerminal;
+  isMounted: () => boolean;
+  isTerminalActive: (terminal: TTerminal) => boolean;
+  waitForTerminalFonts: () => Promise<void>;
+  attachSurface: () => Promise<TerminalSnapshotLike | null>;
+  lastRenderedSequence: number | null;
+  beforeFitAndSync?: () => void;
+  fitAndSyncTerminal: (terminal: TTerminal) => Promise<void>;
+  writeTerminal: (
+    terminal: TTerminal,
+    data: string,
+    afterWrite?: () => void
+  ) => void;
+  onSnapshotRendered?: (snapshot: TerminalSnapshotLike) => void;
 }
 
 export async function hydrateAttachedTerminal<
@@ -32,7 +55,8 @@ export async function hydrateAttachedTerminal<
   waitForTerminalFonts,
   fitAndSyncTerminal,
   attachSurface,
-  writeTerminal
+  writeTerminal,
+  onSnapshotRendered
 }: HydrateAttachedTerminalOptions<TTerminal>): Promise<void> {
   const canContinue = () => isMounted() && isTerminalActive(terminal);
 
@@ -66,6 +90,51 @@ export async function hydrateAttachedTerminal<
     if (!canContinue()) {
       return;
     }
+    onSnapshotRendered?.(snapshot);
     void fitAndSyncTerminal(terminal);
   });
+}
+
+export async function reattachPreservedTerminal<
+  TTerminal extends AttachedTerminalLike
+>({
+  terminal,
+  isMounted,
+  isTerminalActive,
+  waitForTerminalFonts,
+  attachSurface,
+  lastRenderedSequence,
+  beforeFitAndSync,
+  fitAndSyncTerminal,
+  writeTerminal,
+  onSnapshotRendered
+}: ReattachPreservedTerminalOptions<TTerminal>): Promise<void> {
+  const canContinue = () => isMounted() && isTerminalActive(terminal);
+
+  await waitForTerminalFonts();
+  if (!canContinue()) {
+    return;
+  }
+
+  const snapshot = await attachSurface();
+  if (!snapshot || !canContinue()) {
+    return;
+  }
+
+  if (lastRenderedSequence === null || snapshot.sequence > lastRenderedSequence) {
+    terminal.reset();
+    writeTerminal(terminal, snapshot.vt, () => {
+      if (!canContinue()) {
+        return;
+      }
+      onSnapshotRendered?.(snapshot);
+      beforeFitAndSync?.();
+      void fitAndSyncTerminal(terminal);
+    });
+    return;
+  }
+
+  onSnapshotRendered?.(snapshot);
+  beforeFitAndSync?.();
+  await fitAndSyncTerminal(terminal);
 }

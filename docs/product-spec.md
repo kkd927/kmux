@@ -28,15 +28,18 @@ Processes:
 
 - `electron-main`: single writer, file-store persistence, socket API, metadata scheduling
 - `pty-host`: `node-pty` and `@xterm/headless` session runtime
-- `renderer`: visible `xterm.js` mounts, split UI, sidebar, overlays
+- `renderer`: split UI, sidebar, overlays, visible terminals, and warm pane-scoped terminal widgets used to preserve workspace switch continuity
 
 Hard rules:
 
 - The renderer must not own PTYs directly.
-- Hidden surfaces must not keep DOM terminals mounted.
+- The renderer may keep pane-scoped `xterm.js` widget instances warm across workspace switches to avoid destructive remounts, blank intermediate states, lost focus, and TUI redraw churn.
+- Warm terminal widgets are renderer-only caches. The `pty-host` remains the owner of PTY and headless terminal state, and `electron-main` remains the source of truth for workspace, pane, surface, and session state.
+- Hidden surface tabs within a pane must still detach from the visible terminal widget; switching tabs must hydrate the pane widget from the selected surface snapshot/stream.
+- High-cost terminal renderer resources, especially WebGL renderers, must be bounded by a recent-pane policy and released when panes leave product state.
 - All state mutation must flow through the main reducer.
 - Stable `windowId`, `workspaceId`, `paneId`, `surfaceId`, and `sessionId` values must be preserved.
-- Visible-only rendering is required.
+- Workspace switching must preserve the active pane tree's terminal continuity without making hidden workspace widgets authoritative for session state.
 
 ## 3. Feature Scope
 
@@ -70,6 +73,8 @@ Hard rules:
 - Copy mode
 - OSC-based cwd, title, and bell handling
 - Attach snapshot plus incremental output
+- Pane-scoped warm terminal preservation across workspace switches
+- Bounded WebGL acceleration for recently active panes, with fallback to the default renderer outside the bound
 
 ### 3.4 Sidebar / Notifications
 
@@ -110,6 +115,8 @@ Hard rules:
 - Treat pane body content as a functional verification target; it may be masked in visual diffing.
 - Pass `npm run test` and `npm run build`.
 - After launch, verify workspace, split, surface, notification, socket, close-window continuity, clean-quit fresh launch, and crash-recovery behavior.
+- Workspace switching validation must cover terminal continuity: no blank intermediate pane body, no lost focused terminal input, no stale active surface after returning to a workspace, and no accidental reuse after a pane or workspace is closed.
+- Warm terminal validation must cover resource policy: closed panes release cached terminal widgets, WebGL acceleration remains bounded to recent panes, and inactive tab hydration still uses the selected surface's snapshot/stream.
 - If a problem is found, fix it and rerun validation.
 
 ## 5. Repository Shape
@@ -144,5 +151,6 @@ packages/
 
 1. The app launches and visible terminals attach correctly.
 2. Workspace, pane, and surface state remain consistent across live app interactions, while persisted settings, window state, and crash recovery remain predictable.
-3. Automation and notifications work correctly.
-4. The UI remains visually coherent, polished, and easy to read at normal working sizes.
+3. Workspace switching preserves terminal widget continuity while PTY/session ownership stays outside the renderer.
+4. Automation and notifications work correctly.
+5. The UI remains visually coherent, polished, and easy to read at normal working sizes.
