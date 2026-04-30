@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
@@ -49,6 +49,52 @@ async function waitForSurfaceSnapshotMatching(
     `${message}; timeout=${timeoutMs}ms; lastSnapshot=${JSON.stringify(
       lastSnapshot
     )}`
+  );
+}
+
+function rendererResizeApplyPrecedesRequest(profilePath: string): boolean {
+  if (!existsSync(profilePath)) {
+    return false;
+  }
+  const events = readFileSync(profilePath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as {
+          source?: string;
+          name?: string;
+          details?: { generation?: unknown };
+        }];
+      } catch {
+        return [];
+      }
+    });
+  const byGeneration = new Map<
+    number,
+    { applyIndex: number; requestIndex: number }
+  >();
+  for (const [index, event] of events.entries()) {
+    if (event.source !== "renderer") {
+      continue;
+    }
+    const generation = event.details?.generation;
+    if (typeof generation !== "number") {
+      continue;
+    }
+    const entry =
+      byGeneration.get(generation) ?? { applyIndex: -1, requestIndex: -1 };
+    if (event.name === "terminal.resize.apply" && entry.applyIndex < 0) {
+      entry.applyIndex = index;
+    }
+    if (event.name === "terminal.resize.request" && entry.requestIndex < 0) {
+      entry.requestIndex = index;
+    }
+    byGeneration.set(generation, entry);
+  }
+  return [...byGeneration.values()].some(
+    (entry) => entry.applyIndex >= 0 && entry.requestIndex > entry.applyIndex
   );
 }
 
@@ -1512,6 +1558,129 @@ test("workspace switches restore busy alternate-screen terminal content", async 
     await expect(terminalRows).toContainText("Persistent line B");
   } finally {
     await closeKmux(launched);
+  }
+});
+
+test("terminal resize applies to the visible xterm before remote PTY redraws", async () => {
+  const sandbox = createSandbox("kmux-e2e-terminal-resize-redraw-");
+  const profilePath = join(sandbox.profileRoot, "smoothness.jsonl");
+  let launched: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | null = null;
+
+  try {
+    launched = await launchKmuxWithSandbox(sandbox, {
+      env: {
+        KMUX_PROFILE_LOG_PATH: profilePath
+      }
+    });
+    const page = launched.page;
+
+    await dispatch(page, {
+      type: "settings.update",
+      patch: {
+        terminalUseWebgl: false
+      }
+    });
+    await waitForView(
+      page,
+      (view) => view.settings.terminalUseWebgl === false,
+      "terminal WebGL renderer should disable for DOM text assertions"
+    );
+    await page.waitForFunction(() => {
+      const xterm = document.querySelector(".xterm");
+      return Boolean(
+        xterm &&
+          xterm.querySelectorAll("canvas").length === 0 &&
+          xterm.querySelectorAll(".xterm-rows > div").length > 0
+      );
+    });
+
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+    const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
+    const marker = "KMUX_RESIZE_STABLE_MARKER";
+    const stableLine = "KMUX_RESIZE_STABLE_LINE";
+    const resizeShim = [
+      "python3 - <<'PY'",
+      "import signal, shutil, sys, time",
+      `marker = '${marker}'`,
+      `stable_line = '${stableLine}'`,
+      "draw_count = 0",
+      "sys.stdout.write('\\x1b[?1049h')",
+      "def draw(*_args):",
+      "    global draw_count",
+      "    draw_count += 1",
+      "    size = shutil.get_terminal_size((80, 24))",
+      "    sys.stdout.write('\\x1b[2J\\x1b[H')",
+      "    sys.stdout.write(f'{marker}\\n')",
+      "    sys.stdout.write(f'draw={draw_count} size={size.columns}x{size.lines}\\n')",
+      "    sys.stdout.write(f'{stable_line}\\n')",
+      "    sys.stdout.flush()",
+      "signal.signal(signal.SIGWINCH, draw)",
+      "draw()",
+      "time.sleep(6)",
+      "sys.stdout.write('\\x1b[?1049l')",
+      "sys.stdout.flush()",
+      "PY"
+    ].join("\r");
+
+    await page.evaluate(
+      ({ targetSurfaceId, text }) => window.kmux.sendText(targetSurfaceId, text),
+      {
+        targetSurfaceId: surfaceId,
+        text: `${resizeShim}\r`
+      }
+    );
+
+    const terminalRows = page.locator(
+      `[data-active-surface-id="${surfaceId}"] .xterm-rows`
+    );
+    await expect(terminalRows).toContainText(marker);
+    await expect(terminalRows).toContainText(stableLine);
+
+    for (const size of [
+      { width: 900, height: 680 },
+      { width: 1260, height: 820 },
+      { width: 780, height: 640 },
+      { width: 1180, height: 760 },
+      { width: 840, height: 660 },
+      { width: 1220, height: 780 }
+    ]) {
+      await page.setViewportSize(size);
+      await page.waitForTimeout(120);
+    }
+
+    const snapshot = await getSurfaceSnapshot(page, surfaceId, {
+      settleForMs: 300,
+      timeoutMs: 3000
+    });
+    const domText = (await terminalRows.textContent()) ?? "";
+    const snapshotText = snapshot?.vt ?? "";
+    const markerCount = (text: string) => text.split(marker).length - 1;
+    const stableLineCount = (text: string) => text.split(stableLine).length - 1;
+    const visibleRowCount = await page
+      .locator(`[data-active-surface-id="${surfaceId}"] .xterm-rows > div`)
+      .count();
+
+    expect(markerCount(domText)).toBe(1);
+    expect(stableLineCount(domText)).toBe(1);
+    expect(snapshotText).toContain(marker);
+    expect(snapshotText).toContain(stableLine);
+    expect(markerCount(snapshotText)).toBeLessThanOrEqual(2);
+    expect(stableLineCount(snapshotText)).toBeLessThanOrEqual(2);
+    expect(snapshot?.rows).toBe(visibleRowCount);
+
+    await expect
+      .poll(() => rendererResizeApplyPrecedesRequest(profilePath), {
+        message:
+          "renderer resize profile should record visible xterm apply before remote resize request"
+      })
+      .toBe(true);
+  } finally {
+    if (launched) {
+      await closeKmux(launched);
+    } else {
+      destroySandbox(sandbox);
+    }
   }
 });
 
