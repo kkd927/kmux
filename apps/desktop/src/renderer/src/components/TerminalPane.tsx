@@ -35,6 +35,7 @@ import {
   reattachPreservedTerminal
 } from "../terminalAttachHydration";
 import * as terminalInstanceStore from "../terminalInstanceStore";
+import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import {
@@ -145,6 +146,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     dispose(): void;
   } | null>(null);
   const resizeGenerationRef = useRef(0);
+  const resizeSyncRef = useRef<ReturnType<typeof createTerminalResizeSync> | null>(
+    null
+  );
   // The xterm instance is pane-scoped, but PTY size is surface-scoped.
   const surfaceResizeDimensionsRef = useRef(
     new Map<string, { cols: number; rows: number }>()
@@ -214,6 +218,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   shortcutsRef.current = props.settings.shortcuts;
   onToggleSearchRef.current = props.onToggleSearch;
   searchDecorationsRef.current = terminalSearchDecorations;
+  if (!resizeSyncRef.current) {
+    resizeSyncRef.current = createTerminalResizeSync({
+      sendResize: (surfaceId, cols, rows) =>
+        window.kmux.resizeSurface(surfaceId, cols, rows)
+    });
+  }
 
   function syncTerminalMetrics(terminal: Terminal | null): void {
     if (!wrapperRef.current || !terminal) {
@@ -344,55 +354,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const generation = ++resizeGenerationRef.current;
-    let resizedSurfaceId: string | null = null;
-    if (currentSurface) {
-      const requestStartedAt = performance.now();
-      recordRendererSmoothnessProfileEvent("terminal.resize.request", {
-        paneId: props.paneId,
-        surfaceId: currentSurface.id,
-        generation,
-        previousCols,
-        previousRows,
-        cols: dims.cols,
-        rows: dims.rows
-      });
-      let failed = false;
-      try {
-        await window.kmux.resizeSurface(
-          currentSurface.id,
-          dims.cols,
-          dims.rows
-        );
-        resizedSurfaceId = currentSurface.id;
-      } catch {
-        failed = true;
-        // ignore; a superseding resize or teardown is already in flight
-      } finally {
-        recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
-          paneId: props.paneId,
-          surfaceId: currentSurface.id,
-          generation,
-          previousCols,
-          previousRows,
-          cols: dims.cols,
-          rows: dims.rows,
-          failed,
-          durationMs: performance.now() - requestStartedAt
-        });
-      }
-    }
-    if (
-      generation !== resizeGenerationRef.current ||
-      terminalRef.current !== terminal
-    ) {
-      return;
-    }
-    if (resizedSurfaceId) {
-      surfaceResizeDimensionsRef.current.set(resizedSurfaceId, {
-        cols: dims.cols,
-        rows: dims.rows
-      });
-    }
     if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
       const applyStartedAt = performance.now();
       try {
@@ -439,6 +400,51 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
     }
+    syncTerminalMetrics(terminal);
+    if (!currentSurface) {
+      return;
+    }
+
+    const requestStartedAt = performance.now();
+    recordRendererSmoothnessProfileEvent("terminal.resize.request", {
+      paneId: props.paneId,
+      surfaceId: currentSurface.id,
+      generation,
+      previousCols,
+      previousRows,
+      cols: dims.cols,
+      rows: dims.rows
+    });
+    const resizeResult = await resizeSyncRef.current?.request({
+      surfaceId: currentSurface.id,
+      generation,
+      cols: dims.cols,
+      rows: dims.rows
+    });
+    recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
+      paneId: props.paneId,
+      surfaceId: currentSurface.id,
+      generation,
+      previousCols,
+      previousRows,
+      cols: dims.cols,
+      rows: dims.rows,
+      failed: resizeResult?.status === "failed",
+      superseded: resizeResult?.status === "superseded",
+      durationMs: performance.now() - requestStartedAt
+    });
+    if (
+      resizeResult?.status !== "synced" ||
+      generation !== resizeGenerationRef.current ||
+      terminalRef.current !== terminal ||
+      activeSurfaceRef.current?.id !== resizeResult.surfaceId
+    ) {
+      return;
+    }
+    surfaceResizeDimensionsRef.current.set(resizeResult.surfaceId, {
+      cols: resizeResult.cols,
+      rows: resizeResult.rows
+    });
     syncTerminalMetrics(terminal);
   }
 

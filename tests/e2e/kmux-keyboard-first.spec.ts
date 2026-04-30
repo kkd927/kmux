@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
   closeKmux,
@@ -43,6 +43,19 @@ function listSurfaceShortcutTargets(workspace: TestShellView["activeWorkspace"])
       surfaceId
     }))
   );
+}
+
+function terminalInputForSurface(page: Page, surfaceId: string) {
+  return page
+    .getByTestId(`terminal-${surfaceId}`)
+    .locator("textarea.xterm-helper-textarea");
+}
+
+async function focusActiveTerminalInput(page: Page): Promise<void> {
+  const view = await getView(page);
+  const activePane =
+    view.activeWorkspace.panes[view.activeWorkspace.activePaneId];
+  await terminalInputForSurface(page, activePane.activeSurfaceId).focus();
 }
 
 test("command palette supports a keyboard-only flow", async () => {
@@ -130,7 +143,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       "pinning alerts should change the visible workspace shortcut order"
     );
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+1");
     await waitForView(
       page,
@@ -138,7 +151,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       "Meta+1 should select the first workspace"
     );
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+2");
     await waitForView(
       page,
@@ -146,7 +159,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       "Meta+2 should select the second visible workspace"
     );
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+3");
     await waitForView(
       page,
@@ -224,7 +237,7 @@ test("workspace and surface shortcuts plus notification jump work like a keyboar
       )
     ).toBeFalsy();
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+1");
     await waitForView(
       page,
@@ -290,16 +303,21 @@ test("workspace rename and tab close shortcuts stay keyboard-first while tab ren
       "workspace rename shortcut should update the active workspace name"
     );
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+T");
 
-    await waitForView(
+    const withCreatedSurface = await waitForView(
       page,
       (view) =>
         view.activeWorkspace.panes[initialPaneId].surfaceIds.length === 2,
       "surface create shortcut should create another tab"
     );
-    await expect(page.locator("textarea.xterm-helper-textarea")).toBeFocused();
+    await expect(
+      terminalInputForSurface(
+        page,
+        withCreatedSurface.activeWorkspace.panes[initialPaneId].activeSurfaceId
+      )
+    ).toBeFocused();
     const surfaceRenameInput = page.locator(
       `[data-pane-id="${initialPaneId}"] input[aria-label^="Rename surface"]`
     );
@@ -356,7 +374,11 @@ test("Meta+W on the last tab opens the workspace close confirmation", async () =
     );
     const workspaceId = seeded.activeWorkspace.id;
 
-    const terminal = page.locator("textarea.xterm-helper-textarea");
+    const terminal = terminalInputForSurface(
+      page,
+      seeded.activeWorkspace.panes[seeded.activeWorkspace.activePaneId]
+        .activeSurfaceId
+    );
     const dialog = page.getByTestId("workspace-close-confirm-dialog");
 
     await terminal.focus();
@@ -397,7 +419,7 @@ test("surface index shortcuts traverse workspace tabs across split panes without
     const initial = await getView(page);
     const firstPaneId = initial.activeWorkspace.activePaneId;
 
-    await page.locator("textarea.xterm-helper-textarea").focus();
+    await focusActiveTerminalInput(page);
     await page.keyboard.press("Meta+T");
     await waitForView(
       page,
