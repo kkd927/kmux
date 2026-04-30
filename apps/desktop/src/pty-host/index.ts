@@ -478,6 +478,10 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     sessions.delete(record.sessionId);
   });
 
+  if (request.spec.launch.initialInput) {
+    ptyProcess.write(request.spec.launch.initialInput);
+  }
+
   send({
     type: "spawned",
     sessionId: record.sessionId,

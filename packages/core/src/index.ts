@@ -2913,6 +2913,10 @@ function sanitizeSessionLaunchConfig(
     delete nextLaunch.args;
   }
 
+  if (typeof nextLaunch.initialInput !== "string" || !nextLaunch.initialInput) {
+    delete nextLaunch.initialInput;
+  }
+
   if (!nextLaunch.shell && fallbackShell) {
     nextLaunch.shell = fallbackShell;
   }

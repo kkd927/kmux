@@ -1297,8 +1297,7 @@ describe("external session indexer", () => {
       cwd: "/Users/test/codex-project",
       launch: {
         cwd: "/Users/test/codex-project",
-        shell: "codex",
-        args: ["resume", "codex-session"],
+        initialInput: "codex resume codex-session\r",
         title: "Fix terminal focus"
       }
     });

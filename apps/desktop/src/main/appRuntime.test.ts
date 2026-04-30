@@ -173,8 +173,7 @@ describe("app runtime external sessions", () => {
                 cwd: "/tmp/project",
                 launch: {
                   cwd: "/tmp/project",
-                  shell: "codex",
-                  args: ["resume", "codex-session"],
+                  initialInput: "codex resume codex-session\r",
                   title: "Fix terminal focus"
                 }
               }
@@ -194,10 +193,11 @@ describe("app runtime external sessions", () => {
     expect(pane.activeSurfaceId).toBe(result.surfaceId);
     expect(session.launch).toMatchObject({
       cwd: "/tmp/project",
-      shell: "codex",
-      args: ["resume", "codex-session"],
+      shell: "/bin/zsh",
+      initialInput: "codex resume codex-session\r",
       title: "Fix terminal focus"
     });
+    expect(session.launch.args).toBeUndefined();
   });
 
   it("focuses an already open external session instead of opening it again", () => {
@@ -216,8 +216,7 @@ describe("app runtime external sessions", () => {
                 cwd: "/tmp/project",
                 launch: {
                   cwd: "/tmp/project",
-                  shell: "gemini",
-                  args: ["--resume", "gemini-session"],
+                  initialInput: "gemini --resume gemini-session\r",
                   title: "Read image plan"
                 }
               }
@@ -257,6 +256,60 @@ describe("app runtime external sessions", () => {
     );
     expect(activeWorkspaceId).toBe(firstResult.workspaceId);
     expect(activeSurfaceId).toBe(firstResult.surfaceId);
+  });
+
+  it("opens a fresh external session when the previous matching surface exited", () => {
+    const runtime = createRuntime(false, {
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => ({
+          updatedAt: "2026-04-26T12:00:00.000Z",
+          sessions: []
+        }),
+        resolveExternalAgentSession: (key: string) =>
+          key === "claude:claude-session"
+            ? {
+                key,
+                vendor: "claude",
+                title: "Investigate exit",
+                cwd: "/tmp/project",
+                launch: {
+                  cwd: "/tmp/project",
+                  initialInput: "claude --resume claude-session\r",
+                  title: "Investigate exit"
+                }
+              }
+            : null
+      }
+    });
+
+    const firstResult = runtime.resumeExternalAgentSession(
+      "claude:claude-session"
+    );
+    const firstState = runtime.getState();
+    const firstSurface = firstState.surfaces[firstResult.surfaceId];
+    runtime.dispatchAppAction({
+      type: "session.exited",
+      sessionId: firstSurface.sessionId,
+      exitCode: 0
+    });
+    const workspaceCountAfterExit = Object.keys(
+      runtime.getState().workspaces
+    ).length;
+
+    const secondResult = runtime.resumeExternalAgentSession(
+      "claude:claude-session"
+    );
+    const state = runtime.getState();
+
+    expect(secondResult.surfaceId).not.toBe(firstResult.surfaceId);
+    expect(Object.keys(state.workspaces)).toHaveLength(
+      workspaceCountAfterExit + 1
+    );
+    expect(state.surfaces[firstResult.surfaceId]).toBeTruthy();
+    expect(
+      state.sessions[state.surfaces[firstResult.surfaceId].sessionId]
+        .runtimeState
+    ).toBe("exited");
   });
 });
 
