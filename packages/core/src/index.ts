@@ -484,6 +484,7 @@ export interface AppMutationSummary {
   workspaceRows?: boolean;
   activeWorkspacePaneTree?: boolean;
   activeWorkspaceActivity?: boolean;
+  paneTreeWorkspaceIds?: Set<Id>;
   notifications?: boolean;
   settings?: boolean;
   terminalTypography?: boolean;
@@ -498,9 +499,10 @@ export function applyActionWithSummary(
   state: AppState,
   action: AppAction
 ): ApplyActionResult {
+  const effects = applyActionEffects(state, action);
   return {
-    effects: applyActionEffects(state, action),
-    mutation: mutationSummaryForAction(action)
+    effects,
+    mutation: mutationSummaryForAction(state, action)
   };
 }
 
@@ -682,7 +684,10 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
   }
 }
 
-function mutationSummaryForAction(action: AppAction): AppMutationSummary {
+function mutationSummaryForAction(
+  state: AppState,
+  action: AppAction
+): AppMutationSummary {
   switch (action.type) {
     case "workspace.sidebar.toggle":
     case "workspace.sidebar.setWidth":
@@ -692,13 +697,33 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
     case "workspace.selectRelative":
     case "workspace.selectIndex":
     case "workspace.rename":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: activeWorkspaceSet(state),
+        notifications: true
+      };
     case "workspace.close":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: new Set([
+          action.workspaceId,
+          state.windows[state.activeWindowId].activeWorkspaceId
+        ]),
+        notifications: true
+      };
     case "workspace.closeOthers":
       return {
         window: true,
         workspaceRows: true,
         activeWorkspaceActivity: true,
         activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: allWorkspaceSet(state),
         notifications: true
       };
     case "workspace.pin.toggle":
@@ -714,12 +739,37 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
         workspaceRows: true,
         activeWorkspaceActivity: true,
         activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: activeWorkspaceSet(state),
         notifications: true
       };
     case "notification.create":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: new Set([action.workspaceId]),
+        notifications: true
+      };
     case "agent.event":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: new Set([action.workspaceId]),
+        notifications: true
+      };
     case "notification.clear":
     case "notification.jumpLatestUnread":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: activeWorkspaceSet(state),
+        notifications: true
+      };
     case "terminal.bell":
       return {
         window: true,
@@ -733,6 +783,7 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
         window: true,
         workspaceRows: true,
         activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: activeWorkspaceSet(state),
         notifications: true
       };
     case "pane.split":
@@ -746,7 +797,8 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
     case "surface.metadata":
       return {
         workspaceRows: true,
-        activeWorkspacePaneTree: true
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: activeWorkspaceSet(state)
       };
     case "sidebar.setStatus":
     case "sidebar.clearStatus":
@@ -760,7 +812,10 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
       };
     case "session.started":
     case "session.exited":
-      return { activeWorkspacePaneTree: true };
+      return {
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: sessionWorkspaceSet(state, action.sessionId)
+      };
     case "settings.update":
       return { settings: true };
     case "state.restore":
@@ -769,6 +824,7 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
         workspaceRows: true,
         activeWorkspaceActivity: true,
         activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: allWorkspaceSet(state),
         notifications: true,
         settings: true,
         terminalTypography: true
@@ -781,6 +837,21 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
 function assertNeverMutationAction(action: never): AppMutationSummary {
   void action;
   return {};
+}
+
+function activeWorkspaceSet(state: AppState): Set<Id> {
+  return new Set([state.windows[state.activeWindowId].activeWorkspaceId]);
+}
+
+function allWorkspaceSet(state: AppState): Set<Id> {
+  return new Set(Object.keys(state.workspaces));
+}
+
+function sessionWorkspaceSet(state: AppState, sessionId: Id): Set<Id> {
+  const session = state.sessions[sessionId];
+  const surface = session ? state.surfaces[session.surfaceId] : undefined;
+  const pane = surface ? state.panes[surface.paneId] : undefined;
+  return pane ? new Set([pane.workspaceId]) : activeWorkspaceSet(state);
 }
 
 function createWorkspace(
@@ -2465,12 +2536,24 @@ export function buildActiveWorkspacePaneTreeVm(
   state: AppState
 ): ActiveWorkspacePaneTreeVm {
   const { workspace, orderedWorkspaceIds } = resolveActiveWindowContext(state);
-  const workspacePaneIds = listWorkspacePaneIds(state, workspace.id);
-  const activeWorkspaceSurfaceIds = listWorkspaceSurfaceIds(state, workspace.id);
 
   if (!orderedWorkspaceIds.includes(workspace.id)) {
     throw new Error("Cannot build active workspace view for a hidden workspace");
   }
+
+  return buildWorkspacePaneTreeVm(state, workspace.id);
+}
+
+export function buildWorkspacePaneTreeVm(
+  state: AppState,
+  workspaceId: Id
+): ActiveWorkspacePaneTreeVm {
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace) {
+    throw new Error(`Cannot build pane tree for unknown workspace: ${workspaceId}`);
+  }
+  const workspacePaneIds = listWorkspacePaneIds(state, workspaceId);
+  const workspaceSurfaceIds = listWorkspaceSurfaceIds(state, workspaceId);
 
   return {
     id: workspace.id,
@@ -2491,7 +2574,7 @@ export function buildActiveWorkspacePaneTreeVm(
       })
     ),
     surfaces: Object.fromEntries(
-      activeWorkspaceSurfaceIds.map((surfaceId) => {
+      workspaceSurfaceIds.map((surfaceId) => {
         const surface = state.surfaces[surfaceId];
         return [
           surface.id,
@@ -2512,6 +2595,17 @@ export function buildActiveWorkspacePaneTreeVm(
     ),
     activePaneId: workspace.activePaneId
   };
+}
+
+export function buildAllWorkspacePaneTreesVm(
+  state: AppState
+): Record<Id, ActiveWorkspacePaneTreeVm> {
+  return Object.fromEntries(
+    Object.keys(state.workspaces).map((workspaceId) => [
+      workspaceId,
+      buildWorkspacePaneTreeVm(state, workspaceId)
+    ])
+  );
 }
 
 export function buildNotificationsVm(state: AppState): NotificationItem[] {

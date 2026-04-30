@@ -710,6 +710,9 @@ function normalizeGeminiQuotaRows(
 ): SubscriptionUsageRowVm[] {
   const groups = new Map<"pro" | "flash" | "flash-lite", GeminiQuotaBucket>();
   for (const bucket of buckets) {
+    if (!isReliableGeminiQuotaBucket(bucket)) {
+      continue;
+    }
     const key = classifyGeminiQuotaKey(bucket.modelId);
     if (!key) {
       continue;
@@ -745,6 +748,20 @@ function normalizeGeminiQuotaRows(
       })
     ];
   });
+}
+
+function isReliableGeminiQuotaBucket(bucket: GeminiQuotaBucket): boolean {
+  if (!Number.isFinite(bucket.remainingFraction)) {
+    return false;
+  }
+  if (bucket.remainingFraction < 0 || bucket.remainingFraction > 1) {
+    return false;
+  }
+  if (bucket.remainingFraction !== 0) {
+    return true;
+  }
+  const resetTimeMs = parseDateToMs(bucket.resetTime);
+  return typeof resetTimeMs === "number" && resetTimeMs > 0;
 }
 
 async function loadClaudeCredentials(options: {

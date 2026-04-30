@@ -693,7 +693,7 @@ describe("usage runtime", () => {
     );
   });
 
-  it("polls subscription usage every minute for live providers while the dashboard is open", async () => {
+  it("polls subscription usage every five minutes for live providers while the dashboard is open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
@@ -746,7 +746,7 @@ describe("usage runtime", () => {
 
     expect(subscriptionFetchers.codex).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(58_000);
+    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000 + 58_000);
     expect(subscriptionFetchers.codex).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -755,7 +755,7 @@ describe("usage runtime", () => {
     runtime.shutdown();
   });
 
-  it("polls recent-only subscription providers every five minutes and stops when the dashboard closes", async () => {
+  it("polls recent-only subscription providers every fifteen minutes and stops when the dashboard closes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
@@ -808,11 +808,11 @@ describe("usage runtime", () => {
 
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1_000);
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
 
     runtime.setDashboardOpen(false);
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1_000);
 
     expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
 

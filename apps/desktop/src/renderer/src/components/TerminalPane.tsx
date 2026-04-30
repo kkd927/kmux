@@ -52,8 +52,10 @@ import {
 interface TerminalPaneProps {
   paneId: string;
   focused: boolean;
+  active: boolean;
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
+  useWebglForThisPane: boolean;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
@@ -760,7 +762,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     webglAddonRef.current = applyTerminalWebglPreference({
       terminal,
       currentAddon: webglAddonRef.current,
-      useWebgl: props.settings.terminalUseWebgl,
+      useWebgl: props.settings.terminalUseWebgl && props.useWebglForThisPane,
       createAddon: () => new WebglAddon(),
       onLoadError: (error) => {
         console.warn(
@@ -881,7 +883,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     webglAddonRef.current = applyTerminalWebglPreference({
       terminal,
       currentAddon: webglAddonRef.current,
-      useWebgl: props.settings.terminalUseWebgl,
+      useWebgl: props.settings.terminalUseWebgl && props.useWebglForThisPane,
       createAddon: () => new WebglAddon(),
       onLoadError: (error) => {
         console.warn(
@@ -899,7 +901,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       syncTerminalViewportBackground();
     });
     void fitAndSyncTerminal(terminal);
-  }, [props.settings.terminalUseWebgl, runtimeGeneration]);
+  }, [props.settings.terminalUseWebgl, props.useWebglForThisPane, runtimeGeneration]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -974,13 +976,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [props.showSearch, query, terminalSearchDecorations]);
 
   useEffect(() => {
-    if (!props.showSearch) {
+    if (!props.showSearch || !props.active) {
       return;
     }
     setCopyMode(false);
     searchInputRef.current?.focus();
     searchInputRef.current?.select();
-  }, [props.showSearch]);
+  }, [props.showSearch, props.active]);
 
   useEffect(() => {
     setCopyMode(false);
@@ -998,7 +1000,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [props.draggedSurfaceTab]);
 
   useEffect(() => {
-    if (!props.focused || props.showSearch) {
+    if (!props.focused || !props.active || props.showSearch) {
       return;
     }
     const activeElement = document.activeElement;
@@ -1011,7 +1013,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     focusTerminalInput();
-  }, [activeSurface.id, props.focused, props.showSearch, runtimeGeneration]);
+  }, [activeSurface.id, props.focused, props.active, props.showSearch, runtimeGeneration]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(

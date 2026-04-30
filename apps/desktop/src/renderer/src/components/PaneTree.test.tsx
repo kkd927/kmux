@@ -99,6 +99,8 @@ function createPaneTreeProps(): PaneTreeProps {
         ansi: new Array(16).fill("#000000")
       }
     },
+    active: true,
+    isPaneWebglEnabled: () => true,
     colorTheme: "dark",
     searchSurfaceId: null,
     draggedSurfaceTab: null,

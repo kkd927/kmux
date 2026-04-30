@@ -6,8 +6,11 @@ import {
 } from "react";
 
 import type {
+  ActiveWorkspacePaneTreeVm,
+  Id,
   ShellPatch,
   ShellStoreSnapshot,
+  WorkspacePaneTreesPatch,
   WorkspaceRowVm,
   WorkspaceRowsPatch
 } from "@kmux/proto";
@@ -129,15 +132,19 @@ function applyShellPatch(
   if (patch.version <= currentSnapshot.version) {
     return currentSnapshot;
   }
-  const { workspaceRowsPatch, ...snapshotPatch } = patch;
+  const { workspaceRowsPatch, workspacePaneTreesPatch, ...snapshotPatch } = patch;
   const workspaceRows = workspaceRowsPatch
     ? applyWorkspaceRowsPatch(currentSnapshot.workspaceRows, workspaceRowsPatch)
     : (patch.workspaceRows ?? currentSnapshot.workspaceRows);
+  const workspacePaneTrees = workspacePaneTreesPatch
+    ? applyWorkspacePaneTreesPatch(currentSnapshot.workspacePaneTrees, workspacePaneTreesPatch)
+    : (currentSnapshot.workspacePaneTrees ?? {});
 
   return {
     ...currentSnapshot,
     ...snapshotPatch,
-    workspaceRows
+    workspaceRows,
+    workspacePaneTrees
   };
 }
 
@@ -170,6 +177,20 @@ function applyWorkspaceRowsPatch(
     }
   }
   return orderedRows;
+}
+
+function applyWorkspacePaneTreesPatch(
+  currentTrees: Record<Id, ActiveWorkspacePaneTreeVm>,
+  patch: WorkspacePaneTreesPatch
+): Record<Id, ActiveWorkspacePaneTreeVm> {
+  const next = { ...currentTrees };
+  for (const id of patch.remove ?? []) {
+    delete next[id];
+  }
+  if (patch.upsert) {
+    Object.assign(next, patch.upsert);
+  }
+  return next;
 }
 
 function publishSnapshot(nextSnapshot: ShellStoreSnapshot): void {

@@ -37,6 +37,7 @@ import { determineSurfaceCloseStrategy } from "./surfaceCloseStrategy";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
+import { useWebglLru } from "./hooks/useWebglLru";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -76,6 +77,7 @@ type PendingWorkspaceClose = {
 
 const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
+const EMPTY_WORKSPACE_PANE_TREES: ShellStoreSnapshot["workspacePaneTrees"] = {};
 const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" }
@@ -97,6 +99,9 @@ export function App(): JSX.Element {
   );
   const activeWorkspacePaneTree = useShellSelector(
     (snapshot) => snapshot?.activeWorkspacePaneTree ?? null
+  );
+  const workspacePaneTrees = useShellSelector(
+    (snapshot) => snapshot?.workspacePaneTrees ?? EMPTY_WORKSPACE_PANE_TREES
   );
   const notifications = useShellSelector(
     (snapshot) => snapshot?.notifications ?? EMPTY_NOTIFICATIONS
@@ -150,6 +155,7 @@ export function App(): JSX.Element {
   const usageDashboardOpen = activeRightPanel === "usage";
   const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
+  const { isPaneWebglEnabled, touch: touchWebglLru, touchMany: touchManyWebglLru, forget: forgetWebglLru } = useWebglLru();
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const dismissibleUiStateRef = useRef<DismissibleUiState>({
     paletteOpen,
@@ -183,6 +189,15 @@ export function App(): JSX.Element {
   useEffect(() => {
     setDraggedSurfaceTab(null);
   }, [activeWorkspacePaneTree?.id]);
+
+  const activePaneIdsKey = Object.keys(activeWorkspacePaneTree?.panes ?? {}).sort().join(",");
+  useEffect(() => {
+    if (!activeWorkspacePaneTree) {
+      return;
+    }
+    touchManyWebglLru(Object.keys(activeWorkspacePaneTree.panes));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePaneIdsKey, touchManyWebglLru]);
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {
@@ -886,55 +901,65 @@ export function App(): JSX.Element {
           />
         ) : null}
         <main className={styles.main}>
-          <PaneTree
-            workspace={activeWorkspacePaneTree}
-            settings={settings}
-            terminalTypography={terminalTypography}
-            terminalTheme={resolvedTerminalTheme}
-            colorTheme={resolvedColorTheme}
-            searchSurfaceId={searchSurfaceId}
-            draggedSurfaceTab={draggedSurfaceTab}
-            onSetSplitRatio={(splitNodeId, ratio) =>
-              void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
-            }
-            onFocusPane={(paneId) =>
-              void dispatch({ type: "pane.focus", paneId })
-            }
-            onFocusSurface={(surfaceId) =>
-              void dispatch({ type: "surface.focus", surfaceId })
-            }
-            onCreateSurface={(paneId) =>
-              void dispatch({ type: "surface.create", paneId })
-            }
-            onCloseSurface={(surfaceId) => void requestSurfaceClose(surfaceId)}
-            onCloseOthers={(surfaceId) =>
-              void dispatch({ type: "surface.closeOthers", surfaceId })
-            }
-            onMoveSurfaceToSplit={(
-              surfaceId: string,
-              targetPaneId: string,
-              direction: SurfaceTabDropDirection
-            ) =>
-              void dispatch({
-                type: "surface.moveToSplit",
-                surfaceId,
-                targetPaneId,
-                direction
-              })
-            }
-            onSurfaceTabDragStart={setDraggedSurfaceTab}
-            onSurfaceTabDragEnd={() => setDraggedSurfaceTab(null)}
-            onSplitRight={(paneId) =>
-              void dispatch({ type: "pane.split", paneId, direction: "right" })
-            }
-            onSplitDown={(paneId) =>
-              void dispatch({ type: "pane.split", paneId, direction: "down" })
-            }
-            onClosePane={(paneId) =>
-              void dispatch({ type: "pane.close", paneId })
-            }
-            onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
-          />
+          {Object.values(workspacePaneTrees).map((tree) => (
+            <PaneTree
+              key={tree.id}
+              workspace={tree}
+              active={tree.id === activeWorkspacePaneTree?.id}
+              isPaneWebglEnabled={isPaneWebglEnabled}
+              settings={settings}
+              terminalTypography={terminalTypography}
+              terminalTheme={resolvedTerminalTheme}
+              colorTheme={resolvedColorTheme}
+              searchSurfaceId={searchSurfaceId}
+              draggedSurfaceTab={draggedSurfaceTab}
+              onSetSplitRatio={(splitNodeId, ratio) =>
+                void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
+              }
+              onFocusPane={(paneId) => {
+                touchWebglLru(paneId);
+                void dispatch({ type: "pane.focus", paneId });
+              }}
+              onFocusSurface={(surfaceId) =>
+                void dispatch({ type: "surface.focus", surfaceId })
+              }
+              onCreateSurface={(paneId) => {
+                touchWebglLru(paneId);
+                void dispatch({ type: "surface.create", paneId });
+              }}
+              onCloseSurface={(surfaceId) => void requestSurfaceClose(surfaceId)}
+              onCloseOthers={(surfaceId) =>
+                void dispatch({ type: "surface.closeOthers", surfaceId })
+              }
+              onMoveSurfaceToSplit={(
+                surfaceId: string,
+                targetPaneId: string,
+                direction: SurfaceTabDropDirection
+              ) =>
+                void dispatch({
+                  type: "surface.moveToSplit",
+                  surfaceId,
+                  targetPaneId,
+                  direction
+                })
+              }
+              onSurfaceTabDragStart={setDraggedSurfaceTab}
+              onSurfaceTabDragEnd={() => setDraggedSurfaceTab(null)}
+              onSplitRight={(paneId) => {
+                touchWebglLru(paneId);
+                void dispatch({ type: "pane.split", paneId, direction: "right" });
+              }}
+              onSplitDown={(paneId) => {
+                touchWebglLru(paneId);
+                void dispatch({ type: "pane.split", paneId, direction: "down" });
+              }}
+              onClosePane={(paneId) => {
+                forgetWebglLru(paneId);
+                void dispatch({ type: "pane.close", paneId });
+              }}
+              onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
+            />
+          ))}
         </main>
         {activeRightPanel ? (
           <RightSidebarHost

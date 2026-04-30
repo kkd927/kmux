@@ -20,6 +20,8 @@ import { TerminalPane } from "./TerminalPane";
 
 export interface PaneTreeProps {
   workspace: ActiveWorkspacePaneTreeVm;
+  active: boolean;
+  isPaneWebglEnabled: (paneId: Id) => boolean;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
@@ -54,7 +56,10 @@ export const PaneTree = memo(function PaneTree(
     surfaceCount: Object.keys(props.workspace.surfaces).length
   }));
   return (
-    <div className={styles.tree}>
+    <div
+      className={styles.tree}
+      data-active={props.active ? "true" : "false"}
+    >
       <PaneNode nodeId={props.workspace.rootNodeId} {...props} />
     </div>
   );
@@ -66,6 +71,8 @@ function arePaneTreePropsEqual(
 ): boolean {
   const equal =
     left.workspace === right.workspace &&
+    left.active === right.active &&
+    left.isPaneWebglEnabled === right.isPaneWebglEnabled &&
     left.settings === right.settings &&
     left.terminalTypography === right.terminalTypography &&
     left.terminalTheme === right.terminalTheme &&
@@ -104,8 +111,10 @@ function PaneNode(
       <TerminalPane
         paneId={pane.id}
         focused={pane.focused}
+        active={props.active}
         surfaces={surfaces}
         activeSurfaceId={pane.activeSurfaceId}
+        useWebglForThisPane={props.isPaneWebglEnabled(pane.id)}
         settings={props.settings}
         terminalTypography={props.terminalTypography}
         terminalTheme={props.terminalTheme}
