@@ -440,15 +440,13 @@ test("project chrome keeps active workspace and focused surface visually legible
 
     await expect(page.getByTestId("project-header")).toBeVisible();
 
+    const beforeSplit = await getView(page);
     await dispatch(page, {
       type: "pane.split",
-      paneId: (await page
-        .locator("[data-pane-id]")
-        .first()
-        .getAttribute("data-pane-id"))!,
+      paneId: beforeSplit.activeWorkspace.activePaneId,
       direction: "right"
     });
-    await expect(page.locator("[data-pane-id]")).toHaveCount(2);
+    await expect(page.locator("[data-pane-id]:visible")).toHaveCount(2);
 
     const workspaceStyles = await page.evaluate(() => {
       const active = document.querySelector<HTMLElement>(
@@ -475,18 +473,26 @@ test("project chrome keeps active workspace and focused surface visually legible
     expect(workspaceStyles.activeBorder).not.toBe("rgba(0, 0, 0, 0)");
 
     const paneStyles = await page.evaluate(() => {
-      const focused = document.querySelector<HTMLElement>(
-        '[data-pane-id][data-focused="true"]'
-      );
-      const unfocused = document.querySelector<HTMLElement>(
-        '[data-pane-id][data-focused="false"]'
-      );
+      const visiblePanes = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-pane-id]")
+      ).filter((pane) => {
+        const rect = pane.getBoundingClientRect();
+        const style = getComputedStyle(pane);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      });
+      const focused =
+        visiblePanes.find((pane) => pane.dataset.focused === "true") ?? null;
+      const unfocused =
+        visiblePanes.find((pane) => pane.dataset.focused === "false") ?? null;
       const activeTab = focused?.querySelector<HTMLElement>(
         '[data-active="true"]'
       );
-      const activeTabIndicator = activeTab
-        ? getComputedStyle(activeTab, "::before")
-        : null;
+      const activeTabStyle = activeTab ? getComputedStyle(activeTab) : null;
 
       return {
         focusedShadow: focused ? getComputedStyle(focused).boxShadow : "",
@@ -495,18 +501,14 @@ test("project chrome keeps active workspace and focused surface visually legible
         unfocusedBorder: unfocused
           ? getComputedStyle(unfocused).borderColor
           : "",
-        activeTabIndicatorHeight: activeTabIndicator?.height ?? "",
-        activeTabIndicatorBackground:
-          activeTabIndicator?.backgroundColor ?? "rgba(0, 0, 0, 0)"
+        activeTabIndicatorShadow: activeTabStyle?.boxShadow ?? "none"
       };
     });
 
     expect(paneStyles.focusedShadow).toBe(paneStyles.unfocusedShadow);
     expect(paneStyles.focusedBorder).toBe(paneStyles.unfocusedBorder);
-    expect(paneStyles.activeTabIndicatorHeight).toBe("2px");
-    expect(paneStyles.activeTabIndicatorBackground).not.toBe(
-      "rgba(0, 0, 0, 0)"
-    );
+    expect(paneStyles.activeTabIndicatorShadow).toContain("inset");
+    expect(paneStyles.activeTabIndicatorShadow).not.toBe("none");
   } finally {
     await closeKmux(launched);
   }
