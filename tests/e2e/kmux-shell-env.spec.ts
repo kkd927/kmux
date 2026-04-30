@@ -90,9 +90,10 @@ test("kmux resolves login shell env for child processes and terminal sessions on
     const loginSnapshot = await waitForSurfaceSnapshotContains(
       page,
       activeSurfaceId,
-      "__KMUX_LOGIN__=on",
+      "/usr/bin/git",
       10_000
     );
+    expect(loginSnapshot).toContain("__KMUX_LOGIN__=on");
     expect(loginSnapshot).toContain("__KMUX_PATH__=");
     expect(loginSnapshot).toContain("/usr/local/bin");
     expect(loginSnapshot).toContain("/usr/bin/git");

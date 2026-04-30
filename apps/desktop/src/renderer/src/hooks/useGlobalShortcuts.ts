@@ -37,6 +37,7 @@ interface UseGlobalShortcutsOptions {
   openSettingsModal: () => void;
   beginWorkspaceRename: (workspaceId: string, sidebarVisible?: boolean) => void;
   dispatch: (action: AppAction) => Promise<void>;
+  requestPaneClose: (paneId: string) => Promise<void>;
   requestSurfaceClose: (surfaceId: string) => Promise<void>;
   withLatestActiveShortcutContext: (
     run: (context: ActiveShortcutContext) => void | Promise<void>
@@ -358,7 +359,7 @@ export function useGlobalShortcuts(
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({ type: "pane.close", paneId: latestPaneId })
+            currentOptions.requestPaneClose(latestPaneId)
         );
         return;
       }

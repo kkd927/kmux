@@ -33,7 +33,10 @@ import {
   applyProbeIssuesToResolvedTypography,
   probeResolvedTerminalTypography
 } from "./terminalTypography";
-import { determineSurfaceCloseStrategy } from "./surfaceCloseStrategy";
+import {
+  determinePaneCloseStrategy,
+  determineSurfaceCloseStrategy
+} from "./surfaceCloseStrategy";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
@@ -418,6 +421,7 @@ export function App(): JSX.Element {
     beginWorkspaceRename,
     dispatch,
     withLatestActiveShortcutContext,
+    requestPaneClose,
     requestSurfaceClose
   });
 
@@ -501,7 +505,7 @@ export function App(): JSX.Element {
         subtitle: "Remove the current split",
         run: () =>
           void withLatestActiveShortcutContext(({ activePaneId }) =>
-            dispatch({ type: "pane.close", paneId: activePaneId })
+            requestPaneClose(activePaneId)
           )
       },
       {
@@ -959,8 +963,7 @@ export function App(): JSX.Element {
                 void dispatch({ type: "pane.split", paneId, direction: "down" });
               }}
               onClosePane={(paneId) => {
-                forgetWebglLru(paneId);
-                void dispatch({ type: "pane.close", paneId });
+                void requestPaneClose(paneId);
               }}
               onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
             />
@@ -1113,6 +1116,25 @@ export function App(): JSX.Element {
     const strategy = determineSurfaceCloseStrategy(latestView, surfaceId);
     if (strategy.kind === "close-surface") {
       await dispatch({ type: "surface.close", surfaceId });
+      return;
+    }
+
+    setPendingWorkspaceClose({
+      workspaceId: strategy.workspaceId,
+      isLastWorkspace: strategy.isLastWorkspace
+    });
+  }
+
+  async function requestPaneClose(paneId: string): Promise<void> {
+    const latestView = await window.kmux.getShellState();
+    const strategy = determinePaneCloseStrategy(latestView, paneId);
+    if (strategy.kind === "close-pane") {
+      forgetWebglLru(paneId);
+      await dispatch({ type: "pane.close", paneId });
+      return;
+    }
+    if (strategy.kind === "close-surface") {
+      await dispatch({ type: "surface.close", surfaceId: strategy.surfaceId });
       return;
     }
 
