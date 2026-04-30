@@ -23,8 +23,14 @@ export function buildSessionEnv(
     }
   }
 
+  const langFallback: NodeJS.ProcessEnv =
+    !env.LANG && !env.LC_ALL && !env.LC_CTYPE
+      ? { LANG: "en_US.UTF-8" }
+      : {};
+
   return {
     ...env,
+    ...langFallback,
     COLORTERM: "truecolor",
     ...(launchEnv ?? {}),
     ...sessionEnv

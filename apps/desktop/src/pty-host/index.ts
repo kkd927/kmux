@@ -5,6 +5,7 @@ import type {
 } from "@xterm/headless";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 
 import type {
   Id,
@@ -276,6 +277,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     allowProposedApi: true,
     scrollback: 5000
   });
+  const unicode11 = new Unicode11Addon();
+  terminal.loadAddon(unicode11);
+  terminal.unicode.activeVersion = "11";
   const serialize = new SerializeAddon();
   terminal.loadAddon(serialize);
 
