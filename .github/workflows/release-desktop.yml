@@ -95,6 +95,8 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app_path"
           xcrun stapler validate "$app_path"
           xcrun stapler validate "$dmg_path"
+      - name: Smoke packaged DMG
+        run: npm run smoke:packaged:mac
       - name: Upload macOS release assets
         uses: actions/upload-artifact@v7
         with:
@@ -105,35 +107,9 @@ jobs:
             apps/desktop/release/latest*-mac.yml
           if-no-files-found: error
 
-  smoke-packaged-macos:
-    needs: package-macos
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build:cli
-      - uses: actions/download-artifact@v8
-        with:
-          name: macos-${{ matrix.arch }}-release-assets
-          path: release-assets
-      - name: Smoke packaged DMG
-        run: npm run smoke:packaged:mac
-
   publish-release:
     if: github.event_name == 'push'
-    needs: smoke-packaged-macos
+    needs: package-macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
