@@ -291,6 +291,7 @@ describe("ExternalSessionsPanel", () => {
     expect(cssRule(".rightSidebar")).toContain(
       "flex: 0 0 var(--right-sidebar-width)"
     );
+    expect(cssRule(".rightSidebar")).toContain("--right-sidebar-width: 370px");
     expect(cssRule(".rightSidebar")).toContain(
       "width: var(--right-sidebar-width)"
     );
@@ -312,14 +313,23 @@ describe("ExternalSessionsPanel", () => {
     );
     expect(cssRule(".externalSessionsTable")).toContain("table-layout: fixed");
     expect(cssRule(".externalSessionsTable")).not.toContain("min-width:");
+    expect(cssRule(".externalSessionsTableHead th")).toContain(
+      "padding: 10px 2px"
+    );
+    expect(cssRule(".externalSessionsTableHead th:first-child")).toContain(
+      "padding-left: 6px"
+    );
+    expect(cssRule(".externalSessionsTableHead th:last-child")).toContain(
+      "padding-right: 6px"
+    );
     expect(cssRule(".externalSessionsTableHead th:nth-child(1)")).toContain(
-      "width: 56px"
+      "width: 42px"
     );
     expect(cssRule(".externalSessionsTableHead th:nth-child(2)")).toContain(
-      "width: 76px"
+      "width: 60px"
     );
     expect(cssRule(".externalSessionsTableHead th:nth-child(4)")).toContain(
-      "width: 48px"
+      "width: 38px"
     );
     expect(cssRule(".externalSessionsFilterGroup")).toContain(
       "height: var(--external-sessions-control-height)"
@@ -345,6 +355,13 @@ describe("ExternalSessionsPanel", () => {
     );
     expect(cssRule(".externalSessionTitleCell")).toContain(
       "overflow: hidden"
+    );
+    expect(cssRule(".externalSessionCell")).toContain("padding: 11px 2px");
+    expect(cssRule(".externalSessionRow td:first-child")).toContain(
+      "padding-left: 6px"
+    );
+    expect(cssRule(".externalSessionRow td:last-child")).toContain(
+      "padding-right: 6px"
     );
     expect(cssRule(".externalSessionTitle")).toContain("display: block");
     expect(cssRule(".externalSessionTitle")).toContain("max-width: 100%");

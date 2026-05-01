@@ -78,17 +78,47 @@ describe("UsageDashboard", () => {
     expect(container.textContent).not.toContain("2026-04-27");
   });
 
-  it("aligns embedded usage chrome with the terminal surface header and path row", () => {
+  it("uses a VS Code-style text tab strip in the right panel", () => {
     expect(cssRule(".rightSidebar")).toContain(
       "border-top: 1px solid var(--border-strong)"
     );
-    expect(cssRule(".rightSidebarTabBar")).toContain("height: 34px");
-    expect(cssRule(".rightSidebarTabBar")).toContain("min-height: 34px");
-    expect(cssRule(".rightSidebarTabBarItem")).toContain("min-height: 26px");
+    expect(cssRule(".rightSidebarTabBar")).toContain("display: flex");
+    expect(cssRule(".rightSidebarTabBar")).toContain("height: 35px");
+    expect(cssRule(".rightSidebarTabBar")).toContain("padding: 0 12px");
+    expect(cssRule(".rightSidebarTabBar")).toContain(
+      "background: var(--usage-panel-bg)"
+    );
+    expect(cssRule(".rightSidebarTabBarItem")).toContain(
+      "border-bottom: 1px solid transparent"
+    );
+    expect(cssRule(".rightSidebarTabBarItem")).toContain("border-radius: 0");
+    expect(cssRule(".rightSidebarTabBarItem")).toContain(
+      "color: var(--usage-subtle)"
+    );
+    expect(cssRule(".rightSidebarTabBarItem")).toContain("font-size: 0.75rem");
+    expect(cssRule(".rightSidebarTabBarItem")).toContain("min-height: 35px");
+    expect(cssRule(".rightSidebarTabBarItem")).toContain(
+      "text-transform: uppercase"
+    );
+    expect(cssRule('.rightSidebarTabBarItem[data-active="true"]')).toContain(
+      "border-bottom-color: var(--usage-title)"
+    );
+    expect(cssRule('.rightSidebarTabBarItem[data-active="true"]')).not.toContain(
+      "box-shadow"
+    );
     expect(cssRule(".usageDashboardStatus")).toContain("min-height: 22px");
+    expect(cssRule(".usageDashboardStatus")).toContain(
+      "color: var(--usage-subtle)"
+    );
     expect(
       cssRule('.rightSidebar[data-has-tabs="true"] .rightSidebarBody > .usageDashboard')
-    ).toContain("margin-top: calc(var(--right-sidebar-content-padding) * -1)");
+    ).toContain("margin-top: 0");
+  });
+
+  it("keeps the top usage summary cards compact in the right panel", () => {
+    expect(cssRule(".usageMetricCard")).toContain("min-height: 83px");
+    expect(cssRule(".usageMetricCard")).toContain("padding: 14px 20px 12px");
+    expect(cssRule(".usageMetricBody")).toContain("gap: 8px");
   });
 });
 

@@ -1539,7 +1539,7 @@
   --usage-heatmap-cell-2: #40c463;
   --usage-heatmap-cell-3: #30a14e;
   --usage-heatmap-cell-4: #216e39;
-  --right-sidebar-width: 400px;
+  --right-sidebar-width: 370px;
   --right-sidebar-content-padding: 12px;
   flex: 0 0 var(--right-sidebar-width);
   width: var(--right-sidebar-width);
@@ -1708,46 +1708,46 @@
   outline-offset: 2px;
 }
 
-/* New fullwidth tab bar */
+/* VS Code-style text tab strip */
 .rightSidebarTabBar {
   position: sticky;
   top: 0;
   z-index: 2;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: center;
-  gap: 4px;
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
   width: 100%;
-  height: 34px;
-  min-height: 34px;
-  padding: 3px 10px;
+  height: 35px;
+  min-height: 35px;
+  padding: 0 12px;
   border-left: 1px solid var(--border-strong);
   border-bottom: 1px solid var(--usage-card-border);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 65%),
-    var(--usage-panel-bg);
+  background: var(--usage-panel-bg);
   flex: 0 0 auto;
 }
 
 .rightSidebarTabBarItem {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
   background: transparent;
-  color: var(--usage-muted);
+  color: var(--usage-subtle);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1;
-  min-height: 26px;
-  padding: 0 12px;
+  min-height: 35px;
+  padding: 1px 4px 0;
   cursor: pointer;
+  text-transform: uppercase;
   transition:
     color 120ms ease,
-    background 120ms ease,
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+    border-color 120ms ease;
   position: relative;
 }
 
@@ -1757,22 +1757,15 @@
 
 .rightSidebarTabBarItem:hover {
   color: var(--usage-title);
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.05);
 }
 
 .rightSidebarTabBarItem[data-active="true"] {
   color: var(--usage-title);
-  background: var(--usage-card-bg);
-  border-color: var(--usage-card-border);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 8px 22px rgba(0, 0, 0, 0.16);
+  border-bottom-color: var(--usage-title);
 }
 
 :global(html[data-color-theme="dark"]) .rightSidebarTabBarItem[data-active="true"] {
-  border-color: rgba(156, 185, 255, 0.22);
-  background: rgba(156, 185, 255, 0.09);
+  border-bottom-color: rgba(255, 255, 255, 0.9);
 }
 
 .rightSidebarTabBarItem:focus-visible {
@@ -1992,7 +1985,7 @@
 }
 
 .externalSessionsTableHead th {
-  padding: 10px 6px;
+  padding: 10px 2px;
   color: var(--usage-muted);
   font-size: 0.688rem;
   line-height: 1.2;
@@ -2001,16 +1994,24 @@
   white-space: nowrap;
 }
 
+.externalSessionsTableHead th:first-child {
+  padding-left: 6px;
+}
+
+.externalSessionsTableHead th:last-child {
+  padding-right: 6px;
+}
+
 .externalSessionsTableHead th:nth-child(1) {
-  width: 56px;
+  width: 46px;
 }
 
 .externalSessionsTableHead th:nth-child(2) {
-  width: 76px;
+  width: 70px;
 }
 
 .externalSessionsTableHead th:nth-child(4) {
-  width: 48px;
+  width: 38px;
   text-align: right;
 }
 
@@ -2069,10 +2070,18 @@
 
 .externalSessionTitleCell,
 .externalSessionCell {
-  padding: 11px 6px;
+  padding: 11px 2px;
   vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.externalSessionRow td:first-child {
+  padding-left: 6px;
+}
+
+.externalSessionRow td:last-child {
+  padding-right: 6px;
 }
 
 .externalSessionTitleCell {
@@ -2154,7 +2163,7 @@
 }
 
 .rightSidebar[data-has-tabs="true"] .rightSidebarBody > .usageDashboard {
-  margin-top: calc(var(--right-sidebar-content-padding) * -1);
+  margin-top: 0;
 }
 
 .usageDashboardStatus {
@@ -2163,7 +2172,7 @@
   min-width: 0;
   min-height: 22px;
   padding: 0 2px;
-  color: var(--usage-body);
+  color: var(--usage-subtle);
   font-size: 0.8125rem;
   line-height: 1.25;
 }
@@ -2183,8 +2192,8 @@
 
 .usageMetricCard {
   min-width: 0;
-  min-height: 102px;
-  padding: 22px 24px 18px;
+  min-height: 83px;
+  padding: 14px 20px 12px;
   border-radius: 18px;
   border: 1px solid var(--usage-card-border);
   background: var(--usage-card-bg);
@@ -2213,7 +2222,7 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 14px;
+  gap: 8px;
 }
 
 .usageCard {
