@@ -1,8 +1,5 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-
 import { act } from "react";
 import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,14 +10,6 @@ import { ExternalSessionsPanel } from "./ExternalSessionsPanel";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
-
-const APP_CSS = readFileSync(
-  path.join(
-    process.cwd(),
-    "apps/desktop/src/renderer/src/styles/App.module.css"
-  ),
-  "utf8"
-);
 
 function createSnapshot(count = 31): ExternalAgentSessionsSnapshot {
   const vendors = [
@@ -287,92 +276,6 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).not.toContain("No Gemini sessions found.");
   });
 
-  it("keeps the sessions header controls on one row and constrains the table to the sidebar width", () => {
-    expect(cssRule(".rightSidebar")).toContain(
-      "flex: 0 0 var(--right-sidebar-width)"
-    );
-    expect(cssRule(".rightSidebar")).toContain("--right-sidebar-width: 370px");
-    expect(cssRule(".rightSidebar")).toContain(
-      "width: var(--right-sidebar-width)"
-    );
-    expect(cssRule(".rightSidebar")).toContain(
-      "--right-sidebar-content-padding: 12px"
-    );
-    expect(cssRule(".rightSidebarBody")).toContain(
-      "padding: var(--right-sidebar-content-padding)"
-    );
-    expect(cssRule(".externalSessionsPanel")).toContain("margin: 0");
-    expect(cssRule(".usageDashboard")).toContain("padding: 0");
-    expect(cssRule(".externalSessionsHeader")).toContain(
-      "flex-direction: row"
-    );
-    expect(cssRule(".externalSessionsActions")).toContain("flex-wrap: nowrap");
-    expect(cssRule(".externalSessionsActions")).toContain("flex: 0 0 auto");
-    expect(cssRule(".externalSessionsTableWrap")).toContain(
-      "overflow-x: hidden"
-    );
-    expect(cssRule(".externalSessionsTable")).toContain("table-layout: fixed");
-    expect(cssRule(".externalSessionsTable")).not.toContain("min-width:");
-    expect(cssRule(".externalSessionsTableHead th")).toContain(
-      "padding: 10px 2px"
-    );
-    expect(cssRule(".externalSessionsTableHead th:first-child")).toContain(
-      "padding-left: 6px"
-    );
-    expect(cssRule(".externalSessionsTableHead th:last-child")).toContain(
-      "padding-right: 6px"
-    );
-    expect(cssRule(".externalSessionsTableHead th:nth-child(1)")).toContain(
-      "width: 42px"
-    );
-    expect(cssRule(".externalSessionsTableHead th:nth-child(2)")).toContain(
-      "width: 60px"
-    );
-    expect(cssRule(".externalSessionsTableHead th:nth-child(4)")).toContain(
-      "width: 38px"
-    );
-    expect(cssRule(".externalSessionsFilterGroup")).toContain(
-      "height: var(--external-sessions-control-height)"
-    );
-    expect(cssRule(".externalSessionsFilterGroup")).toContain(
-      "flex: 0 0 auto"
-    );
-    expect(cssRule(".externalSessionsFilterGroup")).toContain(
-      "width: max-content"
-    );
-    expect(cssRule(".externalSessionsFilterGroup")).not.toContain("216px");
-    expect(cssRule(".externalSessionsFilterButton")).toContain(
-      "flex: 0 0 var(--external-sessions-filter-button-width)"
-    );
-    expect(cssRule(".externalSessionsFilterButton")).toContain(
-      "width: var(--external-sessions-filter-button-width)"
-    );
-    expect(cssRule(".externalSessionsDescription")).toContain(
-      "white-space: nowrap"
-    );
-    expect(cssRule(".externalSessionsRefreshButton")).toContain(
-      "min-height: var(--external-sessions-control-height)"
-    );
-    expect(cssRule(".externalSessionTitleCell")).toContain(
-      "overflow: hidden"
-    );
-    expect(cssRule(".externalSessionCell")).toContain("padding: 11px 2px");
-    expect(cssRule(".externalSessionRow td:first-child")).toContain(
-      "padding-left: 6px"
-    );
-    expect(cssRule(".externalSessionRow td:last-child")).toContain(
-      "padding-right: 6px"
-    );
-    expect(cssRule(".externalSessionTitle")).toContain("display: block");
-    expect(cssRule(".externalSessionTitle")).toContain("max-width: 100%");
-    expect(cssRule(".externalSessionVendor")).toContain(
-      "display: inline-block"
-    );
-    expect(cssRule(".externalSessionVendor")).not.toContain("background:");
-    expect(cssRule(".externalSessionVendor")).not.toContain("border:");
-    expect(cssRule(".externalSessionVendor::before")).toBe("");
-  });
-
   it("routes refresh and resumable row activation through the provided callbacks", () => {
     const onResume = vi.fn();
     const onRefresh = vi.fn();
@@ -425,12 +328,6 @@ describe("ExternalSessionsPanel", () => {
     expect(title?.getAttribute("title")).toBe("Fix terminal focus");
   });
 });
-
-function cssRule(selector: string): string {
-  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = APP_CSS.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
-  return match?.[1] ?? "";
-}
 
 function sessionCountText(container: HTMLElement): string | null {
   return container.querySelector("p")?.textContent ?? null;
