@@ -1,6 +1,6 @@
 {
   "name": "@kmux/cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "commonjs",
   "bin": {
