@@ -120,6 +120,79 @@ describe("UsageDashboard", () => {
     expect(cssRule(".usageMetricCard")).toContain("padding: 14px 20px 12px");
     expect(cssRule(".usageMetricBody")).toContain("gap: 8px");
   });
+
+  it("aligns heatmap columns to Sunday-first weeks and omits future days in the current week", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot(
+        "2026-04-29",
+        "2026-04-29T09:23:00.000Z"
+      ),
+      dailyActivity: [
+        {
+          dayKey: "2026-04-19",
+          totalCostUsd: 0,
+          totalTokens: 100,
+          activeSessionCount: 1,
+          costSource: "reported"
+        },
+        {
+          dayKey: "2026-04-29",
+          totalCostUsd: 0,
+          totalTokens: 200,
+          activeSessionCount: 1,
+          costSource: "reported"
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard
+          embedded
+          onJumpToSurface={() => undefined}
+        />
+      );
+    });
+
+    const cells = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-testid='usage-heatmap-cell']")
+    );
+    const columns = Array.from(
+      new Set(cells.map((cell) => cell.parentElement).filter(Boolean))
+    ) as HTMLElement[];
+    const completeWeekColumn = columns.find((column) =>
+      Array.from(column.children).some(
+        (cell) =>
+          (cell as HTMLElement).dataset.dayKey === "2026-04-19"
+      )
+    );
+
+    expect(
+      Array.from(completeWeekColumn?.children ?? []).map(
+        (cell) => (cell as HTMLElement).dataset.dayKey
+      )
+    ).toEqual([
+      "2026-04-19",
+      "2026-04-20",
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-25"
+    ]);
+
+    const currentWeekColumn = columns.at(-1);
+    expect(
+      Array.from(currentWeekColumn?.children ?? []).map(
+        (cell) => (cell as HTMLElement).dataset.dayKey
+      )
+    ).toEqual([
+      "2026-04-26",
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29"
+    ]);
+  });
 });
 
 function cssRule(selector: string): string {

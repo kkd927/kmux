@@ -716,7 +716,6 @@ function buildHeatmap(
   columns: HeatmapCell[][];
   monthLabels: string[];
 } {
-  const heatmapCellCount = heatmapColumns * HEATMAP_ROWS;
   const mergedDays = new Map<
     string,
     {
@@ -741,30 +740,46 @@ function buildHeatmap(
       current.costSource === day.costSource ? current.costSource : "partial";
   }
 
-  const chronologicalDays: HeatmapCell[] = [];
-  for (let index = 0; index < heatmapCellCount; index += 1) {
-    const offset = heatmapCellCount - index - 1;
-    const dayKey = shiftDayKey(todayDayKey, -offset);
-    const day =
-      mergedDays.get(dayKey) ?? {
-        dayKey,
-        totalCostUsd: 0,
-        totalTokens: 0,
-        activeSessionCount: 0,
-        costSource: "reported"
-      };
+  const todayDate = parseDayKey(todayDayKey);
+  const currentWeekStartKey = shiftDayKey(todayDayKey, -todayDate.getDay());
+  const firstWeekStartKey = shiftDayKey(
+    currentWeekStartKey,
+    -(heatmapColumns - 1) * HEATMAP_ROWS
+  );
 
-    chronologicalDays.push({
-      dayKey,
-      totalCostUsd: day.totalCostUsd,
-      totalTokens: day.totalTokens,
-      activeSessionCount: day.activeSessionCount,
-      costSource: day.costSource,
-      intensity: 0,
-      tooltipLabel: "",
-      tooltipDetails: "",
-      isPlaceholder: false
-    });
+  const chronologicalDays: HeatmapCell[] = [];
+  for (let columnIndex = 0; columnIndex < heatmapColumns; columnIndex += 1) {
+    const weekStartKey = shiftDayKey(
+      firstWeekStartKey,
+      columnIndex * HEATMAP_ROWS
+    );
+    for (let rowIndex = 0; rowIndex < HEATMAP_ROWS; rowIndex += 1) {
+      const dayKey = shiftDayKey(weekStartKey, rowIndex);
+      if (parseDayKey(dayKey).getTime() > todayDate.getTime()) {
+        continue;
+      }
+
+      const day =
+        mergedDays.get(dayKey) ?? {
+          dayKey,
+          totalCostUsd: 0,
+          totalTokens: 0,
+          activeSessionCount: 0,
+          costSource: "reported"
+        };
+
+      chronologicalDays.push({
+        dayKey,
+        totalCostUsd: day.totalCostUsd,
+        totalTokens: day.totalTokens,
+        activeSessionCount: day.activeSessionCount,
+        costSource: day.costSource,
+        intensity: 0,
+        tooltipLabel: "",
+        tooltipDetails: "",
+        isPlaceholder: false
+      });
+    }
   }
 
   const maxTokens = Math.max(
@@ -772,33 +787,17 @@ function buildHeatmap(
     ...chronologicalDays.map((day) => day.totalTokens)
   );
 
-  const placeholderCells: HeatmapCell[] = Array.from({
-    length: heatmapCellCount - chronologicalDays.length
-  }, () => ({
-    dayKey: null,
-    totalCostUsd: 0,
-    totalTokens: 0,
-    activeSessionCount: 0,
-    costSource: "reported",
-    intensity: 0,
-    tooltipLabel: todayDayKey,
-    tooltipDetails: `${formatUsageUsd(0)} · ${formatTokens(0)}`,
-    isPlaceholder: true
+  const cells: HeatmapCell[] = chronologicalDays.map((day) => ({
+    ...day,
+    intensity: intensityForValue(day.totalTokens, maxTokens),
+    tooltipLabel: day.dayKey ?? "",
+    tooltipDetails: `${formatUsageUsd(day.totalCostUsd)} · ${formatTokens(
+      day.totalTokens
+    )}`
   }));
-  const cells: HeatmapCell[] = [
-    ...placeholderCells,
-    ...chronologicalDays.map((day) => ({
-      ...day,
-      intensity: intensityForValue(day.totalTokens, maxTokens),
-      tooltipLabel: day.dayKey ?? "",
-      tooltipDetails: `${formatUsageUsd(day.totalCostUsd)} · ${formatTokens(
-        day.totalTokens
-      )}`
-    }))
-  ];
 
   const columns = Array.from({ length: heatmapColumns }, (_, index) =>
-    cells.slice(index * HEATMAP_ROWS, index * HEATMAP_ROWS + HEATMAP_ROWS)
+    cells.slice(index * HEATMAP_ROWS, (index + 1) * HEATMAP_ROWS)
   );
 
   return {
