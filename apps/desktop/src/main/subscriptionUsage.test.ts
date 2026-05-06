@@ -267,11 +267,11 @@ describe("subscription usage fetchers", () => {
       new Response(
         JSON.stringify({
           five_hour: {
-            utilization: 0.64,
+            utilization: 64,
             resets_at: "2026-04-18T03:53:00.000Z"
           },
           seven_day: {
-            utilization: 0.19,
+            utilization: 19,
             resets_at: "2026-04-21T00:00:00.000Z"
           }
         }),
