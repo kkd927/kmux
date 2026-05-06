@@ -614,9 +614,7 @@ function normalizeClaudeUsage(options: {
       buildRow({
         key: "session",
         label: "Session",
-        usedPercent: options.fiveHourUtilization <= 1
-          ? options.fiveHourUtilization * 100
-          : options.fiveHourUtilization,
+        usedPercent: options.fiveHourUtilization,
         resetsAtMs: parseDateToMs(options.fiveHourResetAt),
         windowKind: "session",
         nowMs: options.nowMs
@@ -628,9 +626,7 @@ function normalizeClaudeUsage(options: {
       buildRow({
         key: "weekly",
         label: "Weekly",
-        usedPercent: options.weeklyUtilization <= 1
-          ? options.weeklyUtilization * 100
-          : options.weeklyUtilization,
+        usedPercent: options.weeklyUtilization,
         resetsAtMs: parseDateToMs(options.weeklyResetAt),
         windowKind: "weekly",
         nowMs: options.nowMs
