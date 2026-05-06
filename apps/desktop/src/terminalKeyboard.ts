@@ -77,16 +77,32 @@ export function resolveTerminalEnterRewrite(
   return { sequence };
 }
 
+const IME_NAVIGATION_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown"
+]);
+
 // xterm.js's CompositionHelper only whitelists keyCodes 16/17/18/20/229 as
-// modifier keys to ignore during IME composition. Meta (Cmd on macOS, keyCode
-// 91/93/224) is not in that list, so a bare Cmd keydown while composing Hangul
-// triggers _finalizeComposition(false) and flushes the partially-composed
-// syllable into the PTY. The OS-level IME is still alive and continues to
-// update the textarea, producing a second send and visible duplication.
-// Swallowing bare Cmd keydowns during composition via
-// attachCustomKeyEventHandler keeps xterm from entering that path while
-// leaving the DOM/OS free to react to Cmd normally (no preventDefault).
-export function shouldSwallowImeCompositionMetaKey(
+// modifier keys to ignore during IME composition. Anything else received while
+// composing triggers _finalizeComposition(false), which flushes a substring of
+// the textarea to the PTY but does not clear the textarea. macOS IMEs stay
+// alive across that flush, so on the next input the residual text is combined
+// with the new composition and re-sent — visible as the previous syllable
+// repeating. Two real-world cases reach xterm in this state:
+//   1) bare Cmd keydown — Meta (keyCode 91/93/224) isn't in xterm's whitelist.
+//   2) modifier + navigation keys (Cmd/Alt + Arrow/Home/End/PageUp/Down) — the
+//      OS IME routinely consumes these for line edits, word jumps, or pane
+//      shortcuts, but xterm treats the navigation key as ordinary input and
+//      finalizes composition.
+// Returning true here lets attachCustomKeyEventHandler short-circuit xterm
+// without preventDefault, so the DOM/OS still routes the key to the IME.
+export function shouldSuppressXtermDuringIme(
   event: TerminalKeyboardEventLike,
   isComposing: boolean
 ): boolean {
@@ -96,11 +112,22 @@ export function shouldSwallowImeCompositionMetaKey(
   if (event.type !== undefined && event.type !== "keydown") {
     return false;
   }
-  if (event.key !== "Meta") {
-    return false;
+
+  if (
+    event.key === "Meta" &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
+  ) {
+    return true;
   }
-  if (event.ctrlKey || event.altKey || event.shiftKey) {
-    return false;
+
+  if (
+    (event.metaKey || event.altKey) &&
+    IME_NAVIGATION_KEYS.has(event.key)
+  ) {
+    return true;
   }
-  return true;
+
+  return false;
 }

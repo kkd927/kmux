@@ -11,7 +11,7 @@ import {
   pasteClipboardIntoTerminal,
   resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
-  shouldSwallowImeCompositionMetaKey
+  shouldSuppressXtermDuringIme
 } from "./terminalRenderer";
 import type { TerminalKeyboardEventLike } from "./terminalRenderer";
 import { THEMES } from "@kmux/ui";
@@ -298,7 +298,7 @@ describe("terminal renderer helpers", () => {
 
   it("swallows bare Meta keydown during IME composition", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "MetaLeft",
           key: "Meta",
@@ -310,7 +310,7 @@ describe("terminal renderer helpers", () => {
       )
     ).toBe(true);
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "MetaRight",
           key: "Meta",
@@ -325,7 +325,7 @@ describe("terminal renderer helpers", () => {
 
   it("does not swallow Meta when not composing", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "MetaLeft",
           key: "Meta",
@@ -338,9 +338,9 @@ describe("terminal renderer helpers", () => {
     ).toBe(false);
   });
 
-  it("does not swallow Cmd-combined shortcuts or non-keydown events", () => {
+  it("does not swallow Cmd combined with letter keys (e.g., Cmd+C)", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "KeyC",
           key: "c",
@@ -351,8 +351,11 @@ describe("terminal renderer helpers", () => {
         true
       )
     ).toBe(false);
+  });
+
+  it("does not swallow bare Meta when another modifier is also held", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "MetaLeft",
           key: "Meta",
@@ -364,8 +367,11 @@ describe("terminal renderer helpers", () => {
         true
       )
     ).toBe(false);
+  });
+
+  it("does not swallow non-keydown events", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "MetaLeft",
           key: "Meta",
@@ -378,9 +384,82 @@ describe("terminal renderer helpers", () => {
     ).toBe(false);
   });
 
+  it("swallows Cmd + navigation keys during IME composition", () => {
+    for (const key of [
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown"
+    ]) {
+      expect(
+        shouldSuppressXtermDuringIme(
+          keyboardEvent({
+            key,
+            metaKey: true,
+            type: "keydown"
+          }),
+          true
+        )
+      ).toBe(true);
+    }
+  });
+
+  it("swallows Alt + navigation keys during IME composition", () => {
+    for (const key of [
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown"
+    ]) {
+      expect(
+        shouldSuppressXtermDuringIme(
+          keyboardEvent({
+            key,
+            altKey: true,
+            type: "keydown"
+          }),
+          true
+        )
+      ).toBe(true);
+    }
+  });
+
+  it("does not swallow bare navigation keys (no modifier) even when composing", () => {
+    expect(
+      shouldSuppressXtermDuringIme(
+        keyboardEvent({
+          key: "ArrowLeft",
+          type: "keydown"
+        }),
+        true
+      )
+    ).toBe(false);
+  });
+
+  it("does not swallow modifier + navigation when not composing", () => {
+    expect(
+      shouldSuppressXtermDuringIme(
+        keyboardEvent({
+          key: "ArrowLeft",
+          metaKey: true,
+          type: "keydown"
+        }),
+        false
+      )
+    ).toBe(false);
+  });
+
   it("does not swallow other keys (Enter, letters, IME process) even when composing", () => {
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "Enter",
           key: "Enter",
@@ -392,7 +471,7 @@ describe("terminal renderer helpers", () => {
       )
     ).toBe(false);
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "KeyA",
           key: "a",
@@ -403,7 +482,7 @@ describe("terminal renderer helpers", () => {
       )
     ).toBe(false);
     expect(
-      shouldSwallowImeCompositionMetaKey(
+      shouldSuppressXtermDuringIme(
         keyboardEvent({
           code: "",
           key: "Process",
