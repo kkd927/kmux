@@ -6,7 +6,7 @@ import {
 
 export {
   resolveTerminalEnterRewrite,
-  shouldSwallowImeCompositionMetaKey,
+  shouldSuppressXtermDuringIme,
   type TerminalEnterRewrite,
   type TerminalKeyboardEventLike
 } from "../../terminalKeyboard";

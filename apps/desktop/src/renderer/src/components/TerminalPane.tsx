@@ -27,7 +27,7 @@ import {
   pasteClipboardIntoTerminal,
   resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
-  shouldSwallowImeCompositionMetaKey,
+  shouldSuppressXtermDuringIme,
   type PendingTerminalEnterRewrite,
   type DisposableAddon
 } from "../terminalRenderer";
@@ -895,13 +895,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const handleCompositionEnd = (): void => {
       imeCompositionRef.current = false;
     };
+    // Reset stale composition state if focus leaves the textarea (e.g. surface
+    // switch, OS-level shortcut) without a matching compositionend.
+    const handleTextareaBlur = (): void => {
+      imeCompositionRef.current = false;
+    };
     const xtermTextarea = terminal.textarea;
     if (xtermTextarea) {
       xtermTextarea.addEventListener("compositionstart", handleCompositionStart);
       xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
+      xtermTextarea.addEventListener("blur", handleTextareaBlur);
     }
     terminal.attachCustomKeyEventHandler((event) =>
-      !shouldSwallowImeCompositionMetaKey(event, imeCompositionRef.current)
+      !shouldSuppressXtermDuringIme(event, imeCompositionRef.current)
     );
     syncTerminalViewportBackground();
     requestAnimationFrame(() => {
@@ -975,6 +981,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           "compositionend",
           handleCompositionEnd
         );
+        xtermTextarea.removeEventListener("blur", handleTextareaBlur);
       }
       clearPendingEnterRewrite();
       if (webglRecoveryTimerRef.current) {
