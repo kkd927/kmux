@@ -150,6 +150,7 @@ async function bootstrap(): Promise<void> {
       resolvedShellEnv.baseEnv
     ),
     onDidDispatchAppAction: (action) => {
+      metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
     },
     externalSessionIndexer: createExternalSessionIndexer({
@@ -342,6 +343,7 @@ async function bootstrap(): Promise<void> {
         unsubscribeUpdater();
         updater.dispose();
         runtime.shutdown();
+        metadataRuntime.dispose();
         usageRuntime.shutdown();
 
         const server = socketServer;
