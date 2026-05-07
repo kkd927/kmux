@@ -7,6 +7,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 
 import type {
+  CreateImageAttachmentPayload,
+  ImageAttachmentSource,
   KmuxSettings,
   ResolvedTerminalThemeVm,
   ResolvedTerminalTypographyVm,
@@ -23,10 +25,13 @@ import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
+  countSupportedImageFiles,
   createTerminalPaneXtermTheme,
+  isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
+  shouldUseImagePaste,
   shouldSuppressXtermDuringIme,
   type PendingTerminalEnterRewrite,
   type DisposableAddon
@@ -136,6 +141,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [runtimeGeneration, setRuntimeGeneration] = useState(0);
   const [surfaceDropDirection, setSurfaceDropDirection] =
     useState<SurfaceTabDropDirection | null>(null);
+  const [imageDropActive, setImageDropActive] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const terminalInstanceKey = activeSurface.id;
   const copyModeRef = useRef(copyMode);
@@ -150,6 +157,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     dispose(): void;
   } | null>(null);
   const webglRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const attachmentStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
   const resizeBurstRef = useRef({ lastAt: 0, count: 0 });
@@ -282,6 +292,45 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       terminalRef.current?.focus();
     });
+  }
+
+  function showAttachmentStatus(message: string): void {
+    if (attachmentStatusTimerRef.current) {
+      clearTimeout(attachmentStatusTimerRef.current);
+      attachmentStatusTimerRef.current = null;
+    }
+    setAttachmentStatus(message);
+    attachmentStatusTimerRef.current = setTimeout(() => {
+      setAttachmentStatus(null);
+      attachmentStatusTimerRef.current = null;
+    }, 2600);
+  }
+
+  async function attachImagePayloads(
+    terminal: Terminal,
+    surfaceId: string,
+    payloads: CreateImageAttachmentPayload[]
+  ): Promise<boolean> {
+    if (!payloads.length) {
+      return false;
+    }
+    try {
+      const result = await window.kmux.createImageAttachments(
+        surfaceId,
+        payloads
+      );
+      if (result.promptText) {
+        terminal.paste(result.promptText);
+      }
+      showAttachmentStatus(result.message);
+      focusTerminalInput();
+      return true;
+    } catch (error) {
+      console.warn("Failed to attach image to terminal prompt", error);
+      showAttachmentStatus("Could not attach image");
+      focusTerminalInput();
+      return true;
+    }
   }
 
   function setSurfaceWrapperRef(
@@ -731,16 +780,30 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     window.kmux.writeClipboardText(selection);
   }
 
-  function pasteClipboard(terminal: Terminal): void {
-    pasteClipboardIntoTerminal({
+  async function pasteClipboard(terminal: Terminal, surfaceId: string): Promise<void> {
+    const didPaste = await pasteClipboardIntoTerminal({
       terminal,
-      readClipboardText: () => window.kmux.readClipboardText()
+      surfaceId,
+      readClipboardText: () => window.kmux.readClipboardText(),
+      readClipboardImages: () => window.kmux.readClipboardImages(),
+      createImageAttachments: window.kmux.createImageAttachments,
+      onImageAttachmentStatus: showAttachmentStatus,
+      onImageAttachmentError: (error) => {
+        console.warn("Failed to attach image to terminal prompt", error);
+      }
     });
+    if (didPaste) {
+      focusTerminalInput();
+    }
   }
 
   useEffect(() => {
     return () => {
       writeProfileBucketRef.current.flushAll();
+      if (attachmentStatusTimerRef.current) {
+        clearTimeout(attachmentStatusTimerRef.current);
+        attachmentStatusTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -923,7 +986,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         event.preventDefault();
         event.stopPropagation();
         if (!copyModeRef.current) {
-          pasteClipboard(terminal);
+          void pasteClipboard(terminal, currentSurface.id);
         }
         return;
       }
@@ -975,8 +1038,47 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         }
       }
     };
+    const handleTerminalPaste = (event: ClipboardEvent) => {
+      if (copyModeRef.current || showSearchRef.current) {
+        return;
+      }
+      const currentSurface = activeSurfaceRef.current;
+      if (!currentSurface) {
+        return;
+      }
+      const clipboardData = event.clipboardData;
+      const imageCount = clipboardData
+        ? countSupportedImageFiles(getImageFilesFromDataTransfer(clipboardData))
+        : 0;
+      const nativeImages =
+        imageCount > 0 ? [] : window.kmux.readClipboardImages();
+      const text = clipboardData?.getData("text/plain") ?? "";
+      if (
+        !shouldUseImagePaste({
+          imageCount: imageCount + nativeImages.length,
+          text
+        })
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void (async () => {
+        const payloads =
+          imageCount > 0 && clipboardData
+            ? await createImageAttachmentPayloadsFromDataTransfer(
+                clipboardData,
+                "clipboard"
+              )
+            : [];
+        payloads.push(...nativeImages);
+        await attachImagePayloads(terminal, currentSurface.id, payloads);
+      })();
+    };
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
+    container.addEventListener("paste", handleTerminalPaste, true);
     const imeCompositionRef = { current: false };
     const handleCompositionStart = (): void => {
       imeCompositionRef.current = true;
@@ -1062,6 +1164,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
       container.removeEventListener("keydown", handleTerminalShortcut, true);
+      container.removeEventListener("paste", handleTerminalPaste, true);
       if (xtermTextarea) {
         xtermTextarea.removeEventListener(
           "compositionstart",
@@ -1367,6 +1470,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const handleSurfaceDragOver = (event: DragEvent<HTMLDivElement>): void => {
     const payload = props.draggedSurfaceTab;
     if (!payload) {
+      if (dataTransferHasFiles(event.dataTransfer)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setImageDropActive(true);
+      }
       return;
     }
     const direction = resolveDropDirection(event);
@@ -1379,6 +1487,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
+    setImageDropActive(false);
     setSurfaceDropDirection((current) =>
       current === direction ? current : direction
     );
@@ -1393,12 +1502,37 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     setSurfaceDropDirection(null);
+    setImageDropActive(false);
   };
 
-  const handleSurfaceDrop = (event: DragEvent<HTMLDivElement>): void => {
+  const handleSurfaceDrop = async (
+    event: DragEvent<HTMLDivElement>
+  ): Promise<void> => {
     const payload = currentDropPayload(event);
-    const direction = resolveDropDirection(event);
     setSurfaceDropDirection(null);
+    setImageDropActive(false);
+    if (!payload && dataTransferHasFiles(event.dataTransfer)) {
+      event.preventDefault();
+      event.stopPropagation();
+      const terminal = terminalRef.current;
+      const currentSurface = activeSurfaceRef.current;
+      if (!terminal || !currentSurface) {
+        return;
+      }
+      const payloads = await createImageAttachmentPayloadsFromDataTransfer(
+        event.dataTransfer,
+        "drop"
+      );
+      if (!payloads.length) {
+        showAttachmentStatus("Drop an image to attach it");
+        focusTerminalInput();
+        return;
+      }
+      await attachImagePayloads(terminal, currentSurface.id, payloads);
+      return;
+    }
+
+    const direction = resolveDropDirection(event);
     props.onSurfaceTabDragEnd();
     if (
       !payload ||
@@ -1618,13 +1752,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       <div
         className={styles.terminal}
         data-surface-drop-direction={surfaceDropDirection ?? undefined}
+        data-image-drop-active={imageDropActive ? "true" : undefined}
         onDragOver={handleSurfaceDragOver}
         onDragLeave={handleSurfaceDragLeave}
-        onDrop={handleSurfaceDrop}
+        onDrop={(event) => {
+          void handleSurfaceDrop(event);
+        }}
       >
         {showSurfaceDropPrompt ? (
           <div className={styles.surfaceDropPrompt} role="status">
             {SURFACE_TAB_DROP_PROMPT}
+          </div>
+        ) : null}
+        {attachmentStatus ? (
+          <div className={styles.attachmentStatus} role="status">
+            {attachmentStatus}
           </div>
         ) : null}
         {tabs.map((surface) => {
@@ -1643,6 +1785,50 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         })}
       </div>
     </div>
+  );
+}
+
+function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
+  if (dataTransfer.files.length > 0) {
+    return true;
+  }
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file");
+}
+
+function getImageFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {
+  const filesFromItems = Array.from(dataTransfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  const files = filesFromItems.length
+    ? filesFromItems
+    : Array.from(dataTransfer.files);
+  return files.filter(isPotentialImageFile);
+}
+
+async function createImageAttachmentPayloadsFromDataTransfer(
+  dataTransfer: DataTransfer,
+  source: ImageAttachmentSource
+): Promise<CreateImageAttachmentPayload[]> {
+  const files = getImageFilesFromDataTransfer(dataTransfer);
+  const payloads = await Promise.all(
+    files.map(async (file): Promise<CreateImageAttachmentPayload> => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      return {
+        source,
+        originalName: file.name || undefined,
+        mimeType: file.type || undefined,
+        bytes
+      };
+    })
+  );
+  return payloads;
+}
+
+function isPotentialImageFile(file: File): boolean {
+  return (
+    isSupportedImageMimeType(file.type) ||
+    /\.(png|jpe?g|gif|webp)$/i.test(file.name)
   );
 }
 

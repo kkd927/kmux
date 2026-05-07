@@ -401,6 +401,11 @@
   opacity: 1;
 }
 
+.terminal[data-image-drop-active="true"]::before {
+  inset: 0;
+  opacity: 1;
+}
+
 .surfaceDropPrompt {
   position: absolute;
   top: 12px;
@@ -427,6 +432,34 @@
   overflow: hidden;
   pointer-events: none;
   text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachmentStatus {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 21;
+  max-width: min(72%, 420px);
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--window-bg) 94%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  color: var(--text-primary);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+  letter-spacing: 0;
+  overflow: hidden;
+  pointer-events: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

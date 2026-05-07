@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu } from "electron";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
@@ -18,6 +18,10 @@ import { createAppRuntime } from "./appRuntime";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 import { createExternalSessionIndexer } from "./externalSessions";
+import {
+  createImageAttachmentService,
+  IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS
+} from "./imageAttachments";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
@@ -213,6 +217,38 @@ async function bootstrap(): Promise<void> {
     getPtyHost: () => ptyHost,
     profileRecorder: smoothnessProfile
   });
+  const imageAttachmentService = createImageAttachmentService({
+    attachmentRoot: join(dirname(paths.socketPath), "attachments"),
+    getSurfaceSessionId: terminalBridge.surfaceSessionId,
+    getSurfaceVendor: usageRuntime.getSurfaceVendor
+  });
+  const runImageAttachmentCleanup = (): void => {
+    void imageAttachmentService
+      .cleanupImageAttachments()
+      .then((result) => {
+        if (result.deletedCount > 0) {
+          logDiagnostics("main.image-attachments.cleanup", {
+            deletedCount: result.deletedCount,
+            deletedBytes: result.deletedBytes,
+            remainingBytes: result.remainingBytes
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        logDiagnostics("main.image-attachments.cleanup-error", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+  };
+  runImageAttachmentCleanup();
+  const imageAttachmentCleanupTimer = setInterval(
+    runImageAttachmentCleanup,
+    IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS
+  );
+  imageAttachmentCleanupTimer.unref?.();
+  app.once("before-quit", () => {
+    clearInterval(imageAttachmentCleanupTimer);
+  });
 
   logDiagnostics("main.pty-host.starting", {
     diagnosticsLogPath: resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV]
@@ -246,6 +282,7 @@ async function bootstrap(): Promise<void> {
     getUsageView: usageRuntime.getSnapshot,
     getExternalAgentSessions: runtime.getExternalAgentSessions,
     resumeExternalAgentSession: runtime.resumeExternalAgentSession,
+    createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,

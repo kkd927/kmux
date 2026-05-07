@@ -12,6 +12,12 @@ export type NotificationSource =
   | "system";
 export type NotificationKind = "generic" | "needs_input" | "turn_complete";
 export type UsageVendor = "claude" | "codex" | "gemini" | "unknown";
+export type ImageAttachmentMimeType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
+export type ImageAttachmentSource = "drop" | "clipboard";
 export type SessionRuntimeState = "pending" | "running" | "exited";
 export type SidebarLogLevel = "info" | "warn" | "error";
 export type SidebarStatusVariant = "info" | "attention" | "muted" | "error";
@@ -76,6 +82,32 @@ export interface ExternalAgentSessionsSnapshot {
 export interface ExternalAgentSessionResumeResult {
   workspaceId: string;
   surfaceId: string;
+}
+
+export interface CreateImageAttachmentPayload {
+  source: ImageAttachmentSource;
+  originalName?: string;
+  mimeType?: string;
+  bytes: Uint8Array | ArrayBuffer | number[];
+}
+
+export interface ImageAttachmentVm {
+  id: string;
+  surfaceId: Id;
+  sessionId: Id;
+  absolutePath: string;
+  displayName: string;
+  mimeType: ImageAttachmentMimeType;
+  byteLength: number;
+  createdAt: string;
+}
+
+export interface CreateImageAttachmentsResult {
+  attachments: ImageAttachmentVm[];
+  promptText: string;
+  skippedCount: number;
+  status: "attached" | "partial" | "empty" | "failed";
+  message: string;
 }
 
 export interface SidebarProgress {

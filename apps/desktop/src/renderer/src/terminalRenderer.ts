@@ -3,6 +3,11 @@ import {
   THEMES,
   type ColorTheme
 } from "@kmux/ui";
+import type { ImageAttachmentMimeType } from "@kmux/proto";
+import type {
+  CreateImageAttachmentPayload,
+  CreateImageAttachmentsResult
+} from "@kmux/proto";
 
 export {
   resolveTerminalEnterRewrite,
@@ -55,6 +60,12 @@ const TERMINAL_WEBGL_LARGE_COL_DELTA = 8;
 const TERMINAL_WEBGL_LARGE_ROW_DELTA = 2;
 const TERMINAL_WEBGL_TINY_COLS = 20;
 const TERMINAL_WEBGL_TINY_ROWS = 2;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp"
+]);
 
 export function createTerminalPaneXtermTheme(
   palette: Parameters<typeof createXtermTheme>[0],
@@ -77,6 +88,16 @@ interface ApplyTerminalWebglPreferenceOptions<TAddon extends DisposableAddon> {
 interface PasteClipboardIntoTerminalOptions {
   terminal: TerminalPasteHost;
   readClipboardText: () => string;
+  surfaceId?: string;
+  readClipboardImages?: () =>
+    | CreateImageAttachmentPayload[]
+    | Promise<CreateImageAttachmentPayload[]>;
+  createImageAttachments?: (
+    surfaceId: string,
+    payloads: CreateImageAttachmentPayload[]
+  ) => Promise<CreateImageAttachmentsResult>;
+  onImageAttachmentStatus?: (message: string) => void;
+  onImageAttachmentError?: (error: unknown) => void;
 }
 
 export function applyTerminalWebglPreference<TAddon extends DisposableAddon>(
@@ -128,9 +149,37 @@ export function resolveTerminalWebglRecovery(
   };
 }
 
-export function pasteClipboardIntoTerminal(
+export async function pasteClipboardIntoTerminal(
   options: PasteClipboardIntoTerminalOptions
-): boolean {
+): Promise<boolean> {
+  const imagePayloads = (await options.readClipboardImages?.()) ?? [];
+  if (
+    imagePayloads.length > 0 &&
+    options.surfaceId &&
+    options.createImageAttachments
+  ) {
+    try {
+      const result = await options.createImageAttachments(
+        options.surfaceId,
+        imagePayloads
+      );
+      if (result.promptText) {
+        options.terminal.paste(result.promptText);
+        return true;
+      }
+      if (result.message) {
+        options.onImageAttachmentStatus?.(result.message);
+      }
+    } catch (error) {
+      options.onImageAttachmentError?.(error);
+      options.onImageAttachmentStatus?.("Could not attach image");
+    }
+  }
+
+  return pasteClipboardText(options);
+}
+
+function pasteClipboardText(options: PasteClipboardIntoTerminalOptions): boolean {
   const text = options.readClipboardText();
   if (!text) {
     return false;
@@ -138,6 +187,27 @@ export function pasteClipboardIntoTerminal(
 
   options.terminal.paste(text);
   return true;
+}
+
+export function isSupportedImageMimeType(
+  mimeType: string | null | undefined
+): mimeType is ImageAttachmentMimeType {
+  return Boolean(mimeType && SUPPORTED_IMAGE_MIME_TYPES.has(mimeType));
+}
+
+export function shouldUseImagePaste(input: {
+  imageCount: number;
+  text: string;
+}): boolean {
+  return input.imageCount > 0;
+}
+
+export function countSupportedImageFiles(
+  files: ArrayLike<{ type: string | null | undefined }>
+): number {
+  return Array.from(files).filter((file) =>
+    isSupportedImageMimeType(file.type)
+  ).length;
 }
 
 export function applyPendingTerminalEnterRewrite(
