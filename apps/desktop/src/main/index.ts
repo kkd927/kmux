@@ -22,6 +22,7 @@ import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
 import { resolveShellEnvironment } from "./shellEnvironment";
+import { createShellWrapperRuntime } from "./shellWrapperRuntime";
 import { KmuxSocketServer } from "./socketServer";
 import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
@@ -94,6 +95,10 @@ async function bootstrap(): Promise<void> {
     USAGE_PRICING_REVISION
   );
   const savedSettings = settingsStore.load();
+  const shellWrapperRuntime = createShellWrapperRuntime();
+  process.once("exit", () => {
+    shellWrapperRuntime.cleanup();
+  });
   const resolvedShellEnv = await resolveShellEnvironment({
     preferredShell: savedSettings?.shell,
     env: process.env,
@@ -211,7 +216,10 @@ async function bootstrap(): Promise<void> {
   logDiagnostics("main.pty-host.starting", {
     diagnosticsLogPath: resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV]
   });
-  ptyHost.start(resolvedShellEnv.baseEnv);
+  ptyHost.start({
+    ...resolvedShellEnv.baseEnv,
+    ...shellWrapperRuntime.env
+  });
   ptyHost.on("event", terminalBridge.handlePtyEvent);
 
   socketServer = new KmuxSocketServer({
@@ -343,7 +351,11 @@ async function bootstrap(): Promise<void> {
 
         const socketStop = server?.stop();
         host?.stop();
-        await socketStop;
+        try {
+          await socketStop;
+        } finally {
+          shellWrapperRuntime.cleanup();
+        }
       })().catch((error) => {
         console.error("[main:shutdown]", error);
       });
@@ -381,7 +393,7 @@ async function bootstrap(): Promise<void> {
       updaterState: updater.getState(),
       actions: {
         checkForUpdates: () => updater.checkForUpdates("foreground"),
-        downloadUpdate: () => updater.downloadUpdate("foreground"),
+        downloadUpdate: () => updater.downloadUpdate("inline"),
         quitAndInstall: () => {
           lifecycle.allowQuit();
           updater.quitAndInstall();

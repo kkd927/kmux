@@ -1,14 +1,21 @@
-import {execFile, fork} from "node:child_process";
-import {randomUUID} from "node:crypto";
-import {mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync} from "node:fs";
-import {userInfo} from "node:os";
-import {basename, dirname, join, resolve, sep} from "node:path";
-import {fileURLToPath} from "node:url";
-import {promisify} from "node:util";
+import { execFile, fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { userInfo } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
 const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
+const PROBE_ONLY_ENV_KEYS = ["KMUX_SHELL_ENV_PROBE"] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 const DEFAULT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -79,11 +86,9 @@ export type ShellCommandExecutor = (
   command: string,
   args: string[],
   options: ShellCommandExecutorOptions
-) => Promise<{stdout: string; stderr: string}>;
+) => Promise<{ stdout: string; stderr: string }>;
 
-export type ShellPtyProbe = (
-  options: ShellPtyProbeOptions
-) => Promise<string>;
+export type ShellPtyProbe = (options: ShellPtyProbeOptions) => Promise<string>;
 
 interface ResolveShellEnvironmentOptions {
   preferredShell?: string;
@@ -203,9 +208,7 @@ export function parseShellEnvOutput(
     throw new Error("shell env marker not found in probe output");
   }
 
-  const rawPayload = stdout
-    .slice(startIndex + marker.length, endIndex)
-    .trim();
+  const rawPayload = stdout.slice(startIndex + marker.length, endIndex).trim();
   const parsed = JSON.parse(rawPayload) as Record<string, unknown>;
   const env: NodeJS.ProcessEnv = {};
 
@@ -230,6 +233,7 @@ export async function resolveShellEnvironment(
     options.userShell
   );
   const baseEnv = sanitizeInheritedEnv(inheritedEnv);
+  const probeEnv = buildShellProbeEnv(baseEnv);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const processExecPath = options.processExecPath ?? process.execPath;
@@ -247,7 +251,7 @@ export async function resolveShellEnvironment(
       const revalidation = revalidateShellEnvInBackground({
         shellPath,
         platform,
-        probeEnv: baseEnv,
+        probeEnv,
         timeoutMs,
         processExecPath,
         marker,
@@ -271,7 +275,7 @@ export async function resolveShellEnvironment(
     const resolvedEnv = await probeShellEnvironment({
       shellPath,
       platform,
-      probeEnv: baseEnv,
+      probeEnv,
       timeoutMs,
       processExecPath,
       marker,
@@ -349,15 +353,11 @@ async function probeShellEnvironment(options: {
       options.marker,
       options.platform
     );
-    const result = await options.exec(
-      invocation.command,
-      invocation.args,
-      {
-        env: options.probeEnv,
-        timeout: options.timeoutMs,
-        maxBuffer: DEFAULT_MAX_BUFFER
-      }
-    );
+    const result = await options.exec(invocation.command, invocation.args, {
+      env: options.probeEnv,
+      timeout: options.timeoutMs,
+      maxBuffer: DEFAULT_MAX_BUFFER
+    });
     stdout = result.stdout;
   }
 
@@ -481,16 +481,21 @@ function readUserShell(): string | undefined {
   }
 }
 
-function sanitizeInheritedEnv(
-  env: NodeJS.ProcessEnv
-): NodeJS.ProcessEnv {
+function sanitizeInheritedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const nextEnv: NodeJS.ProcessEnv = { ...env };
 
-  for (const key of BLOCKED_INHERITED_ENV_KEYS) {
+  for (const key of [...BLOCKED_INHERITED_ENV_KEYS, ...PROBE_ONLY_ENV_KEYS]) {
     delete nextEnv[key];
   }
 
   return nextEnv;
+}
+
+function buildShellProbeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    KMUX_SHELL_ENV_PROBE: "1"
+  };
 }
 
 function buildShellEnvProbeCommand(
@@ -532,12 +537,12 @@ async function defaultShellCommandExecutor(
   command: string,
   args: string[],
   options: ShellCommandExecutorOptions
-): Promise<{stdout: string; stderr: string}> {
-  const {stdout = "", stderr = ""} = await execFileAsync(command, args, {
+): Promise<{ stdout: string; stderr: string }> {
+  const { stdout = "", stderr = "" } = await execFileAsync(command, args, {
     ...options,
     encoding: "utf8"
   });
-  return {stdout, stderr};
+  return { stdout, stderr };
 }
 
 async function defaultShellPtyProbe(
@@ -563,7 +568,9 @@ async function defaultShellPtyProbe(
           // ignore
         }
         rejectPromise(
-          new Error(`shell env PTY probe timed out after ${options.timeoutMs}ms`)
+          new Error(
+            `shell env PTY probe timed out after ${options.timeoutMs}ms`
+          )
         );
       });
     }, options.timeoutMs);
@@ -625,7 +632,9 @@ async function defaultShellPtyProbe(
       } satisfies ShellEnvProbeWorkerRequest);
     } catch (error) {
       settle(() => {
-        rejectPromise(error instanceof Error ? error : new Error(String(error)));
+        rejectPromise(
+          error instanceof Error ? error : new Error(String(error))
+        );
       });
     }
   });

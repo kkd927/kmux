@@ -1,6 +1,6 @@
 import type * as PtyModule from "node-pty";
 
-import {loadNodePty} from "../pty-host/nodePtyLoader";
+import { loadNodePty } from "../pty-host/nodePtyLoader";
 
 interface ShellEnvProbeWorkerRequest {
   type: "probe";
@@ -25,16 +25,26 @@ type ShellEnvProbeWorkerMessage =
 
 let activePty: PtyModule.IPty | null = null;
 
-function cleanupActivePty(): void {
-  if (!activePty) {
+function cleanupActivePty(signal: NodeJS.Signals = "SIGTERM"): void {
+  const pty = activePty;
+  activePty = null;
+  if (!pty) {
     return;
   }
   try {
-    activePty.kill();
+    pty.kill(signal);
   } catch {
     // ignore
   }
-  activePty = null;
+  try {
+    process.kill(-pty.pid, signal);
+  } catch {
+    try {
+      process.kill(pty.pid, signal);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function sendAndExit(
@@ -56,9 +66,7 @@ function sendAndExit(
   });
 }
 
-async function runProbe(
-  request: ShellEnvProbeWorkerRequest
-): Promise<string> {
+async function runProbe(request: ShellEnvProbeWorkerRequest): Promise<string> {
   const pty = loadNodePty();
   let output = "";
 
@@ -80,7 +88,7 @@ async function runProbe(
       output += chunk;
     });
 
-    activePty.onExit(({exitCode, signal}) => {
+    activePty.onExit(({ exitCode, signal }) => {
       const finishedOutput = output;
       activePty = null;
       if (exitCode === 0) {
@@ -110,10 +118,10 @@ process.once("message", async (message: ShellEnvProbeWorkerRequest) => {
 
   try {
     const stdout = await runProbe(message);
-    sendAndExit({type: "result", stdout}, 0);
+    sendAndExit({ type: "result", stdout }, 0);
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
-    sendAndExit({type: "error", message: messageText}, 1);
+    sendAndExit({ type: "error", message: messageText }, 1);
   }
 });
 
