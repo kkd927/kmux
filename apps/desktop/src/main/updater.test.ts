@@ -342,4 +342,29 @@ describe("updater controller", () => {
     expect(harness.updater.checkForUpdates).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+
+  it("uses the VS Code-style default background update cadence", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+
+    harness.controller.startBackgroundChecks();
+    vi.advanceTimersByTime(29_999);
+    expect(harness.updater.checkForUpdates).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    await Promise.resolve();
+    expect(harness.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    harness.updater.emit("update-not-available", { version: "0.1.11" });
+    vi.advanceTimersByTime(60 * 60 * 1000 - 1);
+    await Promise.resolve();
+    expect(harness.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+    await Promise.resolve();
+    expect(harness.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+
+    harness.controller.dispose();
+    vi.useRealTimers();
+  });
 });
