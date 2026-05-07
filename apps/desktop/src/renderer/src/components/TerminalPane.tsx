@@ -128,7 +128,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const searchRef = useRef<SearchAddon | null>(null);
   const webglAddonRef = useRef<DisposableAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const surfaceWrapperRefs = useRef(new Map<string, HTMLDivElement>());
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingEnterRewriteRef = useRef<PendingEnterRewrite | null>(null);
   const [query, setQuery] = useState("");
@@ -137,6 +137,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [surfaceDropDirection, setSurfaceDropDirection] =
     useState<SurfaceTabDropDirection | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
+  const terminalInstanceKey = activeSurface.id;
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
   const showSearchRef = useRef(props.showSearch);
@@ -156,7 +157,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const resizeSyncRef = useRef<ReturnType<typeof createTerminalResizeSync> | null>(
     null
   );
-  // The xterm instance is pane-scoped, but PTY size is surface-scoped.
+  // The xterm instance is surface-scoped, but PTY size is still synced from
+  // the pane that currently displays the surface.
   const surfaceResizeDimensionsRef = useRef(
     new Map<string, { cols: number; rows: number }>()
   );
@@ -233,16 +235,25 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }
 
   function syncTerminalMetrics(terminal: Terminal | null): void {
-    if (!wrapperRef.current || !terminal) {
+    if (!activeSurface || !terminal) {
       return;
     }
-    wrapperRef.current.dataset.terminalViewportY = String(
+    syncSurfaceTerminalMetrics(activeSurface.id, terminal);
+  }
+
+  function syncSurfaceTerminalMetrics(
+    surfaceId: string,
+    terminal: Terminal
+  ): void {
+    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+    if (!wrapper) {
+      return;
+    }
+    wrapper.dataset.terminalViewportY = String(
       terminal.buffer.active.viewportY
     );
-    wrapperRef.current.dataset.terminalBaseY = String(
-      terminal.buffer.active.baseY
-    );
-    wrapperRef.current.dataset.terminalBracketedPasteMode = String(
+    wrapper.dataset.terminalBaseY = String(terminal.buffer.active.baseY);
+    wrapper.dataset.terminalBracketedPasteMode = String(
       terminal.modes.bracketedPasteMode
     );
   }
@@ -271,6 +282,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       terminalRef.current?.focus();
     });
+  }
+
+  function setSurfaceWrapperRef(
+    surfaceId: string,
+    node: HTMLDivElement | null
+  ): void {
+    if (node) {
+      surfaceWrapperRefs.current.set(surfaceId, node);
+      return;
+    }
+    surfaceWrapperRefs.current.delete(surfaceId);
   }
 
   function scheduleRuntimeRecovery(terminal: Terminal): void {
@@ -396,19 +418,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }, WEBGL_RECOVERY_RECREATE_DELAY_MS);
   }
 
-  async function fitAndSyncTerminal(terminal: Terminal): Promise<void> {
-    const fit = fitRef.current;
+  async function fitAndSyncTerminal(
+    terminal: Terminal,
+    options: { fit?: FitAddon | null; surfaceId?: string | null } = {}
+  ): Promise<void> {
+    const fit = options.fit ?? fitRef.current;
     if (!fit) {
       return;
     }
-    const currentSurface = activeSurfaceRef.current;
+    const surfaceId = options.surfaceId ?? activeSurfaceRef.current?.id ?? null;
+    const requiresActiveSurface = !options.surfaceId;
     const previousCols = terminal.cols;
     const previousRows = terminal.rows;
     const fitStartedAt = performance.now();
     const dims = fit.proposeDimensions();
     const fitDurationMs = performance.now() - fitStartedAt;
-    const syncedSurfaceDimensions = currentSurface
-      ? surfaceResizeDimensionsRef.current.get(currentSurface.id)
+    const syncedSurfaceDimensions = surfaceId
+      ? surfaceResizeDimensionsRef.current.get(surfaceId)
       : undefined;
     const terminalSizeChanged = Boolean(
       dims &&
@@ -419,7 +445,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         (dims.cols !== previousCols || dims.rows !== previousRows)
     );
     const surfaceSizeSynced = Boolean(
-      currentSurface &&
+      surfaceId &&
         dims &&
         syncedSurfaceDimensions?.cols === dims.cols &&
         syncedSurfaceDimensions?.rows === dims.rows
@@ -433,7 +459,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     );
     recordRendererSmoothnessProfileEvent("terminal.fit", {
       paneId: props.paneId,
-      surfaceId: currentSurface?.id,
+      surfaceId,
       previousCols,
       previousRows,
       cols: dims?.cols ?? null,
@@ -452,8 +478,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) {
       return;
     }
-    if (!terminalSizeChanged && (!currentSurface || surfaceSizeSynced)) {
-      syncTerminalMetrics(terminal);
+    if (!terminalSizeChanged && (!surfaceId || surfaceSizeSynced)) {
+      if (surfaceId) {
+        syncSurfaceTerminalMetrics(surfaceId, terminal);
+      } else {
+        syncTerminalMetrics(terminal);
+      }
       return;
     }
     const generation = ++resizeGenerationRef.current;
@@ -464,7 +494,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         const applyEndedAt = performance.now();
         recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
           paneId: props.paneId,
-          surfaceId: currentSurface?.id,
+          surfaceId,
           generation,
           previousCols,
           previousRows,
@@ -487,7 +517,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           }
           recordRendererSmoothnessProfileEvent("terminal.reflow", {
             paneId: props.paneId,
-            surfaceId: currentSurface?.id,
+            surfaceId,
             generation,
             cols: dims.cols,
             rows: dims.rows,
@@ -499,7 +529,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       } catch {
         recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
           paneId: props.paneId,
-          surfaceId: currentSurface?.id,
+          surfaceId,
           generation,
           previousCols,
           previousRows,
@@ -512,15 +542,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
     }
-    syncTerminalMetrics(terminal);
-    if (!currentSurface) {
+    if (surfaceId) {
+      syncSurfaceTerminalMetrics(surfaceId, terminal);
+    } else {
+      syncTerminalMetrics(terminal);
+    }
+    if (!surfaceId) {
       return;
     }
 
     const requestStartedAt = performance.now();
     recordRendererSmoothnessProfileEvent("terminal.resize.request", {
       paneId: props.paneId,
-      surfaceId: currentSurface.id,
+      surfaceId,
       generation,
       previousCols,
       previousRows,
@@ -528,14 +562,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       rows: dims.rows
     });
     const resizeResult = await resizeSyncRef.current?.request({
-      surfaceId: currentSurface.id,
+      surfaceId,
       generation,
       cols: dims.cols,
       rows: dims.rows
     });
     recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
       paneId: props.paneId,
-      surfaceId: currentSurface.id,
+      surfaceId,
       generation,
       previousCols,
       previousRows,
@@ -548,8 +582,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (
       resizeResult?.status !== "synced" ||
       generation !== resizeGenerationRef.current ||
-      terminalRef.current !== terminal ||
-      activeSurfaceRef.current?.id !== resizeResult.surfaceId
+      (requiresActiveSurface && terminalRef.current !== terminal) ||
+      (requiresActiveSurface &&
+        activeSurfaceRef.current?.id !== resizeResult.surfaceId)
     ) {
       return;
     }
@@ -557,7 +592,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       cols: resizeResult.cols,
       rows: resizeResult.rows
     });
-    syncTerminalMetrics(terminal);
+    syncSurfaceTerminalMetrics(resizeResult.surfaceId, terminal);
   }
 
   async function waitForTerminalFonts(): Promise<void> {
@@ -588,7 +623,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   ): void {
     if (!isRendererSmoothnessProfileEnabled() || !profileSurfaceId) {
       terminal.write(data, () => {
-        syncTerminalMetrics(terminal);
+        if (profileSurfaceId) {
+          syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
+        } else {
+          syncTerminalMetrics(terminal);
+        }
         afterWrite?.();
       });
       return;
@@ -613,7 +652,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           now - startedAt
         );
       });
-      syncTerminalMetrics(terminal);
+      syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
       afterWrite?.();
     });
   }
@@ -706,52 +745,102 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, []);
 
   useEffect(() => {
-    const wrapper = wrapperRef.current;
+    const wrapper = surfaceWrapperRefs.current.get(activeSurface.id);
     if (!wrapper) {
       return;
     }
-    const { instance } = terminalInstanceStore.acquire(props.paneId, () => {
-      const host = document.createElement("div");
-      host.style.cssText = "width:100%;height:100%;min-height:0;overflow:hidden;";
-      const terminal = new Terminal({
-        allowProposedApi: true,
-        fontFamily: props.terminalTypography.resolvedFontFamily,
-        fontSize: props.settings.terminalTypography.fontSize,
-        lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
-        fontWeight: 400,
-        cursorBlink: true,
-        macOptionIsMeta: false,
-        scrollback: 5000,
-        minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
-        theme: terminalTheme
-      });
-      const fit = new FitAddon();
-      const search = new SearchAddon();
-      const unicode11 = new Unicode11Addon();
-      terminal.loadAddon(fit);
-      terminal.loadAddon(search);
-      terminal.loadAddon(unicode11);
-      terminal.unicode.activeVersion = "11";
-      terminal.open(host);
-      return {
-        host,
-        terminal,
-        fit,
-        search,
-        unicode11,
-        lastHydratedSurfaceId: null,
-        lastHydratedSurfaceSequence: null
-      };
-    });
+    // Keep the terminal surface alive across tab switches and pane split
+    // remounts. Full-screen TUIs keep mouse tracking state inside xterm, so
+    // only release this instance when the surface itself is removed.
+    const { instance } = terminalInstanceStore.acquire(
+      terminalInstanceKey,
+      () => {
+        const host = document.createElement("div");
+        host.style.cssText =
+          "width:100%;height:100%;min-height:0;overflow:hidden;";
+        const terminal = new Terminal({
+          allowProposedApi: true,
+          fontFamily: props.terminalTypography.resolvedFontFamily,
+          fontSize: props.settings.terminalTypography.fontSize,
+          lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
+          fontWeight: 400,
+          cursorBlink: true,
+          macOptionIsMeta: false,
+          scrollback: 5000,
+          minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
+          theme: terminalTheme
+        });
+        const fit = new FitAddon();
+        const search = new SearchAddon();
+        const unicode11 = new Unicode11Addon();
+        terminal.loadAddon(fit);
+        terminal.loadAddon(search);
+        terminal.loadAddon(unicode11);
+        terminal.unicode.activeVersion = "11";
+        terminal.open(host);
+        return {
+          host,
+          terminal,
+          fit,
+          search,
+          unicode11,
+          lastHydratedSurfaceId: null,
+          lastHydratedSurfaceSequence: null,
+          attachmentCleanup: null,
+          renderSink: null
+        };
+      }
+    );
     containerRef.current = instance.host;
     terminalRef.current = instance.terminal;
     fitRef.current = instance.fit;
     searchRef.current = instance.search;
-    wrapper.appendChild(instance.host);
+    if (instance.host.parentNode !== wrapper) {
+      wrapper.appendChild(instance.host);
+    }
     return () => {
-      terminalInstanceStore.detach(props.paneId);
+      if (terminalRef.current === instance.terminal) {
+        terminalRef.current = null;
+        fitRef.current = null;
+        searchRef.current = null;
+        containerRef.current = null;
+      }
     };
-  }, [props.paneId]);
+  }, [activeSurface.id, terminalInstanceKey]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fit = fitRef.current;
+    if (!terminal || !fit) {
+      return;
+    }
+    const surfaceId = activeSurface.id;
+    // Durable attachments outlive this React component. The sink is the
+    // current mounted pane's bridge back into local refs/helpers.
+    const sink: terminalInstanceStore.TerminalRenderSink = {
+      write: (data, afterWrite, profileSurfaceId = surfaceId) =>
+        writeTerminal(terminal, data, afterWrite, profileSurfaceId),
+      fitAndSync: () => fitAndSyncTerminal(terminal, { fit, surfaceId }),
+      beforeFitAndSync: () => {
+        surfaceResizeDimensionsRef.current.delete(surfaceId);
+      },
+      onSnapshotRendered: () => {
+        scheduleWebglPaintRecovery(terminal, {
+          reason: "hydrate",
+          resized: false,
+          previousCols: terminal.cols,
+          previousRows: terminal.rows,
+          cols: terminal.cols,
+          rows: terminal.rows,
+          resizeBurstCount: 1
+        });
+      }
+    };
+    terminalInstanceStore.setRenderSink(terminalInstanceKey, sink);
+    return () => {
+      terminalInstanceStore.clearRenderSink(terminalInstanceKey, sink);
+    };
+  });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -943,17 +1032,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     const disposeData = terminal.onData((data) => {
       const currentSurface = activeSurfaceRef.current;
-      if (currentSurface) {
-        const rewrite = applyPendingTerminalEnterRewrite(
-          currentSurface.id,
-          data,
-          pendingEnterRewriteRef.current
-        );
-        if (rewrite.clearPending) {
-          clearPendingEnterRewrite();
-        }
-        void window.kmux.sendText(currentSurface.id, rewrite.data);
+      if (!currentSurface) {
+        return;
       }
+      const rewrite = applyPendingTerminalEnterRewrite(
+        currentSurface.id,
+        data,
+        pendingEnterRewriteRef.current
+      );
+      if (rewrite.clearPending) {
+        clearPendingEnterRewrite();
+      }
+      void window.kmux.sendText(currentSurface.id, rewrite.data);
     });
     const disposeWriteParsed = terminal.onWriteParsed(() => {
       syncTerminalMetrics(terminal);
@@ -993,7 +1083,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
     };
-  }, [props.paneId, runtimeGeneration]);
+  }, [props.paneId, runtimeGeneration, terminalInstanceKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1022,7 +1112,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.settings.terminalTypography.fontSize,
     props.settings.terminalTypography.lineHeight,
     props.terminalTheme.minimumContrastRatio,
-    terminalTheme
+    terminalTheme,
+    terminalInstanceKey
   ]);
 
   useEffect(() => {
@@ -1056,32 +1147,62 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       syncTerminalViewportBackground();
     });
     void fitAndSyncTerminal(terminal);
-  }, [props.settings.terminalUseWebgl, props.useWebglForThisPane, runtimeGeneration]);
+  }, [
+    props.settings.terminalUseWebgl,
+    props.useWebglForThisPane,
+    runtimeGeneration,
+    terminalInstanceKey
+  ]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal || !activeSurface) {
       return;
     }
+    if (terminalInstanceStore.hasAttachment(activeSurface.id)) {
+      return;
+    }
 
-    let mounted = true;
-
-    const unsubscribe = window.kmux.subscribeTerminal((event) => {
-      if (!terminalRef.current) {
+    let attached = true;
+    const surfaceId = activeSurface.id;
+    const instanceKey = terminalInstanceKey;
+    const writeAttachedTerminal = (
+      data: string,
+      afterWrite?: () => void,
+      profileSurfaceId = surfaceId
+    ): void => {
+      const sink = terminalInstanceStore.getRenderSink(instanceKey);
+      if (sink) {
+        sink.write(data, afterWrite, profileSurfaceId);
         return;
       }
-      if (
-        event.type === "chunk" &&
-        event.payload.surfaceId === activeSurface.id
-      ) {
+      terminal.write(data, () => {
+        afterWrite?.();
+      });
+    };
+    const fitAttachedTerminal = async (): Promise<void> => {
+      await terminalInstanceStore.getRenderSink(instanceKey)?.fitAndSync();
+    };
+    const markSnapshotRendered = (snapshot: { sequence: number | null }) => {
+      terminalInstanceStore.markSurfaceHydrated(
+        instanceKey,
+        surfaceId,
+        snapshot.sequence
+      );
+      terminalInstanceStore.getRenderSink(instanceKey)?.onSnapshotRendered?.();
+    };
+
+    // Do not tie the IPC attachment to TerminalPane unmount: pane split can
+    // remount the pane while the same Claude surface must keep mouse mode live.
+    const unsubscribe = window.kmux.subscribeTerminal((event) => {
+      if (event.type === "chunk" && event.payload.surfaceId === surfaceId) {
         const payload = event.payload;
-        writeTerminal(
-          terminalRef.current,
+        writeAttachedTerminal(
           payload.chunk,
           () => {
-            if (terminalRef.current === terminal) {
+            if (attached) {
               terminalInstanceStore.markSurfaceRendered(
-                props.paneId,
+                instanceKey,
                 payload.surfaceId,
                 payload.sequence
               );
@@ -1090,96 +1211,67 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           payload.surfaceId
         );
       }
-      if (
-        event.type === "exit" &&
-        event.payload.surfaceId === activeSurface.id
-      ) {
-        writeTerminal(
-          terminalRef.current,
+      if (event.type === "exit" && event.payload.surfaceId === surfaceId) {
+        writeAttachedTerminal(
           `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`,
           undefined,
           event.payload.surfaceId
         );
       }
     });
+    const registered = terminalInstanceStore.registerAttachment(surfaceId, () => {
+      attached = false;
+      unsubscribe();
+      void window.kmux.detachSurface(surfaceId);
+    });
+    if (!registered) {
+      attached = false;
+      unsubscribe();
+      return;
+    }
 
     void (async () => {
-      const terminal = terminalRef.current;
-      if (!terminal) {
+      if (!attached) {
         return;
       }
       const lastHydratedSurfaceId =
-        terminalInstanceStore.getLastHydratedSurfaceId(props.paneId);
-      if (lastHydratedSurfaceId === activeSurface.id) {
+        terminalInstanceStore.getLastHydratedSurfaceId(instanceKey);
+      if (lastHydratedSurfaceId === surfaceId) {
         await reattachPreservedTerminal({
           terminal,
-          isMounted: () => mounted,
-          isTerminalActive: (candidate) => terminalRef.current === candidate,
+          isMounted: () => attached,
+          isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
-          attachSurface: () => window.kmux.attachSurface(activeSurface.id),
+          attachSurface: () => window.kmux.attachSurface(surfaceId),
           lastRenderedSequence:
-            terminalInstanceStore.getLastHydratedSurfaceSequence(props.paneId),
+            terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
           beforeFitAndSync: () => {
             // Force one resize after the surface is live so TUI mouse/scroll
             // state is refreshed without relying on a detached resize.
-            surfaceResizeDimensionsRef.current.delete(activeSurface.id);
+            terminalInstanceStore
+              .getRenderSink(instanceKey)
+              ?.beforeFitAndSync?.();
           },
-          fitAndSyncTerminal,
-          writeTerminal: (terminal, data, afterWrite) =>
-            writeTerminal(terminal, data, afterWrite, activeSurface.id),
-          onSnapshotRendered: (snapshot) => {
-            terminalInstanceStore.markSurfaceHydrated(
-              props.paneId,
-              activeSurface.id,
-              snapshot.sequence
-            );
-            scheduleWebglPaintRecovery(terminal, {
-              reason: "hydrate",
-              resized: false,
-              previousCols: terminal.cols,
-              previousRows: terminal.rows,
-              cols: terminal.cols,
-              rows: terminal.rows,
-              resizeBurstCount: 1
-            });
-          }
+          fitAndSyncTerminal: fitAttachedTerminal,
+          writeTerminal: (_terminal, data, afterWrite) =>
+            writeAttachedTerminal(data, afterWrite, surfaceId),
+          onSnapshotRendered: markSnapshotRendered
         });
       } else {
         await hydrateAttachedTerminal({
           terminal,
-          isMounted: () => mounted,
-          isTerminalActive: (candidate) => terminalRef.current === candidate,
+          isMounted: () => attached,
+          isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
-          fitAndSyncTerminal,
-          attachSurface: () => window.kmux.attachSurface(activeSurface.id),
-          writeTerminal: (terminal, data, afterWrite) =>
-            writeTerminal(terminal, data, afterWrite, activeSurface.id),
-          onSnapshotRendered: (snapshot) => {
-            terminalInstanceStore.markSurfaceHydrated(
-              props.paneId,
-              activeSurface.id,
-              snapshot.sequence
-            );
-            scheduleWebglPaintRecovery(terminal, {
-              reason: "hydrate",
-              resized: false,
-              previousCols: terminal.cols,
-              previousRows: terminal.rows,
-              cols: terminal.cols,
-              rows: terminal.rows,
-              resizeBurstCount: 1
-            });
-          }
+          fitAndSyncTerminal: fitAttachedTerminal,
+          attachSurface: () => window.kmux.attachSurface(surfaceId),
+          writeTerminal: (_terminal, data, afterWrite) =>
+            writeAttachedTerminal(data, afterWrite, surfaceId),
+          onSnapshotRendered: markSnapshotRendered
         });
       }
     })();
-
-    return () => {
-      mounted = false;
-      unsubscribe();
-      void window.kmux.detachSurface(activeSurface.id);
-    };
-  }, [activeSurface?.id, props.paneId]);
+  }, [activeSurface?.id, terminalInstanceKey]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -1231,7 +1323,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     focusTerminalInput();
-  }, [activeSurface.id, props.focused, props.active, props.showSearch, runtimeGeneration]);
+  }, [
+    activeSurface.id,
+    props.focused,
+    props.active,
+    props.showSearch,
+    runtimeGeneration
+  ]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
@@ -1529,12 +1627,20 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             {SURFACE_TAB_DROP_PROMPT}
           </div>
         ) : null}
-        <div
-          ref={wrapperRef}
-          className={styles.terminalViewport}
-          data-testid={`terminal-${activeSurface.id}`}
-          aria-label={`Terminal surface ${activeSurface.title}`}
-        />
+        {tabs.map((surface) => {
+          const selected = surface.id === activeSurface.id;
+          return (
+            <div
+              key={surface.id}
+              ref={(node) => setSurfaceWrapperRef(surface.id, node)}
+              className={styles.terminalViewport}
+              data-active={selected ? "true" : "false"}
+              data-testid={`terminal-${surface.id}`}
+              aria-label={`Terminal surface ${surface.title}`}
+              aria-hidden={selected ? undefined : true}
+            />
+          );
+        })}
       </div>
     </div>
   );

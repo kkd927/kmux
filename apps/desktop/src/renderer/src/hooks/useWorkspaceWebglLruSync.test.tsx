@@ -58,7 +58,7 @@ function TestHarness(props: {
   workspacePaneTrees: ShellStoreSnapshot["workspacePaneTrees"];
   touchPane: (paneId: string) => void;
   forgetPane: (paneId: string) => void;
-  releaseTerminalPane: (paneId: string) => void;
+  releaseTerminalSurface: (surfaceId: string) => void;
 }): null {
   useWorkspaceWebglLruSync(props);
   return null;
@@ -84,7 +84,7 @@ describe("useWorkspaceWebglLruSync", () => {
   it("touches the active pane when keyboard focus changes without pane set changes", () => {
     const touchPane = vi.fn();
     const forgetPane = vi.fn();
-    const releaseTerminalPane = vi.fn();
+    const releaseTerminalSurface = vi.fn();
     const initialTree = createWorkspacePaneTree("pane_a");
     const nextTree = createWorkspacePaneTree("pane_b");
 
@@ -95,7 +95,7 @@ describe("useWorkspaceWebglLruSync", () => {
           workspacePaneTrees={{ workspace_1: initialTree }}
           touchPane={touchPane}
           forgetPane={forgetPane}
-          releaseTerminalPane={releaseTerminalPane}
+          releaseTerminalSurface={releaseTerminalSurface}
         />
       );
     });
@@ -108,7 +108,7 @@ describe("useWorkspaceWebglLruSync", () => {
           workspacePaneTrees={{ workspace_1: nextTree }}
           touchPane={touchPane}
           forgetPane={forgetPane}
-          releaseTerminalPane={releaseTerminalPane}
+          releaseTerminalSurface={releaseTerminalSurface}
         />
       );
     });
@@ -117,10 +117,10 @@ describe("useWorkspaceWebglLruSync", () => {
     expect(touchPane).toHaveBeenCalledWith("pane_b");
   });
 
-  it("forgets and releases panes that leave all workspace trees", () => {
+  it("forgets removed panes and releases removed surfaces", () => {
     const touchPane = vi.fn();
     const forgetPane = vi.fn();
-    const releaseTerminalPane = vi.fn();
+    const releaseTerminalSurface = vi.fn();
     const initialTree = createWorkspacePaneTree("pane_a", ["pane_a", "pane_b"]);
     const nextTree = createWorkspacePaneTree("pane_a", ["pane_a"]);
 
@@ -131,7 +131,7 @@ describe("useWorkspaceWebglLruSync", () => {
           workspacePaneTrees={{ workspace_1: initialTree }}
           touchPane={touchPane}
           forgetPane={forgetPane}
-          releaseTerminalPane={releaseTerminalPane}
+          releaseTerminalSurface={releaseTerminalSurface}
         />
       );
     });
@@ -143,12 +143,12 @@ describe("useWorkspaceWebglLruSync", () => {
           workspacePaneTrees={{ workspace_1: nextTree }}
           touchPane={touchPane}
           forgetPane={forgetPane}
-          releaseTerminalPane={releaseTerminalPane}
+          releaseTerminalSurface={releaseTerminalSurface}
         />
       );
     });
 
     expect(forgetPane).toHaveBeenCalledWith("pane_b");
-    expect(releaseTerminalPane).toHaveBeenCalledWith("pane_b");
+    expect(releaseTerminalSurface).toHaveBeenCalledWith("surface_pane_b");
   });
 });

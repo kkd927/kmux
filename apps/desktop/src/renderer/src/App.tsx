@@ -204,7 +204,7 @@ export function App(): JSX.Element {
     workspacePaneTrees,
     touchPane: touchWebglLru,
     forgetPane: forgetWebglLru,
-    releaseTerminalPane: terminalInstanceStore.release
+    releaseTerminalSurface: terminalInstanceStore.release
   });
 
   useEffect(() => {
