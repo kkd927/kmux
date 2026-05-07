@@ -87,8 +87,8 @@ type ActiveOperation =
   | { kind: "download"; source: UpdateDownloadSource }
   | null;
 
-const DEFAULT_INITIAL_DELAY_MS = 20_000;
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_INITIAL_DELAY_MS = 30_000;
+const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
 
 const DEFAULT_LOGGER: UpdaterLogger = {
   info: (...args) => console.info(...args),
