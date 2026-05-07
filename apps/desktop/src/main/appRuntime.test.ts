@@ -109,7 +109,7 @@ beforeEach(() => {
 });
 
 describe("app runtime bell sound effects", () => {
-  it("forwards branch-only metadata refresh effects", () => {
+  it("forwards metadata refresh effects", () => {
     const refreshMetadata = vi.fn();
     const runtime = createRuntime(false, { refreshMetadata });
 
@@ -119,14 +119,11 @@ describe("app runtime bell sound effects", () => {
         workspaceId: "workspace-1",
         surfaceId: "surface-1",
         pid: 123,
-        cwd: "/tmp/kmux",
-        branchOnly: true
+        cwd: "/tmp/kmux"
       } as never
     ]);
 
-    expect(refreshMetadata).toHaveBeenCalledWith("surface-1", "/tmp/kmux", 123, {
-      branchOnly: true
-    });
+    expect(refreshMetadata).toHaveBeenCalledWith("surface-1", "/tmp/kmux", 123);
   });
 
   it("plays a bell sound when enabled", () => {

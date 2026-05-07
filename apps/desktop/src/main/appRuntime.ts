@@ -44,7 +44,6 @@ import type {
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
-import type { MetadataRefreshOptions } from "./metadataRuntime";
 import type { ExternalSessionResumeSpec } from "./externalSessions";
 import { logDiagnostics } from "../shared/diagnostics";
 import {
@@ -68,8 +67,7 @@ export interface AppRuntimeOptions {
   refreshMetadata: (
     surfaceId: Id,
     cwd?: string,
-    pid?: number,
-    refreshOptions?: MetadataRefreshOptions
+    pid?: number
   ) => void;
   persistWindowState: (window: BrowserWindow) => void;
   fontInventoryProvider?: FontInventoryProvider;
@@ -401,8 +399,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           options.refreshMetadata(
             effect.surfaceId ?? "",
             effect.cwd,
-            effect.pid,
-            effect.branchOnly ? { branchOnly: true } : undefined
+            effect.pid
           );
           break;
         case "notify.desktop":

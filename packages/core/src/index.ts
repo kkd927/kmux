@@ -146,7 +146,6 @@ export type AppEffect =
       surfaceId?: Id;
       pid?: number;
       cwd?: string;
-      branchOnly?: boolean;
     }
   | {
       type: "persist";
@@ -1502,15 +1501,10 @@ function updateSurfaceMetadata(
     return [];
   }
   let shouldRefreshDerivedMetadata = false;
-  let shouldRefreshBranchMetadata = false;
 
-  if (action.cwd !== undefined) {
-    if (action.cwd !== surface.cwd) {
-      surface.cwd = action.cwd;
-      shouldRefreshDerivedMetadata = true;
-    } else {
-      shouldRefreshBranchMetadata = true;
-    }
+  if (action.cwd !== undefined && action.cwd !== surface.cwd) {
+    surface.cwd = action.cwd;
+    shouldRefreshDerivedMetadata = true;
   }
   if (action.title !== undefined) {
     if (!surface.titleLocked) {
@@ -1541,17 +1535,6 @@ function updateSurfaceMetadata(
         cwd: surface.cwd
       },
       { type: "persist" }
-    ];
-  }
-  if (shouldRefreshBranchMetadata) {
-    return [
-      {
-        type: "metadata.refresh",
-        workspaceId,
-        surfaceId: surface.id,
-        cwd: surface.cwd,
-        branchOnly: true
-      }
     ];
   }
   return [{ type: "persist" }];

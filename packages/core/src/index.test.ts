@@ -1631,7 +1631,7 @@ describe("core reducer", () => {
     expect(state.surfaces[firstSurfaceId]).toBeUndefined();
   });
 
-  it("refreshes derived metadata on cwd changes and branch metadata on duplicate cwd prompt ticks", () => {
+  it("refreshes derived metadata only when cwd changes", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
 
@@ -1655,16 +1655,9 @@ describe("core reducer", () => {
       surfaceId,
       cwd: "/tmp/kmux"
     });
-    expect(duplicateCwdEffects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "metadata.refresh",
-          surfaceId,
-          cwd: "/tmp/kmux",
-          branchOnly: true
-        })
-      ])
-    );
+    expect(
+      duplicateCwdEffects.some((effect) => effect.type === "metadata.refresh")
+    ).toBe(false);
 
     const effectsWithDerivedValues = applyAction(state, {
       type: "surface.metadata",
@@ -1679,37 +1672,6 @@ describe("core reducer", () => {
     ).toBe(false);
     expect(state.surfaces[surfaceId].branch).toBe("main");
     expect(state.surfaces[surfaceId].ports).toEqual([3000, 3001]);
-  });
-
-  it("refreshes branch metadata on duplicate cwd prompt ticks", () => {
-    const state = createInitialState();
-    const surfaceId = Object.keys(state.surfaces)[0];
-    const workspaceId =
-      state.panes[state.surfaces[surfaceId].paneId].workspaceId;
-
-    applyAction(state, {
-      type: "surface.metadata",
-      surfaceId,
-      cwd: "/tmp/kmux"
-    });
-
-    const duplicateCwdEffects = applyAction(state, {
-      type: "surface.metadata",
-      surfaceId,
-      cwd: "/tmp/kmux"
-    });
-
-    expect(duplicateCwdEffects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "metadata.refresh",
-          workspaceId,
-          surfaceId,
-          cwd: "/tmp/kmux",
-          branchOnly: true
-        })
-      ])
-    );
   });
 
   it("clears branch metadata when metadata explicitly reports no git branch", () => {
