@@ -17,13 +17,16 @@ vi.mock("@xterm/addon-unicode11", () => ({
 
 import {
   acquire,
-  detach,
+  clearRenderSink,
+  getRenderSink,
   release,
   releaseAll,
   getLastHydratedSurfaceId,
   getLastHydratedSurfaceSequence,
   markSurfaceHydrated,
   markSurfaceRendered,
+  registerAttachment,
+  setRenderSink,
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
@@ -38,7 +41,9 @@ function makeInstance(): TerminalInstance {
     search: {} as TerminalInstance["search"],
     unicode11: {} as TerminalInstance["unicode11"],
     lastHydratedSurfaceId: null,
-    lastHydratedSurfaceSequence: null
+    lastHydratedSurfaceSequence: null,
+    attachmentCleanup: null,
+    renderSink: null
   };
 }
 
@@ -71,28 +76,6 @@ describe("acquire", () => {
   });
 });
 
-describe("detach", () => {
-  it("removes host from DOM but keeps instance in store", () => {
-    const parent = document.createElement("div");
-    const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-3", init);
-    parent.appendChild(instance.host);
-    expect(parent.contains(instance.host)).toBe(true);
-
-    detach("pane-3");
-    expect(parent.contains(instance.host)).toBe(false);
-
-    // Store still has it — second acquire is a hit
-    const { isNew } = acquire("pane-3", init);
-    expect(isNew).toBe(false);
-    release("pane-3");
-  });
-
-  it("is a no-op for unknown paneId", () => {
-    expect(() => detach("unknown")).not.toThrow();
-  });
-});
-
 describe("release", () => {
   it("disposes the terminal and removes from store", () => {
     const init = vi.fn(makeInstance);
@@ -120,6 +103,43 @@ describe("release", () => {
 
   it("is a no-op for unknown paneId", () => {
     expect(() => release("unknown")).not.toThrow();
+  });
+
+  it("runs attachment cleanup before disposing", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-attachment", init);
+    const cleanup = vi.fn();
+
+    expect(registerAttachment("pane-attachment", cleanup)).toBe(true);
+
+    release("pane-attachment");
+
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+});
+
+describe("render sink", () => {
+  it("clears only the current render sink", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-sink", init);
+    const firstSink = {
+      write: vi.fn(),
+      fitAndSync: vi.fn(async () => {})
+    };
+    const secondSink = {
+      write: vi.fn(),
+      fitAndSync: vi.fn(async () => {})
+    };
+
+    setRenderSink("pane-sink", firstSink);
+    setRenderSink("pane-sink", secondSink);
+
+    clearRenderSink("pane-sink", firstSink);
+    expect(getRenderSink("pane-sink")).toBe(secondSink);
+
+    clearRenderSink("pane-sink", secondSink);
+    expect(getRenderSink("pane-sink")).toBeNull();
+    release("pane-sink");
   });
 });
 

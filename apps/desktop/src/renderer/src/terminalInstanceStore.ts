@@ -11,56 +11,108 @@ export interface TerminalInstance {
   unicode11: Unicode11Addon;
   lastHydratedSurfaceId: string | null;
   lastHydratedSurfaceSequence: number | null;
+  // Surface-scoped lifetime: this cleanup must run from release(), not from a
+  // TerminalPane unmount/remount caused by tab switches or pane splits.
+  attachmentCleanup: (() => void) | null;
+  renderSink: TerminalRenderSink | null;
+}
+
+export interface TerminalRenderSink {
+  write(data: string, afterWrite?: () => void, surfaceId?: string): void;
+  fitAndSync(): Promise<void>;
+  beforeFitAndSync?(): void;
+  onSnapshotRendered?(): void;
 }
 
 const store = new Map<string, TerminalInstance>();
 
 export function acquire(
-  paneId: string,
+  key: string,
   init: () => TerminalInstance
 ): { instance: TerminalInstance; isNew: boolean } {
-  const existing = store.get(paneId);
+  const existing = store.get(key);
   if (existing) {
     return { instance: existing, isNew: false };
   }
   const instance = init();
-  store.set(paneId, instance);
+  store.set(key, instance);
   return { instance, isNew: true };
 }
 
-export function detach(paneId: string): void {
-  const instance = store.get(paneId);
-  if (instance?.host.parentNode) {
-    instance.host.parentNode.removeChild(instance.host);
+export function hasAttachment(key: string): boolean {
+  return Boolean(store.get(key)?.attachmentCleanup);
+}
+
+export function registerAttachment(
+  key: string,
+  cleanup: () => void
+): boolean {
+  const instance = store.get(key);
+  if (!instance || instance.attachmentCleanup) {
+    return false;
+  }
+  instance.attachmentCleanup = cleanup;
+  return true;
+}
+
+function detachAttachment(key: string): void {
+  const instance = store.get(key);
+  const cleanup = instance?.attachmentCleanup;
+  if (!instance || !cleanup) {
+    return;
+  }
+  instance.attachmentCleanup = null;
+  cleanup();
+}
+
+export function setRenderSink(key: string, sink: TerminalRenderSink): void {
+  const instance = store.get(key);
+  if (instance) {
+    instance.renderSink = sink;
   }
 }
 
-export function release(paneId: string): void {
-  const instance = store.get(paneId);
+export function clearRenderSink(
+  key: string,
+  sink: TerminalRenderSink
+): void {
+  const instance = store.get(key);
+  if (instance?.renderSink === sink) {
+    instance.renderSink = null;
+  }
+}
+
+export function getRenderSink(key: string): TerminalRenderSink | null {
+  return store.get(key)?.renderSink ?? null;
+}
+
+export function release(key: string): void {
+  const instance = store.get(key);
   if (!instance) {
     return;
   }
-  store.delete(paneId);
+  detachAttachment(key);
+  store.delete(key);
   if (instance.host.parentNode) {
     instance.host.parentNode.removeChild(instance.host);
   }
   instance.terminal.dispose();
 }
 
-export function getLastHydratedSurfaceId(paneId: string): string | null {
-  return store.get(paneId)?.lastHydratedSurfaceId ?? null;
+export function getLastHydratedSurfaceId(key: string): string | null {
+  return store.get(key)?.lastHydratedSurfaceId ?? null;
 }
 
-export function getLastHydratedSurfaceSequence(paneId: string): number | null {
-  return store.get(paneId)?.lastHydratedSurfaceSequence ?? null;
+export function getLastHydratedSurfaceSequence(key: string): number | null {
+  return store.get(key)?.lastHydratedSurfaceSequence ?? null;
 }
 
 export function markSurfaceHydrated(
-  paneId: string,
+  key: string,
   surfaceId: string,
   sequence: number | null = null
 ): void {
-  const instance = store.get(paneId);
+  const instance = store.get(key);
   if (instance) {
     instance.lastHydratedSurfaceId = surfaceId;
     instance.lastHydratedSurfaceSequence = sequence;
@@ -68,11 +120,11 @@ export function markSurfaceHydrated(
 }
 
 export function markSurfaceRendered(
-  paneId: string,
+  key: string,
   surfaceId: string,
   sequence: number
 ): void {
-  const instance = store.get(paneId);
+  const instance = store.get(key);
   if (instance?.lastHydratedSurfaceId === surfaceId) {
     instance.lastHydratedSurfaceSequence = Math.max(
       instance.lastHydratedSurfaceSequence ?? 0,
@@ -82,7 +134,7 @@ export function markSurfaceRendered(
 }
 
 export function releaseAll(): void {
-  for (const paneId of [...store.keys()]) {
-    release(paneId);
+  for (const key of [...store.keys()]) {
+    release(key);
   }
 }

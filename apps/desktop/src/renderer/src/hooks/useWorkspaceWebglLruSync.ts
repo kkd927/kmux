@@ -7,7 +7,7 @@ interface UseWorkspaceWebglLruSyncOptions {
   workspacePaneTrees: ShellStoreSnapshot["workspacePaneTrees"];
   touchPane: (paneId: Id) => void;
   forgetPane: (paneId: Id) => void;
-  releaseTerminalPane: (paneId: Id) => void;
+  releaseTerminalSurface: (surfaceId: Id) => void;
 }
 
 export function useWorkspaceWebglLruSync({
@@ -15,7 +15,7 @@ export function useWorkspaceWebglLruSync({
   workspacePaneTrees,
   touchPane,
   forgetPane,
-  releaseTerminalPane
+  releaseTerminalSurface
 }: UseWorkspaceWebglLruSyncOptions): void {
   const activePaneId = activeWorkspacePaneTree?.activePaneId ?? null;
 
@@ -32,16 +32,33 @@ export function useWorkspaceWebglLruSync({
         .sort(),
     [workspacePaneTrees]
   );
+  const allSurfaceIds = useMemo(
+    () =>
+      Object.values(workspacePaneTrees)
+        .flatMap((tree) => Object.keys(tree.surfaces))
+        .sort(),
+    [workspacePaneTrees]
+  );
   const prevAllPaneIdsRef = useRef(new Set<Id>());
+  const prevAllSurfaceIdsRef = useRef(new Set<Id>());
 
   useEffect(() => {
     const currentIds = new Set(allPaneIds);
     for (const paneId of prevAllPaneIdsRef.current) {
       if (!currentIds.has(paneId)) {
         forgetPane(paneId);
-        releaseTerminalPane(paneId);
       }
     }
     prevAllPaneIdsRef.current = currentIds;
-  }, [allPaneIds, forgetPane, releaseTerminalPane]);
+  }, [allPaneIds, forgetPane]);
+
+  useEffect(() => {
+    const currentIds = new Set(allSurfaceIds);
+    for (const surfaceId of prevAllSurfaceIdsRef.current) {
+      if (!currentIds.has(surfaceId)) {
+        releaseTerminalSurface(surfaceId);
+      }
+    }
+    prevAllSurfaceIdsRef.current = currentIds;
+  }, [allSurfaceIds, releaseTerminalSurface]);
 }

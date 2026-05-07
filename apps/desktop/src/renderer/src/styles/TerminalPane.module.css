@@ -438,6 +438,13 @@
   overflow: hidden;
 }
 
+.terminalViewport[data-active="false"] {
+  position: absolute;
+  inset: 8px 0 8px 10px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .terminalViewport :global(.xterm) {
   height: 100%;
   font-family: var(--kmux-terminal-font-family);
