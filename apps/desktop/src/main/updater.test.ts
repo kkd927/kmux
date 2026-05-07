@@ -218,6 +218,9 @@ describe("updater controller", () => {
     await Promise.resolve();
 
     await harness.controller.downloadUpdate("inline");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
     harness.updater.emit("update-downloaded", { version: "0.1.12" });
     await Promise.resolve();
 
@@ -231,6 +234,34 @@ describe("updater controller", () => {
     });
   });
 
+  it("rechecks before inline downloads so stale update buttons jump to the latest version", async () => {
+    const harness = createHarness();
+
+    await harness.controller.checkForUpdates("background");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    expect(harness.controller.getState()).toEqual({
+      status: "available",
+      version: "0.1.12"
+    });
+
+    await harness.controller.downloadUpdate("inline");
+
+    expect(harness.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(harness.updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(harness.controller.getState()).toEqual({ status: "checking" });
+
+    harness.updater.emit("update-available", { version: "0.1.13" });
+    await Promise.resolve();
+
+    expect(harness.updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(harness.controller.getState()).toEqual({
+      status: "downloading",
+      version: "0.1.13"
+    });
+  });
+
   it("shows inline download failures to the user", async () => {
     const harness = createHarness();
     harness.updater.downloadUpdate.mockRejectedValueOnce(new Error("disk full"));
@@ -240,6 +271,9 @@ describe("updater controller", () => {
     await Promise.resolve();
 
     await harness.controller.downloadUpdate("inline");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(harness.dialogs.showError).toHaveBeenCalledWith("disk full");
     expect(harness.controller.getState()).toEqual({

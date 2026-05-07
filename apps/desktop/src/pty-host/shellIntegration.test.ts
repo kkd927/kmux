@@ -65,7 +65,8 @@ describe("shell integration launch preparation", () => {
       HOME: "/Users/test",
       KMUX_BASH_INTEGRATION_SCRIPT: "/tmp/kmux.bash",
       KMUX_ORIGINAL_HISTFILE: "/Users/test/.zsh_history",
-      KMUX_SHELL_INTEGRATION: "1"
+      KMUX_SHELL_INTEGRATION: "1",
+      KMUX_ZSH_WRAPPER_DIR: "/tmp/kmux-zsh-app-test"
     };
     const prepared = prepareShellIntegrationLaunch(
       "/bin/bash",
@@ -83,12 +84,16 @@ describe("shell integration launch preparation", () => {
   });
 
   it("wraps zsh launches with kmux-managed dotfiles", () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-home-"));
+    const fakeZdotdir = join(fakeHome, ".config", "zsh");
+    mkdirSync(fakeZdotdir, { recursive: true });
+
     const prepared = prepareShellIntegrationLaunch(
       "/bin/zsh",
       ["-l"],
       {
-        HOME: "/Users/test",
-        ZDOTDIR: "/Users/test/.config/zsh"
+        HOME: fakeHome,
+        ZDOTDIR: fakeZdotdir
       },
       { enabled: true }
     );
@@ -97,9 +102,9 @@ describe("shell integration launch preparation", () => {
     expect(prepared.args).toEqual(["-l"]);
     expect(prepared.env.KMUX_SHELL_INTEGRATION).toBe("1");
     expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
-      "/Users/test/.config/zsh/.zsh_history"
+      join(fakeZdotdir, ".zsh_history")
     );
-    expect(prepared.env.KMUX_ORIGINAL_ZDOTDIR).toBe("/Users/test/.config/zsh");
+    expect(prepared.env.KMUX_ORIGINAL_ZDOTDIR).toBe(fakeZdotdir);
     expect(prepared.env.ZDOTDIR).toMatch(/kmux-zsh-/);
 
     const wrapperDir = prepared.env.ZDOTDIR;
@@ -134,7 +139,9 @@ describe("shell integration launch preparation", () => {
     );
     expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).toContain("_kmux_prepend_agent_bin");
-    expect(integrationContents).toContain('local agent_bin="${KMUX_AGENT_BIN_DIR:-}"');
+    expect(integrationContents).toContain(
+      'local agent_bin="${KMUX_AGENT_BIN_DIR:-}"'
+    );
     expect(integrationContents).toContain("typeset -g __KMUX_OSC7_INSTALLED=1");
     expect(integrationContents).not.toContain("typeset -gx");
     const agentHookHelper = join(wrapperDir, "bin", "kmux-agent-hook");
@@ -142,35 +149,37 @@ describe("shell integration launch preparation", () => {
     const agentHookRunner = join(wrapperDir, "bin", "kmux-agent-hook.cjs");
     expect(existsSync(agentHookRunner)).toBe(true);
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
-      'kmux_dispatch_hook() {'
+      "kmux_dispatch_hook() {"
     );
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
       '"$KMUX_NODE_RUNTIME" "$KMUX_AGENT_HELPER_PATH" "$@"'
     );
-    expect(readFileSync(agentHookHelper, "utf8")).not.toContain(' -e ');
+    expect(readFileSync(agentHookHelper, "utf8")).not.toContain(" -e ");
     expect(readFileSync(agentHookHelper, "utf8")).toContain(
       'PATH="$(kmux_filter_path "${PATH:-}")"'
     );
-    expect(readFileSync(agentHookHelper, "utf8")).not.toContain("KMUX_CLI_PATH");
+    expect(readFileSync(agentHookHelper, "utf8")).not.toContain(
+      "KMUX_CLI_PATH"
+    );
     expect(readFileSync(agentHookRunner, "utf8")).toContain(
       'method: "agent.hook"'
     );
     expect(readFileSync(agentHookRunner, "utf8")).toContain(
       'const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";'
     );
-    expect(existsSync(join(wrapperDir, "bin", "kmux-claude-launcher.cjs"))).toBe(
-      false
-    );
+    expect(
+      existsSync(join(wrapperDir, "bin", "kmux-claude-launcher.cjs"))
+    ).toBe(false);
     expect(existsSync(join(wrapperDir, "bin", "claude"))).toBe(false);
     expect(existsSync(join(wrapperDir, "bin", "codex"))).toBe(true);
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'codex.wrapper.invoke'
+      "codex.wrapper.invoke"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'KMUX_DEBUG_LOG_PATH'
+      "KMUX_DEBUG_LOG_PATH"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'TERM_SESSION_ID="${TERM_SESSION_ID:-}"'
@@ -184,12 +193,12 @@ describe("shell integration launch preparation", () => {
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'env ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" <<'
     );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
-      "kmux_sync_codex_home() {"
-    );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).not.toContain(
-      'export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"'
-    );
+    expect(
+      readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
+    ).not.toContain("kmux_sync_codex_home() {");
+    expect(
+      readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
+    ).not.toContain('export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"');
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "const managedEvents = ['SessionStart', 'UserPromptSubmit', 'Stop'];"
     );
@@ -209,6 +218,25 @@ describe("shell integration launch preparation", () => {
       '"$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?'
     );
     expect(existsSync(join(wrapperDir, "bin", "gemini"))).toBe(false);
+    rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  it("does not treat leaked or missing kmux ZDOTDIR values as user dotfile roots", () => {
+    const missingKmuxZdotdir = join(tmpdir(), "kmux-zsh-missing");
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test",
+        ZDOTDIR: missingKmuxZdotdir
+      },
+      { enabled: true }
+    );
+
+    expect(prepared.env.KMUX_ORIGINAL_ZDOTDIR).toBe("/Users/test");
+    expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
+      "/Users/test/.zsh_history"
+    );
   });
 
   it("preserves explicit HISTFILE overrides when wrapping zsh", () => {
@@ -263,7 +291,7 @@ describe("shell integration launch preparation", () => {
       'PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_kmux_emit_osc7"'
     );
     expect(readFileSync(integrationScript ?? "", "utf8")).toContain(
-      '_kmux_prepend_agent_bin'
+      "_kmux_prepend_agent_bin"
     );
     expect(readFileSync(integrationScript ?? "", "utf8")).not.toContain(
       "__KMUX_LAST_OSC7_PWD"
@@ -294,7 +322,9 @@ describe("shell integration launch preparation", () => {
     if (!wrapperConfigHome) {
       throw new Error("expected fish wrapper config root to be set");
     }
-    expect(prepared.env.KMUX_AGENT_BIN_DIR).toBe(join(wrapperConfigHome, "bin"));
+    expect(prepared.env.KMUX_AGENT_BIN_DIR).toBe(
+      join(wrapperConfigHome, "bin")
+    );
 
     expect(
       readFileSync(join(wrapperConfigHome, "fish", "config.fish"), "utf8")
@@ -651,10 +681,7 @@ describe("shell integration launch preparation", () => {
       expect(exitCode).toBe(0);
       expect(readFileSync(hooksPath, "utf8")).toBe("{broken json\n");
       expect(
-        readFileSync(capturePath, "utf8")
-          .trim()
-          .split("\n")
-          .filter(Boolean)
+        readFileSync(capturePath, "utf8").trim().split("\n").filter(Boolean)
       ).toEqual(["--config", "tui.notification_method=osc9", "status"]);
     } finally {
       rmSync(fakeCodexDir, { recursive: true, force: true });

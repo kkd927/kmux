@@ -1,6 +1,6 @@
 import type { UpdaterState } from "@kmux/proto";
 
-export type UpdateCheckSource = "background" | "foreground";
+export type UpdateCheckSource = "background" | "foreground" | "inline";
 export type UpdateDownloadSource = UpdateCheckSource | "inline";
 export type { UpdaterState, UpdaterStatus } from "@kmux/proto";
 
@@ -167,6 +167,10 @@ export function createUpdaterController(
         void promptForDownload(version);
         return;
       }
+      if (source === "inline") {
+        void downloadKnownUpdate("inline");
+        return;
+      }
       if (version) {
         options.notifier.notifyUpdateAvailable(version);
       }
@@ -251,13 +255,13 @@ export function createUpdaterController(
     if (!enabled) {
       return;
     }
-    if (state.status === "downloaded") {
+    if (state.status === "downloaded" && source !== "inline") {
       if (source === "foreground") {
         quitAndInstall();
       }
       return;
     }
-    if (state.status === "available") {
+    if (state.status === "available" && source !== "inline") {
       if (source === "foreground") {
         await downloadUpdate("foreground");
       }
@@ -278,6 +282,20 @@ export function createUpdaterController(
   }
 
   async function downloadUpdate(
+    source: UpdateDownloadSource = "foreground"
+  ): Promise<void> {
+    if (
+      source === "inline" &&
+      (state.status === "available" || state.status === "downloaded")
+    ) {
+      await checkForUpdates("inline");
+      return;
+    }
+
+    await downloadKnownUpdate(source);
+  }
+
+  async function downloadKnownUpdate(
     source: UpdateDownloadSource = "foreground"
   ): Promise<void> {
     if (!enabled) {

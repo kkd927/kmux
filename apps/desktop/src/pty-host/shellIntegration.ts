@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -11,6 +12,8 @@ import { basename, join } from "node:path";
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 
 import { resolveDefaultShellArgs } from "./shellLaunch";
+
+export const KMUX_ZSH_WRAPPER_DIR_ENV = "KMUX_ZSH_WRAPPER_DIR";
 
 export interface PreparedShellLaunch {
   shellPath: string;
@@ -36,6 +39,7 @@ const SHELL_INTEGRATION_ENV_KEYS = [
   "KMUX_ORIGINAL_ZDOTDIR",
   "KMUX_SHELL_INTEGRATION",
   "KMUX_ZSH_INTEGRATION_SCRIPT",
+  KMUX_ZSH_WRAPPER_DIR_ENV,
   "__KMUX_LAST_OSC7_PWD",
   "__KMUX_OSC7_HOST",
   "__KMUX_OSC7_INSTALLED"
@@ -124,7 +128,7 @@ function prepareZshShellLaunch(
   }
 
   const wrapperDir = ensureZshWrapperDir();
-  const originalZdotdir = env.ZDOTDIR?.trim() || homeDir;
+  const originalZdotdir = resolveOriginalZdotdir(env.ZDOTDIR, homeDir);
 
   return {
     shellPath,
@@ -208,7 +212,10 @@ function ensureZshWrapperDir(): string {
     return cachedZshWrapperDir;
   }
 
-  const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-zsh-"));
+  const configuredWrapperDir = process.env[KMUX_ZSH_WRAPPER_DIR_ENV]?.trim();
+  const wrapperDir =
+    configuredWrapperDir || mkdtempSync(join(tmpdir(), "kmux-zsh-"));
+  mkdirSync(wrapperDir, { recursive: true });
   writeAgentWrappers(wrapperDir);
   writeFileSync(
     join(wrapperDir, ".zshenv"),
@@ -235,8 +242,33 @@ function ensureZshWrapperDir(): string {
   );
 
   cachedZshWrapperDir = wrapperDir;
-  registerCleanup();
+  if (!configuredWrapperDir) {
+    registerCleanup();
+  }
   return wrapperDir;
+}
+
+function resolveOriginalZdotdir(
+  configuredZdotdir: string | undefined,
+  homeDir: string
+): string {
+  const candidate = configuredZdotdir?.trim();
+  if (!candidate) {
+    return homeDir;
+  }
+  if (isKmuxZshWrapperDir(candidate) || !existsSync(candidate)) {
+    return homeDir;
+  }
+  return candidate;
+}
+
+function isKmuxZshWrapperDir(candidate: string): boolean {
+  const trimmed = candidate.trim();
+  if (!basename(trimmed).startsWith("kmux-zsh-")) {
+    return false;
+  }
+  const tmpRoot = tmpdir().replace(/\/+$/, "");
+  return trimmed === tmpRoot || trimmed.startsWith(`${tmpRoot}/`);
 }
 
 function ensureBashWrapperDir(): string {
@@ -968,7 +1000,7 @@ function buildCodexWrapperScript(): string {
     "    hooks: [",
     "      {",
     "        type: 'command',",
-    "        command: managedHookMarker + '; [ -n \"${KMUX_SOCKET_PATH:-}\" ] || exit 0; [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] || exit 0; [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ] || exit 0; \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" codex ' + eventName + ' || true',",
+    '        command: managedHookMarker + \'; [ -n "${KMUX_SOCKET_PATH:-}" ] || exit 0; [ -n "${KMUX_AGENT_BIN_DIR:-}" ] || exit 0; [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ] || exit 0; "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" codex \' + eventName + \' || true\',',
     "      },",
     "    ],",
     "  };",
@@ -1048,16 +1080,16 @@ function buildCodexWrapperScript(): string {
     '  for _kmux_arg in "$@"; do',
     '    if [ "$_kmux_expect_config_value" = "1" ]; then',
     '      case "$_kmux_arg" in',
-    '        tui.notification_method=*) return 0 ;;',
+    "        tui.notification_method=*) return 0 ;;",
     "      esac",
     '      _kmux_expect_config_value="0"',
     "      continue",
     "    fi",
     '    case "$_kmux_arg" in',
-    '      --config|-c)',
+    "      --config|-c)",
     '        _kmux_expect_config_value="1"',
     "        ;;",
-    '      --config=tui.notification_method=*|-ctui.notification_method=*)',
+    "      --config=tui.notification_method=*|-ctui.notification_method=*)",
     "        return 0",
     "        ;;",
     "    esac",
