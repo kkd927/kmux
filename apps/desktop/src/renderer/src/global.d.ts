@@ -1,6 +1,8 @@
 import type { AppAction } from "@kmux/core";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type {
+  CreateImageAttachmentPayload,
+  CreateImageAttachmentsResult,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
@@ -40,6 +42,11 @@ declare global {
       detachSurface(surfaceId: string): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
+      createImageAttachments(
+        surfaceId: string,
+        payloads: CreateImageAttachmentPayload[]
+      ): Promise<CreateImageAttachmentsResult>;
+      readClipboardImages(): CreateImageAttachmentPayload[];
       resizeSurface(
         surfaceId: string,
         cols: number,

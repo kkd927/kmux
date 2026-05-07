@@ -1,4 +1,5 @@
 import { clipboard, contextBridge, ipcRenderer } from "electron";
+import { readFileSync, statSync } from "node:fs";
 
 import type { AppAction } from "@kmux/core";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
@@ -7,6 +8,8 @@ import {
   isSmoothnessProfileEnabled
 } from "../shared/smoothnessProfile";
 import type {
+  CreateImageAttachmentPayload,
+  CreateImageAttachmentsResult,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
@@ -25,6 +28,10 @@ import type {
   TerminalKeyInput,
   UpdaterState
 } from "@kmux/proto";
+import {
+  collectClipboardImagePayloads,
+  parseClipboardFileUrls
+} from "./clipboardImages";
 
 export type TerminalEvent =
   | { type: "chunk"; payload: SurfaceChunkPayload }
@@ -92,6 +99,60 @@ const api = {
   },
   sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:key", surfaceId, input);
+  },
+  createImageAttachments(
+    surfaceId: string,
+    payloads: CreateImageAttachmentPayload[]
+  ): Promise<CreateImageAttachmentsResult> {
+    return ipcRenderer.invoke(
+      "kmux:image-attachments:create",
+      surfaceId,
+      payloads
+    );
+  },
+  readClipboardImages(): CreateImageAttachmentPayload[] {
+    return collectClipboardImagePayloads({
+      readNativeImagePng: () => {
+        const image = clipboard.readImage();
+        if (!image.isEmpty()) {
+          const png = image.toPNG();
+          return new Uint8Array(
+            png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength)
+          );
+        }
+        return readClipboardBuffer("public/png");
+      },
+      readFileUrls: () => {
+        const bookmark = clipboard.readBookmark();
+        const knownFormats = [
+          readClipboardFormat("public/file-url"),
+          readClipboardFormat("public/url"),
+          readClipboardFormat("text/uri-list")
+        ];
+        const discoveredFormats = clipboard
+          .availableFormats()
+          .filter((format) => /file-url|uri-list|\burl\b/i.test(format))
+          .map(readClipboardFormat);
+        return parseClipboardFileUrls({
+          bookmarkUrl: bookmark.url,
+          rawValues: [...knownFormats, ...discoveredFormats]
+        });
+      },
+      readFileSize: (path) => {
+        try {
+          return statSync(path).size;
+        } catch {
+          return null;
+        }
+      },
+      readFileBytes: (path) => {
+        try {
+          return new Uint8Array(readFileSync(path));
+        } catch {
+          return null;
+        }
+      }
+    });
   },
   resizeSurface(surfaceId: string, cols: number, rows: number): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:resize", surfaceId, cols, rows);
@@ -175,6 +236,28 @@ const api = {
     return ipcRenderer.invoke("kmux:profile:event", event);
   }
 };
+
+function readClipboardFormat(format: string): string {
+  try {
+    return clipboard.read(format);
+  } catch {
+    return "";
+  }
+}
+
+function readClipboardBuffer(format: string): Uint8Array | null {
+  try {
+    const buffer = clipboard.readBuffer(format);
+    if (!buffer.byteLength) {
+      return null;
+    }
+    return new Uint8Array(
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+    );
+  } catch {
+    return null;
+  }
+}
 
 const testApi = {
   snapshotSurface(

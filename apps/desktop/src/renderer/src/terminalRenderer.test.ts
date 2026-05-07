@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { CreateImageAttachmentPayload } from "@kmux/proto";
 import {
   TERMINAL_CTRL_ENTER_SEQUENCE,
   TERMINAL_SHIFT_ENTER_SEQUENCE
@@ -7,10 +8,13 @@ import {
 import {
   applyPendingTerminalEnterRewrite,
   applyTerminalWebglPreference,
+  countSupportedImageFiles,
   createTerminalPaneXtermTheme,
+  isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
+  shouldUseImagePaste,
   shouldSuppressXtermDuringIme
 } from "./terminalRenderer";
 import type { TerminalKeyboardEventLike } from "./terminalRenderer";
@@ -189,12 +193,12 @@ describe("terminal renderer helpers", () => {
     });
   });
 
-  it("does not paste when the clipboard is empty", () => {
+  it("does not paste when the clipboard is empty", async () => {
     const terminal = {
       paste: vi.fn()
     };
 
-    const didPaste = pasteClipboardIntoTerminal({
+    const didPaste = await pasteClipboardIntoTerminal({
       terminal,
       readClipboardText: () => ""
     });
@@ -203,13 +207,13 @@ describe("terminal renderer helpers", () => {
     expect(terminal.paste).not.toHaveBeenCalled();
   });
 
-  it("delegates multiline clipboard text to xterm paste unchanged", () => {
+  it("delegates multiline clipboard text to xterm paste unchanged", async () => {
     const terminal = {
       paste: vi.fn()
     };
     const text = "alpha\nbeta\n";
 
-    const didPaste = pasteClipboardIntoTerminal({
+    const didPaste = await pasteClipboardIntoTerminal({
       terminal,
       readClipboardText: () => text
     });
@@ -217,6 +221,120 @@ describe("terminal renderer helpers", () => {
     expect(didPaste).toBe(true);
     expect(terminal.paste).toHaveBeenCalledTimes(1);
     expect(terminal.paste).toHaveBeenCalledWith(text);
+  });
+
+  it("attaches native clipboard images before falling back to clipboard text", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const imagePayload: CreateImageAttachmentPayload = {
+      source: "clipboard",
+      originalName: "screenshot.png",
+      mimeType: "image/png",
+      bytes: new Uint8Array([1, 2, 3])
+    };
+    const createImageAttachments = vi.fn(async () => ({
+      attachments: [],
+      promptText: "Attached image: /tmp/kmux/screenshot.png",
+      skippedCount: 0,
+      status: "attached" as const,
+      message: "Attached screenshot.png"
+    }));
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      surfaceId: "surface_1",
+      readClipboardText: () => "스크린샷 2026-05-03 오후 1.02.05",
+      readClipboardImages: () => [imagePayload],
+      createImageAttachments
+    });
+
+    expect(didPaste).toBe(true);
+    expect(createImageAttachments).toHaveBeenCalledWith("surface_1", [
+      imagePayload
+    ]);
+    expect(terminal.paste).toHaveBeenCalledWith(
+      "Attached image: /tmp/kmux/screenshot.png"
+    );
+  });
+
+  it("falls back to clipboard text when image attachment returns no prompt text", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const imagePayload: CreateImageAttachmentPayload = {
+      source: "clipboard",
+      originalName: "too-large.png",
+      mimeType: "image/png",
+      bytes: new Uint8Array([1, 2, 3])
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      surfaceId: "surface_1",
+      readClipboardText: () => "too-large.png",
+      readClipboardImages: () => [imagePayload],
+      createImageAttachments: vi.fn(async () => ({
+        attachments: [],
+        promptText: "",
+        skippedCount: 1,
+        status: "failed" as const,
+        message: "Could not attach image"
+      }))
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledWith("too-large.png");
+  });
+
+  it("falls back to clipboard text when image attachment creation fails", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const imagePayload: CreateImageAttachmentPayload = {
+      source: "clipboard",
+      originalName: "broken.png",
+      mimeType: "image/png",
+      bytes: new Uint8Array([1, 2, 3])
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      surfaceId: "surface_1",
+      readClipboardText: () => "broken.png",
+      readClipboardImages: () => [imagePayload],
+      createImageAttachments: vi.fn(async () => {
+        throw new Error("attach failed");
+      })
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledWith("broken.png");
+  });
+
+  it("recognizes only supported image MIME types for attachments", () => {
+    expect(isSupportedImageMimeType("image/png")).toBe(true);
+    expect(isSupportedImageMimeType("image/jpeg")).toBe(true);
+    expect(isSupportedImageMimeType("image/gif")).toBe(true);
+    expect(isSupportedImageMimeType("image/webp")).toBe(true);
+    expect(isSupportedImageMimeType("text/plain")).toBe(false);
+    expect(isSupportedImageMimeType("")).toBe(false);
+  });
+
+  it("uses image paste only when an image candidate exists", () => {
+    expect(shouldUseImagePaste({ imageCount: 1, text: "hello" })).toBe(true);
+    expect(shouldUseImagePaste({ imageCount: 0, text: "hello" })).toBe(false);
+    expect(shouldUseImagePaste({ imageCount: 0, text: "" })).toBe(false);
+  });
+
+  it("counts supported image files in file-like payloads", () => {
+    expect(
+      countSupportedImageFiles([
+        { type: "image/png" },
+        { type: "text/plain" },
+        { type: "image/webp" }
+      ])
+    ).toBe(2);
   });
 
   it("rewrites Ctrl and Shift Enter to modified terminal sequences", () => {

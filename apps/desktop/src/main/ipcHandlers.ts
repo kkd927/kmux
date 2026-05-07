@@ -4,6 +4,8 @@ import type {AppAction} from "@kmux/core";
 import type {
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
+  CreateImageAttachmentPayload,
+  CreateImageAttachmentsResult,
   Id,
   ImportedTerminalThemePalette,
   ResolvedTerminalTypographyVm,
@@ -31,6 +33,10 @@ interface IpcHandlersOptions {
   resumeExternalAgentSession: (
     key: string
   ) => ExternalAgentSessionResumeResult;
+  createImageAttachments: (
+    surfaceId: Id,
+    payloads: CreateImageAttachmentPayload[]
+  ) => Promise<CreateImageAttachmentsResult>;
   getUpdaterState: () => UpdaterState;
   dispatchAppAction: (action: AppAction) => void;
   attachSurface: (
@@ -77,6 +83,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle("kmux:external-sessions:resume", (_event, key: string) =>
     options.resumeExternalAgentSession(key)
+  );
+  ipcMain.handle(
+    "kmux:image-attachments:create",
+    (_event, surfaceId: Id, payloads: CreateImageAttachmentPayload[]) =>
+      options.createImageAttachments(surfaceId, payloads)
   );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {

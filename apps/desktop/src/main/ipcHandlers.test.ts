@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  CreateImageAttachmentsResult,
+  CreateImageAttachmentPayload,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot
 } from "@kmux/proto";
@@ -28,6 +30,7 @@ import { registerIpcHandlers } from "./ipcHandlers";
 function registerTestHandlers(options: {
   snapshot: ExternalAgentSessionsSnapshot;
   resumeResult: ExternalAgentSessionResumeResult;
+  attachmentResult?: CreateImageAttachmentsResult;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -52,7 +55,19 @@ function registerTestHandlers(options: {
     downloadAvailableUpdate: vi.fn(),
     installDownloadedUpdate: vi.fn(),
     getExternalAgentSessions: () => options.snapshot,
-    resumeExternalAgentSession: () => options.resumeResult
+    resumeExternalAgentSession: () => options.resumeResult,
+    createImageAttachments: async (
+      _surfaceId: string,
+      _payloads: CreateImageAttachmentPayload[]
+    ) => {
+      return options.attachmentResult ?? {
+        attachments: [],
+        promptText: "",
+        skippedCount: 0,
+        status: "empty",
+        message: "No supported image found"
+      };
+    }
   });
 }
 
@@ -77,5 +92,40 @@ describe("ipc handlers", () => {
     await expect(
       Promise.resolve(resumeHandler?.({}, "codex:session"))
     ).resolves.toBe(resumeResult);
+  });
+
+  it("registers image attachment creation handler", async () => {
+    const snapshot: ExternalAgentSessionsSnapshot = {
+      updatedAt: "2026-05-07T12:00:00.000Z",
+      sessions: []
+    };
+    const resumeResult = {
+      workspaceId: "workspace-1",
+      surfaceId: "surface-1"
+    };
+    const attachmentResult: CreateImageAttachmentsResult = {
+      attachments: [],
+      promptText: "@/tmp/kmux/image.png",
+      skippedCount: 0,
+      status: "attached",
+      message: "Attached image.png"
+    };
+    registerTestHandlers({ snapshot, resumeResult, attachmentResult });
+
+    const attachmentHandler = handlers.get("kmux:image-attachments:create");
+
+    expect(attachmentHandler).toBeTypeOf("function");
+    await expect(
+      Promise.resolve(
+        attachmentHandler?.({}, "surface-1", [
+          {
+            source: "drop",
+            originalName: "image.png",
+            mimeType: "image/png",
+            bytes: new Uint8Array([1, 2, 3])
+          }
+        ])
+      )
+    ).resolves.toBe(attachmentResult);
   });
 });
