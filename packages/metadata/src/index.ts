@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 export * from "./aiCliProcess";
@@ -15,6 +16,44 @@ const portsCache = new Map<number, { value: number[]; expiresAt: number }>();
 
 export interface ResolveGitBranchOptions {
   bypassCache?: boolean;
+}
+
+export interface GitRepositoryMetadata {
+  gitDir: string;
+  root: string;
+}
+
+export async function resolveGitRepository(
+  cwd?: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<GitRepositoryMetadata | null> {
+  if (!cwd) {
+    return null;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--git-dir", "--show-toplevel"],
+      {
+        cwd,
+        env
+      }
+    );
+    const [gitDir, root] = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!gitDir || !root) {
+      return null;
+    }
+    return {
+      gitDir: isAbsolute(gitDir) ? gitDir : resolve(cwd, gitDir),
+      root: isAbsolute(root) ? root : resolve(cwd, root)
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveGitBranch(
