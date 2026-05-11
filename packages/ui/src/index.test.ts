@@ -11,7 +11,10 @@ import {
   getThemeCssVariables,
   getXtermTheme,
   resolveColorTheme,
-  normalizeShortcut
+  normalizeShortcut,
+  normalizeShortcutBinding,
+  matchesShortcut,
+  DEFAULT_SHORTCUTS
 } from "./index";
 
 describe("shortcut normalization", () => {
@@ -39,6 +42,36 @@ describe("shortcut normalization", () => {
         code: "Comma"
       } as KeyboardEvent)
     ).toBe("Meta+,");
+  });
+
+  it("normalizes stored shortcut bindings to the matcher modifier order", () => {
+    expect(normalizeShortcutBinding("Alt+Shift+Meta+ArrowLeft")).toBe(
+      "Meta+Alt+Shift+ArrowLeft"
+    );
+    expect(normalizeShortcutBinding("Command+Option+K")).toBe("Meta+Alt+K");
+  });
+
+  it("keeps default shortcuts in normalized matcher order", () => {
+    for (const binding of Object.values(DEFAULT_SHORTCUTS)) {
+      expect(normalizeShortcutBinding(binding)).toBe(binding);
+    }
+  });
+
+  it("matches stored shortcuts even when modifier order is legacy", () => {
+    expect(
+      matchesShortcut(
+        {
+          metaKey: true,
+          ctrlKey: false,
+          altKey: true,
+          shiftKey: false,
+          key: "ArrowLeft",
+          code: "ArrowLeft"
+        } as KeyboardEvent,
+        { "pane.focus.left": "Alt+Meta+ArrowLeft" },
+        "pane.focus.left"
+      )
+    ).toBe(true);
   });
 });
 

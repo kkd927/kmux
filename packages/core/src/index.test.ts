@@ -9,11 +9,14 @@ import {
   applyActionWithSummary,
   buildViewModel,
   cloneState,
+  createDefaultSettings,
   createInitialState,
+  CURRENT_SETTINGS_VERSION,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
   listPaneIds,
   MAX_SIDEBAR_WIDTH,
-  MIN_SIDEBAR_WIDTH
+  MIN_SIDEBAR_WIDTH,
+  sanitizeSettings
 } from "./index";
 
 describe("core reducer", () => {
@@ -1334,6 +1337,51 @@ describe("core reducer", () => {
     });
 
     expect(state.settings.warnBeforeQuit).toBe(false);
+  });
+
+  it("defaults bell sounds to enabled for new settings", () => {
+    const settings = createDefaultSettings();
+
+    expect(settings.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    expect(settings.notificationSound).toBe(true);
+  });
+
+  it("migrates pre-versioned bell sound settings to enabled once", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: undefined,
+      notificationSound: false
+    });
+
+    expect(restored.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    expect(restored.notificationSound).toBe(true);
+  });
+
+  it("preserves explicit bell sound updates after the settings migration", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: CURRENT_SETTINGS_VERSION,
+      notificationSound: false
+    });
+
+    expect(restored.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    expect(restored.notificationSound).toBe(false);
+  });
+
+  it("normalizes restored shortcut bindings to the matcher modifier order", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      shortcuts: {
+        ...createDefaultSettings().shortcuts,
+        "pane.focus.left": "Alt+Meta+ArrowLeft",
+        "pane.resize.left": "Alt+Shift+Meta+ArrowLeft"
+      }
+    });
+
+    expect(restored.shortcuts["pane.focus.left"]).toBe("Meta+Alt+ArrowLeft");
+    expect(restored.shortcuts["pane.resize.left"]).toBe(
+      "Meta+Alt+Shift+ArrowLeft"
+    );
   });
 
   it("merges terminal typography patches without dropping existing preferences", () => {

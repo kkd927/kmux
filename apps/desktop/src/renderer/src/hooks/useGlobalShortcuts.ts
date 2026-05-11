@@ -2,7 +2,7 @@ import {type Dispatch, type MutableRefObject, type SetStateAction, useEffect, us
 
 import type {AppAction} from "@kmux/core";
 import type {ActiveWorkspacePaneTreeVm, ShellStoreSnapshot} from "@kmux/proto";
-import {normalizeShortcut} from "@kmux/ui";
+import {normalizeShortcut, normalizeShortcutBinding} from "@kmux/ui";
 
 type RightPanelKind = "usage" | "sessions" | null;
 
@@ -70,6 +70,14 @@ export function useGlobalShortcuts(
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
         workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen
       } = currentOptions.dismissibleUiStateRef.current;
+      const target = event.target;
+      const isShortcutRecorder =
+        target instanceof HTMLElement &&
+        target.closest("[data-shortcut-recorder]");
+      if (isShortcutRecorder) {
+        return;
+      }
+
       if (event.key === "Escape") {
         if (currentWorkspaceCloseConfirmOpen) {
           event.preventDefault();
@@ -110,7 +118,6 @@ export function useGlobalShortcuts(
         return;
       }
 
-      const target = event.target;
       const isTerminalInput =
         target instanceof HTMLTextAreaElement &&
         target.classList.contains("xterm-helper-textarea");
@@ -492,7 +499,10 @@ function matchShortcut(
   event: KeyboardEvent,
   commandId: string
 ): boolean {
-  return view.settings.shortcuts[commandId] === normalizeShortcut(event);
+  return (
+    normalizeShortcutBinding(view.settings.shortcuts[commandId] ?? "") ===
+    normalizeShortcut(event)
+  );
 }
 
 function listWorkspaceSurfaceShortcutTargets(

@@ -69,6 +69,7 @@ interface IpcHandlersOptions {
     suggestedName: string,
     palette: TerminalColorPalette
   ) => Promise<boolean>;
+  openSettingsJson: () => Promise<void>;
   setUsageDashboardOpen: (open: boolean) => void;
   downloadAvailableUpdate: () => Promise<void>;
   installDownloadedUpdate: () => void;
@@ -162,6 +163,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       return options.exportTerminalThemePalette(window, suggestedName, palette);
     }
   );
+  ipcMain.handle("kmux:settings-json:open", () => options.openSettingsJson());
   ipcMain.handle(
     "kmux:window-control",
     (event, action: "minimize" | "maximize" | "fullscreen" | "close") => {

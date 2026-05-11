@@ -51,6 +51,7 @@ function registerTestHandlers(options: {
     reportTerminalTypographyProbe: vi.fn(),
     importTerminalThemePalette: vi.fn(),
     exportTerminalThemePalette: vi.fn(),
+    openSettingsJson: vi.fn(),
     setUsageDashboardOpen: vi.fn(),
     downloadAvailableUpdate: vi.fn(),
     installDownloadedUpdate: vi.fn(),

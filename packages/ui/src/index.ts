@@ -15,14 +15,14 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "workspace.sidebar.toggle": "Meta+B",
   "pane.split.right": "Meta+D",
   "pane.split.down": "Meta+Shift+D",
-  "pane.focus.left": "Alt+Meta+ArrowLeft",
-  "pane.focus.right": "Alt+Meta+ArrowRight",
-  "pane.focus.up": "Alt+Meta+ArrowUp",
-  "pane.focus.down": "Alt+Meta+ArrowDown",
-  "pane.resize.left": "Alt+Shift+Meta+ArrowLeft",
-  "pane.resize.right": "Alt+Shift+Meta+ArrowRight",
-  "pane.resize.up": "Alt+Shift+Meta+ArrowUp",
-  "pane.resize.down": "Alt+Shift+Meta+ArrowDown",
+  "pane.focus.left": "Meta+Alt+ArrowLeft",
+  "pane.focus.right": "Meta+Alt+ArrowRight",
+  "pane.focus.up": "Meta+Alt+ArrowUp",
+  "pane.focus.down": "Meta+Alt+ArrowDown",
+  "pane.resize.left": "Meta+Alt+Shift+ArrowLeft",
+  "pane.resize.right": "Meta+Alt+Shift+ArrowRight",
+  "pane.resize.up": "Meta+Alt+Shift+ArrowUp",
+  "pane.resize.down": "Meta+Alt+Shift+ArrowDown",
   "pane.close": "Meta+Alt+K",
   "surface.create": "Meta+T",
   "surface.close": "Meta+W",
@@ -746,12 +746,47 @@ export function normalizeShortcut(
   return parts.join("+");
 }
 
+export function normalizeShortcutBinding(shortcut: string): string {
+  const parts = shortcut
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return shortcut;
+  }
+
+  const modifiers = new Set<string>();
+  const keys: string[] = [];
+  for (const part of parts) {
+    if (part === "Meta" || part === "Cmd" || part === "Command") {
+      modifiers.add("Meta");
+    } else if (part === "Ctrl" || part === "Control") {
+      modifiers.add("Ctrl");
+    } else if (part === "Alt" || part === "Option") {
+      modifiers.add("Alt");
+    } else if (part === "Shift") {
+      modifiers.add("Shift");
+    } else {
+      keys.push(part.length === 1 ? part.toUpperCase() : part);
+    }
+  }
+
+  const normalizedParts = ["Meta", "Ctrl", "Alt", "Shift"].filter((part) =>
+    modifiers.has(part)
+  );
+  normalizedParts.push(...keys);
+  return normalizedParts.join("+");
+}
+
 export function matchesShortcut(
   event: KeyboardEvent,
   shortcuts: Record<string, string>,
   commandId: string
 ): boolean {
-  return normalizeShortcut(event) === shortcuts[commandId];
+  return (
+    normalizeShortcut(event) ===
+    normalizeShortcutBinding(shortcuts[commandId] ?? "")
+  );
 }
 
 function normalizeShortcutKey(
