@@ -881,11 +881,7 @@ function createWorkspace(
   launch?: SessionLaunchConfig
 ): AppEffect[] {
   const window = state.windows[state.activeWindowId];
-  const activeWorkspace = state.workspaces[window.activeWorkspaceId];
-  const inheritedCwd = activeWorkspace
-    ? activeSurface(state, activeWorkspace.activePaneId)?.cwd
-    : undefined;
-  const workspaceCwd = cwd ?? inheritedCwd ?? defaultHomeDirectory();
+  const workspaceCwd = cwd ?? launch?.cwd ?? defaultHomeDirectory();
   const workspaceId = makeId("workspace");
   const paneId = makeId("pane");
   const surfaceId = makeId("surface");
