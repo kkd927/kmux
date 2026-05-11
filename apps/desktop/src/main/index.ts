@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu } from "electron";
+import { app, BrowserWindow, Menu, shell } from "electron";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,10 @@ import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
 import { resolveShellEnvironment } from "./shellEnvironment";
+import {
+  openSettingsJsonFile,
+  openWithMacTextEditor
+} from "./settingsJson";
 import { createShellWrapperRuntime } from "./shellWrapperRuntime";
 import { KmuxSocketServer } from "./socketServer";
 import { buildApplicationMenuTemplate } from "./appMenu";
@@ -297,6 +301,22 @@ async function bootstrap(): Promise<void> {
     reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,
     importTerminalThemePalette: importItermcolorsPalette,
     exportTerminalThemePalette: exportItermcolorsPalette,
+    openSettingsJson: async () => {
+      settingsStore.save(runtime.getState().settings);
+      const result = await openSettingsJsonFile({
+        nodeEnv: process.env.NODE_ENV,
+        platform: process.platform,
+        settingsPath: paths.settingsPath,
+        shell,
+        openWithTextEditor: openWithMacTextEditor
+      });
+      if (result.action === "revealed") {
+        logDiagnostics("settings-json.open.fallback", {
+          path: paths.settingsPath,
+          error: result.error
+        });
+      }
+    },
     setUsageDashboardOpen: usageRuntime.setDashboardOpen,
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
     installDownloadedUpdate: () => {

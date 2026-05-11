@@ -64,6 +64,7 @@ declare global {
         suggestedName: string,
         palette: TerminalColorPalette
       ): Promise<boolean>;
+      openSettingsJson(): Promise<void>;
       readClipboardText(): string;
       writeClipboardText(text: string): void;
       windowControl(

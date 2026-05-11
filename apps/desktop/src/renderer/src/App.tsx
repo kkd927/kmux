@@ -1057,6 +1057,7 @@ export function App(): JSX.Element {
         onExportTerminalThemeVariant={(variant) =>
           void handleExportTerminalThemeVariant(variant)
         }
+        onOpenSettingsJson={() => window.kmux.openSettingsJson()}
         onCloseSettings={() => setSettingsOpen(false)}
         onSaveSettings={(draft) => {
           const settingsPatch = {

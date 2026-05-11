@@ -1,6 +1,7 @@
 import {
   DEFAULT_SHORTCUTS,
   createDefaultTerminalThemeSettings,
+  normalizeShortcutBinding,
   sanitizeTerminalThemeSettings
 } from "@kmux/ui";
 import {
@@ -122,6 +123,7 @@ const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
+export const CURRENT_SETTINGS_VERSION = 2;
 
 function defaultHomeDirectory(): string {
   const homeDirectory =
@@ -277,10 +279,11 @@ export function createDefaultSettings(
   shellPath: string | undefined = process.env.SHELL
 ): KmuxSettings {
   return {
+    settingsVersion: CURRENT_SETTINGS_VERSION,
     socketMode: mode,
     warnBeforeQuit: true,
     notificationDesktop: true,
-    notificationSound: false,
+    notificationSound: true,
     terminalUseWebgl: true,
     themeMode: "dark",
     shell: shellPath,
@@ -356,10 +359,15 @@ export function mergeSettings(
   return {
     ...current,
     ...nextPatch,
+    settingsVersion: CURRENT_SETTINGS_VERSION,
     warnBeforeQuit:
       typeof nextPatch.warnBeforeQuit === "boolean"
         ? nextPatch.warnBeforeQuit
         : current.warnBeforeQuit,
+    notificationSound:
+      typeof nextPatch.notificationSound === "boolean"
+        ? nextPatch.notificationSound
+        : current.notificationSound,
     terminalUseWebgl: sanitizeTerminalUseWebgl(
       nextPatch.terminalUseWebgl ?? current.terminalUseWebgl
     ),
@@ -383,7 +391,19 @@ export function sanitizeSettings(
   if (!settings) {
     return createDefaultSettings();
   }
-  return mergeSettings(createDefaultSettings(settings.socketMode), settings);
+  const settingsVersion = sanitizeSettingsVersion(settings.settingsVersion);
+  const migratedSettings: LegacyKmuxSettings = {
+    ...settings,
+    settingsVersion: CURRENT_SETTINGS_VERSION,
+    notificationSound:
+      settingsVersion < CURRENT_SETTINGS_VERSION
+        ? true
+        : settings.notificationSound
+  };
+  return mergeSettings(
+    createDefaultSettings(settings.socketMode),
+    migratedSettings
+  );
 }
 
 export function normalizeTerminalTypographySettings(
@@ -2910,7 +2930,12 @@ function sanitizeSessionLaunchConfig(
 function sanitizeShortcuts(
   shortcuts: Record<string, string>
 ): Record<string, string> {
-  const nextShortcuts = { ...shortcuts };
+  const nextShortcuts = Object.fromEntries(
+    Object.entries(shortcuts).map(([command, binding]) => [
+      command,
+      normalizeShortcutBinding(binding)
+    ])
+  );
   delete nextShortcuts["workspace.switcher"];
   delete nextShortcuts["pane.zoom"];
   return nextShortcuts;
@@ -2923,6 +2948,13 @@ function sanitizeThemeMode(
     return themeMode;
   }
   return "dark";
+}
+
+function sanitizeSettingsVersion(settingsVersion: unknown): number {
+  return typeof settingsVersion === "number" &&
+    Number.isFinite(settingsVersion)
+    ? settingsVersion
+    : 1;
 }
 
 function sanitizeTerminalUseWebgl(

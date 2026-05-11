@@ -52,6 +52,34 @@ async function waitForSurfaceSnapshotMatching(
   );
 }
 
+async function selectSettingsCategory(
+  page: Page,
+  category: "General" | "Terminal" | "Notifications" | "Shortcuts"
+): Promise<void> {
+  await page
+    .getByTestId("settings-dialog")
+    .getByRole("button", { name: new RegExp(`^${category}\\b`) })
+    .click();
+}
+
+async function openSettingsCategory(
+  page: Page,
+  category: "General" | "Terminal" | "Notifications" | "Shortcuts"
+): Promise<void> {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await selectSettingsCategory(page, category);
+}
+
+async function selectSettingsThemeMode(
+  page: Page,
+  mode: "System" | "Light" | "Dark"
+): Promise<void> {
+  await page
+    .getByTestId("settings-dialog")
+    .getByRole("radio", { name: new RegExp(`^${mode}\\b`) })
+    .click();
+}
+
 function rendererResizeApplyPrecedesRequest(profilePath: string): boolean {
   if (!existsSync(profilePath)) {
     return false;
@@ -107,6 +135,7 @@ test("global workspace create shortcut is ignored when a settings input is focus
     const beforeWorkspaceCount = initial.workspaceRows.length;
 
     await page.keyboard.press("Meta+,");
+    await selectSettingsCategory(page, "Terminal");
     const terminalFontInput = page.getByRole("spinbutton", {
       name: "Font size"
     });
@@ -127,13 +156,58 @@ test("global workspace create shortcut is ignored when a settings input is focus
   }
 });
 
+test("settings modal records shortcut bindings from pressed key combinations", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-shortcut-recorder-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+
+    await openSettingsCategory(page, "Shortcuts");
+
+    const dialog = page.getByTestId("settings-dialog");
+    const newWorkspaceShortcut = dialog.getByRole("button", {
+      name: "New workspace shortcut"
+    });
+    const initialShortcutLabel =
+      process.platform === "darwin" ? "⌘ N" : "Meta + N";
+    const recordedShortcutLabel =
+      process.platform === "darwin" ? "⌘ ⇧ N" : "Meta + Shift + N";
+
+    await expect(newWorkspaceShortcut).toHaveText(initialShortcutLabel);
+    await newWorkspaceShortcut.click();
+    await expect(newWorkspaceShortcut).toHaveText("Press keys...");
+
+    await page.keyboard.press("Meta+Shift+N");
+    await expect(newWorkspaceShortcut).toHaveText(recordedShortcutLabel);
+
+    const afterRecord = await getView(page);
+    expect(afterRecord.workspaceRows.length).toBe(initial.workspaceRows.length);
+
+    await page.getByRole("button", { name: "Save" }).click();
+    const updated = await waitForView(
+      page,
+      (view) =>
+        view.settings.shortcuts["workspace.create"] === "Meta+Shift+N" &&
+        view.workspaceRows.length === initial.workspaceRows.length,
+      "recorded shortcut should save without triggering workspace creation"
+    );
+
+    expect(updated.settings.shortcuts["workspace.create"]).toBe(
+      "Meta+Shift+N"
+    );
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("settings modal updates terminal typography preferences and preview", async () => {
   const launched = await launchKmux("kmux-e2e-settings-typography-");
 
   try {
     const page = launched.page;
 
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
 
     const fontFamilyInput = page.getByLabel("Text font");
     const fontSizeInput = page.getByRole("spinbutton", { name: "Font size" });
@@ -226,7 +300,7 @@ test("settings modal toggles the terminal WebGL renderer for comparison", async 
       return Boolean(xterm && xterm.querySelectorAll("canvas").length > 0);
     });
 
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
     const rendererToggle = page.getByLabel("Use WebGL terminal renderer");
     await expect(rendererToggle).toBeVisible();
     await expect(rendererToggle).toBeChecked();
@@ -250,7 +324,7 @@ test("settings modal toggles the terminal WebGL renderer for comparison", async 
       );
     });
 
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
     await expect(
       page.getByLabel("Use WebGL terminal renderer")
     ).not.toBeChecked();
@@ -398,7 +472,7 @@ test("settings preview stays ready with the built-in glyph font when no compatib
 
   try {
     const page = launched.page;
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
 
     const preview = page.getByTestId("terminal-typography-preview");
     await expect(preview).toBeVisible();
@@ -424,7 +498,7 @@ test("settings preview reports a detected installed compatible font", async () =
 
   try {
     const page = launched.page;
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
 
     const preview = page.getByTestId("terminal-typography-preview");
     await expect(preview).toBeVisible();
@@ -465,7 +539,7 @@ test("legacy preferred symbol fallback settings still load without breaking typo
       KMUX_BUILTIN_SYMBOL_FONT_FAMILY
     ]);
 
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
     const preview = page.getByTestId("terminal-typography-preview");
     await expect(preview).toContainText("Glyph support ready");
     await expect(preview).toContainText("Using built-in kmux glyph font.");
@@ -520,9 +594,12 @@ test("settings modal switches between light and system themes and keeps terminal
     await page.emulateMedia({ colorScheme: "light" });
 
     await page.getByRole("button", { name: "Open settings" }).click();
-    const themeModeSelect = page.getByLabel("Theme mode");
-    await expect(themeModeSelect).toBeVisible();
-    await themeModeSelect.selectOption("light");
+    await expect(
+      page.getByTestId("settings-dialog").getByRole("radio", {
+        name: /^Light\b/
+      })
+    ).toBeVisible();
+    await selectSettingsThemeMode(page, "Light");
     await page.getByRole("button", { name: "Save" }).click();
 
     const lightUpdated = await waitForView(
@@ -565,7 +642,7 @@ test("settings modal switches between light and system themes and keeps terminal
       .toBeGreaterThan(0);
 
     await page.getByRole("button", { name: "Open settings" }).click();
-    await themeModeSelect.selectOption("system");
+    await selectSettingsThemeMode(page, "System");
     await page.getByRole("button", { name: "Save" }).click();
 
     const systemUpdated = await waitForView(
@@ -615,7 +692,7 @@ test("settings modal exposes built-in terminal presets and keeps them undeletabl
 
   try {
     const page = launched.page;
-    await page.getByRole("button", { name: "Open settings" }).click();
+    await openSettingsCategory(page, "Terminal");
 
     const themeSelect = page.getByLabel("Active terminal theme");
     const deleteButton = page.getByRole("button", {
@@ -663,6 +740,92 @@ test("settings modal exposes built-in terminal presets and keeps them undeletabl
   }
 });
 
+test("settings modal hides socket mode and keeps settings.json entrypoint", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-advanced-socket-");
+
+  try {
+    const page = launched.page;
+
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const dialog = page.getByTestId("settings-dialog");
+    await expect(
+      dialog.getByRole("button", { name: /^Advanced\b/ })
+    ).toHaveCount(0);
+    await expect(dialog.getByLabel("Socket mode")).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Open settings.json" }).click();
+    await expect(dialog).toBeVisible();
+
+    const settingsPath = join(launched.sandbox.configDir, "settings.json");
+    expect(existsSync(settingsPath)).toBe(true);
+    const savedSettings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      socketMode?: string;
+    };
+    expect(savedSettings.socketMode).toBe("kmuxOnly");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings modal keeps checkbox rows passive and saves bell sound preference", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-checkbox-affordance-");
+
+  try {
+    const page = launched.page;
+
+    await openSettingsCategory(page, "Notifications");
+
+    const dialog = page.getByTestId("settings-dialog");
+    const bellSoundCheckbox = dialog.getByLabel("Bell sounds");
+    await expect(bellSoundCheckbox).toBeChecked();
+
+    await dialog.getByText("Bell sounds").click();
+    await expect(bellSoundCheckbox).toBeChecked();
+
+    await bellSoundCheckbox.click();
+    await expect(bellSoundCheckbox).not.toBeChecked();
+
+    await page.getByRole("button", { name: "Save" }).click();
+    const updated = await waitForView(
+      page,
+      (view) => view.settings.notificationSound === false,
+      "bell sound preference should save after clicking the checkbox itself"
+    );
+
+    expect(updated.settings.notificationSound).toBe(false);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("pre-versioned settings migrate bell sounds to enabled once", async () => {
+  const sandbox = createSandbox("kmux-e2e-settings-bell-migration-");
+  const legacySettings = createDefaultSettings() as ReturnType<
+    typeof createDefaultSettings
+  > & { settingsVersion?: number };
+  const settingsPath = join(sandbox.configDir, "settings.json");
+
+  delete legacySettings.settingsVersion;
+  legacySettings.notificationSound = false;
+  writeFileSync(settingsPath, JSON.stringify(legacySettings, null, 2));
+
+  const launched = await launchKmuxWithSandbox(sandbox);
+
+  try {
+    const page = launched.page;
+    const view = await waitForView(
+      page,
+      (snapshot) => snapshot.settings.notificationSound === true,
+      "pre-versioned settings should migrate bell sounds to enabled"
+    );
+
+    expect(view.settings.notificationSound).toBe(true);
+    expect(view.settings.settingsVersion).toBe(2);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("settings modal keeps save and cancel visible in short windows", async () => {
   const launched = await launchKmux("kmux-e2e-settings-short-window-");
 
@@ -671,14 +834,17 @@ test("settings modal keeps save and cancel visible in short windows", async () =
     await page.setViewportSize({ width: 920, height: 560 });
 
     await page.getByRole("button", { name: "Open settings" }).click();
+    await selectSettingsCategory(page, "Terminal");
 
     const dialog = page.getByTestId("settings-dialog");
     const body = page.getByTestId("settings-body");
+    const panel = page.getByTestId("settings-panel");
     const saveButton = page.getByRole("button", { name: "Save" });
     const cancelButton = page.getByRole("button", { name: "Cancel" });
 
     await expect(dialog).toBeVisible();
     await expect(body).toBeVisible();
+    await expect(panel).toBeVisible();
     await expect(saveButton).toBeVisible();
     await expect(cancelButton).toBeVisible();
 
@@ -688,6 +854,9 @@ test("settings modal keeps save and cancel visible in short windows", async () =
       );
       const body = document.querySelector<HTMLElement>(
         '[data-testid="settings-body"]'
+      );
+      const panel = document.querySelector<HTMLElement>(
+        '[data-testid="settings-panel"]'
       );
       const buttons = Array.from(document.querySelectorAll("button"));
       const saveButton = buttons.find(
@@ -699,6 +868,7 @@ test("settings modal keeps save and cancel visible in short windows", async () =
       if (
         !dialog ||
         !body ||
+        !panel ||
         !(saveButton instanceof HTMLElement) ||
         !(cancelButton instanceof HTMLElement)
       ) {
@@ -707,6 +877,7 @@ test("settings modal keeps save and cancel visible in short windows", async () =
 
       const dialogRect = dialog.getBoundingClientRect();
       const bodyRect = body.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
       const saveRect = saveButton.getBoundingClientRect();
       const cancelRect = cancelButton.getBoundingClientRect();
 
@@ -715,16 +886,18 @@ test("settings modal keeps save and cancel visible in short windows", async () =
         dialogBottom: dialogRect.bottom,
         bodyTop: bodyRect.top,
         bodyBottom: bodyRect.bottom,
-        bodyClientHeight: body.clientHeight,
-        bodyScrollHeight: body.scrollHeight,
+        panelTop: panelRect.top,
+        panelBottom: panelRect.bottom,
+        panelClientHeight: panel.clientHeight,
+        panelScrollHeight: panel.scrollHeight,
         saveBottom: saveRect.bottom,
         cancelBottom: cancelRect.bottom
       };
     });
 
     expect(geometry).toBeTruthy();
-    expect(geometry?.bodyScrollHeight).toBeGreaterThan(
-      geometry?.bodyClientHeight ?? 0
+    expect(geometry?.panelScrollHeight).toBeGreaterThan(
+      geometry?.panelClientHeight ?? 0
     );
     expect(geometry?.saveBottom).toBeLessThanOrEqual(
       geometry?.viewportHeight ?? 0
@@ -739,12 +912,13 @@ test("settings modal keeps save and cancel visible in short windows", async () =
       geometry?.viewportHeight ?? 0
     );
 
-    await body.evaluate((element) => {
+    await panel.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
     await expect(saveButton).toBeVisible();
 
-    await page.getByLabel("Theme mode").selectOption("light");
+    await selectSettingsCategory(page, "General");
+    await selectSettingsThemeMode(page, "Light");
     await saveButton.click();
 
     const updated = await waitForView(

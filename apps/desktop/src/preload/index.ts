@@ -183,6 +183,9 @@ const api = {
       palette
     );
   },
+  openSettingsJson(): Promise<void> {
+    return ipcRenderer.invoke("kmux:settings-json:open");
+  },
   readClipboardText(): string {
     return clipboard.readText();
   },

@@ -16,7 +16,8 @@ import type {
 } from "@kmux/proto";
 import {
   getTerminalSearchDecorations,
-  normalizeShortcut
+  normalizeShortcut,
+  normalizeShortcutBinding
 } from "@kmux/ui";
 import type { ColorTheme } from "@kmux/ui";
 
@@ -1842,5 +1843,5 @@ function matchesBinding(
   if (!binding) {
     return false;
   }
-  return binding === normalizeShortcut(event);
+  return normalizeShortcutBinding(binding) === normalizeShortcut(event);
 }

@@ -373,6 +373,7 @@ export interface TerminalTypographyProbeReport {
 }
 
 export interface KmuxSettings {
+  settingsVersion?: number;
   socketMode: SocketMode;
   warnBeforeQuit: boolean;
   notificationDesktop: boolean;
