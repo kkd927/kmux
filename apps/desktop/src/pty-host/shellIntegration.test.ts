@@ -209,7 +209,10 @@ describe("shell integration launch preparation", () => {
       "Codex downgrade needs_input notifications to BEL-only beeps"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'set -- --enable codex_hooks "$@"'
+      "kmux_resolve_codex_hooks_feature() {"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      'set -- --enable "$KMUX_CODEX_HOOKS_FEATURE" "$@"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'set -- --config tui.notification_method=osc9 "$@"'
@@ -552,6 +555,120 @@ describe("shell integration launch preparation", () => {
     }
   });
 
+  it("selects the Codex hooks feature flag from the installed Codex version", async () => {
+    const prepared = prepareShellIntegrationLaunch(
+      "/bin/zsh",
+      ["-l"],
+      {
+        HOME: "/Users/test"
+      },
+      { enabled: true }
+    );
+
+    const wrapperDir = prepared.env.ZDOTDIR;
+    expect(wrapperDir).toBeTruthy();
+    if (!wrapperDir) {
+      throw new Error("expected ZDOTDIR wrapper to be set");
+    }
+
+    const wrapperCodex = join(wrapperDir, "bin", "codex");
+    const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
+    const fakeCodex = join(fakeCodexDir, "codex");
+    const capturePath = join(fakeCodexDir, "argv.txt");
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
+
+    writeFileSync(
+      fakeCodex,
+      [
+        "#!/bin/sh",
+        'if [ "${1:-}" = "--version" ]; then',
+        '  if [ "${KMUX_FAKE_CODEX_VERSION_FAIL:-0}" = "1" ]; then',
+        "    exit 2",
+        "  fi",
+        '  printf "%s\\n" "${KMUX_FAKE_CODEX_VERSION_OUTPUT:-}"',
+        "  exit 0",
+        "fi",
+        'capture_path="${KMUX_CAPTURE_ARGS_FILE:?}"',
+        ': >"$capture_path"',
+        'for arg in "$@"; do',
+        '  printf "%s\\n" "$arg" >>"$capture_path"',
+        "done",
+        "exit 0",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    chmodSync(fakeCodex, 0o755);
+
+    async function runWrapper(
+      versionOutput: string,
+      extraEnv: Record<string, string> = {}
+    ): Promise<string[]> {
+      const child = spawn(wrapperCodex, ["status"], {
+        env: {
+          ...process.env,
+          ...extraEnv,
+          HOME: fakeHome,
+          PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
+          KMUX_CAPTURE_ARGS_FILE: capturePath,
+          KMUX_FAKE_CODEX_VERSION_OUTPUT: versionOutput,
+          KMUX_NODE_PATH: process.execPath,
+          TERM_PROGRAM: "kmux"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+
+      const [exitCode] = (await once(child, "close")) as [number | null];
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      return readFileSync(capturePath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+    }
+
+    try {
+      await expect(runWrapper("codex-cli 0.128.0")).resolves.toEqual([
+        "--config",
+        "tui.notification_method=osc9",
+        "--enable",
+        "codex_hooks",
+        "status"
+      ]);
+      await expect(runWrapper("codex-cli 0.129.0")).resolves.toEqual([
+        "--config",
+        "tui.notification_method=osc9",
+        "--enable",
+        "hooks",
+        "status"
+      ]);
+      await expect(runWrapper("codex-cli dev")).resolves.toEqual([
+        "--config",
+        "tui.notification_method=osc9",
+        "--enable",
+        "codex_hooks",
+        "status"
+      ]);
+      await expect(
+        runWrapper("", { KMUX_FAKE_CODEX_VERSION_FAIL: "1" })
+      ).resolves.toEqual([
+        "--config",
+        "tui.notification_method=osc9",
+        "--enable",
+        "codex_hooks",
+        "status"
+      ]);
+    } finally {
+      rmSync(fakeCodexDir, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it("does not rewrite unchanged Codex hooks.json across repeated wrapper runs", async () => {
     const prepared = prepareShellIntegrationLaunch(
       "/bin/zsh",
@@ -621,7 +738,7 @@ describe("shell integration launch preparation", () => {
     }
   });
 
-  it("leaves invalid Codex hooks.json untouched and skips codex_hooks enablement", async () => {
+  it("leaves invalid Codex hooks.json untouched and skips Codex hooks enablement", async () => {
     const prepared = prepareShellIntegrationLaunch(
       "/bin/zsh",
       ["-l"],
