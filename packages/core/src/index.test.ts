@@ -19,6 +19,11 @@ import {
   sanitizeSettings
 } from "./index";
 
+function expectedHomeDirectory(): string {
+  const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
+  return homeDirectory?.trim() || "~";
+}
+
 describe("core reducer", () => {
   it("reports sidebar mutations as workspace row and active workspace activity only", () => {
     const state = createInitialState();
@@ -76,13 +81,19 @@ describe("core reducer", () => {
     expect(vm.activeWorkspace.name).toBe("new");
   });
 
-  it("inherits a concrete cwd when creating a workspace without an explicit folder", () => {
+  it("starts a new workspace in the home directory without an explicit folder", () => {
     const state = createInitialState();
     const originalWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
     const originalPaneId = state.workspaces[originalWorkspaceId].activePaneId;
     const originalSurfaceId = state.panes[originalPaneId].activeSurfaceId;
-    const inheritedCwd = state.surfaces[originalSurfaceId].cwd;
+    const homeDirectory = expectedHomeDirectory();
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: originalSurfaceId,
+      cwd: "/tmp/kmux-moved"
+    });
 
     applyAction(state, { type: "workspace.create", name: "new" });
 
@@ -91,20 +102,28 @@ describe("core reducer", () => {
     const createdPaneId = state.workspaces[createdWorkspaceId].activePaneId;
     const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
 
-    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(inheritedCwd);
-    expect(state.surfaces[createdSurfaceId].cwd).toBe(inheritedCwd);
+    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(
+      homeDirectory
+    );
+    expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
     expect(
       state.sessions[state.surfaces[createdSurfaceId].sessionId].launch.cwd
-    ).toBe(inheritedCwd);
+    ).toBe(homeDirectory);
   });
 
-  it("preserves the inherited cwd when a workspace launch carries cwd undefined", () => {
+  it("starts a workspace launch in the home directory when launch cwd is undefined", () => {
     const state = createInitialState("/bin/zsh");
     const originalWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
     const originalPaneId = state.workspaces[originalWorkspaceId].activePaneId;
     const originalSurfaceId = state.panes[originalPaneId].activeSurfaceId;
-    const inheritedCwd = state.surfaces[originalSurfaceId].cwd;
+    const homeDirectory = expectedHomeDirectory();
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: originalSurfaceId,
+      cwd: "/tmp/kmux-moved"
+    });
 
     applyAction(state, {
       type: "workspace.create",
@@ -124,9 +143,11 @@ describe("core reducer", () => {
     const createdSession =
       state.sessions[state.surfaces[createdSurfaceId].sessionId];
 
-    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(inheritedCwd);
-    expect(state.surfaces[createdSurfaceId].cwd).toBe(inheritedCwd);
-    expect(createdSession.launch.cwd).toBe(inheritedCwd);
+    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(
+      homeDirectory
+    );
+    expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
+    expect(createdSession.launch.cwd).toBe(homeDirectory);
     expect(createdSession.launch.shell).toBe("codex");
   });
 
@@ -172,6 +193,32 @@ describe("core reducer", () => {
     );
   });
 
+  it("uses an explicit launch cwd as the new workspace cwd", () => {
+    const state = createInitialState("/bin/zsh");
+
+    applyAction(state, {
+      type: "workspace.create",
+      name: "Resume Codex session",
+      launch: {
+        cwd: "/Users/test/project",
+        shell: "codex",
+        args: ["resume", "session-123"],
+        title: "Resume Codex session"
+      }
+    });
+
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const session = state.sessions[state.surfaces[surfaceId].sessionId];
+
+    expect(state.workspaces[workspaceId].cwdSummary).toBe(
+      "/Users/test/project"
+    );
+    expect(state.surfaces[surfaceId].cwd).toBe("/Users/test/project");
+    expect(session.launch.cwd).toBe("/Users/test/project");
+  });
+
   it("uses the configured shell path as the default session shell", () => {
     const state = createInitialState("/bin/zsh");
     const sessionId = Object.keys(state.sessions)[0];
@@ -194,6 +241,51 @@ describe("core reducer", () => {
     );
     expect(paneIds).toContain(originalPaneId);
     expect(paneIds).toHaveLength(2);
+  });
+
+  it("inherits the active surface cwd when creating a surface in the same workspace", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const originalSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: originalSurfaceId,
+      cwd: "/tmp/kmux-moved"
+    });
+    applyAction(state, { type: "surface.create", paneId, title: "runner" });
+
+    const createdSurfaceId = state.panes[paneId].activeSurfaceId;
+    const session = state.sessions[state.surfaces[createdSurfaceId].sessionId];
+
+    expect(state.surfaces[createdSurfaceId].cwd).toBe("/tmp/kmux-moved");
+    expect(session.launch.cwd).toBe("/tmp/kmux-moved");
+  });
+
+  it("inherits the active surface cwd when splitting within the same workspace", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const originalSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: originalSurfaceId,
+      cwd: "/tmp/kmux-moved"
+    });
+    applyAction(state, {
+      type: "pane.split",
+      paneId,
+      direction: "right"
+    });
+
+    const createdPaneId = state.workspaces[workspaceId].activePaneId;
+    const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
+    const session = state.sessions[state.surfaces[createdSurfaceId].sessionId];
+
+    expect(state.surfaces[createdSurfaceId].cwd).toBe("/tmp/kmux-moved");
+    expect(session.launch.cwd).toBe("/tmp/kmux-moved");
   });
 
   it("moves a surface into a right split without recreating its session", () => {
