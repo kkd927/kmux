@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 
 import {
   resolveGitBranch,
@@ -8,7 +9,7 @@ import {
 } from "@kmux/metadata";
 
 import type { AppAction, AppState } from "@kmux/core";
-import type { Id } from "@kmux/proto";
+import { isoNow, type Id } from "@kmux/proto";
 
 interface MetadataRuntimeOptions {
   getState: () => AppState;
@@ -69,9 +70,60 @@ export function createMetadataRuntime(
         type: "surface.metadata",
         surfaceId,
         branch,
-        ports
+        ports,
+        gitRepository: repository
+          ? {
+              root: repository.root,
+              gitDir: repository.gitDir,
+              commonGitDir: repository.commonGitDir,
+              linkedWorktree: repository.gitDir !== repository.commonGitDir
+            }
+          : null
       });
+      updateWorkspaceWorktreeDetection(surfaceId, repository, branch);
     })();
+  }
+
+  function updateWorkspaceWorktreeDetection(
+    surfaceId: Id,
+    repository: GitRepositoryMetadata | null,
+    branch: string | null
+  ): void {
+    const state = options.getState();
+    const surface = state.surfaces[surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (!surface || !pane || !workspace || pane.activeSurfaceId !== surfaceId) {
+      return;
+    }
+
+    if (!repository || repository.gitDir === repository.commonGitDir) {
+      if (workspace.detectedWorktree) {
+        options.dispatchAppAction({
+          type: "workspace.worktree.clearDetected",
+          workspaceId: workspace.id
+        });
+      }
+      return;
+    }
+
+    if (workspace.worktree) {
+      return;
+    }
+
+    const detectedBranch = branch && branch !== "HEAD" ? branch : "HEAD";
+    options.dispatchAppAction({
+      type: "workspace.worktree.detected",
+      workspaceId: workspace.id,
+      detectedWorktree: {
+        path: repository.root,
+        repoRoot: deriveRepoRootFromCommonGitDir(repository.commonGitDir),
+        commonGitDir: repository.commonGitDir,
+        baseRef: detectedBranch,
+        branch: detectedBranch,
+        detectedAt: isoNow()
+      }
+    });
   }
 
   function trackSurfaceRepository(
@@ -195,11 +247,19 @@ export function createMetadataRuntime(
         if (!surface || surfaceGitDirs.get(surfaceId) !== gitDir) {
           continue;
         }
+        const repository = surface.gitRepository
+          ? {
+              root: surface.gitRepository.root,
+              gitDir: surface.gitRepository.gitDir,
+              commonGitDir: surface.gitRepository.commonGitDir
+            }
+          : null;
         options.dispatchAppAction({
           type: "surface.metadata",
           surfaceId,
           branch
         });
+        updateWorkspaceWorktreeDetection(surfaceId, repository, branch);
       }
     })();
   }
@@ -233,4 +293,10 @@ export function createMetadataRuntime(
       surfaceGitCwds.clear();
     }
   };
+}
+
+function deriveRepoRootFromCommonGitDir(commonGitDir: string): string {
+  return basename(commonGitDir) === ".git"
+    ? dirname(commonGitDir)
+    : commonGitDir;
 }

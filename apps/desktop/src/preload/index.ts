@@ -26,7 +26,11 @@ import type {
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   TerminalKeyInput,
-  UpdaterState
+  UpdaterState,
+  WorktreeBulkRemoveResult,
+  WorktreeConversionPreview,
+  WorktreeRemoveResult,
+  WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import {
   collectClipboardImagePayloads,
@@ -73,10 +77,8 @@ const api = {
     return () => ipcRenderer.off("kmux:usage", handler);
   },
   subscribeUpdater(listener: (state: UpdaterState) => void): () => void {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      state: UpdaterState
-    ) => listener(state);
+    const handler = (_event: Electron.IpcRendererEvent, state: UpdaterState) =>
+      listener(state);
     ipcRenderer.on("kmux:updater", handler);
     return () => ipcRenderer.off("kmux:updater", handler);
   },
@@ -211,12 +213,73 @@ const api = {
   subscribeWorkspaceRenameRequest(
     listener: (workspaceId: string) => void
   ): () => void {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      workspaceId: string
-    ) => listener(workspaceId);
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
+      listener(workspaceId);
     ipcRenderer.on("kmux:workspace-rename-request", handler);
     return () => ipcRenderer.off("kmux:workspace-rename-request", handler);
+  },
+  subscribeWorkspaceCloseRequest(
+    listener: (workspaceId: string) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
+      listener(workspaceId);
+    ipcRenderer.on("kmux:workspace-close-request", handler);
+    return () => ipcRenderer.off("kmux:workspace-close-request", handler);
+  },
+  subscribeWorkspaceCloseOthersRequest(
+    listener: (workspaceId: string) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
+      listener(workspaceId);
+    ipcRenderer.on("kmux:workspace-close-others-request", handler);
+    return () =>
+      ipcRenderer.off("kmux:workspace-close-others-request", handler);
+  },
+  subscribeWorkspaceWorktreeConvertRequest(
+    listener: (workspaceId: string) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
+      listener(workspaceId);
+    ipcRenderer.on("kmux:workspace-worktree-convert-request", handler);
+    return () =>
+      ipcRenderer.off("kmux:workspace-worktree-convert-request", handler);
+  },
+  prepareWorktreeConversion(
+    workspaceId: string
+  ): Promise<WorktreeConversionPreview | null> {
+    return ipcRenderer.invoke("kmux:worktree:prepare-conversion", workspaceId);
+  },
+  createWorktreeWorkspace(
+    workspaceId: string,
+    name: string
+  ): Promise<WorkspaceWorktreeMetadata> {
+    return ipcRenderer.invoke("kmux:worktree:create-workspace", {
+      workspaceId,
+      name
+    });
+  },
+  convertDetectedWorktree(
+    workspaceId: string
+  ): Promise<WorkspaceWorktreeMetadata> {
+    return ipcRenderer.invoke("kmux:worktree:convert-detected", workspaceId);
+  },
+  removeWorkspaceWorktree(
+    workspaceId: string,
+    force: boolean
+  ): Promise<WorktreeRemoveResult> {
+    return ipcRenderer.invoke("kmux:worktree:remove", {
+      workspaceId,
+      force
+    });
+  },
+  removeWorkspaceWorktrees(
+    workspaceIds: string[],
+    force: boolean
+  ): Promise<WorktreeBulkRemoveResult> {
+    return ipcRenderer.invoke("kmux:worktree:remove-many", {
+      workspaceIds,
+      force
+    });
   },
   identify(): Promise<ShellIdentity> {
     return ipcRenderer.invoke("kmux:identify");
@@ -255,7 +318,10 @@ function readClipboardBuffer(format: string): Uint8Array | null {
       return null;
     }
     return new Uint8Array(
-      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+      buffer.buffer.slice(
+        buffer.byteOffset,
+        buffer.byteOffset + buffer.byteLength
+      )
     );
   } catch {
     return null;

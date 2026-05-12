@@ -2,6 +2,7 @@ import type { AppAction } from "@kmux/core";
 import type { Id, KmuxSettings, WorkspaceRowVm } from "@kmux/proto";
 
 export type WorkspaceContextAction =
+  | "convert-worktree"
   | "rename"
   | "pin-toggle"
   | "move-top"
@@ -41,6 +42,9 @@ export interface WorkspaceContext {
 }
 
 export interface WorkspaceContextActionRunner {
+  convertToWorktree?(workspaceId: Id): void | Promise<void>;
+  closeWorkspace?(workspaceId: Id): void | Promise<void>;
+  closeOtherWorkspaces?(workspaceId: Id): void | Promise<void>;
   rename(workspaceId: Id): void | Promise<void>;
   dispatch(action: AppAction): void | Promise<void>;
 }
@@ -79,8 +83,20 @@ export function buildWorkspaceContextMenuEntries(
   context: WorkspaceContext
 ): WorkspaceContextMenuEntry[] {
   const { groupIndex, groupSize, row, totalRows, view } = context;
+  const canConvertToWorktree = Boolean(row.gitRepository && !row.worktree);
 
   return [
+    ...(canConvertToWorktree
+      ? [
+          {
+            id: "convert-worktree",
+            kind: "action" as const,
+            label: "Convert to Worktree Workspace",
+            action: "convert-worktree" as const
+          },
+          { id: "separator-worktree", kind: "separator" as const }
+        ]
+      : []),
     {
       id: "rename",
       kind: "action",
@@ -139,7 +155,10 @@ export function buildWorkspaceContextMenuEntries(
 export async function runWorkspaceContextAction(
   workspaceId: Id,
   action: WorkspaceContextAction,
-  resolveContext: () => WorkspaceContext | null | Promise<WorkspaceContext | null>,
+  resolveContext: () =>
+    | WorkspaceContext
+    | null
+    | Promise<WorkspaceContext | null>,
   runner: WorkspaceContextActionRunner
 ): Promise<void> {
   const context = await resolveContext();
@@ -148,6 +167,11 @@ export async function runWorkspaceContextAction(
   }
 
   switch (action) {
+    case "convert-worktree":
+      if (context.row.gitRepository && !context.row.worktree) {
+        await runner.convertToWorktree?.(workspaceId);
+      }
+      return;
     case "rename":
       await runner.rename(workspaceId);
       return;
@@ -183,12 +207,20 @@ export async function runWorkspaceContextAction(
       return;
     case "close-others":
       if (context.totalRows > 1) {
-        await runner.dispatch({ type: "workspace.closeOthers", workspaceId });
+        if (runner.closeOtherWorkspaces) {
+          await runner.closeOtherWorkspaces(workspaceId);
+        } else {
+          await runner.dispatch({ type: "workspace.closeOthers", workspaceId });
+        }
       }
       return;
     case "close":
       if (context.totalRows > 1) {
-        await runner.dispatch({ type: "workspace.close", workspaceId });
+        if (runner.closeWorkspace) {
+          await runner.closeWorkspace(workspaceId);
+        } else {
+          await runner.dispatch({ type: "workspace.close", workspaceId });
+        }
       }
       return;
     default:

@@ -1,8 +1,17 @@
-import {type Dispatch, type MutableRefObject, type SetStateAction, useEffect, useRef} from "react";
+import {
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+  useEffect,
+  useRef
+} from "react";
 
-import type {AppAction} from "@kmux/core";
-import type {ActiveWorkspacePaneTreeVm, ShellStoreSnapshot} from "@kmux/proto";
-import {normalizeShortcut, normalizeShortcutBinding} from "@kmux/ui";
+import type { AppAction } from "@kmux/core";
+import type {
+  ActiveWorkspacePaneTreeVm,
+  ShellStoreSnapshot
+} from "@kmux/proto";
+import { normalizeShortcut, normalizeShortcutBinding } from "@kmux/ui";
 
 type RightPanelKind = "usage" | "sessions" | null;
 
@@ -13,6 +22,7 @@ interface DismissibleUiState {
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
+  worktreeDialogOpen: boolean;
 }
 
 interface ActiveShortcutContext {
@@ -28,6 +38,7 @@ interface UseGlobalShortcutsOptions {
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
   closeWorkspaceContextMenu: () => void;
   closeWorkspaceCloseConfirm: () => void;
+  closeWorktreeDialog: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
   setSettingsOpen: Dispatch<SetStateAction<boolean>>;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
@@ -37,6 +48,7 @@ interface UseGlobalShortcutsOptions {
   openSettingsModal: () => void;
   beginWorkspaceRename: (workspaceId: string, sidebarVisible?: boolean) => void;
   dispatch: (action: AppAction) => Promise<void>;
+  requestWorkspaceClose: (workspaceId: string) => Promise<void>;
   requestPaneClose: (paneId: string) => Promise<void>;
   requestSurfaceClose: (surfaceId: string) => Promise<void>;
   withLatestActiveShortcutContext: (
@@ -44,9 +56,7 @@ interface UseGlobalShortcutsOptions {
   ) => Promise<void>;
 }
 
-export function useGlobalShortcuts(
-  options: UseGlobalShortcutsOptions
-): void {
+export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
   const optionsRef = useRef(options);
 
   optionsRef.current = options;
@@ -68,7 +78,8 @@ export function useGlobalShortcuts(
         settingsOpen: currentSettingsOpen,
         searchSurfaceId: currentSearchSurfaceId,
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
-        workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen
+        workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen,
+        worktreeDialogOpen: currentWorktreeDialogOpen
       } = currentOptions.dismissibleUiStateRef.current;
       const target = event.target;
       const isShortcutRecorder =
@@ -82,6 +93,11 @@ export function useGlobalShortcuts(
         if (currentWorkspaceCloseConfirmOpen) {
           event.preventDefault();
           currentOptions.closeWorkspaceCloseConfirm();
+          return;
+        }
+        if (currentWorktreeDialogOpen) {
+          event.preventDefault();
+          currentOptions.closeWorktreeDialog();
           return;
         }
         if (currentWorkspaceContextMenuOpen) {
@@ -113,7 +129,8 @@ export function useGlobalShortcuts(
 
       if (
         currentWorkspaceContextMenuOpen ||
-        currentWorkspaceCloseConfirmOpen
+        currentWorkspaceCloseConfirmOpen ||
+        currentWorktreeDialogOpen
       ) {
         return;
       }
@@ -168,7 +185,9 @@ export function useGlobalShortcuts(
         event.stopPropagation();
         const latestView = currentOptions.viewRef.current;
         const shortcutTargets = latestView
-          ? listWorkspaceSurfaceShortcutTargets(latestView.activeWorkspacePaneTree)
+          ? listWorkspaceSurfaceShortcutTargets(
+              latestView.activeWorkspacePaneTree
+            )
           : [];
         const targetSurfaceId = shortcutTargets[digitIndex] ?? null;
         if (!targetSurfaceId) {
@@ -227,10 +246,9 @@ export function useGlobalShortcuts(
       }
       if (matchShortcut(currentView, event, "workspace.close")) {
         event.preventDefault();
-        void currentOptions.dispatch({
-          type: "workspace.close",
-          workspaceId: currentView.activeWorkspace.id
-        });
+        void currentOptions.requestWorkspaceClose(
+          currentView.activeWorkspace.id
+        );
         return;
       }
       if (matchShortcut(currentView, event, "workspace.next")) {
@@ -468,10 +486,7 @@ export function useGlobalShortcuts(
       hideWorkspaceShortcutHints();
     };
     const onVisibilityChange = () => {
-      if (
-        !optionsRef.current.isMac ||
-        document.visibilityState === "visible"
-      ) {
+      if (!optionsRef.current.isMac || document.visibilityState === "visible") {
         return;
       }
       hideWorkspaceShortcutHints();

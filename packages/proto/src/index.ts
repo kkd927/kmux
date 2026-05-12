@@ -131,6 +131,61 @@ export interface SidebarStatusEntry {
   surfaceId?: Id;
 }
 
+export interface WorkspaceGitRepositoryMetadata {
+  root: string;
+  gitDir: string;
+  commonGitDir: string;
+  linkedWorktree: boolean;
+}
+
+export interface WorkspaceWorktreeMetadata {
+  name: string;
+  path: string;
+  repoRoot: string;
+  commonGitDir: string;
+  baseRef: string;
+  branch: string;
+  createdByKmux: boolean;
+}
+
+export interface WorkspaceDetectedWorktreeMetadata {
+  path: string;
+  repoRoot: string;
+  commonGitDir: string;
+  baseRef: string;
+  branch: string;
+  detectedAt: string;
+}
+
+export interface WorktreeConversionPreview {
+  workspaceId: Id;
+  name: string;
+  repoBasename: string;
+  from: string;
+  path: string;
+  branch: string;
+  repoRoot: string;
+  commonGitDir: string;
+  baseRef: string;
+}
+
+export interface WorktreeRemoveResult {
+  status: "removed" | "dirty";
+  dirtyEntries?: string[];
+}
+
+export interface WorktreeDirtyEntryGroup {
+  workspaceId: Id;
+  path: string;
+  branch: string;
+  dirtyEntries: string[];
+}
+
+export interface WorktreeBulkRemoveResult {
+  status: "removed" | "dirty";
+  dirtyWorktrees?: WorktreeDirtyEntryGroup[];
+}
+
 export interface UpdaterState {
   status: UpdaterStatus;
   version?: string;
@@ -144,6 +199,9 @@ export interface WorkspaceRowVm {
   summary: string;
   cwd?: string;
   branch?: string;
+  gitRepository?: WorkspaceGitRepositoryMetadata;
+  worktree?: WorkspaceWorktreeMetadata;
+  detectedWorktree?: WorkspaceDetectedWorktreeMetadata;
   ports: number[];
   statusText?: string;
   statusEntries: SidebarStatusEntry[];
@@ -224,6 +282,7 @@ export interface SurfaceMetadataPayload {
   title?: string;
   branch?: string | null;
   ports?: number[];
+  gitRepository?: WorkspaceGitRepositoryMetadata | null;
   attention?: boolean;
   unreadDelta?: number;
 }
@@ -408,6 +467,7 @@ export interface SurfaceVm {
   title: string;
   cwd?: string;
   branch?: string;
+  gitRepository?: WorkspaceGitRepositoryMetadata;
   ports: number[];
   unreadCount: number;
   attention: boolean;

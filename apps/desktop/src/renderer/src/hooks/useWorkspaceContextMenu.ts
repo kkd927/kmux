@@ -1,12 +1,12 @@
-import {type RefObject, useEffect, useRef, useState} from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
-import type {KmuxSettings, WorkspaceRowVm} from "@kmux/proto";
+import type { KmuxSettings, WorkspaceRowVm } from "@kmux/proto";
 
 import {
-    buildWorkspaceContextMenuEntries,
-    findWorkspaceContext,
-    type WorkspaceContext,
-    type WorkspaceContextMenuEntry
+  buildWorkspaceContextMenuEntries,
+  findWorkspaceContext,
+  type WorkspaceContext,
+  type WorkspaceContextMenuEntry
 } from "../../../shared/workspaceContextMenu";
 
 export type WorkspaceContextMenuState = {
@@ -104,7 +104,7 @@ export function useWorkspaceContextMenu(
     }
 
     const menuWidth = 272;
-    const menuHeight = 252;
+    const menuHeight = 296;
     setWorkspaceContextMenu({
       workspaceId,
       x: Math.max(12, Math.min(x, window.innerWidth - menuWidth - 12)),

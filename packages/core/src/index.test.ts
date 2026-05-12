@@ -81,6 +81,133 @@ describe("core reducer", () => {
     expect(vm.activeWorkspace.name).toBe("new");
   });
 
+  it("keeps worktree workspace sidebar identity stable when surfaces change", () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const originalSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree: {
+        name: "kmux-20260512-1430",
+        path: "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430",
+        repoRoot: "/Users/test/kmux",
+        commonGitDir: "/Users/test/kmux/.git",
+        baseRef: "main",
+        branch: "kmux/kmux-20260512-1430",
+        createdByKmux: true
+      },
+      createSurface: true
+    });
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: originalSurfaceId,
+      title: "agent changed title",
+      cwd: "/tmp/not-the-worktree"
+    });
+
+    const row = buildViewModel(state).workspaceRows.find(
+      (entry) => entry.workspaceId === workspaceId
+    );
+    const activeSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    expect(row).toMatchObject({
+      name: "kmux-20260512-1430",
+      nameLocked: true,
+      summary: "worktree · kmux/kmux-20260512-1430",
+      cwd: "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430",
+      branch: "kmux/kmux-20260512-1430"
+    });
+    expect(activeSurfaceId).not.toBe(originalSurfaceId);
+    expect(state.surfaces[activeSurfaceId].cwd).toBe(
+      "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430"
+    );
+  });
+
+  it("starts new surfaces in the worktree path even when an old repo surface is focused", () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const originalSurfaceId = state.panes[paneId].activeSurfaceId;
+    const repoPath = "/Users/test/kmux";
+    const worktreePath = "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430";
+
+    state.surfaces[originalSurfaceId].cwd = repoPath;
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree: {
+        name: "kmux-20260512-1430",
+        path: worktreePath,
+        repoRoot: repoPath,
+        commonGitDir: `${repoPath}/.git`,
+        baseRef: "main",
+        branch: "kmux/kmux-20260512-1430",
+        createdByKmux: true
+      },
+      createSurface: true
+    });
+
+    applyAction(state, { type: "surface.focus", surfaceId: originalSurfaceId });
+    applyAction(state, { type: "surface.create", paneId, title: "agent" });
+
+    const createdSurfaceId = state.panes[paneId].activeSurfaceId;
+    const createdSession =
+      state.sessions[state.surfaces[createdSurfaceId].sessionId];
+    expect(state.surfaces[createdSurfaceId].cwd).toBe(worktreePath);
+    expect(createdSession.launch.cwd).toBe(worktreePath);
+
+    applyAction(state, { type: "surface.focus", surfaceId: originalSurfaceId });
+    applyAction(state, { type: "pane.split", paneId, direction: "right" });
+
+    const splitPaneId = state.workspaces[workspaceId].activePaneId;
+    const splitSurfaceId = state.panes[splitPaneId].activeSurfaceId;
+    const splitSession =
+      state.sessions[state.surfaces[splitSurfaceId].sessionId];
+    expect(state.surfaces[splitSurfaceId].cwd).toBe(worktreePath);
+    expect(splitSession.launch.cwd).toBe(worktreePath);
+  });
+
+  it("shows inactive linked worktree detection as an attention status", () => {
+    const state = createInitialState("/bin/zsh");
+    const originalWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    applyAction(state, { type: "workspace.create", name: "other" });
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    applyAction(state, {
+      type: "workspace.worktree.detected",
+      workspaceId: originalWorkspaceId,
+      detectedWorktree: {
+        path: "/tmp/repo-wt",
+        repoRoot: "/tmp/repo",
+        commonGitDir: "/tmp/repo/.git",
+        baseRef: "feature/wt",
+        branch: "feature/wt",
+        detectedAt: "2026-05-12T05:30:00.000Z"
+      }
+    });
+
+    const originalRow = buildViewModel(state).workspaceRows.find(
+      (row) => row.workspaceId === originalWorkspaceId
+    );
+    const activeRow = buildViewModel(state).workspaceRows.find(
+      (row) => row.workspaceId === activeWorkspaceId
+    );
+
+    expect(originalRow?.detectedWorktree?.path).toBe("/tmp/repo-wt");
+    expect(originalRow?.statusEntries[0]).toMatchObject({
+      key: "worktree-detected",
+      text: "worktree detected",
+      variant: "attention"
+    });
+    expect(activeRow?.statusEntries).toEqual([]);
+  });
+
   it("starts a new workspace in the home directory without an explicit folder", () => {
     const state = createInitialState();
     const originalWorkspaceId =
@@ -102,9 +229,7 @@ describe("core reducer", () => {
     const createdPaneId = state.workspaces[createdWorkspaceId].activePaneId;
     const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
 
-    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(
-      homeDirectory
-    );
+    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(homeDirectory);
     expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
     expect(
       state.sessions[state.surfaces[createdSurfaceId].sessionId].launch.cwd
@@ -143,9 +268,7 @@ describe("core reducer", () => {
     const createdSession =
       state.sessions[state.surfaces[createdSurfaceId].sessionId];
 
-    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(
-      homeDirectory
-    );
+    expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(homeDirectory);
     expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
     expect(createdSession.launch.cwd).toBe(homeDirectory);
     expect(createdSession.launch.shell).toBe("codex");
@@ -309,8 +432,12 @@ describe("core reducer", () => {
     const paneIds = listPaneIds(state.workspaces[workspaceId]);
 
     expect(effects).toEqual([{ type: "persist" }]);
-    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.spawn" }));
-    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.close" }));
+    expect(effects).not.toContainEqual(
+      expect.objectContaining({ type: "session.spawn" })
+    );
+    expect(effects).not.toContainEqual(
+      expect.objectContaining({ type: "session.close" })
+    );
     expect(paneIds).toHaveLength(2);
     expect(movedPaneId).not.toBe(paneId);
     expect(state.panes[paneId].surfaceIds).toEqual([originalSurfaceId]);
@@ -345,8 +472,12 @@ describe("core reducer", () => {
     const paneIds = listPaneIds(state.workspaces[workspaceId]);
 
     expect(effects).toEqual([{ type: "persist" }]);
-    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.spawn" }));
-    expect(effects).not.toContainEqual(expect.objectContaining({ type: "session.close" }));
+    expect(effects).not.toContainEqual(
+      expect.objectContaining({ type: "session.spawn" })
+    );
+    expect(effects).not.toContainEqual(
+      expect.objectContaining({ type: "session.close" })
+    );
     expect(state.panes[sourcePaneId]).toBeUndefined();
     expect(paneIds).toHaveLength(2);
     expect(paneIds).toContain(targetPaneId);
@@ -1178,9 +1309,9 @@ describe("core reducer", () => {
     const view = buildViewModel(state);
     expect(view.activeWorkspace.statusEntries).toHaveLength(3);
     expect(view.workspaceRows[0]?.statusEntries).toHaveLength(3);
-    expect(view.activeWorkspace.statusEntries.map((entry) => entry.key)).toEqual(
-      ["manual", "alert", "info:17"]
-    );
+    expect(
+      view.activeWorkspace.statusEntries.map((entry) => entry.key)
+    ).toEqual(["manual", "alert", "info:17"]);
   });
 
   it("deduplicates overlapping terminal and agent needs-input notifications", () => {
@@ -2036,7 +2167,9 @@ describe("core reducer", () => {
 
     delete state.surfaces[alertsSurfaceId];
 
-    const effects = applyAction(state, { type: "notification.jumpLatestUnread" });
+    const effects = applyAction(state, {
+      type: "notification.jumpLatestUnread"
+    });
 
     expect(effects).toEqual([{ type: "persist" }]);
     expect(state.windows[state.activeWindowId].activeWorkspaceId).toBe(

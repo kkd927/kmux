@@ -60,6 +60,7 @@ describe("metadata runtime", () => {
     );
     resolveGitRepository.mockResolvedValue({
       gitDir: "/tmp/kmux/.git",
+      commonGitDir: "/tmp/kmux/.git",
       root: "/tmp/kmux"
     });
     resolveGitBranch
@@ -88,7 +89,13 @@ describe("metadata runtime", () => {
         type: "surface.metadata",
         surfaceId,
         branch: "main",
-        ports: []
+        ports: [],
+        gitRepository: {
+          root: "/tmp/kmux",
+          gitDir: "/tmp/kmux/.git",
+          commonGitDir: "/tmp/kmux/.git",
+          linkedWorktree: false
+        }
       });
 
       headListener?.("rename", "HEAD");
@@ -143,6 +150,7 @@ describe("metadata runtime", () => {
     watch.mockReturnValue(watcher);
     resolveGitRepository.mockResolvedValue({
       gitDir: "/tmp/kmux/.git",
+      commonGitDir: "/tmp/kmux/.git",
       root: "/tmp/kmux"
     });
     resolveGitBranch.mockResolvedValue("main");
@@ -192,6 +200,7 @@ describe("metadata runtime", () => {
     );
     resolveGitRepository.mockResolvedValue({
       gitDir: "/tmp/repo-a/.git",
+      commonGitDir: "/tmp/repo-a/.git",
       root: "/tmp/repo-a"
     });
     resolveGitBranch.mockResolvedValue("main");
@@ -234,6 +243,114 @@ describe("metadata runtime", () => {
         surfaceId: secondSurfaceId,
         branch: "repo-a-updated"
       });
+    } finally {
+      runtime.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks the active workspace when its active surface is in a linked worktree", async () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    state.surfaces[surfaceId].cwd = "/tmp/repo-wt";
+    const dispatchAppAction = vi.fn((action) => applyAction(state, action));
+    const watcher = { close: vi.fn(), on: vi.fn() };
+    watch.mockReturnValue(watcher);
+    resolveGitRepository.mockResolvedValue({
+      gitDir: "/tmp/repo/.git/worktrees/repo-wt",
+      commonGitDir: "/tmp/repo/.git",
+      root: "/tmp/repo-wt"
+    });
+    resolveGitBranch.mockResolvedValue("feature/wt");
+    resolveListeningPorts.mockResolvedValue([]);
+
+    const runtime = createMetadataRuntime({
+      getState: () => state,
+      dispatchAppAction
+    });
+
+    try {
+      runtime.refreshMetadata(surfaceId, "/tmp/repo-wt");
+      await flushMetadataRuntime();
+
+      expect(dispatchAppAction).toHaveBeenCalledWith({
+        type: "workspace.worktree.detected",
+        workspaceId,
+        detectedWorktree: expect.objectContaining({
+          path: "/tmp/repo-wt",
+          repoRoot: "/tmp/repo",
+          commonGitDir: "/tmp/repo/.git",
+          baseRef: "feature/wt",
+          branch: "feature/wt"
+        })
+      });
+      expect(state.workspaces[workspaceId].detectedWorktree?.path).toBe(
+        "/tmp/repo-wt"
+      );
+    } finally {
+      runtime.dispose();
+    }
+  });
+
+  it("refreshes detected worktree metadata when linked worktree HEAD changes", async () => {
+    vi.useFakeTimers();
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    state.surfaces[surfaceId].cwd = "/tmp/repo-wt";
+    const dispatchAppAction = vi.fn((action) => applyAction(state, action));
+    let headListener:
+      | ((eventType: string, filename: string | Buffer | null) => void)
+      | undefined;
+    const watcher = { close: vi.fn(), on: vi.fn() };
+    watch.mockImplementation(
+      (_path: string, _options: unknown, listener: typeof headListener) => {
+        headListener = listener;
+        return watcher;
+      }
+    );
+    resolveGitRepository.mockResolvedValue({
+      gitDir: "/tmp/repo/.git/worktrees/repo-wt",
+      commonGitDir: "/tmp/repo/.git",
+      root: "/tmp/repo-wt"
+    });
+    resolveGitBranch.mockResolvedValueOnce("old").mockResolvedValueOnce("new");
+    resolveListeningPorts.mockResolvedValue([]);
+
+    const runtime = createMetadataRuntime({
+      getState: () => state,
+      dispatchAppAction
+    });
+
+    try {
+      runtime.refreshMetadata(surfaceId, "/tmp/repo-wt");
+      await flushMetadataRuntime();
+      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe("old");
+
+      dispatchAppAction.mockClear();
+      headListener?.("change", "HEAD");
+      await vi.advanceTimersByTimeAsync(100);
+      await flushMetadataRuntime();
+
+      expect(dispatchAppAction).toHaveBeenCalledWith({
+        type: "surface.metadata",
+        surfaceId,
+        branch: "new"
+      });
+      expect(dispatchAppAction).toHaveBeenCalledWith({
+        type: "workspace.worktree.detected",
+        workspaceId,
+        detectedWorktree: expect.objectContaining({
+          path: "/tmp/repo-wt",
+          repoRoot: "/tmp/repo",
+          baseRef: "new",
+          branch: "new"
+        })
+      });
+      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe("new");
     } finally {
       runtime.dispose();
       vi.useRealTimers();

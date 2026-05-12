@@ -44,6 +44,136 @@ describe("workspace context menu helpers", () => {
     );
   });
 
+  it("shows convert action only for non-worktree git workspaces", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId,
+      branch: "main",
+      gitRepository: {
+        root: "/tmp/kmux",
+        gitDir: "/tmp/kmux/.git",
+        commonGitDir: "/tmp/kmux/.git",
+        linkedWorktree: false
+      }
+    });
+
+    const view = buildViewModel(state);
+    const context = findWorkspaceContext(view, workspaceId);
+    const entries = buildWorkspaceContextMenuEntries(context!);
+
+    expect(entries[0]).toMatchObject({
+      id: "convert-worktree",
+      label: "Convert to Worktree Workspace"
+    });
+
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree: {
+        name: "kmux-20260512-1430",
+        path: "/tmp/kmux-wt",
+        repoRoot: "/tmp/kmux",
+        commonGitDir: "/tmp/kmux/.git",
+        baseRef: "main",
+        branch: "kmux/kmux-20260512-1430",
+        createdByKmux: true
+      }
+    });
+
+    const worktreeContext = findWorkspaceContext(
+      buildViewModel(state),
+      workspaceId
+    );
+    expect(
+      buildWorkspaceContextMenuEntries(worktreeContext!).some(
+        (entry) => entry.id === "convert-worktree"
+      )
+    ).toBe(false);
+  });
+
+  it("routes convert actions to the specialized runner callback", async () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId,
+      gitRepository: {
+        root: "/tmp/kmux",
+        gitDir: "/tmp/kmux/.git",
+        commonGitDir: "/tmp/kmux/.git",
+        linkedWorktree: false
+      }
+    });
+    const view = buildViewModel(state);
+    const convertToWorktree = vi.fn();
+
+    await runWorkspaceContextAction(
+      workspaceId,
+      "convert-worktree",
+      () => findWorkspaceContext(view, workspaceId),
+      {
+        convertToWorktree,
+        rename: vi.fn(),
+        dispatch: vi.fn()
+      }
+    );
+
+    expect(convertToWorktree).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it("routes close actions to the specialized runner callback", async () => {
+    const state = createInitialState();
+    applyAction(state, { type: "workspace.create", name: "alpha" });
+    const view = buildViewModel(state);
+    const workspaceId = view.activeWorkspace.id;
+    const closeWorkspace = vi.fn();
+    const dispatch = vi.fn();
+
+    await runWorkspaceContextAction(
+      workspaceId,
+      "close",
+      () => findWorkspaceContext(view, workspaceId),
+      {
+        closeWorkspace,
+        rename: vi.fn(),
+        dispatch
+      }
+    );
+
+    expect(closeWorkspace).toHaveBeenCalledWith(workspaceId);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("routes close other actions to the specialized runner callback", async () => {
+    const state = createInitialState();
+    applyAction(state, { type: "workspace.create", name: "alpha" });
+    const view = buildViewModel(state);
+    const workspaceId = view.activeWorkspace.id;
+    const closeOtherWorkspaces = vi.fn();
+    const dispatch = vi.fn();
+
+    await runWorkspaceContextAction(
+      workspaceId,
+      "close-others",
+      () => findWorkspaceContext(view, workspaceId),
+      {
+        closeOtherWorkspaces,
+        rename: vi.fn(),
+        dispatch
+      }
+    );
+
+    expect(closeOtherWorkspaces).toHaveBeenCalledWith(workspaceId);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("runs shared actions using the latest resolved workspace context", async () => {
     const state = createInitialState();
     applyAction(state, { type: "workspace.create", name: "alpha" });

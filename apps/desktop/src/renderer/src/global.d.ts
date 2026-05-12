@@ -17,7 +17,11 @@ import type {
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   TerminalKeyInput,
-  UpdaterState
+  UpdaterState,
+  WorktreeConversionPreview,
+  WorktreeBulkRemoveResult,
+  WorktreeRemoveResult,
+  WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import type { TerminalEvent } from "../../preload/index";
 
@@ -78,6 +82,33 @@ declare global {
       subscribeWorkspaceRenameRequest(
         listener: (workspaceId: string) => void
       ): () => void;
+      subscribeWorkspaceCloseRequest(
+        listener: (workspaceId: string) => void
+      ): () => void;
+      subscribeWorkspaceCloseOthersRequest(
+        listener: (workspaceId: string) => void
+      ): () => void;
+      subscribeWorkspaceWorktreeConvertRequest(
+        listener: (workspaceId: string) => void
+      ): () => void;
+      prepareWorktreeConversion(
+        workspaceId: string
+      ): Promise<WorktreeConversionPreview | null>;
+      createWorktreeWorkspace(
+        workspaceId: string,
+        name: string
+      ): Promise<WorkspaceWorktreeMetadata>;
+      convertDetectedWorktree(
+        workspaceId: string
+      ): Promise<WorkspaceWorktreeMetadata>;
+      removeWorkspaceWorktree(
+        workspaceId: string,
+        force: boolean
+      ): Promise<WorktreeRemoveResult>;
+      removeWorkspaceWorktrees(
+        workspaceIds: string[],
+        force: boolean
+      ): Promise<WorktreeBulkRemoveResult>;
       identify(): Promise<ShellIdentity>;
       setUsageDashboardOpen(open: boolean): Promise<void>;
       downloadAvailableUpdate(): Promise<void>;
