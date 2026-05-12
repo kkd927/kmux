@@ -1,5 +1,4 @@
 import { watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
 
 import {
   resolveGitBranch,
@@ -100,9 +99,13 @@ export function createMetadataRuntime(
       let watcher: FSWatcher;
       try {
         watcher = watch(
-          join(repository.gitDir, "HEAD"),
+          repository.gitDir,
           { persistent: false },
-          () => scheduleGitHeadRefresh(repository.gitDir)
+          (_eventType, filename) => {
+            if ((filename?.toString() ?? "HEAD") === "HEAD") {
+              scheduleGitHeadRefresh(repository.gitDir);
+            }
+          }
         );
       } catch {
         return;

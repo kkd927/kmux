@@ -64,7 +64,9 @@ describe("metadata runtime", () => {
     });
     resolveGitBranch
       .mockResolvedValueOnce("main")
-      .mockResolvedValueOnce("feature/external");
+      .mockResolvedValueOnce("feature/external")
+      .mockResolvedValueOnce("feature/external-2")
+      .mockResolvedValueOnce("feature/external-3");
     resolveListeningPorts.mockResolvedValue([]);
 
     const runtime = createMetadataRuntime({
@@ -78,7 +80,7 @@ describe("metadata runtime", () => {
       await flushMetadataRuntime();
 
       expect(watch).toHaveBeenCalledWith(
-        "/tmp/kmux/.git/HEAD",
+        "/tmp/kmux/.git",
         { persistent: false },
         expect.any(Function)
       );
@@ -89,7 +91,7 @@ describe("metadata runtime", () => {
         ports: []
       });
 
-      headListener?.("change", "HEAD");
+      headListener?.("rename", "HEAD");
       await vi.advanceTimersByTimeAsync(100);
       await flushMetadataRuntime();
 
@@ -100,6 +102,32 @@ describe("metadata runtime", () => {
         type: "surface.metadata",
         surfaceId,
         branch: "feature/external"
+      });
+
+      dispatchAppAction.mockClear();
+      headListener?.("rename", "index");
+      headListener?.("rename", "FETCH_HEAD");
+      await vi.advanceTimersByTimeAsync(100);
+      await flushMetadataRuntime();
+      expect(dispatchAppAction).not.toHaveBeenCalled();
+
+      headListener?.("rename", "HEAD");
+      await vi.advanceTimersByTimeAsync(100);
+      await flushMetadataRuntime();
+      expect(dispatchAppAction).toHaveBeenLastCalledWith({
+        type: "surface.metadata",
+        surfaceId,
+        branch: "feature/external-2"
+      });
+
+      dispatchAppAction.mockClear();
+      headListener?.("rename", null);
+      await vi.advanceTimersByTimeAsync(100);
+      await flushMetadataRuntime();
+      expect(dispatchAppAction).toHaveBeenLastCalledWith({
+        type: "surface.metadata",
+        surfaceId,
+        branch: "feature/external-3"
       });
     } finally {
       (runtime as { dispose?: () => void }).dispose?.();
