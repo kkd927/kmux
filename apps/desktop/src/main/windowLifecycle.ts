@@ -82,7 +82,7 @@ export function createMainWindow(
     webPreferences: {
       preload: join(options.currentDir, "../preload/index.mjs"),
       sandbox: false,
-      backgroundThrottling: !backgroundTestWindow
+      backgroundThrottling: false
     }
   });
 
