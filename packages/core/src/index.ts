@@ -28,7 +28,10 @@ import {
   type SplitAxis,
   type SplitDirection,
   type SurfaceVm,
+  type WorkspaceDetectedWorktreeMetadata,
+  type WorkspaceGitRepositoryMetadata,
   type WorkspaceRowVm,
+  type WorkspaceWorktreeMetadata,
   type TerminalThemeSettings
 } from "@kmux/proto";
 
@@ -45,6 +48,9 @@ export interface WorkspaceState {
   windowId: Id;
   name: string;
   nameLocked?: boolean;
+  worktree?: WorkspaceWorktreeMetadata;
+  detectedWorktree?: WorkspaceDetectedWorktreeMetadata;
+  dismissedWorktreePaths?: string[];
   rootNodeId: Id;
   nodeMap: Record<Id, PaneTreeNode>;
   activePaneId: Id;
@@ -73,6 +79,7 @@ export interface SurfaceState {
   titleLocked: boolean;
   cwd?: string;
   branch?: string;
+  gitRepository?: WorkspaceGitRepositoryMetadata;
   ports: number[];
   unreadCount: number;
   attention: boolean;
@@ -182,6 +189,24 @@ export type AppAction =
   | { type: "workspace.closeOthers"; workspaceId: Id }
   | { type: "workspace.pin.toggle"; workspaceId: Id }
   | { type: "workspace.move"; workspaceId: Id; toIndex: number }
+  | {
+      type: "workspace.worktree.convert";
+      workspaceId: Id;
+      worktree: WorkspaceWorktreeMetadata;
+      createSurface?: boolean;
+      focus?: boolean;
+    }
+  | {
+      type: "workspace.worktree.detected";
+      workspaceId: Id;
+      detectedWorktree: WorkspaceDetectedWorktreeMetadata;
+    }
+  | {
+      type: "workspace.worktree.dismissDetected";
+      workspaceId: Id;
+      path: string;
+    }
+  | { type: "workspace.worktree.clearDetected"; workspaceId: Id }
   | { type: "workspace.sidebar.toggle" }
   | { type: "workspace.sidebar.setWidth"; width: number }
   | { type: "pane.split"; paneId: Id; direction: SplitDirection }
@@ -221,6 +246,7 @@ export type AppAction =
       title?: string;
       branch?: string | null;
       ports?: number[];
+      gitRepository?: WorkspaceGitRepositoryMetadata | null;
       attention?: boolean;
       unreadDelta?: number;
     }
@@ -563,6 +589,14 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return toggleWorkspacePinned(state, action.workspaceId);
     case "workspace.move":
       return moveWorkspace(state, action.workspaceId, action.toIndex);
+    case "workspace.worktree.convert":
+      return convertWorkspaceToWorktree(state, action);
+    case "workspace.worktree.detected":
+      return setDetectedWorkspaceWorktree(state, action);
+    case "workspace.worktree.dismissDetected":
+      return dismissDetectedWorkspaceWorktree(state, action);
+    case "workspace.worktree.clearDetected":
+      return clearDetectedWorkspaceWorktree(state, action.workspaceId);
     case "workspace.sidebar.toggle":
       state.windows[state.activeWindowId].sidebarVisible =
         !state.windows[state.activeWindowId].sidebarVisible;
@@ -716,6 +750,7 @@ function mutationSummaryForAction(
     case "workspace.selectRelative":
     case "workspace.selectIndex":
     case "workspace.rename":
+    case "workspace.worktree.convert":
       return {
         window: true,
         workspaceRows: true,
@@ -747,6 +782,10 @@ function mutationSummaryForAction(
       };
     case "workspace.pin.toggle":
     case "workspace.move":
+      return { workspaceRows: true };
+    case "workspace.worktree.detected":
+    case "workspace.worktree.dismissDetected":
+    case "workspace.worktree.clearDetected":
       return { workspaceRows: true };
     case "pane.focus":
     case "pane.focusDirection":
@@ -1043,6 +1082,101 @@ function moveWorkspace(
   return [{ type: "persist" }];
 }
 
+function convertWorkspaceToWorktree(
+  state: AppState,
+  action: Extract<AppAction, { type: "workspace.worktree.convert" }>
+): AppEffect[] {
+  const workspace = state.workspaces[action.workspaceId];
+  if (!workspace) {
+    return [];
+  }
+
+  const window =
+    state.windows[workspace.windowId] ?? state.windows[state.activeWindowId];
+  workspace.worktree = {
+    ...action.worktree
+  };
+  workspace.detectedWorktree = undefined;
+  workspace.name = action.worktree.name;
+  workspace.nameLocked = true;
+  workspace.cwdSummary = action.worktree.path;
+  workspace.branch = action.worktree.branch;
+  if (action.focus !== false && window) {
+    window.activeWorkspaceId = workspace.id;
+  }
+
+  if (!action.createSurface) {
+    return [{ type: "persist" }];
+  }
+
+  const effects = createSurface(
+    state,
+    workspace.activePaneId,
+    action.worktree.name,
+    action.worktree.path,
+    {
+      cwd: action.worktree.path,
+      title: action.worktree.name
+    }
+  );
+  return effects.length > 0 ? effects : [{ type: "persist" }];
+}
+
+function setDetectedWorkspaceWorktree(
+  state: AppState,
+  action: Extract<AppAction, { type: "workspace.worktree.detected" }>
+): AppEffect[] {
+  const workspace = state.workspaces[action.workspaceId];
+  if (!workspace || workspace.worktree) {
+    return [];
+  }
+  if (
+    workspace.dismissedWorktreePaths?.includes(action.detectedWorktree.path)
+  ) {
+    return [];
+  }
+  if (
+    workspace.detectedWorktree?.path === action.detectedWorktree.path &&
+    workspace.detectedWorktree.branch === action.detectedWorktree.branch &&
+    workspace.detectedWorktree.baseRef === action.detectedWorktree.baseRef
+  ) {
+    return [];
+  }
+  workspace.detectedWorktree = {
+    ...action.detectedWorktree
+  };
+  return [{ type: "persist" }];
+}
+
+function dismissDetectedWorkspaceWorktree(
+  state: AppState,
+  action: Extract<AppAction, { type: "workspace.worktree.dismissDetected" }>
+): AppEffect[] {
+  const workspace = state.workspaces[action.workspaceId];
+  if (!workspace) {
+    return [];
+  }
+  const dismissed = new Set(workspace.dismissedWorktreePaths ?? []);
+  dismissed.add(action.path);
+  workspace.dismissedWorktreePaths = [...dismissed].slice(-32);
+  if (workspace.detectedWorktree?.path === action.path) {
+    workspace.detectedWorktree = undefined;
+  }
+  return [{ type: "persist" }];
+}
+
+function clearDetectedWorkspaceWorktree(
+  state: AppState,
+  workspaceId: Id
+): AppEffect[] {
+  const workspace = state.workspaces[workspaceId];
+  if (!workspace?.detectedWorktree) {
+    return [];
+  }
+  workspace.detectedWorktree = undefined;
+  return [{ type: "persist" }];
+}
+
 function closeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
   const window = state.windows[state.activeWindowId];
   if (window.workspaceOrder.length === 1 || !state.workspaces[workspaceId]) {
@@ -1152,6 +1286,7 @@ function splitPane(
   const newPaneId = makeId("pane");
   const newSurfaceId = makeId("surface");
   const newSessionId = makeId("session");
+  const launchCwd = defaultNewSurfaceCwd(state, paneId);
   insertPaneLeafSplit(workspace, targetLeafId, newPaneId, direction);
 
   state.panes[newPaneId] = {
@@ -1166,7 +1301,7 @@ function splitPane(
     sessionId: newSessionId,
     title: "new terminal",
     titleLocked: false,
-    cwd: activeSurface(state, paneId)?.cwd,
+    cwd: launchCwd,
     ports: [],
     unreadCount: 0,
     attention: false
@@ -1175,7 +1310,7 @@ function splitPane(
     id: newSessionId,
     surfaceId: newSurfaceId,
     launch: {
-      cwd: activeSurface(state, paneId)?.cwd,
+      cwd: launchCwd,
       shell: state.settings.shell || process.env.SHELL
     },
     authToken: makeId("auth"),
@@ -1256,7 +1391,12 @@ function focusPane(state: AppState, paneId: Id): AppEffect[] {
   if (surface) {
     surface.attention = false;
     surface.unreadCount = 0;
-    markNotificationsRead(state, pane.workspaceId, paneId, pane.activeSurfaceId);
+    markNotificationsRead(
+      state,
+      pane.workspaceId,
+      paneId,
+      pane.activeSurfaceId
+    );
   }
   return [{ type: "persist" }];
 }
@@ -1388,7 +1528,7 @@ function createSurface(
   const workspace = state.workspaces[pane.workspaceId];
   const surfaceId = makeId("surface");
   const sessionId = makeId("session");
-  const launchCwd = cwd ?? activeSurface(state, paneId)?.cwd;
+  const launchCwd = defaultNewSurfaceCwd(state, paneId, cwd);
   const defaultTitle = title?.trim() || `tab ${pane.surfaceIds.length + 1}`;
   const sessionLaunch = sanitizeSessionLaunchConfig(
     {
@@ -1529,6 +1669,9 @@ function updateSurfaceMetadata(
   }
   if ("branch" in action) {
     surface.branch = action.branch ?? undefined;
+  }
+  if ("gitRepository" in action) {
+    surface.gitRepository = action.gitRepository ?? undefined;
   }
   if (action.ports !== undefined) {
     surface.ports = action.ports.slice(0, 3);
@@ -1963,7 +2106,13 @@ function findRecentDuplicateNotification(
   state: AppState,
   candidate: Pick<
     NotificationItem,
-    "workspaceId" | "surfaceId" | "title" | "message" | "source" | "kind" | "agent"
+    | "workspaceId"
+    | "surfaceId"
+    | "title"
+    | "message"
+    | "source"
+    | "kind"
+    | "agent"
   >
 ): NotificationItem | undefined {
   const nowMs = Date.now();
@@ -2188,7 +2337,10 @@ function markSurfaceNotificationsRead(
 ): void {
   state.notifications = state.notifications.filter(
     (notification) =>
-      !(notification.workspaceId === workspaceId && notification.surfaceId === surfaceId)
+      !(
+        notification.workspaceId === workspaceId &&
+        notification.surfaceId === surfaceId
+      )
   );
   syncSurfaceNotificationState(state, surfaceId);
 }
@@ -2266,8 +2418,7 @@ function removeSurfaceFromPane(pane: PaneState, surfaceId: Id): void {
     return;
   }
   const nextActiveIndex = surfaceIndex > 0 ? surfaceIndex - 1 : 0;
-  pane.activeSurfaceId =
-    pane.surfaceIds[nextActiveIndex] ?? pane.surfaceIds[0];
+  pane.activeSurfaceId = pane.surfaceIds[nextActiveIndex] ?? pane.surfaceIds[0];
 }
 
 function collapsePaneLeaf(workspace: WorkspaceState, leafId: Id): void {
@@ -2354,6 +2505,19 @@ function findAncestorSplits(
 function activeSurface(state: AppState, paneId: Id): SurfaceState | undefined {
   const pane = state.panes[paneId];
   return pane ? state.surfaces[pane.activeSurfaceId] : undefined;
+}
+
+function defaultNewSurfaceCwd(
+  state: AppState,
+  paneId: Id,
+  explicitCwd?: string
+): string | undefined {
+  if (explicitCwd !== undefined) {
+    return explicitCwd;
+  }
+  const pane = state.panes[paneId];
+  const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+  return workspace?.worktree?.path ?? activeSurface(state, paneId)?.cwd;
 }
 
 function buildPtySpec(
@@ -2458,7 +2622,11 @@ export function buildShellWindowChromeVm(
   state: AppState
 ): Pick<
   ShellViewModel,
-  "windowId" | "title" | "sidebarVisible" | "sidebarWidth" | "unreadNotifications"
+  | "windowId"
+  | "title"
+  | "sidebarVisible"
+  | "sidebarWidth"
+  | "unreadNotifications"
 > {
   const { window, workspace } = resolveActiveWindowContext(state);
 
@@ -2486,22 +2654,50 @@ export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
     const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
       (surfaceId) => state.surfaces[surfaceId]
     );
+    const worktree = entry.worktree;
+    const detectedWorktree = worktree ? undefined : entry.detectedWorktree;
+    const branch = worktree?.branch ?? representativeSurface?.branch;
+    const baseStatusEntries = workspaceStatusEntries(entry).map(
+      (statusEntry) => ({
+        ...statusEntry
+      })
+    );
+    const statusEntries =
+      detectedWorktree && workspaceId !== window.activeWorkspaceId
+        ? [
+            {
+              key: "worktree-detected",
+              text: "worktree detected",
+              variant: "attention" as const,
+              updatedAt: detectedWorktree.detectedAt
+            },
+            ...baseStatusEntries
+          ].slice(0, MAX_VIEW_STATUS_ENTRIES)
+        : baseStatusEntries;
     return {
       workspaceId,
-      name: entry.name,
-      nameLocked: Boolean(entry.nameLocked),
-      summary: workspaceSummary(representativeSurface),
-      cwd: representativeSurface?.cwd ?? entry.cwdSummary,
-      branch: representativeSurface?.branch,
+      name: worktree?.name ?? entry.name,
+      nameLocked: Boolean(entry.nameLocked || worktree),
+      summary: worktree
+        ? `worktree · ${worktree.branch}`
+        : workspaceSummary(representativeSurface),
+      cwd: worktree?.path ?? representativeSurface?.cwd ?? entry.cwdSummary,
+      branch,
+      gitRepository: representativeSurface?.gitRepository
+        ? { ...representativeSurface.gitRepository }
+        : undefined,
+      worktree: worktree ? { ...worktree } : undefined,
+      detectedWorktree: detectedWorktree ? { ...detectedWorktree } : undefined,
       ports: aggregateWorkspacePorts(
         surfaces,
         state.panes[entry.activePaneId]?.activeSurfaceId
       ),
       statusText: entry.statusText,
-      statusEntries: workspaceStatusEntries(entry).map((statusEntry) => ({
-        ...statusEntry
-      })),
-      unreadCount: surfaces.reduce((sum, surface) => sum + surface.unreadCount, 0),
+      statusEntries,
+      unreadCount: surfaces.reduce(
+        (sum, surface) => sum + surface.unreadCount,
+        0
+      ),
       attention: surfaces.some((surface) => surface.attention),
       pinned: entry.pinned,
       isActive: workspaceId === window.activeWorkspaceId
@@ -2537,7 +2733,9 @@ export function buildActiveWorkspacePaneTreeVm(
   const { workspace, orderedWorkspaceIds } = resolveActiveWindowContext(state);
 
   if (!orderedWorkspaceIds.includes(workspace.id)) {
-    throw new Error("Cannot build active workspace view for a hidden workspace");
+    throw new Error(
+      "Cannot build active workspace view for a hidden workspace"
+    );
   }
 
   return buildWorkspacePaneTreeVm(state, workspace.id);
@@ -2549,7 +2747,9 @@ export function buildWorkspacePaneTreeVm(
 ): ActiveWorkspacePaneTreeVm {
   const workspace = state.workspaces[workspaceId];
   if (!workspace) {
-    throw new Error(`Cannot build pane tree for unknown workspace: ${workspaceId}`);
+    throw new Error(
+      `Cannot build pane tree for unknown workspace: ${workspaceId}`
+    );
   }
   const workspacePaneIds = listWorkspacePaneIds(state, workspaceId);
   const workspaceSurfaceIds = listWorkspaceSurfaceIds(state, workspaceId);
@@ -2582,6 +2782,9 @@ export function buildWorkspacePaneTreeVm(
             title: surface.title,
             cwd: surface.cwd,
             branch: surface.branch,
+            gitRepository: surface.gitRepository
+              ? { ...surface.gitRepository }
+              : undefined,
             ports: [...surface.ports],
             unreadCount: surface.unreadCount,
             attention: surface.attention,
@@ -2649,15 +2852,16 @@ function workspaceStatusEntries(
 function sortedWorkspaceStatusEntries(
   workspace: WorkspaceState
 ): SidebarStatusEntry[] {
-  return Object.values(workspace.statusEntries ?? {}).sort(compareStatusEntries);
+  return Object.values(workspace.statusEntries ?? {}).sort(
+    compareStatusEntries
+  );
 }
 
 function compareStatusEntries(
   left: SidebarStatusEntry,
   right: SidebarStatusEntry
 ): number {
-  const priorityDelta =
-    statusEntryPriority(left) - statusEntryPriority(right);
+  const priorityDelta = statusEntryPriority(left) - statusEntryPriority(right);
   if (priorityDelta !== 0) {
     return priorityDelta;
   }
@@ -2812,6 +3016,20 @@ function sanitizeState(state: AppState): AppState {
 
   for (const workspace of Object.values(state.workspaces)) {
     sanitizeWorkspaceStatusEntries(workspace);
+    workspace.worktree = sanitizeWorkspaceWorktree(workspace.worktree);
+    workspace.detectedWorktree = sanitizeDetectedWorkspaceWorktree(
+      workspace.detectedWorktree
+    );
+    workspace.dismissedWorktreePaths = Array.isArray(
+      workspace.dismissedWorktreePaths
+    )
+      ? workspace.dismissedWorktreePaths
+          .filter(
+            (path): path is string =>
+              typeof path === "string" && path.length > 0
+          )
+          .slice(-32)
+      : undefined;
     const paneIds = listPaneIds(workspace).filter(
       (paneId) => state.panes[paneId]?.workspaceId === workspace.id
     );
@@ -2845,10 +3063,84 @@ function sanitizeState(state: AppState): AppState {
   }
 
   for (const surface of Object.values(state.surfaces)) {
+    surface.gitRepository = sanitizeWorkspaceGitRepository(
+      surface.gitRepository
+    );
     syncSurfaceNotificationState(state, surface.id);
   }
 
   return state;
+}
+
+function sanitizeWorkspaceGitRepository(
+  repository: WorkspaceGitRepositoryMetadata | undefined
+): WorkspaceGitRepositoryMetadata | undefined {
+  if (!repository || typeof repository !== "object") {
+    return undefined;
+  }
+  const root = normalizeOptionalText(repository.root, 4096);
+  const gitDir = normalizeOptionalText(repository.gitDir, 4096);
+  const commonGitDir = normalizeOptionalText(repository.commonGitDir, 4096);
+  if (!root || !gitDir || !commonGitDir) {
+    return undefined;
+  }
+  return {
+    root,
+    gitDir,
+    commonGitDir,
+    linkedWorktree: repository.linkedWorktree === true
+  };
+}
+
+function sanitizeWorkspaceWorktree(
+  worktree: WorkspaceWorktreeMetadata | undefined
+): WorkspaceWorktreeMetadata | undefined {
+  if (!worktree || typeof worktree !== "object") {
+    return undefined;
+  }
+  const name = normalizeOptionalText(worktree.name, 128);
+  const path = normalizeOptionalText(worktree.path, 4096);
+  const repoRoot = normalizeOptionalText(worktree.repoRoot, 4096);
+  const commonGitDir = normalizeOptionalText(worktree.commonGitDir, 4096);
+  const baseRef = normalizeOptionalText(worktree.baseRef, 256);
+  const branch = normalizeOptionalText(worktree.branch, 256);
+  if (!name || !path || !repoRoot || !commonGitDir || !baseRef || !branch) {
+    return undefined;
+  }
+  return {
+    name,
+    path,
+    repoRoot,
+    commonGitDir,
+    baseRef,
+    branch,
+    createdByKmux: worktree.createdByKmux === true
+  };
+}
+
+function sanitizeDetectedWorkspaceWorktree(
+  worktree: WorkspaceDetectedWorktreeMetadata | undefined
+): WorkspaceDetectedWorktreeMetadata | undefined {
+  if (!worktree || typeof worktree !== "object") {
+    return undefined;
+  }
+  const path = normalizeOptionalText(worktree.path, 4096);
+  const repoRoot = normalizeOptionalText(worktree.repoRoot, 4096);
+  const commonGitDir = normalizeOptionalText(worktree.commonGitDir, 4096);
+  const baseRef = normalizeOptionalText(worktree.baseRef, 256);
+  const branch = normalizeOptionalText(worktree.branch, 256);
+  const detectedAt = normalizeOptionalText(worktree.detectedAt, 64);
+  if (!path || !repoRoot || !commonGitDir || !baseRef || !branch) {
+    return undefined;
+  }
+  return {
+    path,
+    repoRoot,
+    commonGitDir,
+    baseRef,
+    branch,
+    detectedAt: detectedAt ?? isoNow()
+  };
 }
 
 function sanitizeWorkspaceStatusEntries(workspace: WorkspaceState): void {
@@ -2947,8 +3239,7 @@ function sanitizeThemeMode(
 }
 
 function sanitizeSettingsVersion(settingsVersion: unknown): number {
-  return typeof settingsVersion === "number" &&
-    Number.isFinite(settingsVersion)
+  return typeof settingsVersion === "number" && Number.isFinite(settingsVersion)
     ? settingsVersion
     : 1;
 }

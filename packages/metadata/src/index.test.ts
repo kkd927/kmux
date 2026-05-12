@@ -104,6 +104,9 @@ describe("metadata git branch resolution", () => {
         realpathSync(worktreeDir)
       );
       expect(repository?.gitDir).not.toBe(join(worktreeDir, ".git"));
+      expect(realpathSync(repository?.commonGitDir ?? "")).toBe(
+        realpathSync(join(repoDir, ".git"))
+      );
       expect(existsSync(join(repository?.gitDir ?? "", "HEAD"))).toBe(true);
     } finally {
       rmSync(rootDir, { force: true, recursive: true });

@@ -37,6 +37,9 @@ function toElectronAccelerator(shortcut?: string): string | undefined {
 export function buildNativeWorkspaceContextMenu(params: {
   workspaceId: Id;
   getContextView(): WorkspaceContextView;
+  convertToWorktree(workspaceId: Id): void;
+  closeWorkspace(workspaceId: Id): void;
+  closeOtherWorkspaces(workspaceId: Id): void;
   rename(workspaceId: Id): void;
   dispatch(action: AppAction): void;
 }): Menu | null {
@@ -62,8 +65,15 @@ export function buildNativeWorkspaceContextMenu(params: {
               void runWorkspaceContextAction(
                 params.workspaceId,
                 item.action,
-                () => findWorkspaceContext(params.getContextView(), params.workspaceId),
+                () =>
+                  findWorkspaceContext(
+                    params.getContextView(),
+                    params.workspaceId
+                  ),
                 {
+                  convertToWorktree: params.convertToWorktree,
+                  closeWorkspace: params.closeWorkspace,
+                  closeOtherWorkspaces: params.closeOtherWorkspaces,
                   rename: params.rename,
                   dispatch: params.dispatch
                 }

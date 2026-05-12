@@ -1,6 +1,6 @@
-import {BrowserWindow, ipcMain} from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 
-import type {AppAction} from "@kmux/core";
+import type { AppAction } from "@kmux/core";
 import type {
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
@@ -18,10 +18,14 @@ import type {
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   UpdaterState,
-  UsageViewSnapshot
+  UsageViewSnapshot,
+  WorktreeConversionPreview,
+  WorktreeBulkRemoveResult,
+  WorktreeRemoveResult,
+  WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 
-import {buildNativeWorkspaceContextMenu} from "./workspaceContextMenu";
+import { buildNativeWorkspaceContextMenu } from "./workspaceContextMenu";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 
@@ -30,9 +34,7 @@ interface IpcHandlersOptions {
   getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
   getExternalAgentSessions: () => ExternalAgentSessionsSnapshot;
-  resumeExternalAgentSession: (
-    key: string
-  ) => ExternalAgentSessionResumeResult;
+  resumeExternalAgentSession: (key: string) => ExternalAgentSessionResumeResult;
   createImageAttachments: (
     surfaceId: Id,
     payloads: CreateImageAttachmentPayload[]
@@ -50,17 +52,15 @@ interface IpcHandlersOptions {
   detachSurface: (contentsId: number, surfaceId: Id) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
-  resizeSurface: (
-    surfaceId: Id,
-    cols: number,
-    rows: number
-  ) => Promise<void>;
+  resizeSurface: (surfaceId: Id, cols: number, rows: number) => Promise<void>;
   identify: () => ShellIdentity;
   listTerminalFontFamilies: () => Promise<string[]>;
   previewTerminalTypography: (
     settings: TerminalTypographySettings
   ) => Promise<ResolvedTerminalTypographyVm>;
-  reportTerminalTypographyProbe: (report: TerminalTypographyProbeReport) => void;
+  reportTerminalTypographyProbe: (
+    report: TerminalTypographyProbeReport
+  ) => void;
   importTerminalThemePalette: (
     window: BrowserWindow | null
   ) => Promise<ImportedTerminalThemePalette | null>;
@@ -70,6 +70,24 @@ interface IpcHandlersOptions {
     palette: TerminalColorPalette
   ) => Promise<boolean>;
   openSettingsJson: () => Promise<void>;
+  prepareWorktreeConversion: (
+    workspaceId: Id
+  ) => Promise<WorktreeConversionPreview | null>;
+  createWorktreeWorkspace: (
+    workspaceId: Id,
+    name: string
+  ) => Promise<WorkspaceWorktreeMetadata>;
+  convertDetectedWorktree: (
+    workspaceId: Id
+  ) => Promise<WorkspaceWorktreeMetadata>;
+  removeWorkspaceWorktree: (
+    workspaceId: Id,
+    force: boolean
+  ) => Promise<WorktreeRemoveResult>;
+  removeWorkspaceWorktrees: (
+    workspaceIds: Id[],
+    force: boolean
+  ) => Promise<WorktreeBulkRemoveResult>;
   setUsageDashboardOpen: (open: boolean) => void;
   downloadAvailableUpdate: () => Promise<void>;
   installDownloadedUpdate: () => void;
@@ -103,9 +121,12 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   ipcMain.handle("kmux:updater:install", () => {
     options.installDownloadedUpdate();
   });
-  ipcMain.handle("kmux:profile:event", (_event, event: SmoothnessProfileEvent) => {
-    options.recordProfileEvent?.(event);
-  });
+  ipcMain.handle(
+    "kmux:profile:event",
+    (_event, event: SmoothnessProfileEvent) => {
+      options.recordProfileEvent?.(event);
+    }
+  );
   ipcMain.handle(
     "kmux:attach-surface",
     async (event, surfaceId: Id): Promise<SurfaceSnapshotPayload | null> =>
@@ -165,6 +186,34 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle("kmux:settings-json:open", () => options.openSettingsJson());
   ipcMain.handle(
+    "kmux:worktree:prepare-conversion",
+    (_event, workspaceId: Id) => options.prepareWorktreeConversion(workspaceId)
+  );
+  ipcMain.handle(
+    "kmux:worktree:create-workspace",
+    (_event, payload: { workspaceId: Id; name: string }) =>
+      options.createWorktreeWorkspace(payload.workspaceId, payload.name)
+  );
+  ipcMain.handle("kmux:worktree:convert-detected", (_event, workspaceId: Id) =>
+    options.convertDetectedWorktree(workspaceId)
+  );
+  ipcMain.handle(
+    "kmux:worktree:remove",
+    (_event, payload: { workspaceId: Id; force: boolean }) =>
+      options.removeWorkspaceWorktree(
+        payload.workspaceId,
+        payload.force === true
+      )
+  );
+  ipcMain.handle(
+    "kmux:worktree:remove-many",
+    (_event, payload: { workspaceIds: Id[]; force: boolean }) =>
+      options.removeWorkspaceWorktrees(
+        Array.isArray(payload.workspaceIds) ? payload.workspaceIds : [],
+        payload.force === true
+      )
+  );
+  ipcMain.handle(
     "kmux:window-control",
     (event, action: "minimize" | "maximize" | "fullscreen" | "close") => {
       const window = BrowserWindow.fromWebContents(event.sender);
@@ -200,6 +249,18 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       const menu = buildNativeWorkspaceContextMenu({
         workspaceId: payload.workspaceId,
         getContextView: options.getWorkspaceContextView,
+        convertToWorktree: (workspaceId) => {
+          event.sender.send(
+            "kmux:workspace-worktree-convert-request",
+            workspaceId
+          );
+        },
+        closeWorkspace: (workspaceId) => {
+          event.sender.send("kmux:workspace-close-request", workspaceId);
+        },
+        closeOtherWorkspaces: (workspaceId) => {
+          event.sender.send("kmux:workspace-close-others-request", workspaceId);
+        },
         rename: (workspaceId) => {
           event.sender.send("kmux:workspace-rename-request", workspaceId);
         },

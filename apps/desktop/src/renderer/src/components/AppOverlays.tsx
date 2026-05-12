@@ -11,7 +11,11 @@ import type {
   KmuxSettings,
   NotificationItem,
   ResolvedTerminalThemeVm,
-  ResolvedTerminalTypographyVm
+  ResolvedTerminalTypographyVm,
+  WorktreeConversionPreview,
+  WorktreeDirtyEntryGroup,
+  WorkspaceRowVm,
+  WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import type { TerminalThemeVariant } from "@kmux/proto";
 import { normalizeShortcut } from "@kmux/ui";
@@ -62,10 +66,44 @@ interface AppOverlaysProps {
   onJumpNotifications: () => void;
   onClearNotifications: () => void;
   workspaceCloseConfirm: {
+    workspaceId: string;
+    closeWorkspaceIds?: string[];
     isLastWorkspace: boolean;
+    worktree?: WorkspaceWorktreeMetadata;
+    worktrees?: Array<{
+      workspaceId: string;
+      worktree: WorkspaceWorktreeMetadata;
+    }>;
+    removeWorktree: boolean;
+    dirtyEntries?: string[];
+    dirtyWorktrees?: WorktreeDirtyEntryGroup[];
+    error?: string | null;
+    busy?: boolean;
   } | null;
   onCloseWorkspaceCloseConfirm: () => void;
+  onToggleWorkspaceCloseRemoveWorktree: (removeWorktree: boolean) => void;
   onConfirmWorkspaceClose: () => void;
+  worktreeDialog:
+    | {
+        kind: "create";
+        workspaceId: string;
+        preview: WorktreeConversionPreview;
+        name: string;
+        error?: string | null;
+        busy?: boolean;
+      }
+    | {
+        kind: "detected";
+        workspaceId: string;
+        row: WorkspaceRowVm;
+        error?: string | null;
+        busy?: boolean;
+      }
+    | null;
+  onCloseWorktreeDialog: () => void;
+  onDismissDetectedWorktree: () => void;
+  onChangeWorktreeName: (name: string) => void;
+  onConfirmWorktreeDialog: () => void;
   settingsOpen: boolean;
   settingsDraft: KmuxSettings | undefined;
   setSettingsDraft: Dispatch<SetStateAction<KmuxSettings | undefined>>;
@@ -336,6 +374,12 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           profile.id === props.settingsDraft?.terminalThemes.activeProfileId
       ) ?? null)
     : null;
+  const pendingCloseWorktrees = listPendingCloseWorktrees(
+    props.workspaceCloseConfirm
+  );
+  const pendingCloseDirtyWorktrees = listPendingCloseDirtyWorktrees(
+    props.workspaceCloseConfirm
+  );
 
   useEffect(() => {
     if (props.settingsOpen) {
@@ -520,42 +564,156 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             className={styles.workspaceCloseConfirm}
             role="dialog"
             aria-modal="true"
-            aria-label="Close workspace?"
+            aria-label={
+              pendingCloseWorktrees.length
+                ? pendingCloseWorktrees.length > 1
+                  ? "Close worktree workspaces?"
+                  : "Close worktree workspace?"
+                : "Close workspace?"
+            }
             data-testid="workspace-close-confirm-dialog"
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
             <div className={styles.modalHeader}>
-              <h2>Close workspace?</h2>
+              <h2>
+                {pendingCloseWorktrees.length
+                  ? pendingCloseWorktrees.length > 1
+                    ? "Close Worktree Workspaces?"
+                    : "Close Worktree Workspace?"
+                  : "Close workspace?"}
+              </h2>
               <button
                 aria-label="Dismiss workspace close dialog"
                 onClick={props.onCloseWorkspaceCloseConfirm}
+                disabled={props.workspaceCloseConfirm.busy}
               >
                 ×
               </button>
             </div>
             <p className={styles.confirmBody}>
-              {props.workspaceCloseConfirm.isLastWorkspace
-                ? "This workspace only has one tab left. Closing it will replace it with a new workspace."
-                : "This workspace only has one tab left. Closing it will close the workspace."}
+              {pendingCloseWorktrees.length
+                ? pendingCloseWorktrees.length > 1
+                  ? "Close Workspace keeps git worktrees on disk unless you also remove them."
+                  : "Close Workspace keeps the git worktree on disk unless you also remove it."
+                : props.workspaceCloseConfirm.isLastWorkspace
+                  ? "This workspace only has one tab left. Closing it will replace it with a new workspace."
+                  : "This workspace only has one tab left. Closing it will close the workspace."}
             </p>
+            {pendingCloseWorktrees.length ? (
+              <div className={styles.worktreeCloseOptions}>
+                <label className={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={props.workspaceCloseConfirm.removeWorktree}
+                    disabled={props.workspaceCloseConfirm.busy}
+                    onChange={(event) =>
+                      props.onToggleWorkspaceCloseRemoveWorktree(
+                        event.currentTarget.checked
+                      )
+                    }
+                  />
+                  <span>
+                    {pendingCloseWorktrees.length > 1
+                      ? "Also remove git worktrees"
+                      : "Also remove git worktree"}
+                  </span>
+                </label>
+                <div className={styles.worktreePreviewGrid}>
+                  {pendingCloseWorktrees.length > 1 ? (
+                    <>
+                      <span>Worktrees</span>
+                      <code>
+                        {pendingCloseWorktrees
+                          .map(
+                            (entry) =>
+                              `${entry.worktree.path} (${entry.worktree.branch})`
+                          )
+                          .join("\n")}
+                      </code>
+                    </>
+                  ) : (
+                    <>
+                      <span>Worktree Path</span>
+                      <code>{pendingCloseWorktrees[0]?.worktree.path}</code>
+                      <span>Branch</span>
+                      <code>{pendingCloseWorktrees[0]?.worktree.branch}</code>
+                    </>
+                  )}
+                </div>
+                {pendingCloseWorktrees.some(
+                  (entry) => !entry.worktree.createdByKmux
+                ) ? (
+                  <div className={styles.worktreeWarning}>
+                    {pendingCloseWorktrees.length > 1
+                      ? "One or more worktrees were detected from terminal cwd, not created by kmux."
+                      : "This worktree was detected from the terminal cwd, not created by kmux."}
+                  </div>
+                ) : null}
+                {props.workspaceCloseConfirm.dirtyEntries?.length ||
+                pendingCloseDirtyWorktrees.length ? (
+                  <div className={styles.worktreeWarning}>
+                    <strong>Uncommitted changes detected.</strong>
+                    <span>
+                      Confirm again to force-remove{" "}
+                      {pendingCloseWorktrees.length > 1
+                        ? "these worktrees."
+                        : "this worktree."}
+                    </span>
+                    <code>
+                      {formatPendingCloseDirtyEntries(
+                        props.workspaceCloseConfirm.dirtyEntries,
+                        pendingCloseDirtyWorktrees
+                      )}
+                    </code>
+                  </div>
+                ) : null}
+                {props.workspaceCloseConfirm.error ? (
+                  <div className={styles.worktreeError}>
+                    {props.workspaceCloseConfirm.error}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className={styles.modalActions}>
               <button
                 autoFocus
                 aria-label="Cancel"
                 onClick={props.onCloseWorkspaceCloseConfirm}
+                disabled={props.workspaceCloseConfirm.busy}
               >
                 Cancel
               </button>
               <button
-                aria-label="Close Workspace"
+                aria-label={
+                  pendingCloseWorktrees.length &&
+                  props.workspaceCloseConfirm.removeWorktree
+                    ? "Remove and Close"
+                    : "Close Workspace"
+                }
                 onClick={props.onConfirmWorkspaceClose}
+                disabled={props.workspaceCloseConfirm.busy}
               >
-                Close Workspace
+                {pendingCloseWorktrees.length &&
+                props.workspaceCloseConfirm.removeWorktree
+                  ? props.workspaceCloseConfirm.dirtyEntries?.length ||
+                    pendingCloseDirtyWorktrees.length
+                    ? "Force Remove and Close"
+                    : "Remove and Close"
+                  : "Close Workspace"}
               </button>
             </div>
           </div>
         </div>
+      ) : null}
+      {props.worktreeDialog ? (
+        <WorktreeDialog
+          dialog={props.worktreeDialog}
+          onClose={props.onCloseWorktreeDialog}
+          onDismissDetected={props.onDismissDetectedWorktree}
+          onChangeName={props.onChangeWorktreeName}
+          onConfirm={props.onConfirmWorktreeDialog}
+        />
       ) : null}
       {props.settingsOpen && props.settingsDraft ? (
         <div
@@ -897,14 +1055,13 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           }}
                         >
                           <div className={styles.terminalThemePreviewHeader}>
-                            <span>{props.terminalThemePreview.profileName}</span>
+                            <span>
+                              {props.terminalThemePreview.profileName}
+                            </span>
                             <span>
                               {props.terminalThemePreview.variant} · text
                               contrast{" "}
-                              {
-                                props.terminalThemePreview
-                                  .minimumContrastRatio
-                              }
+                              {props.terminalThemePreview.minimumContrastRatio}
                             </span>
                           </div>
                           <div className={styles.terminalThemePreviewBody}>
@@ -948,9 +1105,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                               </span>
                             </div>
                             <div
-                              className={
-                                styles.terminalThemePreviewSelection
-                              }
+                              className={styles.terminalThemePreviewSelection}
                               style={{
                                 background:
                                   props.terminalThemePreview.palette
@@ -967,9 +1122,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                                 (color, index) => (
                                   <span
                                     key={`${color}-${index}`}
-                                    className={
-                                      styles.terminalThemeAnsiSwatch
-                                    }
+                                    className={styles.terminalThemeAnsiSwatch}
                                     style={{ background: color }}
                                     title={`ANSI ${index}`}
                                   />
@@ -1116,9 +1269,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           </div>
                           <div
                             className={styles.terminalTypographyHeadline}
-                            data-status={
-                              props.terminalTypographyPreview.status
-                            }
+                            data-status={props.terminalTypographyPreview.status}
                           >
                             {describeTerminalTypographyHeadline(
                               props.terminalTypographyPreview
@@ -1167,8 +1318,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           checked={props.settingsDraft.notificationDesktop}
                           onChange={(event) => {
                             updateSettingsDraft(props.setSettingsDraft, {
-                              notificationDesktop:
-                                event.currentTarget.checked
+                              notificationDesktop: event.currentTarget.checked
                             });
                           }}
                         />
@@ -1304,6 +1454,185 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
       ) : null}
     </>
   );
+}
+
+function listPendingCloseWorktrees(
+  pending: AppOverlaysProps["workspaceCloseConfirm"]
+): Array<{ workspaceId: string; worktree: WorkspaceWorktreeMetadata }> {
+  if (!pending) {
+    return [];
+  }
+  if (pending.worktrees?.length) {
+    return pending.worktrees;
+  }
+  return pending.worktree
+    ? [
+        {
+          workspaceId: pending.workspaceId,
+          worktree: pending.worktree
+        }
+      ]
+    : [];
+}
+
+function listPendingCloseDirtyWorktrees(
+  pending: AppOverlaysProps["workspaceCloseConfirm"]
+): WorktreeDirtyEntryGroup[] {
+  return pending?.dirtyWorktrees ?? [];
+}
+
+function formatPendingCloseDirtyEntries(
+  dirtyEntries: string[] | undefined,
+  dirtyWorktrees: WorktreeDirtyEntryGroup[]
+): string {
+  if (dirtyWorktrees.length) {
+    return dirtyWorktrees
+      .map(
+        (entry) =>
+          `${entry.path}\n${entry.dirtyEntries
+            .map((dirtyEntry) => `  ${dirtyEntry}`)
+            .join("\n")}`
+      )
+      .join("\n\n");
+  }
+  return dirtyEntries?.join("\n") ?? "";
+}
+
+function WorktreeDialog(props: {
+  dialog: NonNullable<AppOverlaysProps["worktreeDialog"]>;
+  onClose: () => void;
+  onDismissDetected: () => void;
+  onChangeName: (name: string) => void;
+  onConfirm: () => void;
+}): JSX.Element {
+  const createDialog = props.dialog.kind === "create" ? props.dialog : null;
+  const detectedDialog = props.dialog.kind === "detected" ? props.dialog : null;
+  const preview = createDialog
+    ? {
+        from: createDialog.preview.from,
+        repoPath: createDialog.preview.repoRoot,
+        worktreePath: previewPathForName(
+          createDialog.preview,
+          createDialog.name
+        ),
+        branch: createDialog.name ? `kmux/${createDialog.name}` : ""
+      }
+    : {
+        from: detectedDialog?.row.detectedWorktree?.baseRef ?? "-",
+        repoPath: detectedDialog?.row.detectedWorktree?.repoRoot ?? "-",
+        worktreePath: detectedDialog?.row.detectedWorktree?.path ?? "-",
+        branch: detectedDialog?.row.detectedWorktree?.branch ?? "-"
+      };
+  const closeDialog = createDialog ? props.onClose : props.onDismissDetected;
+
+  return (
+    <div
+      className={`${styles.overlay} ${styles.settingsOverlay}`}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          closeDialog();
+        }
+      }}
+    >
+      <div
+        className={styles.workspaceCloseConfirm}
+        role="dialog"
+        aria-modal="true"
+        aria-label={
+          createDialog ? "Convert to Worktree Workspace" : "Worktree detected"
+        }
+        data-testid="worktree-conversion-dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className={styles.modalHeader}>
+          <h2>
+            {createDialog
+              ? "Convert to Worktree Workspace"
+              : "Worktree detected"}
+          </h2>
+          <button
+            aria-label="Dismiss worktree dialog"
+            onClick={closeDialog}
+            disabled={props.dialog.busy}
+          >
+            ×
+          </button>
+        </div>
+        {createDialog ? (
+          <label className={styles.worktreeNameField}>
+            <span>Name</span>
+            <input
+              autoFocus
+              value={createDialog.name}
+              disabled={createDialog.busy}
+              onChange={(event) =>
+                props.onChangeName(event.currentTarget.value)
+              }
+            />
+          </label>
+        ) : (
+          <p className={styles.confirmBody}>
+            This workspace is already inside a linked git worktree.
+          </p>
+        )}
+        <div className={styles.worktreePreviewGrid}>
+          <span>From</span>
+          <code>{preview.from}</code>
+          <span>Repository Path</span>
+          <code>{preview.repoPath}</code>
+          <span>Worktree Path</span>
+          <code>{preview.worktreePath}</code>
+          <span>Branch</span>
+          <code>{preview.branch}</code>
+        </div>
+        {props.dialog.error ? (
+          <div className={styles.worktreeError}>{props.dialog.error}</div>
+        ) : null}
+        <div className={styles.modalActions}>
+          {createDialog ? (
+            <button
+              aria-label="Cancel"
+              onClick={props.onClose}
+              disabled={props.dialog.busy}
+            >
+              Cancel
+            </button>
+          ) : (
+            <button
+              aria-label="Not now"
+              onClick={props.onDismissDetected}
+              disabled={props.dialog.busy}
+            >
+              Not now
+            </button>
+          )}
+          <button
+            aria-label={createDialog ? "Create" : "Convert"}
+            onClick={props.onConfirm}
+            disabled={
+              props.dialog.busy ||
+              Boolean(createDialog && !createDialog.name.trim())
+            }
+          >
+            {createDialog ? "Create" : "Convert"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function previewPathForName(
+  preview: WorktreeConversionPreview,
+  name: string
+): string {
+  if (preview.path.endsWith(`/${preview.name}`)) {
+    return (
+      preview.path.slice(0, preview.path.length - preview.name.length) + name
+    );
+  }
+  return preview.path;
 }
 
 function updateSettingsDraft(

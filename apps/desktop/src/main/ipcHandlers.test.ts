@@ -16,9 +16,11 @@ vi.mock("electron", () => ({
     fromWebContents: vi.fn()
   },
   ipcMain: {
-    handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
-      handlers.set(channel, handler);
-    })
+    handle: vi.fn(
+      (channel: string, handler: (...args: unknown[]) => unknown) => {
+        handlers.set(channel, handler);
+      }
+    )
   },
   Menu: {
     buildFromTemplate: vi.fn()
@@ -52,7 +54,12 @@ function registerTestHandlers(options: {
     importTerminalThemePalette: vi.fn(),
     exportTerminalThemePalette: vi.fn(),
     openSettingsJson: vi.fn(),
-    setUsageDashboardOpen: vi.fn(),
+    prepareWorktreeConversion: vi.fn(),
+    createWorktreeWorkspace: vi.fn(),
+	    convertDetectedWorktree: vi.fn(),
+	    removeWorkspaceWorktree: vi.fn(),
+	    removeWorkspaceWorktrees: vi.fn(),
+	    setUsageDashboardOpen: vi.fn(),
     downloadAvailableUpdate: vi.fn(),
     installDownloadedUpdate: vi.fn(),
     getExternalAgentSessions: () => options.snapshot,
@@ -61,13 +68,15 @@ function registerTestHandlers(options: {
       _surfaceId: string,
       _payloads: CreateImageAttachmentPayload[]
     ) => {
-      return options.attachmentResult ?? {
-        attachments: [],
-        promptText: "",
-        skippedCount: 0,
-        status: "empty",
-        message: "No supported image found"
-      };
+      return (
+        options.attachmentResult ?? {
+          attachments: [],
+          promptText: "",
+          skippedCount: 0,
+          status: "empty",
+          message: "No supported image found"
+        }
+      );
     }
   });
 }

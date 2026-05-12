@@ -8,8 +8,9 @@ import type { ShellStoreSnapshot } from "@kmux/proto";
 
 import { useGlobalShortcuts } from "./useGlobalShortcuts";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createViewSnapshot(): ShellStoreSnapshot {
   return {
@@ -54,7 +55,8 @@ describe("useGlobalShortcuts", () => {
         settingsOpen: false,
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
-        workspaceCloseConfirmOpen: false
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
       });
 
       useGlobalShortcuts({
@@ -64,6 +66,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -73,6 +76,7 @@ describe("useGlobalShortcuts", () => {
         openSettingsModal: vi.fn(),
         beginWorkspaceRename: vi.fn(),
         dispatch: vi.fn(async () => undefined),
+        requestWorkspaceClose: vi.fn(async () => undefined),
         requestPaneClose: vi.fn(async () => undefined),
         requestSurfaceClose: vi.fn(async () => undefined),
         withLatestActiveShortcutContext: vi.fn(async () => undefined)
@@ -130,7 +134,8 @@ describe("useGlobalShortcuts", () => {
         settingsOpen: false,
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
-        workspaceCloseConfirmOpen: false
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
       });
 
       useGlobalShortcuts({
@@ -140,6 +145,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -149,6 +155,7 @@ describe("useGlobalShortcuts", () => {
         openSettingsModal: vi.fn(),
         beginWorkspaceRename: vi.fn(),
         dispatch,
+        requestWorkspaceClose: vi.fn(async () => undefined),
         requestPaneClose,
         requestSurfaceClose: vi.fn(async () => undefined),
         withLatestActiveShortcutContext
@@ -179,5 +186,76 @@ describe("useGlobalShortcuts", () => {
       type: "pane.close",
       paneId: "pane_1"
     });
+  });
+
+  it("blocks workspace shortcuts while a worktree dialog is open", () => {
+    const dispatch = vi.fn(async () => undefined);
+    const requestWorkspaceClose = vi.fn(async () => undefined);
+    const terminalInput = document.createElement("textarea");
+    terminalInput.className = "xterm-helper-textarea";
+    document.body.appendChild(terminalInput);
+
+    function Harness(): null {
+      const view = createViewSnapshot();
+      view.settings.shortcuts = {
+        "workspace.close": "Meta+Alt+W"
+      };
+      const viewRef = useRef(view);
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: true
+      });
+
+      useGlobalShortcuts({
+        isMac: false,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        setSettingsOpen: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose,
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    act(() => {
+      terminalInput.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "w",
+          code: "KeyW",
+          metaKey: true,
+          altKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    terminalInput.remove();
+    expect(requestWorkspaceClose).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

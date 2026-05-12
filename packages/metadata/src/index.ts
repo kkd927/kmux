@@ -20,6 +20,7 @@ export interface ResolveGitBranchOptions {
 
 export interface GitRepositoryMetadata {
   gitDir: string;
+  commonGitDir: string;
   root: string;
 }
 
@@ -34,21 +35,24 @@ export async function resolveGitRepository(
   try {
     const { stdout } = await execFileAsync(
       "git",
-      ["rev-parse", "--git-dir", "--show-toplevel"],
+      ["rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"],
       {
         cwd,
         env
       }
     );
-    const [gitDir, root] = stdout
+    const [gitDir, commonGitDir, root] = stdout
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
-    if (!gitDir || !root) {
+    if (!gitDir || !commonGitDir || !root) {
       return null;
     }
     return {
       gitDir: isAbsolute(gitDir) ? gitDir : resolve(cwd, gitDir),
+      commonGitDir: isAbsolute(commonGitDir)
+        ? commonGitDir
+        : resolve(cwd, commonGitDir),
       root: isAbsolute(root) ? root : resolve(cwd, root)
     };
   } catch {
@@ -102,15 +106,13 @@ export async function resolveListeningPorts(
   }
 
   try {
-    const { stdout } = await execFileAsync("lsof", [
-      "-Pan",
-      "-p",
-      `${pid}`,
-      "-iTCP",
-      "-sTCP:LISTEN"
-    ], {
-      env
-    });
+    const { stdout } = await execFileAsync(
+      "lsof",
+      ["-Pan", "-p", `${pid}`, "-iTCP", "-sTCP:LISTEN"],
+      {
+        env
+      }
+    );
     const ports = Array.from(
       new Set(
         stdout

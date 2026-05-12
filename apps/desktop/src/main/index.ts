@@ -26,10 +26,7 @@ import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
 import { resolveShellEnvironment } from "./shellEnvironment";
-import {
-  openSettingsJsonFile,
-  openWithMacTextEditor
-} from "./settingsJson";
+import { openSettingsJsonFile, openWithMacTextEditor } from "./settingsJson";
 import { createShellWrapperRuntime } from "./shellWrapperRuntime";
 import { KmuxSocketServer } from "./socketServer";
 import { buildApplicationMenuTemplate } from "./appMenu";
@@ -37,6 +34,7 @@ import { createTerminalBridge } from "./terminalBridge";
 import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
 import { createUsageRuntime } from "./usageRuntime";
+import { createWorktreeRuntime } from "./worktreeRuntime";
 import {
   createNativeUpdaterDialogs,
   createNativeUpdaterNotifier
@@ -143,6 +141,7 @@ async function bootstrap(): Promise<void> {
   }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
   let usageRuntime!: ReturnType<typeof createUsageRuntime>;
+  let worktreeRuntime!: ReturnType<typeof createWorktreeRuntime>;
 
   const runtime = createAppRuntime({
     paths: {
@@ -189,6 +188,13 @@ async function bootstrap(): Promise<void> {
     dispatchAppAction: runtime.dispatchAppAction,
     env: resolvedShellEnv.baseEnv,
     historyStore: usageHistoryStore
+  });
+
+  worktreeRuntime = createWorktreeRuntime({
+    getState: runtime.getState,
+    dispatchAppAction: runtime.dispatchAppAction,
+    env: resolvedShellEnv.baseEnv,
+    homeDir: resolvedShellEnv.baseEnv.HOME ?? homedir()
   });
 
   const isSurfaceVisibleToUser = (surfaceId: string): boolean => {
@@ -317,6 +323,11 @@ async function bootstrap(): Promise<void> {
         });
       }
     },
+    prepareWorktreeConversion: worktreeRuntime.prepareConversion,
+    createWorktreeWorkspace: worktreeRuntime.createWorkspace,
+    convertDetectedWorktree: worktreeRuntime.convertDetected,
+    removeWorkspaceWorktree: worktreeRuntime.remove,
+    removeWorkspaceWorktrees: worktreeRuntime.removeMany,
     setUsageDashboardOpen: usageRuntime.setDashboardOpen,
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
     installDownloadedUpdate: () => {

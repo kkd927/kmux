@@ -7,7 +7,11 @@ import type {
   ResolvedTerminalTypographyVm,
   ShellStoreSnapshot,
   TerminalThemeProfile,
-  TerminalThemeVariant
+  TerminalThemeVariant,
+  WorktreeConversionPreview,
+  WorktreeDirtyEntryGroup,
+  WorkspaceRowVm,
+  WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import {
   applyThemeVariables,
@@ -74,12 +78,41 @@ type DismissibleUiState = {
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
+  worktreeDialogOpen: boolean;
 };
 
 type PendingWorkspaceClose = {
   workspaceId: string;
+  closeWorkspaceIds?: string[];
   isLastWorkspace: boolean;
+  worktree?: WorkspaceWorktreeMetadata;
+  worktrees?: Array<{
+    workspaceId: string;
+    worktree: WorkspaceWorktreeMetadata;
+  }>;
+  removeWorktree: boolean;
+  dirtyEntries?: string[];
+  dirtyWorktrees?: WorktreeDirtyEntryGroup[];
+  error?: string | null;
+  busy?: boolean;
 };
+
+type WorktreeConversionDialog =
+  | {
+      kind: "create";
+      workspaceId: string;
+      preview: WorktreeConversionPreview;
+      name: string;
+      error?: string | null;
+      busy?: boolean;
+    }
+  | {
+      kind: "detected";
+      workspaceId: string;
+      row: WorkspaceRowVm;
+      error?: string | null;
+      busy?: boolean;
+    };
 
 const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
@@ -124,7 +157,8 @@ export function App(): JSX.Element {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [activeRightPanel, setActiveRightPanel] = useState<RightPanelKind>(null);
+  const [activeRightPanel, setActiveRightPanel] =
+    useState<RightPanelKind>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchSurfaceId, setSearchSurfaceId] = useState<string | null>(null);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
@@ -158,6 +192,8 @@ export function App(): JSX.Element {
   );
   const [pendingWorkspaceClose, setPendingWorkspaceClose] =
     useState<PendingWorkspaceClose | null>(null);
+  const [worktreeDialog, setWorktreeDialog] =
+    useState<WorktreeConversionDialog | null>(null);
   const usageDashboardOpen = activeRightPanel === "usage";
   const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
@@ -167,13 +203,15 @@ export function App(): JSX.Element {
     forget: forgetWebglLru
   } = useWebglLru();
   const reportedTypographyStacksRef = useRef(new Set<string>());
+  const dismissedDetectedWorktreesRef = useRef(new Set<string>());
   const dismissibleUiStateRef = useRef<DismissibleUiState>({
     paletteOpen,
     notificationsOpen,
     settingsOpen,
     searchSurfaceId,
     workspaceContextMenuOpen: false,
-    workspaceCloseConfirmOpen: false
+    workspaceCloseConfirmOpen: false,
+    worktreeDialogOpen: false
   });
   useEffect(() => {
     setSettingsDraft(
@@ -231,6 +269,53 @@ export function App(): JSX.Element {
       setPendingWorkspaceClose(null);
     }
   }, [pendingWorkspaceClose, shellReady, workspaceRows]);
+
+  useEffect(() => {
+    return window.kmux.subscribeWorkspaceWorktreeConvertRequest(
+      (workspaceId) => {
+        void openWorktreeConversionDialog(workspaceId);
+      }
+    );
+  }, []);
+
+  useEffect(() => {
+    return window.kmux.subscribeWorkspaceCloseRequest((workspaceId) => {
+      void requestWorkspaceClose(workspaceId);
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.kmux.subscribeWorkspaceCloseOthersRequest((workspaceId) => {
+      void requestCloseOtherWorkspaces(workspaceId);
+    });
+  }, []);
+
+  useEffect(() => {
+    const activeRow = workspaceRows.find((row) => row.isActive);
+    const detected = activeRow?.detectedWorktree;
+    if (!activeRow || !detected || activeRow.worktree || worktreeDialog) {
+      return;
+    }
+    const key = detectedWorktreeDismissKey(
+      activeRow.workspaceId,
+      detected.path
+    );
+    if (dismissedDetectedWorktreesRef.current.has(key)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setWorktreeDialog(
+        (current) =>
+          current ?? {
+            kind: "detected",
+            workspaceId: activeRow.workspaceId,
+            row: activeRow
+          }
+      );
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [workspaceRows, worktreeDialog]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -310,10 +395,7 @@ export function App(): JSX.Element {
     return () => {
       active = false;
     };
-  }, [
-    terminalTypography?.stackHash,
-    terminalTypography?.resolvedFontFamily
-  ]);
+  }, [terminalTypography?.stackHash, terminalTypography?.resolvedFontFamily]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -405,7 +487,8 @@ export function App(): JSX.Element {
     settingsOpen,
     searchSurfaceId,
     workspaceContextMenuOpen: Boolean(workspaceContextMenu),
-    workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose)
+    workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose),
+    worktreeDialogOpen: Boolean(worktreeDialog)
   };
 
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
@@ -422,6 +505,7 @@ export function App(): JSX.Element {
     setShowWorkspaceShortcutHints,
     closeWorkspaceContextMenu,
     closeWorkspaceCloseConfirm: () => setPendingWorkspaceClose(null),
+    closeWorktreeDialog,
     setSearchSurfaceId,
     setSettingsOpen,
     setNotificationsOpen,
@@ -431,6 +515,7 @@ export function App(): JSX.Element {
     openSettingsModal,
     beginWorkspaceRename,
     dispatch,
+    requestWorkspaceClose,
     withLatestActiveShortcutContext,
     requestPaneClose,
     requestSurfaceClose
@@ -934,7 +1019,11 @@ export function App(): JSX.Element {
               searchSurfaceId={searchSurfaceId}
               draggedSurfaceTab={draggedSurfaceTab}
               onSetSplitRatio={(splitNodeId, ratio) =>
-                void dispatch({ type: "pane.setSplitRatio", splitNodeId, ratio })
+                void dispatch({
+                  type: "pane.setSplitRatio",
+                  splitNodeId,
+                  ratio
+                })
               }
               onFocusPane={(paneId) => {
                 touchWebglLru(paneId);
@@ -947,7 +1036,9 @@ export function App(): JSX.Element {
                 touchWebglLru(paneId);
                 void dispatch({ type: "surface.create", paneId });
               }}
-              onCloseSurface={(surfaceId) => void requestSurfaceClose(surfaceId)}
+              onCloseSurface={(surfaceId) =>
+                void requestSurfaceClose(surfaceId)
+              }
               onCloseOthers={(surfaceId) =>
                 void dispatch({ type: "surface.closeOthers", surfaceId })
               }
@@ -967,11 +1058,19 @@ export function App(): JSX.Element {
               onSurfaceTabDragEnd={() => setDraggedSurfaceTab(null)}
               onSplitRight={(paneId) => {
                 touchWebglLru(paneId);
-                void dispatch({ type: "pane.split", paneId, direction: "right" });
+                void dispatch({
+                  type: "pane.split",
+                  paneId,
+                  direction: "right"
+                });
               }}
               onSplitDown={(paneId) => {
                 touchWebglLru(paneId);
-                void dispatch({ type: "pane.split", paneId, direction: "down" });
+                void dispatch({
+                  type: "pane.split",
+                  paneId,
+                  direction: "down"
+                });
               }}
               onClosePane={(paneId) => {
                 void requestPaneClose(paneId);
@@ -1047,7 +1146,35 @@ export function App(): JSX.Element {
         }
         workspaceCloseConfirm={pendingWorkspaceClose}
         onCloseWorkspaceCloseConfirm={() => setPendingWorkspaceClose(null)}
+        onToggleWorkspaceCloseRemoveWorktree={(removeWorktree) =>
+          setPendingWorkspaceClose((current) =>
+            current
+              ? {
+                  ...current,
+                  removeWorktree,
+                  dirtyEntries: removeWorktree
+                    ? current.dirtyEntries
+                    : undefined,
+                  dirtyWorktrees: removeWorktree
+                    ? current.dirtyWorktrees
+                    : undefined,
+                  error: null
+                }
+              : current
+          )
+        }
         onConfirmWorkspaceClose={() => void confirmPendingWorkspaceClose()}
+        worktreeDialog={worktreeDialog}
+        onCloseWorktreeDialog={closeWorktreeDialog}
+        onDismissDetectedWorktree={dismissDetectedWorktreeDialog}
+        onChangeWorktreeName={(name) =>
+          setWorktreeDialog((current) =>
+            current?.kind === "create"
+              ? { ...current, name, error: null }
+              : current
+          )
+        }
+        onConfirmWorktreeDialog={() => void confirmWorktreeDialog()}
         settingsOpen={settingsOpen}
         settingsDraft={settingsDraft}
         setSettingsDraft={setSettingsDraft}
@@ -1101,6 +1228,14 @@ export function App(): JSX.Element {
     setPaletteSelectedIndex(0);
   }
 
+  function closeWorktreeDialog(): void {
+    if (worktreeDialog?.kind === "detected") {
+      dismissDetectedWorktreeDialog();
+      return;
+    }
+    setWorktreeDialog(null);
+  }
+
   function openPalette(): void {
     setPaletteQuery("");
     setPaletteSelectedIndex(0);
@@ -1133,7 +1268,11 @@ export function App(): JSX.Element {
 
     setPendingWorkspaceClose({
       workspaceId: strategy.workspaceId,
-      isLastWorkspace: strategy.isLastWorkspace
+      isLastWorkspace: strategy.isLastWorkspace,
+      worktree: latestView.workspaceRows.find(
+        (row) => row.workspaceId === strategy.workspaceId
+      )?.worktree,
+      removeWorktree: false
     });
   }
 
@@ -1152,7 +1291,68 @@ export function App(): JSX.Element {
 
     setPendingWorkspaceClose({
       workspaceId: strategy.workspaceId,
-      isLastWorkspace: strategy.isLastWorkspace
+      isLastWorkspace: strategy.isLastWorkspace,
+      worktree: latestView.workspaceRows.find(
+        (row) => row.workspaceId === strategy.workspaceId
+      )?.worktree,
+      removeWorktree: false
+    });
+  }
+
+  async function requestWorkspaceClose(workspaceId: string): Promise<void> {
+    const latestView = await window.kmux.getShellState();
+    const row = latestView.workspaceRows.find(
+      (entry) => entry.workspaceId === workspaceId
+    );
+    if (!row) {
+      return;
+    }
+    if (!row.worktree) {
+      await dispatch({ type: "workspace.close", workspaceId });
+      return;
+    }
+    setPendingWorkspaceClose({
+      workspaceId,
+      isLastWorkspace: latestView.workspaceRows.length === 1,
+      worktree: row.worktree,
+      removeWorktree: false
+    });
+  }
+
+  async function requestCloseOtherWorkspaces(
+    workspaceId: string
+  ): Promise<void> {
+    const latestView = await window.kmux.getShellState();
+    const row = latestView.workspaceRows.find(
+      (entry) => entry.workspaceId === workspaceId
+    );
+    if (!row || latestView.workspaceRows.length <= 1) {
+      return;
+    }
+    const closeRows = latestView.workspaceRows.filter(
+      (entry) => entry.workspaceId !== workspaceId
+    );
+    const worktrees = closeRows
+      .filter(
+        (
+          entry
+        ): entry is WorkspaceRowVm & { worktree: WorkspaceWorktreeMetadata } =>
+          Boolean(entry.worktree)
+      )
+      .map((entry) => ({
+        workspaceId: entry.workspaceId,
+        worktree: entry.worktree
+      }));
+    if (!worktrees.length) {
+      await dispatch({ type: "workspace.closeOthers", workspaceId });
+      return;
+    }
+    setPendingWorkspaceClose({
+      workspaceId,
+      closeWorkspaceIds: closeRows.map((entry) => entry.workspaceId),
+      isLastWorkspace: false,
+      worktrees,
+      removeWorktree: false
     });
   }
 
@@ -1161,10 +1361,82 @@ export function App(): JSX.Element {
     if (!nextPendingWorkspaceClose) {
       return;
     }
+    const pendingWorktrees =
+      nextPendingWorkspaceClose.worktrees ??
+      (nextPendingWorkspaceClose.worktree
+        ? [
+            {
+              workspaceId: nextPendingWorkspaceClose.workspaceId,
+              worktree: nextPendingWorkspaceClose.worktree
+            }
+          ]
+        : []);
+
+    setPendingWorkspaceClose({
+      ...nextPendingWorkspaceClose,
+      busy: true,
+      error: null
+    });
+
+    if (
+      pendingWorktrees.length > 0 &&
+      nextPendingWorkspaceClose.removeWorktree
+    ) {
+      try {
+        const forceRemove = Boolean(
+          nextPendingWorkspaceClose.dirtyEntries?.length ||
+          nextPendingWorkspaceClose.dirtyWorktrees?.length
+        );
+        const result = nextPendingWorkspaceClose.closeWorkspaceIds
+          ? await window.kmux.removeWorkspaceWorktrees(
+              pendingWorktrees.map((entry) => entry.workspaceId),
+              forceRemove
+            )
+          : await window.kmux.removeWorkspaceWorktree(
+              nextPendingWorkspaceClose.workspaceId,
+              forceRemove
+            );
+        if (result.status === "dirty") {
+          setPendingWorkspaceClose({
+            ...nextPendingWorkspaceClose,
+            dirtyEntries:
+              "dirtyEntries" in result ? (result.dirtyEntries ?? []) : [],
+            dirtyWorktrees:
+              "dirtyWorktrees" in result
+                ? (result.dirtyWorktrees ?? [])
+                : undefined,
+            busy: false,
+            error: null
+          });
+          return;
+        }
+      } catch (error) {
+        setPendingWorkspaceClose({
+          ...nextPendingWorkspaceClose,
+          busy: false,
+          error: describeError(error)
+        });
+        return;
+      }
+    }
 
     setPendingWorkspaceClose(null);
 
     const latestView = await window.kmux.getShellState();
+    if (nextPendingWorkspaceClose.closeWorkspaceIds) {
+      if (
+        latestView.workspaceRows.some(
+          (row) => row.workspaceId === nextPendingWorkspaceClose.workspaceId
+        )
+      ) {
+        await dispatch({
+          type: "workspace.closeOthers",
+          workspaceId: nextPendingWorkspaceClose.workspaceId
+        });
+      }
+      return;
+    }
+
     const workspaceExists = latestView.workspaceRows.some(
       (row) => row.workspaceId === nextPendingWorkspaceClose.workspaceId
     );
@@ -1187,7 +1459,8 @@ export function App(): JSX.Element {
   ): Promise<void> {
     const latestShellState = await window.kmux.getShellState();
     const latestPaneId = latestShellState.activeWorkspacePaneTree.activePaneId;
-    const latestPane = latestShellState.activeWorkspacePaneTree.panes[latestPaneId];
+    const latestPane =
+      latestShellState.activeWorkspacePaneTree.panes[latestPaneId];
     if (!latestPane) {
       return;
     }
@@ -1225,9 +1498,125 @@ export function App(): JSX.Element {
             latestShellState.sidebarVisible
           );
         },
+        convertToWorktree: openWorktreeConversionDialog,
+        closeWorkspace: requestWorkspaceClose,
+        closeOtherWorkspaces: requestCloseOtherWorkspaces,
         dispatch
       }
     );
+  }
+
+  async function openWorktreeConversionDialog(
+    workspaceId: string
+  ): Promise<void> {
+    const latestView = await window.kmux.getShellState();
+    const row = latestView.workspaceRows.find(
+      (entry) => entry.workspaceId === workspaceId
+    );
+    if (!row || row.worktree) {
+      return;
+    }
+    const detectedRow = row.detectedWorktree
+      ? row
+      : row.gitRepository?.linkedWorktree
+        ? {
+            ...row,
+            detectedWorktree: {
+              path: row.gitRepository.root,
+              repoRoot: deriveRepoPathFromCommonGitDir(
+                row.gitRepository.commonGitDir
+              ),
+              commonGitDir: row.gitRepository.commonGitDir,
+              baseRef: row.branch ?? "HEAD",
+              branch: row.branch ?? "HEAD",
+              detectedAt: new Date().toISOString()
+            }
+          }
+        : null;
+    if (detectedRow) {
+      setWorktreeDialog({
+        kind: "detected",
+        workspaceId,
+        row: detectedRow
+      });
+      return;
+    }
+
+    setWorktreeDialog(null);
+    try {
+      const preview = await window.kmux.prepareWorktreeConversion(workspaceId);
+      if (!preview) {
+        return;
+      }
+      setWorktreeDialog({
+        kind: "create",
+        workspaceId,
+        preview,
+        name: preview.name
+      });
+    } catch (error) {
+      setWorktreeDialog({
+        kind: "create",
+        workspaceId,
+        preview: {
+          workspaceId,
+          name: "",
+          repoBasename: "",
+          from: "",
+          path: "",
+          branch: "",
+          repoRoot: "",
+          commonGitDir: "",
+          baseRef: ""
+        },
+        name: "",
+        error: describeError(error)
+      });
+    }
+  }
+
+  async function confirmWorktreeDialog(): Promise<void> {
+    const dialog = worktreeDialog;
+    if (!dialog) {
+      return;
+    }
+
+    setWorktreeDialog({ ...dialog, busy: true, error: null });
+    try {
+      if (dialog.kind === "create") {
+        await window.kmux.createWorktreeWorkspace(
+          dialog.workspaceId,
+          dialog.name
+        );
+      } else {
+        await window.kmux.convertDetectedWorktree(dialog.workspaceId);
+      }
+      setWorktreeDialog(null);
+    } catch (error) {
+      setWorktreeDialog({
+        ...dialog,
+        busy: false,
+        error: describeError(error)
+      });
+    }
+  }
+
+  function dismissDetectedWorktreeDialog(): void {
+    const dialog = worktreeDialog;
+    if (dialog?.kind !== "detected" || !dialog.row.detectedWorktree) {
+      setWorktreeDialog(null);
+      return;
+    }
+    const path = dialog.row.detectedWorktree.path;
+    dismissedDetectedWorktreesRef.current.add(
+      detectedWorktreeDismissKey(dialog.workspaceId, path)
+    );
+    void dispatch({
+      type: "workspace.worktree.dismissDetected",
+      workspaceId: dialog.workspaceId,
+      path
+    });
+    setWorktreeDialog(null);
   }
 
   function executePaletteItem(index: number): void {
@@ -1248,6 +1637,18 @@ function omitDeprecatedShortcuts(
   delete nextShortcuts["pane.zoom"];
   delete nextShortcuts["surface.rename"];
   return nextShortcuts;
+}
+
+function detectedWorktreeDismissKey(workspaceId: string, path: string): string {
+  return `${workspaceId}\u0000${path}`;
+}
+
+function deriveRepoPathFromCommonGitDir(commonGitDir: string): string {
+  return commonGitDir.replace(/[\\/]\.git$/, "");
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function findTerminalThemeProfile(
