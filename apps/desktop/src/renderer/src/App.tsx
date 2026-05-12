@@ -42,6 +42,7 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
 import { useWebglLru } from "./hooks/useWebglLru";
 import { useWorkspaceWebglLruSync } from "./hooks/useWorkspaceWebglLruSync";
+import { installTerminalWebglReturnRecovery } from "./terminalWebglReturnRecovery";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -206,6 +207,16 @@ export function App(): JSX.Element {
     forgetPane: forgetWebglLru,
     releaseTerminalSurface: terminalInstanceStore.release
   });
+
+  useEffect(
+    () =>
+      installTerminalWebglReturnRecovery({
+        window,
+        document,
+        recover: terminalInstanceStore.recoverWebglTextureAtlases
+      }),
+    []
+  );
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {

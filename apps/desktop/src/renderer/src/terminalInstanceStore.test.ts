@@ -6,6 +6,9 @@ vi.mock("@xterm/xterm", () => ({
     loadAddon: vi.fn(),
     open: vi.fn(),
     dispose: vi.fn(),
+    clearTextureAtlas: vi.fn(),
+    refresh: vi.fn(),
+    rows: 4,
     unicode: { activeVersion: "" }
   }))
 }));
@@ -26,7 +29,10 @@ import {
   markSurfaceHydrated,
   markSurfaceRendered,
   registerAttachment,
+  registerWebglTerminal,
+  recoverWebglTextureAtlases,
   setRenderSink,
+  unregisterWebglTerminal,
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
@@ -140,6 +146,65 @@ describe("render sink", () => {
     clearRenderSink("pane-sink", secondSink);
     expect(getRenderSink("pane-sink")).toBeNull();
     release("pane-sink");
+  });
+});
+
+describe("WebGL texture atlas recovery", () => {
+  it("clears and refreshes every registered WebGL terminal", () => {
+    const init = vi.fn(makeInstance);
+    const first = acquire("surface-webgl-1", init).instance.terminal;
+    const second = acquire("surface-webgl-2", init).instance.terminal;
+    const events: string[] = [];
+    vi.mocked(first.clearTextureAtlas).mockImplementation(() => {
+      events.push("first.clear");
+    });
+    vi.mocked(second.clearTextureAtlas).mockImplementation(() => {
+      events.push("second.clear");
+    });
+    vi.mocked(first.refresh).mockImplementation(() => {
+      events.push("first.refresh");
+    });
+    vi.mocked(second.refresh).mockImplementation(() => {
+      events.push("second.refresh");
+    });
+
+    registerWebglTerminal(first);
+    registerWebglTerminal(second);
+
+    expect(recoverWebglTextureAtlases()).toBe(2);
+    expect(first.clearTextureAtlas).toHaveBeenCalledOnce();
+    expect(first.refresh).toHaveBeenCalledWith(0, 3);
+    expect(second.clearTextureAtlas).toHaveBeenCalledOnce();
+    expect(second.refresh).toHaveBeenCalledWith(0, 3);
+    expect(events).toEqual([
+      "first.clear",
+      "second.clear",
+      "first.refresh",
+      "second.refresh"
+    ]);
+  });
+
+  it("stops recovering a terminal after unregister", () => {
+    const init = vi.fn(makeInstance);
+    const terminal = acquire("surface-webgl-unregister", init).instance.terminal;
+
+    registerWebglTerminal(terminal);
+    unregisterWebglTerminal(terminal);
+
+    expect(recoverWebglTextureAtlases()).toBe(0);
+    expect(terminal.clearTextureAtlas).not.toHaveBeenCalled();
+    expect(terminal.refresh).not.toHaveBeenCalled();
+  });
+
+  it("removes a registered WebGL terminal when its instance is released", () => {
+    const init = vi.fn(makeInstance);
+    const terminal = acquire("surface-webgl-release", init).instance.terminal;
+
+    registerWebglTerminal(terminal);
+    release("surface-webgl-release");
+
+    expect(recoverWebglTextureAtlases()).toBe(0);
+    expect(terminal.clearTextureAtlas).not.toHaveBeenCalled();
   });
 });
 

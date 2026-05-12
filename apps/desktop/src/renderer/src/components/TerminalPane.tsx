@@ -372,6 +372,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
   }
 
+  function syncWebglRecoveryRegistration(terminal: Terminal): void {
+    if (webglAddonRef.current) {
+      terminalInstanceStore.registerWebglTerminal(terminal);
+      return;
+    }
+    terminalInstanceStore.unregisterWebglTerminal(terminal);
+  }
+
   function refreshTerminalRows(terminal: Terminal): void {
     if (terminalRef.current !== terminal || terminal.rows <= 0) {
       return;
@@ -424,6 +432,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     });
     bindWebglContextLoss(webglAddonRef.current, terminal);
+    syncWebglRecoveryRegistration(terminal);
     refreshTerminalRows(terminal);
     requestAnimationFrame(() => {
       refreshTerminalRows(terminal);
@@ -1118,6 +1127,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     });
     bindWebglContextLoss(webglAddonRef.current, terminal);
+    syncWebglRecoveryRegistration(terminal);
     void fitAndSyncTerminal(terminal);
 
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1186,6 +1196,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       webglContextLossSubscriptionRef.current = null;
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
+      terminalInstanceStore.unregisterWebglTerminal(terminal);
     };
   }, [props.paneId, runtimeGeneration, terminalInstanceKey]);
 
@@ -1243,6 +1254,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     });
     bindWebglContextLoss(webglAddonRef.current, terminal);
+    syncWebglRecoveryRegistration(terminal);
     if (terminal.rows > 0) {
       terminal.refresh(0, terminal.rows - 1);
     }
