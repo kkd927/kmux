@@ -25,6 +25,7 @@ export interface TerminalRenderSink {
 }
 
 const store = new Map<string, TerminalInstance>();
+const webglTerminals = new Set<Terminal>();
 
 export function acquire(
   key: string,
@@ -91,6 +92,7 @@ export function release(key: string): void {
   if (!instance) {
     return;
   }
+  unregisterWebglTerminal(instance.terminal);
   detachAttachment(key);
   store.delete(key);
   if (instance.host.parentNode) {
@@ -137,4 +139,35 @@ export function releaseAll(): void {
   for (const key of [...store.keys()]) {
     release(key);
   }
+  webglTerminals.clear();
+}
+
+export function registerWebglTerminal(terminal: Terminal): void {
+  webglTerminals.add(terminal);
+}
+
+export function unregisterWebglTerminal(terminal: Terminal): void {
+  webglTerminals.delete(terminal);
+}
+
+export function recoverWebglTextureAtlases(): number {
+  const recoverable: Terminal[] = [];
+  for (const terminal of [...webglTerminals]) {
+    try {
+      terminal.clearTextureAtlas();
+      recoverable.push(terminal);
+    } catch {
+      webglTerminals.delete(terminal);
+    }
+  }
+  for (const terminal of recoverable) {
+    try {
+      if (terminal.rows > 0) {
+        terminal.refresh(0, terminal.rows - 1);
+      }
+    } catch {
+      webglTerminals.delete(terminal);
+    }
+  }
+  return recoverable.length;
 }
