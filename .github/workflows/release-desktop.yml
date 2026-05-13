@@ -23,7 +23,6 @@ jobs:
       - run: npm run test
 
   package-macos:
-    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -106,20 +105,20 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/latest*-mac.yml
           if-no-files-found: error
+          compression-level: 0
 
   publish-release:
     if: github.event_name == 'push'
-    needs: package-macos
+    needs:
+      - verify
+      - package-macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: macos-arm64-release-assets
+          pattern: macos-*-release-assets
           path: release-assets
-      - uses: actions/download-artifact@v8
-        with:
-          name: macos-x64-release-assets
-          path: release-assets
+          merge-multiple: true
       - name: Verify update manifest assets
         run: |
           shopt -s nullglob
