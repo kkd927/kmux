@@ -44,15 +44,21 @@ export function hasAttachment(key: string): boolean {
   return Boolean(store.get(key)?.attachmentCleanup);
 }
 
-export function registerAttachment(
-  key: string,
-  cleanup: () => void
-): boolean {
+export function registerAttachment(key: string, cleanup: () => void): boolean {
   const instance = store.get(key);
   if (!instance || instance.attachmentCleanup) {
     return false;
   }
   instance.attachmentCleanup = cleanup;
+  return true;
+}
+
+export function clearAttachment(key: string, cleanup: () => void): boolean {
+  const instance = store.get(key);
+  if (instance?.attachmentCleanup !== cleanup) {
+    return false;
+  }
+  instance.attachmentCleanup = null;
   return true;
 }
 
@@ -73,10 +79,7 @@ export function setRenderSink(key: string, sink: TerminalRenderSink): void {
   }
 }
 
-export function clearRenderSink(
-  key: string,
-  sink: TerminalRenderSink
-): void {
+export function clearRenderSink(key: string, sink: TerminalRenderSink): void {
   const instance = store.get(key);
   if (instance?.renderSink === sink) {
     instance.renderSink = null;

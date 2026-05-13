@@ -296,6 +296,7 @@ async function bootstrap(): Promise<void> {
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
     attachSurface: terminalBridge.attachSurface,
+    completeAttachSurface: terminalBridge.completeAttachSurface,
     snapshotSurface: terminalBridge.snapshotSurface,
     detachSurface: terminalBridge.detachSurface,
     sendText: terminalBridge.sendText,

@@ -20,6 +20,7 @@ vi.mock("@xterm/addon-unicode11", () => ({
 
 import {
   acquire,
+  clearAttachment,
   clearRenderSink,
   getRenderSink,
   release,
@@ -122,6 +123,22 @@ describe("release", () => {
 
     expect(cleanup).toHaveBeenCalledOnce();
   });
+
+  it("clears a failed attachment without disposing the terminal", () => {
+    const init = vi.fn(makeInstance);
+    const { instance } = acquire("pane-attachment", init);
+    const cleanup = vi.fn();
+    const disposeSpy = vi.spyOn(instance.terminal, "dispose");
+
+    expect(registerAttachment("pane-attachment", cleanup)).toBe(true);
+    expect(clearAttachment("pane-attachment", cleanup)).toBe(true);
+    expect(disposeSpy).not.toHaveBeenCalled();
+
+    release("pane-attachment");
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(disposeSpy).toHaveBeenCalledOnce();
+  });
 });
 
 describe("render sink", () => {
@@ -186,7 +203,8 @@ describe("WebGL texture atlas recovery", () => {
 
   it("stops recovering a terminal after unregister", () => {
     const init = vi.fn(makeInstance);
-    const terminal = acquire("surface-webgl-unregister", init).instance.terminal;
+    const terminal = acquire("surface-webgl-unregister", init).instance
+      .terminal;
 
     registerWebglTerminal(terminal);
     unregisterWebglTerminal(terminal);

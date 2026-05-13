@@ -11,6 +11,8 @@ import type {
   ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellStoreSnapshot,
+  SurfaceAttachCompletionResult,
+  SurfaceAttachPayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalColorPalette,
@@ -44,7 +46,12 @@ interface IpcHandlersOptions {
   attachSurface: (
     contentsId: number,
     surfaceId: Id
-  ) => Promise<SurfaceSnapshotPayload | null>;
+  ) => Promise<SurfaceAttachPayload | null>;
+  completeAttachSurface: (
+    contentsId: number,
+    surfaceId: Id,
+    attachId: Id
+  ) => Promise<SurfaceAttachCompletionResult>;
   snapshotSurface: (
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
@@ -129,8 +136,17 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle(
     "kmux:attach-surface",
-    async (event, surfaceId: Id): Promise<SurfaceSnapshotPayload | null> =>
+    async (event, surfaceId: Id): Promise<SurfaceAttachPayload | null> =>
       options.attachSurface(event.sender.id, surfaceId)
+  );
+  ipcMain.handle(
+    "kmux:attach-surface-complete",
+    (
+      event,
+      surfaceId: Id,
+      attachId: Id
+    ): Promise<SurfaceAttachCompletionResult> =>
+      options.completeAttachSurface(event.sender.id, surfaceId, attachId)
   );
   ipcMain.handle(
     "kmux:snapshot-surface",

@@ -12,6 +12,8 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   UsageViewSnapshot,
+  SurfaceAttachCompletionResult,
+  SurfaceAttachPayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
@@ -42,7 +44,11 @@ declare global {
       ): () => void;
       subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
       subscribeTerminal(listener: (event: TerminalEvent) => void): () => void;
-      attachSurface(surfaceId: string): Promise<SurfaceSnapshotPayload | null>;
+      attachSurface(surfaceId: string): Promise<SurfaceAttachPayload | null>;
+      completeAttachSurface(
+        surfaceId: string,
+        attachId: string
+      ): Promise<SurfaceAttachCompletionResult>;
       detachSurface(surfaceId: string): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;

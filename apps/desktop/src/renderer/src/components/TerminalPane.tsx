@@ -165,9 +165,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   );
   const resizeBurstRef = useRef({ lastAt: 0, count: 0 });
   const resizeGenerationRef = useRef(0);
-  const resizeSyncRef = useRef<ReturnType<typeof createTerminalResizeSync> | null>(
-    null
-  );
+  const resizeSyncRef = useRef<ReturnType<
+    typeof createTerminalResizeSync
+  > | null>(null);
   // The xterm instance is surface-scoped, but PTY size is still synced from
   // the pane that currently displays the surface.
   const surfaceResizeDimensionsRef = useRef(
@@ -346,10 +346,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }
 
   function scheduleRuntimeRecovery(terminal: Terminal): void {
-    if (
-      runtimeRecoveryPendingRef.current ||
-      terminalRef.current !== terminal
-    ) {
+    if (runtimeRecoveryPendingRef.current || terminalRef.current !== terminal) {
       return;
     }
 
@@ -497,24 +494,24 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       : undefined;
     const terminalSizeChanged = Boolean(
       dims &&
-        Number.isFinite(dims.cols) &&
-        Number.isFinite(dims.rows) &&
-        dims.cols > 0 &&
-        dims.rows > 0 &&
-        (dims.cols !== previousCols || dims.rows !== previousRows)
+      Number.isFinite(dims.cols) &&
+      Number.isFinite(dims.rows) &&
+      dims.cols > 0 &&
+      dims.rows > 0 &&
+      (dims.cols !== previousCols || dims.rows !== previousRows)
     );
     const surfaceSizeSynced = Boolean(
       surfaceId &&
-        dims &&
-        syncedSurfaceDimensions?.cols === dims.cols &&
-        syncedSurfaceDimensions?.rows === dims.rows
+      dims &&
+      syncedSurfaceDimensions?.cols === dims.cols &&
+      syncedSurfaceDimensions?.rows === dims.rows
     );
     const validDims = Boolean(
       dims &&
-        Number.isFinite(dims.cols) &&
-        Number.isFinite(dims.rows) &&
-        dims.cols > 0 &&
-        dims.rows > 0
+      Number.isFinite(dims.cols) &&
+      Number.isFinite(dims.rows) &&
+      dims.cols > 0 &&
+      dims.rows > 0
     );
     recordRendererSmoothnessProfileEvent("terminal.fit", {
       paneId: props.paneId,
@@ -790,7 +787,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     window.kmux.writeClipboardText(selection);
   }
 
-  async function pasteClipboard(terminal: Terminal, surfaceId: string): Promise<void> {
+  async function pasteClipboard(
+    terminal: Terminal,
+    surfaceId: string
+  ): Promise<void> {
     const didPaste = await pasteClipboardIntoTerminal({
       terminal,
       surfaceId,
@@ -1103,12 +1103,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
     const xtermTextarea = terminal.textarea;
     if (xtermTextarea) {
-      xtermTextarea.addEventListener("compositionstart", handleCompositionStart);
+      xtermTextarea.addEventListener(
+        "compositionstart",
+        handleCompositionStart
+      );
       xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
       xtermTextarea.addEventListener("blur", handleTextareaBlur);
     }
-    terminal.attachCustomKeyEventHandler((event) =>
-      !shouldSuppressXtermDuringIme(event, imeCompositionRef.current)
+    terminal.attachCustomKeyEventHandler(
+      (event) => !shouldSuppressXtermDuringIme(event, imeCompositionRef.current)
     );
     syncTerminalViewportBackground();
     requestAnimationFrame(() => {
@@ -1299,13 +1302,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const fitAttachedTerminal = async (): Promise<void> => {
       await terminalInstanceStore.getRenderSink(instanceKey)?.fitAndSync();
     };
-    const markSnapshotRendered = (snapshot: { sequence: number | null }) => {
+    const markSnapshotRendered = (
+      attachId: string,
+      snapshot: { sequence: number | null }
+    ) => {
       terminalInstanceStore.markSurfaceHydrated(
         instanceKey,
         surfaceId,
         snapshot.sequence
       );
       terminalInstanceStore.getRenderSink(instanceKey)?.onSnapshotRendered?.();
+      return window.kmux.completeAttachSurface(surfaceId, attachId);
     };
 
     // Do not tie the IPC attachment to TerminalPane unmount: pane split can
@@ -1335,11 +1342,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
     });
-    const registered = terminalInstanceStore.registerAttachment(surfaceId, () => {
+    const cleanupAttachment = () => {
       attached = false;
       unsubscribe();
       void window.kmux.detachSurface(surfaceId);
-    });
+    };
+    const registered = terminalInstanceStore.registerAttachment(
+      surfaceId,
+      cleanupAttachment
+    );
     if (!registered) {
       attached = false;
       unsubscribe();
@@ -1386,7 +1397,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           onSnapshotRendered: markSnapshotRendered
         });
       }
-    })();
+    })().catch(() => {
+      if (!attached) {
+        return;
+      }
+      terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
+      cleanupAttachment();
+    });
   }, [activeSurface?.id, terminalInstanceKey]);
 
   useEffect(() => {
@@ -1456,11 +1473,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   );
   const showSurfaceDropPrompt = Boolean(
     props.draggedSurfaceTab &&
-      canDropSurfaceTabOnPane(
-        props.draggedSurfaceTab,
-        props.paneId,
-        props.surfaces.length
-      )
+    canDropSurfaceTabOnPane(
+      props.draggedSurfaceTab,
+      props.paneId,
+      props.surfaces.length
+    )
   );
 
   const resolveDropDirection = (
@@ -1623,7 +1640,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                   </span>
                   <span className={styles.tabLabel}>{surface.title}</span>
                   <SurfaceUsageAlertDot
-                    fallbackVisible={surface.attention || surface.unreadCount > 0}
+                    fallbackVisible={
+                      surface.attention || surface.unreadCount > 0
+                    }
                   />
                   {surface.unreadCount > 0 ? (
                     <span
