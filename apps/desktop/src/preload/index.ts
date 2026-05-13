@@ -19,6 +19,8 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   UsageViewSnapshot,
+  SurfaceAttachCompletionResult,
+  SurfaceAttachPayload,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
   SurfaceExitPayload,
@@ -90,8 +92,18 @@ const api = {
     ipcRenderer.on("kmux:terminal-event", handler);
     return () => ipcRenderer.off("kmux:terminal-event", handler);
   },
-  attachSurface(surfaceId: string): Promise<SurfaceSnapshotPayload | null> {
+  attachSurface(surfaceId: string): Promise<SurfaceAttachPayload | null> {
     return ipcRenderer.invoke("kmux:attach-surface", surfaceId);
+  },
+  completeAttachSurface(
+    surfaceId: string,
+    attachId: string
+  ): Promise<SurfaceAttachCompletionResult> {
+    return ipcRenderer.invoke(
+      "kmux:attach-surface-complete",
+      surfaceId,
+      attachId
+    );
   },
   detachSurface(surfaceId: string): Promise<void> {
     return ipcRenderer.invoke("kmux:detach-surface", surfaceId);

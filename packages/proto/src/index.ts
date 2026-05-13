@@ -256,6 +256,16 @@ export interface SurfaceSnapshotOptions {
   timeoutMs?: number;
 }
 
+export interface SurfaceAttachPayload {
+  attachId: Id;
+  snapshot: SurfaceSnapshotPayload;
+}
+
+export type SurfaceAttachCompletionResult =
+  | { status: "ready" }
+  | { status: "replay"; attachId: Id; snapshot: SurfaceSnapshotPayload }
+  | { status: "stale" };
+
 export interface SurfaceChunkSegment {
   sequence: number;
   length: number;

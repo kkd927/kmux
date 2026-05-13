@@ -33,6 +33,11 @@ function registerTestHandlers(options: {
   snapshot: ExternalAgentSessionsSnapshot;
   resumeResult: ExternalAgentSessionResumeResult;
   attachmentResult?: CreateImageAttachmentsResult;
+  completeAttachSurface?: (
+    contentsId: number,
+    surfaceId: string,
+    attachId: string
+  ) => Promise<{ status: "ready" }>;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -42,6 +47,7 @@ function registerTestHandlers(options: {
     getUpdaterState: vi.fn(),
     dispatchAppAction: vi.fn(),
     attachSurface: vi.fn(),
+    completeAttachSurface: options.completeAttachSurface ?? vi.fn(),
     snapshotSurface: vi.fn(),
     detachSurface: vi.fn(),
     sendText: vi.fn(),
@@ -56,10 +62,10 @@ function registerTestHandlers(options: {
     openSettingsJson: vi.fn(),
     prepareWorktreeConversion: vi.fn(),
     createWorktreeWorkspace: vi.fn(),
-	    convertDetectedWorktree: vi.fn(),
-	    removeWorkspaceWorktree: vi.fn(),
-	    removeWorkspaceWorktrees: vi.fn(),
-	    setUsageDashboardOpen: vi.fn(),
+    convertDetectedWorktree: vi.fn(),
+    removeWorkspaceWorktree: vi.fn(),
+    removeWorkspaceWorktrees: vi.fn(),
+    setUsageDashboardOpen: vi.fn(),
     downloadAvailableUpdate: vi.fn(),
     installDownloadedUpdate: vi.fn(),
     getExternalAgentSessions: () => options.snapshot,
@@ -137,5 +143,36 @@ describe("ipc handlers", () => {
         ])
       )
     ).resolves.toBe(attachmentResult);
+  });
+
+  it("registers attach completion handler", async () => {
+    const completeAttachSurface = vi.fn(async () => ({
+      status: "ready" as const
+    }));
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-13T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      completeAttachSurface
+    });
+
+    const handler = handlers.get("kmux:attach-surface-complete");
+
+    expect(handler).toBeTypeOf("function");
+    await expect(
+      Promise.resolve(
+        handler?.({ sender: { id: 44 } }, "surface-1", "attach-1")
+      )
+    ).resolves.toEqual({ status: "ready" });
+    expect(completeAttachSurface).toHaveBeenCalledWith(
+      44,
+      "surface-1",
+      "attach-1"
+    );
   });
 });

@@ -347,7 +347,14 @@ describe("terminal bridge", () => {
     }
     resolve(snapshot);
 
-    await expect(attachPromise).resolves.toEqual(snapshot);
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(snapshot);
+    expect(send).not.toHaveBeenCalled();
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
       type: "chunk",
@@ -432,7 +439,14 @@ describe("terminal bridge", () => {
     }
     resolve(snapshot);
 
-    await expect(attachPromise).resolves.toEqual(snapshot);
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(snapshot);
+    expect(send).not.toHaveBeenCalled();
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
       type: "chunk",
@@ -448,6 +462,478 @@ describe("terminal bridge", () => {
             length: 5
           }
         ]
+      }
+    });
+  });
+
+  it("recovers queue overflow that happens after the snapshot is returned but before hydration completes", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const initialSnapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 0,
+      vt: "initial",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const recoverySnapshot = {
+      ...initialSnapshot,
+      sequence: 1,
+      vt: "recovered"
+    };
+    const ptyHost = {
+      snapshot: vi
+        .fn()
+        .mockResolvedValueOnce(initialSnapshot)
+        .mockResolvedValueOnce(recoverySnapshot)
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    expect(attachPayload?.snapshot).toEqual(initialSnapshot);
+
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 1,
+        chunk: "x".repeat(2 * 1024 * 1024 + 1)
+      }
+    });
+
+    const completion = await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
+
+    expect(ptyHost.snapshot).toHaveBeenCalledTimes(2);
+    expect(completion).toEqual({
+      status: "replay",
+      attachId: attachPayload?.attachId,
+      snapshot: recoverySnapshot
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("degrades to ready instead of replaying forever when post-snapshot overflow repeats", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshots = [
+      {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 0,
+        vt: "initial",
+        title: surface.title,
+        cwd: surface.cwd,
+        branch: undefined,
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      },
+      {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 1,
+        vt: "replay-1",
+        title: surface.title,
+        cwd: surface.cwd,
+        branch: undefined,
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      },
+      {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 2,
+        vt: "replay-2",
+        title: surface.title,
+        cwd: surface.cwd,
+        branch: undefined,
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      },
+      {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 3,
+        vt: "replay-3",
+        title: surface.title,
+        cwd: surface.cwd,
+        branch: undefined,
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      },
+      {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 4,
+        vt: "degraded",
+        title: surface.title,
+        cwd: surface.cwd,
+        branch: undefined,
+        ports: [],
+        unreadCount: 0,
+        attention: false
+      }
+    ];
+    const ptyHost = {
+      snapshot: vi.fn(async () => {
+        const snapshot = snapshots.shift();
+        if (!snapshot) {
+          throw new Error("unexpected snapshot request");
+        }
+        return snapshot;
+      })
+    };
+    const send = vi.fn();
+    const record = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never,
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    let attachId = attachPayload?.attachId ?? "";
+
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      bridge.handlePtyEvent({
+        type: "chunk",
+        payload: {
+          surfaceId,
+          sessionId: surface.sessionId,
+          sequence,
+          chunk: "x".repeat(2 * 1024 * 1024 + 1)
+        }
+      });
+      const completion = await bridge.completeAttachSurface(
+        77,
+        surfaceId,
+        attachId
+      );
+      expect(completion.status).toBe("replay");
+      if (completion.status === "replay") {
+        attachId = completion.attachId;
+      }
+    }
+
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 4,
+        chunk: "x".repeat(2 * 1024 * 1024 + 1)
+      }
+    });
+
+    await expect(
+      bridge.completeAttachSurface(77, surfaceId, attachId)
+    ).resolves.toEqual({ status: "ready" });
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "main",
+        name: "terminal.attach.queue.degraded",
+        details: expect.objectContaining({
+          contentsId: 77,
+          surfaceId,
+          policy: "replay-budget-exhausted",
+          replayCount: 3,
+          maxReplayCycles: 3
+        })
+      })
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("queues live chunks while replaying a ready reattach snapshot", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const firstSnapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "first",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const secondSnapshot = {
+      ...firstSnapshot,
+      sequence: 2,
+      vt: "second"
+    };
+    const ptyHost = {
+      snapshot: vi
+        .fn()
+        .mockResolvedValueOnce(firstSnapshot)
+        .mockResolvedValueOnce(secondSnapshot)
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const firstAttach = await bridge.attachSurface(77, surfaceId);
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      firstAttach?.attachId ?? ""
+    );
+    send.mockClear();
+
+    const secondAttach = await bridge.attachSurface(77, surfaceId);
+    expect(secondAttach?.snapshot).toEqual(secondSnapshot);
+
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 3,
+        chunk: "live-after-ready-reattach"
+      }
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    await expect(
+      bridge.completeAttachSurface(77, surfaceId, secondAttach?.attachId ?? "")
+    ).resolves.toEqual({ status: "ready" });
+    expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 3,
+        chunk: "live-after-ready-reattach"
+      }
+    });
+  });
+
+  it("uses the main-owned pending snapshot sequence as the hydration flush cutoff", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 5,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 4,
+        chunk: "covered-by-snapshot"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 6,
+        chunk: "after-snapshot"
+      }
+    });
+
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 6,
+        chunk: "after-snapshot"
+      }
+    });
+  });
+
+  it("removes failed hydration attachments so a later attach can retry", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const retrySnapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "retry",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("snapshot failed"))
+        .mockResolvedValueOnce(retrySnapshot)
+    };
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send: vi.fn()
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    await expect(bridge.attachSurface(77, surfaceId)).rejects.toThrow(
+      "snapshot failed"
+    );
+    await expect(bridge.attachSurface(77, surfaceId)).resolves.toEqual({
+      attachId: expect.any(String),
+      snapshot: retrySnapshot
+    });
+  });
+
+  it("does not flush queued chunks for stale attach completion ids", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 2,
+        chunk: "queued"
+      }
+    });
+
+    await expect(
+      bridge.completeAttachSurface(77, surfaceId, "stale-attach")
+    ).resolves.toEqual({ status: "stale" });
+    expect(send).not.toHaveBeenCalled();
+
+    await expect(
+      bridge.completeAttachSurface(77, surfaceId, attachPayload?.attachId ?? "")
+    ).resolves.toEqual({ status: "ready" });
+    expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 2,
+        chunk: "queued"
       }
     });
   });
@@ -512,7 +998,12 @@ describe("terminal bridge", () => {
       throw new Error("expected snapshot resolver to be set");
     }
     resolve(snapshot);
-    await attachPromise;
+    const attachPayload = await attachPromise;
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
 
     expect(record).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -549,7 +1040,9 @@ describe("terminal bridge", () => {
       sequence: 1001,
       vt: "fresh"
     };
-    let resolveFirstSnapshot: ((value: typeof firstSnapshot) => void) | undefined;
+    let resolveFirstSnapshot:
+      | ((value: typeof firstSnapshot) => void)
+      | undefined;
     const ptyHost = {
       snapshot: vi
         .fn()
@@ -595,7 +1088,8 @@ describe("terminal bridge", () => {
     }
     resolve(firstSnapshot);
 
-    await expect(attachPromise).resolves.toEqual(freshSnapshot);
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(freshSnapshot);
     expect(ptyHost.snapshot).toHaveBeenCalledTimes(2);
     expect(send).not.toHaveBeenCalled();
   });
@@ -621,7 +1115,9 @@ describe("terminal bridge", () => {
       sequence: 1,
       vt: "fresh"
     };
-    let resolveFirstSnapshot: ((value: typeof firstSnapshot) => void) | undefined;
+    let resolveFirstSnapshot:
+      | ((value: typeof firstSnapshot) => void)
+      | undefined;
     const ptyHost = {
       snapshot: vi
         .fn()
@@ -664,7 +1160,8 @@ describe("terminal bridge", () => {
     }
     resolve(firstSnapshot);
 
-    await expect(attachPromise).resolves.toEqual(freshSnapshot);
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(freshSnapshot);
     expect(ptyHost.snapshot).toHaveBeenCalledTimes(2);
   });
 
@@ -755,7 +1252,8 @@ describe("terminal bridge", () => {
     };
     resolveCaughtUpSnapshot(caughtUpSnapshot);
 
-    await expect(attachPromise).resolves.toEqual(caughtUpSnapshot);
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(caughtUpSnapshot);
     expect(ptyHost.snapshot).toHaveBeenCalledTimes(3);
   });
 
@@ -994,7 +1492,12 @@ describe("terminal bridge", () => {
       }
     });
 
-    await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
 
     for (let index = 1; index <= 100; index += 1) {
       bridge.handlePtyEvent({
@@ -1185,7 +1688,12 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    await bridge.attachSurface(77, surfaceId);
+    const firstAttachPayload = await bridge.attachSurface(77, surfaceId);
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      firstAttachPayload?.attachId ?? ""
+    );
     bridge.detachSurface(77, surfaceId);
     await bridge.attachSurface(77, surfaceId);
 
@@ -1251,7 +1759,10 @@ describe("terminal bridge", () => {
     bridge.sendText(surfaceId, "codex exec\r");
 
     expect(onSurfaceInputText).toHaveBeenCalledWith(surfaceId, "codex exec\r");
-    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "codex exec\r");
+    expect(ptyHost.sendText).toHaveBeenCalledWith(
+      surface.sessionId,
+      "codex exec\r"
+    );
   });
 
   it("clears visible Codex needs-input attention when escape text dismisses the prompt", () => {
@@ -1800,6 +2311,9 @@ describe("terminal bridge", () => {
     bridge.sendText(surfaceId, "foo\nbar\n");
 
     expect(dispatchAppAction).not.toHaveBeenCalled();
-    expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "foo\nbar\n");
+    expect(ptyHost.sendText).toHaveBeenCalledWith(
+      surface.sessionId,
+      "foo\nbar\n"
+    );
   });
 });
