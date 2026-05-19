@@ -127,6 +127,19 @@ jobs:
           zips=(release-assets/*.zip)
           test "${#manifests[@]}" -eq 2
           test "${#zips[@]}" -gt 0
+      - name: Create versionless DMG aliases
+        run: |
+          shopt -s nullglob
+          for arch in arm64 x64; do
+            matches=(release-assets/kmux-*-mac-${arch}.dmg)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "Expected exactly 1 source DMG for $arch, found ${#matches[@]}: ${matches[*]:-<none>}" >&2
+              exit 1
+            fi
+            cp "${matches[0]}" "release-assets/kmux-mac-${arch}.dmg"
+          done
+          test -f release-assets/kmux-mac-arm64.dmg
+          test -f release-assets/kmux-mac-x64.dmg
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
