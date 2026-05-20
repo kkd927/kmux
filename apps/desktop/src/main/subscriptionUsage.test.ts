@@ -1,8 +1,14 @@
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
-import {tmpdir} from "node:os";
-import {dirname, join} from "node:path";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
-import {afterEach, describe, expect, it, vi} from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createSubscriptionAuthDetectors,
@@ -35,25 +41,26 @@ describe("subscription usage fetchers", () => {
         account_id: "acct_123"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          plan_type: "pro",
-          rate_limit: {
-            primary_window: {
-              used_percent: 64,
-              reset_at: 1_776_385_200,
-              limit_window_seconds: 18_000
-            },
-            secondary_window: {
-              used_percent: 18,
-              reset_at: 1_776_903_600,
-              limit_window_seconds: 604_800
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "pro",
+            rate_limit: {
+              primary_window: {
+                used_percent: 64,
+                reset_at: 1_776_385_200,
+                limit_window_seconds: 18_000
+              },
+              secondary_window: {
+                used_percent: 18,
+                reset_at: 1_776_903_600,
+                limit_window_seconds: 604_800
+              }
             }
-          }
-        }),
-        { status: 200 }
-      )
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchCodexSubscriptionUsage({
@@ -97,7 +104,9 @@ describe("subscription usage fetchers", () => {
         account_id: "acct_123"
       }
     });
-    const fetchImpl = vi.fn(async () => new Response("denied", { status: 401 }));
+    const fetchImpl = vi.fn(
+      async () => new Response("denied", { status: 401 })
+    );
     const codexRpcProbe = vi.fn(async () => ({
       planType: "plus",
       windows: [
@@ -131,6 +140,51 @@ describe("subscription usage fetchers", () => {
     expect(codexRpcProbe).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to Codex RPC unlimited credits when OAuth usage is unavailable", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      last_refresh: "2026-05-20T02:11:34.537Z",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () => new Response("denied", { status: 401 })
+    );
+    const codexRpcProbe = vi.fn(async () => ({
+      planType: "business",
+      credits: {
+        unlimited: true
+      },
+      windows: []
+    }));
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      codexRpcProbe,
+      now: () => new Date("2026-05-20T03:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "codex",
+        planLabel: "Business",
+        source: "rpc",
+        rows: [
+          expect.objectContaining({
+            key: "credits",
+            valueKind: "unlimited",
+            windowKind: "credits"
+          })
+        ]
+      })
+    );
+    expect(codexRpcProbe).toHaveBeenCalledTimes(1);
+  });
+
   it("passes the desktop app version to the Codex RPC probe fallback", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".codex", "auth.json"], {
@@ -141,7 +195,9 @@ describe("subscription usage fetchers", () => {
         account_id: "acct_123"
       }
     });
-    const fetchImpl = vi.fn(async () => new Response("denied", { status: 401 }));
+    const fetchImpl = vi.fn(
+      async () => new Response("denied", { status: 401 })
+    );
     const codexRpcProbe = vi.fn(async () => ({
       planType: "plus",
       windows: [
@@ -161,7 +217,10 @@ describe("subscription usage fetchers", () => {
     });
 
     const desktopPackage = JSON.parse(
-      readFileSync(join(process.cwd(), "apps", "desktop", "package.json"), "utf8")
+      readFileSync(
+        join(process.cwd(), "apps", "desktop", "package.json"),
+        "utf8"
+      )
     ) as { version: string };
     expect(codexRpcProbe).toHaveBeenCalledWith(desktopPackage.version);
   });
@@ -196,7 +255,9 @@ describe("subscription usage fetchers", () => {
         account_id: "acct_123"
       }
     });
-    const fetchImpl = vi.fn(async () => new Response("denied", { status: 401 }));
+    const fetchImpl = vi.fn(
+      async () => new Response("denied", { status: 401 })
+    );
     const codexRpcProbe = vi.fn(async () => null);
     const codexStatusProbe = vi.fn(async () => null);
 
@@ -221,20 +282,21 @@ describe("subscription usage fetchers", () => {
         account_id: "acct_123"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          plan_type: "team",
-          rate_limit: {
-            primary_window: {
-              used_percent: 12,
-              reset_at: 1_776_903_600,
-              limit_window_seconds: 604_800
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "team",
+            rate_limit: {
+              primary_window: {
+                used_percent: 12,
+                reset_at: 1_776_903_600,
+                limit_window_seconds: 604_800
+              }
             }
-          }
-        }),
-        { status: 200 }
-      )
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchCodexSubscriptionUsage({
@@ -252,6 +314,65 @@ describe("subscription usage fetchers", () => {
     ]);
   });
 
+  it("maps Codex Business unlimited credits into a credits row", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      last_refresh: "2026-05-20T02:11:34.537Z",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: null,
+            credits: {
+              has_credits: true,
+              unlimited: true,
+              overage_limit_reached: false,
+              balance: null,
+              approx_local_messages: null,
+              approx_cloud_messages: null
+            },
+            spend_control: {
+              reached: false,
+              individual_limit: null
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-05-20T03:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "codex",
+        providerLabel: "Codex",
+        planLabel: "Business",
+        source: "oauth",
+        rows: [
+          expect.objectContaining({
+            key: "credits",
+            label: "Credits",
+            valueKind: "unlimited",
+            resetLabel: "No workspace spend limit",
+            windowKind: "credits"
+          })
+        ]
+      })
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("maps Claude OAuth usage windows and plan tier from Claude Code credentials", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".claude", ".credentials.json"], {
@@ -263,20 +384,21 @@ describe("subscription usage fetchers", () => {
         rateLimitTier: "claude_max"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          five_hour: {
-            utilization: 64,
-            resets_at: "2026-04-18T03:53:00.000Z"
-          },
-          seven_day: {
-            utilization: 19,
-            resets_at: "2026-04-21T00:00:00.000Z"
-          }
-        }),
-        { status: 200 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            five_hour: {
+              utilization: 64,
+              resets_at: "2026-04-18T03:53:00.000Z"
+            },
+            seven_day: {
+              utilization: 19,
+              resets_at: "2026-04-21T00:00:00.000Z"
+            }
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchClaudeSubscriptionUsage({
@@ -366,21 +488,22 @@ describe("subscription usage fetchers", () => {
         rateLimitTier: "claude_enterprise"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          five_hour: null,
-          seven_day: null,
-          extra_usage: {
-            is_enabled: true,
-            monthly_limit: 100000,
-            used_credits: 63598,
-            utilization: 63.598,
-            currency: "USD"
-          }
-        }),
-        { status: 200 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            five_hour: null,
+            seven_day: null,
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 100000,
+              used_credits: 63598,
+              utilization: 63.598,
+              currency: "USD"
+            }
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchClaudeSubscriptionUsage({
@@ -421,21 +544,22 @@ describe("subscription usage fetchers", () => {
         scopes: ["user:profile"]
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          five_hour: null,
-          seven_day: null,
-          extra_usage: {
-            is_enabled: true,
-            monthly_limit: 50000,
-            used_credits: 12500,
-            utilization: 25,
-            currency: "USD"
-          }
-        }),
-        { status: 200 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            five_hour: null,
+            seven_day: null,
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 50000,
+              used_credits: 12500,
+              utilization: 25,
+              currency: "USD"
+            }
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchClaudeSubscriptionUsage({
@@ -458,22 +582,23 @@ describe("subscription usage fetchers", () => {
         rateLimitTier: "claude_enterprise"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          five_hour: null,
-          seven_day: null,
-          extra_usage: {
-            is_enabled: true,
-            monthly_limit: 100000,
-            used_credits: 0,
-            utilization: 0,
-            currency: "USD",
-            resets_at: "2026-05-15T12:00:00.000Z"
-          }
-        }),
-        { status: 200 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            five_hour: null,
+            seven_day: null,
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 100000,
+              used_credits: 0,
+              utilization: 0,
+              currency: "USD",
+              resets_at: "2026-05-15T12:00:00.000Z"
+            }
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchClaudeSubscriptionUsage({
@@ -496,11 +621,11 @@ describe("subscription usage fetchers", () => {
         rateLimitTier: "claude_pro"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({ error: { type: "rate_limit_error" } }),
-        { status: 429 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), {
+          status: 429
+        })
     );
 
     await expect(
@@ -512,7 +637,9 @@ describe("subscription usage fetchers", () => {
       })
     ).rejects.toThrow(/transient status 429/i);
 
-    const fiveHundredFetch = vi.fn(async () => new Response("boom", { status: 503 }));
+    const fiveHundredFetch = vi.fn(
+      async () => new Response("boom", { status: 503 })
+    );
     await expect(
       fetchClaudeSubscriptionUsage({
         homeDir,
@@ -533,24 +660,25 @@ describe("subscription usage fetchers", () => {
         rateLimitTier: "claude_max"
       }
     });
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          five_hour: {
-            utilization: 0.4,
-            resets_at: "2026-04-18T05:00:00.000Z"
-          },
-          seven_day: null,
-          extra_usage: {
-            is_enabled: false,
-            monthly_limit: 100000,
-            used_credits: 0,
-            utilization: 0,
-            currency: "USD"
-          }
-        }),
-        { status: 200 }
-      )
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            five_hour: {
+              utilization: 0.4,
+              resets_at: "2026-04-18T05:00:00.000Z"
+            },
+            seven_day: null,
+            extra_usage: {
+              is_enabled: false,
+              monthly_limit: 100000,
+              used_credits: 0,
+              utilization: 0,
+              currency: "USD"
+            }
+          }),
+          { status: 200 }
+        )
     );
 
     const usage = await fetchClaudeSubscriptionUsage({
@@ -632,8 +760,16 @@ describe("subscription usage fetchers", () => {
         provider: "gemini",
         planLabel: "Paid",
         rows: [
-          expect.objectContaining({ key: "pro", label: "Pro", usedPercent: 75 }),
-          expect.objectContaining({ key: "flash", label: "Flash", usedPercent: 60 }),
+          expect.objectContaining({
+            key: "pro",
+            label: "Pro",
+            usedPercent: 75
+          }),
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 60
+          }),
           expect.objectContaining({
             key: "flash-lite",
             label: "Flash Lite",
@@ -1045,19 +1181,16 @@ function createSandboxHome(): string {
   return homeDir;
 }
 
-function writeJson(
-  homeDir: string,
-  segments: string[],
-  value: unknown
-): void {
+function writeJson(homeDir: string, segments: string[], value: unknown): void {
   const filePath = join(homeDir, ...segments);
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function makeGoogleIdToken(claims: Record<string, unknown>): string {
-  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" }))
-    .toString("base64url");
+  const header = Buffer.from(
+    JSON.stringify({ alg: "none", typ: "JWT" })
+  ).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   return `${header}.${payload}.`;
 }

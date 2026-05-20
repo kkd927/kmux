@@ -1,13 +1,17 @@
-import {execFile, spawn} from "node:child_process";
-import {existsSync, readdirSync, readFileSync, realpathSync} from "node:fs";
-import {createRequire} from "node:module";
-import {readFile, writeFile} from "node:fs/promises";
-import {homedir} from "node:os";
-import {delimiter, dirname, join} from "node:path";
-import {promisify} from "node:util";
-import {createInterface} from "node:readline";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { createInterface } from "node:readline";
 
-import type {SubscriptionProviderUsageVm, SubscriptionUsageRowVm, UsageVendor} from "@kmux/proto";
+import type {
+  SubscriptionProviderUsageVm,
+  SubscriptionUsageRowVm,
+  UsageVendor
+} from "@kmux/proto";
 
 const execFileAsync = promisify(execFile);
 const requireForMeta = createRequire(import.meta.url);
@@ -28,6 +32,9 @@ type CodexProbeWindow = {
 
 type CodexProbeResult = {
   planType?: string | null;
+  credits?: {
+    unlimited?: boolean;
+  };
   windows: CodexProbeWindow[];
 };
 
@@ -49,7 +56,8 @@ type GeminiQuotaBucket = {
   resetTime?: string;
 };
 
-export type SubscriptionProviderFetcher = () => Promise<SubscriptionProviderUsageVm | null>;
+export type SubscriptionProviderFetcher =
+  () => Promise<SubscriptionProviderUsageVm | null>;
 export type SubscriptionProviderAuthDetector = () => Promise<boolean>;
 
 export interface CodexSubscriptionUsageOptions {
@@ -120,7 +128,9 @@ export function createSubscriptionUsageFetchers(
 
 export function createSubscriptionAuthDetectors(
   options: FetcherFactoryOptions = {}
-): Partial<Record<KnownSubscriptionProvider, SubscriptionProviderAuthDetector>> {
+): Partial<
+  Record<KnownSubscriptionProvider, SubscriptionProviderAuthDetector>
+> {
   return {
     codex: async () => {
       const readTextFile = defaultReadTextFile;
@@ -206,17 +216,23 @@ export async function fetchCodexSubscriptionUsage(
   }
 
   try {
-    const response = await fetchImpl("https://chatgpt.com/backend-api/wham/usage", withFetchTimeout({
-      method: "GET",
-      headers: compactHeaders({
-        Authorization: `Bearer ${auth.tokens.access_token}`,
-        Accept: "application/json",
-        "ChatGPT-Account-Id": auth.tokens.account_id
+    const response = await fetchImpl(
+      "https://chatgpt.com/backend-api/wham/usage",
+      withFetchTimeout({
+        method: "GET",
+        headers: compactHeaders({
+          Authorization: `Bearer ${auth.tokens.access_token}`,
+          Accept: "application/json",
+          "ChatGPT-Account-Id": auth.tokens.account_id
+        })
       })
-    }));
+    );
     if (response.ok) {
       const payload = (await response.json()) as {
         plan_type?: string;
+        credits?: {
+          unlimited?: boolean;
+        };
         rate_limit?: {
           primary_window?: {
             used_percent?: number;
@@ -238,7 +254,9 @@ export async function fetchCodexSubscriptionUsage(
 
   const appVersion = resolveDesktopAppVersion();
   const codexRpcProbe =
-    options.codexRpcProbe ?? ((resolvedAppVersion: string) => probeCodexViaRpc(options.env, resolvedAppVersion));
+    options.codexRpcProbe ??
+    ((resolvedAppVersion: string) =>
+      probeCodexViaRpc(options.env, resolvedAppVersion));
   try {
     const rpcUsage = await codexRpcProbe(appVersion);
     if (rpcUsage) {
@@ -279,7 +297,8 @@ export async function fetchClaudeSubscriptionUsage(
     return null;
   }
 
-  const { accessToken, expiresAtMs, scopes, rateLimitTier } = credentials.credentials;
+  const { accessToken, expiresAtMs, scopes, rateLimitTier } =
+    credentials.credentials;
   if (expiresAtMs && now() >= expiresAtMs) {
     return null;
   }
@@ -295,10 +314,13 @@ export async function fetchClaudeSubscriptionUsage(
     "anthropic-beta": "oauth-2025-04-20"
   });
 
-  const response = await fetchImpl("https://api.anthropic.com/api/oauth/usage", withFetchTimeout({
-    method: "GET",
-    headers
-  }));
+  const response = await fetchImpl(
+    "https://api.anthropic.com/api/oauth/usage",
+    withFetchTimeout({
+      method: "GET",
+      headers
+    })
+  );
   if (response.ok) {
     const payload = (await response.json()) as {
       five_hour?: { utilization?: number; resets_at?: string } | null;
@@ -447,19 +469,20 @@ export async function fetchGeminiSubscriptionUsage(
       resetTime?: string;
     }>;
   };
-  const buckets = (quotaPayload.buckets ?? [])
-    .flatMap((bucket) => {
-      const modelId = bucket.modelId?.trim();
-      const remainingFraction = bucket.remainingFraction;
-      if (!modelId || typeof remainingFraction !== "number") {
-        return [];
-      }
-      return [{
+  const buckets = (quotaPayload.buckets ?? []).flatMap((bucket) => {
+    const modelId = bucket.modelId?.trim();
+    const remainingFraction = bucket.remainingFraction;
+    if (!modelId || typeof remainingFraction !== "number") {
+      return [];
+    }
+    return [
+      {
         modelId,
         remainingFraction,
         resetTime: bucket.resetTime
-      }] satisfies GeminiQuotaBucket[];
-    });
+      }
+    ] satisfies GeminiQuotaBucket[];
+  });
   const rows = normalizeGeminiQuotaRows(buckets, now());
   if (rows.length === 0) {
     return null;
@@ -478,6 +501,9 @@ export async function fetchGeminiSubscriptionUsage(
 function normalizeCodexUsageFromApi(
   payload: {
     plan_type?: string;
+    credits?: {
+      unlimited?: boolean;
+    };
     rate_limit?: {
       primary_window?: {
         used_percent?: number;
@@ -500,8 +526,19 @@ function normalizeCodexUsageFromApi(
   const windows = [
     normalizeCodexApiWindow(payload.rate_limit?.primary_window),
     normalizeCodexApiWindow(payload.rate_limit?.secondary_window)
-  ].filter((window): window is { usedPercent: number; resetsAtMs?: number; durationMs: number } => Boolean(window));
+  ].filter(
+    (
+      window
+    ): window is {
+      usedPercent: number;
+      resetsAtMs?: number;
+      durationMs: number;
+    } => Boolean(window)
+  );
   const rows = normalizeCodexWindowRows(windows, nowMs);
+  if (rows.length === 0 && payload.credits?.unlimited === true) {
+    rows.push(buildUnlimitedCreditsRow());
+  }
   if (rows.length === 0) {
     return null;
   }
@@ -512,6 +549,16 @@ function normalizeCodexUsageFromApi(
     source: "oauth",
     updatedAt: new Date(nowMs).toISOString(),
     rows
+  };
+}
+
+function buildUnlimitedCreditsRow(): SubscriptionUsageRowVm {
+  return {
+    key: "credits",
+    label: "Credits",
+    valueKind: "unlimited",
+    resetLabel: "No workspace spend limit",
+    windowKind: "credits"
   };
 }
 
@@ -530,6 +577,9 @@ function normalizeCodexUsageFromProbe(
     })),
     nowMs
   );
+  if (rows.length === 0 && payload.credits?.unlimited === true) {
+    rows.push(buildUnlimitedCreditsRow());
+  }
   if (rows.length === 0) {
     return null;
   }
@@ -566,20 +616,23 @@ function normalizeCodexApiWindow(
 }
 
 function normalizeCodexWindowRows(
-  windows: Array<{ usedPercent: number; resetsAtMs?: number; durationMs: number }>,
+  windows: Array<{
+    usedPercent: number;
+    resetsAtMs?: number;
+    durationMs: number;
+  }>,
   nowMs: number
 ): SubscriptionUsageRowVm[] {
   if (windows.length === 0) {
     return [];
   }
-  const sorted = [...windows].sort((left, right) => left.durationMs - right.durationMs);
+  const sorted = [...windows].sort(
+    (left, right) => left.durationMs - right.durationMs
+  );
   return sorted.map((window, index) => {
-    const isWeeklyOnly = sorted.length === 1 && window.durationMs >= 6 * 24 * 60 * 60 * 1000;
-    const label = isWeeklyOnly
-      ? "Weekly"
-      : index === 0
-        ? "Session"
-        : "Weekly";
+    const isWeeklyOnly =
+      sorted.length === 1 && window.durationMs >= 6 * 24 * 60 * 60 * 1000;
+    const label = isWeeklyOnly ? "Weekly" : index === 0 ? "Session" : "Weekly";
     return buildRow({
       key: label.toLowerCase(),
       label,
@@ -791,7 +844,10 @@ async function loadClaudeCredentials(options: {
       scopes?: string[];
       rateLimitTier?: string;
     };
-  }>(join(options.homeDir, ".claude", ".credentials.json"), options.readTextFile);
+  }>(
+    join(options.homeDir, ".claude", ".credentials.json"),
+    options.readTextFile
+  );
   const fromFile = parseClaudeCredentials(filePayload);
   if (!fromFile) {
     return null;
@@ -804,9 +860,10 @@ async function loadClaudeCredentials(options: {
 
 function parseClaudeCredentials(input: unknown): ClaudeCredentials | null {
   const payload = typeof input === "string" ? safeJsonParse(input) : input;
-  const oauth = isRecord(payload) && isRecord(payload.claudeAiOauth)
-    ? payload.claudeAiOauth
-    : null;
+  const oauth =
+    isRecord(payload) && isRecord(payload.claudeAiOauth)
+      ? payload.claudeAiOauth
+      : null;
   if (!oauth) {
     return null;
   }
@@ -816,9 +873,12 @@ function parseClaudeCredentials(input: unknown): ClaudeCredentials | null {
   }
   return {
     accessToken,
-    expiresAtMs: typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
+    expiresAtMs:
+      typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
     scopes: Array.isArray(oauth.scopes)
-      ? oauth.scopes.flatMap((scope) => (typeof scope === "string" ? [scope] : []))
+      ? oauth.scopes.flatMap((scope) =>
+          typeof scope === "string" ? [scope] : []
+        )
       : [],
     rateLimitTier: asTrimmedString(oauth.rateLimitTier) ?? undefined
   };
@@ -828,7 +888,10 @@ async function readGeminiSettings(
   homeDir: string,
   readTextFile: ReadTextFile
 ): Promise<{ selectedType?: string }> {
-  const raw = await defaultReadJsonText(join(homeDir, ".gemini", "settings.json"), readTextFile);
+  const raw = await defaultReadJsonText(
+    join(homeDir, ".gemini", "settings.json"),
+    readTextFile
+  );
   if (!raw) {
     return {};
   }
@@ -841,11 +904,14 @@ async function readGeminiSettings(
     return {};
   }
   return {
-    selectedType: asTrimmedString(parsed.security.auth.selectedType) ?? undefined
+    selectedType:
+      asTrimmedString(parsed.security.auth.selectedType) ?? undefined
   };
 }
 
-function normalizeCodexPlanLabel(planType: string | null | undefined): string | null {
+function normalizeCodexPlanLabel(
+  planType: string | null | undefined
+): string | null {
   const normalized = planType?.trim().toLowerCase();
   if (!normalized || ["guest", "free", "free_workspace"].includes(normalized)) {
     return null;
@@ -921,7 +987,7 @@ function buildRow(options: {
   label: string;
   usedPercent: number;
   resetsAtMs?: number;
-  windowKind: SubscriptionUsageRowVm["windowKind"];
+  windowKind: Exclude<SubscriptionUsageRowVm["windowKind"], "credits">;
   nowMs: number;
   usedAmountUsd?: number;
   limitAmountUsd?: number;
@@ -930,6 +996,7 @@ function buildRow(options: {
   return {
     key: options.key,
     label: options.label,
+    valueKind: "percent",
     usedPercent: clampPercent(options.usedPercent),
     resetLabel: formatResetLabel(options.resetsAtMs, options.nowMs),
     resetsAt: options.resetsAtMs
@@ -976,13 +1043,17 @@ async function probeCodexViaRpc(
   env: NodeJS.ProcessEnv | undefined,
   appVersion: string
 ): Promise<CodexProbeResult | null> {
-  const child = spawn("codex", ["-s", "read-only", "-a", "untrusted", "app-server"], {
-    env: {
-      ...process.env,
-      ...env
-    },
-    stdio: ["pipe", "pipe", "pipe"]
-  });
+  const child = spawn(
+    "codex",
+    ["-s", "read-only", "-a", "untrusted", "app-server"],
+    {
+      env: {
+        ...process.env,
+        ...env
+      },
+      stdio: ["pipe", "pipe", "pipe"]
+    }
+  );
 
   const rl = createInterface({
     input: child.stdout
@@ -996,7 +1067,10 @@ async function probeCodexViaRpc(
   >();
   let nextId = 1;
 
-  const waitForResponse = (method: string, params: Record<string, unknown> = {}) =>
+  const waitForResponse = (
+    method: string,
+    params: Record<string, unknown> = {}
+  ) =>
     new Promise<unknown>((resolve, reject) => {
       const id = nextId;
       nextId += 1;
@@ -1018,7 +1092,11 @@ async function probeCodexViaRpc(
   };
 
   rl.on("line", (line) => {
-    let payload: { id?: unknown; result?: unknown; error?: { message?: string } };
+    let payload: {
+      id?: unknown;
+      result?: unknown;
+      error?: { message?: string };
+    };
     try {
       payload = JSON.parse(line) as typeof payload;
     } catch {
@@ -1050,7 +1128,9 @@ async function probeCodexViaRpc(
           version: appVersion
         }
       });
-      child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      child.stdin.write(
+        `${JSON.stringify({ method: "initialized", params: {} })}\n`
+      );
       const account = (await waitForResponse("account/read")) as {
         account?: { type?: string; planType?: string };
       };
@@ -1066,13 +1146,20 @@ async function probeCodexViaRpc(
             windowDurationMins?: number;
             resetsAt?: number;
           };
+          credits?: {
+            unlimited?: boolean;
+          };
         };
       };
       return {
         planType:
           account?.account?.type === "chatgpt"
-            ? account.account.planType ?? null
+            ? (account.account.planType ?? null)
             : null,
+        credits:
+          typeof limits?.rateLimits?.credits?.unlimited === "boolean"
+            ? { unlimited: limits.rateLimits.credits.unlimited }
+            : undefined,
         windows: [
           normalizeCodexRpcWindow("session", limits?.rateLimits?.primary),
           normalizeCodexRpcWindow("weekly", limits?.rateLimits?.secondary)
@@ -1087,7 +1174,9 @@ async function probeCodexViaRpc(
 
 function resolveDesktopAppVersion(): string {
   try {
-    const packageJson = requireForMeta("../../package.json") as { version?: unknown };
+    const packageJson = requireForMeta("../../package.json") as {
+      version?: unknown;
+    };
     return typeof packageJson.version === "string" && packageJson.version.trim()
       ? packageJson.version
       : "0.0.0";
@@ -1110,7 +1199,8 @@ function normalizeCodexRpcWindow(
     return null;
   }
   const key =
-    typeof window.windowDurationMins === "number" && window.windowDurationMins >= 24 * 60
+    typeof window.windowDurationMins === "number" &&
+    window.windowDurationMins >= 24 * 60
       ? "weekly"
       : fallbackKey;
   return {
@@ -1217,9 +1307,7 @@ function decodeJwtPayload(token: unknown): Record<string, string> {
   if (parts.length < 2) {
     return {};
   }
-  const payload = parts[1]
-    ?.replace(/-/gu, "+")
-    .replace(/_/gu, "/");
+  const payload = parts[1]?.replace(/-/gu, "+").replace(/_/gu, "/");
   if (!payload) {
     return {};
   }
@@ -1247,7 +1335,9 @@ function normalizeGeminiProjectId(
     return value.trim() || undefined;
   }
   if (isRecord(value)) {
-    return asTrimmedString(value.id) ?? asTrimmedString(value.projectId) ?? undefined;
+    return (
+      asTrimmedString(value.id) ?? asTrimmedString(value.projectId) ?? undefined
+    );
   }
   return undefined;
 }
@@ -1295,15 +1385,18 @@ async function refreshGeminiAccessToken(options: {
   if (clientConfig.clientSecret) {
     body.set("client_secret", clientConfig.clientSecret);
   }
-  const response = await options.fetchImpl("https://oauth2.googleapis.com/token", withFetchTimeout({
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      Accept: "*/*",
-      "User-Agent": "google-api-nodejs-client/9.15.1"
-    },
-    body
-  }));
+  const response = await options.fetchImpl(
+    "https://oauth2.googleapis.com/token",
+    withFetchTimeout({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        Accept: "*/*",
+        "User-Agent": "google-api-nodejs-client/9.15.1"
+      },
+      body
+    })
+  );
   if (!response.ok) {
     return null;
   }
@@ -1347,7 +1440,10 @@ async function refreshGeminiAccessToken(options: {
 function resolveGeminiOAuthClientConfig(
   env?: NodeJS.ProcessEnv
 ): { clientId: string; clientSecret?: string } | null {
-  const envClientId = resolveFirstEnvValue(GEMINI_OAUTH_CLIENT_ID_ENV_KEYS, env);
+  const envClientId = resolveFirstEnvValue(
+    GEMINI_OAUTH_CLIENT_ID_ENV_KEYS,
+    env
+  );
   const envClientSecret = resolveFirstEnvValue(
     GEMINI_OAUTH_CLIENT_SECRET_ENV_KEYS,
     env
@@ -1373,12 +1469,24 @@ function extractGeminiCliOAuthClientConfig(
     new Set([
       dirname(dirname(resolvedPath)),
       join(dirname(resolvedPath), "node_modules", "@google", "gemini-cli"),
-      join(dirname(dirname(resolvedPath)), "node_modules", "@google", "gemini-cli"),
-      join(dirname(dirname(dirname(resolvedPath))), "lib", "node_modules", "@google", "gemini-cli")
+      join(
+        dirname(dirname(resolvedPath)),
+        "node_modules",
+        "@google",
+        "gemini-cli"
+      ),
+      join(
+        dirname(dirname(dirname(resolvedPath))),
+        "lib",
+        "node_modules",
+        "@google",
+        "gemini-cli"
+      )
     ])
   );
   for (const searchDir of searchDirs) {
-    const fromKnownPaths = readGeminiCliOAuthClientConfigFromKnownPaths(searchDir);
+    const fromKnownPaths =
+      readGeminiCliOAuthClientConfigFromKnownPaths(searchDir);
     if (fromKnownPaths) {
       return fromKnownPaths;
     }
@@ -1471,7 +1579,10 @@ function readGeminiCliOAuthClientConfigFile(
   }
 }
 
-function findBinaryInPath(name: string, env?: NodeJS.ProcessEnv): string | null {
+function findBinaryInPath(
+  name: string,
+  env?: NodeJS.ProcessEnv
+): string | null {
   const pathValue = env?.PATH ?? process.env.PATH ?? "";
   for (const dir of pathValue.split(delimiter)) {
     if (!dir) {
@@ -1624,12 +1735,12 @@ function stripJsonComments(input: string): string {
         escaped = false;
       } else if (char === "\\") {
         escaped = true;
-      } else if (char === "\"") {
+      } else if (char === '"') {
         inString = false;
       }
       continue;
     }
-    if (char === "\"") {
+    if (char === '"') {
       inString = true;
       result += char;
       continue;
