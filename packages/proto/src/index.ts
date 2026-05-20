@@ -622,19 +622,30 @@ export type SubscriptionUsageWindowKind =
   | "session"
   | "weekly"
   | "model"
-  | "spend";
+  | "spend"
+  | "credits";
 
-export interface SubscriptionUsageRowVm {
+interface SubscriptionUsageBaseRowVm {
   key: string;
   label: string;
-  usedPercent: number;
   resetLabel: string;
   resetsAt?: string;
   windowKind: SubscriptionUsageWindowKind;
-  usedAmountUsd?: number;
-  limitAmountUsd?: number;
-  currency?: string;
 }
+
+export type SubscriptionUsageRowVm =
+  | (SubscriptionUsageBaseRowVm & {
+      valueKind?: "percent";
+      usedPercent: number;
+      windowKind: Exclude<SubscriptionUsageWindowKind, "credits">;
+      usedAmountUsd?: number;
+      limitAmountUsd?: number;
+      currency?: string;
+    })
+  | (SubscriptionUsageBaseRowVm & {
+      valueKind: "unlimited";
+      windowKind: "credits";
+    });
 
 export interface SubscriptionProviderUsageVm {
   provider: UsageVendor;

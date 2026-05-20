@@ -88,10 +88,7 @@ export function UsageDashboard(props: UsageDashboardProps): JSX.Element {
     hasUnknownCacheWriteCost: false,
     hasUnknownThinkingCost: false
   };
-  const summaryCards = useMemo(
-    () => buildSummaryCards(snapshot),
-    [snapshot]
-  );
+  const summaryCards = useMemo(() => buildSummaryCards(snapshot), [snapshot]);
   const subtitle = buildSubtitle(snapshot.updatedAt, pricingCoverage);
 
   const content = (
@@ -239,23 +236,31 @@ function SubscriptionWindowsCard(props: {
                 data-testid={`subscription-row-${providerUsage.provider}-${row.key}`}
               >
                 <div className={styles.subscriptionUsageCopy}>
-                  <div className={styles.subscriptionUsageLabel}>{row.label}</div>
+                  <div className={styles.subscriptionUsageLabel}>
+                    {row.label}
+                  </div>
                   <div className={styles.subscriptionUsageMeta}>
                     {formatSubscriptionRowMeta(row)}
                   </div>
                 </div>
-                <div className={styles.subscriptionUsageMeter}>
-                  <div className={styles.subscriptionUsageBar}>
-                    <InlineBar
-                      value={row.usedPercent}
-                      total={100}
-                      tone={colorForVendor(providerUsage.provider)}
-                    />
+                {row.valueKind === "unlimited" ? (
+                  <div className={styles.subscriptionUsageUnlimited}>
+                    Unlimited
                   </div>
-                  <div className={styles.subscriptionUsagePercent}>
-                    {formatSubscriptionUsedPercent(row.usedPercent)}
+                ) : (
+                  <div className={styles.subscriptionUsageMeter}>
+                    <div className={styles.subscriptionUsageBar}>
+                      <InlineBar
+                        value={row.usedPercent}
+                        total={100}
+                        tone={colorForVendor(providerUsage.provider)}
+                      />
+                    </div>
+                    <div className={styles.subscriptionUsagePercent}>
+                      {formatSubscriptionUsedPercent(row.usedPercent)}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
@@ -365,9 +370,7 @@ function UsageHeatmap(props: {
           </div>
         ) : null}
         <div className={styles.usageHeatmapLegendRow}>
-          <div className={styles.usageHeatmapBoardLabel}>
-            Usage Heatmap
-          </div>
+          <div className={styles.usageHeatmapBoardLabel}>Usage Heatmap</div>
           <div className={styles.usageHeatmapLegend}>
             <span>Less</span>
             <div className={styles.usageHeatmapLegendScale}>
@@ -385,7 +388,10 @@ function UsageHeatmap(props: {
 
         <div className={styles.usageHeatmapMonths}>
           {heatmap.monthLabels.map((label, index) => (
-            <span key={`${index}-${label}`} className={styles.usageHeatmapMonth}>
+            <span
+              key={`${index}-${label}`}
+              className={styles.usageHeatmapMonth}
+            >
               {label}
             </span>
           ))}
@@ -532,7 +538,8 @@ function DirectoryHotspotsCard(props: {
         title: directory.directoryPath,
         tokens: directory.todayTokens,
         costUsd: directory.todayCostUsd,
-        barValue: metric === "cost" ? directory.todayCostUsd : directory.todayTokens
+        barValue:
+          metric === "cost" ? directory.todayCostUsd : directory.todayTokens
       }))}
       rowTestId={(row, index) => `directory-hotspot-row-${index}`}
     />
@@ -565,7 +572,10 @@ function SalesCategoryCard(props: {
     props.tokenBreakdown,
     props.tokenCostBreakdown
   );
-  const totalTokens = categories.reduce((sum, category) => sum + category.tokens, 0);
+  const totalTokens = categories.reduce(
+    (sum, category) => sum + category.tokens,
+    0
+  );
 
   if (totalTokens <= 0) {
     return <EmptyState text="No token category activity yet." />;
@@ -602,10 +612,7 @@ function LinearBreakdownCard(props: {
 
   return (
     <div className={styles.tokenMixPanel}>
-      <div
-        className={styles.tokenMixLinearBar}
-        data-testid={props.barTestId}
-      >
+      <div className={styles.tokenMixLinearBar} data-testid={props.barTestId}>
         {visibleRows.map((row, index) => {
           const width = total > 0 ? (row.barValue / total) * 100 : 0;
           return (
@@ -670,7 +677,8 @@ function InlineBar(props: {
   total: number;
   tone: string;
 }): JSX.Element {
-  const width = props.total > 0 ? Math.max(4, (props.value / props.total) * 100) : 0;
+  const width =
+    props.total > 0 ? Math.max(4, (props.value / props.total) * 100) : 0;
 
   return (
     <div className={styles.usageInlineBarTrack}>
@@ -686,7 +694,9 @@ function EmptyState(props: { text: string }): JSX.Element {
   return <div className={styles.usageEmpty}>{props.text}</div>;
 }
 
-function buildSummaryCards(snapshot: UsageViewSnapshot): SummaryCardDefinition[] {
+function buildSummaryCards(
+  snapshot: UsageViewSnapshot
+): SummaryCardDefinition[] {
   return [
     {
       key: "spend",
@@ -759,14 +769,13 @@ function buildHeatmap(
         continue;
       }
 
-      const day =
-        mergedDays.get(dayKey) ?? {
-          dayKey,
-          totalCostUsd: 0,
-          totalTokens: 0,
-          activeSessionCount: 0,
-          costSource: "reported"
-        };
+      const day = mergedDays.get(dayKey) ?? {
+        dayKey,
+        totalCostUsd: 0,
+        totalTokens: 0,
+        activeSessionCount: 0,
+        costSource: "reported"
+      };
 
       chronologicalDays.push({
         dayKey,
@@ -838,7 +847,9 @@ export function buildMonthLabels(columns: HeatmapCell[][]): string[] {
     if (!firstRealCell?.dayKey) {
       return "";
     }
-    const normalizedLabel = parseDayKey(firstRealCell.dayKey).toLocaleDateString("en-US", {
+    const normalizedLabel = parseDayKey(
+      firstRealCell.dayKey
+    ).toLocaleDateString("en-US", {
       month: "short"
     });
     if (normalizedLabel === previousColumnLabel) {
@@ -868,10 +879,12 @@ function buildSubtitle(
       }
     | undefined
 ): string {
-  const segments = [`Updated ${new Date(updatedAt).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit"
-  })}`];
+  const segments = [
+    `Updated ${new Date(updatedAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit"
+    })}`
+  ];
   if (pricingCoverage?.hasEstimatedCosts) {
     segments.push("includes estimated subscription spend");
   }
@@ -912,24 +925,27 @@ function toDayKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function buildSalesCategories(tokenBreakdown: {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  thinkingTokens: number;
-}, tokenCostBreakdown: {
-  inputCostUsd: number;
-  outputCostUsd: number;
-  cacheReadCostUsd: number;
-  cacheWriteCostUsd: number;
-  thinkingCostUsd: number;
-  hasUnknownInputCost: boolean;
-  hasUnknownOutputCost: boolean;
-  hasUnknownCacheReadCost: boolean;
-  hasUnknownCacheWriteCost: boolean;
-  hasUnknownThinkingCost: boolean;
-}): Array<{
+function buildSalesCategories(
+  tokenBreakdown: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    thinkingTokens: number;
+  },
+  tokenCostBreakdown: {
+    inputCostUsd: number;
+    outputCostUsd: number;
+    cacheReadCostUsd: number;
+    cacheWriteCostUsd: number;
+    thinkingCostUsd: number;
+    hasUnknownInputCost: boolean;
+    hasUnknownOutputCost: boolean;
+    hasUnknownCacheReadCost: boolean;
+    hasUnknownCacheWriteCost: boolean;
+    hasUnknownThinkingCost: boolean;
+  }
+): Array<{
   key: string;
   label: string;
   tokens: number;

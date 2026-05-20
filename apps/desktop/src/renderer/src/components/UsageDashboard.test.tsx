@@ -18,8 +18,9 @@ vi.mock("../hooks/useUsageView", () => ({
 
 import { UsageDashboard } from "./UsageDashboard";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const APP_CSS = readFileSync(
   path.join(
@@ -38,10 +39,7 @@ describe("UsageDashboard", () => {
     document.body.appendChild(container);
     root = ReactDOMClient.createRoot(container);
     mockUseUsageSnapshot.mockReturnValue({
-      ...createEmptyUsageViewSnapshot(
-        "2026-04-27",
-        "2026-04-27T09:23:00.000Z"
-      ),
+      ...createEmptyUsageViewSnapshot("2026-04-27", "2026-04-27T09:23:00.000Z"),
       pricingCoverage: {
         fullyPriced: false,
         hasEstimatedCosts: true,
@@ -64,10 +62,7 @@ describe("UsageDashboard", () => {
   it("keeps the updated and estimated spend subtitle visible without the day badge when embedded under tabs", () => {
     act(() => {
       root.render(
-        <UsageDashboard
-          embedded
-          onJumpToSurface={() => undefined}
-        />
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
       );
     });
 
@@ -103,15 +98,17 @@ describe("UsageDashboard", () => {
     expect(cssRule('.rightSidebarTabBarItem[data-active="true"]')).toContain(
       "border-bottom-color: var(--usage-title)"
     );
-    expect(cssRule('.rightSidebarTabBarItem[data-active="true"]')).not.toContain(
-      "box-shadow"
-    );
+    expect(
+      cssRule('.rightSidebarTabBarItem[data-active="true"]')
+    ).not.toContain("box-shadow");
     expect(cssRule(".usageDashboardStatus")).toContain("min-height: 22px");
     expect(cssRule(".usageDashboardStatus")).toContain(
       "color: var(--usage-subtle)"
     );
     expect(
-      cssRule('.rightSidebar[data-has-tabs="true"] .rightSidebarBody > .usageDashboard')
+      cssRule(
+        '.rightSidebar[data-has-tabs="true"] .rightSidebarBody > .usageDashboard'
+      )
     ).toContain("margin-top: 0");
   });
 
@@ -121,12 +118,48 @@ describe("UsageDashboard", () => {
     expect(cssRule(".usageMetricBody")).toContain("gap: 8px");
   });
 
+  it("renders unlimited Codex credits without a percentage meter", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-05-20", "2026-05-20T03:00:00.000Z"),
+      subscriptionUsage: [
+        {
+          provider: "codex",
+          providerLabel: "Codex",
+          planLabel: "Business",
+          source: "oauth",
+          updatedAt: "2026-05-20T03:00:00.000Z",
+          rows: [
+            {
+              key: "credits",
+              label: "Credits",
+              valueKind: "unlimited",
+              resetLabel: "No workspace spend limit",
+              windowKind: "credits"
+            }
+          ]
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-row-codex-credits']"
+    );
+    expect(row?.textContent).toContain("Credits");
+    expect(row?.textContent).toContain("Unlimited");
+    expect(row?.textContent).toContain("No workspace spend limit");
+    expect(row?.textContent).not.toContain("NaN%");
+    expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
+  });
+
   it("aligns heatmap columns to Sunday-first weeks and omits future days in the current week", () => {
     mockUseUsageSnapshot.mockReturnValue({
-      ...createEmptyUsageViewSnapshot(
-        "2026-04-29",
-        "2026-04-29T09:23:00.000Z"
-      ),
+      ...createEmptyUsageViewSnapshot("2026-04-29", "2026-04-29T09:23:00.000Z"),
       dailyActivity: [
         {
           dayKey: "2026-04-19",
@@ -147,23 +180,21 @@ describe("UsageDashboard", () => {
 
     act(() => {
       root.render(
-        <UsageDashboard
-          embedded
-          onJumpToSurface={() => undefined}
-        />
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
       );
     });
 
     const cells = Array.from(
-      container.querySelectorAll<HTMLElement>("[data-testid='usage-heatmap-cell']")
+      container.querySelectorAll<HTMLElement>(
+        "[data-testid='usage-heatmap-cell']"
+      )
     );
     const columns = Array.from(
       new Set(cells.map((cell) => cell.parentElement).filter(Boolean))
     ) as HTMLElement[];
     const completeWeekColumn = columns.find((column) =>
       Array.from(column.children).some(
-        (cell) =>
-          (cell as HTMLElement).dataset.dayKey === "2026-04-19"
+        (cell) => (cell as HTMLElement).dataset.dayKey === "2026-04-19"
       )
     );
 
@@ -186,17 +217,14 @@ describe("UsageDashboard", () => {
       Array.from(currentWeekColumn?.children ?? []).map(
         (cell) => (cell as HTMLElement).dataset.dayKey
       )
-    ).toEqual([
-      "2026-04-26",
-      "2026-04-27",
-      "2026-04-28",
-      "2026-04-29"
-    ]);
+    ).toEqual(["2026-04-26", "2026-04-27", "2026-04-28", "2026-04-29"]);
   });
 });
 
 function cssRule(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = APP_CSS.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const match = APP_CSS.match(
+    new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`)
+  );
   return match?.[1] ?? "";
 }
