@@ -34,7 +34,7 @@ describe("terminal typography controller", () => {
     expect(controller.getViewModel().status).toBe("pending");
   });
 
-  it("detects JetBrainsMono Nerd Font Mono on the first resolution pass", async () => {
+  it("does not duplicate the default JetBrainsMono Nerd Font Mono text font as a symbol fallback", async () => {
     const controller = new TerminalTypographyController({
       initialSettings: createDefaultTerminalTypographySettings(),
       fontInventoryProvider: createStaticFontInventoryProvider([
@@ -47,9 +47,11 @@ describe("terminal typography controller", () => {
     const resolvedView = controller.getViewModel();
 
     expect(resolvedView.symbolFallbackFamilies).toEqual([
-      KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
-      "JetBrainsMono Nerd Font Mono"
+      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
     ]);
+    expect(resolvedView.textFontFamily).toContain(
+      '"JetBrainsMono Nerd Font Mono"'
+    );
     expect(resolvedView.status).toBe("pending");
 
     controller.reportProbe({

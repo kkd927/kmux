@@ -24,3 +24,15 @@ unmodified.
 Nerd Fonts `SymbolsOnly` release, converted to WOFF2 for renderer bundling, as
 a built-in terminal glyph fallback so Powerline separators and Nerd Font icons
 render on new installs without manual font setup.
+
+## JetBrainsMono Nerd Font Mono
+
+- Copyright: The JetBrains Mono Project Authors
+- Source: https://github.com/ryanoasis/nerd-fonts
+- Release asset: https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.tar.xz
+- License: SIL Open Font License 1.1
+- License text: apps/desktop/src/renderer/src/assets/JetBrainsMonoNerdFontMono-OFL.txt
+
+`kmux` vendors the official Nerd Fonts `JetBrainsMonoNerdFontMono` Regular,
+Bold, Italic, and Bold Italic faces from the v3.4.0 release, converted to
+WOFF2 for renderer bundling, as the default terminal text font.

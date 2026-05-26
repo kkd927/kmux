@@ -127,7 +127,6 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
       warnBeforeQuit: true,
       notificationDesktop: true,
       notificationSound: false,
-      terminalUseWebgl: true,
       themeMode: "dark",
       shell: "/bin/zsh",
       shortcuts: {

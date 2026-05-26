@@ -16,14 +16,6 @@ export {
   type TerminalKeyboardEventLike
 } from "../../terminalKeyboard";
 
-export interface DisposableAddon {
-  dispose(): void;
-}
-
-export interface AddonHost<TAddon extends DisposableAddon> {
-  loadAddon(addon: TAddon): void;
-}
-
 export interface TerminalPasteHost {
   paste(data: string): void;
 }
@@ -38,28 +30,6 @@ export interface TerminalEnterRewriteResult {
   clearPending: boolean;
 }
 
-export type TerminalWebglRecoveryReason = "hydrate" | "resize";
-
-export interface TerminalWebglRecoveryInput {
-  webglActive: boolean;
-  reason: TerminalWebglRecoveryReason;
-  resized: boolean;
-  previousCols: number;
-  previousRows: number;
-  cols: number;
-  rows: number;
-  resizeBurstCount: number;
-}
-
-export interface TerminalWebglRecoveryAction {
-  refresh: boolean;
-  recreate: boolean;
-}
-
-const TERMINAL_WEBGL_LARGE_COL_DELTA = 8;
-const TERMINAL_WEBGL_LARGE_ROW_DELTA = 2;
-const TERMINAL_WEBGL_TINY_COLS = 20;
-const TERMINAL_WEBGL_TINY_ROWS = 2;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
   "image/png",
   "image/jpeg",
@@ -77,14 +47,6 @@ export function createTerminalPaneXtermTheme(
   };
 }
 
-interface ApplyTerminalWebglPreferenceOptions<TAddon extends DisposableAddon> {
-  terminal: AddonHost<TAddon>;
-  currentAddon: TAddon | null;
-  useWebgl: boolean;
-  createAddon: () => TAddon;
-  onLoadError?: (error: unknown) => void;
-}
-
 interface PasteClipboardIntoTerminalOptions {
   terminal: TerminalPasteHost;
   readClipboardText: () => string;
@@ -98,55 +60,6 @@ interface PasteClipboardIntoTerminalOptions {
   ) => Promise<CreateImageAttachmentsResult>;
   onImageAttachmentStatus?: (message: string) => void;
   onImageAttachmentError?: (error: unknown) => void;
-}
-
-export function applyTerminalWebglPreference<TAddon extends DisposableAddon>(
-  options: ApplyTerminalWebglPreferenceOptions<TAddon>
-): TAddon | null {
-  if (!options.useWebgl) {
-    options.currentAddon?.dispose();
-    return null;
-  }
-
-  if (options.currentAddon) {
-    return options.currentAddon;
-  }
-
-  try {
-    const addon = options.createAddon();
-    options.terminal.loadAddon(addon);
-    return addon;
-  } catch (error) {
-    options.onLoadError?.(error);
-    return null;
-  }
-}
-
-export function resolveTerminalWebglRecovery(
-  input: TerminalWebglRecoveryInput
-): TerminalWebglRecoveryAction {
-  if (!input.webglActive) {
-    return { refresh: false, recreate: false };
-  }
-
-  if (input.reason === "hydrate") {
-    return { refresh: true, recreate: true };
-  }
-
-  const largeResize =
-    Math.abs(input.cols - input.previousCols) >=
-      TERMINAL_WEBGL_LARGE_COL_DELTA ||
-    Math.abs(input.rows - input.previousRows) >=
-      TERMINAL_WEBGL_LARGE_ROW_DELTA;
-  const tinyViewport =
-    input.cols <= TERMINAL_WEBGL_TINY_COLS ||
-    input.rows <= TERMINAL_WEBGL_TINY_ROWS;
-  const resizeChurn = input.resizeBurstCount > 1;
-
-  return {
-    refresh: true,
-    recreate: input.resized && (largeResize || tinyViewport || resizeChurn)
-  };
 }
 
 export async function pasteClipboardIntoTerminal(

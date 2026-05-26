@@ -44,9 +44,7 @@ import {
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
-import { useWebglLru } from "./hooks/useWebglLru";
-import { useWorkspaceWebglLruSync } from "./hooks/useWorkspaceWebglLruSync";
-import { installTerminalWebglReturnRecovery } from "./terminalWebglReturnRecovery";
+import { useTerminalInstanceCleanup } from "./hooks/useTerminalInstanceCleanup";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -197,11 +195,6 @@ export function App(): JSX.Element {
   const usageDashboardOpen = activeRightPanel === "usage";
   const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
-  const {
-    isPaneWebglEnabled,
-    touch: touchWebglLru,
-    forget: forgetWebglLru
-  } = useWebglLru();
   const reportedTypographyStacksRef = useRef(new Set<string>());
   const dismissedDetectedWorktreesRef = useRef(new Set<string>());
   const dismissibleUiStateRef = useRef<DismissibleUiState>({
@@ -238,23 +231,10 @@ export function App(): JSX.Element {
     setDraggedSurfaceTab(null);
   }, [activeWorkspacePaneTree?.id]);
 
-  useWorkspaceWebglLruSync({
-    activeWorkspacePaneTree,
+  useTerminalInstanceCleanup({
     workspacePaneTrees,
-    touchPane: touchWebglLru,
-    forgetPane: forgetWebglLru,
     releaseTerminalSurface: terminalInstanceStore.release
   });
-
-  useEffect(
-    () =>
-      installTerminalWebglReturnRecovery({
-        window,
-        document,
-        recover: terminalInstanceStore.recoverWebglTextureAtlases
-      }),
-    []
-  );
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {
@@ -1011,7 +991,6 @@ export function App(): JSX.Element {
               key={tree.id}
               workspace={tree}
               active={tree.id === activeWorkspacePaneTree?.id}
-              isPaneWebglEnabled={isPaneWebglEnabled}
               settings={settings}
               terminalTypography={terminalTypography}
               terminalTheme={resolvedTerminalTheme}
@@ -1025,17 +1004,15 @@ export function App(): JSX.Element {
                   ratio
                 })
               }
-              onFocusPane={(paneId) => {
-                touchWebglLru(paneId);
-                void dispatch({ type: "pane.focus", paneId });
-              }}
+              onFocusPane={(paneId) =>
+                void dispatch({ type: "pane.focus", paneId })
+              }
               onFocusSurface={(surfaceId) =>
                 void dispatch({ type: "surface.focus", surfaceId })
               }
-              onCreateSurface={(paneId) => {
-                touchWebglLru(paneId);
-                void dispatch({ type: "surface.create", paneId });
-              }}
+              onCreateSurface={(paneId) =>
+                void dispatch({ type: "surface.create", paneId })
+              }
               onCloseSurface={(surfaceId) =>
                 void requestSurfaceClose(surfaceId)
               }
@@ -1056,22 +1033,20 @@ export function App(): JSX.Element {
               }
               onSurfaceTabDragStart={setDraggedSurfaceTab}
               onSurfaceTabDragEnd={() => setDraggedSurfaceTab(null)}
-              onSplitRight={(paneId) => {
-                touchWebglLru(paneId);
+              onSplitRight={(paneId) =>
                 void dispatch({
                   type: "pane.split",
                   paneId,
                   direction: "right"
-                });
-              }}
-              onSplitDown={(paneId) => {
-                touchWebglLru(paneId);
+                })
+              }
+              onSplitDown={(paneId) =>
                 void dispatch({
                   type: "pane.split",
                   paneId,
                   direction: "down"
-                });
-              }}
+                })
+              }
               onClosePane={(paneId) => {
                 void requestPaneClose(paneId);
               }}
@@ -1280,7 +1255,6 @@ export function App(): JSX.Element {
     const latestView = await window.kmux.getShellState();
     const strategy = determinePaneCloseStrategy(latestView, paneId);
     if (strategy.kind === "close-pane") {
-      forgetWebglLru(paneId);
       await dispatch({ type: "pane.close", paneId });
       return;
     }

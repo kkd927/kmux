@@ -12,12 +12,15 @@ import {
   createDefaultSettings,
   createInitialState,
   CURRENT_SETTINGS_VERSION,
+  DEFAULT_TERMINAL_TEXT_FONT_FAMILY,
+  JETBRAINS_MONO_NERD_FONT_MONO_FAMILY,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
   listPaneIds,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   sanitizeSettings
 } from "./index";
+import type { SettingsPatch } from "./index";
 
 function expectedHomeDirectory(): string {
   const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
@@ -25,6 +28,12 @@ function expectedHomeDirectory(): string {
 }
 
 describe("core reducer", () => {
+  const legacyRendererSettingKey = ["terminalUse", "Web", "gl"].join("");
+  const legacyTerminalTextFontFamily =
+    'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
+  const previousBundledTerminalTextFontFamily =
+    `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${legacyTerminalTextFontFamily}`;
+
   it("reports sidebar mutations as workspace row and active workspace activity only", () => {
     const state = createInitialState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
@@ -1510,32 +1519,30 @@ describe("core reducer", () => {
     });
 
     expect(state.settings.terminalTypography.preferredTextFontFamily).toContain(
-      "ui-monospace"
+      JETBRAINS_MONO_NERD_FONT_MONO_FAMILY
     );
     expect(state.settings.terminalTypography.fontSize).toBe(13);
     expect(state.settings.terminalTypography.lineHeight).toBe(1);
   });
 
-  it("defaults the terminal renderer preference to WebGL and sanitizes invalid updates", () => {
+  it("does not include legacy terminal renderer settings in defaults or updates", () => {
     const state = createInitialState();
 
-    expect(state.settings.terminalUseWebgl).toBe(true);
+    expect(
+      legacyRendererSettingKey in
+        (state.settings as unknown as Record<string, unknown>)
+    ).toBe(false);
 
     applyAction(state, {
       type: "settings.update",
       patch: {
-        terminalUseWebgl: false
-      }
+        [legacyRendererSettingKey]: false
+      } as unknown as SettingsPatch
     });
-    expect(state.settings.terminalUseWebgl).toBe(false);
-
-    applyAction(state, {
-      type: "settings.update",
-      patch: {
-        terminalUseWebgl: undefined
-      }
-    });
-    expect(state.settings.terminalUseWebgl).toBe(false);
+    expect(
+      legacyRendererSettingKey in
+        (state.settings as unknown as Record<string, unknown>)
+    ).toBe(false);
   });
 
   it("defaults warn-before-quit to enabled and preserves explicit updates", () => {
@@ -1589,6 +1596,65 @@ describe("core reducer", () => {
 
     expect(restored.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
     expect(restored.notificationSound).toBe(false);
+  });
+
+  it("does not rerun the bell sound migration for v2 settings", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 2,
+      notificationSound: false
+    });
+
+    expect(restored.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    expect(restored.notificationSound).toBe(false);
+  });
+
+  it("migrates the previous default terminal text font to bundled JetBrainsMono Nerd Font Mono", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 2,
+      terminalTypography: {
+        ...createDefaultSettings().terminalTypography,
+        preferredTextFontFamily: legacyTerminalTextFontFamily
+      }
+    });
+
+    expect(restored.terminalTypography.preferredTextFontFamily).toBe(
+      DEFAULT_TERMINAL_TEXT_FONT_FAMILY
+    );
+  });
+
+  it("migrates the previous kmux-prefixed bundled font alias out of settings", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: CURRENT_SETTINGS_VERSION,
+      terminalTypography: {
+        ...createDefaultSettings().terminalTypography,
+        preferredTextFontFamily: previousBundledTerminalTextFontFamily
+      }
+    });
+
+    expect(restored.terminalTypography.preferredTextFontFamily).toBe(
+      DEFAULT_TERMINAL_TEXT_FONT_FAMILY
+    );
+    expect(restored.terminalTypography.preferredTextFontFamily).not.toContain(
+      "kmux JetBrainsMono"
+    );
+  });
+
+  it("preserves custom terminal text fonts during settings migration", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 2,
+      terminalTypography: {
+        ...createDefaultSettings().terminalTypography,
+        preferredTextFontFamily: '"Fira Code", monospace'
+      }
+    });
+
+    expect(restored.terminalTypography.preferredTextFontFamily).toBe(
+      '"Fira Code", monospace'
+    );
   });
 
   it("normalizes restored shortcut bindings to the matcher modifier order", () => {
@@ -1666,18 +1732,20 @@ describe("core reducer", () => {
     ).toBe(false);
   });
 
-  it("migrates missing terminal renderer settings to the WebGL default", () => {
+  it("drops legacy terminal renderer settings during restore", () => {
     const state = createInitialState();
     const legacyState = structuredClone(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
-    delete (legacyState.settings as { terminalUseWebgl?: boolean })
-      .terminalUseWebgl;
+    legacyState.settings[legacyRendererSettingKey] = false;
 
     const restored = cloneState(legacyState as typeof state);
 
-    expect(restored.settings.terminalUseWebgl).toBe(true);
+    expect(
+      legacyRendererSettingKey in
+        (restored.settings as unknown as Record<string, unknown>)
+    ).toBe(false);
   });
 
   it("migrates missing warn-before-quit settings to the default", () => {

@@ -3,7 +3,6 @@ import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 
 import type {
@@ -25,17 +24,14 @@ import { Codicon } from "./Codicon";
 import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
-  applyTerminalWebglPreference,
   countSupportedImageFiles,
   createTerminalPaneXtermTheme,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
-  resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme,
-  type PendingTerminalEnterRewrite,
-  type DisposableAddon
+  type PendingTerminalEnterRewrite
 } from "../terminalRenderer";
 import {
   hydrateAttachedTerminal,
@@ -67,7 +63,6 @@ interface TerminalPaneProps {
   active: boolean;
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
-  useWebglForThisPane: boolean;
   settings: KmuxSettings;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
@@ -117,8 +112,6 @@ type PendingEnterRewrite = PendingTerminalEnterRewrite & {
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
-const WEBGL_RECOVERY_RECREATE_DELAY_MS = 120;
-const WEBGL_RESIZE_BURST_WINDOW_MS = 350;
 
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
@@ -132,14 +125,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
-  const webglAddonRef = useRef<DisposableAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const surfaceWrapperRefs = useRef(new Map<string, HTMLDivElement>());
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingEnterRewriteRef = useRef<PendingEnterRewrite | null>(null);
   const [query, setQuery] = useState("");
   const [copyMode, setCopyMode] = useState(false);
-  const [runtimeGeneration, setRuntimeGeneration] = useState(0);
   const [surfaceDropDirection, setSurfaceDropDirection] =
     useState<SurfaceTabDropDirection | null>(null);
   const [imageDropActive, setImageDropActive] = useState(false);
@@ -152,18 +143,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const shortcutsRef = useRef(props.settings.shortcuts);
   const onToggleSearchRef = useRef(props.onToggleSearch);
   const skipInitialTypographySyncRef = useRef(true);
-  const skipInitialWebglSyncRef = useRef(true);
-  const runtimeRecoveryPendingRef = useRef(false);
-  const webglContextLossSubscriptionRef = useRef<{
-    dispose(): void;
-  } | null>(null);
-  const webglRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
   const attachmentStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
-  const resizeBurstRef = useRef({ lastAt: 0, count: 0 });
   const resizeGenerationRef = useRef(0);
   const resizeSyncRef = useRef<ReturnType<
     typeof createTerminalResizeSync
@@ -345,135 +327,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     surfaceWrapperRefs.current.delete(surfaceId);
   }
 
-  function scheduleRuntimeRecovery(terminal: Terminal): void {
-    if (runtimeRecoveryPendingRef.current || terminalRef.current !== terminal) {
-      return;
-    }
-
-    runtimeRecoveryPendingRef.current = true;
-    setRuntimeGeneration((current) => current + 1);
-  }
-
-  function bindWebglContextLoss(
-    addon: DisposableAddon | null,
-    terminal: Terminal
-  ): void {
-    webglContextLossSubscriptionRef.current?.dispose();
-    webglContextLossSubscriptionRef.current = null;
-    if (!(addon instanceof WebglAddon)) {
-      return;
-    }
-
-    webglContextLossSubscriptionRef.current = addon.onContextLoss(() => {
-      scheduleRuntimeRecovery(terminal);
-    });
-  }
-
-  function syncWebglRecoveryRegistration(terminal: Terminal): void {
-    if (webglAddonRef.current) {
-      terminalInstanceStore.registerWebglTerminal(terminal);
-      return;
-    }
-    terminalInstanceStore.unregisterWebglTerminal(terminal);
-  }
-
-  function refreshTerminalRows(terminal: Terminal): void {
-    if (terminalRef.current !== terminal || terminal.rows <= 0) {
-      return;
-    }
-    try {
-      terminal.refresh(0, terminal.rows - 1);
-      syncTerminalViewportBackground();
-    } catch {
-      // terminal may have been disposed mid-recovery
-    }
-  }
-
-  function registerTerminalResizeBurst(): number {
-    const now = performance.now();
-    const previous = resizeBurstRef.current;
-    const count =
-      now - previous.lastAt <= WEBGL_RESIZE_BURST_WINDOW_MS
-        ? previous.count + 1
-        : 1;
-    resizeBurstRef.current = {
-      lastAt: now,
-      count
-    };
-    return count;
-  }
-
-  function recreateTerminalWebglAddon(terminal: Terminal): void {
-    if (
-      terminalRef.current !== terminal ||
-      !webglAddonRef.current ||
-      !props.settings.terminalUseWebgl ||
-      !props.useWebglForThisPane
-    ) {
-      return;
-    }
-
-    webglContextLossSubscriptionRef.current?.dispose();
-    webglContextLossSubscriptionRef.current = null;
-    webglAddonRef.current.dispose();
-    webglAddonRef.current = applyTerminalWebglPreference({
-      terminal,
-      currentAddon: null,
-      useWebgl: true,
-      createAddon: () => new WebglAddon(),
-      onLoadError: (error) => {
-        console.warn(
-          "Failed to reload the WebGL terminal renderer; falling back to the default renderer",
-          error
-        );
-      }
-    });
-    bindWebglContextLoss(webglAddonRef.current, terminal);
-    syncWebglRecoveryRegistration(terminal);
-    refreshTerminalRows(terminal);
-    requestAnimationFrame(() => {
-      refreshTerminalRows(terminal);
-    });
-  }
-
-  function scheduleWebglPaintRecovery(
-    terminal: Terminal,
-    options: {
-      reason: "hydrate" | "resize";
-      resized: boolean;
-      previousCols: number;
-      previousRows: number;
-      cols: number;
-      rows: number;
-      resizeBurstCount: number;
-    }
-  ): void {
-    const recovery = resolveTerminalWebglRecovery({
-      webglActive: Boolean(webglAddonRef.current),
-      ...options
-    });
-    if (!recovery.refresh) {
-      return;
-    }
-
-    refreshTerminalRows(terminal);
-    requestAnimationFrame(() => {
-      refreshTerminalRows(terminal);
-    });
-
-    if (!recovery.recreate) {
-      return;
-    }
-
-    if (webglRecoveryTimerRef.current) {
-      clearTimeout(webglRecoveryTimerRef.current);
-    }
-    webglRecoveryTimerRef.current = setTimeout(() => {
-      webglRecoveryTimerRef.current = null;
-      recreateTerminalWebglAddon(terminal);
-    }, WEBGL_RECOVERY_RECREATE_DELAY_MS);
-  }
-
   async function fitAndSyncTerminal(
     terminal: Terminal,
     options: { fit?: FitAddon | null; surfaceId?: string | null } = {}
@@ -557,15 +410,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           cols: dims.cols,
           rows: dims.rows,
           durationMs: applyEndedAt - applyStartedAt
-        });
-        scheduleWebglPaintRecovery(terminal, {
-          reason: "resize",
-          resized: true,
-          previousCols,
-          previousRows,
-          cols: dims.cols,
-          rows: dims.rows,
-          resizeBurstCount: registerTerminalResizeBurst()
         });
         requestAnimationFrame(() => {
           if (terminalRef.current !== terminal) {
@@ -888,7 +732,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const surfaceId = activeSurface.id;
-    // Durable attachments outlive this React component. The sink is the
+    // The active stream attachment may outlive this render. The sink is the
     // current mounted pane's bridge back into local refs/helpers.
     const sink: terminalInstanceStore.TerminalRenderSink = {
       write: (data, afterWrite, profileSurfaceId = surfaceId) =>
@@ -896,17 +740,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       fitAndSync: () => fitAndSyncTerminal(terminal, { fit, surfaceId }),
       beforeFitAndSync: () => {
         surfaceResizeDimensionsRef.current.delete(surfaceId);
-      },
-      onSnapshotRendered: () => {
-        scheduleWebglPaintRecovery(terminal, {
-          reason: "hydrate",
-          resized: false,
-          previousCols: terminal.cols,
-          previousRows: terminal.rows,
-          cols: terminal.cols,
-          rows: terminal.rows,
-          resizeBurstCount: 1
-        });
       }
     };
     terminalInstanceStore.setRenderSink(terminalInstanceKey, sink);
@@ -921,7 +754,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!container || !terminal) {
       return;
     }
-    runtimeRecoveryPendingRef.current = false;
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
@@ -1117,20 +949,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    webglAddonRef.current = applyTerminalWebglPreference({
-      terminal,
-      currentAddon: webglAddonRef.current,
-      useWebgl: props.settings.terminalUseWebgl && props.useWebglForThisPane,
-      createAddon: () => new WebglAddon(),
-      onLoadError: (error) => {
-        console.warn(
-          "Failed to load the WebGL terminal renderer; falling back to the default renderer",
-          error
-        );
-      }
-    });
-    bindWebglContextLoss(webglAddonRef.current, terminal);
-    syncWebglRecoveryRegistration(terminal);
     void fitAndSyncTerminal(terminal);
 
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1191,17 +1009,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         xtermTextarea.removeEventListener("blur", handleTextareaBlur);
       }
       clearPendingEnterRewrite();
-      if (webglRecoveryTimerRef.current) {
-        clearTimeout(webglRecoveryTimerRef.current);
-        webglRecoveryTimerRef.current = null;
-      }
-      webglContextLossSubscriptionRef.current?.dispose();
-      webglContextLossSubscriptionRef.current = null;
-      webglAddonRef.current?.dispose();
-      webglAddonRef.current = null;
-      terminalInstanceStore.unregisterWebglTerminal(terminal);
     };
-  }, [props.paneId, runtimeGeneration, terminalInstanceKey]);
+  }, [props.paneId, terminalInstanceKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1231,45 +1040,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.settings.terminalTypography.lineHeight,
     props.terminalTheme.minimumContrastRatio,
     terminalTheme,
-    terminalInstanceKey
-  ]);
-
-  useEffect(() => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-    if (skipInitialWebglSyncRef.current) {
-      skipInitialWebglSyncRef.current = false;
-      return;
-    }
-
-    webglAddonRef.current = applyTerminalWebglPreference({
-      terminal,
-      currentAddon: webglAddonRef.current,
-      useWebgl: props.settings.terminalUseWebgl && props.useWebglForThisPane,
-      createAddon: () => new WebglAddon(),
-      onLoadError: (error) => {
-        console.warn(
-          "Failed to load the WebGL terminal renderer; falling back to the default renderer",
-          error
-        );
-      }
-    });
-    bindWebglContextLoss(webglAddonRef.current, terminal);
-    syncWebglRecoveryRegistration(terminal);
-    if (terminal.rows > 0) {
-      terminal.refresh(0, terminal.rows - 1);
-    }
-    syncTerminalViewportBackground();
-    requestAnimationFrame(() => {
-      syncTerminalViewportBackground();
-    });
-    void fitAndSyncTerminal(terminal);
-  }, [
-    props.settings.terminalUseWebgl,
-    props.useWebglForThisPane,
-    runtimeGeneration,
     terminalInstanceKey
   ]);
 
@@ -1311,12 +1081,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         surfaceId,
         snapshot.sequence
       );
-      terminalInstanceStore.getRenderSink(instanceKey)?.onSnapshotRendered?.();
       return window.kmux.completeAttachSurface(surfaceId, attachId);
     };
 
-    // Do not tie the IPC attachment to TerminalPane unmount: pane split can
-    // remount the pane while the same Claude surface must keep mouse mode live.
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (event.type === "chunk" && event.payload.surfaceId === surfaceId) {
         const payload = event.payload;
@@ -1343,7 +1110,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     });
     const cleanupAttachment = () => {
+      if (!attached) {
+        return;
+      }
       attached = false;
+      terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       unsubscribe();
       void window.kmux.detachSurface(surfaceId);
     };
@@ -1401,9 +1172,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!attached) {
         return;
       }
-      terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       cleanupAttachment();
     });
+    return cleanupAttachment;
   }, [activeSurface?.id, terminalInstanceKey]);
 
   useEffect(() => {
@@ -1456,13 +1227,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     focusTerminalInput();
-  }, [
-    activeSurface.id,
-    props.focused,
-    props.active,
-    props.showSearch,
-    runtimeGeneration
-  ]);
+  }, [activeSurface.id, props.focused, props.active, props.showSearch]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
