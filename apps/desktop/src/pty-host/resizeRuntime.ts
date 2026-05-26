@@ -45,6 +45,7 @@ export function prepareTerminalResize(options: {
 export function handleTerminalResizeRequest(options: {
   record?: ResizeSessionRecord;
   sessionId: Id;
+  attachId?: Id;
   requestId?: Id;
   cols: number;
   rows: number;
@@ -55,6 +56,7 @@ export function handleTerminalResizeRequest(options: {
   const {
     record,
     sessionId,
+    attachId,
     requestId,
     cols,
     rows,
@@ -86,6 +88,7 @@ export function handleTerminalResizeRequest(options: {
   emitResize({
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
+    ...(attachId ? { attachId } : {}),
     cols: record.cols,
     rows: record.rows
   });

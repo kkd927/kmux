@@ -156,6 +156,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     new Map<string, { cols: number; rows: number }>()
   );
   const streamReadySurfaceIdsRef = useRef(new Set<string>());
+  const readySurfaceAttachIdsRef = useRef(new Map<string, string>());
   const writeProfileBucketRef = useRef(
     createSmoothnessProfileBucket<{
       paneId: string;
@@ -223,8 +224,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   searchDecorationsRef.current = terminalSearchDecorations;
   if (!resizeSyncRef.current) {
     resizeSyncRef.current = createTerminalResizeSync({
-      sendResize: (surfaceId, cols, rows) =>
-        window.kmux.resizeSurface(surfaceId, cols, rows)
+      sendResize: (surfaceId, attachId, cols, rows) =>
+        window.kmux.resizeSurface(surfaceId, attachId, cols, rows)
     });
   }
 
@@ -460,9 +461,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const generation = ++resizeGenerationRef.current;
+    const readyAttachId = surfaceId
+      ? (readySurfaceAttachIdsRef.current.get(surfaceId) ?? null)
+      : null;
     const streamReady = Boolean(
-      surfaceId && streamReadySurfaceIdsRef.current.has(surfaceId)
+      surfaceId &&
+        readyAttachId &&
+        streamReadySurfaceIdsRef.current.has(surfaceId)
     );
+    const attachId = streamReady ? readyAttachId : null;
     if (!streamReady) {
       const resized = applyTerminalResize(terminal, {
         cols: dims.cols,
@@ -497,6 +504,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
     const resizeResult = await resizeSyncRef.current?.request({
       surfaceId,
+      attachId,
       generation,
       cols: dims.cols,
       rows: dims.rows
@@ -1125,8 +1133,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         .then((completion) => {
           if (completion.status === "ready") {
             streamReadySurfaceIdsRef.current.add(surfaceId);
+            readySurfaceAttachIdsRef.current.set(surfaceId, attachId);
           } else {
             streamReadySurfaceIdsRef.current.delete(surfaceId);
+            readySurfaceAttachIdsRef.current.delete(surfaceId);
           }
           return completion;
         });
@@ -1151,6 +1161,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       if (event.type === "resize" && event.payload.surfaceId === surfaceId) {
         const payload = event.payload;
+        if (
+          !payload.attachId ||
+          readySurfaceAttachIdsRef.current.get(payload.surfaceId) !==
+            payload.attachId
+        ) {
+          return;
+        }
         applyTerminalResize(terminal, {
           cols: payload.cols,
           rows: payload.rows,
@@ -1179,6 +1196,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       attached = false;
       streamReadySurfaceIdsRef.current.delete(surfaceId);
+      readySurfaceAttachIdsRef.current.delete(surfaceId);
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       unsubscribe();
       void window.kmux.detachSurface(surfaceId);

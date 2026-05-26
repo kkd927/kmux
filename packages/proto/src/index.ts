@@ -283,6 +283,7 @@ export interface SurfaceChunkPayload {
 export interface SurfaceResizePayload {
   surfaceId: Id;
   sessionId: Id;
+  attachId?: Id;
   cols: number;
   rows: number;
 }
@@ -322,6 +323,7 @@ export type PtyRequest =
       sessionId: Id;
       cols: number;
       rows: number;
+      attachId?: Id;
       requestId?: Id;
     }
   | { type: "input:text"; sessionId: Id; text: string }

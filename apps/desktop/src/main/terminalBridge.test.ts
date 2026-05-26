@@ -806,6 +806,7 @@ describe("terminal bridge", () => {
       payload: {
         surfaceId,
         sessionId: surface.sessionId,
+        attachId: attachPayload?.attachId ?? "",
         cols: 132,
         rows: 41
       }
@@ -816,10 +817,92 @@ describe("terminal bridge", () => {
       payload: {
         surfaceId,
         sessionId: surface.sessionId,
+        attachId: attachPayload?.attachId ?? "",
         cols: 132,
         rows: 41
       }
     });
+  });
+
+  it("routes pty resize barriers only to the requesting ready attachment", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    };
+    const firstSend = vi.fn();
+    const secondSend = vi.fn();
+    browserWindows.push(
+      {
+        webContents: {
+          id: 77,
+          send: firstSend
+        }
+      },
+      {
+        webContents: {
+          id: 88,
+          send: secondSend
+        }
+      }
+    );
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const firstAttach = await bridge.attachSurface(77, surfaceId);
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      firstAttach?.attachId ?? ""
+    );
+    const secondAttach = await bridge.attachSurface(88, surfaceId);
+    await bridge.completeAttachSurface(
+      88,
+      surfaceId,
+      secondAttach?.attachId ?? ""
+    );
+    firstSend.mockClear();
+    secondSend.mockClear();
+
+    bridge.handlePtyEvent({
+      type: "resize",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        attachId: firstAttach?.attachId ?? "",
+        cols: 132,
+        rows: 41
+      }
+    });
+
+    expect(firstSend).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "resize",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        attachId: firstAttach?.attachId ?? "",
+        cols: 132,
+        rows: 41
+      }
+    });
+    expect(secondSend).not.toHaveBeenCalled();
   });
 
   it("uses the main-owned pending snapshot sequence as the hydration flush cutoff", async () => {
@@ -1607,7 +1690,7 @@ describe("terminal bridge", () => {
       }
     });
 
-    await bridge.resizeSurface(surfaceId, 132, 43);
+    await bridge.resizeSurface(77, surfaceId, null, 132, 43);
 
     expect(resize).toHaveBeenCalledWith(surface.sessionId, 132, 43);
     expect(record).toHaveBeenCalledWith(
@@ -1660,9 +1743,9 @@ describe("terminal bridge", () => {
         }) as never
     });
 
-    const firstResize = bridge.resizeSurface(surfaceId, 100, 30);
-    const secondResize = bridge.resizeSurface(surfaceId, 110, 35);
-    const thirdResize = bridge.resizeSurface(surfaceId, 120, 40);
+    const firstResize = bridge.resizeSurface(77, surfaceId, null, 100, 30);
+    const secondResize = bridge.resizeSurface(77, surfaceId, null, 110, 35);
+    const thirdResize = bridge.resizeSurface(77, surfaceId, null, 120, 40);
 
     expect(resize).toHaveBeenCalledTimes(3);
     expect(resize).toHaveBeenNthCalledWith(1, surface.sessionId, 100, 30);

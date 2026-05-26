@@ -21,32 +21,48 @@ describe("terminal resize sync", () => {
     const first = deferred();
     const latest = deferred();
     const sendResize = vi
-      .fn<(surfaceId: string, cols: number, rows: number) => Promise<void>>()
+      .fn<
+        (
+          surfaceId: string,
+          attachId: string | null,
+          cols: number,
+          rows: number
+        ) => Promise<void>
+      >()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(latest.promise);
     const sync = createTerminalResizeSync({ sendResize });
 
     const firstResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 1,
       cols: 100,
       rows: 30
     });
     const supersededResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 2,
       cols: 110,
       rows: 35
     });
     const latestResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 3,
       cols: 120,
       rows: 40
     });
 
     expect(sendResize).toHaveBeenCalledTimes(1);
-    expect(sendResize).toHaveBeenNthCalledWith(1, "surface_1", 100, 30);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      1,
+      "surface_1",
+      "attach_1",
+      100,
+      30
+    );
     await expect(supersededResult).resolves.toEqual(
       expect.objectContaining({
         status: "superseded",
@@ -67,7 +83,13 @@ describe("terminal resize sync", () => {
       })
     );
     expect(sendResize).toHaveBeenCalledTimes(2);
-    expect(sendResize).toHaveBeenNthCalledWith(2, "surface_1", 120, 40);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      2,
+      "surface_1",
+      "attach_1",
+      120,
+      40
+    );
 
     latest.resolve();
     await expect(latestResult).resolves.toEqual(
@@ -84,19 +106,28 @@ describe("terminal resize sync", () => {
     const first = deferred();
     const latest = deferred();
     const sendResize = vi
-      .fn<(surfaceId: string, cols: number, rows: number) => Promise<void>>()
+      .fn<
+        (
+          surfaceId: string,
+          attachId: string | null,
+          cols: number,
+          rows: number
+        ) => Promise<void>
+      >()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(latest.promise);
     const sync = createTerminalResizeSync({ sendResize });
 
     const failedResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 1,
       cols: 100,
       rows: 30
     });
     const latestResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 2,
       cols: 120,
       rows: 40
@@ -112,7 +143,13 @@ describe("terminal resize sync", () => {
       })
     );
     expect(sendResize).toHaveBeenCalledTimes(2);
-    expect(sendResize).toHaveBeenNthCalledWith(2, "surface_1", 120, 40);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      2,
+      "surface_1",
+      "attach_1",
+      120,
+      40
+    );
 
     latest.resolve();
     await expect(latestResult).resolves.toEqual(
@@ -130,7 +167,14 @@ describe("terminal resize sync", () => {
     const secondSurface = deferred();
     const latestFirstSurface = deferred();
     const sendResize = vi
-      .fn<(surfaceId: string, cols: number, rows: number) => Promise<void>>()
+      .fn<
+        (
+          surfaceId: string,
+          attachId: string | null,
+          cols: number,
+          rows: number
+        ) => Promise<void>
+      >()
       .mockImplementation((surfaceId) => {
         if (surfaceId === "surface_1" && sendResize.mock.calls.length === 1) {
           return firstSurface.promise;
@@ -144,26 +188,41 @@ describe("terminal resize sync", () => {
 
     const firstResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 1,
       cols: 100,
       rows: 30
     });
     const secondResult = sync.request({
       surfaceId: "surface_2",
+      attachId: "attach_2",
       generation: 1,
       cols: 80,
       rows: 24
     });
     const latestFirstResult = sync.request({
       surfaceId: "surface_1",
+      attachId: "attach_1",
       generation: 2,
       cols: 120,
       rows: 40
     });
 
     expect(sendResize).toHaveBeenCalledTimes(2);
-    expect(sendResize).toHaveBeenNthCalledWith(1, "surface_1", 100, 30);
-    expect(sendResize).toHaveBeenNthCalledWith(2, "surface_2", 80, 24);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      1,
+      "surface_1",
+      "attach_1",
+      100,
+      30
+    );
+    expect(sendResize).toHaveBeenNthCalledWith(
+      2,
+      "surface_2",
+      "attach_2",
+      80,
+      24
+    );
 
     secondSurface.resolve();
     await expect(secondResult).resolves.toEqual(
@@ -186,7 +245,13 @@ describe("terminal resize sync", () => {
       })
     );
     expect(sendResize).toHaveBeenCalledTimes(3);
-    expect(sendResize).toHaveBeenNthCalledWith(3, "surface_1", 120, 40);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      3,
+      "surface_1",
+      "attach_1",
+      120,
+      40
+    );
 
     latestFirstSurface.resolve();
     await expect(latestFirstResult).resolves.toEqual(
@@ -195,6 +260,62 @@ describe("terminal resize sync", () => {
         surfaceId: "surface_1",
         cols: 120,
         rows: 40
+      })
+    );
+  });
+
+  it("does not collapse same-size resizes across different attachments", async () => {
+    const first = deferred();
+    const second = deferred();
+    const sendResize = vi
+      .fn<
+        (
+          surfaceId: string,
+          attachId: string | null,
+          cols: number,
+          rows: number
+        ) => Promise<void>
+      >()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const sync = createTerminalResizeSync({ sendResize });
+
+    const firstResult = sync.request({
+      surfaceId: "surface_1",
+      attachId: "attach_1",
+      generation: 1,
+      cols: 120,
+      rows: 40
+    });
+    const secondResult = sync.request({
+      surfaceId: "surface_1",
+      attachId: "attach_2",
+      generation: 2,
+      cols: 120,
+      rows: 40
+    });
+
+    first.resolve();
+    await expect(firstResult).resolves.toEqual(
+      expect.objectContaining({
+        status: "synced",
+        attachId: "attach_1"
+      })
+    );
+    expect(sendResize).toHaveBeenCalledTimes(2);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      2,
+      "surface_1",
+      "attach_2",
+      120,
+      40
+    );
+
+    second.resolve();
+    await expect(secondResult).resolves.toEqual(
+      expect.objectContaining({
+        status: "synced",
+        attachId: "attach_2"
       })
     );
   });

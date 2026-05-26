@@ -59,6 +59,7 @@ declare global {
       readClipboardImages(): CreateImageAttachmentPayload[];
       resizeSurface(
         surfaceId: string,
+        attachId: string | null,
         cols: number,
         rows: number
       ): Promise<void>;

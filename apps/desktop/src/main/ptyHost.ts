@@ -218,13 +218,19 @@ export class PtyHostManager extends EventEmitter {
     });
   }
 
-  resize(sessionId: Id, cols: number, rows: number): Promise<void> {
+  resize(
+    sessionId: Id,
+    cols: number,
+    rows: number,
+    attachId?: Id
+  ): Promise<void> {
     const requestId = makeId("resize");
     const request: PtyRequest = {
       type: "resize",
       sessionId,
       cols,
       rows,
+      ...(attachId ? { attachId } : {}),
       requestId
     };
     return new Promise((resolve) => {
