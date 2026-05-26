@@ -35,6 +35,7 @@ type KmuxWindow = {
       surfaceId: string,
       options?: SurfaceSnapshotOptions
     ) => Promise<SurfaceSnapshotPayload | null>;
+    subscribeExternalUrlOpen: (listener: (url: string) => void) => () => void;
   };
 };
 

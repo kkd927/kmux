@@ -3,7 +3,8 @@ import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { Terminal } from "@xterm/xterm";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Terminal, type ILinkHandler } from "@xterm/xterm";
 
 import type {
   CreateImageAttachmentPayload,
@@ -112,6 +113,29 @@ type PendingEnterRewrite = PendingTerminalEnterRewrite & {
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
+const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
+
+function openExternalTerminalLink(rawUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    console.warn("Ignoring invalid terminal link", rawUrl);
+    return;
+  }
+  if (!EXTERNAL_TERMINAL_LINK_PROTOCOLS.has(url.protocol)) {
+    console.warn("Ignoring unsupported terminal link protocol", url.protocol);
+    return;
+  }
+  void window.kmux.openExternalUrl(url.toString()).catch((error) => {
+    console.warn("Failed to open terminal link", error);
+  });
+}
+
+const terminalLinkHandler: ILinkHandler = {
+  allowNonHttpProtocols: false,
+  activate: (_event, text) => openExternalTerminalLink(text)
+};
 
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
@@ -732,14 +756,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           macOptionIsMeta: false,
           scrollback: 5000,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
-          theme: terminalTheme
+          theme: terminalTheme,
+          linkHandler: terminalLinkHandler
         });
         const fit = new FitAddon();
         const search = new SearchAddon();
         const unicode11 = new Unicode11Addon();
+        const webLinks = new WebLinksAddon((_event, uri) => {
+          openExternalTerminalLink(uri);
+        });
         terminal.loadAddon(fit);
         terminal.loadAddon(search);
         terminal.loadAddon(unicode11);
+        terminal.loadAddon(webLinks);
         terminal.unicode.activeVersion = "11";
         terminal.open(host);
         return {
@@ -748,6 +777,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fit,
           search,
           unicode11,
+          webLinks,
           lastHydratedSurfaceId: null,
           lastHydratedSurfaceSequence: null,
           attachmentCleanup: null,

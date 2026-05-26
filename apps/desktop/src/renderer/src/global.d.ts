@@ -52,6 +52,7 @@ declare global {
       detachSurface(surfaceId: string): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
+      openExternalUrl(url: string): Promise<void>;
       createImageAttachments(
         surfaceId: string,
         payloads: CreateImageAttachmentPayload[]
@@ -130,6 +131,7 @@ declare global {
         surfaceId: string,
         options?: SurfaceSnapshotOptions
       ): Promise<SurfaceSnapshotPayload | null>;
+      subscribeExternalUrlOpen(listener: (url: string) => void): () => void;
     };
   }
 }

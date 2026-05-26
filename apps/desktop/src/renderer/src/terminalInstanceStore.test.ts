@@ -16,6 +16,9 @@ vi.mock("@xterm/addon-search", () => ({ SearchAddon: vi.fn(() => ({})) }));
 vi.mock("@xterm/addon-unicode11", () => ({
   Unicode11Addon: vi.fn(() => ({}))
 }));
+vi.mock("@xterm/addon-web-links", () => ({
+  WebLinksAddon: vi.fn(() => ({}))
+}));
 
 import {
   acquire,
@@ -43,6 +46,7 @@ function makeInstance(): TerminalInstance {
     fit: {} as TerminalInstance["fit"],
     search: {} as TerminalInstance["search"],
     unicode11: {} as TerminalInstance["unicode11"],
+    webLinks: {} as TerminalInstance["webLinks"],
     lastHydratedSurfaceId: null,
     lastHydratedSurfaceSequence: null,
     attachmentCleanup: null,
