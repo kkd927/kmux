@@ -155,6 +155,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const surfaceResizeDimensionsRef = useRef(
     new Map<string, { cols: number; rows: number }>()
   );
+  const streamReadySurfaceIdsRef = useRef(new Set<string>());
   const writeProfileBucketRef = useRef(
     createSmoothnessProfileBucket<{
       paneId: string;
@@ -327,6 +328,69 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     surfaceWrapperRefs.current.delete(surfaceId);
   }
 
+  function applyTerminalResize(
+    terminal: Terminal,
+    input: {
+      cols: number;
+      rows: number;
+      surfaceId: string | null;
+      generation: number;
+      previousCols: number;
+      previousRows: number;
+    }
+  ): boolean {
+    const { cols, rows, surfaceId, generation, previousCols, previousRows } =
+      input;
+    if (terminal.cols === cols && terminal.rows === rows) {
+      return false;
+    }
+
+    const applyStartedAt = performance.now();
+    try {
+      terminal.resize(cols, rows);
+      const applyEndedAt = performance.now();
+      recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
+        paneId: props.paneId,
+        surfaceId,
+        generation,
+        previousCols,
+        previousRows,
+        cols,
+        rows,
+        durationMs: applyEndedAt - applyStartedAt
+      });
+      requestAnimationFrame(() => {
+        if (terminalRef.current !== terminal) {
+          return;
+        }
+        recordRendererSmoothnessProfileEvent("terminal.reflow", {
+          paneId: props.paneId,
+          surfaceId,
+          generation,
+          cols,
+          rows,
+          viewportY: terminal.buffer.active.viewportY,
+          baseY: terminal.buffer.active.baseY,
+          durationMs: performance.now() - applyEndedAt
+        });
+      });
+      return true;
+    } catch {
+      recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
+        paneId: props.paneId,
+        surfaceId,
+        generation,
+        previousCols,
+        previousRows,
+        cols,
+        rows,
+        failed: true,
+        durationMs: performance.now() - applyStartedAt
+      });
+      return false;
+    }
+  }
+
   async function fitAndSyncTerminal(
     terminal: Terminal,
     options: { fit?: FitAddon | null; surfaceId?: string | null } = {}
@@ -396,56 +460,26 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const generation = ++resizeGenerationRef.current;
-    if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
-      const applyStartedAt = performance.now();
-      try {
-        terminal.resize(dims.cols, dims.rows);
-        const applyEndedAt = performance.now();
-        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
-          paneId: props.paneId,
-          surfaceId,
-          generation,
-          previousCols,
-          previousRows,
-          cols: dims.cols,
-          rows: dims.rows,
-          durationMs: applyEndedAt - applyStartedAt
-        });
-        requestAnimationFrame(() => {
-          if (terminalRef.current !== terminal) {
-            return;
-          }
-          recordRendererSmoothnessProfileEvent("terminal.reflow", {
-            paneId: props.paneId,
-            surfaceId,
-            generation,
-            cols: dims.cols,
-            rows: dims.rows,
-            viewportY: terminal.buffer.active.viewportY,
-            baseY: terminal.buffer.active.baseY,
-            durationMs: performance.now() - applyEndedAt
-          });
-        });
-      } catch {
-        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
-          paneId: props.paneId,
-          surfaceId,
-          generation,
-          previousCols,
-          previousRows,
-          cols: dims.cols,
-          rows: dims.rows,
-          failed: true,
-          durationMs: performance.now() - applyStartedAt
-        });
-        // terminal may have been disposed mid-await
+    const streamReady = Boolean(
+      surfaceId && streamReadySurfaceIdsRef.current.has(surfaceId)
+    );
+    if (!streamReady) {
+      const resized = applyTerminalResize(terminal, {
+        cols: dims.cols,
+        rows: dims.rows,
+        surfaceId,
+        generation,
+        previousCols,
+        previousRows
+      });
+      if (!resized && terminalSizeChanged) {
         return;
       }
-    }
-    if (surfaceId) {
-      syncSurfaceTerminalMetrics(surfaceId, terminal);
-    } else {
-      syncTerminalMetrics(terminal);
+      if (surfaceId) {
+        syncSurfaceTerminalMetrics(surfaceId, terminal);
+      } else {
+        syncTerminalMetrics(terminal);
+      }
     }
     if (!surfaceId) {
       return;
@@ -488,11 +522,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) {
       return;
     }
-    surfaceResizeDimensionsRef.current.set(resizeResult.surfaceId, {
-      cols: resizeResult.cols,
-      rows: resizeResult.rows
-    });
-    syncSurfaceTerminalMetrics(resizeResult.surfaceId, terminal);
+    if (
+      terminal.cols === resizeResult.cols &&
+      terminal.rows === resizeResult.rows
+    ) {
+      surfaceResizeDimensionsRef.current.set(resizeResult.surfaceId, {
+        cols: resizeResult.cols,
+        rows: resizeResult.rows
+      });
+      syncSurfaceTerminalMetrics(resizeResult.surfaceId, terminal);
+    }
   }
 
   async function waitForTerminalFonts(): Promise<void> {
@@ -1081,7 +1120,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         surfaceId,
         snapshot.sequence
       );
-      return window.kmux.completeAttachSurface(surfaceId, attachId);
+      return window.kmux
+        .completeAttachSurface(surfaceId, attachId)
+        .then((completion) => {
+          if (completion.status === "ready") {
+            streamReadySurfaceIdsRef.current.add(surfaceId);
+          } else {
+            streamReadySurfaceIdsRef.current.delete(surfaceId);
+          }
+          return completion;
+        });
     };
 
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
@@ -1101,6 +1149,22 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           payload.surfaceId
         );
       }
+      if (event.type === "resize" && event.payload.surfaceId === surfaceId) {
+        const payload = event.payload;
+        applyTerminalResize(terminal, {
+          cols: payload.cols,
+          rows: payload.rows,
+          surfaceId: payload.surfaceId,
+          generation: resizeGenerationRef.current,
+          previousCols: terminal.cols,
+          previousRows: terminal.rows
+        });
+        surfaceResizeDimensionsRef.current.set(payload.surfaceId, {
+          cols: payload.cols,
+          rows: payload.rows
+        });
+        syncSurfaceTerminalMetrics(payload.surfaceId, terminal);
+      }
       if (event.type === "exit" && event.payload.surfaceId === surfaceId) {
         writeAttachedTerminal(
           `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`,
@@ -1114,6 +1178,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
       attached = false;
+      streamReadySurfaceIdsRef.current.delete(surfaceId);
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       unsubscribe();
       void window.kmux.detachSurface(surfaceId);

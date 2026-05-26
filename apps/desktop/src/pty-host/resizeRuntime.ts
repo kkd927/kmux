@@ -1,3 +1,5 @@
+import type { Id, SurfaceResizePayload } from "@kmux/proto";
+
 interface ResizableTerminal {
   resize(cols: number, rows: number): void;
 }
@@ -7,11 +9,19 @@ interface ResizablePty {
 }
 
 interface ResizeSessionRecord {
-  sessionId: string;
+  sessionId: Id;
+  surfaceId: Id;
   cols: number;
   rows: number;
   terminal: ResizableTerminal;
   pty: ResizablePty;
+}
+
+interface TerminalResizeAckPayload {
+  sessionId: Id;
+  requestId: Id;
+  cols: number;
+  rows: number;
 }
 
 export function prepareTerminalResize(options: {
@@ -30,4 +40,62 @@ export function prepareTerminalResize(options: {
   record.terminal.resize(cols, rows);
   record.pty.resize(cols, rows);
   return true;
+}
+
+export function handleTerminalResizeRequest(options: {
+  record?: ResizeSessionRecord;
+  sessionId: Id;
+  requestId?: Id;
+  cols: number;
+  rows: number;
+  flushOutput: (sessionId: Id) => void;
+  emitResize: (payload: SurfaceResizePayload) => void;
+  emitAck: (payload: TerminalResizeAckPayload) => void;
+}): void {
+  const {
+    record,
+    sessionId,
+    requestId,
+    cols,
+    rows,
+    flushOutput,
+    emitResize,
+    emitAck
+  } = options;
+
+  if (!record || cols <= 0 || rows <= 0) {
+    if (requestId) {
+      emitAck({
+        sessionId,
+        requestId,
+        cols: record?.cols ?? 0,
+        rows: record?.rows ?? 0
+      });
+    }
+    return;
+  }
+
+  prepareTerminalResize({
+    record,
+    cols,
+    rows,
+    flushOutput
+  });
+
+  // Even no-op PTY resizes need this barrier; the visible xterm may be stale.
+  emitResize({
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    cols: record.cols,
+    rows: record.rows
+  });
+
+  if (requestId) {
+    emitAck({
+      sessionId: record.sessionId,
+      requestId,
+      cols: record.cols,
+      rows: record.rows
+    });
+  }
 }

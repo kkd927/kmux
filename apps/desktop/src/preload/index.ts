@@ -23,6 +23,7 @@ import type {
   SurfaceAttachPayload,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
+  SurfaceResizePayload,
   SurfaceExitPayload,
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
@@ -41,6 +42,7 @@ import {
 
 export type TerminalEvent =
   | { type: "chunk"; payload: SurfaceChunkPayload }
+  | { type: "resize"; payload: SurfaceResizePayload }
   | { type: "exit"; payload: SurfaceExitPayload };
 
 const api = {

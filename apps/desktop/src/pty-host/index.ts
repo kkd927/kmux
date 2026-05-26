@@ -42,7 +42,7 @@ import {
 import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { OutputBatcher } from "./outputBatcher";
-import { prepareTerminalResize } from "./resizeRuntime";
+import { handleTerminalResizeRequest } from "./resizeRuntime";
 import { SnapshotCache } from "./snapshotCache";
 
 let cachedPty: typeof PtyModule | null = null;
@@ -509,34 +509,26 @@ process.on("message", (request: PtyRequest) => {
       break;
     case "resize":
       {
-        const record = sessions.get(request.sessionId);
-        if (!record || request.cols <= 0 || request.rows <= 0) {
-          if (request.requestId) {
-            send({
-              type: "resize:ack",
-              sessionId: request.sessionId,
-              requestId: request.requestId,
-              cols: record?.cols ?? 0,
-              rows: record?.rows ?? 0
-            });
-          }
-          break;
-        }
-        prepareTerminalResize({
-          record,
+        handleTerminalResizeRequest({
+          record: sessions.get(request.sessionId),
+          sessionId: request.sessionId,
+          requestId: request.requestId,
           cols: request.cols,
           rows: request.rows,
-          flushOutput: (sessionId) => outputBatcher.flush(sessionId)
+          flushOutput: (sessionId) => outputBatcher.flush(sessionId),
+          emitResize: (payload) => {
+            send({
+              type: "resize",
+              payload
+            });
+          },
+          emitAck: (payload) => {
+            send({
+              type: "resize:ack",
+              ...payload
+            });
+          }
         });
-        if (request.requestId) {
-          send({
-            type: "resize:ack",
-            sessionId: request.sessionId,
-            requestId: request.requestId,
-            cols: record.cols,
-            rows: record.rows
-          });
-        }
       }
       break;
     case "input:text":
