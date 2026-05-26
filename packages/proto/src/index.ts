@@ -280,6 +280,13 @@ export interface SurfaceChunkPayload {
   segments?: SurfaceChunkSegment[];
 }
 
+export interface SurfaceResizePayload {
+  surfaceId: Id;
+  sessionId: Id;
+  cols: number;
+  rows: number;
+}
+
 export interface SurfaceExitPayload {
   surfaceId: Id;
   sessionId: Id;
@@ -332,6 +339,7 @@ export type PtyEvent =
   | { type: "spawned"; sessionId: Id; pid: number }
   | { type: "snapshot"; requestId: Id; payload: SurfaceSnapshotPayload }
   | { type: "chunk"; payload: SurfaceChunkPayload }
+  | { type: "resize"; payload: SurfaceResizePayload }
   | { type: "metadata"; payload: SurfaceMetadataPayload }
   | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }
   | {

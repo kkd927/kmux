@@ -81,7 +81,7 @@ async function selectSettingsThemeMode(
     .click();
 }
 
-function rendererResizeApplyPrecedesRequest(profilePath: string): boolean {
+function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
   if (!existsSync(profilePath)) {
     return false;
   }
@@ -123,7 +123,7 @@ function rendererResizeApplyPrecedesRequest(profilePath: string): boolean {
     byGeneration.set(generation, entry);
   }
   return [...byGeneration.values()].some(
-    (entry) => entry.applyIndex >= 0 && entry.requestIndex > entry.applyIndex
+    (entry) => entry.requestIndex >= 0 && entry.applyIndex > entry.requestIndex
   );
 }
 
@@ -1625,7 +1625,7 @@ test("workspace switches restore busy alternate-screen terminal content", async 
   }
 });
 
-test("terminal resize applies to the visible xterm before remote PTY redraws", async () => {
+test("terminal resize applies after the remote PTY resize barrier", async () => {
   const sandbox = createSandbox("kmux-e2e-terminal-resize-redraw-");
   const profilePath = join(sandbox.profileRoot, "smoothness.jsonl");
   let launched: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | null = null;
@@ -1723,9 +1723,9 @@ test("terminal resize applies to the visible xterm before remote PTY redraws", a
     expect(snapshot?.rows).toBe(visibleRowCount);
 
     await expect
-      .poll(() => rendererResizeApplyPrecedesRequest(profilePath), {
+      .poll(() => rendererResizeRequestPrecedesApply(profilePath), {
         message:
-          "renderer resize profile should record visible xterm apply before remote resize request"
+          "renderer resize profile should record the remote resize request before visible xterm apply"
       })
       .toBe(true);
   } finally {

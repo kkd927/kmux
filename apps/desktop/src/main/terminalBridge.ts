@@ -10,6 +10,7 @@ import type {
   SurfaceChunkSegment,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
+  SurfaceResizePayload,
   SurfaceExitPayload,
   SurfaceSnapshotPayload,
   TerminalKeyInput,
@@ -579,6 +580,7 @@ export function createTerminalBridge(
     contentsId: number,
     event:
       | { type: "chunk"; payload: SurfaceChunkPayload }
+      | { type: "resize"; payload: SurfaceResizePayload }
       | { type: "exit"; payload: SurfaceExitPayload }
   ): void {
     const window = BrowserWindow.getAllWindows().find(
@@ -678,6 +680,20 @@ export function createTerminalBridge(
       }
       sendTerminalEvent(contentsId, {
         type: "chunk",
+        payload
+      });
+    }
+  }
+
+  function forwardTerminalResize(payload: SurfaceResizePayload): void {
+    for (const [contentsId, attachment] of surfaceAttachmentEntries(
+      payload.surfaceId
+    )) {
+      if (attachment.status === "hydrating") {
+        continue;
+      }
+      sendTerminalEvent(contentsId, {
+        type: "resize",
         payload
       });
     }
@@ -999,6 +1015,9 @@ export function createTerminalBridge(
       }
       case "chunk":
         forwardTerminalChunk(event.payload);
+        return;
+      case "resize":
+        forwardTerminalResize(event.payload);
         return;
       case "exit":
         options.dispatchAppAction({

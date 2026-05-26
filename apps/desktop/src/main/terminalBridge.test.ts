@@ -760,6 +760,68 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("forwards pty resize barriers to ready terminal attachments", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const ptyHost = {
+      snapshot: vi.fn().mockResolvedValue(snapshot)
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? ""
+    );
+    send.mockClear();
+
+    bridge.handlePtyEvent({
+      type: "resize",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        cols: 132,
+        rows: 41
+      }
+    });
+
+    expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "resize",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        cols: 132,
+        rows: 41
+      }
+    });
+  });
+
   it("uses the main-owned pending snapshot sequence as the hydration flush cutoff", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
