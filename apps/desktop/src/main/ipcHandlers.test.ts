@@ -45,6 +45,7 @@ function registerTestHandlers(options: {
     cols: number,
     rows: number
   ) => Promise<void>;
+  openExternalUrl?: (url: string) => Promise<void>;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -59,6 +60,7 @@ function registerTestHandlers(options: {
     detachSurface: vi.fn(),
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
+    openExternalUrl: options.openExternalUrl ?? vi.fn(),
     resizeSurface: options.resizeSurface ?? vi.fn(),
     identify: vi.fn(),
     listTerminalFontFamilies: vi.fn(),
@@ -209,6 +211,32 @@ describe("ipc handlers", () => {
       "attach-1",
       132,
       43
+    );
+  });
+
+  it("registers external URL open handler", async () => {
+    const openExternalUrl = vi.fn(async () => {});
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-13T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      openExternalUrl
+    });
+
+    const handler = handlers.get("kmux:external-url:open");
+    const sender = { send: vi.fn() };
+
+    expect(handler).toBeTypeOf("function");
+    await Promise.resolve(handler?.({ sender }, "https://example.com/path"));
+    expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/path");
+    expect(sender.send).toHaveBeenCalledWith(
+      "kmux:external-url:opened",
+      "https://example.com/path"
     );
   });
 });

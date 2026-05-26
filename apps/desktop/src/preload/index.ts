@@ -116,6 +116,9 @@ const api = {
   sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:key", surfaceId, input);
   },
+  openExternalUrl(url: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:external-url:open", url);
+  },
   createImageAttachments(
     surfaceId: string,
     payloads: CreateImageAttachmentPayload[]
@@ -359,6 +362,12 @@ const testApi = {
     options?: SurfaceSnapshotOptions
   ): Promise<SurfaceSnapshotPayload | null> {
     return ipcRenderer.invoke("kmux:snapshot-surface", surfaceId, options);
+  },
+  subscribeExternalUrlOpen(listener: (url: string) => void): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, url: string) =>
+      listener(url);
+    ipcRenderer.on("kmux:external-url:opened", handler);
+    return () => ipcRenderer.off("kmux:external-url:opened", handler);
   }
 };
 

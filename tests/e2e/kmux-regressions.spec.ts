@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
   createDefaultSettings,
+  CURRENT_SETTINGS_VERSION,
   JETBRAINS_MONO_NERD_FONT_MONO_FAMILY,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY
 } from "@kmux/core";
@@ -51,6 +52,91 @@ async function waitForSurfaceSnapshotMatching(
       lastSnapshot
     )}`
   );
+}
+
+async function startRecordingExternalUrlOpens(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      kmuxTest?: {
+        subscribeExternalUrlOpen(listener: (url: string) => void): () => void;
+      };
+      __kmuxExternalUrlOpenUnsubscribe?: () => void;
+      __kmuxOpenedExternalUrls?: string[];
+    };
+    if (!testWindow.kmuxTest) {
+      throw new Error("kmuxTest bridge unavailable");
+    }
+
+    testWindow.__kmuxExternalUrlOpenUnsubscribe?.();
+    testWindow.__kmuxOpenedExternalUrls = [];
+    testWindow.__kmuxExternalUrlOpenUnsubscribe =
+      testWindow.kmuxTest.subscribeExternalUrlOpen((url) => {
+        testWindow.__kmuxOpenedExternalUrls?.push(url);
+      });
+  });
+}
+
+async function waitForExternalUrlOpen(
+  page: Page,
+  expectedUrl: string
+): Promise<void> {
+  await expect
+    .poll(async () =>
+      page.evaluate((url) => {
+        const testWindow = window as unknown as {
+          __kmuxOpenedExternalUrls?: string[];
+        };
+        return testWindow.__kmuxOpenedExternalUrls?.includes(url) ?? false;
+      }, expectedUrl)
+    )
+    .toBe(true);
+}
+
+async function clickTerminalTextLink(
+  page: Page,
+  surfaceId: string,
+  text: string,
+  cols: number
+): Promise<void> {
+  await expect(
+    page.locator(`[data-testid="terminal-${surfaceId}"] .xterm-rows`)
+  ).toContainText(text);
+
+  const point = await page.evaluate(
+    ({ targetSurfaceId, targetText, terminalCols }) => {
+      const terminal = document.querySelector<HTMLElement>(
+        `[data-testid="terminal-${targetSurfaceId}"]`
+      );
+      const screen =
+        terminal?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+      const rows = Array.from(
+        terminal?.querySelectorAll<HTMLElement>(".xterm-rows > div") ?? []
+      );
+      const row =
+        rows.find((candidate) => candidate.textContent?.trim() === targetText) ??
+        rows.find((candidate) => candidate.textContent?.includes(targetText));
+      if (!terminal || !screen || !row) {
+        throw new Error(`terminal text link not visible: ${targetText}`);
+      }
+
+      const rowText = row.textContent ?? "";
+      const startColumn = rowText.indexOf(targetText) + 1;
+      if (startColumn < 1) {
+        throw new Error(`terminal text link column not found: ${targetText}`);
+      }
+
+      const screenRect = screen.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const cellWidth = screenRect.width / terminalCols;
+      return {
+        x: screenRect.left + (startColumn - 0.5) * cellWidth,
+        y: rowRect.top + rowRect.height / 2
+      };
+    },
+    { targetSurfaceId: surfaceId, targetText: text, terminalCols: cols }
+  );
+
+  await page.mouse.click(point.x, point.y);
 }
 
 async function selectSettingsCategory(
@@ -321,6 +407,54 @@ test("terminal renders with xterm DOM rows by default", async () => {
     await expect(textFontInput).toHaveValue(/"JetBrainsMono Nerd Font Mono"/);
     await expect(textFontInput).not.toHaveValue(/kmux JetBrainsMono/);
     await expect(page.getByTestId("terminal-typography-preview")).toBeVisible();
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("terminal links open through the external URL bridge", async () => {
+  const launched = await launchKmux("kmux-e2e-terminal-links-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+    const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
+    const osc8Url =
+      "https://oss.navercorp.com/ArticleBE/monorepo/pull/5463";
+    const plainUrl =
+      "https://oss.navercorp.com/ArticleBE/monorepo/pull/5463?plain=1";
+
+    await startRecordingExternalUrlOpens(page);
+    await page.evaluate(
+      ({ targetSurfaceId, targetUrl }) =>
+        window.kmux.sendText(
+          targetSurfaceId,
+          `printf '\\033]8;;${targetUrl}\\007${targetUrl}\\033]8;;\\007\\n'\r`
+        ),
+      { targetSurfaceId: surfaceId, targetUrl: osc8Url }
+    );
+    await waitForSurfaceSnapshotContains(page, surfaceId, osc8Url, 8000);
+
+    const osc8Snapshot = await getSurfaceSnapshot(page, surfaceId);
+    expect(osc8Snapshot).not.toBeNull();
+    await clickTerminalTextLink(page, surfaceId, osc8Url, osc8Snapshot!.cols);
+    await waitForExternalUrlOpen(page, osc8Url);
+
+    await page.evaluate(
+      ({ targetSurfaceId, targetUrl }) =>
+        window.kmux.sendText(
+          targetSurfaceId,
+          `printf '${targetUrl}\\n'\r`
+        ),
+      { targetSurfaceId: surfaceId, targetUrl: plainUrl }
+    );
+    await waitForSurfaceSnapshotContains(page, surfaceId, plainUrl, 8000);
+
+    const plainSnapshot = await getSurfaceSnapshot(page, surfaceId);
+    expect(plainSnapshot).not.toBeNull();
+    await clickTerminalTextLink(page, surfaceId, plainUrl, plainSnapshot!.cols);
+    await waitForExternalUrlOpen(page, plainUrl);
   } finally {
     await closeKmux(launched);
   }
@@ -691,7 +825,7 @@ test("pre-versioned settings migrate bell sounds to enabled once", async () => {
     );
 
     expect(view.settings.notificationSound).toBe(true);
-    expect(view.settings.settingsVersion).toBe(2);
+    expect(view.settings.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
   } finally {
     await closeKmux(launched);
   }

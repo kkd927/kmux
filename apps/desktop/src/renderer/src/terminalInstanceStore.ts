@@ -1,6 +1,7 @@
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { Unicode11Addon } from "@xterm/addon-unicode11";
+import type { WebLinksAddon } from "@xterm/addon-web-links";
 import type { Terminal } from "@xterm/xterm";
 
 export interface TerminalInstance {
@@ -9,6 +10,7 @@ export interface TerminalInstance {
   fit: FitAddon;
   search: SearchAddon;
   unicode11: Unicode11Addon;
+  webLinks: WebLinksAddon;
   lastHydratedSurfaceId: string | null;
   lastHydratedSurfaceSequence: number | null;
   // Active stream attachment cleanup. The terminal widget may stay cached by

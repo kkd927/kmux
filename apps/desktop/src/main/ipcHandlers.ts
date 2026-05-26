@@ -59,6 +59,7 @@ interface IpcHandlersOptions {
   detachSurface: (contentsId: number, surfaceId: Id) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
+  openExternalUrl: (url: string) => Promise<void>;
   resizeSurface: (
     contentsId: number,
     surfaceId: Id,
@@ -175,6 +176,10 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       options.sendKeyInput(surfaceId, input);
     }
   );
+  ipcMain.handle("kmux:external-url:open", async (event, url: string) => {
+    await options.openExternalUrl(url);
+    event.sender.send("kmux:external-url:opened", url);
+  });
   ipcMain.handle(
     "kmux:terminal:resize",
     async (

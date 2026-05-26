@@ -301,6 +301,16 @@ async function bootstrap(): Promise<void> {
     detachSurface: terminalBridge.detachSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,
+    openExternalUrl: async (rawUrl) => {
+      const url = new URL(rawUrl);
+      if (!["http:", "https:"].includes(url.protocol)) {
+        throw new Error(`Unsupported external URL protocol: ${url.protocol}`);
+      }
+      if (process.env.NODE_ENV === "test") {
+        return;
+      }
+      await shell.openExternal(url.toString());
+    },
     resizeSurface: terminalBridge.resizeSurface,
     identify: runtime.identify,
     listTerminalFontFamilies: runtime.listTerminalFontFamilies,
