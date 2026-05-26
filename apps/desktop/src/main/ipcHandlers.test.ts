@@ -38,6 +38,13 @@ function registerTestHandlers(options: {
     surfaceId: string,
     attachId: string
   ) => Promise<{ status: "ready" }>;
+  resizeSurface?: (
+    contentsId: number,
+    surfaceId: string,
+    attachId: string | null,
+    cols: number,
+    rows: number
+  ) => Promise<void>;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -52,7 +59,7 @@ function registerTestHandlers(options: {
     detachSurface: vi.fn(),
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
-    resizeSurface: vi.fn(),
+    resizeSurface: options.resizeSurface ?? vi.fn(),
     identify: vi.fn(),
     listTerminalFontFamilies: vi.fn(),
     previewTerminalTypography: vi.fn(),
@@ -173,6 +180,35 @@ describe("ipc handlers", () => {
       44,
       "surface-1",
       "attach-1"
+    );
+  });
+
+  it("routes resize requests with sender and attach identity", async () => {
+    const resizeSurface = vi.fn(async () => {});
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-13T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      resizeSurface
+    });
+
+    const handler = handlers.get("kmux:terminal:resize");
+
+    expect(handler).toBeTypeOf("function");
+    await Promise.resolve(
+      handler?.({ sender: { id: 44 } }, "surface-1", "attach-1", 132, 43)
+    );
+    expect(resizeSurface).toHaveBeenCalledWith(
+      44,
+      "surface-1",
+      "attach-1",
+      132,
+      43
     );
   });
 });

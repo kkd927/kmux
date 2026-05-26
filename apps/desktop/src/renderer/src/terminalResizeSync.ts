@@ -2,6 +2,7 @@ export type TerminalResizeSyncStatus = "synced" | "superseded" | "failed";
 
 export interface TerminalResizeSyncRequest {
   surfaceId: string;
+  attachId: string | null;
   generation: number;
   cols: number;
   rows: number;
@@ -13,7 +14,12 @@ export type TerminalResizeSyncResult = TerminalResizeSyncRequest & {
 };
 
 interface TerminalResizeSyncOptions {
-  sendResize: (surfaceId: string, cols: number, rows: number) => Promise<void>;
+  sendResize: (
+    surfaceId: string,
+    attachId: string | null,
+    cols: number,
+    rows: number
+  ) => Promise<void>;
 }
 
 interface PendingResize extends TerminalResizeSyncRequest {
@@ -37,6 +43,7 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
   ): void {
     request.resolve({
       surfaceId: request.surfaceId,
+      attachId: request.attachId,
       generation: request.generation,
       cols: request.cols,
       rows: request.rows,
@@ -70,7 +77,12 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
       let failed = false;
       let error: unknown;
       try {
-        await options.sendResize(request.surfaceId, request.cols, request.rows);
+        await options.sendResize(
+          request.surfaceId,
+          request.attachId,
+          request.cols,
+          request.rows
+        );
       } catch (caughtError) {
         failed = true;
         error = caughtError;
@@ -90,6 +102,7 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
 
       if (
         !failed &&
+        pending.attachId === request.attachId &&
         pending.cols === request.cols &&
         pending.rows === request.rows
       ) {

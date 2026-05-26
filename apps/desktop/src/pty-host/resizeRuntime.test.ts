@@ -72,6 +72,7 @@ describe("pty-host resize runtime", () => {
     handleTerminalResizeRequest({
       record,
       sessionId: "session_1",
+      attachId: "attach_1",
       requestId: "resize_1",
       cols: 120,
       rows: 40,
@@ -86,6 +87,7 @@ describe("pty-host resize runtime", () => {
     expect(emitResize).toHaveBeenCalledWith({
       surfaceId: "surface_1",
       sessionId: "session_1",
+      attachId: "attach_1",
       cols: 120,
       rows: 40
     });

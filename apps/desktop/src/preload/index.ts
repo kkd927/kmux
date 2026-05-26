@@ -170,8 +170,19 @@ const api = {
       }
     });
   },
-  resizeSurface(surfaceId: string, cols: number, rows: number): Promise<void> {
-    return ipcRenderer.invoke("kmux:terminal:resize", surfaceId, cols, rows);
+  resizeSurface(
+    surfaceId: string,
+    attachId: string | null,
+    cols: number,
+    rows: number
+  ): Promise<void> {
+    return ipcRenderer.invoke(
+      "kmux:terminal:resize",
+      surfaceId,
+      attachId,
+      cols,
+      rows
+    );
   },
   listTerminalFontFamilies(): Promise<string[]> {
     return ipcRenderer.invoke("kmux:terminal-typography:fonts:list");

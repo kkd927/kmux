@@ -512,6 +512,7 @@ process.on("message", (request: PtyRequest) => {
         handleTerminalResizeRequest({
           record: sessions.get(request.sessionId),
           sessionId: request.sessionId,
+          attachId: request.attachId,
           requestId: request.requestId,
           cols: request.cols,
           rows: request.rows,

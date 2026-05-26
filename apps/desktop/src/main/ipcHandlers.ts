@@ -59,7 +59,13 @@ interface IpcHandlersOptions {
   detachSurface: (contentsId: number, surfaceId: Id) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
-  resizeSurface: (surfaceId: Id, cols: number, rows: number) => Promise<void>;
+  resizeSurface: (
+    contentsId: number,
+    surfaceId: Id,
+    attachId: Id | null,
+    cols: number,
+    rows: number
+  ) => Promise<void>;
   identify: () => ShellIdentity;
   listTerminalFontFamilies: () => Promise<string[]>;
   previewTerminalTypography: (
@@ -171,8 +177,20 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle(
     "kmux:terminal:resize",
-    async (_event, surfaceId: Id, cols: number, rows: number) => {
-      await options.resizeSurface(surfaceId, cols, rows);
+    async (
+      event,
+      surfaceId: Id,
+      attachId: Id | null,
+      cols: number,
+      rows: number
+    ) => {
+      await options.resizeSurface(
+        event.sender.id,
+        surfaceId,
+        attachId,
+        cols,
+        rows
+      );
     }
   );
   ipcMain.handle("kmux:terminal-typography:fonts:list", () =>

@@ -97,7 +97,13 @@ export interface TerminalBridge {
   sendText(surfaceId: Id, text: string): void;
   sendKey(surfaceId: Id, key: string): void;
   sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void;
-  resizeSurface(surfaceId: Id, cols: number, rows: number): Promise<void>;
+  resizeSurface(
+    contentsId: number,
+    surfaceId: Id,
+    attachId: Id | null,
+    cols: number,
+    rows: number
+  ): Promise<void>;
   snapshotSurface(
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
@@ -276,13 +282,23 @@ export function createTerminalBridge(
   }
 
   async function resizeSurface(
+    contentsId: number,
     surfaceId: Id,
+    attachId: Id | null,
     cols: number,
     rows: number
   ): Promise<void> {
     const sessionId = surfaceSessionId(surfaceId);
     if (!sessionId) {
       return;
+    }
+    if (attachId) {
+      const attachment = attachedSurfacesByContents
+        .get(contentsId)
+        ?.get(surfaceId);
+      if (attachment?.status !== "ready" || attachment.attachId !== attachId) {
+        return;
+      }
     }
 
     const startedAt = profileNowMs();
@@ -295,6 +311,7 @@ export function createTerminalBridge(
         details: {
           surfaceId,
           sessionId,
+          attachId,
           cols,
           rows,
           hasPtyHost: Boolean(ptyHost)
@@ -302,7 +319,11 @@ export function createTerminalBridge(
       });
     }
     try {
-      await ptyHost?.resize(sessionId, cols, rows);
+      if (attachId) {
+        await ptyHost?.resize(sessionId, cols, rows, attachId);
+      } else {
+        await ptyHost?.resize(sessionId, cols, rows);
+      }
     } finally {
       if (options.profileRecorder?.enabled) {
         const endedAt = profileNowMs();
@@ -313,6 +334,7 @@ export function createTerminalBridge(
           details: {
             surfaceId,
             sessionId,
+            attachId,
             cols,
             rows,
             durationMs: endedAt - startedAt
@@ -686,10 +708,16 @@ export function createTerminalBridge(
   }
 
   function forwardTerminalResize(payload: SurfaceResizePayload): void {
+    if (!payload.attachId) {
+      return;
+    }
     for (const [contentsId, attachment] of surfaceAttachmentEntries(
       payload.surfaceId
     )) {
-      if (attachment.status === "hydrating") {
+      if (
+        attachment.status === "hydrating" ||
+        attachment.attachId !== payload.attachId
+      ) {
         continue;
       }
       sendTerminalEvent(contentsId, {
