@@ -116,8 +116,14 @@ type LegacyTypographyFields = {
 type LegacyKmuxSettings = Partial<KmuxSettings> & LegacyTypographyFields;
 
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
-export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY =
+export const JETBRAINS_MONO_NERD_FONT_MONO_FAMILY =
+  '"JetBrainsMono Nerd Font Mono"';
+const LEGACY_TERMINAL_TEXT_FONT_FAMILY =
   'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
+const PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY =
+  `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
+export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY =
+  `${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
 export const DEFAULT_TERMINAL_LINE_HEIGHT = 1;
 export const KMUX_BUILTIN_SYMBOL_FONT_FAMILY = '"kmux Symbols Nerd Font Mono"';
 export const DEFAULT_SIDEBAR_WIDTH = 320;
@@ -130,7 +136,7 @@ const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
-export const CURRENT_SETTINGS_VERSION = 2;
+export const CURRENT_SETTINGS_VERSION = 3;
 
 function defaultHomeDirectory(): string {
   const homeDirectory =
@@ -310,7 +316,6 @@ export function createDefaultSettings(
     warnBeforeQuit: true,
     notificationDesktop: true,
     notificationSound: true,
-    terminalUseWebgl: true,
     themeMode: "dark",
     shell: shellPath,
     shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -383,21 +388,22 @@ export function mergeSettings(
   });
 
   return {
-    ...current,
-    ...nextPatch,
     settingsVersion: CURRENT_SETTINGS_VERSION,
+    socketMode: nextPatch.socketMode ?? current.socketMode,
     warnBeforeQuit:
       typeof nextPatch.warnBeforeQuit === "boolean"
         ? nextPatch.warnBeforeQuit
         : current.warnBeforeQuit,
+    notificationDesktop:
+      typeof nextPatch.notificationDesktop === "boolean"
+        ? nextPatch.notificationDesktop
+        : current.notificationDesktop,
     notificationSound:
       typeof nextPatch.notificationSound === "boolean"
         ? nextPatch.notificationSound
         : current.notificationSound,
-    terminalUseWebgl: sanitizeTerminalUseWebgl(
-      nextPatch.terminalUseWebgl ?? current.terminalUseWebgl
-    ),
     themeMode: sanitizeThemeMode(nextPatch.themeMode ?? current.themeMode),
+    shell: nextPatch.shell ?? current.shell,
     terminalTypography: sanitizeTerminalTypographySettings(
       nextPatch.terminalTypography,
       patch,
@@ -422,14 +428,44 @@ export function sanitizeSettings(
     ...settings,
     settingsVersion: CURRENT_SETTINGS_VERSION,
     notificationSound:
-      settingsVersion < CURRENT_SETTINGS_VERSION
+      settingsVersion < 2
         ? true
         : settings.notificationSound
   };
-  return mergeSettings(
+  const sanitizedSettings = mergeSettings(
     createDefaultSettings(settings.socketMode),
     migratedSettings
   );
+  return migrateSettingsAfterSanitize(sanitizedSettings, settingsVersion);
+}
+
+function migrateSettingsAfterSanitize(
+  settings: KmuxSettings,
+  sourceSettingsVersion: number
+): KmuxSettings {
+  const textFontFamily =
+    settings.terminalTypography.preferredTextFontFamily.trim();
+  if (
+    sourceSettingsVersion >= CURRENT_SETTINGS_VERSION &&
+    textFontFamily !== PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY
+  ) {
+    return settings;
+  }
+
+  if (
+    textFontFamily !== LEGACY_TERMINAL_TEXT_FONT_FAMILY &&
+    textFontFamily !== PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY
+  ) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    terminalTypography: {
+      ...settings.terminalTypography,
+      preferredTextFontFamily: DEFAULT_TERMINAL_TEXT_FONT_FAMILY
+    }
+  };
 }
 
 export function normalizeTerminalTypographySettings(
@@ -3242,12 +3278,6 @@ function sanitizeSettingsVersion(settingsVersion: unknown): number {
   return typeof settingsVersion === "number" && Number.isFinite(settingsVersion)
     ? settingsVersion
     : 1;
-}
-
-function sanitizeTerminalUseWebgl(
-  terminalUseWebgl: boolean | undefined
-): boolean {
-  return typeof terminalUseWebgl === "boolean" ? terminalUseWebgl : true;
 }
 
 function sanitizeTextFontFamily(fontFamily: string | undefined): string {

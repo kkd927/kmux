@@ -7,12 +7,10 @@ import {
 } from "@kmux/proto";
 import {
   applyPendingTerminalEnterRewrite,
-  applyTerminalWebglPreference,
   countSupportedImageFiles,
   createTerminalPaneXtermTheme,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
-  resolveTerminalWebglRecovery,
   resolveTerminalEnterRewrite,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme
@@ -53,144 +51,6 @@ describe("terminal renderer helpers", () => {
 
     expect(theme.background).toBe(THEMES.dark.windowBg);
     expect(theme.foreground).toBe("#eeeeee");
-  });
-
-  it("loads the WebGL addon once when enabled", () => {
-    const addon = {
-      dispose: vi.fn()
-    };
-    const terminal = {
-      loadAddon: vi.fn()
-    };
-
-    const loadedAddon = applyTerminalWebglPreference({
-      terminal,
-      currentAddon: null,
-      useWebgl: true,
-      createAddon: () => addon
-    });
-    const reusedAddon = applyTerminalWebglPreference({
-      terminal,
-      currentAddon: loadedAddon,
-      useWebgl: true,
-      createAddon: () => {
-        throw new Error("should not create another addon");
-      }
-    });
-
-    expect(loadedAddon).toBe(addon);
-    expect(reusedAddon).toBe(addon);
-    expect(terminal.loadAddon).toHaveBeenCalledTimes(1);
-    expect(terminal.loadAddon).toHaveBeenCalledWith(addon);
-  });
-
-  it("disposes the WebGL addon when disabled", () => {
-    const addon = {
-      dispose: vi.fn()
-    };
-
-    const nextAddon = applyTerminalWebglPreference({
-      terminal: {
-        loadAddon: vi.fn()
-      },
-      currentAddon: addon,
-      useWebgl: false,
-      createAddon: () => addon
-    });
-
-    expect(nextAddon).toBeNull();
-    expect(addon.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back cleanly when the WebGL addon fails to load", () => {
-    const loadError = new Error("webgl unavailable");
-    const onLoadError = vi.fn();
-
-    const nextAddon = applyTerminalWebglPreference({
-      terminal: {
-        loadAddon: vi.fn(() => {
-          throw loadError;
-        })
-      },
-      currentAddon: null,
-      useWebgl: true,
-      createAddon: () => ({
-        dispose: vi.fn()
-      }),
-      onLoadError
-    });
-
-    expect(nextAddon).toBeNull();
-    expect(onLoadError).toHaveBeenCalledWith(loadError);
-  });
-
-  it("recreates WebGL after hydration because snapshot replay can leave stale canvas paint", () => {
-    expect(
-      resolveTerminalWebglRecovery({
-        webglActive: true,
-        reason: "hydrate",
-        resized: false,
-        previousCols: 120,
-        previousRows: 30,
-        cols: 120,
-        rows: 30,
-        resizeBurstCount: 1
-      })
-    ).toEqual({
-      refresh: true,
-      recreate: true
-    });
-  });
-
-  it("uses refresh-only recovery for isolated small WebGL resizes", () => {
-    expect(
-      resolveTerminalWebglRecovery({
-        webglActive: true,
-        reason: "resize",
-        resized: true,
-        previousCols: 120,
-        previousRows: 30,
-        cols: 118,
-        rows: 30,
-        resizeBurstCount: 1
-      })
-    ).toEqual({
-      refresh: true,
-      recreate: false
-    });
-  });
-
-  it("recreates WebGL after large or churned resizes", () => {
-    expect(
-      resolveTerminalWebglRecovery({
-        webglActive: true,
-        reason: "resize",
-        resized: true,
-        previousCols: 58,
-        previousRows: 16,
-        cols: 27,
-        rows: 16,
-        resizeBurstCount: 1
-      })
-    ).toEqual({
-      refresh: true,
-      recreate: true
-    });
-    expect(
-      resolveTerminalWebglRecovery({
-        webglActive: true,
-        reason: "resize",
-        resized: true,
-        previousCols: 80,
-        previousRows: 24,
-        cols: 79,
-        rows: 24,
-        resizeBurstCount: 2
-      })
-    ).toEqual({
-      refresh: true,
-      recreate: true
-    });
   });
 
   it("does not paste when the clipboard is empty", async () => {

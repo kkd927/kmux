@@ -447,7 +447,6 @@ export interface KmuxSettings {
   warnBeforeQuit: boolean;
   notificationDesktop: boolean;
   notificationSound: boolean;
-  terminalUseWebgl: boolean;
   themeMode: ThemeMode;
   shell?: string;
   shortcuts: Record<string, string>;

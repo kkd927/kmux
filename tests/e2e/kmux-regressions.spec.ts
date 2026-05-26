@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
   createDefaultSettings,
+  JETBRAINS_MONO_NERD_FONT_MONO_FAMILY,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY
 } from "@kmux/core";
 import type { SurfaceSnapshotPayload } from "@kmux/proto";
@@ -285,8 +286,8 @@ test("settings modal updates terminal typography preferences and preview", async
   }
 });
 
-test("settings modal toggles the terminal WebGL renderer for comparison", async () => {
-  const launched = await launchKmux("kmux-e2e-settings-terminal-renderer-", {
+test("terminal renders with xterm DOM rows by default", async () => {
+  const launched = await launchKmux("kmux-e2e-terminal-dom-renderer-", {
     env: {
       KMUX_E2E_WINDOW_MODE: "visible"
     }
@@ -294,26 +295,6 @@ test("settings modal toggles the terminal WebGL renderer for comparison", async 
 
   try {
     const page = launched.page;
-
-    await page.waitForFunction(() => {
-      const xterm = document.querySelector(".xterm");
-      return Boolean(xterm && xterm.querySelectorAll("canvas").length > 0);
-    });
-
-    await openSettingsCategory(page, "Terminal");
-    const rendererToggle = page.getByLabel("Use WebGL terminal renderer");
-    await expect(rendererToggle).toBeVisible();
-    await expect(rendererToggle).toBeChecked();
-
-    await rendererToggle.uncheck();
-    await page.getByRole("button", { name: "Save" }).click();
-
-    const disabled = await waitForView(
-      page,
-      (view) => view.settings.terminalUseWebgl === false,
-      "terminal WebGL renderer should disable after saving settings"
-    );
-    expect(disabled.settings.terminalUseWebgl).toBe(false);
 
     await page.waitForFunction(() => {
       const xterm = document.querySelector(".xterm");
@@ -324,140 +305,22 @@ test("settings modal toggles the terminal WebGL renderer for comparison", async 
       );
     });
 
-    await openSettingsCategory(page, "Terminal");
-    await expect(
-      page.getByLabel("Use WebGL terminal renderer")
-    ).not.toBeChecked();
-    await page.getByLabel("Use WebGL terminal renderer").check();
-    await page.getByRole("button", { name: "Save" }).click();
-
-    const enabled = await waitForView(
-      page,
-      (view) => view.settings.terminalUseWebgl === true,
-      "terminal WebGL renderer should re-enable after saving settings"
+    const view = await getView(page);
+    expect(view.settings.terminalTypography.preferredTextFontFamily).toContain(
+      JETBRAINS_MONO_NERD_FONT_MONO_FAMILY
     );
-    expect(enabled.settings.terminalUseWebgl).toBe(true);
+    expect(view.terminalTypography.resolvedFontFamily).toContain(
+      JETBRAINS_MONO_NERD_FONT_MONO_FAMILY
+    );
+    expect(
+      view.settings.terminalTypography.preferredTextFontFamily
+    ).not.toContain("kmux JetBrainsMono");
 
-    await page.waitForFunction(() => {
-      const xterm = document.querySelector(".xterm");
-      return Boolean(xterm && xterm.querySelectorAll("canvas").length > 0);
-    });
-  } finally {
-    await closeKmux(launched);
-  }
-});
-
-test("active terminal automatically recovers after WebGL context loss", async () => {
-  const launched = await launchKmux("kmux-e2e-webgl-context-loss-", {
-    env: {
-      KMUX_E2E_WINDOW_MODE: "visible"
-    }
-  });
-
-  try {
-    const page = launched.page;
-    const initial = await getView(page);
-    const paneId = initial.activeWorkspace.activePaneId;
-    const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
-
-    await page.waitForFunction((targetSurfaceId) => {
-      const viewport = document.querySelector(
-        `[data-testid="terminal-${targetSurfaceId}"]`
-      );
-      if (!(viewport instanceof HTMLElement)) {
-        return false;
-      }
-
-      return Array.from(viewport.querySelectorAll("canvas")).some((canvas) => {
-        const gl =
-          (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
-          (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
-          (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
-        return Boolean(gl?.getExtension("WEBGL_lose_context"));
-      });
-    }, surfaceId);
-
-    const triggered = await page.evaluate((targetSurfaceId) => {
-      const trackedWindow = window as Window & {
-        __kmuxLostWebglCanvas?: HTMLCanvasElement | null;
-      };
-      const viewport = document.querySelector(
-        `[data-testid="terminal-${targetSurfaceId}"]`
-      );
-      if (!(viewport instanceof HTMLElement)) {
-        return { triggered: false };
-      }
-
-      for (const canvas of Array.from(viewport.querySelectorAll("canvas"))) {
-        const gl =
-          (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
-          (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
-          (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
-        const loseContext = gl?.getExtension("WEBGL_lose_context");
-        if (!gl || !loseContext) {
-          continue;
-        }
-
-        trackedWindow.__kmuxLostWebglCanvas = canvas;
-        loseContext.loseContext();
-        return {
-          triggered: true,
-          contextLost: gl.isContextLost()
-        };
-      }
-
-      return { triggered: false };
-    }, surfaceId);
-
-    expect(triggered).toMatchObject({
-      triggered: true,
-      contextLost: true
-    });
-
-    await expect
-      .poll(
-        async () =>
-          page.evaluate((targetSurfaceId) => {
-            const trackedWindow = window as Window & {
-              __kmuxLostWebglCanvas?: HTMLCanvasElement | null;
-            };
-            const viewport = document.querySelector(
-              `[data-testid="terminal-${targetSurfaceId}"]`
-            );
-            const oldCanvas = trackedWindow.__kmuxLostWebglCanvas ?? null;
-            if (!(viewport instanceof HTMLElement)) {
-              return {
-                viewportReady: false,
-                oldCanvasConnected: Boolean(oldCanvas?.isConnected),
-                hasLiveReplacement: false
-              };
-            }
-
-            const liveReplacement = Array.from(
-              viewport.querySelectorAll("canvas")
-            ).find((canvas) => {
-              const gl =
-                (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
-                (canvas.getContext("webgl") as WebGLRenderingContext | null) ??
-                (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
-              return Boolean(gl && !gl.isContextLost() && canvas !== oldCanvas);
-            });
-
-            return {
-              viewportReady: true,
-              oldCanvasConnected: Boolean(oldCanvas?.isConnected),
-              hasLiveReplacement: Boolean(liveReplacement)
-            };
-          }, surfaceId),
-        {
-          timeout: 10_000
-        }
-      )
-      .toMatchObject({
-        viewportReady: true,
-        oldCanvasConnected: false,
-        hasLiveReplacement: true
-      });
+    await openSettingsCategory(page, "Terminal");
+    const textFontInput = page.getByLabel("Text font");
+    await expect(textFontInput).toHaveValue(/"JetBrainsMono Nerd Font Mono"/);
+    await expect(textFontInput).not.toHaveValue(/kmux JetBrainsMono/);
+    await expect(page.getByTestId("terminal-typography-preview")).toBeVisible();
   } finally {
     await closeKmux(launched);
   }
@@ -486,7 +349,7 @@ test("settings preview stays ready with the built-in glyph font when no compatib
   }
 });
 
-test("settings preview reports a detected installed compatible font", async () => {
+test("settings preview keeps the default full Nerd Font in the text stack", async () => {
   const launched = await launchKmux("kmux-e2e-settings-typography-installed-", {
     env: {
       KMUX_TEST_FONT_FAMILIES: JSON.stringify([
@@ -498,14 +361,22 @@ test("settings preview reports a detected installed compatible font", async () =
 
   try {
     const page = launched.page;
+    const view = await getView(page);
+    expect(view.terminalTypography.textFontFamily).toContain(
+      '"JetBrainsMono Nerd Font Mono"'
+    );
+    expect(view.terminalTypography.symbolFallbackFamilies).toEqual([
+      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+    ]);
+
     await openSettingsCategory(page, "Terminal");
 
     const preview = page.getByTestId("terminal-typography-preview");
     await expect(preview).toBeVisible();
     await expect(preview).toContainText("Glyph support ready");
     await expect(preview).toContainText("Using built-in kmux glyph font.");
-    await expect(preview).toContainText(
-      "Compatible installed font detected: JetBrainsMono Nerd Font Mono"
+    await expect(preview).not.toContainText(
+      "Compatible installed font detected:"
     );
   } finally {
     await closeKmux(launched);
@@ -1507,6 +1378,10 @@ test("terminal output survives surface switches through attach snapshots", async
       await page.waitForTimeout(200);
     }
     expect(snapshotVt).toContain("kmux-attach-check");
+    const originalSurfaceRows = page.locator(
+      `[data-testid="terminal-${originalSurfaceId}"] .xterm-rows`
+    );
+    await expect(originalSurfaceRows).toContainText("kmux-attach-check");
 
     await dispatch(page, {
       type: "surface.create",
@@ -1521,6 +1396,29 @@ test("terminal output survives surface switches through attach snapshots", async
       withSecondSurface.activeWorkspace.panes[paneId].activeSurfaceId
     ).not.toBe(originalSurfaceId);
 
+    await runCliJson(
+      launched.cliPath,
+      launched.workspaceRoot,
+      launched.sandbox.socketPath,
+      [
+        "surface",
+        "send-text",
+        "--surface",
+        originalSurfaceId,
+        "--text",
+        "printf 'kmux-hidden-tab-check\\n'\r"
+      ]
+    );
+    await waitForSurfaceSnapshotContains(
+      page,
+      originalSurfaceId,
+      "kmux-hidden-tab-check"
+    );
+    await page.waitForTimeout(500);
+    expect(await originalSurfaceRows.textContent()).not.toContain(
+      "kmux-hidden-tab-check"
+    );
+
     await dispatch(page, {
       type: "surface.focus",
       surfaceId: originalSurfaceId
@@ -1533,8 +1431,11 @@ test("terminal output survives surface switches through attach snapshots", async
       "original surface should become active again"
     );
 
+    await expect(originalSurfaceRows).toContainText("kmux-attach-check");
+    await expect(originalSurfaceRows).toContainText("kmux-hidden-tab-check");
     const restoredSnapshot = await getSurfaceSnapshot(page, originalSurfaceId);
     expect(restoredSnapshot?.vt).toContain("kmux-attach-check");
+    expect(restoredSnapshot?.vt).toContain("kmux-hidden-tab-check");
   } finally {
     await closeKmux(launched);
   }
@@ -1626,17 +1527,6 @@ test("workspace switches restore busy alternate-screen terminal content", async 
   try {
     const page = launched.page;
 
-    await dispatch(page, {
-      type: "settings.update",
-      patch: {
-        terminalUseWebgl: false
-      }
-    });
-    await waitForView(
-      page,
-      (view) => view.settings.terminalUseWebgl === false,
-      "terminal WebGL renderer should disable for DOM text assertions"
-    );
     await page.waitForFunction(() => {
       const xterm = document.querySelector(".xterm");
       return Boolean(
@@ -1748,17 +1638,6 @@ test("terminal resize applies to the visible xterm before remote PTY redraws", a
     });
     const page = launched.page;
 
-    await dispatch(page, {
-      type: "settings.update",
-      patch: {
-        terminalUseWebgl: false
-      }
-    });
-    await waitForView(
-      page,
-      (view) => view.settings.terminalUseWebgl === false,
-      "terminal WebGL renderer should disable for DOM text assertions"
-    );
     await page.waitForFunction(() => {
       const xterm = document.querySelector(".xterm");
       return Boolean(

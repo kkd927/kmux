@@ -1,4 +1,55 @@
 @font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src:
+    local("JetBrainsMono Nerd Font Mono Regular"),
+    local("JetBrainsMono NFM Regular"),
+    local("JetBrainsMonoNFM-Regular"),
+    url("../assets/JetBrainsMonoNerdFontMono-Regular.woff2")
+    format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src:
+    local("JetBrainsMono Nerd Font Mono Bold"),
+    local("JetBrainsMono NFM Bold"),
+    local("JetBrainsMonoNFM-Bold"),
+    url("../assets/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src:
+    local("JetBrainsMono Nerd Font Mono Italic"),
+    local("JetBrainsMono NFM Italic"),
+    local("JetBrainsMonoNFM-Italic"),
+    url("../assets/JetBrainsMonoNerdFontMono-Italic.woff2")
+    format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src:
+    local("JetBrainsMono Nerd Font Mono Bold Italic"),
+    local("JetBrainsMono NFM Bold Italic"),
+    local("JetBrainsMonoNFM-BoldItalic"),
+    url("../assets/JetBrainsMonoNerdFontMono-BoldItalic.woff2")
+    format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
   font-family: "kmux Symbols Nerd Font Mono";
   src: url("../assets/SymbolsNerdFontMono.woff2") format("woff2");
   font-weight: normal;
@@ -13,7 +64,8 @@
   --kmux-ui-font-size: 13px;
   --kmux-ui-line-height: 1.35;
   --kmux-terminal-font-family:
-    ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular",
+    "JetBrainsMono Nerd Font Mono", ui-monospace, Menlo, Monaco, Consolas,
+    "SFMono-Regular",
     "kmux Symbols Nerd Font Mono", monospace;
   --kmux-terminal-font-size: 13px;
   --kmux-terminal-line-height: 1;

@@ -1225,28 +1225,6 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           }}
                         />
                       </label>
-                      <div className={styles.settingsRow}>
-                        <span className={styles.settingsRowCopy}>
-                          <span className={styles.settingsRowTitle}>
-                            Hardware-accelerated renderer
-                          </span>
-                          <span className={styles.settingsRowDescription}>
-                            Uses WebGL for smoother terminal drawing. Turn this
-                            off only if text looks soft or blurry on your
-                            display.
-                          </span>
-                        </span>
-                        <input
-                          aria-label="Use WebGL terminal renderer"
-                          type="checkbox"
-                          checked={props.settingsDraft.terminalUseWebgl}
-                          onChange={(event) => {
-                            updateSettingsDraft(props.setSettingsDraft, {
-                              terminalUseWebgl: event.currentTarget.checked
-                            });
-                          }}
-                        />
-                      </div>
                       {props.terminalTypographyPreview ? (
                         <div
                           className={styles.terminalTypographyPreview}

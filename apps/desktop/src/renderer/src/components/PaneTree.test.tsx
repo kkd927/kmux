@@ -59,7 +59,6 @@ function createPaneTreeProps(): PaneTreeProps {
       warnBeforeQuit: true,
       notificationDesktop: true,
       notificationSound: false,
-      terminalUseWebgl: true,
       themeMode: "dark",
       shell: "/bin/zsh",
       shortcuts: {},
@@ -100,7 +99,6 @@ function createPaneTreeProps(): PaneTreeProps {
       }
     },
     active: true,
-    isPaneWebglEnabled: () => true,
     colorTheme: "dark",
     searchSurfaceId: null,
     draggedSurfaceTab: null,
