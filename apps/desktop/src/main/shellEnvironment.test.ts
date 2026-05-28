@@ -252,7 +252,7 @@ describe("shell environment resolver", () => {
     ).toEqual({
       entry:
         "/Applications/kmux.app/Contents/Resources/app.asar/out/main/shellEnvProbeWorker.js",
-      cwd: "/Applications/kmux.app/Contents/Resources",
+      cwd: "/Applications/kmux.app/Contents/Resources/app.asar.unpacked",
       execArgv: []
     });
   });
@@ -352,8 +352,8 @@ describe("shell environment resolver", () => {
     warning.mockRestore();
   });
 
-  it("returns fresh cache immediately without probing synchronously on an SWR hit", async () => {
-    const cachePath = join(sandboxDir, "swr-hit.json");
+  it("probes synchronously and overwrites the cache even when a fresh cache exists", async () => {
+    const cachePath = join(sandboxDir, "fresh-cache.json");
     writeFileSync(
       cachePath,
       JSON.stringify({
@@ -368,7 +368,6 @@ describe("shell environment resolver", () => {
     const ptyProbe = vi.fn(async () => {
       return '__TOKEN__{"PATH":"/new/path","SHELL":"/bin/zsh"}__TOKEN__';
     });
-    let backgroundRevalidation: Promise<void> | null = null;
 
     const resolved = await resolveShellEnvironment({
       preferredShell: "/bin/zsh",
@@ -377,20 +376,15 @@ describe("shell environment resolver", () => {
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       cachePath,
-      ptyProbe,
-      onBackgroundRevalidation: (promise) => {
-        backgroundRevalidation = promise;
-      }
+      ptyProbe
     });
 
-    expect(resolved.source).toBe("cached");
+    expect(resolved.source).toBe("resolved");
     expect(resolved.shellPath).toBe("/bin/zsh");
     expect(resolved.baseEnv).toEqual({
-      PATH: "/cached/path",
+      PATH: "/new/path",
       SHELL: "/bin/zsh"
     });
-    expect(backgroundRevalidation).not.toBeNull();
-    await backgroundRevalidation;
     expect(ptyProbe).toHaveBeenCalledTimes(1);
     const refreshed = JSON.parse(readFileSync(cachePath, "utf8")) as {
       baseEnv: Record<string, string>;
@@ -398,8 +392,8 @@ describe("shell environment resolver", () => {
     expect(refreshed.baseEnv.PATH).toBe("/new/path");
   });
 
-  it("re-probes synchronously when the cached entry is older than the TTL", async () => {
-    const cachePath = join(sandboxDir, "swr-stale.json");
+  it("replaces stale cached entries after a successful probe", async () => {
+    const cachePath = join(sandboxDir, "stale-cache.json");
     const stalePastMs = Date.now() - 60 * 60 * 1000;
     writeFileSync(
       cachePath,
@@ -421,13 +415,16 @@ describe("shell environment resolver", () => {
       processExecPath: "/usr/local/bin/node",
       randomToken: "__TOKEN__",
       cachePath,
-      cacheTtlMs: 30 * 60 * 1000,
       exec: execMock
     });
 
     expect(resolved.source).toBe("resolved");
     expect(resolved.baseEnv.PATH).toBe("/fresh/path");
     expect(execMock).toHaveBeenCalledTimes(1);
+    const refreshed = JSON.parse(readFileSync(cachePath, "utf8")) as {
+      baseEnv: Record<string, string>;
+    };
+    expect(refreshed.baseEnv.PATH).toBe("/fresh/path");
   });
 
   it("ignores cached entries that were recorded for a different shell", async () => {
