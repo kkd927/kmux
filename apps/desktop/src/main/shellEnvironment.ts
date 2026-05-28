@@ -18,7 +18,6 @@ const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
 const PROBE_ONLY_ENV_KEYS = ["KMUX_SHELL_ENV_PROBE"] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
-const DEFAULT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface CachedShellEnvEnvelope {
   shellPath: string;
@@ -101,8 +100,6 @@ interface ResolveShellEnvironmentOptions {
   exec?: ShellCommandExecutor;
   ptyProbe?: ShellPtyProbe;
   cachePath?: string;
-  cacheTtlMs?: number;
-  onBackgroundRevalidation?: (promise: Promise<void>) => void;
 }
 
 export function resolveShellPath(
@@ -174,9 +171,11 @@ export function resolveShellEnvProbeLaunchOptions(
 ): ShellProbeLaunchOptions {
   const asarSegment = `${sep}app.asar${sep}`;
   if (currentDir.includes(asarSegment)) {
+    const packagedResourcesPath =
+      resourcesPath ?? resolve(currentDir, "../../../..");
     return {
       entry: join(currentDir, "shellEnvProbeWorker.js"),
-      cwd: resourcesPath ?? resolve(currentDir, "../../../.."),
+      cwd: join(packagedResourcesPath, "app.asar.unpacked"),
       execArgv: []
     };
   }
@@ -235,41 +234,10 @@ export async function resolveShellEnvironment(
   const baseEnv = sanitizeInheritedEnv(inheritedEnv);
   const probeEnv = buildShellProbeEnv(baseEnv);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const processExecPath = options.processExecPath ?? process.execPath;
   const marker = options.randomToken ?? `__kmux_shell_env__${randomUUID()}`;
   const exec = options.exec ?? defaultShellCommandExecutor;
   const ptyProbe = options.ptyProbe ?? defaultShellPtyProbe;
-
-  if (options.cachePath) {
-    const envelope = readCachedShellEnvEnvelope(options.cachePath);
-    if (
-      envelope &&
-      envelope.shellPath === shellPath &&
-      isCacheFresh(envelope.cachedAt, cacheTtlMs)
-    ) {
-      const revalidation = revalidateShellEnvInBackground({
-        shellPath,
-        platform,
-        probeEnv,
-        timeoutMs,
-        processExecPath,
-        marker,
-        exec,
-        ptyProbe,
-        cachePath: options.cachePath
-      });
-      options.onBackgroundRevalidation?.(revalidation);
-      return {
-        shellPath,
-        baseEnv: {
-          ...envelope.baseEnv,
-          SHELL: envelope.baseEnv.SHELL ?? shellPath
-        },
-        source: "cached"
-      };
-    }
-  }
 
   try {
     const resolvedEnv = await probeShellEnvironment({
@@ -366,49 +334,6 @@ async function probeShellEnvironment(options: {
   );
   resolvedEnv.SHELL ??= options.shellPath;
   return resolvedEnv;
-}
-
-function isCacheFresh(cachedAt: number | undefined, ttlMs: number): boolean {
-  if (typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
-    return false;
-  }
-  const age = Date.now() - cachedAt;
-  return age >= 0 && age < ttlMs;
-}
-
-async function revalidateShellEnvInBackground(options: {
-  shellPath: string;
-  platform: NodeJS.Platform;
-  probeEnv: NodeJS.ProcessEnv;
-  timeoutMs: number;
-  processExecPath: string;
-  marker: string;
-  exec: ShellCommandExecutor;
-  ptyProbe: ShellPtyProbe;
-  cachePath: string;
-}): Promise<void> {
-  try {
-    const resolvedEnv = await probeShellEnvironment({
-      shellPath: options.shellPath,
-      platform: options.platform,
-      probeEnv: options.probeEnv,
-      timeoutMs: options.timeoutMs,
-      processExecPath: options.processExecPath,
-      marker: options.marker,
-      exec: options.exec,
-      ptyProbe: options.ptyProbe
-    });
-    writeCachedShellEnv(options.cachePath, {
-      shellPath: options.shellPath,
-      baseEnv: resolvedEnv,
-      cachedAt: Date.now()
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[shell-env] background revalidation failed for ${options.shellPath}: ${message}`
-    );
-  }
 }
 
 function readCachedShellEnvEnvelope(
