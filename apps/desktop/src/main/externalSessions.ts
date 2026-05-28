@@ -379,6 +379,9 @@ function extractCodexPromptText(value: unknown): string | undefined {
 }
 
 function cleanCodexPromptText(value: string): string | undefined {
+  if (isCodexInjectedInstructionsText(value)) {
+    return undefined;
+  }
   const cleaned = value
     .replace(/<permissions instructions>[\s\S]*?<\/permissions instructions>/gi, "\n")
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "\n")
@@ -386,7 +389,16 @@ function cleanCodexPromptText(value: string): string | undefined {
     .replace(/<skill>[\s\S]*?<\/skill>/gi, "\n")
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "\n")
     .trim();
+  if (isCodexInjectedInstructionsText(cleaned)) {
+    return undefined;
+  }
   return cleaned || undefined;
+}
+
+function isCodexInjectedInstructionsText(value: string): boolean {
+  return /^# [^\r\n]+ instructions for [^\r\n]+\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>\s*$/i.test(
+    value.trim()
+  );
 }
 
 function claudeSessionMetadataTitle(

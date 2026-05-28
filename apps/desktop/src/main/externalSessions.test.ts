@@ -427,6 +427,84 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Actual Codex request");
   });
 
+  it("ignores Codex repository instructions when deriving session titles", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-05-28T12:00:00.000Z");
+    const mtime = new Date("2026-05-28T11:00:00.000Z");
+
+    writeJsonl(
+      join(
+        homeDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "05",
+        "28",
+        "rollout-2026-05-28T11-00-codex-agents.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: {
+            id: "codex-agents",
+            cwd: "/Users/test/codex-project"
+          }
+        },
+        {
+          type: "response_item",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "# AGENTS.md instructions for /Users/test/codex-project\n\n" +
+                  "<INSTRUCTIONS>\n" +
+                  "# AGENTS.md\n\n" +
+                  "Do not use this as a resume title.\n" +
+                  "</INSTRUCTIONS>"
+              }
+            ]
+          }
+        },
+        {
+          type: "response_item",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "Fix sessions panel Codex titles\nwith details"
+              }
+            ]
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "user_message",
+            message: "Fix sessions panel Codex titles\nwith details"
+          }
+        }
+      ],
+      mtime
+    );
+
+    const snapshot = createExternalSessionIndexer({
+      homeDir,
+      now: () => now
+    }).listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0].title).toBe("Fix sessions panel Codex titles");
+  });
+
   it("prefers Codex thread names over sanitized prompt fallback titles", () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
