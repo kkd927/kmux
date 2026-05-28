@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +99,50 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(settings);
     expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(settings);
+  });
+
+  it("does not overwrite settings.json edits made after the app opens the file", () => {
+    const settingsPath = join(sandboxDir, "settings.json");
+    const store = createSettingsStore(settingsPath);
+    const settings = createInitialState("/bin/zsh").settings;
+    settings.terminalTypography.preferredTextFontFamily =
+      '"JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, monospace';
+
+    store.save(settings);
+
+    const externallyEditedSettings = {
+      ...settings
+    } as Record<string, unknown>;
+    delete externallyEditedSettings.terminalTypography;
+    writeFileSync(
+      settingsPath,
+      JSON.stringify(externallyEditedSettings, null, 2)
+    );
+
+    store.save(settings);
+
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).not.toHaveProperty(
+      "terminalTypography"
+    );
+  });
+
+  it("skips settings saves when an existing settings.json cannot be read", () => {
+    const settingsPath = join(sandboxDir, "settings-unreadable.json");
+    const existingSettings = createInitialState("/bin/zsh").settings;
+    existingSettings.warnBeforeQuit = false;
+    writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
+    chmodSync(settingsPath, 0o000);
+
+    const store = createSettingsStore(settingsPath);
+    const nextSettings = createInitialState("/bin/zsh").settings;
+    nextSettings.warnBeforeQuit = true;
+
+    store.save(nextSettings);
+
+    chmodSync(settingsPath, 0o600);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(
+      existingSettings
+    );
   });
 
   it("strips legacy startupRestore settings when loading from disk", () => {

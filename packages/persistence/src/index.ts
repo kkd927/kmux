@@ -105,16 +105,57 @@ function warnInvalidFile(filePath: string, reason: string): void {
   console.warn(`[persistence] ignoring ${filePath}: ${reason}`);
 }
 
-function readJsonFile<T>(filePath: string): T | null {
+function warnSkippedSave(filePath: string, reason: string): void {
+  console.warn(`[persistence] skipping save for ${filePath}: ${reason}`);
+}
+
+type TextFileReadResult =
+  | { status: "ok"; content: string }
+  | { status: "missing" }
+  | { status: "error"; reason: string };
+
+function readTextFile(filePath: string): TextFileReadResult {
   try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as T;
+    return { status: "ok", content: readFileSync(filePath, "utf8") };
   } catch (error) {
     if (isMissingFileError(error)) {
-      return null;
+      return { status: "missing" };
     }
     const reason = error instanceof Error ? error.message : String(error);
     warnInvalidFile(filePath, reason);
+    return { status: "error", reason };
+  }
+}
+
+function readJsonFile<T>(filePath: string): T | null {
+  const readResult = readTextFile(filePath);
+  if (readResult.status !== "ok") {
     return null;
+  }
+
+  try {
+    return JSON.parse(readResult.content) as T;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    warnInvalidFile(filePath, reason);
+    return null;
+  }
+}
+
+function sameTextFileReadResult(
+  left: TextFileReadResult,
+  right: TextFileReadResult
+): boolean {
+  if (left.status !== right.status) {
+    return false;
+  }
+  switch (left.status) {
+    case "ok":
+      return right.status === "ok" && left.content === right.content;
+    case "missing":
+      return true;
+    case "error":
+      return false;
   }
 }
 
@@ -211,18 +252,56 @@ export function createWindowStateStore(
 
 export function createSettingsStore(settingsPath: string): SettingsFileStore {
   mkdirSync(dirname(settingsPath), { recursive: true });
+  let lastKnownReadResult = readTextFile(settingsPath);
 
   return {
     path: settingsPath,
     load() {
-      const settings = readJsonFile<KmuxSettings>(settingsPath);
+      const readResult = readTextFile(settingsPath);
+      lastKnownReadResult = readResult;
+      if (readResult.status !== "ok") {
+        return null;
+      }
+      let settings: KmuxSettings;
+      try {
+        settings = JSON.parse(readResult.content) as KmuxSettings;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        warnInvalidFile(settingsPath, reason);
+        return null;
+      }
       if (!settings) {
         return null;
       }
       return sanitizeSettings(settings);
     },
     save(settings) {
-      atomicWrite(settingsPath, JSON.stringify(settings, null, 2));
+      const currentReadResult = readTextFile(settingsPath);
+      if (currentReadResult.status === "error") {
+        warnSkippedSave(
+          settingsPath,
+          `settings file could not be read: ${currentReadResult.reason}`
+        );
+        return;
+      }
+      if (lastKnownReadResult.status === "error") {
+        warnSkippedSave(
+          settingsPath,
+          "last settings read failed; reload settings before saving"
+        );
+        return;
+      }
+      if (!sameTextFileReadResult(currentReadResult, lastKnownReadResult)) {
+        warnSkippedSave(
+          settingsPath,
+          "external changes detected since the last settings load or save"
+        );
+        return;
+      }
+
+      const nextContent = JSON.stringify(settings, null, 2);
+      atomicWrite(settingsPath, nextContent);
+      lastKnownReadResult = { status: "ok", content: nextContent };
     }
   };
 }
