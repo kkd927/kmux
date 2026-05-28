@@ -1642,19 +1642,48 @@ describe("core reducer", () => {
     );
   });
 
-  it("preserves custom terminal text fonts during settings migration", () => {
+  it("resets custom terminal typography once when migrating from v3 settings", () => {
+    const defaultTypography = createDefaultSettings().terminalTypography;
     const restored = sanitizeSettings({
       ...createDefaultSettings(),
-      settingsVersion: 2,
+      settingsVersion: 3,
       terminalTypography: {
-        ...createDefaultSettings().terminalTypography,
-        preferredTextFontFamily: '"Fira Code", monospace'
+        ...defaultTypography,
+        preferredTextFontFamily: '"Fira Code", monospace',
+        preferredSymbolFallbackFamilies: ['"Custom Symbols"'],
+        fontSize: 17,
+        lineHeight: 1.35
+      }
+    });
+
+    expect(restored.terminalTypography).toEqual({
+      ...defaultTypography,
+      preferredSymbolFallbackFamilies: ['"Custom Symbols"']
+    });
+  });
+
+  it("preserves custom terminal typography after the v4 settings migration", () => {
+    const defaultTypography = createDefaultSettings().terminalTypography;
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 4,
+      terminalTypography: {
+        ...defaultTypography,
+        preferredTextFontFamily: '"Fira Code", monospace',
+        preferredSymbolFallbackFamilies: ['"Custom Symbols"'],
+        fontSize: 17,
+        lineHeight: 1.35
       }
     });
 
     expect(restored.terminalTypography.preferredTextFontFamily).toBe(
       '"Fira Code", monospace'
     );
+    expect(restored.terminalTypography.preferredSymbolFallbackFamilies).toEqual(
+      ['"Custom Symbols"']
+    );
+    expect(restored.terminalTypography.fontSize).toBe(17);
+    expect(restored.terminalTypography.lineHeight).toBe(1.35);
   });
 
   it("normalizes restored shortcut bindings to the matcher modifier order", () => {
