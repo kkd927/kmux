@@ -136,7 +136,8 @@ const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
-export const CURRENT_SETTINGS_VERSION = 3;
+export const CURRENT_SETTINGS_VERSION = 4;
+const TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION = 4;
 
 function defaultHomeDirectory(): string {
   const homeDirectory =
@@ -445,6 +446,20 @@ function migrateSettingsAfterSanitize(
 ): KmuxSettings {
   const textFontFamily =
     settings.terminalTypography.preferredTextFontFamily.trim();
+  if (
+    sourceSettingsVersion < TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION
+  ) {
+    return {
+      ...settings,
+      terminalTypography: {
+        ...settings.terminalTypography,
+        preferredTextFontFamily: DEFAULT_TERMINAL_TEXT_FONT_FAMILY,
+        fontSize: DEFAULT_TERMINAL_FONT_SIZE,
+        lineHeight: DEFAULT_TERMINAL_LINE_HEIGHT
+      }
+    };
+  }
+
   if (
     sourceSettingsVersion >= CURRENT_SETTINGS_VERSION &&
     textFontFamily !== PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY
