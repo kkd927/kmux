@@ -249,11 +249,124 @@ export interface SurfaceSnapshotPayload {
   ports: number[];
   unreadCount: number;
   attention: boolean;
+  rawOutputTail?: string;
+  rawOutputTailTruncated?: boolean;
+  rawOutputLogPath?: string;
+  rawOutputIndexPath?: string;
+  rawOutputLogBytes?: number;
+  rawOutputLogChunks?: number;
 }
 
 export interface SurfaceSnapshotOptions {
   settleForMs?: number;
   timeoutMs?: number;
+  includeRawOutputTail?: boolean;
+}
+
+export type SurfaceCaptureOptions = SurfaceSnapshotOptions;
+
+export interface SurfaceCaptureRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SurfaceCaptureDomRow {
+  index: number;
+  text: string;
+  rect: SurfaceCaptureRect;
+}
+
+export interface SurfaceCaptureBufferRow {
+  index: number;
+  absoluteY: number;
+  text: string;
+  isWrapped: boolean;
+}
+
+export interface SurfaceCaptureRendererDom {
+  surfaceId: Id;
+  documentHasFocus: boolean;
+  fontStatus: string;
+  devicePixelRatio: number;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  terminalDiagnostics: {
+    hydratedSequence: number | null;
+    renderedSequence: number | null;
+    targetSequence: number | null;
+    waitTimedOut: boolean;
+  };
+  rootRect: SurfaceCaptureRect;
+  xtermRect: SurfaceCaptureRect | null;
+  screenRect: SurfaceCaptureRect | null;
+  rows: SurfaceCaptureDomRow[];
+  text: string;
+  bufferRows: SurfaceCaptureBufferRow[];
+  bufferText: string;
+  bufferState: {
+    type: string;
+    cols: number;
+    rows: number;
+    baseY: number;
+    viewportY: number;
+    cursorX: number;
+    cursorY: number;
+    length: number;
+  } | null;
+  terminalAttrs: Record<string, string>;
+}
+
+export interface SurfaceCaptureRendererPayload {
+  ok: boolean;
+  error?: string;
+  dom?: SurfaceCaptureRendererDom;
+}
+
+export interface SurfaceCaptureFiles {
+  json: string;
+  text: string;
+  screenshot?: string;
+  rawOutputTail?: string;
+  rawOutputLog?: string;
+  rawOutputIndex?: string;
+}
+
+export type SurfaceCaptureSnapshotAttemptKind = "settled" | "immediate";
+export type SurfaceCaptureSnapshotAttemptStatus =
+  | "ok"
+  | "unavailable"
+  | "error";
+
+export interface SurfaceCaptureSnapshotAttempt {
+  kind: SurfaceCaptureSnapshotAttemptKind;
+  settleForMs: number;
+  timeoutMs: number;
+  status: SurfaceCaptureSnapshotAttemptStatus;
+  sequence?: number;
+  error?: string;
+}
+
+export interface SurfaceCaptureSnapshotDiagnostics {
+  selected: SurfaceCaptureSnapshotAttemptKind | "unavailable";
+  attempts: SurfaceCaptureSnapshotAttempt[];
+}
+
+export interface SurfaceCapturePayload {
+  surfaceId: Id;
+  sessionId?: Id;
+  workspaceId?: Id;
+  paneId?: Id;
+  capturedAt: string;
+  outDir: string;
+  files: SurfaceCaptureFiles;
+  snapshot: SurfaceSnapshotPayload | null;
+  snapshotDiagnostics: SurfaceCaptureSnapshotDiagnostics;
+  rawOutputCopyErrors?: string[];
+  renderer: SurfaceCaptureRendererPayload;
 }
 
 export interface SurfaceAttachPayload {
@@ -334,6 +447,7 @@ export type PtyRequest =
       surfaceId: Id;
       requestId: Id;
       settleForMs?: number;
+      includeRawOutputTail?: boolean;
     };
 
 export type PtyEvent =

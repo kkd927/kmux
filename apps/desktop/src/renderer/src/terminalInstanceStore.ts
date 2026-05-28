@@ -118,9 +118,26 @@ export function markSurfaceHydrated(
 ): void {
   const instance = store.get(key);
   if (instance) {
+    const nextSequence =
+      instance.lastHydratedSurfaceId === surfaceId
+        ? maxSequence(instance.lastHydratedSurfaceSequence, sequence)
+        : sequence;
     instance.lastHydratedSurfaceId = surfaceId;
-    instance.lastHydratedSurfaceSequence = sequence;
+    instance.lastHydratedSurfaceSequence = nextSequence;
   }
+}
+
+function maxSequence(
+  current: number | null,
+  next: number | null
+): number | null {
+  if (next === null) {
+    return current;
+  }
+  if (current === null) {
+    return next;
+  }
+  return Math.max(current, next);
 }
 
 export function markSurfaceRendered(

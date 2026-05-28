@@ -4,7 +4,8 @@ import type {
   CreateImageAttachmentsResult,
   CreateImageAttachmentPayload,
   ExternalAgentSessionResumeResult,
-  ExternalAgentSessionsSnapshot
+  ExternalAgentSessionsSnapshot,
+  SurfaceCapturePayload
 } from "@kmux/proto";
 
 const { handlers } = vi.hoisted(() => ({
@@ -46,6 +47,10 @@ function registerTestHandlers(options: {
     rows: number
   ) => Promise<void>;
   openExternalUrl?: (url: string) => Promise<void>;
+  surfaceDiagnosticsEnabled?: boolean;
+  captureSurfaceDiagnostics?: (
+    surfaceId: string
+  ) => Promise<SurfaceCapturePayload>;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -69,6 +74,24 @@ function registerTestHandlers(options: {
     importTerminalThemePalette: vi.fn(),
     exportTerminalThemePalette: vi.fn(),
     openSettingsJson: vi.fn(),
+    surfaceDiagnosticsEnabled: options.surfaceDiagnosticsEnabled ?? false,
+    captureSurfaceDiagnostics:
+      options.captureSurfaceDiagnostics ??
+      vi.fn(async () => ({
+        surfaceId: "surface_1",
+        capturedAt: "2026-05-27T00:00:00.000Z",
+        outDir: "/tmp/kmux-capture",
+        files: {
+          json: "/tmp/kmux-capture/capture.json",
+          text: "/tmp/kmux-capture/terminal.txt"
+        },
+        snapshot: null,
+        snapshotDiagnostics: {
+          selected: "unavailable" as const,
+          attempts: []
+        },
+        renderer: { ok: false }
+      })),
     prepareWorktreeConversion: vi.fn(),
     createWorktreeWorkspace: vi.fn(),
     convertDetectedWorktree: vi.fn(),
@@ -152,6 +175,63 @@ describe("ipc handlers", () => {
         ])
       )
     ).resolves.toBe(attachmentResult);
+  });
+
+  it("captures surface diagnostics only when enabled", async () => {
+    const snapshot: ExternalAgentSessionsSnapshot = {
+      updatedAt: "2026-05-27T12:00:00.000Z",
+      sessions: []
+    };
+    const resumeResult = {
+      workspaceId: "workspace-1",
+      surfaceId: "surface-1"
+    };
+    const captureSurfaceDiagnostics = vi.fn(async (surfaceId: string) => ({
+      surfaceId,
+      capturedAt: "2026-05-27T00:00:00.000Z",
+      outDir: "/tmp/kmux-capture",
+      files: {
+        json: "/tmp/kmux-capture/capture.json",
+        text: "/tmp/kmux-capture/terminal.txt"
+      },
+      snapshot: null,
+      snapshotDiagnostics: {
+        selected: "unavailable" as const,
+        attempts: []
+      },
+      renderer: { ok: true }
+    }));
+    registerTestHandlers({
+      snapshot,
+      resumeResult,
+      surfaceDiagnosticsEnabled: true,
+      captureSurfaceDiagnostics
+    });
+
+    const handler = handlers.get("kmux:surface-diagnostics:capture");
+
+    await expect(
+      Promise.resolve(handler?.({}, "surface_debug"))
+    ).resolves.toMatchObject({
+      surfaceId: "surface_debug",
+      files: {
+        json: "/tmp/kmux-capture/capture.json"
+      }
+    });
+    expect(captureSurfaceDiagnostics).toHaveBeenCalledWith("surface_debug");
+
+    registerTestHandlers({
+      snapshot,
+      resumeResult,
+      surfaceDiagnosticsEnabled: false,
+      captureSurfaceDiagnostics
+    });
+
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:surface-diagnostics:capture")?.({}, "surface_debug")
+      )
+    ).rejects.toThrow("development builds");
   });
 
   it("registers attach completion handler", async () => {

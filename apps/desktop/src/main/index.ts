@@ -29,6 +29,7 @@ import { resolveShellEnvironment } from "./shellEnvironment";
 import { openSettingsJsonFile, openWithMacTextEditor } from "./settingsJson";
 import { createShellWrapperRuntime } from "./shellWrapperRuntime";
 import { KmuxSocketServer } from "./socketServer";
+import { createSurfaceCaptureService } from "./surfaceCapture";
 import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
 import { createFontInventoryProvider } from "./terminalTypography";
@@ -227,6 +228,34 @@ async function bootstrap(): Promise<void> {
     getPtyHost: () => ptyHost,
     profileRecorder: smoothnessProfile
   });
+  const surfaceCaptureService = createSurfaceCaptureService({
+    captureRoot: join(dirname(paths.socketPath), "captures"),
+    getState: runtime.getState,
+    getWindow: () =>
+      BrowserWindow.getFocusedWindow() ??
+      BrowserWindow.getAllWindows()[0] ??
+      null,
+    snapshotSurface: terminalBridge.snapshotSurface
+  });
+  const captureSurfaceDiagnostics = async (surfaceId: string) => {
+    runtime.dispatchAppAction({ type: "surface.focus", surfaceId });
+    const capture = await surfaceCaptureService.captureSurface(surfaceId, {
+      settleForMs: 250,
+      timeoutMs: 3000
+    });
+    logDiagnostics("surface.capture.completed", {
+      surfaceId,
+      outDir: capture.outDir,
+      json: capture.files.json,
+      screenshot: capture.files.screenshot,
+      rendererWaitTimedOut:
+        capture.renderer.dom?.terminalDiagnostics.waitTimedOut ?? null
+    });
+    if (process.env.NODE_ENV !== "test") {
+      shell.showItemInFolder(capture.files.json);
+    }
+    return capture;
+  };
   const imageAttachmentService = createImageAttachmentService({
     attachmentRoot: join(dirname(paths.socketPath), "attachments"),
     getSurfaceSessionId: terminalBridge.surfaceSessionId,
@@ -334,6 +363,8 @@ async function bootstrap(): Promise<void> {
         });
       }
     },
+    surfaceDiagnosticsEnabled: !app.isPackaged,
+    captureSurfaceDiagnostics,
     prepareWorktreeConversion: worktreeRuntime.prepareConversion,
     createWorktreeWorkspace: worktreeRuntime.createWorkspace,
     convertDetectedWorktree: worktreeRuntime.convertDetected,

@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, Menu, ipcMain } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type {
@@ -11,6 +11,7 @@ import type {
   ResolvedTerminalTypographyVm,
   ShellIdentity,
   ShellStoreSnapshot,
+  SurfaceCapturePayload,
   SurfaceAttachCompletionResult,
   SurfaceAttachPayload,
   SurfaceSnapshotOptions,
@@ -84,6 +85,8 @@ interface IpcHandlersOptions {
     palette: TerminalColorPalette
   ) => Promise<boolean>;
   openSettingsJson: () => Promise<void>;
+  surfaceDiagnosticsEnabled: boolean;
+  captureSurfaceDiagnostics: (surfaceId: Id) => Promise<SurfaceCapturePayload>;
   prepareWorktreeConversion: (
     workspaceId: Id
   ) => Promise<WorktreeConversionPreview | null>;
@@ -225,6 +228,17 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle("kmux:settings-json:open", () => options.openSettingsJson());
   ipcMain.handle(
+    "kmux:surface-diagnostics:capture",
+    async (_event, surfaceId: Id): Promise<SurfaceCapturePayload> => {
+      if (!options.surfaceDiagnosticsEnabled) {
+        throw new Error(
+          "Surface diagnostics are only available in development builds"
+        );
+      }
+      return options.captureSurfaceDiagnostics(surfaceId);
+    }
+  );
+  ipcMain.handle(
     "kmux:worktree:prepare-conversion",
     (_event, workspaceId: Id) => options.prepareWorktreeConversion(workspaceId)
   );
@@ -272,6 +286,44 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       } else {
         window.close();
       }
+    }
+  );
+  ipcMain.handle(
+    "kmux:surface-context-menu",
+    async (
+      event,
+      payload: { surfaceId: Id; x: number; y: number }
+    ): Promise<boolean> => {
+      if (
+        !options.surfaceDiagnosticsEnabled ||
+        process.env.NODE_ENV === "test"
+      ) {
+        return false;
+      }
+
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window) {
+        return false;
+      }
+
+      const menu = Menu.buildFromTemplate([
+        {
+          label: "Capture Diagnostics",
+          click: () => {
+            void options
+              .captureSurfaceDiagnostics(payload.surfaceId)
+              .catch((error: unknown) => {
+                console.warn("[surface-diagnostics:capture]", error);
+              });
+          }
+        }
+      ]);
+      menu.popup({
+        window,
+        x: Math.round(payload.x),
+        y: Math.round(payload.y)
+      });
+      return true;
     }
   );
   ipcMain.handle(

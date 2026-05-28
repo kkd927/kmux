@@ -1,4 +1,11 @@
-import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type MouseEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -47,6 +54,7 @@ import {
   recordRendererSmoothnessProfileEvent
 } from "../smoothnessProfile";
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
+import { TERMINAL_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
 import {
   canDropSurfaceTabOnPane,
   decodeSurfaceTabDragPayload,
@@ -109,6 +117,16 @@ type SearchAddonWithInternals = SearchAddon & {
 
 type PendingEnterRewrite = PendingTerminalEnterRewrite & {
   timeout: ReturnType<typeof setTimeout>;
+};
+
+type TerminalDiagnosticMetadata = {
+  hydratedSequence: number | null;
+  renderedSequence: number | null;
+};
+
+type TerminalDiagnosticElement = HTMLDivElement & {
+  __kmuxTerminal?: Terminal;
+  __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
 };
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
@@ -216,6 +234,47 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     })
   );
+
+  function updateTerminalDiagnostics(
+    surfaceId: string,
+    terminal: Terminal,
+    patch: Partial<TerminalDiagnosticMetadata>
+  ): void {
+    const elements = [
+      containerRef.current as TerminalDiagnosticElement | null,
+      surfaceWrapperRefs.current.get(surfaceId) as
+        | TerminalDiagnosticElement
+        | undefined
+    ];
+    for (const element of elements) {
+      if (!element || element.__kmuxTerminal !== terminal) {
+        continue;
+      }
+      const diagnostics = {
+        hydratedSequence:
+          element.__kmuxTerminalDiagnostics?.hydratedSequence ?? null,
+        renderedSequence:
+          element.__kmuxTerminalDiagnostics?.renderedSequence ?? null,
+        ...patch
+      };
+      element.__kmuxTerminalDiagnostics = diagnostics;
+      if (diagnostics.hydratedSequence === null) {
+        delete element.dataset.terminalHydratedSequence;
+      } else {
+        element.dataset.terminalHydratedSequence = String(
+          diagnostics.hydratedSequence
+        );
+      }
+      if (diagnostics.renderedSequence === null) {
+        delete element.dataset.terminalRenderedSequence;
+      } else {
+        element.dataset.terminalRenderedSequence = String(
+          diagnostics.renderedSequence
+        );
+      }
+    }
+  }
+
   const terminalPaletteSignature = [
     props.terminalTheme.palette.background,
     props.terminalTheme.palette.foreground,
@@ -743,7 +802,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const { instance } = terminalInstanceStore.acquire(
       terminalInstanceKey,
       () => {
-        const host = document.createElement("div");
+        const host = document.createElement("div") as TerminalDiagnosticElement;
         host.style.cssText =
           "width:100%;height:100%;min-height:0;overflow:hidden;";
         const terminal = new Terminal({
@@ -754,11 +813,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fontWeight: 400,
           cursorBlink: true,
           macOptionIsMeta: false,
-          scrollback: 5000,
+          scrollback: TERMINAL_SCROLLBACK_LINES,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
           theme: terminalTheme,
           linkHandler: terminalLinkHandler
         });
+        host.__kmuxTerminal = terminal;
+        host.__kmuxTerminalDiagnostics = {
+          hydratedSequence: null,
+          renderedSequence: null
+        };
         const fit = new FitAddon();
         const search = new SearchAddon();
         const unicode11 = new Unicode11Addon();
@@ -792,7 +856,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (instance.host.parentNode !== wrapper) {
       wrapper.appendChild(instance.host);
     }
+    const diagnosticWrapper = wrapper as TerminalDiagnosticElement;
+    diagnosticWrapper.__kmuxTerminal = instance.terminal;
+    diagnosticWrapper.__kmuxTerminalDiagnostics = (
+      instance.host as TerminalDiagnosticElement
+    ).__kmuxTerminalDiagnostics;
     return () => {
+      if (diagnosticWrapper.__kmuxTerminal === instance.terminal) {
+        delete diagnosticWrapper.__kmuxTerminal;
+        delete diagnosticWrapper.__kmuxTerminalDiagnostics;
+        delete diagnosticWrapper.dataset.terminalHydratedSequence;
+        delete diagnosticWrapper.dataset.terminalRenderedSequence;
+      }
       if (terminalRef.current === instance.terminal) {
         terminalRef.current = null;
         fitRef.current = null;
@@ -1158,6 +1233,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         surfaceId,
         snapshot.sequence
       );
+      const renderedSequence =
+        terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey);
+      updateTerminalDiagnostics(surfaceId, terminal, {
+        hydratedSequence: snapshot.sequence,
+        renderedSequence
+      });
       return window.kmux
         .completeAttachSurface(surfaceId, attachId)
         .then((completion) => {
@@ -1184,6 +1265,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                 payload.surfaceId,
                 payload.sequence
               );
+              const renderedSequence =
+                terminalInstanceStore.getLastHydratedSurfaceSequence(
+                  instanceKey
+                );
+              updateTerminalDiagnostics(payload.surfaceId, terminal, {
+                renderedSequence
+              });
             }
           },
           payload.surfaceId
@@ -1453,6 +1541,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.onMoveSurfaceToSplit(payload.surfaceId, props.paneId, direction);
   };
 
+  function handleSurfaceTabContextMenu(
+    event: MouseEvent,
+    surfaceId: string
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    props.onFocusPane(props.paneId);
+    props.onFocusSurface(surfaceId);
+    void window.kmux
+      .showSurfaceContextMenu(surfaceId, event.clientX, event.clientY)
+      .catch((error) => {
+        console.warn("Failed to show surface context menu", error);
+      });
+  }
+
   return (
     <div
       className={styles.pane}
@@ -1486,6 +1589,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                 data-selected={selected}
                 data-active={active}
                 data-surface-id={surface.id}
+                onContextMenu={(event) =>
+                  handleSurfaceTabContextMenu(event, surface.id)
+                }
               >
                 <button
                   className={styles.tab}
