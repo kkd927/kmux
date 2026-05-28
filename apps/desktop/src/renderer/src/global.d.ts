@@ -14,6 +14,7 @@ import type {
   UsageViewSnapshot,
   SurfaceAttachCompletionResult,
   SurfaceAttachPayload,
+  SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalTypographyProbeReport,
@@ -84,6 +85,14 @@ declare global {
       ): Promise<void>;
       showWorkspaceContextMenu(
         workspaceId: string,
+        x: number,
+        y: number
+      ): Promise<boolean>;
+      captureSurfaceDiagnostics(
+        surfaceId: string
+      ): Promise<SurfaceCapturePayload>;
+      showSurfaceContextMenu(
+        surfaceId: string,
         x: number,
         y: number
       ): Promise<boolean>;

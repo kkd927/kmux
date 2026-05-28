@@ -6,6 +6,8 @@ import type {
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type {
   Id,
@@ -33,8 +35,10 @@ import {
 } from "./shellLaunch";
 import { buildSessionEnv } from "./sessionEnv";
 import {
+  PTY_STDOUT_LOGS_ENV,
   logDiagnostics
 } from "../shared/diagnostics";
+import { TERMINAL_SCROLLBACK_LINES } from "../shared/terminalConfig";
 import {
   createNodeSmoothnessProfileRecorder,
   profileNowMs
@@ -71,6 +75,13 @@ interface SessionRecord {
   terminal: HeadlessTerminal;
   serialize: SerializeAddon;
   snapshotCache: SnapshotCache;
+  rawOutputTail: string;
+  rawOutputTailTruncated: boolean;
+  rawOutputLogPath?: string;
+  rawOutputIndexPath?: string;
+  rawOutputLogBytes: number;
+  rawOutputLogChars: number;
+  rawOutputLogChunks: number;
   sequence: number;
   parsedSequence: number;
   cols: number;
@@ -80,6 +91,7 @@ interface SessionRecord {
   pendingSettledSnapshots: Array<{
     requestId: Id;
     settleForMs: number;
+    includeRawOutputTail: boolean;
   }>;
   settledSnapshotTimer: NodeJS.Timeout | null;
 }
@@ -91,6 +103,8 @@ const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
 const OUTPUT_BATCH_FLUSH_MS = 8;
 const OUTPUT_BATCH_MAX_BYTES = 64 * 1024;
+const RAW_OUTPUT_TAIL_MAX_CHARS = 128 * 1024;
+const RAW_OUTPUT_HISTORY_ENABLED = process.env[PTY_STDOUT_LOGS_ENV] === "1";
 const outputBatcher = new OutputBatcher({
   flushMs: OUTPUT_BATCH_FLUSH_MS,
   maxBatchBytes: OUTPUT_BATCH_MAX_BYTES,
@@ -159,13 +173,110 @@ function recordPtyChunk(record: SessionRecord, chunk: string): void {
   });
 }
 
+function appendRawOutputTail(record: SessionRecord, chunk: string): void {
+  record.rawOutputTail += chunk;
+  if (record.rawOutputTail.length <= RAW_OUTPUT_TAIL_MAX_CHARS) {
+    return;
+  }
+
+  record.rawOutputTail = record.rawOutputTail.slice(-RAW_OUTPUT_TAIL_MAX_CHARS);
+  record.rawOutputTailTruncated = true;
+}
+
+function createRawOutputHistory(
+  sessionId: Id,
+  surfaceId: Id
+):
+  | {
+      rawOutputLogPath: string;
+      rawOutputIndexPath: string;
+    }
+  | undefined {
+  if (!RAW_OUTPUT_HISTORY_ENABLED) {
+    return undefined;
+  }
+
+  try {
+    const root =
+      process.env.KMUX_RUNTIME_DIR ?? join(process.cwd(), ".kmux/dev/runtime");
+    const dir = join(
+      root,
+      "pty-raw",
+      `${safePathSegment(sessionId)}-${safePathSegment(surfaceId)}`
+    );
+    mkdirSync(dir, { recursive: true });
+    const rawOutputLogPath = join(dir, "stream.ansi");
+    const rawOutputIndexPath = join(dir, "chunks.jsonl");
+    writeFileSync(rawOutputLogPath, "", "utf8");
+    writeFileSync(rawOutputIndexPath, "", "utf8");
+    return { rawOutputLogPath, rawOutputIndexPath };
+  } catch (error) {
+    logDiagnostics("pty-host.raw-output-history.create.failed", {
+      sessionId,
+      surfaceId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return undefined;
+  }
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9_.-]/g, "_");
+}
+
+function appendRawOutputHistory(
+  record: SessionRecord,
+  chunk: string,
+  chunkSequence: number
+): void {
+  if (!record.rawOutputLogPath || !record.rawOutputIndexPath) {
+    return;
+  }
+
+  const byteLength = Buffer.byteLength(chunk, "utf8");
+  const byteStart = record.rawOutputLogBytes;
+  const charStart = record.rawOutputLogChars;
+  try {
+    appendFileSync(record.rawOutputLogPath, chunk, "utf8");
+    record.rawOutputLogBytes += byteLength;
+    record.rawOutputLogChars += chunk.length;
+    record.rawOutputLogChunks += 1;
+    appendFileSync(
+      record.rawOutputIndexPath,
+      `${JSON.stringify({
+        sequence: chunkSequence,
+        byteStart,
+        byteEnd: record.rawOutputLogBytes,
+        charStart,
+        charEnd: record.rawOutputLogChars,
+        utf8Bytes: byteLength,
+        chars: chunk.length,
+        at: new Date(record.lastActivityAt).toISOString()
+      })}\n`,
+      "utf8"
+    );
+  } catch (error) {
+    logDiagnostics("pty-host.raw-output-history.append.failed", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      sequence: chunkSequence,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    record.rawOutputLogPath = undefined;
+    record.rawOutputIndexPath = undefined;
+  }
+}
+
 function flushPtyProfileBucket(record: SessionRecord): void {
   if (smoothnessProfile.enabled) {
     ptyBucket.flush(`${record.surfaceId}\u0000${record.sessionId}`);
   }
 }
 
-function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
+function snapshot(
+  record: SessionRecord,
+  options: { includeRawOutputTail?: boolean } = {}
+): SurfaceSnapshotPayload {
   outputBatcher.flush(record.sessionId);
   const snapshotSequence = record.parsedSequence;
   return {
@@ -176,7 +287,8 @@ function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
       sequence: snapshotSequence,
       cols: record.cols,
       rows: record.rows,
-      serialize: () => record.serialize.serialize({ scrollback: 5000 })
+      serialize: () =>
+        record.serialize.serialize({ scrollback: TERMINAL_SCROLLBACK_LINES })
     }),
     cols: record.cols,
     rows: record.rows,
@@ -185,7 +297,17 @@ function snapshot(record: SessionRecord): SurfaceSnapshotPayload {
     branch: undefined,
     ports: [],
     unreadCount: 0,
-    attention: false
+    attention: false,
+    ...(options.includeRawOutputTail
+      ? {
+          rawOutputTail: record.rawOutputTail,
+          rawOutputTailTruncated: record.rawOutputTailTruncated,
+          rawOutputLogPath: record.rawOutputLogPath,
+          rawOutputIndexPath: record.rawOutputIndexPath,
+          rawOutputLogBytes: record.rawOutputLogBytes,
+          rawOutputLogChunks: record.rawOutputLogChunks
+        }
+      : {})
   };
 }
 
@@ -275,13 +397,17 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cols: request.spec.cols,
     rows: request.spec.rows,
     allowProposedApi: true,
-    scrollback: 5000
+    scrollback: TERMINAL_SCROLLBACK_LINES
   });
   const unicode11 = new Unicode11Addon();
   terminal.loadAddon(unicode11);
   terminal.unicode.activeVersion = "11";
   const serialize = new SerializeAddon();
   terminal.loadAddon(serialize);
+  const rawOutputHistory = createRawOutputHistory(
+    request.spec.sessionId,
+    request.spec.surfaceId
+  );
 
   const record: SessionRecord = {
     sessionId: request.spec.sessionId,
@@ -292,6 +418,13 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     terminal,
     serialize,
     snapshotCache: new SnapshotCache(),
+    rawOutputTail: "",
+    rawOutputTailTruncated: false,
+    rawOutputLogPath: rawOutputHistory?.rawOutputLogPath,
+    rawOutputIndexPath: rawOutputHistory?.rawOutputIndexPath,
+    rawOutputLogBytes: 0,
+    rawOutputLogChars: 0,
+    rawOutputLogChunks: 0,
     sequence: 0,
     parsedSequence: 0,
     cols: request.spec.cols,
@@ -449,9 +582,11 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
 
   ptyProcess.onData((chunk) => {
     recordPtyChunk(record, chunk);
+    appendRawOutputTail(record, chunk);
     record.sequence += 1;
     const chunkSequence = record.sequence;
     record.lastActivityAt = Date.now();
+    appendRawOutputHistory(record, chunk, chunkSequence);
     terminal.write(chunk, () => {
       record.parsedSequence = Math.max(record.parsedSequence, chunkSequence);
     });
@@ -546,14 +681,17 @@ process.on("message", (request: PtyRequest) => {
         if ((request.settleForMs ?? 0) > 0) {
           record.pendingSettledSnapshots.push({
             requestId: request.requestId,
-            settleForMs: request.settleForMs ?? 0
+            settleForMs: request.settleForMs ?? 0,
+            includeRawOutputTail: Boolean(request.includeRawOutputTail)
           });
           scheduleSettledSnapshotCheck(record);
         } else {
           send({
             type: "snapshot",
             requestId: request.requestId,
-            payload: snapshot(record)
+            payload: snapshot(record, {
+              includeRawOutputTail: Boolean(request.includeRawOutputTail)
+            })
           });
         }
       }
@@ -585,7 +723,9 @@ function scheduleSettledSnapshotCheck(record: SessionRecord): void {
       send({
         type: "snapshot",
         requestId: pendingSnapshot.requestId,
-        payload: snapshot(record)
+        payload: snapshot(record, {
+          includeRawOutputTail: pendingSnapshot.includeRawOutputTail
+        })
       });
       continue;
     }

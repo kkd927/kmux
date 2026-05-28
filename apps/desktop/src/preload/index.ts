@@ -21,6 +21,7 @@ import type {
   UsageViewSnapshot,
   SurfaceAttachCompletionResult,
   SurfaceAttachPayload,
+  SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceChunkPayload,
   SurfaceResizePayload,
@@ -234,6 +235,20 @@ const api = {
   ): Promise<boolean> {
     return ipcRenderer.invoke("kmux:workspace-context-menu", {
       workspaceId,
+      x,
+      y
+    });
+  },
+  captureSurfaceDiagnostics(surfaceId: string): Promise<SurfaceCapturePayload> {
+    return ipcRenderer.invoke("kmux:surface-diagnostics:capture", surfaceId);
+  },
+  showSurfaceContextMenu(
+    surfaceId: string,
+    x: number,
+    y: number
+  ): Promise<boolean> {
+    return ipcRenderer.invoke("kmux:surface-context-menu", {
+      surfaceId,
       x,
       y
     });

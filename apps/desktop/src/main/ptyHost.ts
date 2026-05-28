@@ -200,7 +200,8 @@ export class PtyHostManager extends EventEmitter {
       sessionId,
       surfaceId,
       requestId,
-      ...(settleForMs > 0 ? { settleForMs } : {})
+      ...(settleForMs > 0 ? { settleForMs } : {}),
+      ...(options.includeRawOutputTail ? { includeRawOutputTail: true } : {})
     } satisfies PtyRequest;
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {

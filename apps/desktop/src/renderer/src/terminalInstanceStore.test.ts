@@ -213,6 +213,17 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
     release("pane-9");
   });
 
+  it("does not move the rendered sequence backward for the same hydrated surface", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-11", init);
+    markSurfaceHydrated("pane-11", "surface-abc", 20);
+
+    markSurfaceHydrated("pane-11", "surface-abc", 12);
+
+    expect(getLastHydratedSurfaceSequence("pane-11")).toBe(20);
+    release("pane-11");
+  });
+
   it("ignores rendered sequence updates for stale surfaces", () => {
     const init = vi.fn(makeInstance);
     acquire("pane-10", init);
