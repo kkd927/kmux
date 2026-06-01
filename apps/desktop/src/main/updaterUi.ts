@@ -77,6 +77,21 @@ export function createNativeUpdaterNotifier(
   };
 }
 
+export async function showUpdateInstallIncompleteDialog(
+  window: BrowserWindow | null,
+  options: { appName: string; version?: string }
+): Promise<void> {
+  const versionLabel = options.version ? ` ${options.version}` : "";
+  await showMessageBox(window, {
+    type: "warning",
+    buttons: ["OK"],
+    defaultId: 0,
+    message: `${options.appName}${versionLabel} couldn't finish installing`,
+    detail:
+      "The update was downloaded but macOS didn't apply it. This happens when a Squirrel update has already been installed since the last restart. Restart your Mac, then check for updates again to finish updating."
+  });
+}
+
 async function showMessageBox(
   window: BrowserWindow | null,
   options: Electron.MessageBoxOptions
