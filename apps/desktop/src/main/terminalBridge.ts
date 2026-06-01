@@ -67,6 +67,7 @@ const ATTACH_QUEUE_MAX_CHUNKS = 1000;
 const ATTACH_QUEUE_MAX_BYTES = 2 * 1024 * 1024;
 const ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS = 2;
 const ATTACH_MAX_REPLAY_CYCLES = 3;
+const TITLE_METADATA_COALESCE_MS = 1000;
 const PROFILE_TERMINAL_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS = 1000;
 const CODEX_INPUT_PATTERNS = [
@@ -129,6 +130,15 @@ export function createTerminalBridge(
     Map<Id, SurfaceAttachmentState>
   >();
   const hydratedSurfaceIds = new Set<Id>();
+  const pendingTitleMetadata = new Map<
+    Id,
+    {
+      title: string;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const lastTitleMetadataDispatchAt = new Map<Id, number>();
+  const lastDispatchedTitleMetadata = new Map<Id, string>();
   const terminalIpcBucket = createSmoothnessProfileBucket<{
     surfaceId: Id;
     sessionId: Id;
@@ -279,6 +289,110 @@ export function createTerminalBridge(
 
   function sendKey(surfaceId: Id, key: string): void {
     sendKeyInput(surfaceId, { key });
+  }
+
+  function handleTerminalMetadata(
+    payload: Extract<PtyEvent, { type: "metadata" }>["payload"]
+  ): void {
+    if (
+      payload.cwd !== undefined ||
+      payload.attention !== undefined ||
+      payload.unreadDelta !== undefined
+    ) {
+      options.dispatchAppAction({
+        type: "surface.metadata",
+        surfaceId: payload.surfaceId,
+        cwd: payload.cwd,
+        attention: payload.attention,
+        unreadDelta: payload.unreadDelta
+      });
+    }
+    if (payload.title !== undefined) {
+      queueTitleMetadata(payload.surfaceId, payload.title);
+    }
+  }
+
+  function queueTitleMetadata(surfaceId: Id, title: string): void {
+    if (!shouldDispatchTitleMetadata(surfaceId, title)) {
+      if (pendingTitleMetadata.get(surfaceId)?.title !== title) {
+        clearPendingTitleMetadata(surfaceId);
+      }
+      return;
+    }
+
+    const now = Date.now();
+    const lastDispatchAt = lastTitleMetadataDispatchAt.get(surfaceId);
+    if (
+      lastDispatchAt === undefined ||
+      now - lastDispatchAt >= TITLE_METADATA_COALESCE_MS
+    ) {
+      clearPendingTitleMetadata(surfaceId);
+      dispatchTitleMetadata(surfaceId, title);
+      return;
+    }
+
+    const existing = pendingTitleMetadata.get(surfaceId);
+    if (existing) {
+      existing.title = title;
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      flushPendingTitleMetadata(surfaceId);
+    }, TITLE_METADATA_COALESCE_MS - (now - lastDispatchAt));
+    if (typeof timer === "object" && "unref" in timer) {
+      timer.unref();
+    }
+    pendingTitleMetadata.set(surfaceId, { title, timer });
+  }
+
+  function shouldDispatchTitleMetadata(surfaceId: Id, title: string): boolean {
+    const surface = options.getState().surfaces[surfaceId];
+    if (!surface || surface.titleLocked) {
+      return false;
+    }
+    if (surface.title === title) {
+      return false;
+    }
+    if (lastDispatchedTitleMetadata.get(surfaceId) === title) {
+      return false;
+    }
+    if (pendingTitleMetadata.get(surfaceId)?.title === title) {
+      return false;
+    }
+    return true;
+  }
+
+  function dispatchTitleMetadata(surfaceId: Id, title: string): void {
+    if (!shouldDispatchTitleMetadata(surfaceId, title)) {
+      return;
+    }
+    lastTitleMetadataDispatchAt.set(surfaceId, Date.now());
+    lastDispatchedTitleMetadata.set(surfaceId, title);
+    options.dispatchAppAction({
+      type: "surface.metadata",
+      surfaceId,
+      title
+    });
+  }
+
+  function flushPendingTitleMetadata(surfaceId: Id): void {
+    const pending = pendingTitleMetadata.get(surfaceId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    pendingTitleMetadata.delete(surfaceId);
+    dispatchTitleMetadata(surfaceId, pending.title);
+  }
+
+  function clearPendingTitleMetadata(surfaceId: Id): void {
+    const pending = pendingTitleMetadata.get(surfaceId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    pendingTitleMetadata.delete(surfaceId);
   }
 
   async function resizeSurface(
@@ -901,14 +1015,7 @@ export function createTerminalBridge(
         });
         return;
       case "metadata":
-        options.dispatchAppAction({
-          type: "surface.metadata",
-          surfaceId: event.payload.surfaceId,
-          cwd: event.payload.cwd,
-          title: event.payload.title,
-          attention: event.payload.attention,
-          unreadDelta: event.payload.unreadDelta
-        });
+        handleTerminalMetadata(event.payload);
         return;
       case "bell": {
         logDiagnostics("main.terminal.bell.received", {
@@ -1048,6 +1155,7 @@ export function createTerminalBridge(
         forwardTerminalResize(event.payload);
         return;
       case "exit":
+        flushPendingTitleMetadata(event.payload.surfaceId);
         options.dispatchAppAction({
           type: "session.exited",
           sessionId: event.payload.sessionId,

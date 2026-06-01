@@ -830,10 +830,53 @@ describe("app runtime shell patches", () => {
           source: "main",
           name: "shell.patch.emit",
           details: expect.objectContaining({
+            actionType: "workspace.sidebar.toggle",
+            effectTypes: expect.arrayContaining(["persist"]),
             requestedGroups: ["window"],
             changedKeys: expect.arrayContaining(["sidebarVisible"]),
             payloadBytes: expect.any(Number),
             durationMs: expect.any(Number)
+          })
+        })
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("records shell patch source metadata fields for surface metadata actions", () => {
+    const record = vi.fn();
+    const runtime = createRuntime(false, {
+      profileRecorder: {
+        enabled: true,
+        record
+      }
+    });
+    const window = createMockWindow();
+    browserWindows.push(window);
+    const surfaceId = Object.keys(runtime.getState().surfaces)[0];
+
+    try {
+      runtime.dispatchAppAction({
+        type: "surface.metadata",
+        surfaceId,
+        title: "active task"
+      });
+
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "main",
+          name: "shell.patch.emit",
+          details: expect.objectContaining({
+            actionType: "surface.metadata",
+            actionSurfaceId: surfaceId,
+            effectTypes: expect.arrayContaining(["persist"]),
+            surfaceMetadataFields: ["title"],
+            requestedGroups: [
+              "activeWorkspacePaneTree",
+              "workspacePaneTrees",
+              "workspaceRows"
+            ]
           })
         })
       );

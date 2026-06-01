@@ -190,7 +190,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }, 300);
   }
 
-  function emitShellPatch(groups: Set<ShellGroup>): void {
+  function emitShellPatch(
+    groups: Set<ShellGroup>,
+    profileContext: ShellPatchProfileContext = {}
+  ): void {
     if (!store || groups.size === 0) {
       return;
     }
@@ -358,6 +361,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         at: profileEndedAt,
         details: {
           version,
+          ...profileContext,
           requestedGroups: [...groups].sort(),
           changedKeys: Object.keys(outgoingPatch).filter(
             (key) => key !== "version"
@@ -498,7 +502,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       shellGroups.add("terminalTypography");
     }
     runEffects(effects);
-    emitShellPatch(shellGroups);
+    emitShellPatch(
+      shellGroups,
+      shellPatchProfileContextForAction(action, effects)
+    );
   }
 
   function restoreInitialState(): AppState {
@@ -828,6 +835,16 @@ type ShellGroup =
   | "settings"
   | "terminalTypography";
 
+interface ShellPatchProfileContext {
+  actionType?: AppAction["type"];
+  actionWorkspaceId?: Id;
+  actionPaneId?: Id;
+  actionSurfaceId?: Id;
+  actionSessionId?: Id;
+  effectTypes?: AppEffect["type"][];
+  surfaceMetadataFields?: string[];
+}
+
 function buildWorkspacePaneTreesPatch(
   state: AppState,
   currentTrees: Record<Id, ActiveWorkspacePaneTreeVm>,
@@ -920,6 +937,53 @@ function shellGroupsFromMutation(mutation: AppMutationSummary): Set<ShellGroup> 
     groups.add("terminalTypography");
   }
   return groups;
+}
+
+function shellPatchProfileContextForAction(
+  action: AppAction,
+  effects: AppEffect[]
+): ShellPatchProfileContext {
+  return {
+    actionType: action.type,
+    ...("workspaceId" in action
+      ? { actionWorkspaceId: action.workspaceId }
+      : {}),
+    ...("paneId" in action ? { actionPaneId: action.paneId } : {}),
+    ...("surfaceId" in action ? { actionSurfaceId: action.surfaceId } : {}),
+    ...("sessionId" in action ? { actionSessionId: action.sessionId } : {}),
+    effectTypes: effects.map((effect) => effect.type),
+    ...(action.type === "surface.metadata"
+      ? { surfaceMetadataFields: surfaceMetadataFieldsFromAction(action) }
+      : {})
+  };
+}
+
+function surfaceMetadataFieldsFromAction(
+  action: Extract<AppAction, { type: "surface.metadata" }>
+): string[] {
+  const fields: string[] = [];
+  if (action.cwd !== undefined) {
+    fields.push("cwd");
+  }
+  if (action.title !== undefined) {
+    fields.push("title");
+  }
+  if ("branch" in action) {
+    fields.push("branch");
+  }
+  if ("gitRepository" in action) {
+    fields.push("gitRepository");
+  }
+  if (action.ports !== undefined) {
+    fields.push("ports");
+  }
+  if (action.attention !== undefined) {
+    fields.push("attention");
+  }
+  if (action.unreadDelta !== undefined) {
+    fields.push("unreadDelta");
+  }
+  return fields;
 }
 
 function areTerminalTypographySettingsEqual(
