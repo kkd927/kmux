@@ -19,6 +19,7 @@ import { createTerminalBridge } from "./terminalBridge";
 
 describe("terminal bridge", () => {
   afterEach(() => {
+    vi.useRealTimers();
     browserWindows.length = 0;
     vi.clearAllMocks();
   });
@@ -45,6 +46,219 @@ describe("terminal bridge", () => {
     expect(dispatchAppAction).toHaveBeenCalledWith({
       type: "terminal.bell"
     });
+  });
+
+  it("coalesces frequent title metadata per surface", () => {
+    vi.useFakeTimers();
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "first"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "second"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "third"
+      }
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId,
+      title: "first"
+    });
+
+    vi.advanceTimersByTime(999);
+    expect(dispatchAppAction).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+    expect(dispatchAppAction).toHaveBeenCalledTimes(2);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId,
+      title: "third"
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "third"
+      }
+    });
+    expect(dispatchAppAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops pending title metadata when the title reverts to the current value", () => {
+    vi.useFakeTimers();
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "first"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "stale"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "first"
+      }
+    });
+
+    vi.advanceTimersByTime(1000);
+
+    expect(dispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId,
+      title: "first"
+    });
+  });
+
+  it("does not delay non-title metadata while title metadata is pending", () => {
+    vi.useFakeTimers();
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "first"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "pending"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        cwd: "/tmp/kmux"
+      }
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledTimes(2);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId,
+      cwd: "/tmp/kmux",
+      attention: undefined,
+      unreadDelta: undefined
+    });
+
+    vi.advanceTimersByTime(1000);
+    expect(dispatchAppAction).toHaveBeenCalledTimes(3);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId,
+      title: "pending"
+    });
+  });
+
+  it("flushes pending title metadata before session exit", () => {
+    vi.useFakeTimers();
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "first"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        title: "final"
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "exit",
+      payload: {
+        surfaceId,
+        sessionId,
+        exitCode: 0
+      }
+    });
+
+    expect(dispatchAppAction).toHaveBeenNthCalledWith(2, {
+      type: "surface.metadata",
+      surfaceId,
+      title: "final"
+    });
+    expect(dispatchAppAction).toHaveBeenNthCalledWith(3, {
+      type: "session.exited",
+      sessionId,
+      exitCode: 0
+    });
+
+    vi.advanceTimersByTime(1000);
+    expect(dispatchAppAction).toHaveBeenCalledTimes(3);
   });
 
   it("routes terminal notifications into notification.create", () => {
