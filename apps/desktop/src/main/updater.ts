@@ -63,6 +63,7 @@ interface UpdaterControllerOptions {
   dialogs: UpdaterDialogs;
   notifier: UpdaterNotifier;
   currentVersion: string;
+  beforeQuitAndInstall?: (version?: string) => void;
   logger?: UpdaterLogger;
   scheduler?: UpdaterScheduler;
   platform?: NodeJS.Platform;
@@ -328,6 +329,7 @@ export function createUpdaterController(
     if (!enabled || state.status !== "downloaded") {
       return;
     }
+    options.beforeQuitAndInstall?.(state.version);
     options.driver.quitAndInstall();
   }
 

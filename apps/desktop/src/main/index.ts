@@ -38,8 +38,13 @@ import { createUsageRuntime } from "./usageRuntime";
 import { createWorktreeRuntime } from "./worktreeRuntime";
 import {
   createNativeUpdaterDialogs,
-  createNativeUpdaterNotifier
+  createNativeUpdaterNotifier,
+  showUpdateInstallIncompleteDialog
 } from "./updaterUi";
+import {
+  createPendingUpdateStore,
+  evaluatePendingInstall
+} from "./pendingUpdate";
 import {
   createMainLifecycleController,
   showQuitConfirmationDialog
@@ -372,10 +377,7 @@ async function bootstrap(): Promise<void> {
     removeWorkspaceWorktrees: worktreeRuntime.removeMany,
     setUsageDashboardOpen: usageRuntime.setDashboardOpen,
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
-    installDownloadedUpdate: () => {
-      lifecycle.allowQuit();
-      updater.quitAndInstall();
-    },
+    installDownloadedUpdate: () => updater.quitAndInstall(),
     recordProfileEvent: (event) => smoothnessProfile.record(event)
   });
 
@@ -425,6 +427,9 @@ async function bootstrap(): Promise<void> {
     autoUpdater.channel = "latest-arm64";
   }
   autoUpdater.allowDowngrade = false;
+  const pendingUpdateStore = createPendingUpdateStore(
+    join(dirname(paths.settingsPath), "pending-update.json")
+  );
   updater = createUpdaterController({
     driver: autoUpdater,
     dialogs: createNativeUpdaterDialogs({
@@ -437,7 +442,13 @@ async function bootstrap(): Promise<void> {
     currentVersion: app.getVersion(),
     platform: process.platform,
     isPackaged: app.isPackaged,
-    env: process.env
+    env: process.env,
+    beforeQuitAndInstall: (version) => {
+      lifecycle.allowQuit();
+      if (version) {
+        pendingUpdateStore.record(version);
+      }
+    }
   });
   const broadcastUpdaterState = (): void => {
     const state = updater.getState();
@@ -497,6 +508,24 @@ async function bootstrap(): Promise<void> {
     shutdown
   });
   openMainWindow("initial");
+  const pendingInstall = evaluatePendingInstall(
+    app.getVersion(),
+    pendingUpdateStore.read()
+  );
+  if (pendingInstall.status !== "none") {
+    logDiagnostics("main.updater.pending-install", {
+      status: pendingInstall.status,
+      attemptedVersion: pendingInstall.version,
+      currentVersion: app.getVersion()
+    });
+    pendingUpdateStore.clear();
+    if (pendingInstall.status === "incomplete" && process.env.NODE_ENV !== "test") {
+      void showUpdateInstallIncompleteDialog(getCurrentWindow(), {
+        appName: app.getName(),
+        version: pendingInstall.version
+      });
+    }
+  }
   const updateApplicationMenu = () => {
     const template = buildApplicationMenuTemplate({
       appName: app.getName(),
@@ -506,10 +535,7 @@ async function bootstrap(): Promise<void> {
       actions: {
         checkForUpdates: () => updater.checkForUpdates("foreground"),
         downloadUpdate: () => updater.downloadUpdate("inline"),
-        quitAndInstall: () => {
-          lifecycle.allowQuit();
-          updater.quitAndInstall();
-        }
+        quitAndInstall: () => updater.quitAndInstall()
       }
     });
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));

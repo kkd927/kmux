@@ -37,6 +37,7 @@ class FakeUpdater extends EventEmitter implements UpdaterDriver {
 function createHarness(options?: {
   isPackaged?: boolean;
   env?: NodeJS.ProcessEnv;
+  beforeQuitAndInstall?: ReturnType<typeof vi.fn>;
 }): {
   updater: FakeUpdater;
   dialogs: UpdaterDialogs & {
@@ -81,7 +82,8 @@ function createHarness(options?: {
     currentVersion: "0.1.11",
     platform: "darwin",
     isPackaged: options?.isPackaged ?? true,
-    env: options?.env ?? {}
+    env: options?.env ?? {},
+    beforeQuitAndInstall: options?.beforeQuitAndInstall
   });
 
   return {
@@ -232,6 +234,28 @@ describe("updater controller", () => {
       status: "downloaded",
       version: "0.1.12"
     });
+  });
+
+  it("runs the install preparation hook before installing an accepted inline update", async () => {
+    const beforeQuitAndInstall = vi.fn();
+    const harness = createHarness({ beforeQuitAndInstall });
+    harness.dialogs.promptForInstall.mockResolvedValue(true);
+
+    await harness.controller.checkForUpdates("background");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    await harness.controller.downloadUpdate("inline");
+    harness.updater.emit("update-available", { version: "0.1.12" });
+    await Promise.resolve();
+
+    harness.updater.emit("update-downloaded", { version: "0.1.12" });
+    await Promise.resolve();
+
+    expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
+    expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.updater.quitAndInstall.mock.invocationCallOrder[0]
+    );
   });
 
   it("rechecks before inline downloads so stale update buttons jump to the latest version", async () => {
