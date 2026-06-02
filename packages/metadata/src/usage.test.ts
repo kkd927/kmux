@@ -696,9 +696,6 @@ describe("usage adapters", () => {
       "logs"
     );
     mkdirSync(logDir, { recursive: true });
-    mkdirSync(path.join(homeDir, ".gemini", "antigravity-cli", "cache"), {
-      recursive: true
-    });
     writeFileSync(
       path.join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
       `${JSON.stringify({
@@ -707,17 +704,6 @@ describe("usage adapters", () => {
         workspace,
         conversationId
       })}\n`,
-      "utf8"
-    );
-    writeFileSync(
-      path.join(
-        homeDir,
-        ".gemini",
-        "antigravity-cli",
-        "cache",
-        "last_conversations.json"
-      ),
-      JSON.stringify({ [workspace]: conversationId }),
       "utf8"
     );
     writeFileSync(
@@ -850,9 +836,6 @@ describe("usage adapters", () => {
       })
     ]);
 
-    mkdirSync(path.join(homeDir, ".gemini", "antigravity-cli", "cache"), {
-      recursive: true
-    });
     writeFileSync(
       path.join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
       `${JSON.stringify({
@@ -861,17 +844,6 @@ describe("usage adapters", () => {
         workspace,
         conversationId
       })}\n`,
-      "utf8"
-    );
-    writeFileSync(
-      path.join(
-        homeDir,
-        ".gemini",
-        "antigravity-cli",
-        "cache",
-        "last_conversations.json"
-      ),
-      JSON.stringify({ [workspace]: conversationId }),
       "utf8"
     );
     const incremental = await antigravityAdapter.readIncremental(startOfDayMs);

@@ -839,6 +839,7 @@ describe("external session indexer", () => {
     const dbOnlyUpdatedAt = new Date("2026-06-02T12:18:34.000Z");
     const firstUpdatedAt = new Date("2026-06-02T12:55:54.000Z");
     const latestUpdatedAt = new Date("2026-06-02T14:57:53.000Z");
+    const unattributedUpdatedAt = new Date("2026-06-02T14:58:53.000Z");
 
     writeJsonl(
       join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
@@ -850,12 +851,18 @@ describe("external session indexer", () => {
           timestamp: firstUpdatedAt.getTime()
         },
         {
+          conversationId: latestConversationId,
           workspace,
           display: "Latest AGY local session",
           timestamp: latestUpdatedAt.getTime()
+        },
+        {
+          workspace,
+          display: "Unattributed AGY prompt",
+          timestamp: unattributedUpdatedAt.getTime()
         }
       ],
-      latestUpdatedAt
+      unattributedUpdatedAt
     );
     writeJson(
       join(
@@ -866,7 +873,7 @@ describe("external session indexer", () => {
         "last_conversations.json"
       ),
       {
-        [workspace]: latestConversationId
+        [workspace]: firstConversationId
       },
       latestUpdatedAt
     );
