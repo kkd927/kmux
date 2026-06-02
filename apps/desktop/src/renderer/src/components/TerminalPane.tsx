@@ -54,7 +54,7 @@ import {
   recordRendererSmoothnessProfileEvent
 } from "../smoothnessProfile";
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
-import { TERMINAL_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
+import { TERMINAL_LIVE_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
 import {
   canDropSurfaceTabOnPane,
   decodeSurfaceTabDragPayload,
@@ -813,7 +813,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fontWeight: 400,
           cursorBlink: true,
           macOptionIsMeta: false,
-          scrollback: TERMINAL_SCROLLBACK_LINES,
+          scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
           theme: terminalTheme,
           linkHandler: terminalLinkHandler

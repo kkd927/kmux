@@ -38,7 +38,10 @@ import {
   PTY_STDOUT_LOGS_ENV,
   logDiagnostics
 } from "../shared/diagnostics";
-import { TERMINAL_SCROLLBACK_LINES } from "../shared/terminalConfig";
+import {
+  TERMINAL_LIVE_SCROLLBACK_LINES,
+  TERMINAL_RESTORE_SCROLLBACK_LINES
+} from "../shared/terminalConfig";
 import {
   createNodeSmoothnessProfileRecorder,
   profileNowMs
@@ -288,7 +291,9 @@ function snapshot(
       cols: record.cols,
       rows: record.rows,
       serialize: () =>
-        record.serialize.serialize({ scrollback: TERMINAL_SCROLLBACK_LINES })
+        record.serialize.serialize({
+          scrollback: TERMINAL_RESTORE_SCROLLBACK_LINES
+        })
     }),
     cols: record.cols,
     rows: record.rows,
@@ -397,7 +402,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cols: request.spec.cols,
     rows: request.spec.rows,
     allowProposedApi: true,
-    scrollback: TERMINAL_SCROLLBACK_LINES
+    scrollback: TERMINAL_LIVE_SCROLLBACK_LINES
   });
   const unicode11 = new Unicode11Addon();
   terminal.loadAddon(unicode11);
