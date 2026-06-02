@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ExternalAgentSessionVm,
@@ -12,7 +12,8 @@ const SESSION_PAGE_SIZE = 20;
 const SESSION_VENDOR_FILTERS = [
   { key: "codex", label: "Codex" },
   { key: "gemini", label: "Gemini" },
-  { key: "claude", label: "Claude" }
+  { key: "claude", label: "Claude" },
+  { key: "antigravity", label: "Antigravity" }
 ] as const;
 
 type SessionVendorFilter = (typeof SESSION_VENDOR_FILTERS)[number]["key"];
@@ -43,7 +44,9 @@ export function ExternalSessionsPanelContainer(): JSX.Element {
         setResumeError(null);
         void window.kmux.resumeExternalAgentSession(key).catch((caught) => {
           setResumeError(
-            caught instanceof Error ? caught.message : "Could not resume session"
+            caught instanceof Error
+              ? caught.message
+              : "Could not resume session"
           );
         });
       }}
@@ -56,18 +59,33 @@ export function ExternalSessionsPanel(
 ): JSX.Element {
   const [visibleCount, setVisibleCount] = useState(SESSION_PAGE_SIZE);
   const [activeFilter, setActiveFilter] = useState<SessionFilter>("all");
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const filterDropdownRef = useRef<HTMLDivElement | null>(null);
   const sessions = props.snapshot.sessions;
+  const vendorSessionCounts = useMemo(() => {
+    const counts = new Map<SessionVendorFilter, number>();
+    for (const session of sessions) {
+      counts.set(session.vendor, (counts.get(session.vendor) ?? 0) + 1);
+    }
+    return counts;
+  }, [sessions]);
   const availableVendorFilters = useMemo(() => {
     const vendors = new Set(sessions.map((session) => session.vendor));
     return SESSION_VENDOR_FILTERS.filter((filter) => vendors.has(filter.key));
   }, [sessions]);
-  const visibleFilters = useMemo(
-    () =>
-      availableVendorFilters.length > 1
-        ? ([{ key: "all", label: "ALL" }, ...availableVendorFilters] as const)
-        : [],
-    [availableVendorFilters]
-  );
+  const visibleFilters = useMemo(() => {
+    if (availableVendorFilters.length <= 1) {
+      return [];
+    }
+
+    return [
+      { key: "all" as const, label: "All", count: sessions.length },
+      ...availableVendorFilters.map((filter) => ({
+        ...filter,
+        count: vendorSessionCounts.get(filter.key) ?? 0
+      }))
+    ];
+  }, [availableVendorFilters, sessions.length, vendorSessionCounts]);
   const effectiveFilter =
     activeFilter === "all" ||
     availableVendorFilters.some((filter) => filter.key === activeFilter)
@@ -94,18 +112,106 @@ export function ExternalSessionsPanel(
   }, [props.snapshot.updatedAt]);
 
   useEffect(() => {
+    if (!filterMenuOpen) {
+      return undefined;
+    }
+
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      if (
+        filterDropdownRef.current &&
+        !filterDropdownRef.current.contains(event.target as Node)
+      ) {
+        setFilterMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", closeOnOutsidePointer);
+    return () => {
+      window.removeEventListener("mousedown", closeOnOutsidePointer);
+    };
+  }, [filterMenuOpen]);
+
+  useEffect(() => {
     if (effectiveFilter !== activeFilter) {
       setActiveFilter(effectiveFilter);
+      setFilterMenuOpen(false);
     }
   }, [activeFilter, effectiveFilter]);
 
   const activeFilterLabel = labelForFilter(effectiveFilter);
+  const activeFilterDisplayLabel = displayLabelForFilter(effectiveFilter);
   const hasAnySessions = sessions.length > 0;
   const description = describeSessionCount(
     effectiveFilter,
     filteredSessions.length,
     sessions.length
   );
+  const filterControl =
+    visibleFilters.length > 0 ? (
+      <div
+        ref={filterDropdownRef}
+        className={styles.externalSessionsFilterDropdown}
+        data-open={filterMenuOpen ? "true" : "false"}
+        aria-label="Filter sessions by agent"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setFilterMenuOpen(false);
+          }
+        }}
+      >
+        <button
+          type="button"
+          className={styles.externalSessionsFilterTrigger}
+          aria-haspopup="menu"
+          aria-expanded={filterMenuOpen}
+          aria-label={`Agent filter: ${activeFilterDisplayLabel}`}
+          onClick={() => {
+            setFilterMenuOpen((open) => !open);
+          }}
+        >
+          <span className={styles.externalSessionsFilterTriggerValue}>
+            {activeFilterDisplayLabel}
+          </span>
+          <ChevronDownIcon />
+        </button>
+
+        {filterMenuOpen ? (
+          <div
+            className={styles.externalSessionsFilterMenu}
+            role="menu"
+            aria-label="Agent filters"
+          >
+            <div className={styles.externalSessionsFilterOptions}>
+              {visibleFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  className={styles.externalSessionsFilterOption}
+                  data-filter-key={filter.key}
+                  data-active={
+                    effectiveFilter === filter.key ? "true" : "false"
+                  }
+                  role="menuitemradio"
+                  aria-checked={effectiveFilter === filter.key}
+                  onClick={() => {
+                    setVisibleCount(SESSION_PAGE_SIZE);
+                    setActiveFilter(filter.key);
+                    setFilterMenuOpen(false);
+                  }}
+                >
+                  <span className={styles.externalSessionsFilterOptionText}>
+                    {filter.label}
+                  </span>
+                  <span className={styles.externalSessionsFilterOptionCount}>
+                    {filter.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    ) : null;
 
   return (
     <div
@@ -114,32 +220,18 @@ export function ExternalSessionsPanel(
     >
       <div className={styles.externalSessionsHeader}>
         <div className={styles.externalSessionsHeaderCopy}>
-          <h3 className={styles.externalSessionsTitle}>Sessions</h3>
-          <p className={styles.externalSessionsDescription}>{description}</p>
+          <div className={styles.externalSessionsTitleLine}>
+            <h3 className={styles.externalSessionsTitle}>Sessions</h3>
+            <span
+              className={styles.externalSessionsCount}
+              data-testid="external-sessions-count"
+            >
+              {description}
+            </span>
+          </div>
         </div>
         <div className={styles.externalSessionsActions}>
-          {visibleFilters.length > 0 ? (
-            <div
-              className={styles.externalSessionsFilterGroup}
-              aria-label="Filter sessions by agent"
-            >
-              {visibleFilters.map((filter) => (
-                <button
-                  key={filter.key}
-                  type="button"
-                  className={styles.externalSessionsFilterButton}
-                  data-active={effectiveFilter === filter.key ? "true" : "false"}
-                  aria-pressed={effectiveFilter === filter.key}
-                  onClick={() => {
-                    setVisibleCount(SESSION_PAGE_SIZE);
-                    setActiveFilter(filter.key);
-                  }}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
+          {filterControl}
           <button
             type="button"
             className={styles.externalSessionsRefreshButton}
@@ -178,7 +270,7 @@ export function ExternalSessionsPanel(
           <table className={styles.externalSessionsTable}>
             <thead className={styles.externalSessionsTableHead}>
               <tr>
-                <th scope="col">Vendor</th>
+                <th scope="col">Agent</th>
                 <th scope="col">Workspace</th>
                 <th scope="col">Title</th>
                 <th scope="col">Time</th>
@@ -300,7 +392,45 @@ function labelForFilter(filter: SessionFilter): string {
       return "Codex";
     case "gemini":
       return "Gemini";
+    case "antigravity":
+      return "Antigravity";
   }
+}
+
+function displayLabelForFilter(filter: SessionFilter): string {
+  switch (filter) {
+    case "all":
+      return "All";
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "gemini":
+      return "Gemini";
+    case "antigravity":
+      return "Antigravity";
+  }
+}
+
+function ChevronDownIcon(): JSX.Element {
+  return (
+    <svg
+      className={styles.externalSessionsFilterChevron}
+      width="14"
+      height="14"
+      viewBox="0 0 20 20"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="m5.833 8.333 4.167 4.167 4.167-4.167"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function RefreshIcon(): JSX.Element {

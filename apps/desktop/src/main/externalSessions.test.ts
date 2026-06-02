@@ -386,8 +386,7 @@ describe("external session indexer", () => {
             content: [
               {
                 type: "input_text",
-                text:
-                  "<environment_context>\n  <cwd>/Users/test/codex-project</cwd>\n</environment_context>"
+                text: "<environment_context>\n  <cwd>/Users/test/codex-project</cwd>\n</environment_context>"
               }
             ]
           }
@@ -767,6 +766,236 @@ describe("external session indexer", () => {
       relativeTimeLabel: "3h",
       resumeCommandPreview: "claude --resume claude-session"
     });
+  });
+
+  it("lists Antigravity sessions from the kmux-owned index and resumes with a deterministic conversation id", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-06-02T02:30:00.000Z");
+    const updatedAt = new Date("2026-06-02T02:05:00.000Z");
+    writeJson(
+      join(homeDir, ".config", "kmux", "antigravity-sessions.json"),
+      {
+        version: 1,
+        sessions: [
+          {
+            conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+            cwd: "/Users/test/antigravity-project",
+            workspacePaths: ["/Users/test/antigravity-project"],
+            transcriptPath:
+              "/Users/test/antigravity-project/.gemini/jetski/transcript.jsonl",
+            artifactDirectoryPath:
+              "/Users/test/antigravity-project/.gemini/jetski/artifacts",
+            createdAt: "2026-06-02T02:00:00.000Z",
+            updatedAt: updatedAt.toISOString()
+          }
+        ]
+      },
+      updatedAt
+    );
+
+    const indexer = createExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      commandAvailability: (command) => command === "agy"
+    });
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+      vendor: "antigravity",
+      vendorLabel: "AGY",
+      title: "Antigravity 9a8b7c6d",
+      cwd: "/Users/test/antigravity-project",
+      relativeTimeLabel: "25m",
+      canResume: true,
+      resumeCommandPreview:
+        "agy --conversation 9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+    });
+    expect(
+      indexer.resolveExternalAgentSession(
+        "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+      )
+    ).toMatchObject({
+      key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+      vendor: "antigravity",
+      cwd: "/Users/test/antigravity-project",
+      launch: {
+        cwd: "/Users/test/antigravity-project",
+        initialInput:
+          "agy --conversation 9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890\r"
+      }
+    });
+  });
+
+  it("lists existing Antigravity CLI conversations from local history and database files", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-06-02T15:30:00.000Z");
+    const firstConversationId = "4814da0a-b93c-41cc-837d-8a747e9d5b2e";
+    const latestConversationId = "614e5204-a346-44fa-ba98-2cbf60cf574d";
+    const dbOnlyConversationId = "8098bfd3-9fa8-4757-879b-949836ebdcc3";
+    const workspace = "/Users/test/antigravity-project";
+    const projectId = "5eef7b7d-2cfc-42f2-ab33-3bfe45d26cfe";
+    const dbOnlyUpdatedAt = new Date("2026-06-02T12:18:34.000Z");
+    const firstUpdatedAt = new Date("2026-06-02T12:55:54.000Z");
+    const latestUpdatedAt = new Date("2026-06-02T14:57:53.000Z");
+
+    writeJsonl(
+      join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
+      [
+        {
+          conversationId: firstConversationId,
+          workspace,
+          display: "Investigate AGY sessions",
+          timestamp: firstUpdatedAt.getTime()
+        },
+        {
+          workspace,
+          display: "Latest AGY local session",
+          timestamp: latestUpdatedAt.getTime()
+        }
+      ],
+      latestUpdatedAt
+    );
+    writeJson(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "cache",
+        "last_conversations.json"
+      ),
+      {
+        [workspace]: latestConversationId
+      },
+      latestUpdatedAt
+    );
+    writeJson(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "cache",
+        "projects.json"
+      ),
+      {
+        [workspace]: projectId
+      },
+      latestUpdatedAt
+    );
+    writeJson(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "conversations",
+        `${firstConversationId}.db`
+      ),
+      {},
+      firstUpdatedAt
+    );
+    writeJson(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "conversations",
+        `${latestConversationId}.db`
+      ),
+      {},
+      latestUpdatedAt
+    );
+    writeJson(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "conversations",
+        `${dbOnlyConversationId}.db`
+      ),
+      {
+        projectId
+      },
+      dbOnlyUpdatedAt
+    );
+
+    const indexer = createExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      commandAvailability: (command) => command === "agy"
+    });
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(3);
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: `antigravity:${latestConversationId}`,
+      vendor: "antigravity",
+      vendorLabel: "AGY",
+      title: "Latest AGY local session",
+      cwd: workspace,
+      canResume: true,
+      resumeCommandPreview: `agy --conversation ${latestConversationId}`
+    });
+    expect(snapshot.sessions[1]).toMatchObject({
+      key: `antigravity:${firstConversationId}`,
+      title: "Investigate AGY sessions",
+      cwd: workspace,
+      resumeCommandPreview: `agy --conversation ${firstConversationId}`
+    });
+    expect(snapshot.sessions[2]).toMatchObject({
+      key: `antigravity:${dbOnlyConversationId}`,
+      title: "Antigravity 8098bfd3",
+      cwd: workspace,
+      resumeCommandPreview: `agy --conversation ${dbOnlyConversationId}`
+    });
+    expect(
+      indexer.resolveExternalAgentSession(
+        `antigravity:${latestConversationId}`
+      )
+    ).toMatchObject({
+      launch: {
+        cwd: workspace,
+        initialInput: `agy --conversation ${latestConversationId}\r`
+      }
+    });
+  });
+
+  it("disables Antigravity resume when agy is not available", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-06-02T02:30:00.000Z");
+    writeJson(
+      join(homeDir, ".config", "kmux", "antigravity-sessions.json"),
+      {
+        version: 1,
+        sessions: [
+          {
+            conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+            cwd: "/Users/test/antigravity-project",
+            updatedAt: "2026-06-02T02:05:00.000Z"
+          }
+        ]
+      },
+      new Date("2026-06-02T02:05:00.000Z")
+    );
+
+    const indexer = createExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      commandAvailability: (command) => command !== "agy"
+    });
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+      canResume: false,
+      resumeCommandPreview:
+        "agy --conversation 9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+    });
+    expect(
+      indexer.resolveExternalAgentSession(
+        "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+      )
+    ).toBeNull();
   });
 
   it("only indexes Claude main session transcripts as top-level sessions", () => {
@@ -1325,7 +1554,9 @@ describe("external session indexer", () => {
       canResume: false,
       resumeCommandPreview: "codex resume codex-session"
     });
-    expect(indexer.resolveExternalAgentSession("codex:codex-session")).toBeNull();
+    expect(
+      indexer.resolveExternalAgentSession("codex:codex-session")
+    ).toBeNull();
   });
 
   it("resolves a session key to a vendor resume launch config", () => {

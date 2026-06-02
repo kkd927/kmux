@@ -2,7 +2,7 @@
 
 # kmux
 
-**Run Claude Code, Codex CLI, and Gemini CLI side-by-side — without losing track of any of them.**
+**Run Claude Code, Codex CLI, Gemini CLI, and Antigravity CLI side-by-side — without losing track of any of them.**
 
 A macOS workspace for AI coding agents: parallel sessions, integrated usage, instant resume, worktree-safe branches.
 
@@ -33,14 +33,14 @@ English | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简�
 
 ## ✨ Why kmux?
 
-If you've started leaning on **Claude Code**, **Codex CLI**, and **Gemini CLI** for real work, you've already hit the friction: three terminals, three rate limits, three session histories, and no good way to keep them from stepping on each other inside the same repo.
+If you've started leaning on **Claude Code**, **Codex CLI**, **Gemini CLI**, and **Antigravity CLI** for real work, you've already hit the friction: multiple terminals, multiple agent surfaces, separate session histories, and no good way to keep them from stepping on each other inside the same repo.
 
 **kmux** is a macOS workspace built around exactly that workflow:
 
 - Park each agent in its own workspace and run them in parallel
 - Get native macOS notifications when any agent needs input or finishes
 - Track combined usage and remaining session budgets in one sidebar
-- Jump back into any past Claude/Codex/Gemini session with one click
+- Jump back into any past Claude/Codex/Gemini/Antigravity session with one click
 - Spin up a `git worktree` so two agents can edit the same repo on different branches safely
 
 It's keyboard-first by design — every workflow is reachable from the home row — but that's how it gets out of your way, not the headline.
@@ -55,7 +55,7 @@ It's keyboard-first by design — every workflow is reachable from the home row 
 
 ### 📊 Unified Usage Dashboard
 
-Track Claude Code, Codex CLI, and Gemini CLI side-by-side in one right-sidebar panel. The 5-hour session window, weekly window, and monthly spend roll up across all three providers — so you can see remaining session budget at a glance.
+Track Claude Code, Codex CLI, Gemini CLI, and Antigravity CLI side-by-side in one right-sidebar panel. Usage and state roll up from each provider's local records where available, while lifecycle hooks stay focused on live status and notifications.
 
 A daily heatmap, today's spend, top-spending models, and per-project hotspots round out the view, replacing a stack of `usage` commands with a single live dashboard.
 
@@ -76,9 +76,9 @@ A daily heatmap, today's spend, top-spending models, and per-project hotspots ro
 
 ### 🕘 Cross-Agent Session History
 
-kmux indexes the local session logs for all three agents — Claude (`~/.claude/projects`), Codex (`~/.codex/sessions`), Gemini (`~/.gemini/tmp`) — and surfaces them in one filterable panel.
+kmux indexes local session records for all four agents — Claude (`~/.claude/projects`), Codex (`~/.codex/sessions`), Gemini (`~/.gemini/tmp`), and Antigravity (`~/.gemini/antigravity-cli`) — and surfaces them in one filterable panel.
 
-Click any row to resume that session. kmux focuses an existing surface for the same `cwd` if one is open, or spins up a fresh workspace and runs `claude --resume`, `codex resume`, or `gemini --resume` for you.
+Click any row to resume that session. kmux focuses an existing surface for the same `cwd` if one is open, or spins up a fresh workspace and runs `claude --resume`, `codex resume`, `gemini --resume`, or `agy --conversation` for you.
 
 </td>
 </tr>
@@ -129,7 +129,7 @@ kmux tracks the worktree lifecycle — branch name, dirty state, and removal, in
 ## 🏁 Quick Start
 
 1. Launch kmux and press `⌘ N` to create a workspace
-2. Inside it, run your agent — `claude`, `codex`, or `gemini`
+2. Inside it, run your agent — `claude`, `codex`, `gemini`, or `agy`
 3. Toggle the sidebar with `⌘ B` to see the **Usage** and **Sessions** panels
 4. Press `⌘ N` again to park another agent in its own workspace — or right-click a workspace → **Convert to Worktree Workspace** if both should touch the same repo
 5. When an agent needs input or finishes, a native macOS notification fires and the workspace picks up an attention badge
@@ -142,15 +142,15 @@ kmux tracks the worktree lifecycle — branch name, dirty state, and removal, in
 
 ### Workspaces
 
-| Shortcut  | Action                          |
-| :-------- | :------------------------------ |
-| `⌘ N`     | New workspace                   |
-| `⌘ ]`     | Next workspace                  |
-| `⌘ [`     | Previous workspace              |
-| `⌘ 1`–`9` | Switch to workspace by number   |
-| `⌘ ⇧ R`   | Rename workspace                |
-| `⌘ ⇧ W`   | Close workspace                 |
-| `⌘ B`     | Toggle sidebar                  |
+| Shortcut  | Action                        |
+| :-------- | :---------------------------- |
+| `⌘ N`     | New workspace                 |
+| `⌘ ]`     | Next workspace                |
+| `⌘ [`     | Previous workspace            |
+| `⌘ 1`–`9` | Switch to workspace by number |
+| `⌘ ⇧ R`   | Rename workspace              |
+| `⌘ ⇧ W`   | Close workspace               |
+| `⌘ B`     | Toggle sidebar                |
 
 ### Panes
 
@@ -164,27 +164,27 @@ kmux tracks the worktree lifecycle — branch name, dirty state, and removal, in
 
 ### Surface Tabs
 
-| Shortcut  | Action                       |
-| :-------- | :--------------------------- |
-| `⌘ T`     | New surface tab              |
-| `⌃ Tab`   | Next surface                 |
-| `⌃ ⇧ Tab` | Previous surface             |
-| `⌃ 1`–`9` | Switch to surface by number  |
-| `⌘ W`     | Close surface                |
-| `⌃ ⌘ W`   | Close other surfaces         |
+| Shortcut  | Action                      |
+| :-------- | :-------------------------- |
+| `⌘ T`     | New surface tab             |
+| `⌃ Tab`   | Next surface                |
+| `⌃ ⇧ Tab` | Previous surface            |
+| `⌃ 1`–`9` | Switch to surface by number |
+| `⌘ W`     | Close surface               |
+| `⌃ ⌘ W`   | Close other surfaces        |
 
 ### Terminal & Utilities
 
-| Shortcut        | Action               |
-| :-------------- | :------------------- |
-| `⌘ ⇧ P`         | Command palette      |
-| `⌘ F`           | Search in terminal   |
-| `⌘ G` / `⌘ ⇧ G` | Find next / previous |
-| `⌘ C` / `⌘ V`   | Copy / paste         |
-| `⌘ ⇧ M`         | Vim-style copy mode  |
-| `⌘ I`           | Toggle notifications |
+| Shortcut        | Action                 |
+| :-------------- | :--------------------- |
+| `⌘ ⇧ P`         | Command palette        |
+| `⌘ F`           | Search in terminal     |
+| `⌘ G` / `⌘ ⇧ G` | Find next / previous   |
+| `⌘ C` / `⌘ V`   | Copy / paste           |
+| `⌘ ⇧ M`         | Vim-style copy mode    |
+| `⌘ I`           | Toggle notifications   |
 | `⌘ ⇧ U`         | Toggle usage dashboard |
-| `⌘ ,`           | Open settings        |
+| `⌘ ,`           | Open settings          |
 
 <br>
 

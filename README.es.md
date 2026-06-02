@@ -2,7 +2,7 @@
 
 # kmux
 
-**Ejecuta Claude Code, Codex CLI y Gemini CLI en paralelo, sin perder el control de ninguno de ellos.**
+**Ejecuta Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en paralelo, sin perder el control de ninguno de ellos.**
 
 Un espacio de trabajo en macOS para agentes de programación de IA: sesiones paralelas, uso integrado, reanudación instantánea y ramas seguras con worktrees.
 
@@ -33,14 +33,14 @@ Un espacio de trabajo en macOS para agentes de programación de IA: sesiones par
 
 ## ✨ ¿Por qué kmux?
 
-Si has comenzado a confiar en **Claude Code**, **Codex CLI** y **Gemini CLI** para tu trabajo diario, ya te habrás topado con las dificultades habituales: tres terminales independientes, tres límites de velocidad (Rate limits), tres historiales de sesión y ninguna forma óptima de evitar que interfieran entre sí en el mismo repositorio.
+Si has comenzado a confiar en **Claude Code**, **Codex CLI**, **Gemini CLI** y **Antigravity CLI** para tu trabajo diario, ya te habrás topado con las dificultades habituales: múltiples terminales, múltiples superficies de agente, historiales de sesión separados y ninguna forma óptima de evitar que interfieran entre sí en el mismo repositorio.
 
 **kmux** es un espacio de trabajo para macOS diseñado específicamente para optimizar este flujo de trabajo:
 
 - Aloja cada agente en su propio espacio de trabajo virtual e independiente, ejecutándolos en paralelo.
 - Recibe notificaciones nativas de macOS cuando cualquier agente requiera entrada de datos o finalice su tarea.
 - Realiza un seguimiento del uso consolidado y del presupuesto de sesión restante en una barra lateral única.
-- Regresa instantáneamente a cualquier sesión anterior de Claude, Codex o Gemini con un solo clic.
+- Regresa instantáneamente a cualquier sesión anterior de Claude, Codex, Gemini o Antigravity con un solo clic.
 - Crea un `git worktree` para que dos agentes puedan editar el mismo repositorio en ramas diferentes de manera totalmente segura.
 
 Su diseño prioriza el uso del teclado (Keyboard-first) para que puedas acceder a todas las funciones desde la fila central (Home row), integrándose en tu flujo sin interrumpir tu concentración.
@@ -55,7 +55,7 @@ Su diseño prioriza el uso del teclado (Keyboard-first) para que puedas acceder 
 
 ### 📊 Panel de Uso Unificado
 
-Monitorea Claude Code, Codex CLI y Gemini CLI en paralelo desde el panel derecho de la barra lateral. La ventana de sesión de 5 horas, el uso semanal y el gasto mensual se consolidan entre los tres proveedores para que conozcas el presupuesto restante de un vistazo.
+Monitorea Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en paralelo desde el panel derecho de la barra lateral. Cuando existen registros locales del proveedor, kmux consolida uso y estado desde ahí; los hooks de ciclo de vida se reservan para estado en vivo y notificaciones.
 
 Ofrece un mapa de calor diario, el gasto de hoy, los modelos más utilizados y los puntos calientes por proyecto, reemplazando múltiples comandos de `usage` por un único panel interactivo en tiempo real.
 
@@ -76,9 +76,9 @@ Ofrece un mapa de calor diario, el gasto de hoy, los modelos más utilizados y l
 
 ### 🕘 Historial de Sesiones entre Agentes
 
-kmux indexa los registros de sesiones locales de los tres agentes (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp`) y los presenta en un panel único y filtrable.
+kmux indexa los registros de sesiones locales de los cuatro agentes (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp`, Antigravity: `~/.gemini/antigravity-cli`) y los presenta en un panel único y filtrable.
 
-Haz clic en cualquier fila para reanudar esa sesión al instante. kmux enfocará una pantalla existente si está abierta en el mismo directorio (`cwd`), o abrirá un nuevo espacio de trabajo y ejecutará `claude --resume`, `codex resume` o `gemini --resume` por ti.
+Haz clic en cualquier fila para reanudar esa sesión al instante. kmux enfocará una pantalla existente si está abierta en el mismo directorio (`cwd`), o abrirá un nuevo espacio de trabajo y ejecutará `claude --resume`, `codex resume`, `gemini --resume` o `agy --conversation` por ti.
 
 </td>
 </tr>
@@ -129,7 +129,7 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
 ## 🏁 Inicio Rápido
 
 1. Inicia kmux y presiona `⌘ N` para crear tu primer espacio de trabajo.
-2. Dentro de la terminal, ejecuta tu agente favorito (`claude`, `codex` o `gemini`).
+2. Dentro de la terminal, ejecuta tu agente favorito (`claude`, `codex`, `gemini` o `agy`).
 3. Presiona `⌘ B` para abrir la barra lateral y ver el panel de **Usage** y la lista de **Sessions**.
 4. Presiona `⌘ N` nuevamente para ejecutar otro agente en un espacio de trabajo independiente, o haz clic derecho en un espacio de trabajo y selecciona **Convert to Worktree Workspace** si ambos van a interactuar con el mismo repositorio.
 5. Cuando un agente requiera tu atención o termine su tarea, recibirás una notificación del sistema macOS y se mostrará un indicador visual en el icono de su espacio de trabajo.
@@ -142,25 +142,25 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
 
 ### Espacios de Trabajo (Workspaces)
 
-| Atajo     | Acción                          |
-| :-------- | :------------------------------ |
-| `⌘ N`     | Nuevo espacio de trabajo        |
-| `⌘ ]`     | Siguiente espacio de trabajo    |
-| `⌘ [`     | Anterior espacio de trabajo    |
-| `⌘ 1`–`9` | Cambiar a espacio por número    |
-| `⌘ ⇧ R`   | Renombrar espacio de trabajo    |
-| `⌘ ⇧ W`   | Cerrar espacio de trabajo       |
-| `⌘ B`     | Mostrar/Ocultar barra lateral   |
+| Atajo     | Acción                        |
+| :-------- | :---------------------------- |
+| `⌘ N`     | Nuevo espacio de trabajo      |
+| `⌘ ]`     | Siguiente espacio de trabajo  |
+| `⌘ [`     | Anterior espacio de trabajo   |
+| `⌘ 1`–`9` | Cambiar a espacio por número  |
+| `⌘ ⇧ R`   | Renombrar espacio de trabajo  |
+| `⌘ ⇧ W`   | Cerrar espacio de trabajo     |
+| `⌘ B`     | Mostrar/Ocultar barra lateral |
 
 ### Paneles (Panes)
 
-| Atajo                 | Acción                                       |
-| :-------------------- | :------------------------------------------- |
-| `⌘ D`                 | Dividir verticalmente (a la derecha)         |
-| `⌘ ⇧ D`               | Dividir horizontalmente (hacia abajo)        |
-| `⌥ ⌘ ←` `→` `↑` `↓`   | Enfocar panel en la dirección indicada       |
-| `⌥ ⇧ ⌘ ←` `→` `↑` `↓` | Ajustar tamaño del panel                     |
-| `⌥ ⌘ K`               | Cerrar panel                                 |
+| Atajo                 | Acción                                 |
+| :-------------------- | :------------------------------------- |
+| `⌘ D`                 | Dividir verticalmente (a la derecha)   |
+| `⌘ ⇧ D`               | Dividir horizontalmente (hacia abajo)  |
+| `⌥ ⌘ ←` `→` `↑` `↓`   | Enfocar panel en la dirección indicada |
+| `⌥ ⇧ ⌘ ←` `→` `↑` `↓` | Ajustar tamaño del panel               |
+| `⌥ ⌘ K`               | Cerrar panel                           |
 
 ### Pestañas (Surface Tabs)
 
@@ -175,25 +175,25 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
 
 ### Terminal y Utilidades (Terminal & Utilities)
 
-| Atajo           | Acción                          |
-| :-------------- | :------------------------------ |
-| `⌘ ⇧ P`         | Abrir paleta de comandos        |
-| `⌘ F`           | Buscar en la terminal           |
-| `⌘ G` / `⌘ ⇧ G` | Buscar siguiente / anterior     |
-| `⌘ C` / `⌘ V`   | Copiar / Pegar                  |
-| `⌘ ⇧ M`         | Modo de copia al estilo Vim     |
+| Atajo           | Acción                            |
+| :-------------- | :-------------------------------- |
+| `⌘ ⇧ P`         | Abrir paleta de comandos          |
+| `⌘ F`           | Buscar en la terminal             |
+| `⌘ G` / `⌘ ⇧ G` | Buscar siguiente / anterior       |
+| `⌘ C` / `⌘ V`   | Copiar / Pegar                    |
+| `⌘ ⇧ M`         | Modo de copia al estilo Vim       |
 | `⌘ I`           | Activar/Desactivar notificaciones |
-| `⌘ ⇧ U`         | Mostrar/Ocultar panel de uso    |
-| `⌘ ,`           | Abrir preferencias              |
+| `⌘ ⇧ U`         | Mostrar/Ocultar panel de uso      |
+| `⌘ ,`           | Abrir preferencias                |
 
 <br>
 
 ## 📚 Recursos y Documentación
 
-|                          |                                                                                                        |
-| :----------------------- | :----------------------------------------------------------------------------------------------------- |
-| 📖 **Especificaciones**   | [docs/product-spec.md](./docs/product-spec.md) — Especificaciones completas, incluyendo Socket y CLI  |
-| 🏗️ **Arquitectura ADR**  | [docs/adr/0002-electron-xterm-mvp-architecture.md](./docs/adr/0002-electron-xterm-mvp-architecture.md) |
+|                           |                                                                                                        |
+| :------------------------ | :----------------------------------------------------------------------------------------------------- |
+| 📖 **Especificaciones**   | [docs/product-spec.md](./docs/product-spec.md) — Especificaciones completas, incluyendo Socket y CLI   |
+| 🏗️ **Arquitectura ADR**   | [docs/adr/0002-electron-xterm-mvp-architecture.md](./docs/adr/0002-electron-xterm-mvp-architecture.md) |
 | 🛠️ **Guía de Desarrollo** | [docs/development.md](./docs/development.md) — Compilación desde origen, ciclo de dev y depuración     |
 | 🤝 **Contribuciones**     | [CONTRIBUTING.md](./CONTRIBUTING.md)                                                                   |
 | 📜 **Código de Conducta** | [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)                                                             |

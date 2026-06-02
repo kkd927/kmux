@@ -201,4 +201,79 @@ describe("agent hook normalization", () => {
       event: "turn_complete"
     });
   });
+
+  it("normalizes Antigravity aliases and preserves conversation metadata", () => {
+    expect(
+      normalizeAgentHookInvocation("agy", "PreInvocation", {
+        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+        transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
+        artifactDirectoryPath: "/Users/test/project/.gemini/jetski/artifacts",
+        workspacePaths: ["/Users/test/project"]
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "running",
+      message: "Running",
+      details: {
+        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+        transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
+        artifactDirectoryPath: "/Users/test/project/.gemini/jetski/artifacts",
+        workspacePaths: ["/Users/test/project"],
+        kmux_hook_event_arg: "PreInvocation"
+      }
+    });
+
+    expect(
+      normalizeAgentHookInvocation("antigravity-cli", "PostInvocation")
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "running"
+    });
+  });
+
+  it("maps Antigravity permission and question tools to needs_input", () => {
+    expect(
+      normalizeAgentHookInvocation("antigravity", "PreToolUse", {
+        toolCall: {
+          name: "ask_permission",
+          args: {
+            Reason: "Needs command access"
+          }
+        }
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "needs_input",
+      title: "Antigravity needs input"
+    });
+
+    expect(
+      normalizeAgentHookInvocation("antigravity", "PreToolUse", {
+        tool_name: "ask_question"
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "needs_input"
+    });
+  });
+
+  it("maps Antigravity stop hooks by fullyIdle state", () => {
+    expect(
+      normalizeAgentHookInvocation("antigravity", "Stop", {
+        fullyIdle: true
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "turn_complete"
+    });
+
+    expect(
+      normalizeAgentHookInvocation("antigravity", "Stop", {
+        fullyIdle: false
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "running"
+    });
+  });
 });

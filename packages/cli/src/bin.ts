@@ -87,6 +87,27 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+function agentHookResponse(
+  agent: string,
+  hookEvent: string
+): Record<string, unknown> {
+  const normalizedAgent = agent.trim().toLowerCase();
+  const normalizedEvent = hookEvent
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  if (
+    normalizedAgent === "agy" ||
+    normalizedAgent === "antigravity" ||
+    normalizedAgent === "antigravity-cli"
+  ) {
+    if (normalizedEvent === "pretooluse" || normalizedEvent === "stop") {
+      return { decision: "allow" };
+    }
+  }
+  return {};
+}
+
 function readJsonFromStdin(): Record<string, unknown> {
   if (process.stdin.isTTY) {
     return {};
@@ -123,7 +144,7 @@ async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
   } catch {
     // Agent hooks must never block or fail the agent command path.
   }
-  print({});
+  print(agentHookResponse(agent, hookEvent));
 }
 
 const program = new Command();
@@ -183,12 +204,12 @@ surface
         await sendRpc("surface.split", {
           direction: options.direction,
           paneId: useStableCurrentSurface ? undefined : options.pane,
-          surfaceId: options.surface ?? (useStableCurrentSurface
-            ? env.KMUX_SURFACE_ID
-            : undefined),
-          sessionId: options.session ?? (useStableCurrentSurface
-            ? env.KMUX_SESSION_ID
-            : undefined)
+          surfaceId:
+            options.surface ??
+            (useStableCurrentSurface ? env.KMUX_SURFACE_ID : undefined),
+          sessionId:
+            options.session ??
+            (useStableCurrentSurface ? env.KMUX_SESSION_ID : undefined)
         })
       );
     }

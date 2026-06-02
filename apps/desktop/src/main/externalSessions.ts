@@ -17,6 +17,11 @@ import type {
   ExternalAgentSessionsSnapshot,
   SessionLaunchConfig
 } from "@kmux/proto";
+import { readAntigravityConversationMetadata } from "@kmux/metadata";
+import {
+  antigravitySessionIndexPath,
+  readAntigravitySessionIndex
+} from "./antigravityIntegration";
 
 export interface ExternalSessionIndexerOptions {
   homeDir: string;
@@ -24,6 +29,7 @@ export interface ExternalSessionIndexerOptions {
   maxFilesPerVendor?: number;
   env?: NodeJS.ProcessEnv;
   commandAvailability?: (command: string) => boolean;
+  antigravitySessionIndexPath?: string;
 }
 
 export interface ExternalSessionResumeSpec {
@@ -71,7 +77,12 @@ export function createExternalSessionIndexer(
     const records = [
       ...listCodexSessions(options.homeDir, maxFilesPerVendor),
       ...listGeminiSessions(options.homeDir, maxFilesPerVendor),
-      ...listClaudeSessions(options.homeDir, maxFilesPerVendor)
+      ...listClaudeSessions(options.homeDir, maxFilesPerVendor),
+      ...listAntigravitySessions(
+        options.homeDir,
+        resolveAntigravityIndexPath(options),
+        maxFilesPerVendor
+      )
     ].filter((record) => record.updatedAtMs >= cutoffMs);
     records.sort((left, right) => right.updatedAtMs - left.updatedAtMs);
     return records;
@@ -82,7 +93,11 @@ export function createExternalSessionIndexer(
       const currentNow = now();
       return {
         sessions: listRecords(currentNow).map((record) =>
-          toViewModel(record, currentNow, canResumeRecord(record, canRunCommand))
+          toViewModel(
+            record,
+            currentNow,
+            canResumeRecord(record, canRunCommand)
+          )
         ),
         updatedAt: currentNow.toISOString()
       };
@@ -96,13 +111,99 @@ export function createExternalSessionIndexer(
   };
 }
 
+function resolveAntigravityIndexPath(
+  options: ExternalSessionIndexerOptions
+): string {
+  return (
+    options.antigravitySessionIndexPath ??
+    antigravitySessionIndexPath(options.homeDir, options.env)
+  );
+}
+
+function listAntigravitySessions(
+  homeDir: string,
+  indexPath: string,
+  maxFiles: number
+): ExternalSessionRecord[] {
+  const merged = new Map<
+    string,
+    {
+      conversationId: string;
+      cwd?: string;
+      title?: string;
+      createdAt?: string;
+      updatedAt?: string;
+      mtimeMs: number;
+    }
+  >();
+
+  const upsert = (record: {
+    conversationId: string;
+    cwd?: string;
+    title?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    mtimeMs: number;
+  }) => {
+    const previous = merged.get(record.conversationId);
+    if (!previous) {
+      merged.set(record.conversationId, record);
+      return;
+    }
+    merged.set(record.conversationId, {
+      conversationId: record.conversationId,
+      cwd: record.cwd ?? previous.cwd,
+      title: record.title ?? previous.title,
+      createdAt: earliestIsoTimestamp(previous.createdAt, record.createdAt),
+      updatedAt: latestIsoTimestamp(previous.updatedAt, record.updatedAt),
+      mtimeMs: Math.max(previous.mtimeMs, record.mtimeMs)
+    });
+  };
+
+  for (const session of readAntigravityConversationMetadata(homeDir, {
+    maxConversationFiles: maxFiles
+  })) {
+    upsert({
+      conversationId: session.conversationId,
+      cwd: session.workspace,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      mtimeMs: session.mtimeMs
+    });
+  }
+  for (const session of readAntigravitySessionIndex(indexPath).sessions) {
+    const updatedAtMs = Date.parse(session.updatedAt);
+    upsert({
+      conversationId: session.conversationId,
+      cwd: session.cwd ?? session.workspacePaths?.[0],
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      mtimeMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0
+    });
+  }
+
+  return Array.from(merged.values()).map((session) =>
+    buildRecord({
+      vendor: "antigravity",
+      sessionId: session.conversationId,
+      cwd: session.cwd,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      mtimeMs: session.mtimeMs,
+      title: session.title
+    })
+  );
+}
+
 function listCodexSessions(
   homeDir: string,
   maxFiles: number
 ): ExternalSessionRecord[] {
   const root = join(homeDir, ".codex", "sessions");
-  return collectCandidateFiles(root, (path) =>
-    basename(path).startsWith("rollout-") && path.endsWith(".jsonl")
+  return collectCandidateFiles(
+    root,
+    (path) => basename(path).startsWith("rollout-") && path.endsWith(".jsonl")
   )
     .slice(0, maxFiles)
     .flatMap((candidate) => {
@@ -122,15 +223,22 @@ function listCodexSessions(
           updatedAt = maxIsoTimestamp(updatedAt, timestamp);
         }
         if (object?.type === "session_meta" && payload) {
-          sessionId = pickFirstString(payload, ["id", "session_id", "sessionId"]);
+          sessionId = pickFirstString(payload, [
+            "id",
+            "session_id",
+            "sessionId"
+          ]);
           cwd = pickFirstString(payload, ["cwd"]);
           createdAt =
             pickFirstString(payload, ["timestamp", "createdAt", "startTime"]) ??
             timestamp ??
             createdAt;
           updatedAt =
-            pickFirstString(payload, ["timestamp", "updatedAt", "lastUpdated"]) ??
-            updatedAt;
+            pickFirstString(payload, [
+              "timestamp",
+              "updatedAt",
+              "lastUpdated"
+            ]) ?? updatedAt;
         }
         if (payload?.type === "thread_name_updated") {
           metadataTitle =
@@ -175,13 +283,18 @@ function listGeminiSessions(
   const projectRoots = readGeminiProjectRoots(homeDir);
   return collectCandidateFiles(root, (path) => {
     const name = basename(path);
-    return name.startsWith("session-") && (name.endsWith(".json") || name.endsWith(".jsonl"));
+    return (
+      name.startsWith("session-") &&
+      (name.endsWith(".json") || name.endsWith(".jsonl"))
+    );
   })
     .slice(0, maxFiles)
     .flatMap((candidate) => {
       const projectDir = dirname(dirname(candidate.path));
       const projectKey = basename(projectDir);
-      const cwd = readTrimmedFile(join(projectDir, ".project_root")) ?? projectRoots.get(projectKey);
+      const cwd =
+        readTrimmedFile(join(projectDir, ".project_root")) ??
+        projectRoots.get(projectKey);
       const parsed = candidate.path.endsWith(".jsonl")
         ? parseGeminiJsonl(candidate.path)
         : parseGeminiJson(candidate.path);
@@ -228,7 +341,11 @@ function listClaudeSessions(
         if (!object) {
           continue;
         }
-        sessionId ??= pickFirstString(object, ["sessionId", "session_id", "id"]);
+        sessionId ??= pickFirstString(object, [
+          "sessionId",
+          "session_id",
+          "id"
+        ]);
         cwd ??= pickFirstString(object, ["cwd", "projectRoot"]);
         const timestamp = pickFirstString(object, [
           "timestamp",
@@ -313,7 +430,11 @@ function parseGeminiJsonl(path: string): {
       continue;
     }
     sessionId ??= pickFirstString(object, ["sessionId", "session_id", "id"]);
-    createdAt ??= pickFirstString(object, ["startTime", "createdAt", "timestamp"]);
+    createdAt ??= pickFirstString(object, [
+      "startTime",
+      "createdAt",
+      "timestamp"
+    ]);
     updatedAt =
       pickFirstString(object, ["lastUpdated", "updatedAt", "timestamp"]) ??
       updatedAt;
@@ -334,7 +455,9 @@ function firstUserMessageTitle(messages: unknown[]): string | undefined {
     const object = asObject(message);
     const type = pickFirstString(object, ["type", "role"]);
     if (type === "user") {
-      return sanitizeTitle(extractText(object?.content ?? object?.displayContent));
+      return sanitizeTitle(
+        extractText(object?.content ?? object?.displayContent)
+      );
     }
   }
   return undefined;
@@ -351,7 +474,9 @@ function isGeminiConversationMessage(value: unknown): boolean {
     return false;
   }
   return Boolean(
-    extractText(object?.content ?? object?.displayContent ?? object?.message)?.trim()
+    extractText(
+      object?.content ?? object?.displayContent ?? object?.message
+    )?.trim()
   );
 }
 
@@ -375,7 +500,9 @@ function extractCodexPromptText(value: unknown): string | undefined {
   if (type === "input_text" || type === "text") {
     return extractCodexPromptText(object.text);
   }
-  return extractCodexPromptText(object.content ?? object.text ?? object.message);
+  return extractCodexPromptText(
+    object.content ?? object.text ?? object.message
+  );
 }
 
 function cleanCodexPromptText(value: string): string | undefined {
@@ -383,7 +510,10 @@ function cleanCodexPromptText(value: string): string | undefined {
     return undefined;
   }
   const cleaned = value
-    .replace(/<permissions instructions>[\s\S]*?<\/permissions instructions>/gi, "\n")
+    .replace(
+      /<permissions instructions>[\s\S]*?<\/permissions instructions>/gi,
+      "\n"
+    )
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "\n")
     .replace(/<turn_aborted>[\s\S]*?<\/turn_aborted>/gi, "\n")
     .replace(/<skill>[\s\S]*?<\/skill>/gi, "\n")
@@ -446,7 +576,9 @@ function claudeUserPromptTitle(
   }
   const message = asObject(object.message);
   return sanitizeTitle(
-    extractClaudePromptText(message?.content ?? object.content ?? object.message)
+    extractClaudePromptText(
+      message?.content ?? object.content ?? object.message
+    )
   );
 }
 
@@ -469,23 +601,16 @@ function extractClaudePromptText(value: unknown): string | undefined {
   if (type === "text") {
     return extractClaudePromptText(object.text);
   }
-  return extractClaudePromptText(object.content ?? object.text ?? object.message);
+  return extractClaudePromptText(
+    object.content ?? object.text ?? object.message
+  );
 }
 
 function cleanClaudePromptText(value: string): string | undefined {
   const cleaned = value
-    .replace(
-      /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi,
-      "\n"
-    )
-    .replace(
-      /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi,
-      "\n"
-    )
-    .replace(
-      /<local-command-stderr>[\s\S]*?<\/local-command-stderr>/gi,
-      "\n"
-    )
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "\n")
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "\n")
+    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/gi, "\n")
     .replace(/<command-message>[\s\S]*?<\/command-message>/gi, "\n")
     .replace(/<command-name>[\s\S]*?<\/command-name>/gi, "\n")
     .replace(/<command-args>[\s\S]*?<\/command-args>/gi, "\n")
@@ -506,7 +631,9 @@ function buildRecord(input: {
   mtimeMs: number;
 }): ExternalSessionRecord {
   const vendorLabel = vendorLabelFor(input.vendor);
-  const title = input.title ?? `${vendorLabel} ${input.sessionId.slice(0, 8)}`;
+  const title =
+    input.title ??
+    `${vendorTitleLabelFor(input.vendor, vendorLabel)} ${input.sessionId.slice(0, 8)}`;
   const updatedAtMs = input.updatedAt
     ? Date.parse(input.updatedAt)
     : input.mtimeMs;
@@ -520,6 +647,13 @@ function buildRecord(input: {
     updatedAt: input.updatedAt ?? new Date(input.mtimeMs).toISOString(),
     updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : input.mtimeMs
   };
+}
+
+function vendorTitleLabelFor(
+  vendor: ExternalAgentSessionVendor,
+  compactLabel: ExternalAgentSessionVm["vendorLabel"]
+): string {
+  return vendor === "antigravity" ? "Antigravity" : compactLabel;
 }
 
 function toViewModel(
@@ -541,7 +675,9 @@ function toViewModel(
   };
 }
 
-function toResumeSpec(record: ExternalSessionRecord): ExternalSessionResumeSpec {
+function toResumeSpec(
+  record: ExternalSessionRecord
+): ExternalSessionResumeSpec {
   const launch = buildResumeLaunch(record);
   return {
     key: record.key,
@@ -573,6 +709,8 @@ function resumeCommandParts(record: ExternalSessionRecord): string[] {
       return ["gemini", "--resume", record.sessionId];
     case "claude":
       return ["claude", "--resume", record.sessionId];
+    case "antigravity":
+      return ["agy", "--conversation", record.sessionId];
   }
 }
 
@@ -649,6 +787,8 @@ function vendorLabelFor(
       return "GEMINI";
     case "claude":
       return "CLAUDE";
+    case "antigravity":
+      return "AGY";
   }
 }
 
@@ -702,16 +842,14 @@ function parseJsonlEdges(path: string): unknown[] {
 }
 
 function parseJsonlLines(contents: string): unknown[] {
-  return contents
-    .split(/\r?\n/)
-    .flatMap((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return [];
-      }
-      const parsed = parseJson(trimmed);
-      return parsed === null ? [] : [parsed];
-    });
+  return contents.split(/\r?\n/).flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return [];
+    }
+    const parsed = parseJson(trimmed);
+    return parsed === null ? [] : [parsed];
+  });
 }
 
 function readFilePrefix(path: string): string {
@@ -861,6 +999,32 @@ function maxIsoTimestamp(
     return candidate;
   }
   return Date.parse(candidate) > Date.parse(current) ? candidate : current;
+}
+
+function latestIsoTimestamp(
+  left: string | undefined,
+  right: string | undefined
+): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return Date.parse(right) > Date.parse(left) ? right : left;
+}
+
+function earliestIsoTimestamp(
+  left: string | undefined,
+  right: string | undefined
+): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return Date.parse(right) < Date.parse(left) ? right : left;
 }
 
 function recentJsonlActivityTimestamp(

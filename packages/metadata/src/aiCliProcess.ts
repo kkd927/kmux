@@ -149,9 +149,13 @@ function detectVendorFromCommandLine(commandLine: string): UsageVendor {
     return "gemini";
   }
   if (
-    commandNames.includes("claude") ||
-    commandNames.includes("claude-code")
+    commandNames.includes("agy") ||
+    commandNames.includes("antigravity") ||
+    commandNames.includes("antigravity-cli")
   ) {
+    return "antigravity";
+  }
+  if (commandNames.includes("claude") || commandNames.includes("claude-code")) {
     return "claude";
   }
   return "unknown";

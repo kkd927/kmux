@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 export * from "./aiCliProcess";
+export * from "./antigravityStorage";
 export * from "./modelPricing";
 export * from "./usage";
 

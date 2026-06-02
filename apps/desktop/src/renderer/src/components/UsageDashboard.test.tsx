@@ -62,6 +62,45 @@ describe("UsageDashboard", () => {
     expect(container.textContent).not.toContain("2026-04-27");
   });
 
+  it("rounds visible usage spend up to cents", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      totalTodayCostUsd: 0.0045,
+      totalTodayTokens: 1288,
+      models: [
+        {
+          vendor: "antigravity",
+          modelId: "gemini-3.5-flash",
+          modelLabel: "gemini-3.5-flash",
+          todayCostUsd: 0.0045,
+          inputTokens: 1000,
+          outputTokens: 288,
+          cacheTokens: 0,
+          totalTokens: 1288,
+          activeSessionCount: 1,
+          costSource: "estimated"
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    expect(
+      container.querySelector("[data-testid='usage-summary-card-spend']")
+        ?.textContent
+    ).toContain("$0.01");
+    expect(
+      container.querySelector(
+        "[data-testid='usage-model-row-gemini-3.5-flash']"
+      )?.textContent
+    ).toContain("$0.01");
+    expect(container.textContent).not.toContain("$0.0045");
+  });
+
   it("renders unlimited Codex credits without a percentage meter", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-05-20", "2026-05-20T03:00:00.000Z"),
@@ -99,6 +138,98 @@ describe("UsageDashboard", () => {
     expect(row?.textContent).toContain("No workspace spend limit");
     expect(row?.textContent).not.toContain("NaN%");
     expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
+  });
+
+  it("renders Antigravity subscription quota rows", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      subscriptionUsage: [
+        {
+          provider: "antigravity",
+          providerLabel: "AGY",
+          planLabel: "Paid",
+          source: "quota_api",
+          updatedAt: "2026-06-02T02:00:00.000Z",
+          rows: [
+            {
+              key: "flash",
+              label: "Flash",
+              valueKind: "percent",
+              usedPercent: 65,
+              resetLabel: "Resets in 13h 0m",
+              resetsAt: "2026-06-02T15:00:00.000Z",
+              windowKind: "model"
+            }
+          ]
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const provider = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-provider-antigravity']"
+    );
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-row-antigravity-flash']"
+    );
+    expect(provider?.textContent).toContain("AGY Paid");
+    expect(row?.textContent).toContain("Flash");
+    expect(row?.textContent).toContain("65%");
+  });
+
+  it("shows token mix costs as plain values when only some samples have unknown component pricing", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      totalTodayCostUsd: 181.48,
+      totalTodayTokens: 214_067_512,
+      todayTokenBreakdown: {
+        inputTokens: 2_773_238,
+        outputTokens: 1_900_758,
+        cacheReadTokens: 202_076_526,
+        cacheWriteTokens: 7_212_712,
+        thinkingTokens: 104_278,
+        totalTokens: 214_067_512
+      },
+      todayTokenCostBreakdown: {
+        inputCostUsd: 6.93,
+        outputCostUsd: 45.08,
+        cacheReadCostUsd: 83.34,
+        cacheWriteCostUsd: 44.53,
+        thinkingCostUsd: 1.56,
+        hasUnknownInputCost: false,
+        hasUnknownOutputCost: true,
+        hasUnknownCacheReadCost: true,
+        hasUnknownCacheWriteCost: true,
+        hasUnknownThinkingCost: false
+      }
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    expect(
+      container.querySelector<HTMLElement>(
+        "[data-testid='token-mix-cost-output']"
+      )?.textContent
+    ).toBe("$45.08");
+    expect(
+      container.querySelector<HTMLElement>(
+        "[data-testid='token-mix-cost-cache-read']"
+      )?.textContent
+    ).toBe("$83.34");
+    expect(
+      container.querySelector<HTMLElement>(
+        "[data-testid='token-mix-cost-cache-create']"
+      )?.textContent
+    ).toBe("$44.53");
   });
 
   it("aligns heatmap columns to Sunday-first weeks and omits future days in the current week", () => {

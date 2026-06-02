@@ -112,10 +112,18 @@ export function normalizeHookNotificationInvocation(
 }
 
 function normalizeAgentName(agent: string): string {
-  return agent
+  const normalized = agent
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_.:-]/g, "_");
+  if (
+    normalized === "agy" ||
+    normalized === "antigravity" ||
+    normalized === "antigravity-cli"
+  ) {
+    return "antigravity";
+  }
+  return normalized;
 }
 
 function normalizeHookEventName(eventName: string): string {
@@ -202,6 +210,29 @@ function mapAgentHookEvent(
     }
   }
 
+  if (agent === "antigravity") {
+    const toolName = antigravityToolName(payload);
+    if (
+      hookEvent === "pre-tool-use" &&
+      (toolName === "ask_permission" || toolName === "ask_question")
+    ) {
+      return "needs_input";
+    }
+    if (
+      hookEvent === "pre-invocation" ||
+      hookEvent === "pre-tool-use" ||
+      hookEvent === "post-tool-use" ||
+      hookEvent === "post-invocation"
+    ) {
+      return "running";
+    }
+    if (hookEvent === "stop") {
+      return booleanField(payload, "fullyIdle") === false
+        ? "running"
+        : "turn_complete";
+    }
+  }
+
   return null;
 }
 
@@ -214,6 +245,20 @@ function isClaudeNotificationHook(agent: string, hookEvent: string): boolean {
 
 function isClaudeInputTool(toolName: string | undefined): boolean {
   return toolName === "AskUserQuestion" || toolName === "ExitPlanMode";
+}
+
+function antigravityToolName(payload: HookPayload): string | undefined {
+  const tool = recordField(payload, "tool");
+  const toolCall = recordField(payload, "toolCall");
+  return firstString(
+    stringField(toolCall, "name"),
+    stringField(toolCall, "toolName"),
+    stringField(payload, "tool_name"),
+    stringField(payload, "toolName"),
+    stringField(payload, "name"),
+    stringField(tool, "name"),
+    stringField(tool, "toolName")
+  )?.toLowerCase();
 }
 
 function resolveHookTarget(
@@ -288,6 +333,25 @@ function extractHookMessage(
     );
   }
 
+  if (agent === "antigravity") {
+    const toolName = antigravityToolName(payload);
+    if (toolName === "ask_question") {
+      return firstString(
+        stringField(payload, "message"),
+        stringField(payload, "question"),
+        stringField(recordField(payload, "toolInput"), "question"),
+        "Question requested"
+      );
+    }
+    if (toolName === "ask_permission") {
+      return firstString(
+        stringField(payload, "message"),
+        stringField(payload, "reason"),
+        "Tool permission requested"
+      );
+    }
+  }
+
   return firstString(
     stringField(payload, "message"),
     stringField(payload, "body"),
@@ -345,13 +409,29 @@ function compactDetails(payload: HookPayload): Record<string, unknown> {
     "hook_event_name",
     "notification_type",
     "tool_name",
+    "toolName",
     "session_id",
-    "surface_id"
+    "surface_id",
+    "conversationId",
+    "transcriptPath",
+    "artifactDirectoryPath"
   ]) {
     const value = stringField(payload, key);
     if (value) {
       details[key] = value.slice(0, 160);
     }
+  }
+  const fullyIdle = booleanField(payload, "fullyIdle");
+  if (fullyIdle !== undefined) {
+    details.fullyIdle = fullyIdle;
+  }
+  const workspacePaths = arrayField(payload, "workspacePaths")
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  if (workspacePaths.length > 0) {
+    details.workspacePaths = workspacePaths;
   }
   return details;
 }
@@ -364,6 +444,8 @@ function agentDisplayName(agent: string): string {
       return "Gemini";
     case "codex":
       return "Codex";
+    case "antigravity":
+      return "Antigravity";
     default:
       return agent
         .replace(/[_-]+/g, " ")
@@ -386,6 +468,14 @@ function stringField(
 ): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanField(
+  record: Record<string, unknown> | undefined,
+  key: string
+): boolean | undefined {
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function recordField(

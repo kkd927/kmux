@@ -333,8 +333,7 @@ function registerCleanup(): void {
   }
 }
 
-function writeAgentWrappers(wrapperDir: string): void {
-  const binDir = join(wrapperDir, "bin");
+export function writeAgentHookHelpers(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
   writeExecutableFile(
     join(binDir, "kmux-agent-hook"),
@@ -345,6 +344,11 @@ function writeAgentWrappers(wrapperDir: string): void {
     buildAgentHookRunnerScript(),
     "utf8"
   );
+}
+
+function writeAgentWrappers(wrapperDir: string): void {
+  const binDir = join(wrapperDir, "bin");
+  writeAgentHookHelpers(binDir);
   writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
 }
 
@@ -688,9 +692,27 @@ const net = require("node:net");
 
 const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";
 
+function hookResponsePayload() {
+  const agent = (process.env.KMUX_HOOK_AGENT || "").trim().toLowerCase();
+  const eventName = (process.env.KMUX_HOOK_EVENT || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  if (
+    agent === "agy" ||
+    agent === "antigravity" ||
+    agent === "antigravity-cli"
+  ) {
+    if (eventName === "pretooluse" || eventName === "stop") {
+      return { decision: "allow" };
+    }
+  }
+  return {};
+}
+
 function emitResponse() {
   if (outputJson) {
-    process.stdout.write("{}\\n");
+    process.stdout.write(JSON.stringify(hookResponsePayload()) + "\\n");
   }
 }
 
@@ -806,10 +828,20 @@ function buildAgentHookHelperScript(): string {
   return [
     "#!/bin/sh",
     'KMUX_AGENT_HOOK_OUTPUT_MODE="${KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}"',
-    'if [ "$#" -lt 2 ]; then',
-    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    '    printf "{}\\n"',
+    "kmux_print_hook_fallback() {",
+    '  if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" != "json" ]; then',
+    "    return 0",
     "  fi",
+    '  _kmux_hook_agent="$(printf "%s" "${1:-}" | tr "[:upper:]" "[:lower:]")"',
+    '  _kmux_hook_event="$(printf "%s" "${2:-}" | tr "[:upper:]" "[:lower:]" | tr -cd "[:alnum:]")"',
+    '  if { [ "$_kmux_hook_agent" = "agy" ] || [ "$_kmux_hook_agent" = "antigravity" ] || [ "$_kmux_hook_agent" = "antigravity-cli" ]; } && { [ "$_kmux_hook_event" = "pretooluse" ] || [ "$_kmux_hook_event" = "stop" ]; }; then',
+    '    printf "{\\"decision\\":\\"allow\\"}\\n"',
+    "    return 0",
+    "  fi",
+    '  printf "{}\\n"',
+    "}",
+    'if [ "$#" -lt 2 ]; then',
+    "  kmux_print_hook_fallback",
     "  exit 0",
     "fi",
     "",
@@ -835,9 +867,7 @@ function buildAgentHookHelperScript(): string {
     "  exit 0",
     "fi",
     "",
-    'if [ "$KMUX_AGENT_HOOK_OUTPUT_MODE" = "json" ]; then',
-    '  printf "{}\\n"',
-    "fi",
+    'kmux_print_hook_fallback "$@"',
     "",
     "exit 0",
     ""
@@ -1099,7 +1129,7 @@ function buildCodexWrapperScript(): string {
     "kmux_resolve_codex_hooks_feature() {",
     '  _kmux_codex_version_output="$("$KMUX_REAL_CODEX" --version 2>/dev/null || true)"',
     '  _kmux_codex_version=""',
-    '  for _kmux_codex_version_token in $_kmux_codex_version_output; do',
+    "  for _kmux_codex_version_token in $_kmux_codex_version_output; do",
     '    case "$_kmux_codex_version_token" in',
     "      [0-9]*.[0-9]*.[0-9]*)",
     '        _kmux_codex_version="${_kmux_codex_version_token%%-*}"',

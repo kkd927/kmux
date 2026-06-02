@@ -2537,6 +2537,13 @@
   min-width: 0;
 }
 
+.externalSessionsTitleLine {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
 .externalSessionsTitle {
   margin: 0;
   color: var(--usage-title);
@@ -2545,11 +2552,11 @@
   font-weight: 600;
 }
 
-.externalSessionsDescription {
-  margin: 3px 0 0;
+.externalSessionsCount {
   color: var(--usage-body);
   font-size: 0.875rem;
-  line-height: 1.35;
+  line-height: 1;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -2563,37 +2570,33 @@
   min-width: 0;
 }
 
-.externalSessionsFilterGroup {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 2px;
-  width: max-content;
-  max-width: 100%;
-  height: var(--external-sessions-control-height);
-  overflow: hidden;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  background: rgba(255, 255, 255, 0.035);
-  padding: 2px;
+.externalSessionsFilterDropdown {
+  position: relative;
+  flex: 0 1 124px;
+  width: 124px;
+  max-width: 124px;
+  min-width: 0;
 }
 
-.externalSessionsFilterButton {
+.externalSessionsFilterTrigger {
   appearance: none;
-  flex: 0 0 var(--external-sessions-filter-button-width);
-  width: var(--external-sessions-filter-button-width);
-  min-width: var(--external-sessions-filter-button-width);
-  height: calc(var(--external-sessions-control-height) - 6px);
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--usage-muted);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: var(--external-sessions-control-height);
+  padding: 0 9px;
+  border: 1px solid var(--usage-card-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--usage-body);
   font: inherit;
   font-size: 0.75rem;
   line-height: 1;
   font-weight: 600;
   cursor: pointer;
+  min-width: 0;
   transition:
     background 120ms ease,
     border-color 120ms ease,
@@ -2601,11 +2604,97 @@
     box-shadow 120ms ease;
 }
 
-.externalSessionsFilterButton:hover {
+.externalSessionsFilterTrigger:hover,
+.externalSessionsFilterDropdown[data-open="true"]
+  .externalSessionsFilterTrigger {
   color: var(--usage-title);
+  border-color: var(--border-subtle);
+  background: var(--usage-track);
 }
 
-.externalSessionsFilterButton[data-active="true"] {
+.externalSessionsFilterTrigger:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.externalSessionsFilterTriggerValue {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--usage-title);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.externalSessionsFilterChevron {
+  flex: 0 0 auto;
+  color: var(--usage-muted);
+  transition: transform 120ms ease;
+}
+
+.externalSessionsFilterDropdown[data-open="true"]
+  .externalSessionsFilterChevron {
+  transform: rotate(180deg);
+}
+
+.externalSessionsFilterMenu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-height: 260px;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid var(--usage-card-border);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+:global(html[data-color-theme="dark"]) .externalSessionsFilterMenu {
+  background: var(--shell-bg);
+  border-color: var(--border-soft);
+}
+
+.externalSessionsFilterOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.externalSessionsFilterOption {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--usage-body);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.externalSessionsFilterOption:hover {
+  color: var(--usage-title);
+  background: var(--usage-track);
+}
+
+.externalSessionsFilterOption[data-active="true"] {
   border-color: var(--usage-card-border);
   background: #ffffff;
   color: #1d2939;
@@ -2613,15 +2702,33 @@
 }
 
 :global(html[data-color-theme="dark"])
-  .externalSessionsFilterButton[data-active="true"] {
-  border-color: rgba(255, 255, 255, 0.06);
-  background: #1d2939;
+  .externalSessionsFilterOption[data-active="true"] {
+  border-color: var(--input-border);
+  background: var(--button-active);
   color: rgba(255, 255, 255, 0.9);
 }
 
-.externalSessionsFilterButton:focus-visible {
+.externalSessionsFilterOption:focus-visible {
   outline: 1px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+
+.externalSessionsFilterOptionText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.externalSessionsFilterOptionCount {
+  color: var(--usage-muted);
+  font-size: 0.688rem;
+  font-weight: 650;
+}
+
+.externalSessionsFilterOption[data-active="true"]
+  .externalSessionsFilterOptionCount {
+  color: currentColor;
 }
 
 .externalSessionsRefreshButton {
@@ -2774,6 +2881,11 @@
   --session-accent-bg: rgba(86, 211, 100, 0.055);
 }
 
+.externalSessionRow[data-vendor="antigravity"] {
+  --session-accent: #56d364;
+  --session-accent-bg: rgba(86, 211, 100, 0.055);
+}
+
 .externalSessionRow[data-vendor="claude"] {
   --session-accent: #fdb022;
   --session-accent-bg: rgba(253, 176, 34, 0.055);
@@ -2857,6 +2969,10 @@
 }
 
 .externalSessionRow[data-vendor="gemini"] .externalSessionVendor {
+  color: #67bd71;
+}
+
+.externalSessionRow[data-vendor="antigravity"] .externalSessionVendor {
   color: #67bd71;
 }
 
@@ -3196,7 +3312,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.688rem;
+  font-size: 0.8rem;
   color: var(--usage-heatmap-text);
 }
 
@@ -3247,7 +3363,7 @@
 
 .usageHeatmapMonth {
   min-height: 12px;
-  font-size: 0.625rem;
+  font-size: 0.8rem;
   line-height: 1;
   color: var(--usage-muted);
 }

@@ -144,6 +144,20 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   ],
   gemini: [
     {
+      modelId: "gemini-3.5-flash",
+      inputCostPerToken: 0.0000015,
+      outputCostPerToken: 0.000009,
+      cacheReadCostPerToken: 0.00000015,
+      aliases: [
+        "Gemini 3.5 Flash (Low)",
+        "Gemini 3.5 Flash (Medium)",
+        "Gemini 3.5 Flash (High)",
+        "gemini-3.5-flash-low",
+        "gemini-3.5-flash-medium",
+        "gemini-3.5-flash-high"
+      ]
+    },
+    {
       modelId: "gemini-3.1-pro-preview",
       inputCostPerToken: 0.000002,
       outputCostPerToken: 0.000012,
@@ -446,6 +460,8 @@ export function normalizeModelLookupKey(model: string): string {
     ""
   );
   value = value.replace(/[_\s]+/gu, "-");
+  value = value.replace(/-\((low|medium|high)\)$/u, "");
+  value = value.replace(/-(low|medium|high)$/u, "");
   value = value.replace(/-v\d+(?::\d+)?$/u, "");
   value = value.replace(/-(\d{4}-\d{2}-\d{2}|\d{8})$/u, "");
   value = value.replace(/-preview-(\d{2}-\d{2}|\d{2}-\d{4})$/u, "-preview");

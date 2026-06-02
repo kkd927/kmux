@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createSubscriptionAuthDetectors,
+  fetchAntigravitySubscriptionUsage,
   fetchClaudeSubscriptionUsage,
   fetchCodexSubscriptionUsage,
   fetchGeminiSubscriptionUsage
@@ -780,6 +781,197 @@ describe("subscription usage fetchers", () => {
     );
   });
 
+  it("maps Antigravity keychain auth to AGY quota rows", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "user@gmail.com:agy-refresh-token\n",
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "agy-access-token",
+            expires_in: 3600,
+            token_type: "Bearer"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            },
+            cloudaicompanionProject: "projects/agy-project"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-3.5-flash",
+                remainingFraction: 0.35,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      execFileImpl,
+      fetchImpl,
+      googleOAuthClientConfig: {
+        clientId: "agy-client-id"
+      },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Paid",
+        source: "quota_api",
+        rows: [
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 65
+          })
+        ]
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      expect.objectContaining({
+        method: "POST"
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+      expect.objectContaining({
+        method: "POST"
+      })
+    );
+  });
+
+  it("reads Antigravity go-keyring credentials and keeps zero-use quota rows visible", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "agy-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            },
+            cloudaicompanionProject: "projects/agy-project"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-2.5-flash",
+                remainingFraction: 1,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      execFileImpl,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    const loadRequest = fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(loadRequest?.body))).toEqual({
+      metadata: {
+        ideType: "GEMINI_CLI",
+        pluginType: "GEMINI"
+      }
+    });
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Paid",
+        rows: [
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 0
+          })
+        ]
+      })
+    );
+  });
+
+  it("does not relabel Gemini quota as Antigravity when AGY auth is unavailable", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".gemini", "oauth_creds.json"], {
+      access_token: "gemini-access-token",
+      refresh_token: "gemini-refresh-token",
+      expiry_date: Date.parse("2026-04-19T00:00:00.000Z"),
+      id_token: makeGoogleIdToken({ email: "user@gmail.com" })
+    });
+    writeJson(homeDir, [".gemini", "settings.json"], {
+      security: {
+        auth: {
+          selectedType: "oauth-personal"
+        }
+      }
+    });
+    const execFileImpl = vi.fn(async () => {
+      throw new Error("missing AGY keychain item");
+    });
+    const fetchImpl = vi.fn();
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      execFileImpl,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("hides Gemini model-family rows when the used percentage is zero", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".gemini", "oauth_creds.json"], {
@@ -1064,6 +1256,81 @@ describe("subscription usage fetchers", () => {
     expect(freeUsage).toBeNull();
   });
 
+  it("uses refreshed Gemini id tokens when classifying workspace free-tier quota", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".gemini", "oauth_creds.json"], {
+      access_token: "expired-token",
+      refresh_token: "refresh-token",
+      expiry_date: Date.parse("2026-04-17T00:00:00.000Z")
+    });
+    writeJson(homeDir, [".gemini", "settings.json"], {
+      security: {
+        auth: {
+          selectedType: "oauth-personal"
+        }
+      }
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "fresh-token",
+            refresh_token: "refresh-token-2",
+            id_token: makeGoogleIdToken({
+              email: "user@company.dev",
+              hd: "company.dev"
+            }),
+            expires_in: 3600,
+            token_type: "Bearer"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "free-tier"
+            }
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-2.5-pro",
+                remainingFraction: 0.5,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchGeminiSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      googleOAuthClientConfig: {
+        clientId: "client-id",
+        clientSecret: "client-secret"
+      },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "gemini",
+        planLabel: "Workspace",
+        rows: [expect.objectContaining({ key: "pro", usedPercent: 50 })]
+      })
+    );
+  });
+
   it("refreshes expired Gemini OAuth tokens before fetching quota usage", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".gemini", "oauth_creds.json"], {
@@ -1172,6 +1439,21 @@ describe("subscription usage fetchers", () => {
     });
 
     await expect(detectors.gemini?.()).resolves.toBe(true);
+  });
+
+  it("treats Antigravity keychain auth as visible local auth", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "user@gmail.com:agy-refresh-token\n",
+      stderr: ""
+    }));
+
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      execFileImpl
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
   });
 });
 
