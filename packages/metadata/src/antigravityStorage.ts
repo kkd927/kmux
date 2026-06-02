@@ -64,24 +64,12 @@ function readAntigravityConversationMetadataUncached(
   options: { maxConversationFiles?: number }
 ): AntigravityConversationMetadata[] {
   const conversations = new Map<string, AntigravityConversationMetadata>();
-  const latestWorkspaceHistory = new Map<string, Record<string, unknown>>();
 
   for (const record of parseJsonlFile(join(antigravityRoot, "history.jsonl"))) {
     if (!isRecord(record)) {
       continue;
     }
     const workspace = normalizePathValue(pickFirstString(record, ["workspace"]));
-    if (workspace) {
-      const previous = latestWorkspaceHistory.get(workspace);
-      if (
-        !previous ||
-        (numericField(record, "timestamp") ?? 0) >=
-          (numericField(previous, "timestamp") ?? 0)
-      ) {
-        latestWorkspaceHistory.set(workspace, record);
-      }
-    }
-
     const conversationId = pickFirstString(record, ["conversationId"]);
     if (!conversationId) {
       continue;
@@ -89,22 +77,6 @@ function readAntigravityConversationMetadataUncached(
     upsertConversation(
       conversations,
       buildHistoryConversationRecord(conversationId, record, workspace)
-    );
-  }
-
-  for (const [workspace, conversationId] of readStringMap(
-    join(antigravityRoot, "cache", "last_conversations.json")
-  )) {
-    const normalizedWorkspace = normalizePathValue(workspace);
-    upsertConversation(
-      conversations,
-      buildHistoryConversationRecord(
-        conversationId,
-        normalizedWorkspace
-          ? latestWorkspaceHistory.get(normalizedWorkspace)
-          : undefined,
-        normalizedWorkspace
-      )
     );
   }
 
@@ -134,7 +106,6 @@ function antigravityStorageSignature(
 ): string {
   return [
     fileSignature(join(antigravityRoot, "history.jsonl")),
-    fileSignature(join(antigravityRoot, "cache", "last_conversations.json")),
     fileSignature(join(antigravityRoot, "cache", "projects.json")),
     conversationsSignature(
       join(antigravityRoot, "conversations"),
