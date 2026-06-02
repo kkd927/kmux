@@ -13,8 +13,8 @@ import { useUsageSnapshot } from "../hooks/useUsageView";
 import styles from "../styles/App.module.css";
 
 const HEATMAP_ROWS = 7;
-const HEATMAP_CELL_SIZE_PX = 10;
-const HEATMAP_CELL_GAP_PX = 3;
+const HEATMAP_CELL_SIZE_PX = 11;
+const HEATMAP_CELL_GAP_PX = 2;
 const HEATMAP_BOARD_HORIZONTAL_PADDING_PX = 48;
 const HEATMAP_MIN_COLUMNS = 20;
 const HEATMAP_DEFAULT_COLUMNS = 25;

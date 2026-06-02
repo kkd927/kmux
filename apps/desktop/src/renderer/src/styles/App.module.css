@@ -3140,9 +3140,9 @@
   display: inline-flex;
   flex-direction: column;
   width: max-content;
-  max-width: min(calc(100vw - 32px), 280px);
-  padding: 12px 14px;
-  border-radius: 10px;
+  max-width: min(calc(100vw - 32px), 308px);
+  padding: 13px 15px;
+  border-radius: 11px;
   border: 1px solid var(--usage-card-border);
   background: rgba(16, 24, 40, 0.96);
   color: #f8fafc;
@@ -3152,7 +3152,7 @@
 }
 
 .usageHeatmapTooltipLabel {
-  font-size: 0.82rem;
+  font-size: 0.9rem;
   line-height: 1.35;
   font-weight: 600;
   color: #f8fafc;
@@ -3160,8 +3160,8 @@
 }
 
 .usageHeatmapTooltipDetails {
-  margin-top: 4px;
-  font-size: 0.78rem;
+  margin-top: 5px;
+  font-size: 0.86rem;
   line-height: 1.45;
   color: rgba(248, 250, 252, 0.84);
   white-space: nowrap;
@@ -3240,8 +3240,8 @@
 
 .usageHeatmapMonths {
   display: grid;
-  grid-template-columns: repeat(var(--usage-heatmap-columns, 25), 10px);
-  gap: 3px;
+  grid-template-columns: repeat(var(--usage-heatmap-columns, 25), 11px);
+  gap: 2px;
   align-items: end;
 }
 
@@ -3254,19 +3254,19 @@
 
 .usageHeatmapColumns {
   display: grid;
-  grid-template-columns: repeat(var(--usage-heatmap-columns, 25), 10px);
-  gap: 3px;
+  grid-template-columns: repeat(var(--usage-heatmap-columns, 25), 11px);
+  gap: 2px;
 }
 
 .usageHeatmapColumn {
   display: grid;
-  grid-template-rows: repeat(7, 10px);
-  gap: 3px;
+  grid-template-rows: repeat(7, 11px);
+  gap: 2px;
 }
 
 .usageHeatmapCell {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
   border-radius: 2px;
   border: 1px solid var(--usage-heatmap-cell-border);
 }
