@@ -13,6 +13,11 @@ A macOS workspace for AI coding agents: parallel sessions, integrated usage, ins
 
 <br>
 
+English | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.es.md">Español</a>
+
+<br>
+<br>
+
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Download for Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
 &nbsp;
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Download for Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
@@ -178,6 +183,7 @@ kmux tracks the worktree lifecycle — branch name, dirty state, and removal, in
 | `⌘ C` / `⌘ V`   | Copy / paste         |
 | `⌘ ⇧ M`         | Vim-style copy mode  |
 | `⌘ I`           | Toggle notifications |
+| `⌘ ⇧ U`         | Toggle usage dashboard |
 | `⌘ ,`           | Open settings        |
 
 <br>
