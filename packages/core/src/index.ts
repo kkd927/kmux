@@ -120,10 +120,8 @@ export const JETBRAINS_MONO_NERD_FONT_MONO_FAMILY =
   '"JetBrainsMono Nerd Font Mono"';
 const LEGACY_TERMINAL_TEXT_FONT_FAMILY =
   'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
-const PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY =
-  `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
-export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY =
-  `${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
+const PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY = `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
+export const DEFAULT_TERMINAL_TEXT_FONT_FAMILY = `${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${LEGACY_TERMINAL_TEXT_FONT_FAMILY}`;
 export const DEFAULT_TERMINAL_LINE_HEIGHT = 1;
 export const KMUX_BUILTIN_SYMBOL_FONT_FAMILY = '"kmux Symbols Nerd Font Mono"';
 export const DEFAULT_SIDEBAR_WIDTH = 320;
@@ -428,10 +426,7 @@ export function sanitizeSettings(
   const migratedSettings: LegacyKmuxSettings = {
     ...settings,
     settingsVersion: CURRENT_SETTINGS_VERSION,
-    notificationSound:
-      settingsVersion < 2
-        ? true
-        : settings.notificationSound
+    notificationSound: settingsVersion < 2 ? true : settings.notificationSound
   };
   const sanitizedSettings = mergeSettings(
     createDefaultSettings(settings.socketMode),
@@ -2066,6 +2061,9 @@ function agentDisplayName(agent: string): string {
   }
   if (agent === "gemini") {
     return "Gemini";
+  }
+  if (agent === "antigravity") {
+    return "Antigravity";
   }
   return agent
     .split(/[-_:]+/)

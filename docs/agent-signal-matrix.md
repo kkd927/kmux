@@ -4,10 +4,11 @@ Date: 2026-04-20
 
 ## Purpose
 
-This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, and Gemini, and how those signals are consumed by:
+This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, Gemini, and Antigravity, and how those signals are consumed by:
 
 - notifications and sidebar attention
 - usage binding and live usage state
+- external session indexing and deterministic resume
 
 The goal is to prevent the same signal from being reused for incompatible purposes.
 
@@ -32,8 +33,8 @@ Flow:
 - hook command
 - `kmux-agent-hook`
 - socket `agent.hook` or `agent.event`
-- [`apps/desktop/src/main/socketServer.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/socketServer.ts)
-- [`packages/proto/src/agentHooks.ts`](/Users/kkd927/Projects/kmux/packages/proto/src/agentHooks.ts)
+- [`apps/desktop/src/main/socketServer.ts`](../apps/desktop/src/main/socketServer.ts)
+- [`packages/proto/src/agentHooks.ts`](../packages/proto/src/agentHooks.ts)
 - reducer `agent.event` or `notification.create`
 
 Primary use:
@@ -53,9 +54,9 @@ Producer:
 Flow:
 
 - terminal output
-- [`apps/desktop/src/pty-host/terminalNotifications.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/pty-host/terminalNotifications.ts)
+- [`apps/desktop/src/pty-host/terminalNotifications.ts`](../apps/desktop/src/pty-host/terminalNotifications.ts)
 - `PtyEvent { type: "terminal.notification" }`
-- [`apps/desktop/src/main/terminalBridge.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/terminalBridge.ts)
+- [`apps/desktop/src/main/terminalBridge.ts`](../apps/desktop/src/main/terminalBridge.ts)
 
 Primary use:
 
@@ -75,7 +76,7 @@ Producer:
 Flow:
 
 - renderer terminal input
-- [`apps/desktop/src/main/terminalBridge.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/terminalBridge.ts)
+- [`apps/desktop/src/main/terminalBridge.ts`](../apps/desktop/src/main/terminalBridge.ts)
 - synthetic `agent.event(idle)` for every agent that has a matching visible `needs_input` status on the focused surface
 
 Two trigger kinds:
@@ -103,7 +104,7 @@ Not allowed:
 
 Installed hooks:
 
-- [`apps/desktop/src/main/claudeIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/claudeIntegration.ts)
+- [`apps/desktop/src/main/claudeIntegration.ts`](../apps/desktop/src/main/claudeIntegration.ts)
 - `PermissionRequest`
 - `PreToolUse` with matcher `AskUserQuestion|ExitPlanMode`
 - `PostToolUse`
@@ -132,7 +133,7 @@ Important:
 
 Usage consumption:
 
-- real `agent.event` values are consumed by [`apps/desktop/src/main/usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts)
+- real `agent.event` values are consumed by [`apps/desktop/src/main/usageRuntime.ts`](../apps/desktop/src/main/usageRuntime.ts)
 - legacy/user-defined generic Claude `Notification` hook entries must not affect usage binding or waiting state
 - visible-input fallback events carry `details.uiOnly = true` and are ignored by `usageRuntime` (same rule as Codex)
 
@@ -145,7 +146,7 @@ OSC policy:
 
 Installed hooks:
 
-- [`apps/desktop/src/main/geminiIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/geminiIntegration.ts)
+- [`apps/desktop/src/main/geminiIntegration.ts`](../apps/desktop/src/main/geminiIntegration.ts)
 - `BeforeAgent`
 - `AfterAgent`
 - `BeforeTool`
@@ -176,7 +177,7 @@ OSC policy:
 
 Installed hooks:
 
-- [`apps/desktop/src/pty-host/shellIntegration.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/pty-host/shellIntegration.ts)
+- [`apps/desktop/src/pty-host/shellIntegration.ts`](../apps/desktop/src/pty-host/shellIntegration.ts)
 - `SessionStart`
 - `UserPromptSubmit`
 - `Stop`
@@ -198,7 +199,7 @@ Important:
 
 OSC policy:
 
-- in [`terminalBridge.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/terminalBridge.ts), if the surface vendor is `codex`:
+- in [`terminalBridge.ts`](../apps/desktop/src/main/terminalBridge.ts), if the surface vendor is `codex`:
 - allowlist known input-required patterns such as `Plan mode prompt:`, approval, permission, answer/selection prompts
 - promote those to synthetic `agent.event(needs_input)`
 - mark them with `details.uiOnly = true`
@@ -208,12 +209,51 @@ OSC policy:
 
 Usage policy:
 
-- [`usageRuntime.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
+- [`usageRuntime.ts`](../apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
 - this prevents UI-only promotions (Codex OSC-derived attention, visible-input clear fallbacks for any agent, and similar synthetic events) from creating bindings, waiting state, or active session count changes
+
+### Antigravity
+
+Installed hooks:
+
+- [`apps/desktop/src/main/antigravityIntegration.ts`](../apps/desktop/src/main/antigravityIntegration.ts)
+- global hooks only in `~/.gemini/config/hooks.json`
+- top-level managed hook entry `kmux-antigravity`
+- `PreInvocation`
+- `PreToolUse`
+- `PostToolUse`
+- `PostInvocation`
+- `Stop`
+
+Canonical notification signals:
+
+- hook `PreInvocation` / `PreToolUse` / `PostToolUse` / `PostInvocation` -> `agent.event(running)`
+- hook `PreToolUse` with tool `ask_permission` or `ask_question` -> `agent.event(needs_input)`
+- hook `Stop` with `fullyIdle !== false` -> `agent.event(turn_complete)`
+- hook `Stop` with `fullyIdle === false` -> `agent.event(running)` because background work is still active
+
+Session indexing:
+
+- primary source is Antigravity's existing local CLI storage under `~/.gemini/antigravity-cli`:
+  - `history.jsonl`
+  - `cache/last_conversations.json`
+  - `cache/projects.json`
+  - `conversations/*.db`
+- hook-recorded metadata in `antigravity-sessions.json` is only a secondary source for conversations observed while kmux hooks are installed.
+- Session table resume uses `agy --conversation <conversationId>` from the resolved `cwd`; `agy --continue` is intentionally not used for row resume because it is not deterministic.
+
+Usage policy:
+
+- Antigravity lifecycle events bind only the live surface state (`active`, `waiting`, `turn_complete`) for workflow parity.
+- Usage samples come from Antigravity transcript storage under `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl`.
+- If Antigravity transcript records expose explicit token metrics, kmux uses those metrics.
+- If no explicit token metrics are present, kmux estimates visible transcript tokens and prices them with Gemini pricing when the Antigravity model label resolves to a Gemini model.
+- Subscription remaining rows use Antigravity's local keychain auth (`service=gemini`, `account=antigravity`) and the Google Code Assist quota endpoint on `daily-cloudcode-pa.googleapis.com`.
+- AGY quota rows are shown even when current usage is `0%`, because an authenticated Antigravity quota response is still the source of truth for the remaining-session panel.
 
 ## Notification Semantics
 
-`NotificationItem` carries extra metadata in [`packages/proto/src/index.ts`](/Users/kkd927/Projects/kmux/packages/proto/src/index.ts):
+`NotificationItem` carries extra metadata in [`packages/proto/src/index.ts`](../packages/proto/src/index.ts):
 
 - `source`
 - `kind`
@@ -229,14 +269,14 @@ Other notification shapes:
 - hook-driven generic notifications may use `source = "agent"` with no structured `kind`
 - these generic entries do not create sidebar attention or usage state on their own
 
-Reducer behavior in [`packages/core/src/index.ts`](/Users/kkd927/Projects/kmux/packages/core/src/index.ts):
+Reducer behavior in [`packages/core/src/index.ts`](../packages/core/src/index.ts):
 
 - `agent.event(needs_input)` creates an agent notification with `kind = "needs_input"` and clears any generic `source = "agent"` reminder for the same agent/surface so the structured entry replaces stale previews
 - `agent.event(turn_complete)` creates an agent notification with `kind = "turn_complete"`
 - `running`, `idle`, and `session_end` clear stale `needs_input` status, structured `needs_input` notifications, and generic `source = "agent"` reminders for the same agent/surface
 - `turn_complete` also clears stale `needs_input` UI before creating the completion notification
 
-Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](/Users/kkd927/Projects/kmux/apps/desktop/src/main/socketServer.ts):
+Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](../apps/desktop/src/main/socketServer.ts):
 
 - a generic hook-driven `notification.create` (no structured `kind`) is dropped in `dispatchHookNotification` when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same `agent + surfaceId` is still present. This prevents legacy/user-defined Claude `Notification` hook reminders from stacking on top of the structured needs-input or completion notification that already exists.
 

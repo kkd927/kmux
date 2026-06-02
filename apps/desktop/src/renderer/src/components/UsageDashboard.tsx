@@ -663,7 +663,7 @@ function LinearBreakdownCard(props: {
               className={styles.tokenMixRowCost}
               data-testid={row.costTestId}
             >
-              {row.hasUnknownCost ? "—" : formatUsageUsd(row.costUsd)}
+              {formatBreakdownCost(row.costUsd, row.hasUnknownCost)}
             </div>
           </div>
         ))}
@@ -1041,16 +1041,25 @@ function colorForBreakdownSeries(index: number): string {
 }
 
 function formatUsageUsd(value: number): string {
-  if (value >= 1) {
-    return `$${value.toFixed(2)}`;
-  }
-  if (value >= 0.01) {
-    return `$${value.toFixed(2)}`;
-  }
   if (value > 0) {
-    return `$${value.toFixed(4)}`;
+    return `$${ceilToUsdCents(value).toFixed(2)}`;
   }
   return "$0.00";
+}
+
+function formatBreakdownCost(
+  value: number,
+  hasUnknownCost = false
+): string {
+  if (!hasUnknownCost) {
+    return formatUsageUsd(value);
+  }
+  return value > 0 ? formatUsageUsd(value) : "—";
+}
+
+function ceilToUsdCents(value: number): number {
+  const cents = Math.max(1, Math.ceil(value * 100 - 1e-9));
+  return cents / 100;
 }
 
 function formatTokens(value: number): string {

@@ -16,7 +16,10 @@ import type {
 const execFileAsync = promisify(execFile);
 const requireForMeta = createRequire(import.meta.url);
 
-type KnownSubscriptionProvider = Exclude<UsageVendor, "unknown">;
+type KnownSubscriptionProvider = Exclude<
+  UsageVendor,
+  "unknown"
+>;
 type FetchLike = typeof fetch;
 type ReadTextFile = (filePath: string) => Promise<string>;
 type ExecFileLike = (
@@ -56,6 +59,16 @@ type GeminiQuotaBucket = {
   resetTime?: string;
 };
 
+type AntigravityCredentials = {
+  access_token?: string;
+  refresh_token?: string;
+  id_token?: string;
+  expiry_date?: number;
+  token_type?: string;
+  scope?: string;
+  auth_method?: string;
+};
+
 export type SubscriptionProviderFetcher =
   () => Promise<SubscriptionProviderUsageVm | null>;
 export type SubscriptionProviderAuthDetector = () => Promise<boolean>;
@@ -85,6 +98,7 @@ export interface GeminiSubscriptionUsageOptions {
   now?: () => number;
   fetchImpl?: FetchLike;
   readTextFile?: ReadTextFile;
+  execFileImpl?: ExecFileLike;
   googleOAuthClientConfig?: {
     clientId: string;
     clientSecret?: string;
@@ -95,6 +109,7 @@ type FetcherFactoryOptions = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   now?: () => number;
+  execFileImpl?: ExecFileLike;
 };
 
 const GEMINI_OAUTH_CLIENT_ID_ENV_KEYS = [
@@ -105,9 +120,18 @@ const GEMINI_OAUTH_CLIENT_SECRET_ENV_KEYS = [
   "OPENCLAW_GEMINI_OAUTH_CLIENT_SECRET",
   "GEMINI_CLI_OAUTH_CLIENT_SECRET"
 ] as const;
+const ANTIGRAVITY_OAUTH_CLIENT_ID_ENV_KEYS = [
+  "ANTIGRAVITY_OAUTH_CLIENT_ID",
+  "AGY_OAUTH_CLIENT_ID"
+] as const;
+const ANTIGRAVITY_OAUTH_CLIENT_SECRET_ENV_KEYS = [
+  "ANTIGRAVITY_OAUTH_CLIENT_SECRET",
+  "AGY_OAUTH_CLIENT_SECRET"
+] as const;
 const SUBSCRIPTION_FETCH_TIMEOUT_MS = 5_000;
 const SUBSCRIPTION_EXEC_TIMEOUT_MS = 4_000;
 const SUBSCRIPTION_PROBE_TIMEOUT_MS = 4_000;
+const GOOGLE_OAUTH_CLIENT_SECRET_LENGTH = 35;
 
 class CodexSubscriptionProbeError extends Error {
   constructor() {
@@ -122,7 +146,8 @@ export function createSubscriptionUsageFetchers(
   return {
     codex: () => fetchCodexSubscriptionUsage(options),
     claude: () => fetchClaudeSubscriptionUsage(options),
-    gemini: () => fetchGeminiSubscriptionUsage(options)
+    gemini: () => fetchGeminiSubscriptionUsage(options),
+    antigravity: () => fetchAntigravitySubscriptionUsage(options)
   };
 }
 
@@ -192,6 +217,17 @@ export function createSubscriptionAuthDetectors(
         return Boolean(refreshToken);
       }
       return true;
+    },
+    antigravity: async () => {
+      const now = options.now ?? (() => Date.now());
+      const execFileImpl = options.execFileImpl ?? defaultExecFile;
+      const credentials = await loadAntigravityCredentials({ execFileImpl });
+      const accessToken = credentials?.access_token?.trim();
+      const refreshToken = credentials?.refresh_token?.trim();
+      if (accessToken && !isCredentialsExpired(credentials, now())) {
+        return true;
+      }
+      return Boolean(refreshToken);
     }
   };
 }
@@ -415,19 +451,110 @@ export async function fetchGeminiSubscriptionUsage(
     return null;
   }
 
-  const loadCodeAssistResponse = await fetchImpl(
-    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-    withFetchTimeout({
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${resolvedAccessToken}`,
-        "Content-Type": "application/json"
+  return fetchCodeAssistQuotaUsage({
+    provider: "gemini",
+    providerLabel: "Gemini",
+    source: "quota_api",
+    endpointBaseUrl: "https://cloudcode-pa.googleapis.com",
+    accessToken: resolvedAccessToken,
+    idToken: nextCredentials?.id_token,
+    metadata: {
+      ideType: "GEMINI_CLI",
+      pluginType: "GEMINI"
+    },
+    fetchImpl,
+    now
+  });
+}
+
+export async function fetchAntigravitySubscriptionUsage(
+  options: GeminiSubscriptionUsageOptions = {}
+): Promise<SubscriptionProviderUsageVm | null> {
+  const now = options.now ?? (() => Date.now());
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const execFileImpl = options.execFileImpl ?? defaultExecFile;
+  const homeDir = resolveHomeDir(options.homeDir, options.env);
+  const credentials = await loadAntigravityCredentials({ execFileImpl });
+
+  const existingAccessToken = credentials?.access_token?.trim();
+  if (existingAccessToken && !isCredentialsExpired(credentials, now())) {
+    const usage = await fetchCodeAssistQuotaUsage({
+      provider: "antigravity",
+      providerLabel: "AGY",
+      source: "quota_api",
+      endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      accessToken: existingAccessToken,
+      idToken: credentials?.id_token,
+      metadata: {
+        ideType: "GEMINI_CLI",
+        pluginType: "GEMINI"
       },
-      body: JSON.stringify({
+      fetchImpl,
+      now,
+      includeZeroUseRows: true
+    });
+    if (usage) {
+      return usage;
+    }
+  }
+
+  if (credentials?.refresh_token) {
+    const refreshed = await refreshAntigravityAccessToken({
+      homeDir,
+      fetchImpl,
+      now,
+      credentials,
+      env: options.env,
+      googleOAuthClientConfig: options.googleOAuthClientConfig
+    });
+    const accessToken = refreshed?.access_token?.trim();
+    if (accessToken) {
+      const usage = await fetchCodeAssistQuotaUsage({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        source: "quota_api",
+        endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
+        accessToken,
+        idToken: refreshed?.id_token,
         metadata: {
           ideType: "GEMINI_CLI",
           pluginType: "GEMINI"
-        }
+        },
+        fetchImpl,
+        now,
+        includeZeroUseRows: true
+      });
+      if (usage) {
+        return usage;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function fetchCodeAssistQuotaUsage(options: {
+  provider: KnownSubscriptionProvider;
+  providerLabel: string;
+  source: string;
+  endpointBaseUrl: string;
+  accessToken: string;
+  idToken?: string;
+  metadata: Record<string, string>;
+  fetchImpl: FetchLike;
+  now: () => number;
+  includeZeroUseRows?: boolean;
+}): Promise<SubscriptionProviderUsageVm | null> {
+  const loadCodeAssistResponse = await options.fetchImpl(
+    `${options.endpointBaseUrl}/v1internal:loadCodeAssist`,
+    withFetchTimeout({
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        metadata: options.metadata
       })
     })
   );
@@ -439,7 +566,7 @@ export async function fetchGeminiSubscriptionUsage(
     cloudaicompanionProject?: string | { id?: string; projectId?: string };
   };
   const tierId = loadCodeAssistPayload.currentTier?.id?.trim().toLowerCase();
-  const idTokenClaims = decodeJwtPayload(credentials?.id_token);
+  const idTokenClaims = decodeJwtPayload(options.idToken);
   const planLabel = normalizeGeminiPlanLabel(tierId, idTokenClaims.hd);
   if (!planLabel) {
     return null;
@@ -448,12 +575,12 @@ export async function fetchGeminiSubscriptionUsage(
     loadCodeAssistPayload.cloudaicompanionProject
   );
 
-  const quotaResponse = await fetchImpl(
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+  const quotaResponse = await options.fetchImpl(
+    `${options.endpointBaseUrl}/v1internal:retrieveUserQuota`,
     withFetchTimeout({
       method: "POST",
       headers: {
-        Authorization: `Bearer ${resolvedAccessToken}`,
+        Authorization: `Bearer ${options.accessToken}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(projectId ? { project: projectId } : {})
@@ -483,17 +610,19 @@ export async function fetchGeminiSubscriptionUsage(
       }
     ] satisfies GeminiQuotaBucket[];
   });
-  const rows = normalizeGeminiQuotaRows(buckets, now());
+  const rows = normalizeGeminiQuotaRows(buckets, options.now(), {
+    includeZeroUseRows: options.includeZeroUseRows
+  });
   if (rows.length === 0) {
     return null;
   }
 
   return {
-    provider: "gemini",
-    providerLabel: "Gemini",
+    provider: options.provider,
+    providerLabel: options.providerLabel,
     planLabel,
-    source: "quota_api",
-    updatedAt: new Date(now()).toISOString(),
+    source: options.source,
+    updatedAt: new Date(options.now()).toISOString(),
     rows
   };
 }
@@ -755,7 +884,8 @@ function nextMonthFirstUtcMs(nowMs: number): number {
 
 function normalizeGeminiQuotaRows(
   buckets: GeminiQuotaBucket[],
-  nowMs: number
+  nowMs: number,
+  options: { includeZeroUseRows?: boolean } = {}
 ): SubscriptionUsageRowVm[] {
   const groups = new Map<"pro" | "flash" | "flash-lite", GeminiQuotaBucket>();
   for (const bucket of buckets) {
@@ -783,7 +913,7 @@ function normalizeGeminiQuotaRows(
       return [];
     }
     const usedPercent = clampPercent((1 - bucket.remainingFraction) * 100);
-    if (usedPercent <= 0) {
+    if (usedPercent <= 0 && options.includeZeroUseRows !== true) {
       return [];
     }
     return [
@@ -882,6 +1012,110 @@ function parseClaudeCredentials(input: unknown): ClaudeCredentials | null {
       : [],
     rateLimitTier: asTrimmedString(oauth.rateLimitTier) ?? undefined
   };
+}
+
+async function loadAntigravityCredentials(options: {
+  execFileImpl: ExecFileLike;
+}): Promise<AntigravityCredentials | null> {
+  try {
+    const { stdout } = await options.execFileImpl("security", [
+      "find-generic-password",
+      "-s",
+      "gemini",
+      "-a",
+      "antigravity",
+      "-w"
+    ]);
+    return parseAntigravityKeychainSecret(stdout);
+  } catch {
+    return null;
+  }
+}
+
+function parseAntigravityKeychainSecret(
+  value: string
+): AntigravityCredentials | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const decodedPayload = decodeAntigravityKeyringPayload(trimmed);
+  const parsedCredentials =
+    parseAntigravityCredentialsPayload(decodedPayload ?? trimmed);
+  if (parsedCredentials) {
+    return parsedCredentials;
+  }
+  const separatorIndex = trimmed.indexOf(":");
+  const refreshToken =
+    separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1).trim() : trimmed;
+  return refreshToken ? { refresh_token: refreshToken } : null;
+}
+
+function decodeAntigravityKeyringPayload(value: string): string | null {
+  const prefix = "go-keyring-base64:";
+  if (!value.startsWith(prefix)) {
+    return null;
+  }
+  const encoded = value.slice(prefix.length).trim();
+  if (!encoded) {
+    return null;
+  }
+  try {
+    return Buffer.from(normalizeBase64(encoded), "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBase64(value: string): string {
+  const normalized = value.replace(/-/gu, "+").replace(/_/gu, "/");
+  return normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+}
+
+function parseAntigravityCredentialsPayload(
+  input: unknown
+): AntigravityCredentials | null {
+  const payload = typeof input === "string" ? safeJsonParse(input) : input;
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const token = isRecord(payload.token) ? payload.token : payload;
+  const accessToken = asTrimmedString(token.access_token);
+  const refreshToken = asTrimmedString(token.refresh_token);
+  if (!accessToken && !refreshToken) {
+    return null;
+  }
+  const expiryDate =
+    typeof token.expiry_date === "number"
+      ? token.expiry_date
+      : parseDateToMs(asTrimmedString(token.expiry) ?? undefined);
+  return {
+    ...(accessToken ? { access_token: accessToken } : {}),
+    ...(refreshToken ? { refresh_token: refreshToken } : {}),
+    ...(asTrimmedString(token.id_token)
+      ? { id_token: asTrimmedString(token.id_token) ?? undefined }
+      : {}),
+    ...(typeof expiryDate === "number" ? { expiry_date: expiryDate } : {}),
+    ...(asTrimmedString(token.token_type)
+      ? { token_type: asTrimmedString(token.token_type) ?? undefined }
+      : {}),
+    ...(asTrimmedString(token.scope)
+      ? { scope: asTrimmedString(token.scope) ?? undefined }
+      : {}),
+    ...(asTrimmedString(payload.auth_method)
+      ? { auth_method: asTrimmedString(payload.auth_method) ?? undefined }
+      : {})
+  };
+}
+
+function isCredentialsExpired(
+  credentials: { expiry_date?: number } | null | undefined,
+  nowMs: number
+): boolean {
+  return (
+    typeof credentials?.expiry_date === "number" &&
+    nowMs >= credentials.expiry_date
+  );
 }
 
 async function readGeminiSettings(
@@ -1359,6 +1593,7 @@ async function refreshGeminiAccessToken(options: {
     clientId: string;
     clientSecret?: string;
   };
+  persist?: boolean;
 }): Promise<{
   access_token?: string;
   refresh_token?: string;
@@ -1425,16 +1660,49 @@ async function refreshGeminiAccessToken(options: {
     ...(payload.token_type ? { token_type: payload.token_type } : {}),
     ...(payload.scope ? { scope: payload.scope } : {})
   };
-  try {
-    await writeFile(
-      join(options.homeDir, ".gemini", "oauth_creds.json"),
-      `${JSON.stringify(nextCredentials, null, 2)}\n`,
-      "utf8"
-    );
-  } catch {
-    // Ignore persistence failures and continue with in-memory credentials.
+  if (options.persist !== false) {
+    try {
+      await writeFile(
+        join(options.homeDir, ".gemini", "oauth_creds.json"),
+        `${JSON.stringify(nextCredentials, null, 2)}\n`,
+        "utf8"
+      );
+    } catch {
+      // Ignore persistence failures and continue with in-memory credentials.
+    }
   }
   return nextCredentials;
+}
+
+async function refreshAntigravityAccessToken(options: {
+  homeDir: string;
+  fetchImpl: FetchLike;
+  now: () => number;
+  credentials: AntigravityCredentials | null;
+  env?: NodeJS.ProcessEnv;
+  googleOAuthClientConfig?: {
+    clientId: string;
+    clientSecret?: string;
+  };
+}): Promise<AntigravityCredentials | null> {
+  const clientConfigs = options.googleOAuthClientConfig
+    ? [options.googleOAuthClientConfig]
+    : resolveAntigravityOAuthClientConfigs(options.env);
+  for (const clientConfig of clientConfigs) {
+    const refreshed = await refreshGeminiAccessToken({
+      homeDir: options.homeDir,
+      fetchImpl: options.fetchImpl,
+      now: options.now,
+      credentials: options.credentials,
+      env: options.env,
+      googleOAuthClientConfig: clientConfig,
+      persist: false
+    });
+    if (refreshed?.access_token?.trim()) {
+      return refreshed;
+    }
+  }
+  return null;
 }
 
 function resolveGeminiOAuthClientConfig(
@@ -1455,6 +1723,83 @@ function resolveGeminiOAuthClientConfig(
     };
   }
   return extractGeminiCliOAuthClientConfig(env);
+}
+
+function resolveAntigravityOAuthClientConfigs(
+  env?: NodeJS.ProcessEnv
+): Array<{ clientId: string; clientSecret?: string }> {
+  const envClientId = resolveFirstEnvValue(
+    ANTIGRAVITY_OAUTH_CLIENT_ID_ENV_KEYS,
+    env
+  );
+  const envClientSecret = resolveFirstEnvValue(
+    ANTIGRAVITY_OAUTH_CLIENT_SECRET_ENV_KEYS,
+    env
+  );
+  if (envClientId) {
+    return [
+      {
+        clientId: envClientId,
+        clientSecret: envClientSecret
+      }
+    ];
+  }
+  return extractAntigravityOAuthClientConfigs(env);
+}
+
+function extractAntigravityOAuthClientConfigs(
+  env?: NodeJS.ProcessEnv
+): Array<{ clientId: string; clientSecret?: string }> {
+  const agyPath = findBinaryInPath("agy", env);
+  if (!agyPath) {
+    return [];
+  }
+  const resolvedPath = safeRealpathSync(agyPath) ?? agyPath;
+  try {
+    const content = readFileSync(resolvedPath, "latin1");
+    const clientIds = Array.from(
+      new Set(
+        Array.from(
+          content.matchAll(
+            /(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/giu
+          )
+        ).map((match) => match[1])
+      )
+    );
+    if (clientIds.length === 0) {
+      return [];
+    }
+    const clientSecrets = extractGoogleOAuthClientSecrets(content);
+    if (clientSecrets.length === 0) {
+      return clientIds.map((clientId) => ({ clientId }));
+    }
+    return clientIds.flatMap((clientId) =>
+      clientSecrets.map((clientSecret) => ({
+        clientId,
+        clientSecret
+      }))
+    );
+  } catch {
+    return [];
+  }
+}
+
+function extractGoogleOAuthClientSecrets(content: string): string[] {
+  const secrets = new Set<string>();
+  for (
+    let index = content.indexOf("GOCSPX-");
+    index >= 0;
+    index = content.indexOf("GOCSPX-", index + 1)
+  ) {
+    const candidate = content.slice(
+      index,
+      index + GOOGLE_OAUTH_CLIENT_SECRET_LENGTH
+    );
+    if (/^GOCSPX-[A-Za-z0-9_-]{28}$/u.test(candidate)) {
+      secrets.add(candidate);
+    }
+  }
+  return Array.from(secrets);
 }
 
 function extractGeminiCliOAuthClientConfig(

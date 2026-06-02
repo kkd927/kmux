@@ -8,8 +8,9 @@ import type { ExternalAgentSessionsSnapshot } from "@kmux/proto";
 
 import { ExternalSessionsPanel } from "./ExternalSessionsPanel";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createSnapshot(count = 31): ExternalAgentSessionsSnapshot {
   const vendors = [
@@ -72,7 +73,8 @@ describe("ExternalSessionsPanel", () => {
     });
 
     expect(container.textContent).toContain("Sessions");
-    expect(container.textContent).toContain("Vendor");
+    expect(container.textContent).toContain("Agent");
+    expect(container.textContent).not.toContain("Vendor");
     expect(container.textContent).toContain("Workspace");
     expect(container.textContent).toContain("Title");
     expect(container.textContent).toContain("Time");
@@ -90,10 +92,23 @@ describe("ExternalSessionsPanel", () => {
     expect(sessionCountText(container)).toBe("(31)");
     expect(container.textContent).not.toContain("31 sessions");
 
-    const allFilter = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "ALL"
+    const filterTrigger = agentFilterTrigger(container);
+    expect(filterTrigger?.getAttribute("aria-label")).toBe("Agent filter: All");
+    expect(filterTrigger?.getAttribute("aria-expanded")).toBe("false");
+
+    openAgentFilterMenu(container);
+
+    expect(filterOptionKeys(container)).toEqual([
+      "all",
+      "codex",
+      "gemini",
+      "claude"
+    ]);
+    expect(filterOptionText(container, "all")).toBe("All31");
+    expect(filterOptionText(container, "codex")).toBe("Codex11");
+    expect(filterOption(container, "all")?.getAttribute("aria-checked")).toBe(
+      "true"
     );
-    expect(allFilter?.getAttribute("aria-pressed")).toBe("true");
 
     const moreButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Load more")
@@ -121,16 +136,11 @@ describe("ExternalSessionsPanel", () => {
       );
     });
 
-    const codexFilter = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Codex"
+    selectAgentFilter(container, "codex");
+
+    expect(agentFilterTrigger(container)?.getAttribute("aria-label")).toBe(
+      "Agent filter: Codex"
     );
-    expect(codexFilter).toBeTruthy();
-
-    act(() => {
-      codexFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(codexFilter?.getAttribute("aria-pressed")).toBe("true");
     expect(sessionCountText(container)).toBe("(31)");
     expect(container.textContent).not.toContain("31 sessions");
     expect(container.textContent).toContain("Fix terminal focus");
@@ -152,13 +162,7 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).toContain("CODEX Session 91");
     expect(container.textContent).not.toContain("Load more");
 
-    const claudeFilter = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Claude"
-    );
-
-    act(() => {
-      claudeFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    selectAgentFilter(container, "claude");
 
     expect(container.textContent).toContain("CLAUDE Session 03");
     expect(container.textContent).not.toContain("CLAUDE Session 92");
@@ -180,21 +184,77 @@ describe("ExternalSessionsPanel", () => {
       );
     });
 
-    expect(filterButtonLabels(container)).toEqual(["ALL", "Codex", "Gemini"]);
+    openAgentFilterMenu(container);
 
-    const geminiFilter = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Gemini"
+    expect(filterOptionKeys(container)).toEqual(["all", "codex", "gemini"]);
+    expect(filterOptionText(container, "gemini")).toBe("Gemini1");
+
+    selectAgentFilter(container, "gemini");
+
+    expect(agentFilterTrigger(container)?.getAttribute("aria-label")).toBe(
+      "Agent filter: Gemini"
     );
-
-    act(() => {
-      geminiFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(geminiFilter?.getAttribute("aria-pressed")).toBe("true");
     expect(sessionCountText(container)).toBe("(1)");
     expect(container.textContent).toContain("GEMINI Session 02");
     expect(container.textContent).not.toContain("Fix terminal focus");
     expect(container.textContent).not.toContain("Claude");
+  });
+
+  it("filters Antigravity sessions with the AGY compact label", () => {
+    act(() => {
+      root.render(
+        <ExternalSessionsPanel
+          snapshot={{
+            updatedAt: "2026-06-02T02:30:00.000Z",
+            sessions: [
+              {
+                key: "codex:session-1",
+                vendor: "codex",
+                vendorLabel: "CODEX",
+                title: "Codex session",
+                cwd: "/Users/test/codex",
+                updatedAt: "2026-06-02T02:00:00.000Z",
+                relativeTimeLabel: "30m",
+                canResume: true,
+                resumeCommandPreview: "codex resume session-1"
+              },
+              {
+                key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+                vendor: "antigravity",
+                vendorLabel: "AGY",
+                title: "Antigravity 9a8b7c6",
+                cwd: "/Users/test/antigravity",
+                updatedAt: "2026-06-02T02:05:00.000Z",
+                relativeTimeLabel: "25m",
+                canResume: true,
+                resumeCommandPreview:
+                  "agy --conversation 9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+              }
+            ]
+          }}
+          loading={false}
+          error={null}
+          onRefresh={() => undefined}
+          onResume={() => undefined}
+        />
+      );
+    });
+
+    openAgentFilterMenu(container);
+
+    expect(filterOptionKeys(container)).toEqual([
+      "all",
+      "codex",
+      "antigravity"
+    ]);
+    expect(filterOptionText(container, "antigravity")).toBe("Antigravity1");
+
+    selectAgentFilter(container, "antigravity");
+
+    expect(sessionCountText(container)).toBe("(1)");
+    expect(container.textContent).toContain("AGY");
+    expect(container.textContent).toContain("Antigravity 9a8b7c6");
+    expect(container.textContent).not.toContain("Codex session");
   });
 
   it("hides agent filter controls when one vendor has sessions", () => {
@@ -240,13 +300,7 @@ describe("ExternalSessionsPanel", () => {
       );
     });
 
-    const geminiFilter = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Gemini"
-    );
-
-    act(() => {
-      geminiFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    selectAgentFilter(container, "gemini");
 
     expect(sessionCountText(container)).toBe("(1)");
     expect(container.textContent).toContain("GEMINI Session 02");
@@ -303,9 +357,7 @@ describe("ExternalSessionsPanel", () => {
 
     expect(onRefresh).toHaveBeenCalledTimes(1);
 
-    const row = container.querySelector(
-      '[data-testid="external-session-row"]'
-    );
+    const row = container.querySelector('[data-testid="external-session-row"]');
     expect(row).toBeTruthy();
 
     act(() => {
@@ -330,13 +382,55 @@ describe("ExternalSessionsPanel", () => {
 });
 
 function sessionCountText(container: HTMLElement): string | null {
-  return container.querySelector("p")?.textContent ?? null;
+  return (
+    container.querySelector('[data-testid="external-sessions-count"]')
+      ?.textContent ?? null
+  );
 }
 
-function filterButtonLabels(container: HTMLElement): string[] {
-  return Array.from(
-    container.querySelectorAll(
-      '[aria-label="Filter sessions by agent"] button'
-    )
-  ).map((button) => button.textContent ?? "");
+function agentFilterTrigger(container: HTMLElement): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>(
+    'button[aria-haspopup="menu"]'
+  );
+}
+
+function openAgentFilterMenu(container: HTMLElement): void {
+  const trigger = agentFilterTrigger(container);
+  expect(trigger).toBeTruthy();
+
+  act(() => {
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+function selectAgentFilter(container: HTMLElement, key: string): void {
+  if (agentFilterTrigger(container)?.getAttribute("aria-expanded") !== "true") {
+    openAgentFilterMenu(container);
+  }
+
+  const option = filterOption(container, key);
+  expect(option).toBeTruthy();
+
+  act(() => {
+    option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+function filterOption(
+  container: HTMLElement,
+  key: string
+): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>(
+    `[role="menuitemradio"][data-filter-key="${key}"]`
+  );
+}
+
+function filterOptionKeys(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('[role="menuitemradio"]')).map(
+    (button) => button.getAttribute("data-filter-key") ?? ""
+  );
+}
+
+function filterOptionText(container: HTMLElement, key: string): string | null {
+  return filterOption(container, key)?.textContent ?? null;
 }

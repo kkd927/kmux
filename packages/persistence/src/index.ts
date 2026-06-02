@@ -315,7 +315,8 @@ export function createUsageHistoryStore(
   return {
     path: usageHistoryPath,
     load() {
-      const envelope = readJsonFile<Partial<UsageHistoryEnvelope>>(usageHistoryPath);
+      const envelope =
+        readJsonFile<Partial<UsageHistoryEnvelope>>(usageHistoryPath);
       if (!envelope) {
         return [];
       }
@@ -357,6 +358,8 @@ export function defaultAppPaths(
   windowStatePath: string;
   settingsPath: string;
   usageHistoryPath: string;
+  antigravitySessionsPath: string;
+  agentHookBinDir: string;
   shellEnvCachePath: string;
   socketPath: string;
 } {
@@ -367,6 +370,8 @@ export function defaultAppPaths(
     windowStatePath: join(configDir, "window-state.json"),
     settingsPath: join(configDir, "settings.json"),
     usageHistoryPath: join(configDir, "usage-history.json"),
+    antigravitySessionsPath: join(configDir, "antigravity-sessions.json"),
+    agentHookBinDir: join(configDir, "bin"),
     shellEnvCachePath: join(configDir, "shell-env.json"),
     socketPath: join(runtimeDir, "control.sock")
   };

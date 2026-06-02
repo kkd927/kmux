@@ -169,11 +169,13 @@ type ResolveAiCliProcesses = (
 ) => Promise<Map<number, AiCliProcessMatch>>;
 
 type SubscriptionProvider = Exclude<UsageVendor, "unknown">;
+type PricingVendor = Exclude<SubscriptionProvider, "antigravity">;
 type SubscriptionVisibility = "live" | "recent";
 const SUBSCRIPTION_PROVIDER_ORDER: SubscriptionProvider[] = [
   "codex",
   "claude",
-  "gemini"
+  "gemini",
+  "antigravity"
 ];
 const DISCOVER_ONLY_DIRTY_OPTIONS = {
   discoverNewSources: true,
@@ -199,13 +201,14 @@ function getResetDrivenPollAtMs(
   nowMs: number,
   options: { staleDelayMs?: number } = {}
 ): number | null {
-  const resetTimes = providerUsage?.rows.flatMap((row) => {
-    if (!row.resetsAt) {
-      return [];
-    }
-    const resetAtMs = Date.parse(row.resetsAt);
-    return Number.isFinite(resetAtMs) ? [resetAtMs] : [];
-  }) ?? [];
+  const resetTimes =
+    providerUsage?.rows.flatMap((row) => {
+      if (!row.resetsAt) {
+        return [];
+      }
+      const resetAtMs = Date.parse(row.resetsAt);
+      return Number.isFinite(resetAtMs) ? [resetAtMs] : [];
+    }) ?? [];
 
   if (resetTimes.length === 0) {
     return null;
@@ -328,6 +331,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     SubscriptionProvider,
     number
   >();
+  const daySampleIndexes = new Map<string, number>();
   let authVisibleProviders = new Set<SubscriptionProvider>();
   let lastSubscriptionVisibilitySignature = "";
 
@@ -525,10 +529,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }, nextDelayMs);
   }
 
-  async function refreshSubscriptionUsageNow(options: {
-    forceAuthRefresh?: boolean;
-    forceInteractiveRefresh?: boolean;
-  } = {}): Promise<void> {
+  async function refreshSubscriptionUsageNow(
+    options: {
+      forceAuthRefresh?: boolean;
+      forceInteractiveRefresh?: boolean;
+    } = {}
+  ): Promise<void> {
     if (!dashboardOpen) {
       return;
     }
@@ -636,17 +642,29 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     SubscriptionProvider,
     SubscriptionVisibility
   > {
-    const visibleProviders = new Map<SubscriptionProvider, SubscriptionVisibility>();
+    const visibleProviders = new Map<
+      SubscriptionProvider,
+      SubscriptionVisibility
+    >();
 
     for (const binding of bindings.values()) {
       if (binding.state === "unknown") {
+        continue;
+      }
+      if (!isSubscriptionProvider(binding.vendor)) {
         continue;
       }
       visibleProviders.set(binding.vendor, "live");
     }
 
     for (const sample of daySamples) {
-      if (sample.vendor === "unknown" || visibleProviders.has(sample.vendor)) {
+      if (
+        sample.vendor === "unknown" ||
+        !isSubscriptionProvider(sample.vendor)
+      ) {
+        continue;
+      }
+      if (visibleProviders.has(sample.vendor)) {
         continue;
       }
       visibleProviders.set(sample.vendor, "recent");
@@ -691,16 +709,19 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     provider: SubscriptionProvider,
     nowMs: number
   ): boolean {
-    const lastRefreshAtMs = lastInteractiveSubscriptionRefreshAtMs.get(provider);
+    const lastRefreshAtMs =
+      lastInteractiveSubscriptionRefreshAtMs.get(provider);
     return (
       typeof lastRefreshAtMs !== "number" ||
       nowMs - lastRefreshAtMs >= SUBSCRIPTION_INTERACTIVE_REFRESH_COOLDOWN_MS
     );
   }
 
-  async function refreshSubscriptionAuthVisibility(options: {
-    force?: boolean;
-  } = {}): Promise<void> {
+  async function refreshSubscriptionAuthVisibility(
+    options: {
+      force?: boolean;
+    } = {}
+  ): Promise<void> {
     const nowMs = now();
     if (
       !options.force &&
@@ -745,6 +766,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     if (dayKey !== nextDayKey) {
       dayKey = nextDayKey;
       daySamples = [];
+      daySampleIndexes.clear();
       initialScanComplete = false;
     }
 
@@ -762,8 +784,21 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (read.samples.length === 0) {
         continue;
       }
-      daySamples.push(...read.samples);
+      for (const sample of read.samples) {
+        upsertDaySample(sample);
+      }
     }
+  }
+
+  function upsertDaySample(sample: UsageEventSample): void {
+    const identity = usageSampleIdentity(sample);
+    const existingIndex = daySampleIndexes.get(identity);
+    if (existingIndex !== undefined) {
+      daySamples[existingIndex] = sample;
+      return;
+    }
+    daySampleIndexes.set(identity, daySamples.length);
+    daySamples.push(sample);
   }
 
   async function backfillHistoryIfNeeded(): Promise<void> {
@@ -773,14 +808,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     const expectedDayKeys = buildRollingDayKeys(now(), USAGE_HISTORY_DAY_COUNT);
     const shouldBackfill = expectedDayKeys.some(
-      (expectedDayKey) => !historyDays.some((day) => day.dayKey === expectedDayKey)
+      (expectedDayKey) =>
+        !historyDays.some((day) => day.dayKey === expectedDayKey)
     );
     if (!shouldBackfill) {
       return Promise.resolve();
     }
 
     historyBackfillPromise = (async () => {
-      const rangeStartMs = startOfRollingDayRange(now(), USAGE_HISTORY_DAY_COUNT);
+      const rangeStartMs = startOfRollingDayRange(
+        now(),
+        USAGE_HISTORY_DAY_COUNT
+      );
       const backfilledDays = await scanUsageHistoryDays({
         env: options.env,
         homeDir: options.homeDir,
@@ -812,7 +851,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     const probes: AiCliProcessProbe[] = [];
     const surfaceProbeMeta = new Map<
       Id,
-      { parentPid: number; vendor: Exclude<UsageVendor, "unknown">; boundAtMs: number }
+      {
+        parentPid: number;
+        vendor: Exclude<UsageVendor, "unknown">;
+        boundAtMs: number;
+      }
     >();
 
     for (const [surfaceId, candidate] of manualCandidates.entries()) {
@@ -919,7 +962,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           binding.state = "unknown";
         }
       }
-      const surfaceId = options.getState().sessions[action.sessionId]?.surfaceId;
+      const surfaceId =
+        options.getState().sessions[action.sessionId]?.surfaceId;
       if (surfaceId) {
         clearSurfaceInputState(surfaceId);
       }
@@ -947,7 +991,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
 
-    if (action.type === "surface.rename" || action.type === "workspace.rename") {
+    if (
+      action.type === "surface.rename" ||
+      action.type === "workspace.rename"
+    ) {
       rebuildSnapshot();
     }
   }
@@ -990,7 +1037,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
   }
 
-  function handleAgentEvent(action: Extract<AppAction, { type: "agent.event" }>): void {
+  function handleAgentEvent(
+    action: Extract<AppAction, { type: "agent.event" }>
+  ): void {
     if (action.details?.uiOnly === true) {
       return;
     }
@@ -1082,7 +1131,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       DerivedVendor
     >();
     const modelTotals = new Map<string, DerivedModel>();
-    const unboundSurfacePathIndex = buildUnboundSurfacePathIndex(state, bindings);
+    const unboundSurfacePathIndex = buildUnboundSurfacePathIndex(
+      state,
+      bindings
+    );
     let totalTodayCostUsd = 0;
     let totalTodayTokens = 0;
     let unattributedTodayCostUsd = 0;
@@ -1160,42 +1212,39 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       applyTokenCostBreakdown(todayTokenCostBreakdown, sample);
       applyPricingCoverage(pricingCoverage, sample, sampleCostSource);
 
-      const vendorTotal =
-        vendorTotals.get(sample.vendor) ??
-        {
-          vendor: sample.vendor,
-          todayCostUsd: 0,
-          todayTokens: 0,
-          activeCount: 0,
-          costSource: "reported",
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0
-        };
+      const vendorTotal = vendorTotals.get(sample.vendor) ?? {
+        vendor: sample.vendor,
+        todayCostUsd: 0,
+        todayTokens: 0,
+        activeCount: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0
+      };
       vendorTotal.todayCostUsd += sampleCostUsd;
       vendorTotal.todayTokens += sample.totalTokens;
       applyCostBreakdown(vendorTotal, sample, sampleCostSource);
       vendorTotals.set(sample.vendor, vendorTotal);
 
-      if (sample.model) {
-        const modelKey = `${sample.vendor}:${sample.model}`;
-        const modelTotal =
-          modelTotals.get(modelKey) ??
-          {
-            vendor: sample.vendor,
-            modelId: sample.model,
-            modelLabel: sample.model,
-            todayCostUsd: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheTokens: 0,
-            totalTokens: 0,
-            activeKeys: new Set<string>(),
-            costSource: "reported",
-            reportedCostUsd: 0,
-            estimatedCostUsd: 0,
-            unknownCostTokens: 0
-          };
+      const modelIdentity = resolveModelUsageIdentity(sample);
+      if (modelIdentity) {
+        const modelKey = `${sample.vendor}:${modelIdentity.modelId}`;
+        const modelTotal = modelTotals.get(modelKey) ?? {
+          vendor: sample.vendor,
+          modelId: modelIdentity.modelId,
+          modelLabel: modelIdentity.modelLabel,
+          todayCostUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalTokens: 0,
+          activeKeys: new Set<string>(),
+          costSource: "reported",
+          reportedCostUsd: 0,
+          estimatedCostUsd: 0,
+          unknownCostTokens: 0
+        };
         modelTotal.todayCostUsd += sampleCostUsd;
         modelTotal.inputTokens += sample.inputTokens;
         modelTotal.outputTokens += sample.outputTokens;
@@ -1222,17 +1271,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         matchedBinding?.cwd ?? fallbackSurfaceCwd
       );
       if (directoryPath) {
-        const directoryTotal =
-          directoryTotals.get(directoryPath) ??
-          {
-            directoryPath,
-            todayCostUsd: 0,
-            todayTokens: 0,
-            costSource: "reported",
-            reportedCostUsd: 0,
-            estimatedCostUsd: 0,
-            unknownCostTokens: 0
-          };
+        const directoryTotal = directoryTotals.get(directoryPath) ?? {
+          directoryPath,
+          todayCostUsd: 0,
+          todayTokens: 0,
+          costSource: "reported",
+          reportedCostUsd: 0,
+          estimatedCostUsd: 0,
+          unknownCostTokens: 0
+        };
         directoryTotal.todayCostUsd += sampleCostUsd;
         directoryTotal.todayTokens += sample.totalTokens;
         applyCostBreakdown(directoryTotal, sample, sampleCostSource);
@@ -1295,55 +1342,48 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       }
 
       const workspaceId = binding?.workspaceId ?? surfaceAggregate.workspaceId;
-      const workspaceTotal =
-        workspaceTotals.get(workspaceId) ??
-        {
-          workspaceId,
-          todayCostUsd: 0,
-          todayTokens: 0,
-          activeCount: 0,
-          costSource: "reported",
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0
-        };
+      const workspaceTotal = workspaceTotals.get(workspaceId) ?? {
+        workspaceId,
+        todayCostUsd: 0,
+        todayTokens: 0,
+        activeCount: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0
+      };
       workspaceTotal.todayCostUsd += sampleCostUsd;
       workspaceTotal.todayTokens += sample.totalTokens;
       applyCostBreakdown(workspaceTotal, sample, sampleCostSource);
       workspaceTotals.set(workspaceId, workspaceTotal);
-
     }
 
     for (const binding of bindings.values()) {
-      const workspaceTotal =
-        workspaceTotals.get(binding.workspaceId) ??
-        {
-          workspaceId: binding.workspaceId,
-          todayCostUsd: 0,
-          todayTokens: 0,
-          activeCount: 0,
-          costSource: "reported",
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0
-        };
+      const workspaceTotal = workspaceTotals.get(binding.workspaceId) ?? {
+        workspaceId: binding.workspaceId,
+        todayCostUsd: 0,
+        todayTokens: 0,
+        activeCount: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0
+      };
       if (binding.state !== "unknown") {
         workspaceTotal.activeCount += 1;
       }
       workspaceTotals.set(binding.workspaceId, workspaceTotal);
 
-      const vendorTotal =
-        vendorTotals.get(binding.vendor) ??
-        {
-          vendor: binding.vendor,
-          todayCostUsd: 0,
-          todayTokens: 0,
-          activeCount: 0,
-          costSource: "reported",
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0
-        };
+      const vendorTotal = vendorTotals.get(binding.vendor) ?? {
+        vendor: binding.vendor,
+        todayCostUsd: 0,
+        todayTokens: 0,
+        activeCount: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0
+      };
       if (binding.state !== "unknown") {
         vendorTotal.activeCount += 1;
       }
@@ -1438,14 +1478,16 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           if (!workspace) {
             return [];
           }
-          return [{
-            workspaceId: workspace.id,
-            workspaceName: workspace.name,
-            todayCostUsd: roundUsd(workspaceTotal.todayCostUsd),
-            todayTokens: Math.round(workspaceTotal.todayTokens),
-            activeCount: workspaceTotal.activeCount,
-            costSource: workspaceTotal.costSource
-          }];
+          return [
+            {
+              workspaceId: workspace.id,
+              workspaceName: workspace.name,
+              todayCostUsd: roundUsd(workspaceTotal.todayCostUsd),
+              todayTokens: Math.round(workspaceTotal.todayTokens),
+              activeCount: workspaceTotal.activeCount,
+              costSource: workspaceTotal.costSource
+            }
+          ];
         })
         .sort((left, right) => right.todayCostUsd - left.todayCostUsd),
       directoryHotspots: buildDirectoryHotspots(
@@ -1506,8 +1548,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         thinkingCostUsd: roundUsd(todayTokenCostBreakdown.thinkingCostUsd),
         hasUnknownInputCost: todayTokenCostBreakdown.hasUnknownInputCost,
         hasUnknownOutputCost: todayTokenCostBreakdown.hasUnknownOutputCost,
-        hasUnknownCacheReadCost: todayTokenCostBreakdown.hasUnknownCacheReadCost,
-        hasUnknownCacheWriteCost: todayTokenCostBreakdown.hasUnknownCacheWriteCost,
+        hasUnknownCacheReadCost:
+          todayTokenCostBreakdown.hasUnknownCacheReadCost,
+        hasUnknownCacheWriteCost:
+          todayTokenCostBreakdown.hasUnknownCacheWriteCost,
         hasUnknownThinkingCost: todayTokenCostBreakdown.hasUnknownThinkingCost
       },
       dailyActivity,
@@ -1572,7 +1616,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     });
   }
 
-  function findBindingByKmuxSessionId(sessionId: Id): SurfaceBinding | undefined {
+  function findBindingByKmuxSessionId(
+    sessionId: Id
+  ): SurfaceBinding | undefined {
     return Array.from(bindings.values()).find(
       (binding) => binding.kmuxSessionId === sessionId
     );
@@ -1669,18 +1715,22 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (!providerUsage || providerUsage.rows.length === 0) {
         return [];
       }
-      return [{
-        ...providerUsage,
-        rows: providerUsage.rows.map((row) => {
-          const resetsAtMs = row.resetsAt ? Date.parse(row.resetsAt) : Number.NaN;
-          return {
-            ...row,
-            resetLabel: Number.isFinite(resetsAtMs)
-              ? formatResetLabel(resetsAtMs, now(), row.resetLabel)
-              : row.resetLabel
-          };
-        })
-      }];
+      return [
+        {
+          ...providerUsage,
+          rows: providerUsage.rows.map((row) => {
+            const resetsAtMs = row.resetsAt
+              ? Date.parse(row.resetsAt)
+              : Number.NaN;
+            return {
+              ...row,
+              resetLabel: Number.isFinite(resetsAtMs)
+                ? formatResetLabel(resetsAtMs, now(), row.resetLabel)
+                : row.resetLabel
+            };
+          })
+        }
+      ];
     });
   }
 
@@ -1881,10 +1931,69 @@ function eventToUsageState(
 
 function normalizeVendor(agent: string): UsageVendor {
   const normalized = agent.trim().toLowerCase();
-  if (normalized === "claude" || normalized === "codex" || normalized === "gemini") {
-    return normalized;
+  switch (normalized) {
+    case "claude":
+    case "codex":
+    case "gemini":
+    case "antigravity":
+      return normalized;
+    case "agy":
+    case "antigravity-cli":
+      return "antigravity";
+    default:
+      return "unknown";
   }
-  return "unknown";
+}
+
+function isSubscriptionProvider(
+  vendor: UsageVendor
+): vendor is SubscriptionProvider {
+  return (
+    vendor === "claude" ||
+    vendor === "codex" ||
+    vendor === "gemini" ||
+    vendor === "antigravity"
+  );
+}
+
+function pricingVendorForUsageVendor(
+  vendor: UsageVendor
+): PricingVendor | null {
+  if (vendor === "antigravity") {
+    return "gemini";
+  }
+  if (vendor === "claude" || vendor === "codex" || vendor === "gemini") {
+    return vendor;
+  }
+  return null;
+}
+
+function normalizeAiCliExecutableVendor(
+  normalizedExecutable: string
+): Exclude<UsageVendor, "unknown"> | null {
+  if (normalizedExecutable === "codex") {
+    return "codex";
+  }
+  if (
+    normalizedExecutable === "gemini" ||
+    normalizedExecutable === "gemini-cli"
+  ) {
+    return "gemini";
+  }
+  if (
+    normalizedExecutable === "agy" ||
+    normalizedExecutable === "antigravity" ||
+    normalizedExecutable === "antigravity-cli"
+  ) {
+    return "antigravity";
+  }
+  if (
+    normalizedExecutable === "claude" ||
+    normalizedExecutable === "claude-code"
+  ) {
+    return "claude";
+  }
+  return null;
 }
 
 function detectAiCliVendorFromCommand(
@@ -1897,22 +2006,7 @@ function detectAiCliVendorFromCommand(
   }
 
   const normalizedExecutable = normalizeCommandName(executable);
-  if (normalizedExecutable === "codex") {
-    return "codex";
-  }
-  if (
-    normalizedExecutable === "gemini" ||
-    normalizedExecutable === "gemini-cli"
-  ) {
-    return "gemini";
-  }
-  if (
-    normalizedExecutable === "claude" ||
-    normalizedExecutable === "claude-code"
-  ) {
-    return "claude";
-  }
-  return null;
+  return normalizeAiCliExecutableVendor(normalizedExecutable);
 }
 
 function tokenizeCommandLine(commandLine: string): string[] {
@@ -1941,11 +2035,13 @@ function isShellEnvAssignment(token: string): boolean {
 }
 
 function normalizeCommandName(token: string): string {
-  return token
-    .replace(/^['"]+|['"]+$/gu, "")
-    .split("/")
-    .pop()
-    ?.toLowerCase() ?? "";
+  return (
+    token
+      .replace(/^['"]+|['"]+$/gu, "")
+      .split("/")
+      .pop()
+      ?.toLowerCase() ?? ""
+  );
 }
 
 function applyTerminalInput(
@@ -2022,6 +2118,22 @@ function usageSampleKey(sample: UsageEventSample): string {
     sample.cwd ??
     sample.sourcePath
   );
+}
+
+function usageSampleIdentity(sample: UsageEventSample): string {
+  const eventKey =
+    sample.threadId ??
+    [
+      sample.sessionId ?? "",
+      sample.timestampMs,
+      sample.inputTokens,
+      sample.outputTokens,
+      sample.thinkingTokens ?? 0,
+      sample.cacheReadTokens ?? sample.cacheTokens,
+      sample.cacheWriteTokens ?? 0,
+      sample.totalTokens
+    ].join(":");
+  return [sample.vendor, sample.sourcePath, eventKey].join("\t");
 }
 
 function buildDirectoryHotspots(
@@ -2139,7 +2251,8 @@ function applyTokenCostBreakdown(
   target: UsageTokenCostBreakdownVm,
   sample: UsageEventSample
 ): void {
-  if (sample.vendor === "unknown") {
+  const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
+  if (!pricingVendor) {
     return;
   }
 
@@ -2147,7 +2260,7 @@ function applyTokenCostBreakdown(
   const cacheWriteTokens = sample.cacheWriteTokens ?? 0;
   const thinkingTokens = sample.thinkingTokens ?? 0;
   const estimate = estimateUsageComponentCosts({
-    vendor: sample.vendor,
+    vendor: pricingVendor,
     model: sample.model,
     inputTokens: sample.inputTokens,
     outputTokens: sample.outputTokens,
@@ -2181,6 +2294,36 @@ function applyTokenCostBreakdown(
   markUnknownTokenCost(target, "thinking", !estimate.thinkingCostKnown);
   markUnknownTokenCost(target, "cacheRead", !estimate.cacheReadCostKnown);
   markUnknownTokenCost(target, "cacheWrite", !estimate.cacheWriteCostKnown);
+}
+
+function resolveModelUsageIdentity(
+  sample: UsageEventSample
+): { modelId: string; modelLabel: string } | null {
+  if (!sample.model) {
+    return null;
+  }
+  const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
+  if (!pricingVendor) {
+    return {
+      modelId: sample.model,
+      modelLabel: sample.model
+    };
+  }
+  const estimate = estimateUsageComponentCosts({
+    vendor: pricingVendor,
+    model: sample.model,
+    inputTokens: sample.inputTokens,
+    outputTokens: sample.outputTokens,
+    thinkingTokens: sample.thinkingTokens ?? 0,
+    cacheReadTokens: sample.cacheReadTokens ?? sample.cacheTokens,
+    cacheWriteTokens: sample.cacheWriteTokens ?? 0,
+    cacheWriteTokensKnown: sample.cacheWriteTokensKnown
+  });
+  const modelId = estimate?.modelId ?? sample.model;
+  return {
+    modelId,
+    modelLabel: modelId
+  };
 }
 
 function markUnknownTokenCost(
@@ -2240,7 +2383,9 @@ function buildTodayHistoryRecord(
   };
 }
 
-function normalizeHistoryDays(days: UsageHistoryDayRecord[]): UsageHistoryDayRecord[] {
+function normalizeHistoryDays(
+  days: UsageHistoryDayRecord[]
+): UsageHistoryDayRecord[] {
   return [...days]
     .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
     .slice(-USAGE_HISTORY_DAY_COUNT);

@@ -2,7 +2,11 @@ import { applyAction, createInitialState } from "@kmux/core";
 import { type AppAction } from "@kmux/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { UsageAdapter, UsageAdapterReadResult, UsageEventSample } from "@kmux/metadata";
+import type {
+  UsageAdapter,
+  UsageAdapterReadResult,
+  UsageEventSample
+} from "@kmux/metadata";
 import type { SubscriptionProviderUsageVm } from "@kmux/proto";
 import { createUsageRuntime } from "./usageRuntime";
 
@@ -140,7 +144,9 @@ describe("usage runtime", () => {
     });
 
     await runtime.refreshNow();
-    const firstWave = dispatchAppAction.mock.calls.map(([action]) => action.type);
+    const firstWave = dispatchAppAction.mock.calls.map(
+      ([action]) => action.type
+    );
 
     dispatchAppAction.mockClear();
     await runtime.refreshNow();
@@ -391,7 +397,10 @@ describe("usage runtime", () => {
       now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
     });
 
-    runtime.handleTerminalInput(surfaceId, "codex exec --skip-git-repo-check\r");
+    runtime.handleTerminalInput(
+      surfaceId,
+      "codex exec --skip-git-repo-check\r"
+    );
     await runtime.refreshNow();
 
     expect(resolveAiCliProcesses).toHaveBeenCalledWith([
@@ -409,6 +418,222 @@ describe("usage runtime", () => {
         todayTokens: 544
       })
     );
+  });
+
+  it("shows a live bound HUD state for a manually launched Antigravity CLI without usage samples", async () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-manual";
+    state.sessions[sessionId].pid = 4242;
+    state.sessions[sessionId].runtimeState = "running";
+    const resolveAiCliProcesses = vi.fn(async () => {
+      return new Map([
+        [
+          4242,
+          {
+            parentPid: 4242,
+            pid: process.pid,
+            vendor: "antigravity" as const,
+            commandLine: "/usr/local/bin/agy --conversation abc123"
+          }
+        ]
+      ]);
+    });
+    const subscriptionFetchers = {
+      codex: vi.fn(async () => null),
+      claude: vi.fn(async () => null),
+      gemini: vi.fn(async () => null)
+    };
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [],
+      resolveAiCliProcesses,
+      emitSnapshot: vi.fn(),
+      subscriptionFetchers,
+      now: () => new Date("2026-06-02T02:00:00.000Z").getTime()
+    });
+
+    runtime.handleTerminalInput(surfaceId, "agy --conversation abc123\r");
+    await runtime.refreshNow();
+    runtime.setDashboardOpen(true);
+    await runtime.refreshNow();
+
+    expect(resolveAiCliProcesses).toHaveBeenCalledWith([
+      {
+        parentPid: 4242,
+        vendor: "antigravity"
+      }
+    ]);
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toEqual(
+      expect.objectContaining({
+        vendor: "antigravity",
+        attributionState: "bound",
+        state: "active",
+        sessionTokens: 0,
+        todayTokens: 0
+      })
+    );
+    expect(runtime.getSnapshot().subscriptionUsage).toEqual([]);
+    expect(subscriptionFetchers.codex).not.toHaveBeenCalled();
+    expect(subscriptionFetchers.claude).not.toHaveBeenCalled();
+    expect(subscriptionFetchers.gemini).not.toHaveBeenCalled();
+  });
+
+  it("includes Antigravity usage samples in dashboard aggregates", async () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-usage";
+    const adapter = new FakeUsageAdapter({
+      vendor: "antigravity",
+      initialReads: [
+        {
+          sourceCount: 1,
+          samples: [
+            buildSample({
+              vendor: "antigravity",
+              timestampMs: new Date("2026-06-02T02:00:00.000Z").getTime(),
+              sessionId: "agy-session-1",
+              model: "Gemini 3.5 Flash (Medium)",
+              cwd: "/tmp/kmux-antigravity-usage",
+              projectPath: "/tmp/kmux-antigravity-usage",
+              inputTokens: 2_000,
+              outputTokens: 300,
+              totalTokens: 2_300,
+              estimatedCostUsd: 0.0057,
+              costSource: "estimated"
+            })
+          ]
+        }
+      ]
+    });
+
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [adapter],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-06-02T02:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toEqual(
+      expect.objectContaining({
+        vendor: "antigravity",
+        attributionState: "aggregate_only",
+        todayTokens: 2300,
+        todayCostUsd: 0.0057,
+        costSource: "estimated"
+      })
+    );
+    expect(runtime.getSnapshot().vendors).toEqual([
+      expect.objectContaining({
+        vendor: "antigravity",
+        todayTokens: 2300,
+        todayCostUsd: 0.0057,
+        costSource: "estimated"
+      })
+    ]);
+    expect(runtime.getSnapshot().models).toEqual([
+      expect.objectContaining({
+        vendor: "antigravity",
+        modelId: "gemini-3.5-flash",
+        modelLabel: "gemini-3.5-flash",
+        totalTokens: 2300,
+        todayCostUsd: 0.0057,
+        costSource: "estimated"
+      })
+    ]);
+    expect(runtime.getSnapshot().pricingCoverage).toEqual(
+      expect.objectContaining({
+        hasEstimatedCosts: true,
+        hasMissingPricing: false
+      })
+    );
+  });
+
+  it("replaces replayed usage samples when Antigravity metadata fills in attribution", async () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-usage";
+    const timestampMs = new Date("2026-06-02T02:00:00.000Z").getTime();
+    const baseSample = buildSample({
+      vendor: "antigravity",
+      timestampMs,
+      sourcePath:
+        "/tmp/agy/614e5204-a346-44fa-ba98-2cbf60cf574d/.system_generated/logs/transcript.jsonl",
+      sessionId: "614e5204-a346-44fa-ba98-2cbf60cf574d",
+      threadId: "614e5204-a346-44fa-ba98-2cbf60cf574d:0",
+      model: "Gemini 3.5 Flash (Medium)",
+      inputTokens: 2_000,
+      outputTokens: 300,
+      totalTokens: 2_300,
+      estimatedCostUsd: 0.0057,
+      costSource: "estimated"
+    });
+    const adapter = new FakeUsageAdapter({
+      vendor: "antigravity",
+      initialReads: [
+        {
+          sourceCount: 1,
+          samples: [baseSample]
+        }
+      ],
+      incrementalReads: [
+        {
+          sourceCount: 1,
+          samples: [
+            {
+              ...baseSample,
+              cwd: "/tmp/kmux-antigravity-usage",
+              projectPath: "/tmp/kmux-antigravity-usage"
+            }
+          ]
+        }
+      ]
+    });
+
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [adapter],
+      emitSnapshot: vi.fn(),
+      now: () => timestampMs
+    });
+
+    await runtime.refreshNow();
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().vendors).toEqual([
+      expect.objectContaining({
+        vendor: "antigravity",
+        todayTokens: 2300,
+        todayCostUsd: 0.0057
+      })
+    ]);
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toEqual(
+      expect.objectContaining({
+        vendor: "antigravity",
+        attributionState: "aggregate_only",
+        todayTokens: 2300,
+        todayCostUsd: 0.0057
+      })
+    );
+    expect(runtime.getSnapshot().directoryHotspots).toEqual([
+      expect.objectContaining({
+        directoryPath: "/tmp/kmux-antigravity-usage",
+        todayTokens: 2300,
+        todayCostUsd: 0.0057
+      })
+    ]);
   });
 
   it("builds model, daily activity, and pricing coverage aggregates for the dashboard", async () => {
@@ -480,13 +705,14 @@ describe("usage runtime", () => {
 
     await runtime.refreshNow();
 
-    const snapshot = runtime.getSnapshot() as typeof runtime.getSnapshot extends () => infer T
-      ? T & {
-          models?: Array<Record<string, unknown>>;
-          dailyActivity?: Array<Record<string, unknown>>;
-          pricingCoverage?: Record<string, unknown>;
-        }
-      : never;
+    const snapshot =
+      runtime.getSnapshot() as typeof runtime.getSnapshot extends () => infer T
+        ? T & {
+            models?: Array<Record<string, unknown>>;
+            dailyActivity?: Array<Record<string, unknown>>;
+            pricingCoverage?: Record<string, unknown>;
+          }
+        : never;
 
     expect(snapshot.models).toEqual([
       expect.objectContaining({
@@ -539,22 +765,22 @@ describe("usage runtime", () => {
           initialReads: [
             {
               sourceCount: 1,
-      samples: [
-        {
-          ...buildSample({
-            vendor: "claude",
-            model: "claude-sonnet-4-5",
+              samples: [
+                {
+                  ...buildSample({
+                    vendor: "claude",
+                    model: "claude-sonnet-4-5",
                     estimatedCostUsd: 0.006735,
-            totalTokens: 1500,
-            inputTokens: 900,
-            cacheTokens: 300,
-            outputTokens: 180
-          }),
-          cacheReadTokens: 200,
-          cacheWriteTokens: 100,
-          thinkingTokens: 60
-        } as UsageEventSample
-      ]
+                    totalTokens: 1500,
+                    inputTokens: 900,
+                    cacheTokens: 300,
+                    outputTokens: 180
+                  }),
+                  cacheReadTokens: 200,
+                  cacheWriteTokens: 100,
+                  thinkingTokens: 60
+                } as UsageEventSample
+              ]
             }
           ]
         })
@@ -668,12 +894,13 @@ describe("usage runtime", () => {
 
     await runtime.refreshNow();
 
-    const snapshot = runtime.getSnapshot() as typeof runtime.getSnapshot extends () => infer T
-      ? T & {
-          models?: Array<Record<string, unknown>>;
-          pricingCoverage?: Record<string, unknown>;
-        }
-      : never;
+    const snapshot =
+      runtime.getSnapshot() as typeof runtime.getSnapshot extends () => infer T
+        ? T & {
+            models?: Array<Record<string, unknown>>;
+            pricingCoverage?: Record<string, unknown>;
+          }
+        : never;
 
     expect(snapshot.totalTodayCostUsd).toBe(0);
     expect(snapshot.models).toEqual([
@@ -701,28 +928,34 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const subscriptionFetchers = {
-      codex: vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "codex",
-        providerLabel: "Codex",
-        planLabel: "Pro",
-        source: "oauth",
-        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
-        rows: [
-          {
-            key: "session",
-            label: "Session",
-            usedPercent: 42,
-            resetLabel: "Resets in 4h 0m",
-            resetsAt: new Date("2026-04-17T15:00:00.000Z").toISOString(),
-            windowKind: "session"
-          }
-        ]
-      }))
+      codex: vi.fn(
+        async (): Promise<SubscriptionProviderUsageVm> => ({
+          provider: "codex",
+          providerLabel: "Codex",
+          planLabel: "Pro",
+          source: "oauth",
+          updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+          rows: [
+            {
+              key: "session",
+              label: "Session",
+              usedPercent: 42,
+              resetLabel: "Resets in 4h 0m",
+              resetsAt: new Date("2026-04-17T15:00:00.000Z").toISOString(),
+              windowKind: "session"
+            }
+          ]
+        })
+      )
     };
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers,
       subscriptionAuthDetectors: {}
@@ -760,23 +993,25 @@ describe("usage runtime", () => {
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
     const subscriptionFetchers = {
-      gemini: vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "gemini",
-        providerLabel: "Gemini",
-        planLabel: "Paid",
-        source: "quota_api",
-        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
-        rows: [
-          {
-            key: "pro",
-            label: "Pro",
-            usedPercent: 75,
-            resetLabel: "Resets in 13h 0m",
-            resetsAt: new Date("2026-04-18T00:00:00.000Z").toISOString(),
-            windowKind: "model"
-          }
-        ]
-      }))
+      gemini: vi.fn(
+        async (): Promise<SubscriptionProviderUsageVm> => ({
+          provider: "gemini",
+          providerLabel: "Gemini",
+          planLabel: "Paid",
+          source: "quota_api",
+          updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+          rows: [
+            {
+              key: "pro",
+              label: "Pro",
+              usedPercent: 75,
+              resetLabel: "Resets in 13h 0m",
+              resetsAt: new Date("2026-04-18T00:00:00.000Z").toISOString(),
+              windowKind: "model"
+            }
+          ]
+        })
+      )
     };
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -823,27 +1058,33 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
-      provider: "gemini",
-      providerLabel: "Gemini",
-      planLabel: "Paid",
-      source: "quota_api",
-      updatedAt: new Date().toISOString(),
-      rows: [
-        {
-          key: "pro",
-          label: "Pro",
-          usedPercent: 42,
-          resetLabel: "Resets in 6h 0m",
-          resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
-          windowKind: "model"
-        }
-      ]
-    }));
+    const geminiFetcher = vi.fn(
+      async (): Promise<SubscriptionProviderUsageVm> => ({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date().toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 42,
+            resetLabel: "Resets in 6h 0m",
+            resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+    );
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
         gemini: geminiFetcher
@@ -919,7 +1160,11 @@ describe("usage runtime", () => {
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
         gemini: geminiFetcher
@@ -948,27 +1193,33 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
-      provider: "gemini",
-      providerLabel: "Gemini",
-      planLabel: "Paid",
-      source: "quota_api",
-      updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
-      rows: [
-        {
-          key: "pro",
-          label: "Pro",
-          usedPercent: 42,
-          resetLabel: "Resets in 6h 0m",
-          resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
-          windowKind: "model"
-        }
-      ]
-    }));
+    const geminiFetcher = vi.fn(
+      async (): Promise<SubscriptionProviderUsageVm> => ({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 42,
+            resetLabel: "Resets in 6h 0m",
+            resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+    );
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
         gemini: geminiFetcher
@@ -995,32 +1246,102 @@ describe("usage runtime", () => {
     runtime.shutdown();
   });
 
+  it("shows Antigravity subscription quota rows in the dashboard snapshot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T02:00:00.000Z"));
+    const state = createInitialState();
+    const antigravityFetcher = vi.fn(
+      async (): Promise<SubscriptionProviderUsageVm> => ({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-06-02T02:00:00.000Z").toISOString(),
+        rows: [
+          {
+            key: "flash",
+            label: "Flash",
+            usedPercent: 65,
+            resetLabel: "Resets in 13h 0m",
+            resetsAt: new Date("2026-06-02T15:00:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+    );
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      subscriptionFetchers: {
+        antigravity: antigravityFetcher
+      },
+      subscriptionAuthDetectors: {
+        antigravity: vi.fn(async () => true)
+      }
+    } as never);
+
+    runtime.start();
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().subscriptionUsage).toEqual([
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Paid",
+        rows: [
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 65
+          })
+        ]
+      })
+    ]);
+
+    runtime.shutdown();
+  });
+
   it("does not rerun subscription auth detectors on the dashboard refresh loop", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(async (): Promise<SubscriptionProviderUsageVm> => ({
-      provider: "gemini",
-      providerLabel: "Gemini",
-      planLabel: "Paid",
-      source: "quota_api",
-      updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
-      rows: [
-        {
-          key: "pro",
-          label: "Pro",
-          usedPercent: 42,
-          resetLabel: "Resets in 6h 0m",
-          resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
-          windowKind: "model"
-        }
-      ]
-    }));
+    const geminiFetcher = vi.fn(
+      async (): Promise<SubscriptionProviderUsageVm> => ({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 42,
+            resetLabel: "Resets in 6h 0m",
+            resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+    );
     const geminiDetector = vi.fn(async () => true);
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
         gemini: geminiFetcher
@@ -1077,7 +1398,11 @@ describe("usage runtime", () => {
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
         claude: claudeFetcher
@@ -1210,7 +1535,11 @@ describe("usage runtime", () => {
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [new FakeUsageAdapter({ initialReads: [{ sourceCount: 1, samples: [] }] })],
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [{ sourceCount: 1, samples: [] }]
+        })
+      ],
       resolveAiCliProcesses,
       emitSnapshot: vi.fn(),
       now: () => Date.now()
@@ -1219,7 +1548,10 @@ describe("usage runtime", () => {
     runtime.start();
     resolveAiCliProcesses.mockClear();
 
-    runtime.handleTerminalInput(surfaceId, "codex exec --skip-git-repo-check\r");
+    runtime.handleTerminalInput(
+      surfaceId,
+      "codex exec --skip-git-repo-check\r"
+    );
     await vi.advanceTimersByTimeAsync(0);
 
     expect(resolveAiCliProcesses).toHaveBeenCalledTimes(1);
@@ -1302,7 +1634,10 @@ describe("usage runtime", () => {
     adapter.markDirty.mockClear();
     resolveAiCliProcesses.mockClear();
 
-    runtime.handleTerminalInput(surfaceId, "codex exec --skip-git-repo-check\r");
+    runtime.handleTerminalInput(
+      surfaceId,
+      "codex exec --skip-git-repo-check\r"
+    );
     await vi.advanceTimersByTimeAsync(0);
 
     expect(resolveAiCliProcesses).toHaveBeenCalledTimes(1);

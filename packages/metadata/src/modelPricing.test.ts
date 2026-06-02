@@ -133,6 +133,29 @@ describe("model pricing", () => {
     );
   });
 
+  it("uses Gemini 3.5 Flash pricing for Antigravity model labels", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "gemini",
+      model: "Gemini 3.5 Flash (Medium)",
+      inputTokens: 2_000,
+      outputTokens: 300,
+      thinkingTokens: 100,
+      cacheReadTokens: 1_000,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gemini-3.5-flash",
+        inputCostUsd: expect.closeTo(0.003, 8),
+        outputCostUsd: expect.closeTo(0.0027, 8),
+        thinkingCostUsd: expect.closeTo(0.0009, 8),
+        cacheReadCostUsd: expect.closeTo(0.00015, 8)
+      })
+    );
+  });
+
   it("applies tiered pricing when prompt context exceeds the published threshold", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "codex",

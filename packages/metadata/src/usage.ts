@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
+import { readAntigravityWorkspaceByConversation } from "./antigravityStorage";
 import { estimateModelCost } from "./modelPricing";
 
 const JSON_EXTENSIONS = new Set([".json"]);
@@ -20,7 +21,12 @@ const WATCH_DEBOUNCE_MS = 180;
 const SOURCE_INDEX_RESYNC_MS = 60_000;
 const WATCH_ROOT_RETRY_MS = 60_000;
 
-export type UsageVendor = "claude" | "codex" | "gemini" | "unknown";
+export type UsageVendor =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "antigravity"
+  | "unknown";
 export type UsageCostSource = "reported" | "estimated" | "unavailable";
 
 export interface UsageEventSample {
@@ -136,6 +142,10 @@ type CodexSessionContext = {
   sessionId?: string;
 };
 
+type AntigravitySessionContext = {
+  model?: string;
+};
+
 type TokenUsageTotals = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
@@ -149,6 +159,9 @@ type TokenUsageTotals = {
 interface FileUsageAdapterOptions {
   geminiProjectRootsDir?: string;
   includeJson?: boolean;
+  includeHiddenDirs?: boolean;
+  antigravityWorkspaceByConversation?: Map<string, string>;
+  antigravityWorkspaceByConversationLoader?: () => Map<string, string>;
 }
 
 class FileUsageAdapter implements UsageAdapter {
@@ -156,10 +169,20 @@ class FileUsageAdapter implements UsageAdapter {
 
   private readonly codexContexts = new Map<string, CodexSessionContext>();
   private readonly codexTotals = new Map<string, TokenUsageTotals>();
+  private readonly antigravityContexts = new Map<
+    string,
+    AntigravitySessionContext
+  >();
   private readonly geminiProjectRoots = new Map<string, string | undefined>();
   private readonly geminiSeenMessageIds = new Map<string, Set<string>>();
   private readonly geminiProjectRootsDir?: string;
+  private readonly antigravityWorkspaceByConversation: Map<string, string>;
+  private readonly antigravityWorkspaceByConversationLoader?: () => Map<
+    string,
+    string
+  >;
   private readonly includeJson: boolean;
+  private readonly includeHiddenDirs: boolean;
   private readonly roots: string[];
   private readonly cursors = new Map<string, SourceCursor>();
   private readonly sources = new Map<string, SourceDescriptor>();
@@ -179,13 +202,21 @@ class FileUsageAdapter implements UsageAdapter {
     this.vendor = vendor;
     this.roots = roots.filter(Boolean);
     this.geminiProjectRootsDir = options.geminiProjectRootsDir;
+    this.antigravityWorkspaceByConversationLoader =
+      options.antigravityWorkspaceByConversationLoader;
+    this.antigravityWorkspaceByConversation =
+      options.antigravityWorkspaceByConversation ??
+      options.antigravityWorkspaceByConversationLoader?.() ??
+      new Map();
     this.includeJson = options.includeJson ?? false;
+    this.includeHiddenDirs = options.includeHiddenDirs ?? false;
   }
 
   async initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult> {
     this.dayKey = dayKeyFor(startOfDayMs);
     this.codexContexts.clear();
     this.codexTotals.clear();
+    this.antigravityContexts.clear();
     this.cursors.clear();
     this.geminiProjectRoots.clear();
     this.geminiSeenMessageIds.clear();
@@ -206,6 +237,7 @@ class FileUsageAdapter implements UsageAdapter {
   async scanRange(range: UsageTimeRange): Promise<UsageAdapterReadResult> {
     this.codexContexts.clear();
     this.codexTotals.clear();
+    this.antigravityContexts.clear();
     this.geminiProjectRoots.clear();
     this.geminiSeenMessageIds.clear();
     return this.readAllSources(range, false);
@@ -278,6 +310,7 @@ class FileUsageAdapter implements UsageAdapter {
     range: UsageTimeRange,
     useCursors: boolean
   ): Promise<UsageAdapterReadResult> {
+    this.refreshAntigravityWorkspaceByConversation();
     const samples: UsageEventSample[] = [];
     const sources = this.resolveSourcesForRead(useCursors);
 
@@ -293,6 +326,33 @@ class FileUsageAdapter implements UsageAdapter {
       samples,
       sourceCount: this.sources.size
     };
+  }
+
+  private refreshAntigravityWorkspaceByConversation(): void {
+    if (
+      this.vendor !== "antigravity" ||
+      !this.antigravityWorkspaceByConversationLoader
+    ) {
+      return;
+    }
+    const nextWorkspaces = this.antigravityWorkspaceByConversationLoader();
+    if (
+      stringMapEquals(
+        this.antigravityWorkspaceByConversation,
+        nextWorkspaces
+      )
+    ) {
+      return;
+    }
+    this.antigravityWorkspaceByConversation.clear();
+    for (const [conversationId, workspace] of nextWorkspaces.entries()) {
+      this.antigravityWorkspaceByConversation.set(conversationId, workspace);
+    }
+    this.antigravityContexts.clear();
+    for (const sourcePath of this.sources.keys()) {
+      this.cursors.delete(sourcePath);
+      this.dirtyPaths.add(sourcePath);
+    }
   }
 
   private resolveSourcesForRead(useCursors: boolean): SourceDescriptor[] {
@@ -326,7 +386,8 @@ class FileUsageAdapter implements UsageAdapter {
 
   private refreshSourceIndex(markAllDirty: boolean): void {
     const nextSources = collectUsageSources(this.vendor, this.roots, {
-      includeJson: this.includeJson
+      includeJson: this.includeJson,
+      includeHiddenDirs: this.includeHiddenDirs
     });
     const nextSourceMap = new Map(
       nextSources.map((source) => [source.path, source] as const)
@@ -351,7 +412,10 @@ class FileUsageAdapter implements UsageAdapter {
     this.lastSourceIndexRefreshAtMs = Date.now();
   }
 
-  private markSourceDirty(root: string, filename: string | Buffer | null): void {
+  private markSourceDirty(
+    root: string,
+    filename: string | Buffer | null
+  ): void {
     if (!filename) {
       this.sourceIndexDirty = true;
       return;
@@ -371,7 +435,8 @@ class FileUsageAdapter implements UsageAdapter {
       return;
     }
     const source = describeUsageSource(this.vendor, absolutePath, {
-      includeJson: this.includeJson
+      includeJson: this.includeJson,
+      includeHiddenDirs: this.includeHiddenDirs
     });
     if (!source) {
       return;
@@ -381,7 +446,9 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   private shouldResyncSourceIndex(): boolean {
-    return Date.now() - this.lastSourceIndexRefreshAtMs >= SOURCE_INDEX_RESYNC_MS;
+    return (
+      Date.now() - this.lastSourceIndexRefreshAtMs >= SOURCE_INDEX_RESYNC_MS
+    );
   }
 
   private removeTrackedSource(sourcePath: string): void {
@@ -389,6 +456,7 @@ class FileUsageAdapter implements UsageAdapter {
     this.cursors.delete(sourcePath);
     this.codexContexts.delete(sourcePath);
     this.codexTotals.delete(sourcePath);
+    this.antigravityContexts.delete(sourcePath);
     this.geminiSeenMessageIds.delete(sourcePath);
     this.geminiProjectRoots.delete(sourcePath);
     this.dirtyPaths.delete(sourcePath);
@@ -459,7 +527,9 @@ class FileUsageAdapter implements UsageAdapter {
     const samples: UsageEventSample[] = [];
     const lines = text.split("\n");
     const endedWithNewline = text.endsWith("\n");
-    const completeLines = endedWithNewline ? lines.slice(0, -1) : lines.slice(0, -1);
+    const completeLines = endedWithNewline
+      ? lines.slice(0, -1)
+      : lines.slice(0, -1);
 
     for (const line of completeLines) {
       offset = consumeJsonLine(
@@ -471,7 +541,9 @@ class FileUsageAdapter implements UsageAdapter {
         offset,
         true,
         this.codexContexts,
-        this.codexTotals
+        this.codexTotals,
+        this.antigravityContexts,
+        this.antigravityWorkspaceByConversation
       );
     }
 
@@ -486,7 +558,9 @@ class FileUsageAdapter implements UsageAdapter {
         offset,
         false,
         this.codexContexts,
-        this.codexTotals
+        this.codexTotals,
+        this.antigravityContexts,
+        this.antigravityWorkspaceByConversation
       );
     }
 
@@ -539,7 +613,9 @@ class FileUsageAdapter implements UsageAdapter {
         {
           geminiProjectRoots: this.geminiProjectRoots,
           geminiProjectRootsDir: this.geminiProjectRootsDir,
-          geminiSeenMessageIds: this.geminiSeenMessageIds
+          geminiSeenMessageIds: this.geminiSeenMessageIds,
+          antigravityWorkspaceByConversation:
+            this.antigravityWorkspaceByConversation
         }
       );
       if (useCursors) {
@@ -566,27 +642,38 @@ export function createUsageAdapters(
     env.KMUX_GEMINI_USAGE_DIR,
     join(homeDirectory, ".gemini", "tmp")
   );
+  const antigravityRoots = resolveRoots(
+    env.KMUX_ANTIGRAVITY_USAGE_DIR,
+    join(homeDirectory, ".gemini", "antigravity-cli", "brain")
+  );
 
   return [
     new FileUsageAdapter(
       "claude",
-      resolveRoots(env.KMUX_CLAUDE_USAGE_DIR, join(homeDirectory, ".claude", "projects"))
+      resolveRoots(
+        env.KMUX_CLAUDE_USAGE_DIR,
+        join(homeDirectory, ".claude", "projects")
+      )
     ),
     new FileUsageAdapter(
       "codex",
-      resolveRoots(env.KMUX_CODEX_USAGE_DIR, join(homeDirectory, ".codex", "sessions"))
+      resolveRoots(
+        env.KMUX_CODEX_USAGE_DIR,
+        join(homeDirectory, ".codex", "sessions")
+      )
     ),
-    new FileUsageAdapter(
-      "gemini",
-      geminiRoots,
-      {
-        geminiProjectRootsDir: resolveGeminiProjectRootsDir(
-          geminiRoots,
-          homeDirectory
-        ),
-        includeJson: true
-      }
-    )
+    new FileUsageAdapter("gemini", geminiRoots, {
+      geminiProjectRootsDir: resolveGeminiProjectRootsDir(
+        geminiRoots,
+        homeDirectory
+      ),
+      includeJson: true
+    }),
+    new FileUsageAdapter("antigravity", antigravityRoots, {
+      antigravityWorkspaceByConversationLoader: () =>
+        readAntigravityWorkspaceByConversation(homeDirectory),
+      includeHiddenDirs: true
+    })
   ];
 }
 
@@ -636,18 +723,16 @@ export async function scanUsageHistoryDays(options: {
           continue;
         }
         const dayKey = dayKeyFor(sample.timestampMs);
-        const dayBucket =
-          bucketMap.get(dayKey) ??
-          {
-            dayKey,
-            totalCostUsd: 0,
-            reportedCostUsd: 0,
-            estimatedCostUsd: 0,
-            unknownCostTokens: 0,
-            totalTokens: 0,
-            activeKeys: new Set<string>(),
-            vendors: new Map()
-          };
+        const dayBucket = bucketMap.get(dayKey) ?? {
+          dayKey,
+          totalCostUsd: 0,
+          reportedCostUsd: 0,
+          estimatedCostUsd: 0,
+          unknownCostTokens: 0,
+          totalTokens: 0,
+          activeKeys: new Set<string>(),
+          vendors: new Map()
+        };
         const sampleCostSource = normalizeSampleCostSource(sample);
         const sessionKey = usageSampleSessionKey(sample);
         dayBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
@@ -661,15 +746,16 @@ export async function scanUsageHistoryDays(options: {
         }
         dayBucket.activeKeys.add(sessionKey);
 
-        const vendorBucket =
-          dayBucket.vendors.get(sample.vendor) ??
-          {
-            vendor: sample.vendor,
-            totalCostUsd: 0,
-            totalTokens: 0,
-            activeKeys: new Set<string>()
-          };
-        vendorBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
+        const vendorBucket = dayBucket.vendors.get(sample.vendor) ?? {
+          vendor: sample.vendor,
+          totalCostUsd: 0,
+          totalTokens: 0,
+          activeKeys: new Set<string>()
+        };
+        vendorBucket.totalCostUsd += pricedCostForSample(
+          sample,
+          sampleCostSource
+        );
         vendorBucket.totalTokens += sample.totalTokens;
         vendorBucket.activeKeys.add(sessionKey);
         dayBucket.vendors.set(sample.vendor, vendorBucket);
@@ -703,7 +789,10 @@ export async function scanUsageHistoryDays(options: {
     }));
 }
 
-function resolveRoots(overrideValue: string | undefined, fallbackRoot: string): string[] {
+function resolveRoots(
+  overrideValue: string | undefined,
+  fallbackRoot: string
+): string[] {
   const source = overrideValue?.trim() ? overrideValue : fallbackRoot;
   return source
     .split(delimiter)
@@ -727,7 +816,7 @@ function resolveGeminiProjectRootsDir(
 function collectUsageSources(
   vendor: UsageVendor,
   roots: string[],
-  options: { includeJson: boolean }
+  options: { includeJson: boolean; includeHiddenDirs: boolean }
 ): SourceDescriptor[] {
   const sources: SourceDescriptor[] = [];
   const seen = new Set<string>();
@@ -736,7 +825,7 @@ function collectUsageSources(
     if (!root || !existsSync(root)) {
       continue;
     }
-    for (const filePath of walkFiles(root, 0)) {
+    for (const filePath of walkFiles(root, 0, options.includeHiddenDirs)) {
       if (seen.has(filePath)) {
         continue;
       }
@@ -755,10 +844,13 @@ function collectUsageSources(
 function describeUsageSource(
   vendor: UsageVendor,
   filePath: string,
-  options: { includeJson: boolean }
+  options: { includeJson: boolean; includeHiddenDirs: boolean }
 ): SourceDescriptor | null {
   const extension = extname(filePath).toLowerCase();
-  if (JSONL_EXTENSIONS.has(extension)) {
+  if (
+    JSONL_EXTENSIONS.has(extension) &&
+    shouldCollectJsonlSource(vendor, filePath)
+  ) {
     return { kind: "jsonl", path: filePath };
   }
   if (
@@ -771,14 +863,34 @@ function describeUsageSource(
   return null;
 }
 
-function shouldCollectJsonSource(vendor: UsageVendor, filePath: string): boolean {
+function shouldCollectJsonlSource(
+  vendor: UsageVendor,
+  filePath: string
+): boolean {
+  if (vendor === "antigravity") {
+    const normalizedPath = filePath.replace(/\\/g, "/");
+    return /\/[^/]+\/\.system_generated\/logs\/transcript\.jsonl$/u.test(
+      normalizedPath
+    );
+  }
+  return true;
+}
+
+function shouldCollectJsonSource(
+  vendor: UsageVendor,
+  filePath: string
+): boolean {
   if (vendor === "gemini") {
     return /\/chats\/session-[^/]+\.json$/u.test(filePath);
   }
   return true;
 }
 
-function walkFiles(rootPath: string, depth: number): string[] {
+function walkFiles(
+  rootPath: string,
+  depth: number,
+  includeHiddenDirs = false
+): string[] {
   const stats = safeStat(rootPath);
   if (!stats) {
     return [];
@@ -794,13 +906,13 @@ function walkFiles(rootPath: string, depth: number): string[] {
   for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) {
       const hiddenException = entry.name.endsWith(".jsonl");
-      if (!hiddenException && depth > 0) {
+      if (!hiddenException && depth > 0 && !includeHiddenDirs) {
         continue;
       }
     }
     const nextPath = join(rootPath, entry.name);
     if (entry.isDirectory()) {
-      files.push(...walkFiles(nextPath, depth + 1));
+      files.push(...walkFiles(nextPath, depth + 1, includeHiddenDirs));
       continue;
     }
     if (entry.isFile()) {
@@ -834,7 +946,11 @@ function resolveExistingWatchRoot(rootPath: string): string | null {
   return currentPath;
 }
 
-function readJsonlSlice(filePath: string, offset: number, fileSize: number): string {
+function readJsonlSlice(
+  filePath: string,
+  offset: number,
+  fileSize: number
+): string {
   const nextOffset = Math.max(0, Math.min(offset, fileSize));
   const byteLength = Math.max(0, fileSize - nextOffset);
   if (byteLength === 0) {
@@ -849,6 +965,21 @@ function readJsonlSlice(filePath: string, offset: number, fileSize: number): str
   } finally {
     closeSync(fd);
   }
+}
+
+function stringMapEquals(
+  left: Map<string, string>,
+  right: Map<string, string>
+): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const [key, value] of left.entries()) {
+    if (right.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function extractUsageSampleFromRecord(
@@ -878,13 +1009,14 @@ function extractUsageSampleFromRecord(
     reportedCostUsd > 0
       ? "reported"
       : metrics.totalTokens > 0
-        ? estimateModelCostForSample(vendor, model, metrics)?.costSource ??
-          "unavailable"
+        ? (estimateModelCostForSample(vendor, model, metrics)?.costSource ??
+          "unavailable")
         : "unavailable";
   const estimatedCostUsd =
     reportedCostUsd > 0
       ? reportedCostUsd
-      : estimateModelCostForSample(vendor, model, metrics)?.estimatedCostUsd ?? 0;
+      : (estimateModelCostForSample(vendor, model, metrics)?.estimatedCostUsd ??
+        0);
 
   return {
     vendor,
@@ -935,6 +1067,7 @@ function extractUsageSamplesFromJsonDocument(
     geminiProjectRoots: Map<string, string | undefined>;
     geminiProjectRootsDir?: string;
     geminiSeenMessageIds: Map<string, Set<string>>;
+    antigravityWorkspaceByConversation: Map<string, string>;
   }
 ): UsageEventSample[] {
   if (vendor === "gemini") {
@@ -955,7 +1088,9 @@ function extractUsageSamplesFromJsonDocument(
   }
 
   const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
-  return sample && isTimestampInRange(sample.timestampMs, range) ? [sample] : [];
+  return sample && isTimestampInRange(sample.timestampMs, range)
+    ? [sample]
+    : [];
 }
 
 function extractUsageSamplesFromJsonLine(
@@ -966,6 +1101,8 @@ function extractUsageSamplesFromJsonLine(
   state: {
     codexContexts: Map<string, CodexSessionContext>;
     codexTotals: Map<string, TokenUsageTotals>;
+    antigravityContexts: Map<string, AntigravitySessionContext>;
+    antigravityWorkspaceByConversation: Map<string, string>;
   }
 ): UsageEventSample[] {
   if (vendor === "codex") {
@@ -977,9 +1114,20 @@ function extractUsageSamplesFromJsonLine(
       state.codexTotals
     );
   }
+  if (vendor === "antigravity") {
+    return extractAntigravityUsageSamples(
+      record,
+      sourcePath,
+      range,
+      state.antigravityContexts,
+      state.antigravityWorkspaceByConversation
+    );
+  }
 
   const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
-  return sample && isTimestampInRange(sample.timestampMs, range) ? [sample] : [];
+  return sample && isTimestampInRange(sample.timestampMs, range)
+    ? [sample]
+    : [];
 }
 
 function consumeJsonLine(
@@ -991,7 +1139,9 @@ function consumeJsonLine(
   offset: number,
   hasTrailingNewline: boolean,
   codexContexts: Map<string, CodexSessionContext>,
-  codexTotals: Map<string, TokenUsageTotals>
+  codexTotals: Map<string, TokenUsageTotals>,
+  antigravityContexts: Map<string, AntigravitySessionContext>,
+  antigravityWorkspaceByConversation: Map<string, string>
 ): number {
   const nextOffset =
     offset + Buffer.byteLength(line, "utf8") + (hasTrailingNewline ? 1 : 0);
@@ -1002,16 +1152,12 @@ function consumeJsonLine(
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     output.push(
-      ...extractUsageSamplesFromJsonLine(
-        vendor,
-        parsed,
-        sourcePath,
-        range,
-        {
-          codexContexts,
-          codexTotals
-        }
-      )
+      ...extractUsageSamplesFromJsonLine(vendor, parsed, sourcePath, range, {
+        codexContexts,
+        codexTotals,
+        antigravityContexts,
+        antigravityWorkspaceByConversation
+      })
     );
     return nextOffset;
   } catch {
@@ -1029,7 +1175,9 @@ function extractCodexUsageSamples(
   const recordType = typeof record.type === "string" ? record.type : undefined;
   if (!recordType) {
     const sample = extractUsageSampleFromRecord("codex", record, sourcePath);
-    return sample && isTimestampInRange(sample.timestampMs, range) ? [sample] : [];
+    return sample && isTimestampInRange(sample.timestampMs, range)
+      ? [sample]
+      : [];
   }
 
   if (recordType === "session_meta") {
@@ -1158,7 +1306,8 @@ function extractCodexUsageSamples(
       cacheCreateTokens: 0,
       cacheCreateTokensKnown: false
     })?.estimatedCostUsd ?? 0;
-  const costSource: UsageCostSource = estimatedCostUsd > 0 ? "estimated" : "unavailable";
+  const costSource: UsageCostSource =
+    estimatedCostUsd > 0 ? "estimated" : "unavailable";
 
   return [
     {
@@ -1231,8 +1380,7 @@ function extractGeminiUsageSamples(
     const cacheTokens = cacheReadTokens + cacheWriteTokens;
     const outputTokens = toFiniteNumber(tokens.output) ?? 0;
     const totalTokens =
-      toFiniteNumber(tokens.total) ??
-      inputTokens + outputTokens + cacheTokens;
+      toFiniteNumber(tokens.total) ?? inputTokens + outputTokens + cacheTokens;
     if (totalTokens <= 0) {
       continue;
     }
@@ -1279,6 +1427,226 @@ function extractGeminiUsageSamples(
   return samples;
 }
 
+function extractAntigravityUsageSamples(
+  record: Record<string, unknown>,
+  sourcePath: string,
+  range: UsageTimeRange,
+  contexts: Map<string, AntigravitySessionContext>,
+  workspaceByConversation: Map<string, string>
+): UsageEventSample[] {
+  const conversationId =
+    antigravityConversationIdFromPath(sourcePath) ??
+    pickFirstString(record, ["conversationId", "conversation_id"]);
+  const cwd = conversationId
+    ? workspaceByConversation.get(conversationId)
+    : undefined;
+  const inferredModel = inferAntigravityModelFromRecord(record);
+  const previousContext = contexts.get(sourcePath);
+  const model = inferredModel ?? previousContext?.model;
+  if (inferredModel && previousContext?.model !== inferredModel) {
+    contexts.set(sourcePath, { model: inferredModel });
+  }
+  const augmentedRecord: Record<string, unknown> = { ...record };
+  if (conversationId && !pickFirstString(augmentedRecord, ["conversationId"])) {
+    augmentedRecord.conversationId = conversationId;
+  }
+  if (cwd && !pickFirstString(augmentedRecord, ["cwd"])) {
+    augmentedRecord.cwd = cwd;
+  }
+  if (cwd && !pickFirstString(augmentedRecord, ["projectPath"])) {
+    augmentedRecord.projectPath = cwd;
+  }
+  if (model && !pickFirstString(augmentedRecord, ["model"])) {
+    augmentedRecord.model = model;
+  }
+
+  const reportedSample = extractUsageSampleFromRecord(
+    "antigravity",
+    augmentedRecord,
+    sourcePath
+  );
+  if (reportedSample && isTimestampInRange(reportedSample.timestampMs, range)) {
+    return [
+      {
+        ...reportedSample,
+        sessionId: reportedSample.sessionId ?? conversationId,
+        threadId:
+          reportedSample.threadId ??
+          antigravityThreadId(conversationId, record, reportedSample.timestampMs),
+        model: reportedSample.model ?? model,
+        cwd: reportedSample.cwd ?? cwd,
+        projectPath: reportedSample.projectPath ?? cwd,
+        costSource: reportedSample.costSource ?? "unavailable"
+      }
+    ];
+  }
+
+  const timestampMs = normalizeTimestamp(
+    record.created_at ??
+      record.createdAt ??
+      record.timestamp ??
+      record.updated_at ??
+      record.updatedAt,
+    Date.now()
+  );
+  if (!isTimestampInRange(timestampMs, range)) {
+    return [];
+  }
+
+  const transcriptText = extractAntigravityTranscriptText(record);
+  const inputTokens = estimateAntigravityTranscriptTokens(
+    transcriptText.inputText
+  );
+  const outputTokens = estimateAntigravityTranscriptTokens(
+    transcriptText.outputText
+  );
+  const totalTokens = inputTokens + outputTokens;
+  if (totalTokens <= 0) {
+    return [];
+  }
+  const estimated = estimateModelCostForSample("antigravity", model, {
+    inputTokens,
+    outputTokens,
+    thinkingTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheTokens: 0,
+    totalTokens,
+    estimatedCostUsd: 0,
+    score: 0
+  });
+
+  return [
+    {
+      vendor: "antigravity",
+      timestampMs,
+      sourcePath,
+      sourceType: "jsonl",
+      sessionId: conversationId,
+      threadId: antigravityThreadId(conversationId, record, timestampMs),
+      model,
+      cwd,
+      projectPath: cwd,
+      inputTokens,
+      outputTokens,
+      thinkingTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: false,
+      cacheTokens: 0,
+      totalTokens,
+      estimatedCostUsd: estimated?.estimatedCostUsd ?? 0,
+      costSource: estimated?.costSource ?? "unavailable"
+    }
+  ];
+}
+
+function extractAntigravityTranscriptText(record: Record<string, unknown>): {
+  inputText: string;
+  outputText: string;
+} {
+  const type =
+    typeof record.type === "string" ? record.type.toUpperCase() : "";
+  const source =
+    typeof record.source === "string" ? record.source.toUpperCase() : "";
+  const content = stringifyAntigravityTranscriptValue(record.content);
+  const toolCalls = Array.isArray(record.tool_calls)
+    ? stringifyAntigravityTranscriptValue(record.tool_calls)
+    : "";
+  const isModelResponse =
+    source === "MODEL" && (type.endsWith("_RESPONSE") || Boolean(toolCalls));
+
+  if (isModelResponse) {
+    return {
+      inputText: "",
+      outputText: [content, toolCalls].filter(Boolean).join("\n")
+    };
+  }
+
+  return {
+    inputText: content,
+    outputText: ""
+  };
+}
+
+function stringifyAntigravityTranscriptValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function estimateAntigravityTranscriptTokens(value: string): number {
+  const normalized = value.trim();
+  if (!normalized) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(normalized.length / 4));
+}
+
+function antigravityConversationIdFromPath(
+  sourcePath: string
+): string | undefined {
+  const normalizedPath = sourcePath.replace(/\\/g, "/");
+  return normalizedPath.match(
+    /\/([^/]+)\/\.system_generated\/logs\/transcript\.jsonl$/u
+  )?.[1];
+}
+
+function antigravityThreadId(
+  conversationId: string | undefined,
+  record: Record<string, unknown>,
+  timestampMs: number
+): string | undefined {
+  const explicitId = pickFirstString(record, [
+    "thread_id",
+    "threadId",
+    "id",
+    "messageId",
+    "eventId"
+  ]);
+  if (explicitId) {
+    return explicitId;
+  }
+  const stepIndex = toFiniteNumber(record.step_index ?? record.stepIndex);
+  if (conversationId && stepIndex !== undefined) {
+    return `${conversationId}:${stepIndex}`;
+  }
+  return conversationId ? `${conversationId}:${timestampMs}` : undefined;
+}
+
+function inferAntigravityModelFromRecord(
+  record: Record<string, unknown>
+): string | undefined {
+  const explicit = pickFirstString(record, [
+    "model",
+    "model_name",
+    "modelName"
+  ]);
+  if (explicit) {
+    return explicit;
+  }
+  const content = stringifyAntigravityTranscriptValue(record.content);
+  const modelIdMatch = content.match(/gemini-[A-Za-z0-9._-]+/iu);
+  if (modelIdMatch?.[0]) {
+    return modelIdMatch[0];
+  }
+  const humanLabelMatch = content.match(
+    /Gemini\s+\d+(?:\.\d+)?\s+(?:Pro|Flash(?:[- ]Lite)?)(?:\s*\((?:Low|Medium|High)\))?/iu
+  );
+  if (humanLabelMatch?.[0]) {
+    return humanLabelMatch[0].trim().replace(/[.。]+$/u, "");
+  }
+  return undefined;
+}
+
 function resolveGeminiProjectRoot(
   sourcePath: string,
   cache: Map<string, string | undefined>,
@@ -1288,7 +1656,9 @@ function resolveGeminiProjectRoot(
     return cache.get(sourcePath);
   }
 
-  const projectKey = sourcePath.match(/\/tmp\/([^/]+)\/chats\/session-[^/]+\.json$/u)?.[1];
+  const projectKey = sourcePath.match(
+    /\/tmp\/([^/]+)\/chats\/session-[^/]+\.json$/u
+  )?.[1];
   if (!projectKey || !projectRootsDir) {
     cache.set(sourcePath, undefined);
     return undefined;
@@ -1296,7 +1666,9 @@ function resolveGeminiProjectRoot(
 
   const projectRootPath = join(projectRootsDir, projectKey, ".project_root");
   try {
-    const projectRoot = normalizePathValue(readFileSync(projectRootPath, "utf8"));
+    const projectRoot = normalizePathValue(
+      readFileSync(projectRootPath, "utf8")
+    );
     cache.set(sourcePath, projectRoot);
     return projectRoot;
   } catch {
@@ -1319,8 +1691,7 @@ function pickBestUsageMetrics(
     if (
       !best ||
       parsed.score > best.score ||
-      (parsed.score === best.score &&
-        parsed.totalTokens > best.totalTokens) ||
+      (parsed.score === best.score && parsed.totalTokens > best.totalTokens) ||
       (parsed.score === best.score &&
         parsed.totalTokens === best.totalTokens &&
         parsed.estimatedCostUsd > best.estimatedCostUsd)
@@ -1394,7 +1765,8 @@ function parseUsageMetrics(
       "cache_creation_input_tokens",
       "cacheCreationInputTokens"
     ]) ?? 0) +
-    (readNumericField(record, ["cache_write_tokens", "cacheWriteTokens"]) ?? 0) +
+    (readNumericField(record, ["cache_write_tokens", "cacheWriteTokens"]) ??
+      0) +
     (readNestedNumericField(
       record,
       ["prompt_tokens_details", "input_tokens_details"],
@@ -1422,7 +1794,10 @@ function parseUsageMetrics(
         "thinkingTokens"
       ]
     ) ?? 0);
-  const inputTokens = Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens);
+  const inputTokens = Math.max(
+    0,
+    rawInputTokens - cacheReadTokens - cacheWriteTokens
+  );
   const outputTokens = Math.max(0, rawOutputTokens - thinkingTokens);
   const cacheTokens = cacheReadTokens + cacheWriteTokens;
   const totalTokens =
@@ -1488,7 +1863,7 @@ function estimateModelCostForSample(
     return null;
   }
   const estimated = estimateModelCost({
-    vendor,
+    vendor: vendor === "antigravity" ? "gemini" : vendor,
     model,
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,
@@ -1506,7 +1881,10 @@ function estimateModelCostForSample(
   };
 }
 
-function isTimestampInRange(timestampMs: number, range: UsageTimeRange): boolean {
+function isTimestampInRange(
+  timestampMs: number,
+  range: UsageTimeRange
+): boolean {
   return (
     timestampMs >= range.fromMs &&
     (typeof range.toMs !== "number" || timestampMs <= range.toMs)

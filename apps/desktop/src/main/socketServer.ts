@@ -59,9 +59,8 @@ function isIgnorableSocketReplyError(error: unknown): boolean {
     return false;
   }
 
-  const code = "code" in error && typeof error.code === "string"
-    ? error.code
-    : "";
+  const code =
+    "code" in error && typeof error.code === "string" ? error.code : "";
   const message =
     "message" in error && typeof error.message === "string"
       ? error.message
@@ -114,6 +113,11 @@ interface SocketServerOptions {
   sendSurfaceKey: (surfaceId: string, key: string) => void;
   identify: () => ShellIdentity;
   isSurfaceVisibleToUser?: (surfaceId: string) => boolean;
+  onAgentHook?: (hook: {
+    agent: string;
+    hookEvent: string;
+    payload: Record<string, unknown>;
+  }) => void;
 }
 
 export class KmuxSocketServer {
@@ -323,6 +327,20 @@ export class KmuxSocketServer {
       case "agent.event":
         return this.dispatchAgentEvent(request.params, activeWorkspaceId);
       case "agent.hook": {
+        const onAgentHook = this.options.onAgentHook;
+        if (onAgentHook) {
+          setImmediate(() => {
+            try {
+              onAgentHook({
+                agent: request.params.agent,
+                hookEvent: request.params.hookEvent,
+                payload: request.params.payload ?? {}
+              });
+            } catch {
+              // Hook side effects must not block the agent hook response path.
+            }
+          });
+        }
         const event = normalizeAgentHookInvocation(
           request.params.agent,
           request.params.hookEvent,

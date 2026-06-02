@@ -680,6 +680,210 @@ describe("usage adapters", () => {
     ]);
   });
 
+  it("parses Antigravity transcript usage from local conversation storage", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-"));
+    cleanupPaths.push(root);
+    const homeDir = path.join(root, "home");
+    const conversationId = "4814da0a-b93c-41cc-837d-8a747e9d5b2e";
+    const workspace = "/tmp/kmux-antigravity-real";
+    const logDir = path.join(
+      homeDir,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      conversationId,
+      ".system_generated",
+      "logs"
+    );
+    mkdirSync(logDir, { recursive: true });
+    mkdirSync(path.join(homeDir, ".gemini", "antigravity-cli", "cache"), {
+      recursive: true
+    });
+    writeFileSync(
+      path.join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
+      `${JSON.stringify({
+        display: "hello",
+        timestamp: new Date("2026-06-02T03:55:54.000Z").getTime(),
+        workspace,
+        conversationId
+      })}\n`,
+      "utf8"
+    );
+    writeFileSync(
+      path.join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "cache",
+        "last_conversations.json"
+      ),
+      JSON.stringify({ [workspace]: conversationId }),
+      "utf8"
+    );
+    writeFileSync(
+      path.join(logDir, "transcript.jsonl"),
+      [
+        JSON.stringify({
+          step_index: 0,
+          source: "USER_EXPLICIT",
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-06-02T03:55:54.000Z",
+          content:
+            "The user changed setting `Model Selection` from None to Gemini 3.5 Flash (Medium).\n<USER_REQUEST>\nhello\n</USER_REQUEST>"
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-06-02T03:55:59.000Z",
+          content: "Hello from Antigravity.",
+          tool_calls: [
+            {
+              name: "list_dir",
+              args: {
+                DirectoryPath: workspace
+              }
+            }
+          ]
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    writeFileSync(
+      path.join(logDir, "transcript_full.jsonl"),
+      `${JSON.stringify({
+        step_index: 2,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-06-02T03:56:00.000Z",
+        content: "This should not be double-counted."
+      })}\n`,
+      "utf8"
+    );
+
+    const [, , , antigravityAdapter] = createUsageAdapters({
+      homeDir
+    });
+
+    const initial = await antigravityAdapter.initialScan(
+      startOfLocalDay(new Date("2026-06-02T03:55:54.000Z").getTime())
+    );
+    expect(initial.sourceCount).toBe(1);
+    expect(initial.samples).toHaveLength(2);
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        vendor: "antigravity",
+        sessionId: conversationId,
+        threadId: `${conversationId}:0`,
+        model: "Gemini 3.5 Flash (Medium)",
+        cwd: workspace,
+        projectPath: workspace,
+        outputTokens: 0,
+        costSource: "estimated"
+      }),
+      expect.objectContaining({
+        vendor: "antigravity",
+        sessionId: conversationId,
+        threadId: `${conversationId}:1`,
+        model: "Gemini 3.5 Flash (Medium)",
+        cwd: workspace,
+        projectPath: workspace,
+        inputTokens: 0,
+        costSource: "estimated"
+      })
+    ]);
+    expect(
+      initial.samples.reduce((sum, sample) => sum + sample.totalTokens, 0)
+    ).toBeGreaterThan(0);
+    expect(
+      initial.samples.reduce((sum, sample) => sum + sample.estimatedCostUsd, 0)
+    ).toBeGreaterThan(0);
+  });
+
+  it("replays Antigravity transcript samples when conversation workspace metadata appears during incremental reads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-refresh-"));
+    cleanupPaths.push(root);
+    const homeDir = path.join(root, "home");
+    const conversationId = "614e5204-a346-44fa-ba98-2cbf60cf574d";
+    const workspace = "/tmp/kmux-antigravity-late-workspace";
+    const logDir = path.join(
+      homeDir,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      conversationId,
+      ".system_generated",
+      "logs"
+    );
+    mkdirSync(logDir, { recursive: true });
+    const transcriptPath = path.join(logDir, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        step_index: 0,
+        source: "USER_EXPLICIT",
+        type: "USER_INPUT",
+        status: "DONE",
+        created_at: "2026-06-02T03:55:54.000Z",
+        content:
+          "The user changed setting `Model Selection` from None to Gemini 3.5 Flash (Medium).\n<USER_REQUEST>\nhello\n</USER_REQUEST>"
+      })}\n`,
+      "utf8"
+    );
+
+    const [, , , antigravityAdapter] = createUsageAdapters({
+      homeDir
+    });
+    const startOfDayMs = startOfLocalDay(
+      new Date("2026-06-02T03:55:54.000Z").getTime()
+    );
+
+    const initial = await antigravityAdapter.initialScan(startOfDayMs);
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        sessionId: conversationId,
+        cwd: undefined,
+        projectPath: undefined
+      })
+    ]);
+
+    mkdirSync(path.join(homeDir, ".gemini", "antigravity-cli", "cache"), {
+      recursive: true
+    });
+    writeFileSync(
+      path.join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
+      `${JSON.stringify({
+        display: "hello",
+        timestamp: new Date("2026-06-02T03:55:56.000Z").getTime(),
+        workspace,
+        conversationId
+      })}\n`,
+      "utf8"
+    );
+    writeFileSync(
+      path.join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "cache",
+        "last_conversations.json"
+      ),
+      JSON.stringify({ [workspace]: conversationId }),
+      "utf8"
+    );
+    const incremental = await antigravityAdapter.readIncremental(startOfDayMs);
+    expect(incremental.samples).toEqual([
+      expect.objectContaining({
+        sessionId: conversationId,
+        cwd: workspace,
+        projectPath: workspace
+      })
+    ]);
+  });
+
   it("scans recent usage history into daily buckets without reusing the live incremental cursors", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-scan-"));
     cleanupPaths.push(root);

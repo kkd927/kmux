@@ -59,12 +59,17 @@ import {
 } from "../shared/diagnostics";
 import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
 import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
+import { writeAgentHookHelpers } from "../pty-host/shellIntegration";
 import {
   createMainWindow,
   persistWindowState,
   setDevelopmentDockIcon
 } from "./windowLifecycle";
 import { AppStore } from "./store";
+import {
+  ensureAntigravityHooksInstalled,
+  recordAntigravitySessionFromHook
+} from "./antigravityIntegration";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -133,6 +138,7 @@ async function bootstrap(): Promise<void> {
   } else {
     delete resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV];
   }
+  writeAgentHookHelpers(paths.agentHookBinDir);
   const claudeIntegrationResult = ensureClaudeHooksInstalled(
     resolvedShellEnv.baseEnv.HOME ?? homedir()
   );
@@ -144,6 +150,16 @@ async function bootstrap(): Promise<void> {
   );
   if (geminiIntegrationResult.warning) {
     console.warn(geminiIntegrationResult.warning);
+  }
+  const antigravityIntegrationResult = ensureAntigravityHooksInstalled(
+    resolvedShellEnv.baseEnv.HOME ?? homedir(),
+    {
+      socketPath: paths.socketPath,
+      agentBinDir: paths.agentHookBinDir
+    }
+  );
+  if (antigravityIntegrationResult.warning) {
+    console.warn(antigravityIntegrationResult.warning);
   }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
   let usageRuntime!: ReturnType<typeof createUsageRuntime>;
@@ -168,7 +184,8 @@ async function bootstrap(): Promise<void> {
     },
     externalSessionIndexer: createExternalSessionIndexer({
       homeDir: resolvedShellEnv.baseEnv.HOME ?? homedir(),
-      env: resolvedShellEnv.baseEnv
+      env: resolvedShellEnv.baseEnv,
+      antigravitySessionIndexPath: paths.antigravitySessionsPath
     }),
     profileRecorder: smoothnessProfile,
     persistWindowState: (window) => {
@@ -310,7 +327,14 @@ async function bootstrap(): Promise<void> {
     sendSurfaceText: terminalBridge.sendText,
     sendSurfaceKey: terminalBridge.sendKey,
     identify: runtime.identify,
-    isSurfaceVisibleToUser
+    isSurfaceVisibleToUser,
+    onAgentHook: ({ agent, payload }) => {
+      recordAntigravitySessionFromHook({
+        indexPath: paths.antigravitySessionsPath,
+        agent,
+        payload
+      });
+    }
   });
   await socketServer.start();
 
@@ -519,7 +543,10 @@ async function bootstrap(): Promise<void> {
       currentVersion: app.getVersion()
     });
     pendingUpdateStore.clear();
-    if (pendingInstall.status === "incomplete" && process.env.NODE_ENV !== "test") {
+    if (
+      pendingInstall.status === "incomplete" &&
+      process.env.NODE_ENV !== "test"
+    ) {
       void showUpdateInstallIncompleteDialog(getCurrentWindow(), {
         appName: app.getName(),
         version: pendingInstall.version
