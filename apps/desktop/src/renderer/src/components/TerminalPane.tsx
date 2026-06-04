@@ -45,6 +45,10 @@ import {
   hydrateAttachedTerminal,
   reattachPreservedTerminal
 } from "../terminalAttachHydration";
+import {
+  installTerminalForegroundFit,
+  type TerminalForegroundFitController
+} from "../terminalForegroundFit";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
@@ -178,6 +182,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [imageDropActive, setImageDropActive] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
+  const paneActiveRef = useRef(props.active);
+  const previousPaneActiveRef = useRef(props.active);
+  const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -299,6 +306,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const searchDecorationsRef = useRef(terminalSearchDecorations);
 
   activeSurfaceRef.current = activeSurface;
+  paneActiveRef.current = props.active;
   copyModeRef.current = copyMode;
   queryRef.current = query;
   showSearchRef.current = props.showSearch;
@@ -1102,6 +1110,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       syncTerminalViewportBackground();
     });
     void fitAndSyncTerminal(terminal);
+    const foregroundFit = installTerminalForegroundFit({
+      isActive: () =>
+        paneActiveRef.current &&
+        terminalRef.current === terminal &&
+        Boolean(activeSurfaceRef.current),
+      fitAndSync: () => fitAndSyncTerminal(terminal),
+      onError: () => {
+        // Ignore foreground revalidation races during unmount/surface switches.
+      }
+    });
+    foregroundFitRef.current = foregroundFit;
 
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
@@ -1139,6 +1158,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
 
     return () => {
+      if (foregroundFitRef.current === foregroundFit) {
+        foregroundFitRef.current = null;
+      }
+      foregroundFit.dispose();
       resizeObserver.disconnect();
       if (resizeTimeout) {
         clearTimeout(resizeTimeout);
@@ -1163,6 +1186,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       clearPendingEnterRewrite();
     };
   }, [props.paneId, terminalInstanceKey]);
+
+  useEffect(() => {
+    const wasActive = previousPaneActiveRef.current;
+    previousPaneActiveRef.current = props.active;
+    if (!wasActive && props.active) {
+      foregroundFitRef.current?.scheduleFit();
+    }
+  }, [props.active, terminalInstanceKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
