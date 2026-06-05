@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createUsageAdapters } from "./usage";
+import { createUsageAdapters, scanUsageHistoryDays } from "./usage";
 
 const cleanupPaths: string[] = [];
 
@@ -84,6 +84,155 @@ describe("usage adapters", () => {
       startOfLocalDay(new Date("2026-04-18T09:00:00.000Z").getTime())
     );
     expect(nextDay.samples).toEqual([]);
+  });
+
+  it("keeps Claude cache usage separate from uncached input tokens", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-claude-cache-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    mkdirSync(usageDir, { recursive: true });
+    const usagePath = path.join(usageDir, "session.jsonl");
+
+    writeFileSync(
+      usagePath,
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        type: "assistant",
+        sessionId: "claude-cache-session",
+        requestId: "req_cache_1",
+        message: {
+          id: "msg_cache_1",
+          model: "claude-sonnet-4-5",
+          usage: {
+            input_tokens: 21,
+            cache_read_input_tokens: 188086,
+            cache_creation_input_tokens: 100,
+            output_tokens: 393
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const [adapter] = createUsageAdapters({
+      env: {
+        KMUX_CLAUDE_USAGE_DIR: usageDir
+      },
+      homeDir: root
+    });
+
+    const initial = await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        vendor: "claude",
+        sessionId: "claude-cache-session",
+        threadId: "msg_cache_1",
+        requestId: "req_cache_1",
+        inputTokens: 21,
+        cacheReadTokens: 188086,
+        cacheWriteTokens: 100,
+        outputTokens: 393,
+        totalTokens: 188600
+      })
+    ]);
+  });
+
+  it("ignores non-assistant Claude Code records with nested token-like payloads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-claude-noise-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    mkdirSync(usageDir, { recursive: true });
+    const usagePath = path.join(usageDir, "session.jsonl");
+
+    writeFileSync(
+      usagePath,
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        type: "user",
+        sessionId: "claude-noise-session",
+        uuid: "user-tool-result",
+        toolUseResult: {
+          input_tokens: 999999,
+          cache_read_input_tokens: 999999,
+          output_tokens: 999999
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const [adapter] = createUsageAdapters({
+      env: {
+        KMUX_CLAUDE_USAGE_DIR: usageDir
+      },
+      homeDir: root
+    });
+
+    const initial = await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+
+    expect(initial.samples).toEqual([]);
+  });
+
+  it("keeps generic Claude usage records with type and sessionId parseable", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-claude-generic-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    mkdirSync(usageDir, { recursive: true });
+    const usagePath = path.join(usageDir, "usage.jsonl");
+
+    writeFileSync(
+      usagePath,
+      [
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:00.000Z",
+          type: "usage",
+          sessionId: "claude-generic-session",
+          usage: {
+            input_tokens: 120,
+            output_tokens: 20
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:05:00.000Z",
+          type: "assistant",
+          sessionId: "claude-top-level-assistant",
+          input_tokens: 80,
+          output_tokens: 10
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const [adapter] = createUsageAdapters({
+      env: {
+        KMUX_CLAUDE_USAGE_DIR: usageDir
+      },
+      homeDir: root
+    });
+
+    const initial = await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        sessionId: "claude-generic-session",
+        inputTokens: 120,
+        outputTokens: 20,
+        totalTokens: 140
+      }),
+      expect.objectContaining({
+        sessionId: "claude-top-level-assistant",
+        inputTokens: 80,
+        outputTokens: 10,
+        totalTokens: 90
+      })
+    ]);
   });
 
   it("can force a one-shot rescan after a new codex usage root appears without relying on fast polling", async () => {
@@ -280,6 +429,16 @@ describe("usage adapters", () => {
       expect.objectContaining({
         vendor: "codex",
         sessionId: "codex-session-42",
+        eventId: [
+          "codex-token-count",
+          "codex-session-42",
+          new Date("2026-04-17T09:00:02.000Z").getTime(),
+          1200,
+          200,
+          80,
+          0,
+          1280
+        ].join(":"),
         model: "gpt-5.4",
         cwd: "/tmp/kmux-codex-real",
         inputTokens: 1000,
@@ -290,6 +449,16 @@ describe("usage adapters", () => {
       expect.objectContaining({
         vendor: "codex",
         sessionId: "codex-session-42",
+        eventId: [
+          "codex-token-count",
+          "codex-session-42",
+          new Date("2026-04-17T09:01:02.000Z").getTime(),
+          1800,
+          260,
+          140,
+          0,
+          1940
+        ].join(":"),
         model: "gpt-5.4",
         cwd: "/tmp/kmux-codex-real",
         inputTokens: 540,
@@ -926,6 +1095,189 @@ describe("usage adapters", () => {
         totalCostUsd: 0.8,
         totalTokens: 680,
         activeSessionCount: 1
+      })
+    ]);
+  });
+
+  it("dedupes canonical Claude samples when scanning usage history", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-dedupe-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    const parentDir = path.join(usageDir, "project-session");
+    const subagentDir = path.join(parentDir, "subagents");
+    mkdirSync(subagentDir, { recursive: true });
+
+    writeFileSync(
+      path.join(parentDir, "session.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-04-16T11:00:00.000Z",
+        type: "assistant",
+        sessionId: "claude-history-session",
+        requestId: "req_history_overlap",
+        message: {
+          id: "msg_history_overlap",
+          model: "claude-sonnet-4-5",
+          usage: {
+            input_tokens: 100,
+            cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 20,
+            output_tokens: 30,
+            estimated_cost: 0.01
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+    writeFileSync(
+      path.join(subagentDir, "agent-a.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-04-16T11:00:01.000Z",
+          type: "assistant",
+          sessionId: "claude-history-session",
+          requestId: "req_history_overlap",
+          parentUuid: "parent-message",
+          isSidechain: true,
+          agentId: "agent-a",
+          message: {
+            id: "msg_history_overlap",
+            model: "claude-sonnet-4-5",
+            usage: {
+              input_tokens: 100,
+              cache_read_input_tokens: 10,
+              cache_creation_input_tokens: 20,
+              output_tokens: 40,
+              estimated_cost: 0.012
+            }
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-16T11:05:00.000Z",
+          type: "assistant",
+          sessionId: "claude-history-session",
+          requestId: "req_history_unique",
+          parentUuid: "parent-message",
+          isSidechain: true,
+          agentId: "agent-a",
+          message: {
+            id: "msg_history_unique",
+            model: "claude-sonnet-4-5",
+            usage: {
+              input_tokens: 70,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 5,
+              output_tokens: 20,
+              estimated_cost: 0.005
+            }
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const days = await scanUsageHistoryDays({
+      env: {
+        KMUX_CLAUDE_USAGE_DIR: usageDir
+      },
+      homeDir: root,
+      fromMs: new Date("2026-04-16T00:00:00.000Z").getTime(),
+      toMs: new Date("2026-04-16T23:59:59.999Z").getTime()
+    });
+
+    expect(days).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-04-16",
+        totalCostUsd: 0.017,
+        reportedCostUsd: 0.017,
+        totalTokens: 265,
+        activeSessionCount: 1,
+        vendors: [
+          expect.objectContaining({
+            vendor: "claude",
+            totalCostUsd: 0.017,
+            totalTokens: 265,
+            activeSessionCount: 1
+          })
+        ]
+      })
+    ]);
+  });
+
+  it("keeps multiple Codex history deltas from the same session file", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-codex-"));
+    cleanupPaths.push(root);
+    const codexDir = path.join(root, "sessions", "2026", "04", "16");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      path.join(codexDir, "rollout-2026-04-16T09-00-00-codex.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-04-16T09:00:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "codex-history-session",
+            cwd: "/tmp/kmux-codex-history",
+            model: "gpt-5.4"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-16T09:00:02.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 1200,
+                cached_input_tokens: 200,
+                output_tokens: 80,
+                total_tokens: 1280
+              }
+            }
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-16T09:01:02.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 1800,
+                cached_input_tokens: 260,
+                output_tokens: 140,
+                total_tokens: 1940
+              }
+            }
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const days = await scanUsageHistoryDays({
+      env: {
+        KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
+      },
+      homeDir: root,
+      fromMs: new Date("2026-04-16T00:00:00.000Z").getTime(),
+      toMs: new Date("2026-04-16T23:59:59.999Z").getTime()
+    });
+
+    expect(days).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-04-16",
+        totalTokens: 1940,
+        activeSessionCount: 1,
+        vendors: [
+          expect.objectContaining({
+            vendor: "codex",
+            totalTokens: 1940,
+            activeSessionCount: 1
+          })
+        ]
       })
     ]);
   });

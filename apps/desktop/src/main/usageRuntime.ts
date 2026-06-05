@@ -26,6 +26,8 @@ import {
   createUsageAdapters,
   estimateUsageComponentCosts,
   scanUsageHistoryDays,
+  shouldReplaceUsageSample,
+  usageSampleIdentity,
   type UsageAdapter,
   type UsageCostSource as SampleCostSource,
   type UsageEventSample
@@ -794,7 +796,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     const identity = usageSampleIdentity(sample);
     const existingIndex = daySampleIndexes.get(identity);
     if (existingIndex !== undefined) {
-      daySamples[existingIndex] = sample;
+      const existingSample = daySamples[existingIndex];
+      if (shouldReplaceUsageSample(existingSample, sample)) {
+        daySamples[existingIndex] = sample;
+      }
       return;
     }
     daySampleIndexes.set(identity, daySamples.length);
@@ -2118,22 +2123,6 @@ function usageSampleKey(sample: UsageEventSample): string {
     sample.cwd ??
     sample.sourcePath
   );
-}
-
-function usageSampleIdentity(sample: UsageEventSample): string {
-  const eventKey =
-    sample.threadId ??
-    [
-      sample.sessionId ?? "",
-      sample.timestampMs,
-      sample.inputTokens,
-      sample.outputTokens,
-      sample.thinkingTokens ?? 0,
-      sample.cacheReadTokens ?? sample.cacheTokens,
-      sample.cacheWriteTokens ?? 0,
-      sample.totalTokens
-    ].join(":");
-  return [sample.vendor, sample.sourcePath, eventKey].join("\t");
 }
 
 function buildDirectoryHotspots(
