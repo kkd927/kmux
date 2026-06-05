@@ -920,6 +920,342 @@ describe("usage runtime", () => {
     );
   });
 
+  it("dedupes Claude usage across parent and subagent files by message and request id", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 3,
+              samples: [
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session-parent.jsonl",
+                  sessionId: "claude-session",
+                  threadId: "msg_overlap",
+                  requestId: "req_overlap",
+                  inputTokens: 100,
+                  cacheReadTokens: 10,
+                  cacheWriteTokens: 20,
+                  cacheTokens: 30,
+                  outputTokens: 30,
+                  totalTokens: 160,
+                  estimatedCostUsd: 0.01
+                }),
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session-parent/subagents/agent-a.jsonl",
+                  sessionId: "claude-session",
+                  threadId: "msg_overlap",
+                  requestId: "req_overlap",
+                  inputTokens: 100,
+                  cacheReadTokens: 10,
+                  cacheWriteTokens: 20,
+                  cacheTokens: 30,
+                  outputTokens: 40,
+                  totalTokens: 170,
+                  estimatedCostUsd: 0.012
+                }),
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session-parent/subagents/agent-b.jsonl",
+                  sessionId: "claude-session",
+                  threadId: "msg_unique_sidechain",
+                  requestId: "req_unique_sidechain",
+                  inputTokens: 70,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 5,
+                  cacheTokens: 5,
+                  outputTokens: 20,
+                  totalTokens: 95,
+                  estimatedCostUsd: 0.005
+                })
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.totalTodayTokens).toBe(265);
+    expect(snapshot.totalTodayCostUsd).toBeCloseTo(0.017, 8);
+    expect(snapshot.todayTokenBreakdown).toEqual(
+      expect.objectContaining({
+        inputTokens: 170,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 25,
+        outputTokens: 60,
+        totalTokens: 265
+      })
+    );
+  });
+
+  it("prefers the parent Claude sample when duplicate totals match", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 2,
+              samples: [
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session/subagents/agent-a.jsonl",
+                  sessionId: "claude-session",
+                  threadId: "msg_equal",
+                  requestId: "req_equal",
+                  inputTokens: 80,
+                  cacheReadTokens: 10,
+                  cacheWriteTokens: 0,
+                  cacheTokens: 10,
+                  outputTokens: 20,
+                  totalTokens: 110,
+                  estimatedCostUsd: 0.003
+                }),
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session.jsonl",
+                  sessionId: "claude-session",
+                  threadId: "msg_equal",
+                  requestId: "req_equal",
+                  inputTokens: 80,
+                  cacheReadTokens: 10,
+                  cacheWriteTokens: 0,
+                  cacheTokens: 10,
+                  outputTokens: 20,
+                  totalTokens: 110,
+                  estimatedCostUsd: 0.004
+                })
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:05:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.totalTodayTokens).toBe(110);
+    expect(snapshot.totalTodayCostUsd).toBeCloseTo(0.004, 8);
+  });
+
+  it("keeps the final Claude streaming sample for the same message and request id", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 1,
+              samples: [
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session.jsonl",
+                  timestampMs: new Date("2026-04-17T11:00:00.000Z").getTime(),
+                  threadId: "msg_stream",
+                  requestId: "req_stream",
+                  inputTokens: 50,
+                  cacheReadTokens: 5,
+                  cacheWriteTokens: 10,
+                  cacheTokens: 15,
+                  outputTokens: 7,
+                  totalTokens: 72,
+                  estimatedCostUsd: 0.001
+                }),
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/session.jsonl",
+                  timestampMs: new Date("2026-04-17T11:00:01.000Z").getTime(),
+                  threadId: "msg_stream",
+                  requestId: "req_stream",
+                  inputTokens: 50,
+                  cacheReadTokens: 5,
+                  cacheWriteTokens: 10,
+                  cacheTokens: 15,
+                  outputTokens: 19,
+                  totalTokens: 84,
+                  estimatedCostUsd: 0.002
+                })
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:05:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.totalTodayTokens).toBe(84);
+    expect(snapshot.totalTodayCostUsd).toBeCloseTo(0.002, 8);
+    expect(snapshot.todayTokenBreakdown).toEqual(
+      expect.objectContaining({
+        outputTokens: 19
+      })
+    );
+  });
+
+  it("does not globally dedupe Claude samples without request id", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 2,
+              samples: [
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/a.jsonl",
+                  threadId: "msg_without_request",
+                  requestId: undefined,
+                  inputTokens: 10,
+                  outputTokens: 5,
+                  cacheTokens: 0,
+                  totalTokens: 15,
+                  estimatedCostUsd: 0.001
+                }),
+                buildSample({
+                  vendor: "claude",
+                  sourcePath: "/tmp/project/b.jsonl",
+                  threadId: "msg_without_request",
+                  requestId: undefined,
+                  inputTokens: 20,
+                  outputTokens: 5,
+                  cacheTokens: 0,
+                  totalTokens: 25,
+                  estimatedCostUsd: 0.002
+                })
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:05:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.totalTodayTokens).toBe(40);
+    expect(snapshot.totalTodayCostUsd).toBeCloseTo(0.003, 8);
+  });
+
+  it("keeps multiple Codex token-count deltas from the same session file", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          vendor: "codex",
+          initialReads: [
+            {
+              sourceCount: 1,
+              samples: [
+                buildSample({
+                  vendor: "codex",
+                  sourcePath: "/tmp/project/codex-session.jsonl",
+                  timestampMs: new Date("2026-04-17T09:00:02.000Z").getTime(),
+                  sessionId: "codex-session-42",
+                  threadId: "codex-session-42",
+                  eventId: [
+                    "codex-token-count",
+                    "codex-session-42",
+                    new Date("2026-04-17T09:00:02.000Z").getTime(),
+                    1200,
+                    200,
+                    80,
+                    0,
+                    1280
+                  ].join(":"),
+                  model: "gpt-5.4",
+                  cwd: "/tmp/kmux-codex-real",
+                  projectPath: "/tmp/kmux-codex-real",
+                  inputTokens: 1000,
+                  cacheReadTokens: 200,
+                  cacheWriteTokens: 0,
+                  cacheTokens: 200,
+                  outputTokens: 80,
+                  thinkingTokens: 0,
+                  totalTokens: 1280,
+                  estimatedCostUsd: 0.00375
+                }),
+                buildSample({
+                  vendor: "codex",
+                  sourcePath: "/tmp/project/codex-session.jsonl",
+                  timestampMs: new Date("2026-04-17T09:01:02.000Z").getTime(),
+                  sessionId: "codex-session-42",
+                  threadId: "codex-session-42",
+                  eventId: [
+                    "codex-token-count",
+                    "codex-session-42",
+                    new Date("2026-04-17T09:01:02.000Z").getTime(),
+                    1800,
+                    260,
+                    140,
+                    0,
+                    1940
+                  ].join(":"),
+                  model: "gpt-5.4",
+                  cwd: "/tmp/kmux-codex-real",
+                  projectPath: "/tmp/kmux-codex-real",
+                  inputTokens: 540,
+                  cacheReadTokens: 60,
+                  cacheWriteTokens: 0,
+                  cacheTokens: 60,
+                  outputTokens: 60,
+                  thinkingTokens: 0,
+                  totalTokens: 660,
+                  estimatedCostUsd: 0.00195
+                })
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:05:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const snapshot = runtime.getSnapshot();
+    expect(snapshot.totalTodayTokens).toBe(1940);
+    expect(snapshot.totalTodayCostUsd).toBeCloseTo(0.0057, 8);
+    expect(snapshot.todayTokenBreakdown).toEqual(
+      expect.objectContaining({
+        inputTokens: 1540,
+        cacheReadTokens: 260,
+        cacheWriteTokens: 0,
+        outputTokens: 140,
+        thinkingTokens: 0,
+        totalTokens: 1940
+      })
+    );
+  });
+
   it("polls subscription usage every three minutes for live providers while the dashboard is open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));

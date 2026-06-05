@@ -36,6 +36,8 @@ export interface UsageEventSample {
   sourceType: "jsonl" | "json";
   sessionId?: string;
   threadId?: string;
+  requestId?: string;
+  eventId?: string;
   model?: string;
   cwd?: string;
   projectPath?: string;
@@ -708,6 +710,8 @@ export async function scanUsageHistoryDays(options: {
       >;
     }
   >();
+  const historySamples: UsageEventSample[] = [];
+  const historySampleIndexes = new Map<string, number>();
 
   try {
     for (const adapter of adapters) {
@@ -722,50 +726,64 @@ export async function scanUsageHistoryDays(options: {
         if (sample.vendor === "unknown") {
           continue;
         }
-        const dayKey = dayKeyFor(sample.timestampMs);
-        const dayBucket = bucketMap.get(dayKey) ?? {
-          dayKey,
-          totalCostUsd: 0,
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0,
-          totalTokens: 0,
-          activeKeys: new Set<string>(),
-          vendors: new Map()
-        };
-        const sampleCostSource = normalizeSampleCostSource(sample);
-        const sessionKey = usageSampleSessionKey(sample);
-        dayBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
-        dayBucket.totalTokens += sample.totalTokens;
-        if (sampleCostSource === "reported") {
-          dayBucket.reportedCostUsd += sample.estimatedCostUsd;
-        } else if (sampleCostSource === "estimated") {
-          dayBucket.estimatedCostUsd += sample.estimatedCostUsd;
-        } else {
-          dayBucket.unknownCostTokens += sample.totalTokens;
+        const identity = usageHistorySampleIdentity(sample);
+        const existingIndex = historySampleIndexes.get(identity);
+        if (existingIndex !== undefined) {
+          const existingSample = historySamples[existingIndex];
+          if (shouldReplaceUsageSample(existingSample, sample)) {
+            historySamples[existingIndex] = sample;
+          }
+          continue;
         }
-        dayBucket.activeKeys.add(sessionKey);
-
-        const vendorBucket = dayBucket.vendors.get(sample.vendor) ?? {
-          vendor: sample.vendor,
-          totalCostUsd: 0,
-          totalTokens: 0,
-          activeKeys: new Set<string>()
-        };
-        vendorBucket.totalCostUsd += pricedCostForSample(
-          sample,
-          sampleCostSource
-        );
-        vendorBucket.totalTokens += sample.totalTokens;
-        vendorBucket.activeKeys.add(sessionKey);
-        dayBucket.vendors.set(sample.vendor, vendorBucket);
-        bucketMap.set(dayKey, dayBucket);
+        historySampleIndexes.set(identity, historySamples.length);
+        historySamples.push(sample);
       }
     }
   } finally {
     for (const adapter of adapters) {
       adapter.close();
     }
+  }
+
+  for (const sample of historySamples) {
+    const dayKey = dayKeyFor(sample.timestampMs);
+    const dayBucket = bucketMap.get(dayKey) ?? {
+      dayKey,
+      totalCostUsd: 0,
+      reportedCostUsd: 0,
+      estimatedCostUsd: 0,
+      unknownCostTokens: 0,
+      totalTokens: 0,
+      activeKeys: new Set<string>(),
+      vendors: new Map()
+    };
+    const sampleCostSource = normalizeSampleCostSource(sample);
+    const sessionKey = usageSampleSessionKey(sample);
+    dayBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
+    dayBucket.totalTokens += sample.totalTokens;
+    if (sampleCostSource === "reported") {
+      dayBucket.reportedCostUsd += sample.estimatedCostUsd;
+    } else if (sampleCostSource === "estimated") {
+      dayBucket.estimatedCostUsd += sample.estimatedCostUsd;
+    } else {
+      dayBucket.unknownCostTokens += sample.totalTokens;
+    }
+    dayBucket.activeKeys.add(sessionKey);
+
+    const vendorBucket = dayBucket.vendors.get(sample.vendor) ?? {
+      vendor: sample.vendor,
+      totalCostUsd: 0,
+      totalTokens: 0,
+      activeKeys: new Set<string>()
+    };
+    vendorBucket.totalCostUsd += pricedCostForSample(
+      sample,
+      sampleCostSource
+    );
+    vendorBucket.totalTokens += sample.totalTokens;
+    vendorBucket.activeKeys.add(sessionKey);
+    dayBucket.vendors.set(sample.vendor, vendorBucket);
+    bucketMap.set(dayKey, dayBucket);
   }
 
   return Array.from(bucketMap.values())
@@ -985,9 +1003,10 @@ function stringMapEquals(
 function extractUsageSampleFromRecord(
   vendor: UsageVendor,
   record: Record<string, unknown>,
-  sourcePath: string
+  sourcePath: string,
+  metricsRoot: Record<string, unknown> = record
 ): UsageEventSample | null {
-  const metrics = pickBestUsageMetrics(record);
+  const metrics = pickBestUsageMetrics(vendor, metricsRoot);
   if (!metrics) {
     return null;
   }
@@ -1038,6 +1057,7 @@ function extractUsageSampleFromRecord(
       "conversationId",
       "id"
     ]),
+    requestId: pickFirstOwnString(record, ["request_id", "requestId"]),
     model,
     cwd: normalizePathValue(
       pickFirstString(record, ["cwd", "current_working_directory", "path"])
@@ -1086,6 +1106,12 @@ function extractUsageSamplesFromJsonDocument(
       return samples;
     }
   }
+  if (vendor === "claude") {
+    const sample = extractClaudeUsageSample(record, sourcePath);
+    return sample && isTimestampInRange(sample.timestampMs, range)
+      ? [sample]
+      : [];
+  }
 
   const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
   return sample && isTimestampInRange(sample.timestampMs, range)
@@ -1123,11 +1149,61 @@ function extractUsageSamplesFromJsonLine(
       state.antigravityWorkspaceByConversation
     );
   }
+  if (vendor === "claude") {
+    const sample = extractClaudeUsageSample(record, sourcePath);
+    return sample && isTimestampInRange(sample.timestampMs, range)
+      ? [sample]
+      : [];
+  }
 
   const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
   return sample && isTimestampInRange(sample.timestampMs, range)
     ? [sample]
     : [];
+}
+
+function extractClaudeUsageSample(
+  record: Record<string, unknown>,
+  sourcePath: string
+): UsageEventSample | null {
+  const message = isRecord(record.message) ? record.message : null;
+  const usage = message && isRecord(message.usage) ? message.usage : null;
+  const recordType = typeof record.type === "string" ? record.type : undefined;
+  const hasClaudeCodeMarker =
+    "uuid" in record ||
+    "parentUuid" in record ||
+    "userType" in record ||
+    "isSidechain" in record ||
+    "agentId" in record;
+
+  if (message && recordType === "assistant") {
+    if (!usage) {
+      return null;
+    }
+    return extractUsageSampleFromRecord("claude", record, sourcePath, usage);
+  }
+
+  if (hasClaudeCodeMarker && isClaudeCodeNonUsageRecordType(recordType)) {
+    return null;
+  }
+
+  return extractUsageSampleFromRecord("claude", record, sourcePath);
+}
+
+function isClaudeCodeNonUsageRecordType(type: string | undefined): boolean {
+  return (
+    type === "user" ||
+    type === "attachment" ||
+    type === "system" ||
+    type === "mode" ||
+    type === "permission-mode" ||
+    type === "file-history-snapshot" ||
+    type === "ai-title" ||
+    type === "last-prompt" ||
+    type === "queue-operation" ||
+    type === "pr-link" ||
+    type === "agent-name"
+  );
 }
 
 function consumeJsonLine(
@@ -1317,6 +1393,16 @@ function extractCodexUsageSamples(
       sourceType: "jsonl",
       sessionId: context?.sessionId,
       threadId: context?.sessionId,
+      eventId: [
+        "codex-token-count",
+        context?.sessionId ?? "",
+        timestampMs,
+        absoluteInputTokens,
+        absoluteCacheReadTokens,
+        absoluteOutputTokens,
+        absoluteThinkingTokens,
+        absoluteTotalTokens
+      ].join(":"),
       model: context?.model,
       cwd: context?.cwd,
       projectPath: context?.projectPath ?? context?.cwd,
@@ -1678,13 +1764,14 @@ function resolveGeminiProjectRoot(
 }
 
 function pickBestUsageMetrics(
+  vendor: UsageVendor,
   root: Record<string, unknown>
 ): ParsedUsageMetrics | null {
   const candidates = collectObjectCandidates(root);
   let best: ParsedUsageMetrics | null = null;
 
   for (const candidate of candidates) {
-    const parsed = parseUsageMetrics(candidate.value);
+    const parsed = parseUsageMetrics(vendor, candidate.value);
     if (!parsed) {
       continue;
     }
@@ -1735,6 +1822,7 @@ function collectObjectCandidates(
 }
 
 function parseUsageMetrics(
+  vendor: UsageVendor,
   record: Record<string, unknown>
 ): ParsedUsageMetrics | null {
   const rawInputTokens =
@@ -1746,28 +1834,34 @@ function parseUsageMetrics(
     readNumericField(record, ["completion_tokens", "completionTokens"]) ??
     0;
   const cacheReadTokens =
-    (readNumericField(record, ["cache_tokens", "cacheTokens"]) ?? 0) +
-    (readNumericField(record, [
-      "cache_read_tokens",
-      "cacheReadTokens",
+    readNumericField(record, [
       "cache_read_input_tokens",
       "cacheReadInputTokens"
-    ]) ?? 0) +
-    (readNestedNumericField(
+    ]) ??
+    readNumericField(record, [
+      "cache_read_tokens",
+      "cacheReadTokens",
+      "cache_tokens",
+      "cacheTokens"
+    ]) ??
+    readNestedNumericField(
       record,
       ["prompt_tokens_details", "input_tokens_details"],
       ["cached_tokens", "cachedTokens"]
-    ) ?? 0);
+    ) ??
+    0;
   const cacheWriteTokens =
-    (readNumericField(record, [
-      "cache_creation_tokens",
-      "cacheCreationTokens",
+    readNumericField(record, [
       "cache_creation_input_tokens",
       "cacheCreationInputTokens"
-    ]) ?? 0) +
-    (readNumericField(record, ["cache_write_tokens", "cacheWriteTokens"]) ??
-      0) +
-    (readNestedNumericField(
+    ]) ??
+    readNumericField(record, [
+      "cache_creation_tokens",
+      "cacheCreationTokens",
+      "cache_write_tokens",
+      "cacheWriteTokens"
+    ]) ??
+    readNestedNumericField(
       record,
       ["prompt_tokens_details", "input_tokens_details"],
       [
@@ -1776,15 +1870,16 @@ function parseUsageMetrics(
         "cache_creation_tokens",
         "cacheCreationTokens"
       ]
-    ) ?? 0);
+    ) ??
+    0;
   const thinkingTokens =
-    (readNumericField(record, [
+    readNumericField(record, [
       "reasoning_tokens",
       "reasoningTokens",
       "thinking_tokens",
       "thinkingTokens"
-    ]) ?? 0) +
-    (readNestedNumericField(
+    ]) ??
+    readNestedNumericField(
       record,
       ["completion_tokens_details", "output_tokens_details"],
       [
@@ -1793,11 +1888,11 @@ function parseUsageMetrics(
         "thinking_tokens",
         "thinkingTokens"
       ]
-    ) ?? 0);
-  const inputTokens = Math.max(
-    0,
-    rawInputTokens - cacheReadTokens - cacheWriteTokens
-  );
+    ) ??
+    0;
+  const inputTokens = treatsInputTokensAsUncached(vendor, record)
+    ? Math.max(0, rawInputTokens)
+    : Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens);
   const outputTokens = Math.max(0, rawOutputTokens - thinkingTokens);
   const cacheTokens = cacheReadTokens + cacheWriteTokens;
   const totalTokens =
@@ -1915,6 +2010,89 @@ function usageSampleSessionKey(sample: UsageEventSample): string {
   );
 }
 
+export function usageSampleIdentity(sample: UsageEventSample): string {
+  const claudeIdentity = claudeCanonicalUsageIdentity(sample);
+  if (claudeIdentity) {
+    return claudeIdentity;
+  }
+  const eventKey =
+    sample.eventId ??
+    sample.threadId ??
+    [
+      sample.sessionId ?? "",
+      sample.timestampMs,
+      sample.inputTokens,
+      sample.outputTokens,
+      sample.thinkingTokens ?? 0,
+      sample.cacheReadTokens ?? sample.cacheTokens,
+      sample.cacheWriteTokens ?? 0,
+      sample.totalTokens
+    ].join(":");
+  return [sample.vendor, sample.sourcePath, eventKey].join("\t");
+}
+
+export function shouldReplaceUsageSample(
+  existing: UsageEventSample,
+  candidate: UsageEventSample
+): boolean {
+  const existingClaudeIdentity = claudeCanonicalUsageIdentity(existing);
+  const candidateClaudeIdentity = claudeCanonicalUsageIdentity(candidate);
+  if (
+    existingClaudeIdentity &&
+    candidateClaudeIdentity &&
+    existingClaudeIdentity === candidateClaudeIdentity
+  ) {
+    return shouldReplaceClaudeCanonicalSample(existing, candidate);
+  }
+  return true;
+}
+
+function usageHistorySampleIdentity(sample: UsageEventSample): string {
+  return [dayKeyFor(sample.timestampMs), usageSampleIdentity(sample)].join("\t");
+}
+
+function claudeCanonicalUsageIdentity(sample: UsageEventSample): string | null {
+  if (sample.vendor !== "claude" || !sample.threadId || !sample.requestId) {
+    return null;
+  }
+  return [sample.vendor, sample.threadId, sample.requestId].join("\t");
+}
+
+function shouldReplaceClaudeCanonicalSample(
+  existing: UsageEventSample,
+  candidate: UsageEventSample
+): boolean {
+  if (candidate.totalTokens !== existing.totalTokens) {
+    return candidate.totalTokens > existing.totalTokens;
+  }
+  const existingSubagent = isClaudeSubagentSource(existing);
+  const candidateSubagent = isClaudeSubagentSource(candidate);
+  if (existingSubagent !== candidateSubagent) {
+    return existingSubagent && !candidateSubagent;
+  }
+  if (existing.sourcePath === candidate.sourcePath) {
+    return candidate.timestampMs >= existing.timestampMs;
+  }
+  return candidate.sourcePath < existing.sourcePath;
+}
+
+function isClaudeSubagentSource(sample: UsageEventSample): boolean {
+  return sample.sourcePath.replace(/\\/g, "/").includes("/subagents/");
+}
+
+function pickFirstOwnString(
+  root: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = root[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 function pickFirstString(
   root: Record<string, unknown>,
   keys: string[]
@@ -1974,6 +2152,16 @@ function readNestedNumericField(
     }
   }
   return undefined;
+}
+
+function treatsInputTokensAsUncached(
+  vendor: UsageVendor,
+  record: Record<string, unknown>
+): boolean {
+  return (
+    vendor === "claude" &&
+    readNumericField(record, ["input_tokens", "inputTokens"]) !== undefined
+  );
 }
 
 function toFiniteNumber(value: unknown): number | undefined {
