@@ -478,6 +478,13 @@
   pointer-events: none;
 }
 
+.terminalViewport[data-terminal-replay-hidden],
+.terminalViewport[data-terminal-resize-redraw-hidden="true"],
+.terminalViewport :global([data-terminal-replay-hidden]),
+.terminalViewport :global([data-terminal-resize-redraw-hidden="true"]) {
+  visibility: hidden;
+}
+
 .terminalViewport :global(.xterm) {
   height: 100%;
   font-family: var(--kmux-terminal-font-family);

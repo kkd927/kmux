@@ -2291,27 +2291,9 @@ function resolveModelUsageIdentity(
   if (!sample.model) {
     return null;
   }
-  const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
-  if (!pricingVendor) {
-    return {
-      modelId: sample.model,
-      modelLabel: sample.model
-    };
-  }
-  const estimate = estimateUsageComponentCosts({
-    vendor: pricingVendor,
-    model: sample.model,
-    inputTokens: sample.inputTokens,
-    outputTokens: sample.outputTokens,
-    thinkingTokens: sample.thinkingTokens ?? 0,
-    cacheReadTokens: sample.cacheReadTokens ?? sample.cacheTokens,
-    cacheWriteTokens: sample.cacheWriteTokens ?? 0,
-    cacheWriteTokensKnown: sample.cacheWriteTokensKnown
-  });
-  const modelId = estimate?.modelId ?? sample.model;
   return {
-    modelId,
-    modelLabel: modelId
+    modelId: sample.model,
+    modelLabel: sample.model
   };
 }
 

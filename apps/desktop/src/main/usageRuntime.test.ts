@@ -543,8 +543,8 @@ describe("usage runtime", () => {
     expect(runtime.getSnapshot().models).toEqual([
       expect.objectContaining({
         vendor: "antigravity",
-        modelId: "gemini-3.5-flash",
-        modelLabel: "gemini-3.5-flash",
+        modelId: "Gemini 3.5 Flash (Medium)",
+        modelLabel: "Gemini 3.5 Flash (Medium)",
         totalTokens: 2300,
         todayCostUsd: 0.0057,
         costSource: "estimated"
@@ -858,6 +858,75 @@ describe("usage runtime", () => {
     );
   });
 
+  it("keeps reported model names in dashboard aggregates when pricing falls back to older entries", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 2,
+              samples: [
+                {
+                  ...buildSample({
+                    vendor: "codex",
+                    sessionId: "codex-newer-model",
+                    model: "gpt-5.5",
+                    estimatedCostUsd: 0.004,
+                    totalTokens: 1200,
+                    inputTokens: 1000,
+                    cacheTokens: 100,
+                    outputTokens: 100
+                  }),
+                  costSource: "estimated"
+                } as UsageEventSample,
+                {
+                  ...buildSample({
+                    vendor: "claude",
+                    sessionId: "claude-newer-model",
+                    model: "claude-opus-4-8",
+                    estimatedCostUsd: 0.003,
+                    totalTokens: 900,
+                    inputTokens: 700,
+                    cacheTokens: 100,
+                    outputTokens: 100
+                  }),
+                  costSource: "estimated"
+                } as UsageEventSample
+              ]
+            }
+          ]
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-06-05T11:00:00.000Z").getTime(),
+      historyStore: createFakeUsageHistoryStore([])
+    } as never);
+
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().models).toEqual([
+      expect.objectContaining({
+        vendor: "codex",
+        modelId: "gpt-5.5",
+        modelLabel: "gpt-5.5",
+        totalTokens: 1200,
+        todayCostUsd: expect.closeTo(0.004, 8),
+        costSource: "estimated"
+      }),
+      expect.objectContaining({
+        vendor: "claude",
+        modelId: "claude-opus-4-8",
+        modelLabel: "claude-opus-4-8",
+        totalTokens: 900,
+        todayCostUsd: expect.closeTo(0.003, 8),
+        costSource: "estimated"
+      })
+    ]);
+  });
+
   it("marks pricing coverage as partial when usage tokens have no local model pricing", async () => {
     const state = createInitialState();
     const runtime = createUsageRuntime({
@@ -947,7 +1016,8 @@ describe("usage runtime", () => {
                 }),
                 buildSample({
                   vendor: "claude",
-                  sourcePath: "/tmp/project/session-parent/subagents/agent-a.jsonl",
+                  sourcePath:
+                    "/tmp/project/session-parent/subagents/agent-a.jsonl",
                   sessionId: "claude-session",
                   threadId: "msg_overlap",
                   requestId: "req_overlap",
@@ -961,7 +1031,8 @@ describe("usage runtime", () => {
                 }),
                 buildSample({
                   vendor: "claude",
-                  sourcePath: "/tmp/project/session-parent/subagents/agent-b.jsonl",
+                  sourcePath:
+                    "/tmp/project/session-parent/subagents/agent-b.jsonl",
                   sessionId: "claude-session",
                   threadId: "msg_unique_sidechain",
                   requestId: "req_unique_sidechain",
