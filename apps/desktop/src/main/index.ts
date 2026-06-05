@@ -74,6 +74,7 @@ import {
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
+const USER_VISIBLE_APP_NAME = "kmux";
 
 let ptyHost: PtyHostManager | null = null;
 let socketServer: KmuxSocketServer | null = null;
@@ -89,6 +90,7 @@ process.stdout.on("error", ignoreExpectedPipeClose);
 process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
+  app.setName(USER_VISIBLE_APP_NAME);
   const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
