@@ -49,6 +49,11 @@ import {
   installTerminalForegroundFit,
   type TerminalForegroundFitController
 } from "../terminalForegroundFit";
+import {
+  createTerminalRedrawConcealment,
+  type TerminalRedrawConcealmentController
+} from "../terminalRedrawConcealment";
+import { createTerminalReplayVisibility } from "../terminalReplayVisibility";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
@@ -136,6 +141,7 @@ type TerminalDiagnosticElement = HTMLDivElement & {
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
 const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
+const TERMINAL_RESIZE_REDRAW_HIDDEN_ATTR = "terminalResizeRedrawHidden";
 
 function openExternalTerminalLink(rawUrl: string): void {
   let url: URL;
@@ -185,6 +191,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const paneActiveRef = useRef(props.active);
   const previousPaneActiveRef = useRef(props.active);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
+  const redrawConcealmentRef =
+    useRef<TerminalRedrawConcealmentController | null>(null);
+  const resizeRedrawHiddenElementsRef = useRef(
+    new Map<string, Set<HTMLElement>>()
+  );
   const terminalInstanceKey = activeSurface.id;
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -319,6 +330,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         window.kmux.resizeSurface(surfaceId, attachId, cols, rows)
     });
   }
+  if (!redrawConcealmentRef.current) {
+    redrawConcealmentRef.current = createTerminalRedrawConcealment({
+      hide: (surfaceId) => setSurfaceResizeRedrawHidden(surfaceId, true),
+      reveal: (surfaceId) => setSurfaceResizeRedrawHidden(surfaceId, false)
+    });
+  }
 
   function syncTerminalMetrics(terminal: Terminal | null): void {
     if (!activeSurface || !terminal) {
@@ -418,6 +435,31 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     surfaceWrapperRefs.current.delete(surfaceId);
+  }
+
+  function setSurfaceResizeRedrawHidden(
+    surfaceId: string,
+    hidden: boolean
+  ): void {
+    const elements = new Set(
+      [
+        containerRef.current,
+        surfaceWrapperRefs.current.get(surfaceId),
+        ...(resizeRedrawHiddenElementsRef.current.get(surfaceId) ?? [])
+      ].filter((element): element is HTMLElement => Boolean(element))
+    );
+    if (hidden) {
+      resizeRedrawHiddenElementsRef.current.set(surfaceId, elements);
+    } else {
+      resizeRedrawHiddenElementsRef.current.delete(surfaceId);
+    }
+    for (const element of elements) {
+      if (hidden) {
+        element.dataset[TERMINAL_RESIZE_REDRAW_HIDDEN_ATTR] = "true";
+      } else {
+        delete element.dataset[TERMINAL_RESIZE_REDRAW_HIDDEN_ATTR];
+      }
+    }
   }
 
   function applyTerminalResize(
@@ -557,10 +599,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       : null;
     const streamReady = Boolean(
       surfaceId &&
-        readyAttachId &&
-        streamReadySurfaceIdsRef.current.has(surfaceId)
+      readyAttachId &&
+      streamReadySurfaceIdsRef.current.has(surfaceId)
     );
     const attachId = streamReady ? readyAttachId : null;
+    if (surfaceId && terminalSizeChanged) {
+      redrawConcealmentRef.current?.start(surfaceId);
+    }
     if (!streamReady) {
       const resized = applyTerminalResize(terminal, {
         cols: dims.cols,
@@ -791,6 +836,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   useEffect(() => {
     return () => {
+      redrawConcealmentRef.current?.revealAllNow();
       writeProfileBucketRef.current.flushAll();
       if (attachmentStatusTimerRef.current) {
         clearTimeout(attachmentStatusTimerRef.current);
@@ -1238,6 +1284,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     let attached = true;
     const surfaceId = activeSurface.id;
     const instanceKey = terminalInstanceKey;
+    const replayVisibility = createTerminalReplayVisibility({
+      host: containerRef.current,
+      wrapper: surfaceWrapperRefs.current.get(surfaceId) ?? null
+    });
     const writeAttachedTerminal = (
       data: string,
       afterWrite?: () => void,
@@ -1287,6 +1337,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (event.type === "chunk" && event.payload.surfaceId === surfaceId) {
         const payload = event.payload;
+        redrawConcealmentRef.current?.touch(payload.surfaceId);
         writeAttachedTerminal(
           payload.chunk,
           () => {
@@ -1316,6 +1367,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             payload.attachId
         ) {
           return;
+        }
+        if (terminal.cols !== payload.cols || terminal.rows !== payload.rows) {
+          redrawConcealmentRef.current?.start(payload.surfaceId);
         }
         applyTerminalResize(terminal, {
           cols: payload.cols,
@@ -1347,6 +1401,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       streamReadySurfaceIdsRef.current.delete(surfaceId);
       readySurfaceAttachIdsRef.current.delete(surfaceId);
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
+      replayVisibility.dispose();
+      redrawConcealmentRef.current?.revealNow(surfaceId);
       unsubscribe();
       void window.kmux.detachSurface(surfaceId);
     };
@@ -1385,6 +1441,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fitAndSyncTerminal: fitAttachedTerminal,
           writeTerminal: (_terminal, data, afterWrite) =>
             writeAttachedTerminal(data, afterWrite, surfaceId),
+          onReplayStart: replayVisibility.hide,
+          onReplayEnd: replayVisibility.revealAfterPaint,
           onSnapshotRendered: markSnapshotRendered
         });
       } else {
@@ -1397,6 +1455,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           attachSurface: () => window.kmux.attachSurface(surfaceId),
           writeTerminal: (_terminal, data, afterWrite) =>
             writeAttachedTerminal(data, afterWrite, surfaceId),
+          onReplayStart: replayVisibility.hide,
+          onReplayEnd: replayVisibility.revealAfterPaint,
           onSnapshotRendered: markSnapshotRendered
         });
       }

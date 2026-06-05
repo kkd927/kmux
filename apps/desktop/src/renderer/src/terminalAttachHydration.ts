@@ -1,7 +1,4 @@
-import type {
-  SurfaceAttachPayload,
-  SurfaceSnapshotPayload
-} from "@kmux/proto";
+import type { SurfaceAttachPayload, SurfaceSnapshotPayload } from "@kmux/proto";
 
 export interface AttachedTerminalLike {
   cols: number;
@@ -26,7 +23,9 @@ type TerminalAttachCompletionResultLike =
 
 type MaybePromise<T> = T | Promise<T>;
 
-interface HydrateAttachedTerminalOptions<TTerminal extends AttachedTerminalLike> {
+interface HydrateAttachedTerminalOptions<
+  TTerminal extends AttachedTerminalLike
+> {
   terminal: TTerminal;
   isMounted: () => boolean;
   isTerminalActive: (terminal: TTerminal) => boolean;
@@ -38,6 +37,8 @@ interface HydrateAttachedTerminalOptions<TTerminal extends AttachedTerminalLike>
     data: string,
     afterWrite?: () => void
   ) => void;
+  onReplayStart?: () => void;
+  onReplayEnd?: () => void;
   onSnapshotRendered?: (
     attachId: string,
     snapshot: TerminalSnapshotLike
@@ -60,6 +61,8 @@ interface ReattachPreservedTerminalOptions<
     data: string,
     afterWrite?: () => void
   ) => void;
+  onReplayStart?: () => void;
+  onReplayEnd?: () => void;
   onSnapshotRendered?: (
     attachId: string,
     snapshot: TerminalSnapshotLike
@@ -76,6 +79,8 @@ export async function hydrateAttachedTerminal<
   fitAndSyncTerminal,
   attachSurface,
   writeTerminal,
+  onReplayStart,
+  onReplayEnd,
   onSnapshotRendered
 }: HydrateAttachedTerminalOptions<TTerminal>): Promise<void> {
   const canContinue = () => isMounted() && isTerminalActive(terminal);
@@ -108,23 +113,33 @@ export async function hydrateAttachedTerminal<
     terminal.resize(snapshot.cols, snapshot.rows);
   }
 
-  for (;;) {
-    const completion = await replaySnapshot({
-      terminal,
-      snapshot,
-      attachId,
-      applySnapshotDimensions,
-      canContinue,
-      fitAndSyncTerminal,
-      writeTerminal,
-      onSnapshotRendered
-    });
-    if (completion?.status !== "replay") {
-      return;
+  const replayVisibility = createReplayVisibilityController({
+    onReplayStart,
+    onReplayEnd
+  });
+
+  try {
+    for (;;) {
+      replayVisibility.start();
+      const completion = await replaySnapshot({
+        terminal,
+        snapshot,
+        attachId,
+        applySnapshotDimensions,
+        canContinue,
+        fitAndSyncTerminal,
+        writeTerminal,
+        onSnapshotRendered
+      });
+      if (completion?.status !== "replay") {
+        return;
+      }
+      attachId = completion.attachId;
+      snapshot = completion.snapshot;
+      applySnapshotDimensions = true;
     }
-    attachId = completion.attachId;
-    snapshot = completion.snapshot;
-    applySnapshotDimensions = true;
+  } finally {
+    replayVisibility.stop();
   }
 }
 
@@ -140,6 +155,8 @@ export async function reattachPreservedTerminal<
   beforeFitAndSync,
   fitAndSyncTerminal,
   writeTerminal,
+  onReplayStart,
+  onReplayEnd,
   onSnapshotRendered
 }: ReattachPreservedTerminalOptions<TTerminal>): Promise<void> {
   const canContinue = () => isMounted() && isTerminalActive(terminal);
@@ -157,48 +174,87 @@ export async function reattachPreservedTerminal<
   let attachId = attachPayload.attachId;
   let forceReplay = false;
   let applySnapshotDimensions = false;
+  const replayVisibility = createReplayVisibilityController({
+    onReplayStart,
+    onReplayEnd
+  });
 
-  for (;;) {
-    if (
-      forceReplay ||
-      lastRenderedSequence === null ||
-      snapshot.sequence > lastRenderedSequence
-    ) {
-      const completion = await replaySnapshot({
-        terminal,
-        snapshot,
-        attachId,
-        applySnapshotDimensions,
-        canContinue,
-        beforeFitAndSync,
-        fitAndSyncTerminal,
-        writeTerminal,
-        onSnapshotRendered
-      });
-      if (completion?.status !== "replay") {
+  try {
+    for (;;) {
+      if (
+        forceReplay ||
+        lastRenderedSequence === null ||
+        snapshot.sequence > lastRenderedSequence
+      ) {
+        replayVisibility.start();
+        const completion = await replaySnapshot({
+          terminal,
+          snapshot,
+          attachId,
+          applySnapshotDimensions,
+          canContinue,
+          beforeFitAndSync,
+          fitAndSyncTerminal,
+          writeTerminal,
+          onSnapshotRendered
+        });
+        if (completion?.status !== "replay") {
+          return;
+        }
+        attachId = completion.attachId;
+        snapshot = completion.snapshot;
+        forceReplay = true;
+        applySnapshotDimensions = true;
+        continue;
+      }
+
+      const completion = await onSnapshotRendered?.(attachId, snapshot);
+      if (completion?.status === "replay") {
+        attachId = completion.attachId;
+        snapshot = completion.snapshot;
+        forceReplay = true;
+        applySnapshotDimensions = true;
+        replayVisibility.start();
+        continue;
+      }
+      if (canContinue()) {
+        beforeFitAndSync?.();
+        await fitAndSyncTerminal(terminal);
+      }
+      return;
+    }
+  } finally {
+    replayVisibility.stop();
+  }
+}
+
+function createReplayVisibilityController({
+  onReplayStart,
+  onReplayEnd
+}: {
+  onReplayStart?: () => void;
+  onReplayEnd?: () => void;
+}): {
+  start(): void;
+  stop(): void;
+} {
+  let replaying = false;
+  return {
+    start(): void {
+      if (replaying) {
         return;
       }
-      attachId = completion.attachId;
-      snapshot = completion.snapshot;
-      forceReplay = true;
-      applySnapshotDimensions = true;
-      continue;
+      replaying = true;
+      onReplayStart?.();
+    },
+    stop(): void {
+      if (!replaying) {
+        return;
+      }
+      replaying = false;
+      onReplayEnd?.();
     }
-
-    const completion = await onSnapshotRendered?.(attachId, snapshot);
-    if (completion?.status === "replay") {
-      attachId = completion.attachId;
-      snapshot = completion.snapshot;
-      forceReplay = true;
-      applySnapshotDimensions = true;
-      continue;
-    }
-    if (canContinue()) {
-      beforeFitAndSync?.();
-      await fitAndSyncTerminal(terminal);
-    }
-    return;
-  }
+  };
 }
 
 async function replaySnapshot<TTerminal extends AttachedTerminalLike>({
