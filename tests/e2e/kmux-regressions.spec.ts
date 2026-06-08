@@ -213,6 +213,61 @@ function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
   );
 }
 
+async function expectTerminalContinuitySamples(
+  page: Page,
+  surfaceId: string,
+  marker: string,
+  context: string
+): Promise<void> {
+  const samples: Array<{
+    text: string;
+    hiddenMarkerCount: number;
+    hiddenByVisibility: boolean;
+    frameWidth: number;
+  }> = [];
+
+  for (let index = 0; index < 10; index += 1) {
+    samples.push(
+      await page.evaluate(
+        ({ targetSurfaceId }) => {
+          const terminal = document.querySelector<HTMLElement>(
+            `[data-testid="terminal-${targetSurfaceId}"]`
+          );
+          const frame = terminal?.parentElement;
+          const rows = terminal?.querySelector<HTMLElement>(".xterm-rows");
+          const screen = terminal?.querySelector<HTMLElement>(".xterm-screen");
+          const elements = [frame, terminal, screen, rows].filter(
+            (element): element is HTMLElement => element instanceof HTMLElement
+          );
+
+          return {
+            text: rows?.textContent ?? "",
+            hiddenMarkerCount:
+              terminal?.querySelectorAll(
+                "[data-terminal-replay-hidden], [data-terminal-resize-redraw-hidden]"
+              ).length ?? 0,
+            hiddenByVisibility: elements.some(
+              (element) => getComputedStyle(element).visibility === "hidden"
+            ),
+            frameWidth: frame instanceof HTMLElement ? frame.clientWidth : 0
+          };
+        },
+        { targetSurfaceId: surfaceId }
+      )
+    );
+    await page.waitForTimeout(16);
+  }
+
+  const failedSample = samples.find(
+    (sample) =>
+      !sample.text.includes(marker) ||
+      sample.hiddenMarkerCount > 0 ||
+      sample.hiddenByVisibility ||
+      sample.frameWidth <= 0
+  );
+  expect(failedSample, context).toBeUndefined();
+}
+
 test("global workspace create shortcut is ignored when a settings input is focused", async () => {
   const launched = await launchKmux("kmux-e2e-settings-shortcut-");
 
@@ -1184,6 +1239,63 @@ test("terminal viewport background matches the pane background without a black b
 
     expect(colors).toBeTruthy();
     expect(colors?.viewportBackground).toBe(colors?.frameBackground);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("right sidebar toggles keep streaming terminal output visible during resize", async () => {
+  const launched = await launchKmux("kmux-e2e-terminal-sidebar-continuity-");
+
+  try {
+    const page = launched.page;
+    await page.setViewportSize({ width: 1280, height: 820 });
+
+    const initial = await getView(page);
+    const activePaneId = initial.activeWorkspace.activePaneId;
+    const activeSurfaceId =
+      initial.activeWorkspace.panes[activePaneId].activeSurfaceId;
+    const marker = "KMUX_STREAM_CONTINUITY_MARKER";
+    const streamCommand = [
+      "python3 - <<'PY'",
+      "import sys, time",
+      `marker = '${marker}'`,
+      "print(marker, flush=True)",
+      "for index in range(80):",
+      "    print(f'{marker}_{index:02d}', flush=True)",
+      "    time.sleep(0.05)",
+      "PY"
+    ].join("\r");
+
+    await page.evaluate(
+      ({ targetSurfaceId, text }) => window.kmux.sendText(targetSurfaceId, text),
+      {
+        targetSurfaceId: activeSurfaceId,
+        text: `${streamCommand}\r`
+      }
+    );
+
+    const terminalRows = page.locator(
+      `[data-testid="terminal-${activeSurfaceId}"] .xterm-rows`
+    );
+    await expect(terminalRows).toContainText(marker);
+
+    for (let index = 0; index < 6; index += 1) {
+      await page.getByRole("button", { name: "Toggle usage dashboard" }).click();
+      await expectTerminalContinuitySamples(
+        page,
+        activeSurfaceId,
+        marker,
+        `terminal should stay visible while right sidebar toggles, sample group ${index}`
+      );
+    }
+
+    const snapshot = await getSurfaceSnapshot(page, activeSurfaceId, {
+      settleForMs: 200,
+      timeoutMs: 3000
+    });
+    expect(snapshot?.vt).toContain(marker);
+    await expect(terminalRows).toContainText(marker);
   } finally {
     await closeKmux(launched);
   }

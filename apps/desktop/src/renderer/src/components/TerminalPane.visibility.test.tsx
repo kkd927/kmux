@@ -7,22 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 
-const mocks = vi.hoisted(() => {
-  const redrawController = {
-    start: vi.fn(),
-    touch: vi.fn(),
-    revealNow: vi.fn(),
-    revealAllNow: vi.fn()
-  };
-  return {
-    redrawController
-  };
-});
-
-vi.mock("../terminalRedrawConcealment", () => ({
-  createTerminalRedrawConcealment: vi.fn(() => mocks.redrawController)
-}));
-
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn(() => ({
     proposeDimensions: () => ({ cols: 120, rows: 40 })
@@ -255,18 +239,6 @@ describe("TerminalPane visibility cleanup", () => {
     });
     terminalInstanceStore.releaseAll();
     container.remove();
-  });
-
-  it("reveals resize-redraw concealment when cleaning up a surface attachment", async () => {
-    await act(async () => {
-      root.render(<TerminalPane {...createProps("surface_1")} />);
-    });
-
-    await act(async () => {
-      root.render(<TerminalPane {...createProps("surface_2")} />);
-    });
-
-    expect(mocks.redrawController.revealNow).toHaveBeenCalledWith("surface_1");
   });
 
   it("shows shell startup status until the active surface accepts input", async () => {

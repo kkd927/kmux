@@ -502,9 +502,7 @@
 }
 
 .terminalViewport[data-terminal-replay-hidden],
-.terminalViewport[data-terminal-resize-redraw-hidden="true"],
-.terminalViewport :global([data-terminal-replay-hidden]),
-.terminalViewport :global([data-terminal-resize-redraw-hidden="true"]) {
+.terminalViewport :global([data-terminal-replay-hidden]) {
   visibility: hidden;
 }
 
