@@ -11,6 +11,7 @@ export default [
       "**/coverage/**",
       "**/playwright-report/**",
       "**/test-results/**",
+      ".kmux/**",
       "apps/desktop/out/**",
       "apps/desktop/dist/**"
     ]
@@ -22,6 +23,7 @@ export default [
     languageOptions: {
       globals: {
         console: "readonly",
+        fetch: "readonly",
         process: "readonly"
       }
     }

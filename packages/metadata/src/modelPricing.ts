@@ -37,12 +37,36 @@ export type UsageComponentCostEstimate = {
 const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   claude: [
     {
+      modelId: "claude-opus-4-8",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.000025,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      aliases: ["claude-opus-4.8"]
+    },
+    {
+      modelId: "claude-opus-4-7",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.000025,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      aliases: ["claude-opus-4.7"]
+    },
+    {
       modelId: "claude-sonnet-4-6",
       inputCostPerToken: 0.000003,
       outputCostPerToken: 0.000015,
       cacheReadCostPerToken: 0.0000003,
       cacheCreateCostPerToken: 0.00000375,
       aliases: ["claude-sonnet-4.6"]
+    },
+    {
+      modelId: "claude-opus-4-6",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.000025,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      aliases: ["claude-opus-4.6"]
     },
     {
       modelId: "claude-sonnet-4-5",
@@ -54,23 +78,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerTokenAboveThreshold: 0.0000225,
       cacheReadCostPerTokenAboveThreshold: 0.0000006,
       cacheCreateCostPerTokenAboveThreshold: 0.0000075,
-      aliases: ["claude-sonnet-4", "claude-sonnet-4.5", "claude-sonnet-4-20250514"]
-    },
-    {
-      modelId: "claude-opus-4-7",
-      inputCostPerToken: 0.000005,
-      outputCostPerToken: 0.000025,
-      cacheReadCostPerToken: 0.0000005,
-      cacheCreateCostPerToken: 0.00000625,
-      aliases: ["claude-opus-4.7"]
-    },
-    {
-      modelId: "claude-opus-4-6",
-      inputCostPerToken: 0.000005,
-      outputCostPerToken: 0.000025,
-      cacheReadCostPerToken: 0.0000005,
-      cacheCreateCostPerToken: 0.00000625,
-      aliases: ["claude-opus-4.6"]
+      aliases: ["claude-sonnet-4.5", "claude-sonnet-4-20250514"]
     },
     {
       modelId: "claude-opus-4-5",
@@ -78,15 +86,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerToken: 0.000025,
       cacheReadCostPerToken: 0.0000005,
       cacheCreateCostPerToken: 0.00000625,
-      aliases: ["claude-opus-4-5-20251101"]
-    },
-    {
-      modelId: "claude-opus-4-1",
-      inputCostPerToken: 0.000015,
-      outputCostPerToken: 0.000075,
-      cacheReadCostPerToken: 0.0000015,
-      cacheCreateCostPerToken: 0.00001875,
-      aliases: ["claude-opus-4-1-20250805", "claude-opus-4-20250514"]
+      aliases: ["claude-opus-4.5", "claude-opus-4-5-20251101"]
     },
     {
       modelId: "claude-haiku-4-5",
@@ -95,6 +95,46 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       cacheReadCostPerToken: 0.0000001,
       cacheCreateCostPerToken: 0.00000125,
       aliases: ["claude-haiku-4.5"]
+    },
+    {
+      modelId: "claude-opus-4-1",
+      inputCostPerToken: 0.000015,
+      outputCostPerToken: 0.000075,
+      cacheReadCostPerToken: 0.0000015,
+      cacheCreateCostPerToken: 0.00001875,
+      aliases: [
+        "claude-opus-4.1",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-20250514"
+      ]
+    },
+    {
+      modelId: "claude-sonnet-4",
+      inputCostPerToken: 0.000003,
+      outputCostPerToken: 0.000015,
+      cacheReadCostPerToken: 0.0000003,
+      cacheCreateCostPerToken: 0.00000375,
+      inputCostPerTokenAboveThreshold: 0.000006,
+      outputCostPerTokenAboveThreshold: 0.0000225,
+      cacheReadCostPerTokenAboveThreshold: 0.0000006,
+      cacheCreateCostPerTokenAboveThreshold: 0.0000075,
+      aliases: ["claude-sonnet-4"]
+    },
+    {
+      modelId: "claude-opus-4",
+      inputCostPerToken: 0.000015,
+      outputCostPerToken: 0.000075,
+      cacheReadCostPerToken: 0.0000015,
+      cacheCreateCostPerToken: 0.00001875,
+      aliases: ["claude-opus-4"]
+    },
+    {
+      modelId: "claude-haiku-3-5",
+      inputCostPerToken: 0.0000008,
+      outputCostPerToken: 0.000004,
+      cacheReadCostPerToken: 0.00000008,
+      cacheCreateCostPerToken: 0.000001,
+      aliases: ["claude-haiku-3.5"]
     }
   ],
   codex: [
@@ -140,6 +180,30 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       inputCostPerToken: 0.00000175,
       outputCostPerToken: 0.000014,
       cacheReadCostPerToken: 0.000000175
+    },
+    {
+      modelId: "gpt-5.2-codex",
+      inputCostPerToken: 0.00000175,
+      outputCostPerToken: 0.000014,
+      cacheReadCostPerToken: 0.000000175
+    },
+    {
+      modelId: "gpt-5.1-codex-max",
+      inputCostPerToken: 0.00000125,
+      outputCostPerToken: 0.00001,
+      cacheReadCostPerToken: 0.000000125
+    },
+    {
+      modelId: "gpt-5.1-codex",
+      inputCostPerToken: 0.00000125,
+      outputCostPerToken: 0.00001,
+      cacheReadCostPerToken: 0.000000125
+    },
+    {
+      modelId: "gpt-5.1-codex-mini",
+      inputCostPerToken: 0.00000025,
+      outputCostPerToken: 0.000002,
+      cacheReadCostPerToken: 0.000000025
     }
   ],
   gemini: [
@@ -164,19 +228,27 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       cacheReadCostPerToken: 0.0000002,
       inputCostPerTokenAboveThreshold: 0.000004,
       outputCostPerTokenAboveThreshold: 0.000018,
+      cacheReadCostPerTokenAboveThreshold: 0.0000004,
+      cacheCreateCostPerTokenAboveThreshold: 0.0000004,
       aliases: ["gemini-3-pro-preview"]
-    },
-    {
-      modelId: "gemini-3-flash-preview",
-      inputCostPerToken: 0.0000005,
-      outputCostPerToken: 0.000003,
-      cacheReadCostPerToken: 0.00000005
     },
     {
       modelId: "gemini-3.1-flash-lite-preview",
       inputCostPerToken: 0.00000025,
       outputCostPerToken: 0.0000015,
       cacheReadCostPerToken: 0.000000025
+    },
+    {
+      modelId: "gemini-3.1-flash-lite",
+      inputCostPerToken: 0.00000025,
+      outputCostPerToken: 0.0000015,
+      cacheReadCostPerToken: 0.000000025
+    },
+    {
+      modelId: "gemini-3-flash-preview",
+      inputCostPerToken: 0.0000005,
+      outputCostPerToken: 0.000003,
+      cacheReadCostPerToken: 0.00000005
     },
     {
       modelId: "gemini-2.5-pro",
@@ -195,16 +267,10 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       ]
     },
     {
-      modelId: "gemini-2.5-flash",
-      inputCostPerToken: 0.0000003,
-      outputCostPerToken: 0.0000025,
-      cacheReadCostPerToken: 0.00000003,
-      aliases: [
-        "gemini/gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.5-flash-preview-04-17",
-        "gemini-2.5-flash-preview-09-2025"
-      ]
+      modelId: "gemini-2.5-flash-lite-preview",
+      inputCostPerToken: 0.0000001,
+      outputCostPerToken: 0.0000004,
+      cacheReadCostPerToken: 0.00000001
     },
     {
       modelId: "gemini-2.5-flash-lite",
@@ -218,10 +284,28 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       ]
     },
     {
-      modelId: "gemini-2.0-flash",
+      modelId: "gemini-2.5-flash",
+      inputCostPerToken: 0.0000003,
+      outputCostPerToken: 0.0000025,
+      cacheReadCostPerToken: 0.00000003,
+      aliases: [
+        "gemini/gemini-2.5-flash",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.5-flash-preview-09-2025"
+      ]
+    },
+    {
+      modelId: "gemini-2.0-flash-lite",
       inputCostPerToken: 0.000000075,
       outputCostPerToken: 0.0000003,
       cacheReadCostPerToken: 0
+    },
+    {
+      modelId: "gemini-2.0-flash",
+      inputCostPerToken: 0.0000001,
+      outputCostPerToken: 0.0000004,
+      cacheReadCostPerToken: 0.000000025
     }
   ]
 };
@@ -281,11 +365,15 @@ const FORWARD_COMPAT_ENTRIES = Object.fromEntries(
     vendor,
     MODEL_PRICING[vendor]
       .map((entry) => {
-        const spec = parseForwardCompatSpec(vendor, normalizeModelLookupKey(entry.modelId));
+        const spec = parseForwardCompatSpec(
+          vendor,
+          normalizeModelLookupKey(entry.modelId)
+        );
         return spec ? { entry, spec } : null;
       })
       .filter(
-        (value): value is { entry: PricingEntry; spec: ForwardCompatSpec } => value !== null
+        (value): value is { entry: PricingEntry; spec: ForwardCompatSpec } =>
+          value !== null
       )
   ])
 ) as Record<
@@ -493,7 +581,9 @@ function resolveForwardCompatPricingEntry(
 ): PricingEntry | undefined {
   if (requestedSpec.kind === "codex") {
     const matches = FORWARD_COMPAT_ENTRIES.codex.filter(
-      (candidate): candidate is { entry: PricingEntry; spec: CodexForwardCompatSpec } =>
+      (
+        candidate
+      ): candidate is { entry: PricingEntry; spec: CodexForwardCompatSpec } =>
         candidate.spec.kind === "codex" &&
         candidate.spec.tier === requestedSpec.tier &&
         candidate.spec.major === requestedSpec.major &&
@@ -504,7 +594,9 @@ function resolveForwardCompatPricingEntry(
 
   if (requestedSpec.kind === "claude") {
     const matches = FORWARD_COMPAT_ENTRIES.claude.filter(
-      (candidate): candidate is { entry: PricingEntry; spec: ClaudeForwardCompatSpec } =>
+      (
+        candidate
+      ): candidate is { entry: PricingEntry; spec: ClaudeForwardCompatSpec } =>
         candidate.spec.kind === "claude" &&
         candidate.spec.line === requestedSpec.line &&
         candidate.spec.major === requestedSpec.major &&
@@ -515,7 +607,9 @@ function resolveForwardCompatPricingEntry(
 
   const matches = FORWARD_COMPAT_ENTRIES.gemini
     .filter(
-      (candidate): candidate is { entry: PricingEntry; spec: GeminiForwardCompatSpec } =>
+      (
+        candidate
+      ): candidate is { entry: PricingEntry; spec: GeminiForwardCompatSpec } =>
         candidate.spec.kind === "gemini" &&
         candidate.spec.tier === requestedSpec.tier &&
         compareVersion(candidate.spec, requestedSpec) <= 0
@@ -525,17 +619,20 @@ function resolveForwardCompatPricingEntry(
       if (versionDiff !== 0) {
         return versionDiff;
       }
-      return Number(right.spec.preview === requestedSpec.preview) -
-        Number(left.spec.preview === requestedSpec.preview);
+      return (
+        Number(right.spec.preview === requestedSpec.preview) -
+        Number(left.spec.preview === requestedSpec.preview)
+      );
     });
   return matches[0]?.entry;
 }
 
 function pickHighestVersionEntry<
   TSpec extends { major: number; minor: number }
->(matches: Array<{ entry: PricingEntry; spec: TSpec }>): PricingEntry | undefined {
-  return matches
-    .sort((left, right) => compareVersion(right.spec, left.spec))[0]
+>(
+  matches: Array<{ entry: PricingEntry; spec: TSpec }>
+): PricingEntry | undefined {
+  return matches.sort((left, right) => compareVersion(right.spec, left.spec))[0]
     ?.entry;
 }
 
@@ -562,8 +659,9 @@ function parseForwardCompatSpec(
 function parseCodexForwardCompatSpec(
   normalizedKey: string
 ): CodexForwardCompatSpec | null {
-  const match =
-    /^gpt-(\d+)\.(\d+)(?:-(codex-spark|mini|pro|codex))?$/u.exec(normalizedKey);
+  const match = /^gpt-(\d+)\.(\d+)(?:-(codex-spark|mini|pro|codex))?$/u.exec(
+    normalizedKey
+  );
   if (!match) {
     return null;
   }
@@ -586,8 +684,9 @@ function parseCodexForwardCompatSpec(
 function parseClaudeForwardCompatSpec(
   normalizedKey: string
 ): ClaudeForwardCompatSpec | null {
-  const match =
-    /^claude-(sonnet|opus|haiku)-(\d+)(?:[.-](\d+))?$/u.exec(normalizedKey);
+  const match = /^claude-(sonnet|opus|haiku)-(\d+)(?:[.-](\d+))?$/u.exec(
+    normalizedKey
+  );
   if (!match) {
     return null;
   }
