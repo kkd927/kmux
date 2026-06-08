@@ -39,6 +39,8 @@
     "smoke:packaged:mac": "node scripts/smoke-packaged-mac.mjs",
     "release:check:mac": "npm run package:mac && npm run smoke:packaged:mac",
     "capture:scene": "npm run build && node scripts/capture-reference-scene.mjs",
+    "update:model-pricing": "node scripts/update-model-pricing.mjs",
+    "check:model-pricing": "node scripts/update-model-pricing.mjs --check",
     "format": "prettier --write ."
   },
   "devDependencies": {

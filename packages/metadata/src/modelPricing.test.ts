@@ -73,6 +73,33 @@ describe("model pricing", () => {
     );
   });
 
+  it.each(["claude-sonnet-4", "claude-sonnet-4-5"])(
+    "applies Claude Sonnet 4 long-context pricing for %s",
+    (model) => {
+      const estimate = estimateUsageComponentCosts({
+        vendor: "claude",
+        model,
+        inputTokens: 210_000,
+        outputTokens: 1_000,
+        thinkingTokens: 500,
+        cacheReadTokens: 1_000,
+        cacheWriteTokens: 100,
+        cacheWriteTokensKnown: true
+      });
+
+      expect(estimate).toEqual(
+        expect.objectContaining({
+          modelId: model,
+          inputCostUsd: expect.closeTo(1.26, 8),
+          outputCostUsd: expect.closeTo(0.0225, 8),
+          thinkingCostUsd: expect.closeTo(0.01125, 8),
+          cacheReadCostUsd: expect.closeTo(0.0006, 8),
+          cacheWriteCostUsd: expect.closeTo(0.00075, 8)
+        })
+      );
+    }
+  );
+
   it("does not cross Codex major versions when no same-major fallback exists", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "codex",
@@ -106,6 +133,29 @@ describe("model pricing", () => {
         outputCostUsd: expect.closeTo(0.003, 8),
         thinkingCostUsd: expect.closeTo(0.0006, 8),
         cacheReadCostUsd: expect.closeTo(0.00008, 8)
+      })
+    );
+  });
+
+  it("maps legacy Gemini 3 Pro preview labels to Gemini 3.1 Pro Preview pricing", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "gemini",
+      model: "gemini-3-pro-preview",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      thinkingTokens: 50,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gemini-3.1-pro-preview",
+        inputCostUsd: expect.closeTo(0.002, 8),
+        outputCostUsd: expect.closeTo(0.0012, 8),
+        thinkingCostUsd: expect.closeTo(0.0006, 8),
+        cacheReadCostUsd: expect.closeTo(0.00002, 8)
       })
     );
   });
