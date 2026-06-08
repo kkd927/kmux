@@ -10,6 +10,17 @@ kmux should support Linux desktop environments while preserving the current macO
 
 The first supported Linux target is GUI desktop Linux, not headless Linux. Ubuntu Desktop LTS is the baseline validation target. Fedora Workstation and other desktop distributions can be treated as follow-up validation targets.
 
+## Decision Summary
+
+- Linux initial target is packaged GUI desktop Linux, validated first on Ubuntu Desktop LTS.
+- macOS behavior remains compatibility-preserving during the platform refactor.
+- POSIX socket wire/env remains `KMUX_SOCKET_PATH` for the macOS/Linux phase.
+- Platform behavior is composed in main, while renderer and pty-host receive only serializable policies and descriptors.
+- pty-host protocol becomes desktop-owned; `packages/core` emits desktop-neutral spawn effects.
+- Linux paths use XDG roots, with safe `/run/user/${uid}` and private `tmpdir()` fallbacks for runtime sockets.
+- Subscription usage is required for providers with verified Linux credential sources; unverified provider quotas can show normal unavailable states.
+- Linux stable publishing stays gated until packaged AppImage, updater, notification identity, hook, shell, socket, and output-continuity checks pass.
+
 ## Goals
 
 - Keep macOS behavior stable.
@@ -40,12 +51,24 @@ Linux support is a feature-complete desktop target for kmux's main workflows. A 
 | Terminal restore, split panes, surface switching, and output continuity | Required |
 | Codex, Claude, Gemini, and Antigravity hook notifications | Required |
 | External agent session discovery and resume | Required |
-| Usage history and subscription usage | Required |
+| Usage history and verified subscription usage providers | Required |
 | Desktop notifications and app identity | Required |
 | Linux packaged updater | Required |
 | Windows named pipe, shell, hook, and updater behavior | Out of scope for this phase |
 
 In this document, "Linux initial release" means the public stable packaged Linux release. Internal/dev Linux builds may exist earlier with known gaps for spike work, but those gaps must not be described as acceptable stable-release behavior. The stable release gate is the baseline table above.
+
+Subscription usage is required for providers whose Linux credential source has been verified during the Linux spike. If a vendor does not expose a stable Linux credential source, that provider's subscription quota can show the normal disconnected/unavailable state while terminal sessions, hooks, local usage history, external session discovery, and restore workflows remain release requirements.
+
+Linux dev and internal packaged builds may be produced before the stable gate passes. Public stable Linux publishing remains disabled until the stable release candidate milestone passes.
+
+The macOS compatibility baseline for this refactor is:
+
+- existing macOS config/runtime path defaults remain unchanged.
+- existing `KMUX_SOCKET_PATH` wire/env behavior remains unchanged.
+- existing macOS shell env and login-shell behavior remain unchanged unless covered by an explicit compatibility-reviewed change.
+- existing macOS hook installation, notification, and Codex wrapper behavior remain unchanged.
+- existing macOS terminal restore, split pane, surface switching, and output continuity checks remain valid.
 
 ## Implementation Milestones
 
@@ -120,10 +143,12 @@ Cross-package helpers used by both `packages/cli` and desktop should live in `@k
 Recommended decision for this phase:
 
 - Extend `@kmux/persistence.defaultAppPaths()` instead of creating a new app-local path service. It already owns config/runtime defaults and should grow Linux XDG state/data/cache paths plus the shared POSIX socket default used by CLI and desktop.
-- Treat pty-host IPC as desktop-internal protocol. Move pty-host request/event types and `ShellLaunchPolicy` toward `apps/desktop/src/shared/ptyProtocol.ts`, while letting `packages/core` emit a desktop-neutral session spawn effect that main maps into a pty-host spawn request. If that migration is too large for the first refactor, the fallback is to promote `ShellLaunchPolicy` into `@kmux/proto` with an explicit note that it is a serialized pty-host contract.
+- Treat pty-host IPC as desktop-internal protocol. Move pty-host request/event types and `ShellLaunchPolicy` toward `apps/desktop/src/shared/ptyProtocol.ts`, while letting `packages/core` emit a desktop-neutral session spawn effect that main maps into a pty-host spawn request.
 - Keep shortcut policy tied to the existing `@kmux/ui` shortcut catalog. New `ShortcutCommandId` and `KeyChord` types are part of the policy work; they are not pre-existing proto contracts.
 
-The pty protocol migration should be explicit because current ownership is split: `PtySessionSpec`, `PtyRequest`, and `PtyEvent` live in `@kmux/proto`, while `packages/core` currently constructs `PtySessionSpec` directly. The final architecture should move pty-host-specific requests/events to a desktop-owned protocol, but the first refactor can keep them in `@kmux/proto` if that preserves reviewability. In either path, the desired boundary is the same: core emits a desktop-neutral session spawn effect, main composes shell/path/runtime policy, and only then maps the effect into pty-host IPC.
+The pty protocol migration is an intentional architecture milestone, not an incidental Linux patch. Current ownership is split: `PtySessionSpec`, `PtyRequest`, and `PtyEvent` live in `@kmux/proto`, while `packages/core` currently constructs `PtySessionSpec` directly. The desired boundary is: core emits a desktop-neutral session spawn effect, main composes shell/path/runtime policy, and only then maps the effect into desktop-owned pty-host IPC.
+
+Because this is a broad boundary change, it should be reviewed as its own behavior-preserving step with compatibility adapters where useful. The migration should first add characterization tests for the current spawn/resize/input/snapshot/notification protocol, then move the protocol types, then update core/main mapping, and only then remove the old direct construction path. Linux enablement can depend on the new boundary once those tests prove macOS behavior is unchanged.
 
 Windows does not need a full adapter file in this phase. The main composition root should reject unsupported platforms with a clear message. Shared contracts can reserve Windows-oriented shapes, such as named pipe IPC, but Linux should not pay the env/wire migration cost before Windows can validate it.
 
@@ -238,7 +263,7 @@ Path rules:
 - macOS keeps the current config default, `$HOME/.config/kmux`, to preserve behavior.
 - Linux uses `$XDG_CONFIG_HOME/kmux` when `XDG_CONFIG_HOME` is set, otherwise `$HOME/.config/kmux`.
 - macOS keeps the current runtime default, `$HOME/.kmux`, to preserve behavior until a separate macOS migration is chosen.
-- Linux uses `$XDG_RUNTIME_DIR/kmux` when `XDG_RUNTIME_DIR` is set, otherwise a deterministic private fallback.
+- Linux uses `$XDG_RUNTIME_DIR/kmux` when `XDG_RUNTIME_DIR` is set, otherwise an existing safe `/run/user/${uid}/kmux` runtime root when available, otherwise a deterministic private fallback under `tmpdir()`.
 - Runtime directories that contain sockets must be created with `0700` permissions where the filesystem honors POSIX modes.
 - Sockets must live in runtime storage, not config/state/data storage.
 - Capture, attachment, shell-env cache, snapshots, usage history, native module extraction cache, and other non-socket data must not be placed under Linux `XDG_RUNTIME_DIR`.
@@ -271,9 +296,11 @@ Platform path resolver algorithm:
 2. Keep resolution side-effect-free. `resolveAppPaths()` should calculate paths only. It must not create directories, chmod paths, delete stale sockets, or probe live sockets. CLI commands should call only this pure resolver.
 3. Perform filesystem mutation in desktop main/server code. `ensureRuntimeSocketDir()` should create and validate runtime socket directories with `0700`; `ensureAppStorageDirs()` should create state/data/cache roots as needed; socket stale-file handling belongs to socket startup.
 4. Resolve explicit env overrides first. `KMUX_CONFIG_DIR`, `KMUX_RUNTIME_DIR`, `KMUX_STATE_DIR`, `KMUX_DATA_DIR`, and `KMUX_CACHE_DIR` are authoritative for their own scopes. If an explicit runtime dir cannot be created, is not a directory, cannot be made private, or produces an overlong socket path, desktop startup fails with a specific error. Explicit runtime dirs must not silently fall back to another directory.
-5. Resolve Linux runtime defaults. If `XDG_RUNTIME_DIR` is set, use `$XDG_RUNTIME_DIR/kmux`. If it is absent, choose a deterministic private fallback under `tmpdir()`, such as `kmux-${uid}` when a numeric uid is available or `kmux-${hash(homeDir)}` otherwise.
+5. Resolve Linux runtime defaults. If `XDG_RUNTIME_DIR` is set, use `$XDG_RUNTIME_DIR/kmux`. If it is absent and `/run/user/${uid}` exists with safe ownership and permissions, use `/run/user/${uid}/kmux`. If neither is available, choose a deterministic private fallback under `tmpdir()`, such as `kmux-runtime-${uid}` when a numeric uid is available or `kmux-runtime-${hash(homeDir)}` otherwise.
 6. Resolve the default socket as `control.sock` inside the runtime root. If the default, non-explicit path exceeds the supported Unix socket path length, choose a deterministic shorter socket path, such as a hashed private directory under `tmpdir()` plus a short socket filename. Do not apply this fallback to explicit `KMUX_RUNTIME_DIR`.
-7. Return both the resolved root paths and the final socket path so tests can assert desktop/CLI equality, directory permissions, and path-length behavior.
+7. Return both the resolved root paths and the final socket path so tests can assert desktop/CLI equality, runtime root selection, and path-length behavior.
+
+Any Linux runtime fallback outside `XDG_RUNTIME_DIR` must be validated before socket creation. Use `lstat`-style checks rather than following symlinks. The directory must be an actual directory, must not be a symlink, must be owned by the current uid where uid ownership is available, and must have `0700` permissions where POSIX modes are honored. An unsafe explicit `KMUX_RUNTIME_DIR` is a startup error. An unsafe default fallback should either be repaired safely or replaced by a deterministic shorter private fallback; if neither is possible, startup should fail with a specific runtime directory error.
 
 IPC migration policy:
 
@@ -284,12 +311,14 @@ IPC migration policy:
 
 Unix socket paths need a length guard. If a computed default socket path is too long for common `sun_path` limits, the platform path resolver should choose a deterministic shorter runtime socket path, preferably under `$XDG_RUNTIME_DIR` on Linux or a hashed directory under `tmpdir()` when no safe runtime root exists. If an explicit `KMUX_RUNTIME_DIR` produces a too-long socket path, startup should fail with a specific error instead of silently using a different directory.
 
-Socket robustness is a platform-neutral bug fix, not a Linux-only feature. Two mechanisms are required and they solve different problems:
+Socket robustness is a platform-neutral bug fix, not a Linux-only feature. Two mechanisms are useful, but they solve different problems and must not be treated as the same lock:
 
-- `app.requestSingleInstanceLock()` prevents two GUI instances from racing for the same runtime and can hand the second launch to the first instance.
+- `app.requestSingleInstanceLock()` can prevent duplicate launches for the default packaged app identity and can hand the second launch to the first instance.
 - connect-first socket startup handles stale socket files after crashes. The server should first try to connect to the existing endpoint. If a live kmux instance responds, startup should stop or hand focus to the existing instance. Only `ENOENT`, `ECONNREFUSED`, or equivalent stale-socket cases should allow unlink and listen.
 
-The instance lock must respect resolved runtime identity. Dev/test profiles and explicit `KMUX_CONFIG_DIR`/`KMUX_RUNTIME_DIR` overrides are valid ways to run isolated kmux instances side by side. Do not use a single app-id-wide lock that prevents an isolated dev profile from running next to a packaged app. Use lock additional data, a runtime-id derived from resolved config/runtime roots, or a dev/test bypass so lock behavior and connect-first socket behavior agree.
+Socket ownership is the final authority for resolved runtime identity. Dev/test profiles and explicit `KMUX_CONFIG_DIR`/`KMUX_RUNTIME_DIR` overrides are valid ways to run isolated kmux instances side by side. Electron's single-instance lock is app-identity-scoped, not a runtime-directory-scoped mutex, so do not rely on `additionalData` to create per-runtime locks. Either use the Electron lock only for the default packaged runtime, bypass it for explicit dev/test/profile-isolated runtimes, or release/avoid it before socket ownership is resolved. In every case, connect-first socket behavior decides whether the resolved runtime is already owned by a live kmux instance.
+
+The POSIX socket is a local control surface for kmux. The initial Linux protection model is a private, user-owned runtime directory plus connect-first live-owner probing. The app must not listen on a socket inside a shared, symlinked, wrong-owner, or overly permissive runtime directory. Peer credential checks such as `SO_PEERCRED` can be evaluated later, but the initial Linux release must at minimum prevent socket creation in attacker-controlled filesystem locations.
 
 ### Shell and PTY
 
@@ -387,13 +416,13 @@ macOS can use Keychain through `security find-generic-password` and keep existin
 
 Credential service behavior:
 
-- Codex, Claude, Gemini, and Antigravity subscription usage are required Linux workflows.
+- Codex, Claude, Gemini, and Antigravity subscription usage are required Linux workflows once their Linux credential source has been verified.
 - All macOS `security` calls must be gated to `platform === "darwin"` so Linux does not spawn failing subprocesses.
 - Claude should try verified Linux file fallback such as `~/.claude/.credentials.json` when that remains the Linux credential source. The current file fallback makes Claude lower risk than providers with no non-Keychain path, but the macOS `security` call should still be skipped on Linux.
-- Antigravity is the highest credential risk in this phase because the current reader is Keychain-only and may depend on platform-specific Google/Antigravity credential storage. Verify whether Linux stores credentials in files, keyring, browser-backed session state, CLI-readable state, or another location before release. The existing `go-keyring-base64` parsing path is a hint to verify the actual Linux keyring backend, not proof that libsecret should be implemented speculatively.
-- Missing user credentials should show a normal disconnected/unavailable subscription state and must not break terminal/session features. A missing Linux provider for an authenticated supported agent is a release blocker.
+- Antigravity is the highest credential risk in this phase because the current reader is Keychain-only and may depend on platform-specific Google/Antigravity credential storage. Verify whether Linux stores credentials in files, keyring, browser-backed session state, CLI-readable state, or another location before declaring Antigravity subscription usage release-ready. The existing `go-keyring-base64` parsing path is a hint to verify the actual Linux keyring backend, not proof that libsecret should be implemented speculatively.
+- Missing user credentials should show a normal disconnected/unavailable subscription state and must not break terminal/session features. A missing Linux credential provider for an otherwise authenticated vendor is a release blocker only after the Linux spike verifies that the vendor exposes a stable Linux credential source kmux can reasonably read or query.
 
-Because subscription usage is required, credential/storage verification belongs in the first Linux spike. The later implementation step can add the providers, but the spike must answer where each agent stores the data on Ubuntu Desktop and whether kmux can read or query it without macOS-only tools.
+Because subscription usage depends on authenticated credential access, credential/storage verification belongs in the first Linux spike. The later implementation step can add the providers, but the spike must answer where each agent stores the data on Ubuntu Desktop and whether kmux can read or query it without macOS-only tools. If Antigravity does not expose a stable Linux credential source, Antigravity subscription usage can remain unavailable while Antigravity hooks, local session discovery, transcript usage, terminal workflows, and notifications remain required where verified.
 
 ### Platform Subprocesses
 
@@ -403,6 +432,20 @@ Several current metadata and subscription paths use system commands whose behavi
 - Codex subscription PTY fallback uses `script`; util-linux and BSD/macOS `script` have different argument shapes, so the command builder must be platform-specific or replaced with another verified PTY strategy.
 - `ps` process table parsing is on a critical path for manual CLI usage attribution. Do not assume the current `ps -axo ... command=` shape is broken on Linux, but validate the accepted output format on Ubuntu Desktop and ensure failures do not break usage refresh.
 - `lsof` is often absent from minimal Linux desktop installs. Listening-port metadata should either use a Linux fallback such as `/proc`, mark only that optional port detail unavailable, or declare `lsof` as a package dependency. It must not break usage/session workflows.
+
+### Filesystem Watch and Resync
+
+Usage history, external session discovery, and agent metadata refresh must not depend on macOS-style recursive watch behavior. Linux `fs.watch` behavior varies by filesystem and inotify limits, and recursive watching may be unavailable or incomplete.
+
+Linux support should use a watch provider policy:
+
+- Prefer efficient file watching when the root exists and the platform supports it.
+- Treat watch setup failure, missing recursive support, inotify limit errors, and missed events as expected degradation, not fatal workflow errors.
+- Keep a low-frequency resync path that can discover new transcript/session files and replay appended usage even when no watch event arrives.
+- Use known-root watches, targeted non-recursive watches, or polling/resync fallbacks instead of assuming one recursive watch covers all vendor storage trees.
+- Surface persistent watch failures in diagnostics without breaking terminal sessions, local usage refresh, or external session indexing.
+
+The watch policy should be shared by usage and external-session workflows where practical. The important contract is freshness with eventual catch-up, not perfect realtime delivery from the filesystem watcher.
 
 ### Native Module Loading
 
@@ -546,13 +589,13 @@ Startup flow:
 1. main process creates a thin platform runtime and capability descriptors.
 2. startup exits with a clear unsupported message if no supported runtime exists for the current platform.
 3. paths and POSIX socket endpoint are resolved from platform path/IPC helpers.
-4. runtime identity is checked with `requestSingleInstanceLock()` and connect-first live socket probing before settings, hooks, or app-owned state are mutated.
+4. runtime identity is checked with connect-first live socket probing before settings, hooks, or app-owned state are mutated. `requestSingleInstanceLock()` may be used as a default packaged-app duplicate-launch helper only when it does not block explicit isolated runtimes.
 5. if another live instance owns the resolved runtime/socket, the second process exits or forwards focus/launch intent to the live instance.
 6. runtime socket directory and app storage directories are ensured only after this process is known to be the owner for the resolved runtime.
 7. shell environment is resolved using platform shell policy.
 8. agent hook helpers are installed independently of shell integration.
 9. agent hook commands and wrappers are installed using platform hook/wrapper builders, runtime path fallbacks, and `AgentStorageRoots`.
-10. socket server claims the POSIX socket after single-instance and stale-socket checks.
+10. socket server claims the POSIX socket after connect-first live-owner probing and stale-socket checks.
 11. pty-host receives only `ShellLaunchPolicy`, session specs, and env values, never service functions.
 12. renderer receives only `RendererPlatformDescriptor`, not the full platform runtime.
 
@@ -578,7 +621,7 @@ Terminal spawn flow:
 - Linux packaging failures should not affect macOS packaging.
 - Missing shell or failed shell env probe should fall back to sanitized inherited env, matching the current defensive behavior.
 - Missing agent CLIs should mark that vendor unavailable rather than failing indexing. Installed agent CLIs with verified Linux storage must be indexable.
-- Missing credentials should show a disconnected/unavailable subscription state, not break terminal behavior. Missing Linux credential providers for authenticated supported agents are release blockers.
+- Missing credentials should show a disconnected/unavailable subscription state, not break terminal behavior. Missing Linux credential providers for authenticated supported agents are release blockers only for providers whose Linux credential source has been verified as stable and accessible.
 - Socket startup should distinguish second live GUI instance, live socket owner, stale socket, bind failure, and explicit runtime path length failure.
 - Linux updater should report disabled only in dev/unpackaged builds or when update metadata is intentionally unavailable in tests. Packaged Linux release builds must support update checks.
 - Linux notification failures should be logged and reflected in app diagnostics without breaking in-app agent event records. Ubuntu Desktop notification delivery is a release requirement.
@@ -587,12 +630,13 @@ Terminal spawn flow:
 
 Unit tests:
 
-- centralized POSIX socket path resolver and `KMUX_SOCKET_PATH` default behavior, including Linux fallback root selection, explicit `KMUX_RUNTIME_DIR` failures, `0700` runtime dir creation, and path-length fallback.
-- pure path resolution is separated from desktop-only runtime directory creation, permission validation, stale socket handling, and storage directory creation.
+- centralized POSIX socket path resolver and `KMUX_SOCKET_PATH` default behavior, including Linux fallback root selection, safe `/run/user/${uid}` selection, explicit `KMUX_RUNTIME_DIR` failures, and path-length fallback.
+- pure path resolution is separated from desktop-only runtime directory creation, permission validation, stale socket handling, and storage directory creation. `resolveAppPaths()` tests assert calculated paths only; `ensureRuntimeSocketDir()` and startup/socket tests assert filesystem mutation and ownership behavior.
 - renderer display and full shortcut keyboard descriptor formatting, including coverage for every command in `DEFAULT_SHORTCUTS`.
 - Linux shortcut defaults and settings migration preserve user-edited shortcuts while replacing generated macOS defaults on Linux first-run/migration.
 - main runtime composition for macOS and Linux.
-- POSIX path defaults, including `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, explicit env overrides, and `0700` runtime dir creation.
+- POSIX path defaults, including `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, explicit env overrides, and `/run/user/${uid}` fallback selection.
+- runtime directory creation and validation, including `0700` permissions, ownership checks, symlink rejection, unsafe fallback repair/failure, and explicit `KMUX_RUNTIME_DIR` failure behavior.
 - runtime/state/data/cache separation so captures, attachments, and native caches do not live under Linux socket runtime dir.
 - Unix socket endpoint generation and length guard.
 - stale socket handling and live socket refusal.
@@ -618,6 +662,7 @@ Integration tests:
 - Codex wrapper is installed in the stable wrapper bin dir and reachable through pty launch PATH prepend even when shell rc integration is disabled.
 - agent storage roots are passed into usage adapters, external session indexing, hook/wrapper installers, and subscription usage readers.
 - Antigravity `history.jsonl`, `brain`, and `.system_generated/logs/transcript.jsonl` paths are covered through `AgentStorageRoots`.
+- usage and external-session refresh continue through low-frequency resync when Linux filesystem watches are unavailable, non-recursive, rate-limited, or miss events.
 - settings opener goes through platform-aware opener function.
 - credential loading uses Linux providers without invoking macOS `security`, and reports disconnected state when the user is not authenticated.
 - Codex subscription fallback uses a Linux-compatible PTY/status probe or a verified alternative instead of macOS-only `script` arguments.
@@ -651,6 +696,19 @@ E2E and smoke tests:
 - verify terminal font loading and xterm.js cell metrics.
 - preserve current terminal restore, split pane, surface switching, and output continuity regressions.
 
+Linux validation matrix:
+
+| Environment | Required checks |
+| --- | --- |
+| Ubuntu Desktop LTS, GUI launcher | window launch, shell PATH recovery, pty spawn, hook env, desktop notifications, app identity, terminal output continuity |
+| Ubuntu Desktop LTS, terminal launch | socket/CLI path equality, pty spawn, agent wrapper PATH, hook delivery, restore/split/switch flows |
+| Ubuntu Desktop LTS, packaged AppImage | native `node-pty` loading, AppImage sandbox/startup behavior, updater metadata/check, desktop integration, notification identity |
+| Ubuntu Desktop LTS, dev build | platform runtime composition, pty-host protocol migration checks, shared resolver behavior, macOS compatibility tests still green |
+| X11 session where available | native window frame, terminal resize/paint stability, keyboard shortcuts, notifications |
+| Wayland session where available | native window frame, compositor/GPU paint stability, keyboard shortcuts, notifications |
+
+CI may cover dev launch, unit/integration tests, and `xvfb` startup smoke. Local or VM desktop validation is still required for Wayland, compositor/GPU behavior, real notifications, desktop integration, and packaged AppImage updater behavior.
+
 Manual validation:
 
 - Ubuntu Desktop LTS.
@@ -664,7 +722,7 @@ Manual validation:
 - switch workspaces and surfaces.
 - restore session.
 - verify external sessions panel and resume for installed agents with known sessions.
-- verify usage history and subscription usage for authenticated agents.
+- verify usage history and subscription usage for authenticated agents whose Linux credential source has been verified.
 - verify CLI hook/socket communication.
 - verify desktop notifications and `.desktop` identity.
 - verify packaged updater behavior.
@@ -688,9 +746,9 @@ Manual validation:
 2. Platform-neutral socket robustness:
    - centralize pure CLI/desktop socket path resolution first, including `KMUX_RUNTIME_DIR` handling.
    - keep CLI resolution side-effect-free.
-   - add `app.requestSingleInstanceLock()`.
+   - add `app.requestSingleInstanceLock()` only as a default packaged-app duplicate-launch helper when it does not prevent explicit dev/test/profile-isolated runtimes.
    - change socket startup to connect-first before unlink.
-   - make locking respect resolved runtime identity so dev/test profiles and packaged builds can run side by side when their config/runtime roots differ.
+   - make connect-first socket ownership respect resolved runtime identity so dev/test profiles and packaged builds can run side by side when their config/runtime roots differ.
    - keep this as a macOS bug fix, not a Linux-only change.
 3. No-behavior-change macOS refactor:
    - add desktop-only serializable launch/display helpers under `apps/desktop/src/shared/platform`.
@@ -699,16 +757,21 @@ Manual validation:
    - keep existing macOS tests green.
    - add characterization tests around shell env, paths, hooks, opener, updater, socket behavior, and terminal output continuity.
 4. Move app paths into `@kmux/persistence` path helpers:
-   - add the Linux fallback runtime algorithm, explicit override failure behavior, `0700` creation, and socket path length guard.
+   - add the Linux fallback runtime algorithm, including `XDG_RUNTIME_DIR`, safe `/run/user/${uid}`, deterministic private `tmpdir()` fallback, explicit override failure behavior, runtime directory validation, and socket path length guard.
    - add Linux runtime/state/data/cache separation.
    - add `KMUX_STATE_DIR`, `KMUX_DATA_DIR`, or a broader `KMUX_PROFILE_DIR` decision for dev/test isolation.
    - expose `captureRoot`, `attachmentRoot`, `rawOutputRoot`, `nativeCacheRoot`, and `diagnosticsRoot` instead of deriving non-socket storage from socket dirname or runtime dir.
 5. Move shell defaults, shell probe policy, hook runtime env construction, documented env precedence, agent PATH prepend, and `ShellLaunchPolicy` into platform shell code.
-6. Update pty-host protocol so pty-host consumes serializable shell launch data instead of hard-coded platform fallbacks.
+6. Move the pty-host protocol boundary:
+   - add characterization tests for current spawn, resize, input, snapshot, raw output, and notification behavior.
+   - move pty-host request/event types and `ShellLaunchPolicy` toward `apps/desktop/src/shared/ptyProtocol.ts`.
+   - update `packages/core` to emit desktop-neutral session spawn effects instead of constructing pty-host-specific session specs.
+   - map core session effects to pty-host IPC in desktop main after shell/path/runtime policy is composed.
+   - ensure pty-host consumes serializable shell launch data instead of hard-coded platform fallbacks.
 7. Separate hook helper installation, agent wrapper installation, agent PATH injection, and OSC7/cwd shell rc integration.
 8. Add Antigravity-style runtime path fallback baking to Claude and Gemini hook builders.
 9. Introduce `AgentStorageRoots` and pass it into usage adapters, external session indexers, hook/wrapper installers, subscription usage, and agent metadata readers.
-10. Implement Linux credential providers for Codex, Claude, Gemini, and Antigravity subscription usage, with macOS `security` calls gated to darwin only.
+10. Implement Linux credential providers for Codex, Claude, Gemini, and Antigravity subscription usage where the Linux spike verifies a stable credential source, with macOS `security` calls gated to darwin only.
 11. Add settings opener functions where platform behavior is needed.
 12. Update renderer to consume `RendererPlatformDescriptor` through dedicated renderer IPC, including concrete keyboard policy, instead of userAgent sniffing or `identify()`.
 13. Add Linux shortcut defaults and settings migration so Linux first-run settings do not persist macOS `Meta+` defaults and existing user-edited shortcuts are preserved.
@@ -732,6 +795,7 @@ Manual validation:
 - Linux app can be built and launched on Ubuntu Desktop.
 - Linux can spawn a shell through `node-pty` in dev and packaged AppImage.
 - Linux shell env recovery finds user-installed agent CLIs from GUI-launched sessions.
+- pty-host-specific request/event contracts are desktop-owned, and `packages/core` emits desktop-neutral session spawn effects that main maps into pty-host IPC.
 - pty-host receives serializable shell launch policy and has no hard-coded `/bin/zsh` platform fallback.
 - pty-host final env follows documented `ShellLaunchPolicy` precedence and includes `KMUX_SOCKET_PATH`, `KMUX_AGENT_BIN_DIR`, and `KMUX_NODE_PATH` before spawning.
 - Linux terminal output remains stable through pane splitting, surface switching, restore, font loading, and foreground resize.
@@ -741,7 +805,7 @@ Manual validation:
 - Codex wrapper is installed outside shell rc wrapper dirs and can be found through agent PATH injection without requiring OSC7/cwd shell rc integration.
 - Antigravity hook fallback behavior works on Linux through verified runtime paths.
 - External session discovery and resume work on Linux for Codex, Claude, Gemini, and Antigravity verified storage roots.
-- Usage history and subscription usage work on Linux for Codex, Claude, Gemini, and Antigravity when the user is authenticated.
+- Usage history works on Linux, and subscription usage works for Codex, Claude, Gemini, and Antigravity when the user is authenticated and the provider's Linux credential source has been verified.
 - Linux credential providers do not invoke macOS `security` and expose normal disconnected states when the user is unauthenticated.
 - Linux subscription/metadata subprocesses use verified Linux-compatible commands or fallbacks for `script`, `lsof`, and `ps`.
 - Linux packaged updater can check, download, and install an update through `electron-updater` using Linux release metadata.
@@ -753,7 +817,7 @@ Manual validation:
 - Capture/attachment/state/cache data does not live under Linux `XDG_RUNTIME_DIR`.
 - Capture, attachment, raw pty output, diagnostics, and native extraction roots come from `PlatformPathService`, not from `dirname(socketPath)` or pty-host `KMUX_RUNTIME_DIR` inference.
 - Socket startup does not steal a live socket from another kmux instance.
-- Single-instance behavior respects resolved runtime identity so isolated dev/test profiles can run next to packaged builds.
+- Socket ownership respects resolved runtime identity so isolated dev/test profiles can run next to packaged builds; Electron single-instance behavior, if enabled, does not block explicit isolated runtimes.
 - Renderer platform behavior and shortcut behavior do not depend on `navigator.userAgent`.
 - Renderer platform behavior is delivered through dedicated renderer IPC and does not mutate the socket/CLI `ShellIdentity` contract.
 - Linux default shortcuts cover the full shortcut catalog and are intentionally chosen/tested against terminal input and GNOME defaults.
