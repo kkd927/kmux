@@ -48,6 +48,54 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("routes spawned shell input readiness into session.started", () => {
+    const state = createInitialState();
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+    const sessionId = Object.values(state.surfaces)[0].sessionId;
+
+    bridge.handlePtyEvent({
+      type: "spawned",
+      sessionId,
+      pid: 1234,
+      shellInputReady: false
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "session.started",
+      sessionId,
+      pid: 1234,
+      shellInputReady: false
+    });
+  });
+
+  it("routes shell.ready into session.shellReady", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "shell.ready",
+      surfaceId,
+      sessionId
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "session.shellReady",
+      sessionId
+    });
+  });
+
   it("coalesces frequent title metadata per surface", () => {
     vi.useFakeTimers();
     const state = createInitialState();

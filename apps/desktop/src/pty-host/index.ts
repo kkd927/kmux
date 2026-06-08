@@ -26,9 +26,16 @@ import {
 } from "./terminalNotifications";
 import { resolveOsc7Cwd } from "./osc7";
 import {
+  SHELL_READY_OSC,
   prepareShellIntegrationLaunch,
   shouldApplyShellIntegration
 } from "./shellIntegration";
+import {
+  armShellReadyFallback,
+  disposeShellReadyFallback,
+  isShellReadyOscPayload,
+  markShellInputReady
+} from "./shellInputReady";
 import {
   resolveDefaultShellArgs,
   shouldStripShellManagedEnv
@@ -90,6 +97,9 @@ interface SessionRecord {
   cols: number;
   rows: number;
   osc99State: Osc99NotificationState;
+  shellInputReady: boolean;
+  pendingInitialInput?: string;
+  shellReadyFallbackTimer: NodeJS.Timeout | null;
   lastActivityAt: number;
   pendingSettledSnapshots: Array<{
     requestId: Id;
@@ -435,6 +445,11 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cols: request.spec.cols,
     rows: request.spec.rows,
     osc99State: {},
+    shellInputReady: !preparedLaunch.requiresShellReady,
+    pendingInitialInput: preparedLaunch.requiresShellReady
+      ? request.spec.launch.initialInput
+      : undefined,
+    shellReadyFallbackTimer: null,
     lastActivityAt: Date.now(),
     pendingSettledSnapshots: [],
     settledSnapshotTimer: null
@@ -466,6 +481,30 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
         }
       });
     }
+    return true;
+  });
+  terminal.parser.registerOscHandler(SHELL_READY_OSC, (data: string) => {
+    if (!isShellReadyOscPayload(data)) {
+      return false;
+    }
+    logDiagnostics("pty-host.osc.shell-ready", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId
+    });
+    logRawTerminalEvent({
+      kind: "osc.shell-ready",
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      payloadLength: data.length
+    });
+    setTimeout(() => {
+      if (sessions.get(record.sessionId) !== record) {
+        return;
+      }
+      markShellInputReady(record, send, () =>
+        outputBatcher.flush(record.sessionId)
+      );
+    }, 0);
     return true;
   });
   terminal.onTitleChange((title: string) => {
@@ -607,6 +646,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     flushPtyProfileBucket(record);
     outputBatcher.flush(record.sessionId);
     disposeSettledSnapshotState(record);
+    disposeShellReadyFallback(record);
     send({
       type: "exit",
       payload: {
@@ -618,14 +658,19 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     sessions.delete(record.sessionId);
   });
 
-  if (request.spec.launch.initialInput) {
+  if (!preparedLaunch.requiresShellReady && request.spec.launch.initialInput) {
     ptyProcess.write(request.spec.launch.initialInput);
+  } else if (preparedLaunch.requiresShellReady) {
+    armShellReadyFallback(record, send, () =>
+      outputBatcher.flush(record.sessionId)
+    );
   }
 
   send({
     type: "spawned",
     sessionId: record.sessionId,
-    pid: ptyProcess.pid
+    pid: ptyProcess.pid,
+    shellInputReady: record.shellInputReady
   });
 }
 
@@ -643,6 +688,7 @@ process.on("message", (request: PtyRequest) => {
         flushPtyProfileBucket(record);
         outputBatcher.flush(record.sessionId);
         disposeSettledSnapshotState(record);
+        disposeShellReadyFallback(record);
         record.pty.kill();
         sessions.delete(request.sessionId);
       }

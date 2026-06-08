@@ -63,6 +63,7 @@ export class PtyHostManager extends EventEmitter {
   private child: ChildProcess | null = null;
   private stopping = false;
   private readonly readySessions = new Set<Id>();
+  private readonly inputReadySessions = new Set<Id>();
   private readonly pendingSnapshots = new Map<
     string,
     {
@@ -73,6 +74,7 @@ export class PtyHostManager extends EventEmitter {
   >();
   private readonly pendingResizes = new Map<string, () => void>();
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
+  private readonly queuedInputRequests = new Map<Id, PtyRequest[]>();
 
   constructor(private readonly forkProcess: typeof fork = fork) {
     super();
@@ -112,13 +114,23 @@ export class PtyHostManager extends EventEmitter {
       if (event.type === "spawned") {
         this.readySessions.add(event.sessionId);
         this.flushQueuedRequests(event.sessionId);
+        if (event.shellInputReady) {
+          this.inputReadySessions.add(event.sessionId);
+          this.flushQueuedInputRequests(event.sessionId);
+        }
+      }
+      if (event.type === "shell.ready") {
+        this.inputReadySessions.add(event.sessionId);
+        this.flushQueuedInputRequests(event.sessionId);
       }
       if (event.type === "exit" || event.type === "error") {
         const sessionId =
           event.type === "exit" ? event.payload.sessionId : event.sessionId;
         if (sessionId) {
           this.readySessions.delete(sessionId);
+          this.inputReadySessions.delete(sessionId);
           this.queuedRequests.delete(sessionId);
+          this.queuedInputRequests.delete(sessionId);
           this.flushPendingSnapshotsForSession(sessionId);
         }
       }
@@ -132,7 +144,9 @@ export class PtyHostManager extends EventEmitter {
         this.child = null;
       }
       this.readySessions.clear();
+      this.inputReadySessions.clear();
       this.queuedRequests.clear();
+      this.queuedInputRequests.clear();
       this.flushPendingSnapshots();
       this.flushPendingResizes();
       if (expectedExit) {
@@ -160,7 +174,9 @@ export class PtyHostManager extends EventEmitter {
     this.child.kill();
     this.child = null;
     this.readySessions.clear();
+    this.inputReadySessions.clear();
     this.queuedRequests.clear();
+    this.queuedInputRequests.clear();
     this.flushPendingSnapshots();
     this.flushPendingResizes();
   }
@@ -297,11 +313,21 @@ export class PtyHostManager extends EventEmitter {
   }
 
   sendText(sessionId: Id, text: string): void {
-    this.sendWhenReady(sessionId, { type: "input:text", sessionId, text });
+    this.sendWhenInputReady(sessionId, { type: "input:text", sessionId, text });
   }
 
   sendKey(sessionId: Id, input: TerminalKeyInput): void {
-    this.sendWhenReady(sessionId, { type: "input:key", sessionId, input });
+    this.sendWhenInputReady(sessionId, { type: "input:key", sessionId, input });
+  }
+
+  private sendWhenInputReady(sessionId: Id, message: PtyRequest): void {
+    if (this.inputReadySessions.has(sessionId)) {
+      this.send(message);
+      return;
+    }
+    const queued = this.queuedInputRequests.get(sessionId) ?? [];
+    queued.push(message);
+    this.queuedInputRequests.set(sessionId, queued);
   }
 
   private sendWhenReady(sessionId: Id, message: PtyRequest): void {
@@ -342,6 +368,17 @@ export class PtyHostManager extends EventEmitter {
       return;
     }
     this.queuedRequests.delete(sessionId);
+    for (const request of queued) {
+      this.send(request);
+    }
+  }
+
+  private flushQueuedInputRequests(sessionId: Id): void {
+    const queued = this.queuedInputRequests.get(sessionId);
+    if (!queued || queued.length === 0) {
+      return;
+    }
+    this.queuedInputRequests.delete(sessionId);
     for (const request of queued) {
       this.send(request);
     }

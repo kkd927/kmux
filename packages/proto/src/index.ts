@@ -465,7 +465,17 @@ export type PtyRequest =
 
 export type PtyEvent =
   | { type: "ready" }
-  | { type: "spawned"; sessionId: Id; pid: number }
+  | {
+      type: "spawned";
+      sessionId: Id;
+      pid: number;
+      shellInputReady: boolean;
+    }
+  | {
+      type: "shell.ready";
+      sessionId: Id;
+      surfaceId: Id;
+    }
   | { type: "snapshot"; requestId: Id; payload: SurfaceSnapshotPayload }
   | { type: "chunk"; payload: SurfaceChunkPayload }
   | { type: "resize"; payload: SurfaceResizePayload }
@@ -618,6 +628,7 @@ export interface SurfaceVm {
   unreadCount: number;
   attention: boolean;
   sessionState: SessionRuntimeState;
+  shellInputReady: boolean;
   exitCode?: number;
 }
 

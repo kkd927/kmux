@@ -56,7 +56,8 @@ describe("shell integration launch preparation", () => {
       args: ["-l"],
       env: {
         HOME: "/Users/test"
-      }
+      },
+      requiresShellReady: false
     });
   });
 
@@ -81,7 +82,8 @@ describe("shell integration launch preparation", () => {
       args: ["-c", 'printf %s "$HOME"'],
       env: {
         HOME: "/Users/test"
-      }
+      },
+      requiresShellReady: false
     });
   });
 
@@ -102,6 +104,7 @@ describe("shell integration launch preparation", () => {
 
     expect(prepared.shellPath).toBe("/bin/zsh");
     expect(prepared.args).toEqual(["-l"]);
+    expect(prepared.requiresShellReady).toBe(true);
     expect(prepared.env.KMUX_SHELL_INTEGRATION).toBe("1");
     expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
       join(fakeZdotdir, ".zsh_history")
@@ -138,6 +141,9 @@ describe("shell integration launch preparation", () => {
     const integrationContents = readFileSync(integrationScript ?? "", "utf8");
     expect(integrationContents).toContain(
       "add-zsh-hook precmd _kmux_emit_osc7"
+    );
+    expect(integrationContents).toContain(
+      "add-zsh-hook precmd _kmux_emit_shell_ready"
     );
     expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).toContain("_kmux_prepend_agent_bin");
@@ -272,6 +278,7 @@ describe("shell integration launch preparation", () => {
 
     expect(prepared.shellPath).toBe("/bin/bash");
     expect(prepared.args).toEqual(["--login"]);
+    expect(prepared.requiresShellReady).toBe(true);
     expect(prepared.env.HOME).toMatch(/kmux-bash-/);
     expect(prepared.env.KMUX_SHELL_INTEGRATION).toBe("1");
     expect(prepared.env.KMUX_ORIGINAL_HOME).toBe("/Users/test");
@@ -298,6 +305,9 @@ describe("shell integration launch preparation", () => {
     expect(readFileSync(integrationScript ?? "", "utf8")).toContain(
       "_kmux_prepend_agent_bin"
     );
+    expect(readFileSync(integrationScript ?? "", "utf8")).toContain(
+      "_kmux_emit_shell_ready"
+    );
     expect(readFileSync(integrationScript ?? "", "utf8")).not.toContain(
       "__KMUX_LAST_OSC7_PWD"
     );
@@ -316,6 +326,7 @@ describe("shell integration launch preparation", () => {
 
     expect(prepared.shellPath).toBe("/opt/homebrew/bin/fish");
     expect(prepared.args).toEqual(["-l"]);
+    expect(prepared.requiresShellReady).toBe(true);
     expect(prepared.env.XDG_CONFIG_HOME).toMatch(/kmux-fish-/);
     expect(prepared.env.KMUX_SHELL_INTEGRATION).toBe("1");
     expect(prepared.env.KMUX_ORIGINAL_XDG_CONFIG_HOME).toBe(
@@ -344,6 +355,9 @@ describe("shell integration launch preparation", () => {
     expect(integrationContents).toContain("set -q KMUX_AGENT_BIN_DIR");
     expect(integrationContents).toContain(
       "function __kmux_emit_osc7 --on-event fish_prompt"
+    );
+    expect(integrationContents).toContain(
+      "function __kmux_emit_shell_ready --on-event fish_prompt"
     );
     expect(integrationContents).toContain("set -g __KMUX_OSC7_INSTALLED 1");
     expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");

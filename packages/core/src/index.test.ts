@@ -7,6 +7,7 @@ import {
 import {
   applyAction,
   applyActionWithSummary,
+  buildActiveWorkspacePaneTreeVm,
   buildViewModel,
   cloneState,
   createDefaultSettings,
@@ -2186,7 +2187,8 @@ describe("core reducer", () => {
     const effects = applyAction(state, {
       type: "session.started",
       sessionId,
-      pid: 4242
+      pid: 4242,
+      shellInputReady: true
     });
 
     expect(state.sessions[sessionId].runtimeState).toBe("running");
@@ -2200,6 +2202,74 @@ describe("core reducer", () => {
         })
       ])
     );
+  });
+
+  it("keeps shell input readiness separate from runtime state", () => {
+    const state = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(state.sessions)[0];
+    const surfaceId = state.sessions[sessionId].surfaceId;
+
+    applyAction(state, {
+      type: "session.started",
+      sessionId,
+      pid: 1234,
+      shellInputReady: false
+    });
+
+    expect(state.sessions[sessionId].runtimeState).toBe("running");
+    expect(state.sessions[sessionId].shellInputReady).toBe(false);
+
+    let paneTree = buildActiveWorkspacePaneTreeVm(state);
+    expect(paneTree.surfaces[surfaceId].sessionState).toBe("running");
+    expect(paneTree.surfaces[surfaceId].shellInputReady).toBe(false);
+
+    applyAction(state, {
+      type: "session.shellReady",
+      sessionId
+    });
+
+    expect(state.sessions[sessionId].shellInputReady).toBe(true);
+    paneTree = buildActiveWorkspacePaneTreeVm(state);
+    expect(paneTree.surfaces[surfaceId].shellInputReady).toBe(true);
+  });
+
+  it("marks custom or unsupported launches input-ready on session start", () => {
+    const state = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(state.sessions)[0];
+    const surfaceId = state.sessions[sessionId].surfaceId;
+
+    applyAction(state, {
+      type: "session.started",
+      sessionId,
+      pid: 1234,
+      shellInputReady: true
+    });
+
+    expect(state.sessions[sessionId].shellInputReady).toBe(true);
+    expect(
+      buildActiveWorkspacePaneTreeVm(state).surfaces[surfaceId].shellInputReady
+    ).toBe(true);
+  });
+
+  it("resets restored running sessions to not shell-input-ready", () => {
+    const state = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(state.sessions)[0];
+    const surfaceId = state.sessions[sessionId].surfaceId;
+    const snapshot = cloneState(state);
+    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].shellInputReady = true;
+    snapshot.sessions[sessionId].pid = 4242;
+
+    applyAction(state, {
+      type: "state.restore",
+      snapshot
+    });
+
+    expect(state.sessions[sessionId].runtimeState).toBe("running");
+    expect(state.sessions[sessionId].shellInputReady).toBe(false);
+    expect(
+      buildActiveWorkspacePaneTreeVm(state).surfaces[surfaceId].shellInputReady
+    ).toBe(false);
   });
 
   it("jumps to the latest unread notification target across workspaces", () => {

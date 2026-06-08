@@ -1,7 +1,14 @@
 import { PTY_STDOUT_LOGS_ENV } from "../shared/diagnostics";
 
 export type RawTerminalStdoutEvent = {
-  kind: "osc.7" | "bell" | "osc.9" | "osc.99" | "osc.777" | "notification";
+  kind:
+    | "osc.7"
+    | "osc.shell-ready"
+    | "bell"
+    | "osc.9"
+    | "osc.99"
+    | "osc.777"
+    | "notification";
   surfaceId: string;
   sessionId: string;
   payloadLength?: number;

@@ -91,6 +91,7 @@ export interface SessionState {
   launch: SessionLaunchConfig;
   authToken: string;
   runtimeState: SessionRuntimeState;
+  shellInputReady: boolean;
   pid?: number;
   exitCode?: number;
 }
@@ -301,7 +302,13 @@ export type AppAction =
   | { type: "notification.jumpLatestUnread" }
   | { type: "terminal.bell" }
   | { type: "settings.update"; patch: SettingsPatch }
-  | { type: "session.started"; sessionId: Id; pid: number }
+  | {
+      type: "session.started";
+      sessionId: Id;
+      pid: number;
+      shellInputReady: boolean;
+    }
+  | { type: "session.shellReady"; sessionId: Id }
   | { type: "session.exited"; sessionId: Id; exitCode?: number }
   | { type: "state.restore"; snapshot: AppState };
 
@@ -555,7 +562,8 @@ export function createInitialState(
           shell: shellPath
         },
         authToken: makeId("auth"),
-        runtimeState: "pending"
+        runtimeState: "pending",
+        shellInputReady: false
       }
     },
     notifications: [],
@@ -604,7 +612,11 @@ export function applyAction(state: AppState, action: AppAction): AppEffect[] {
 function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
   switch (action.type) {
     case "state.restore":
-      Object.assign(state, cloneState(action.snapshot));
+      {
+        const restored = cloneState(action.snapshot);
+        resetRestoredShellInputReadiness(restored);
+        Object.assign(state, restored);
+      }
       return [{ type: "persist" }];
     case "workspace.create":
       return createWorkspace(
@@ -755,6 +767,7 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       if (state.sessions[action.sessionId]) {
         const session = state.sessions[action.sessionId];
         session.runtimeState = "running";
+        session.shellInputReady = action.shellInputReady;
         session.pid = action.pid;
         const surface = state.surfaces[session.surfaceId];
         const pane = surface ? state.panes[surface.paneId] : undefined;
@@ -772,14 +785,29 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
           : [{ type: "persist" }];
       }
       return [];
+    case "session.shellReady":
+      if (state.sessions[action.sessionId]) {
+        state.sessions[action.sessionId].shellInputReady = true;
+        return [{ type: "persist" }];
+      }
+      return [];
     case "session.exited":
       if (state.sessions[action.sessionId]) {
         state.sessions[action.sessionId].runtimeState = "exited";
+        state.sessions[action.sessionId].shellInputReady = false;
         state.sessions[action.sessionId].exitCode = action.exitCode;
       }
       return [{ type: "persist" }];
     default:
       return [];
+  }
+}
+
+function resetRestoredShellInputReadiness(state: AppState): void {
+  for (const session of Object.values(state.sessions)) {
+    if (session.runtimeState !== "exited") {
+      session.shellInputReady = false;
+    }
   }
 }
 
@@ -915,6 +943,7 @@ function mutationSummaryForAction(
         activeWorkspaceActivity: true
       };
     case "session.started":
+    case "session.shellReady":
     case "session.exited":
       return {
         activeWorkspacePaneTree: true,
@@ -1028,7 +1057,8 @@ function createWorkspace(
     surfaceId,
     launch: sessionLaunch,
     authToken: makeId("auth"),
-    runtimeState: "pending"
+    runtimeState: "pending",
+    shellInputReady: false
   };
   window.workspaceOrder.push(workspaceId);
   window.activeWorkspaceId = workspaceId;
@@ -1360,7 +1390,8 @@ function splitPane(
       shell: state.settings.shell || process.env.SHELL
     },
     authToken: makeId("auth"),
-    runtimeState: "pending"
+    runtimeState: "pending",
+    shellInputReady: false
   };
   workspace.activePaneId = newPaneId;
 
@@ -1603,7 +1634,8 @@ function createSurface(
     surfaceId,
     launch: sessionLaunch,
     authToken: makeId("auth"),
-    runtimeState: "pending"
+    runtimeState: "pending",
+    shellInputReady: false
   };
   pane.surfaceIds.push(surfaceId);
   pane.activeSurfaceId = surfaceId;
@@ -2839,6 +2871,8 @@ export function buildWorkspacePaneTreeVm(
             attention: surface.attention,
             sessionState:
               state.sessions[surface.sessionId]?.runtimeState ?? "pending",
+            shellInputReady:
+              state.sessions[surface.sessionId]?.shellInputReady === true,
             exitCode: state.sessions[surface.sessionId]?.exitCode
           } satisfies SurfaceVm
         ];
@@ -3109,6 +3143,8 @@ function sanitizeState(state: AppState): AppState {
       session.launch,
       state.settings.shell
     );
+    session.shellInputReady =
+      session.runtimeState === "running" && session.shellInputReady === true;
   }
 
   for (const surface of Object.values(state.surfaces)) {
