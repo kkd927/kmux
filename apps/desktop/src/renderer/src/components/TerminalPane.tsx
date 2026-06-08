@@ -1536,6 +1536,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       props.surfaces.length
     )
   );
+  const showShellStartupStatus =
+    activeSurface.sessionState === "running" && !activeSurface.shellInputReady;
 
   const resolveDropDirection = (
     event: DragEvent<HTMLDivElement>
@@ -1744,6 +1746,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           })}
         </div>
         <div className={styles.headerTrailing}>
+          {showShellStartupStatus ? (
+            <div
+              className={styles.shellStartupStatus}
+              role="status"
+              aria-live="polite"
+              data-testid={`terminal-shell-loading-${activeSurface.id}`}
+            >
+              Starting shell...
+            </div>
+          ) : null}
           <div className={styles.controls}>
             <button
               title="New tab"

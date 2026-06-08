@@ -44,7 +44,8 @@ function createWorkspacePaneTree(
           ports: [],
           unreadCount: 0,
           attention: false,
-          sessionState: "running"
+          sessionState: "running",
+          shellInputReady: true
         }
       ])
     ),

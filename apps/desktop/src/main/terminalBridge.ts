@@ -1011,7 +1011,14 @@ export function createTerminalBridge(
         options.dispatchAppAction({
           type: "session.started",
           sessionId: event.sessionId,
-          pid: event.pid
+          pid: event.pid,
+          shellInputReady: event.shellInputReady
+        });
+        return;
+      case "shell.ready":
+        options.dispatchAppAction({
+          type: "session.shellReady",
+          sessionId: event.sessionId
         });
         return;
       case "metadata":

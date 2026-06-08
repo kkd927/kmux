@@ -14,11 +14,14 @@ import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 import { resolveDefaultShellArgs } from "./shellLaunch";
 
 export const KMUX_ZSH_WRAPPER_DIR_ENV = "KMUX_ZSH_WRAPPER_DIR";
+export const SHELL_READY_OSC = 6972;
+export const SHELL_READY_OSC_PAYLOAD = "shell.ready";
 
 export interface PreparedShellLaunch {
   shellPath: string;
   args: string[];
   env: NodeJS.ProcessEnv;
+  requiresShellReady: boolean;
 }
 
 export interface PrepareShellIntegrationLaunchOptions {
@@ -42,7 +45,8 @@ const SHELL_INTEGRATION_ENV_KEYS = [
   KMUX_ZSH_WRAPPER_DIR_ENV,
   "__KMUX_LAST_OSC7_PWD",
   "__KMUX_OSC7_HOST",
-  "__KMUX_OSC7_INSTALLED"
+  "__KMUX_OSC7_INSTALLED",
+  "__KMUX_SHELL_READY_EMITTED"
 ] as const;
 
 export function shouldApplyShellIntegration(
@@ -71,7 +75,8 @@ export function prepareShellIntegrationLaunch(
     return {
       shellPath,
       args,
-      env: shellIntegrationEnv
+      env: shellIntegrationEnv,
+      requiresShellReady: false
     };
   }
 
@@ -86,7 +91,8 @@ export function prepareShellIntegrationLaunch(
       return {
         shellPath,
         args,
-        env: shellIntegrationEnv
+        env: shellIntegrationEnv,
+        requiresShellReady: false
       };
   }
 }
@@ -123,7 +129,8 @@ function prepareZshShellLaunch(
     return {
       shellPath,
       args,
-      env
+      env,
+      requiresShellReady: false
     };
   }
 
@@ -142,7 +149,8 @@ function prepareZshShellLaunch(
       KMUX_ORIGINAL_ZDOTDIR: originalZdotdir,
       KMUX_ZSH_INTEGRATION_SCRIPT: join(wrapperDir, "kmux.zsh"),
       ZDOTDIR: wrapperDir
-    }
+    },
+    requiresShellReady: true
   };
 }
 
@@ -156,7 +164,8 @@ function prepareBashShellLaunch(
     return {
       shellPath,
       args,
-      env
+      env,
+      requiresShellReady: false
     };
   }
 
@@ -172,7 +181,8 @@ function prepareBashShellLaunch(
       KMUX_BASH_INTEGRATION_SCRIPT: join(wrapperDir, "kmux.bash"),
       KMUX_SHELL_INTEGRATION: "1",
       KMUX_ORIGINAL_HOME: homeDir
-    }
+    },
+    requiresShellReady: true
   };
 }
 
@@ -186,7 +196,8 @@ function prepareFishShellLaunch(
     return {
       shellPath,
       args,
-      env
+      env,
+      requiresShellReady: false
     };
   }
 
@@ -203,7 +214,8 @@ function prepareFishShellLaunch(
         env.XDG_CONFIG_HOME?.trim() || join(homeDir, ".config"),
       KMUX_SHELL_INTEGRATION: "1",
       XDG_CONFIG_HOME: wrapperDir
-    }
+    },
+    requiresShellReady: true
   };
 }
 
@@ -423,6 +435,7 @@ function buildZshIntegrationScript(): string {
     "[[ -o interactive ]] || return 0",
     '[[ -z "${__KMUX_OSC7_INSTALLED:-}" ]] || return 0',
     "typeset -g __KMUX_OSC7_INSTALLED=1",
+    "typeset -g __KMUX_SHELL_READY_EMITTED=0",
     "",
     "autoload -Uz add-zsh-hook",
     "",
@@ -467,10 +480,18 @@ function buildZshIntegrationScript(): string {
     "  printf '\\e]7;%s\\a' \"file://${host_part}${path_part}\"",
     "}",
     "",
+    "function _kmux_emit_shell_ready() {",
+    "  emulate -L zsh",
+    '  [[ "${__KMUX_SHELL_READY_EMITTED:-0}" == "0" ]] || return 0',
+    "  typeset -g __KMUX_SHELL_READY_EMITTED=1",
+    `  printf '\\e]${SHELL_READY_OSC};${SHELL_READY_OSC_PAYLOAD}\\a'`,
+    "}",
+    "",
     "_kmux_prepend_agent_bin",
     "unfunction _kmux_prepend_agent_bin",
     "",
     "add-zsh-hook precmd _kmux_emit_osc7",
+    "add-zsh-hook precmd _kmux_emit_shell_ready",
     ""
   ].join("\n");
 }
@@ -515,6 +536,7 @@ function buildBashIntegrationScript(): string {
     '[[ "$-" == *i* ]] || return 0',
     '[[ -z "${__KMUX_OSC7_INSTALLED:-}" ]] || return 0',
     "__KMUX_OSC7_INSTALLED=1",
+    "__KMUX_SHELL_READY_EMITTED=0",
     "",
     "_kmux_prepend_agent_bin() {",
     '  local agent_bin="${KMUX_AGENT_BIN_DIR:-}"',
@@ -554,6 +576,12 @@ function buildBashIntegrationScript(): string {
     '  printf \'\\033]7;file://%s%s\\a\' "$host_part" "$path_part"',
     "}",
     "",
+    "_kmux_emit_shell_ready() {",
+    '  [[ "${__KMUX_SHELL_READY_EMITTED:-0}" == "0" ]] || return 0',
+    "  __KMUX_SHELL_READY_EMITTED=1",
+    `  printf '\\033]${SHELL_READY_OSC};${SHELL_READY_OSC_PAYLOAD}\\a'`,
+    "}",
+    "",
     '_kmux_prompt_decl="$(declare -p PROMPT_COMMAND 2>/dev/null || true)"',
     'case "$_kmux_prompt_decl" in',
     '  "declare -a PROMPT_COMMAND="*)',
@@ -573,6 +601,30 @@ function buildBashIntegrationScript(): string {
     '    case ";${PROMPT_COMMAND:-};" in',
     '      *";_kmux_emit_osc7;"*) ;;',
     '      *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_kmux_emit_osc7" ;;',
+    "    esac",
+    "    ;;",
+    "esac",
+    "unset _kmux_prompt_decl",
+    "",
+    '_kmux_prompt_decl="$(declare -p PROMPT_COMMAND 2>/dev/null || true)"',
+    'case "$_kmux_prompt_decl" in',
+    '  "declare -a PROMPT_COMMAND="*)',
+    "    _kmux_prompt_found=0",
+    '    for _kmux_prompt_command in "${PROMPT_COMMAND[@]}"; do',
+    '      if [[ "$_kmux_prompt_command" == "_kmux_emit_shell_ready" ]]; then',
+    "        _kmux_prompt_found=1",
+    "        break",
+    "      fi",
+    "    done",
+    '    if [[ "$_kmux_prompt_found" -eq 0 ]]; then',
+    "      PROMPT_COMMAND+=(_kmux_emit_shell_ready)",
+    "    fi",
+    "    unset _kmux_prompt_command _kmux_prompt_found",
+    "    ;;",
+    "  *)",
+    '    case ";${PROMPT_COMMAND:-};" in',
+    '      *";_kmux_emit_shell_ready;"*) ;;',
+    '      *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_kmux_emit_shell_ready" ;;',
     "    esac",
     "    ;;",
     "esac",
@@ -613,6 +665,7 @@ function buildFishIntegrationScript(): string {
     "status is-interactive; or return 0",
     "set -q __KMUX_OSC7_INSTALLED; and return 0",
     "set -g __KMUX_OSC7_INSTALLED 1",
+    "set -g __KMUX_SHELL_READY_EMITTED 0",
     "",
     'if set -q KMUX_AGENT_BIN_DIR; and test -d "$KMUX_AGENT_BIN_DIR"',
     '  contains -- "$KMUX_AGENT_BIN_DIR" $PATH; or set -gx PATH "$KMUX_AGENT_BIN_DIR" $PATH',
@@ -629,6 +682,12 @@ function buildFishIntegrationScript(): string {
     '  test -n "$pwd_path"; or return 0',
     '  set -l path_part (__kmux_percent_encode "$pwd_path")',
     '  printf \'\\033]7;file://%s%s\\a\' "$__KMUX_OSC7_HOST" "$path_part"',
+    "end",
+    "",
+    "function __kmux_emit_shell_ready --on-event fish_prompt",
+    '  test "$__KMUX_SHELL_READY_EMITTED" = "0"; or return 0',
+    "  set -g __KMUX_SHELL_READY_EMITTED 1",
+    `  printf '\\033]${SHELL_READY_OSC};${SHELL_READY_OSC_PAYLOAD}\\a'`,
     "end",
     "",
     "__kmux_emit_osc7",

@@ -122,7 +122,8 @@ function createSurface(id: string): SurfaceVm {
     ports: [],
     unreadCount: 0,
     attention: false,
-    sessionState: "running"
+    sessionState: "running",
+    shellInputReady: true
   };
 }
 
@@ -266,5 +267,42 @@ describe("TerminalPane visibility cleanup", () => {
     });
 
     expect(mocks.redrawController.revealNow).toHaveBeenCalledWith("surface_1");
+  });
+
+  it("shows shell startup status until the active surface accepts input", async () => {
+    const props = createProps("surface_1");
+    props.surfaces = [
+      {
+        ...props.surfaces[0],
+        shellInputReady: false
+      }
+    ];
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    expect(
+      container.querySelector("[data-testid='terminal-shell-loading-surface_1']")
+        ?.textContent
+    ).toBe("Starting shell...");
+    expect(
+      container
+        .querySelector("[data-testid='terminal-shell-loading-surface_1']")
+        ?.parentElement?.querySelector("[data-testid='terminal-surface_1']")
+    ).toBeNull();
+
+    await act(async () => {
+      root.render(
+        <TerminalPane
+          {...props}
+          surfaces={[{ ...props.surfaces[0], shellInputReady: true }]}
+        />
+      );
+    });
+
+    expect(
+      container.querySelector("[data-testid='terminal-shell-loading-surface_1']")
+    ).toBeNull();
   });
 });

@@ -49,7 +49,8 @@ function createPaneTreeProps(): PaneTreeProps {
           ports: [3000],
           unreadCount: 0,
           attention: false,
-          sessionState: "running"
+          sessionState: "running",
+          shellInputReady: true
         }
       },
       activePaneId: "pane_1"

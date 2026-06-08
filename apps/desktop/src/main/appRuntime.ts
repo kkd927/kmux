@@ -528,6 +528,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       for (const session of Object.values(initial.sessions)) {
         if (session.runtimeState !== "exited") {
           session.runtimeState = "pending";
+          session.shellInputReady = false;
           delete session.pid;
           delete session.exitCode;
         }

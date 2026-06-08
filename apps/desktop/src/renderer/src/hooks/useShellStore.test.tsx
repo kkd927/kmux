@@ -82,7 +82,8 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
           ports: [3000],
           unreadCount: 0,
           attention: false,
-          sessionState: "running"
+          sessionState: "running",
+          shellInputReady: true
         }
       },
       activePaneId: "pane_1"
@@ -115,7 +116,8 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
             ports: [3000],
             unreadCount: 0,
             attention: false,
-            sessionState: "running"
+            sessionState: "running",
+            shellInputReady: true
           }
         },
         activePaneId: "pane_1"

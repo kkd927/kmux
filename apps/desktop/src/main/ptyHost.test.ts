@@ -131,7 +131,7 @@ describe("resolvePtyHostLaunchOptions", () => {
     );
   });
 
-  it("queues text input until the session reports spawned", () => {
+  it("queues text input until the session reports shell input ready", () => {
     const fakeChild = new EventEmitter() as ChildProcess;
     (fakeChild as ChildProcess & { connected: boolean }).connected = true;
     (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
@@ -149,7 +149,43 @@ describe("resolvePtyHostLaunchOptions", () => {
     fakeChild.emit("message", {
       type: "spawned",
       sessionId: "session_1",
-      pid: 1234
+      pid: 1234,
+      shellInputReady: false
+    });
+
+    expect(send).not.toHaveBeenCalled();
+
+    fakeChild.emit("message", {
+      type: "shell.ready",
+      sessionId: "session_1",
+      surfaceId: "surface_1"
+    });
+
+    expect(send).toHaveBeenCalledWith({
+      type: "input:text",
+      sessionId: "session_1",
+      text: "echo ready\r"
+    });
+  });
+
+  it("flushes queued text when spawned reports shell input already ready", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    const send = vi.fn((message: unknown) => Boolean(message));
+    (fakeChild as ChildProcess & { send: typeof send }).send = send;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    manager.sendText("session_1", "echo ready\r");
+
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session_1",
+      pid: 1234,
+      shellInputReady: true
     });
 
     expect(send).toHaveBeenCalledWith({
@@ -389,7 +425,7 @@ describe("resolvePtyHostLaunchOptions", () => {
       pid: 1234
     });
 
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         type: "resize",
@@ -398,6 +434,13 @@ describe("resolvePtyHostLaunchOptions", () => {
         rows: 40
       })
     );
+    fakeChild.emit("message", {
+      type: "shell.ready",
+      sessionId: "session_1",
+      surfaceId: "surface_1"
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[1]?.[0]).toEqual({
       type: "input:text",
       sessionId: "session_1",
