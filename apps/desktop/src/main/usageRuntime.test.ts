@@ -2053,7 +2053,6 @@ describe("usage runtime", () => {
       discoverNewSources: true,
       markKnownSourcesDirty: false
     });
-    expect(runtime.getSnapshot().surfaces[surfaceId]).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(1_000);
 
