@@ -4,6 +4,8 @@
 
 **Goal:** Build the native kmux Agent Team Workspace MVP with alias routing, worktree-enforced presets, route logs, bounded surface capture/read, and pty-host input acknowledgement.
 
+**Architecture Decision:** `docs/adr/0003-agent-team-workspaces.md`
+
 **Architecture:** Team state lives in the core reducer and is exposed through typed protocol contracts. Routing and worktree orchestration run in `electron-main`, while terminal capture and input acknowledgement run in `pty-host`. The renderer displays and initiates team workflows but does not own team state.
 
 **Tech Stack:** TypeScript, Electron, xterm.js headless terminal state, node-pty, Vitest, commander, Unix domain socket JSON-RPC.
@@ -25,8 +27,9 @@ default. The work is split into tasks that each produce testable behavior:
 7. Worktree-enforced preset behavior
 8. E2E coverage and docs
 
-The MVP intentionally excludes the fake `tmux` shim and file-edit broadcast.
-Those are post-MVP candidates after native usage is validated.
+The MVP intentionally excludes fake `tmux` compatibility and file-edit
+broadcast. Fake `tmux` support is not planned unless validated usage evidence
+shows native kmux CLI/API support cannot cover an important adoption path.
 
 ## File Structure
 
@@ -1184,14 +1187,12 @@ git add apps/desktop/src/main/teamRuntime.ts apps/desktop/src/main/teamRuntime.t
 git commit -m "feat: apply worktree policy to team presets"
 ```
 
-## Deferred Work: Fake tmux Compatibility Shim
+## Out of Scope: Fake tmux Compatibility Shim
 
-The fake `tmux` shim is intentionally outside this MVP. Revisit it only after
-the native Team Workspace workflow has been used as a daily driver and there is
-clear evidence that Claude Code Agent Teams users want tmux-compatible
-automation inside kmux.
+A fake `tmux` shim is not planned for this MVP. Revisit it only if native kmux
+workflows prove insufficient for a specific, high-value adoption path.
 
-If it is added later, keep these constraints:
+If it is reconsidered later, keep these constraints:
 
 - implement it as an adapter over native `surfaceId`/`sessionId`, never as core
   product state
@@ -1261,7 +1262,7 @@ git commit -m "test: cover agent team workspace workflow"
 ## Self-Review
 
 - Spec coverage: ADR MVP requirements map to Tasks 1 through 8.
-- Deferred scope: fake tmux and broadcast are explicitly non-MVP and have no
+- Out-of-scope work: fake tmux and broadcast are explicitly non-MVP and have no
   implementation checkboxes in this plan.
 - Type consistency: team member, route log, capture, and send result names are consistent across proto, core, main, CLI, and renderer tasks.
-- Scope control: fake tmux, Telegram/PWA bridges, iTerm compatibility, and broadcast routing are intentionally excluded from the MVP. They should build on the native socket APIs only after native Team Workspace usage is validated.
+- Scope control: fake tmux, Telegram/PWA bridges, iTerm compatibility, and broadcast routing are intentionally excluded from the MVP. They should be reconsidered only if validated native Team Workspace usage shows a concrete gap.

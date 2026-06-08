@@ -1,4 +1,4 @@
-# 0003: Agent Team Workspaces and Deferred Compatibility Adapters
+# 0003: Agent Team Workspaces
 
 ## Status
 
@@ -19,8 +19,8 @@ pane-number orchestration:
 - Multiple agents editing the same repository need explicit worktree policy.
 - Users need status, route history, and readable output more than raw pane
   count.
-- Claude Code Agent Teams already understands `tmux` and iTerm2-like pane
-  APIs, so compatibility may matter for later adoption.
+- Some existing tools expose `tmux`-like pane APIs, but compatibility should be
+  treated as an adoption hypothesis, not a default product requirement.
 
 kmux already has stronger primitives than `tmux` for this use case:
 
@@ -31,14 +31,14 @@ kmux already has stronger primitives than `tmux` for this use case:
 - worktree-aware workspaces
 - a `pty-host` that owns terminal state outside the renderer
 
-The decision here is how to absorb the community workflow without weakening the
-existing terminal continuity and state ownership rules.
+The decision here is how to support the useful parts of the community workflow
+without weakening the existing terminal continuity and state ownership rules.
 
 ## Decision
 
-Implement a narrow native kmux Agent Team Workspace MVP first. Defer fake
-`tmux` and other compatibility adapters until the native workflow has usage
-evidence.
+Implement a narrow native kmux Agent Team Workspace MVP. Do not implement fake
+`tmux` or other compatibility adapters unless validated usage evidence shows
+that native kmux CLI/API support cannot cover an important adoption path.
 
 The native model is:
 
@@ -52,9 +52,9 @@ Team Workspace
       -> sessionId
 ```
 
-Compatibility shims, if added later, must translate external terminal-control
-conventions into native kmux commands. They must not make `tmux` pane numbers
-authoritative inside kmux.
+If a compatibility adapter is revisited later, it must translate external
+terminal-control conventions into native kmux commands. It must not make `tmux`
+pane numbers authoritative inside kmux.
 
 The implementation will be staged in this order:
 
@@ -64,11 +64,9 @@ The implementation will be staged in this order:
 4. worktree-enforced team preset orchestration
 5. renderer, CLI, e2e, and documentation for the native MVP
 
-Post-MVP candidates:
-
-- status-only broadcast for non-destructive questions
-- fake `tmux` shim for Claude Code Agent Teams and similar tools
-- iTerm-style split-pane compatibility
+Post-MVP candidates are limited to native kmux workflow improvements, such as
+status-only broadcast for non-destructive questions. Compatibility adapters are
+not planned work.
 
 ## Native Team Workspace
 
@@ -159,7 +157,7 @@ terminal as the source of truth.
 Capture is sensitive because it exposes terminal text. Socket `surface.capture`
 must require a matching surface/session auth token in the first implementation;
 `socketMode = "allowAll"` must not bypass capture auth. Renderer IPC capture
-can use the existing trusted renderer path. Deferred compatibility adapters
+can use the existing trusted renderer path. Any future compatibility adapter
 must use the same auth boundary.
 
 ## Worktree Policy
@@ -195,51 +193,23 @@ Default preset:
 The default preset should fit normal laptop screens and token budgets. Users
 can create additional custom members later.
 
-## Deferred Compatibility Adapters
+## Out-of-Scope Compatibility
 
-A fake `tmux` shim is explicitly deferred from the native MVP. It is a useful
-adapter only if native Team Workspace usage shows that Claude Code Agent Teams
-users want to run those workflows inside kmux.
+A fake `tmux` shim is not planned for the Agent Team Workspace MVP. It adds a
+large support surface around pane-number emulation, PATH ordering, partial tmux
+command semantics, adapter state, and real-tmux collision handling. That work is
+not justified unless native kmux workflows prove insufficient for a specific,
+high-value adoption path.
 
-If built later, the shim is a small executable named `tmux` that is placed
-ahead of real tmux in the environment for selected agent sessions.
+If revisited later, the bar is:
 
-It translates a supported subset of tmux commands to kmux socket requests:
-
-| tmux command         | kmux behavior                                        |
-| -------------------- | ---------------------------------------------------- |
-| `split-window`       | create a native pane/surface or team member surface  |
-| `send-keys`          | send text or key input to a resolved surface         |
-| `capture-pane`       | call `surface.capture`                               |
-| `select-pane`        | focus the resolved surface                           |
-| `kill-pane`          | close the resolved surface or pane                   |
-| `list-panes`         | list known compatibility pane aliases                |
-| `display-message -p` | print the requested compatibility pane/session value |
-
-The shim should support only the command subset required by the validated target
-workflow. Unsupported tmux commands must fail loudly with a clear message
-instead of silently doing the wrong thing.
-
-Compatibility pane identifiers are adapter state, not core product identity.
-They map to native `surfaceId` values through the socket API.
-
-Adapter state is scoped by compatibility session. The first implementation uses
-the auth token of the invoking surface as the compatibility session key. State
-includes:
-
-- compatibility session key
-- workspace id
-- active compatibility pane token
-- tmux pane token to `surfaceId` mapping
-- created timestamp
-- last-used timestamp
-
-The mapping is cleaned up when mapped surfaces close, the workspace closes, or a
-compatibility session has no live mapped surfaces.
-
-The first compatibility call for an auth token would seed the invoking surface
-as the initial compatibility pane token and active pane. Compatibility commands
-without a valid auth token/session must fail before creating adapter state.
+- native kmux CLI/API cannot support the workflow directly
+- the required command subset is small, explicit, and testable
+- adapter pane identifiers remain adapter state, mapped to native `surfaceId`
+  values
+- terminal capture auth, pty-host input acknowledgement, and output continuity
+  are not weakened
+- unsupported commands fail loudly instead of silently doing the wrong thing
 
 ## Ownership Boundaries
 
@@ -266,12 +236,12 @@ unstable pane identifiers and command-line side effects as state.
 Rejected. It would help Claude Code Agent Teams, but would not cover mixed
 Claude/Codex/Gemini teams, route logs, worktree policy, or native kmux UI.
 
-### Build the native MVP before compatibility adapters
+### Build the native MVP without compatibility adapters
 
 Selected. It focuses the first release on kmux's durable advantages: stable
 surface/session identity, route visibility, pty-host acknowledgement, terminal
-capture, and worktree-safe orchestration. Existing Claude Code Agent Teams
-workflows can be revisited after native usage is measured.
+capture, and worktree-safe orchestration. Compatibility adapters can be
+reconsidered only if validated native usage shows a concrete gap.
 
 ## Consequences
 
@@ -281,13 +251,14 @@ Positive:
   becoming tmux-shaped.
 - Mixed-agent teams become a first-class workflow.
 - Worktree safety becomes visible at the team level.
-- External bridges can use the same socket API as the native UI.
+- External bridges can use the same socket API as the native UI without kmux
+  becoming tmux-shaped.
 
 Negative:
 
 - The CLI surface grows.
-- Existing Claude Code Agent Teams workflows that require a fake `tmux`
-  executable are not supported by the native MVP.
+- Workflows that require a fake `tmux` executable are not supported by the
+  native MVP.
 - Capture APIs can expose sensitive terminal text through the socket API, so
   existing auth-token checks remain mandatory.
 - Dedicated worktree creation can fail for dirty repositories, missing git, or
@@ -307,3 +278,5 @@ The feature is not complete until these pass:
 - CLI tests for `kmux team send` and `kmux team list`
 - e2e smoke flow that creates a team workspace, sends to one member, captures
   output, and verifies terminal continuity after workspace switches
+
+Implementation plan: `docs/superpowers/plans/2026-06-01-agent-team-workspaces.md`.

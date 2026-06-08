@@ -1,4 +1,8 @@
-# Linux Platform Support and OS-Neutral Architecture Design
+# 0004: Linux Platform Support and OS-Neutral Architecture
+
+## Status
+
+Proposed
 
 ## Purpose
 
