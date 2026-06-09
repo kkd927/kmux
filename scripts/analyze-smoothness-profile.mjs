@@ -41,6 +41,41 @@ function ratio(numerator, denominator) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
+function detailValues(name, key) {
+  return (byName.get(name) ?? [])
+    .map((event) => Number(event.details?.[key] ?? 0))
+    .filter((value) => Number.isFinite(value));
+}
+
+function percentile(values, p) {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)
+  );
+  return sorted[index];
+}
+
+function round2(value) {
+  return Math.round(value * 100) / 100;
+}
+
+// Sample count + percentiles per metric so a single noisy max does not stand in
+// for the whole run (the renderer write bucket only flushes every ~1s, so short
+// scenarios used to yield one unreliable sample).
+function distribution(name, key) {
+  const values = detailValues(name, key);
+  return {
+    samples: values.length,
+    p50: round2(percentile(values, 50)),
+    p95: round2(percentile(values, 95)),
+    max: round2(Math.max(0, ...values))
+  };
+}
+
 function topTerminalSurfaces(limit = 8) {
   const surfaces = new Map();
   for (const name of [
@@ -200,6 +235,16 @@ const summary = {
   shellPatchPayloadBytes: sumDetail("shell.patch.emit", "payloadBytes"),
   terminalPaneRenderPerPatch: ratio(terminalPaneRenderCount, shellPatchCount),
   paneTreeRenderPerPatch: ratio(paneTreeRenderCount, shellPatchCount),
+  distributions: {
+    terminalWriteDurationMs: distribution("terminal.write.bucket", "maxDurationMs"),
+    terminalWriteQueueDepth: distribution("terminal.write.bucket", "maxQueueDepth"),
+    terminalIpcSendDurationMs: distribution("terminal.ipc.bucket", "maxSendDurationMs"),
+    ptyChunkBytes: distribution("terminal.pty.bucket", "maxChunkBytes"),
+    terminalReflowDurationMs: distribution("terminal.reflow", "durationMs"),
+    terminalResizeAckDurationMs: distribution("terminal.resize.ack", "durationMs"),
+    terminalResizeApplyDurationMs: distribution("terminal.resize.apply", "durationMs"),
+    terminalFitDurationMs: distribution("terminal.fit", "durationMs")
+  },
   topTerminalSurfaces: topTerminalSurfaces()
 };
 
