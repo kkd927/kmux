@@ -6,14 +6,19 @@ import {
   utimesSync,
   writeFileSync
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createExternalSessionIndexer } from "./externalSessions";
 
 const sandboxDirs: string[] = [];
+const nodeRequire = createRequire(import.meta.url);
+
+type DatabaseSyncConstructor = typeof NodeSqliteDatabaseSync;
 
 function createSandboxHome(): string {
   const homeDir = mkdtempSync(join(tmpdir(), "kmux-external-sessions-"));
@@ -35,6 +40,67 @@ function writeJson(path: string, record: unknown, mtime: Date): void {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
   utimesSync(path, mtime, mtime);
+}
+
+function loadTestDatabaseSync(): DatabaseSyncConstructor | undefined {
+  try {
+    return (
+      nodeRequire("node:sqlite") as {
+        DatabaseSync?: DatabaseSyncConstructor;
+      }
+    ).DatabaseSync;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeAntigravitySqliteConversation(
+  path: string,
+  prompt: string,
+  mtime: Date
+): boolean {
+  const DatabaseSync = loadTestDatabaseSync();
+  if (!DatabaseSync) {
+    return false;
+  }
+
+  mkdirSync(join(path, ".."), { recursive: true });
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(
+      "CREATE TABLE steps (idx INTEGER NOT NULL, step_type INTEGER NOT NULL, step_payload BLOB)"
+    );
+    db.prepare(
+      "INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)"
+    ).run(0, 14, encodePromptPayload(prompt));
+  } finally {
+    db.close();
+  }
+  utimesSync(path, mtime, mtime);
+  return true;
+}
+
+function encodePromptPayload(prompt: string): Buffer {
+  const promptBytes = Buffer.from(prompt, "utf8");
+  return Buffer.concat([
+    Buffer.from([0x12]),
+    encodeVarint(promptBytes.length),
+    promptBytes
+  ]);
+}
+
+function encodeVarint(value: number): Buffer {
+  const bytes: number[] = [];
+  let remaining = value;
+  do {
+    let byte = remaining & 0x7f;
+    remaining = Math.floor(remaining / 128);
+    if (remaining > 0) {
+      byte |= 0x80;
+    }
+    bytes.push(byte);
+  } while (remaining > 0);
+  return Buffer.from(bytes);
 }
 
 afterEach(() => {
@@ -964,6 +1030,59 @@ describe("external session indexer", () => {
         cwd: workspace,
         initialInput: `agy --conversation ${latestConversationId}\r`
       }
+    });
+  });
+
+  it("uses sanitized prompt titles from Antigravity SQLite conversations", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-06-02T15:30:00.000Z");
+    const conversationId = "02bf2ec4-d6e4-4bf9-b5a0-66e7cc9176d8";
+    const workspace = "/Users/test/antigravity-project";
+    const updatedAt = new Date("2026-06-02T14:57:53.000Z");
+    const prompt = `Database prompt title\n${"x".repeat(140)}`;
+    const normalizedPrompt = prompt.replace(/\s+/gu, " ").trim();
+    const expectedTitle = `${normalizedPrompt.slice(0, 93)}...`;
+
+    writeJsonl(
+      join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
+      [
+        {
+          conversationId,
+          workspace,
+          display: "History title should be replaced",
+          timestamp: updatedAt.getTime()
+        }
+      ],
+      updatedAt
+    );
+    const wroteDb = writeAntigravitySqliteConversation(
+      join(
+        homeDir,
+        ".gemini",
+        "antigravity-cli",
+        "conversations",
+        `${conversationId}.db`
+      ),
+      prompt,
+      updatedAt
+    );
+    if (!wroteDb) {
+      return;
+    }
+
+    const indexer = createExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      commandAvailability: (command) => command === "agy"
+    });
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: `antigravity:${conversationId}`,
+      title: expectedTitle,
+      cwd: workspace,
+      resumeCommandPreview: `agy --conversation ${conversationId}`
     });
   });
 

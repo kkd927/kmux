@@ -6,10 +6,20 @@ import {
   readdirSync,
   statSync
 } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, join } from "node:path";
+import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
 const MAX_BINARY_SCAN_BYTES = 512 * 1024;
 const MAX_TITLE_LENGTH = 96;
+const MAX_PROMPT_PAYLOAD_BYTES = 1024 * 1024;
+const MAX_PROMPT_FIELD_BYTES = 128 * 1024;
+const MAX_PROMPT_PARSE_DEPTH = 8;
+
+const nodeRequire = createRequire(import.meta.url);
+
+type DatabaseSyncConstructor = typeof NodeSqliteDatabaseSync;
+type DatabaseSyncInstance = InstanceType<DatabaseSyncConstructor>;
 
 type ConversationSignatureEntry =
   | string
@@ -32,6 +42,7 @@ const conversationMetadataCache = new Map<
   string,
   { signature: string; records: AntigravityConversationMetadata[] }
 >();
+let cachedDatabaseSync: DatabaseSyncConstructor | null | undefined;
 
 export function readAntigravityConversationMetadata(
   homeDirectory: string,
@@ -253,6 +264,7 @@ function listAntigravityConversationFiles(
       } catch {
         // Conversation files are best-effort metadata sources.
       }
+      const title = extractPromptFromDb(candidate.path);
       return [
         {
           conversationId,
@@ -263,6 +275,7 @@ function listAntigravityConversationFiles(
               projectWorkspaces
             )
           ),
+          ...(title ? { title } : {}),
           ...(createdAt ? { createdAt } : {}),
           updatedAt,
           mtimeMs: candidate.mtimeMs
@@ -452,4 +465,154 @@ function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
     value
   );
+}
+
+function extractPromptFromDb(dbPath: string): string | undefined {
+  const DatabaseSync = loadDatabaseSync();
+  if (!DatabaseSync) {
+    return undefined;
+  }
+
+  let db: DatabaseSyncInstance | undefined;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT step_payload FROM steps WHERE idx = 0 AND step_type = 14 LIMIT 1"
+      )
+      .get() as unknown;
+    const payload = isRecord(row) ? row.step_payload : undefined;
+    if (payload instanceof Uint8Array) {
+      return sanitizeTitle(extractPromptFromPayload(Buffer.from(payload)));
+    }
+  } catch {
+    // Database sync might fail if the file is locked, busy, or corrupted
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Closing is best-effort because this reader is optional metadata.
+    }
+  }
+  return undefined;
+}
+
+function loadDatabaseSync(): DatabaseSyncConstructor | undefined {
+  if (cachedDatabaseSync !== undefined) {
+    return cachedDatabaseSync ?? undefined;
+  }
+  try {
+    const sqliteModule = nodeRequire("node:sqlite") as {
+      DatabaseSync?: unknown;
+    };
+    cachedDatabaseSync =
+      typeof sqliteModule.DatabaseSync === "function"
+        ? (sqliteModule.DatabaseSync as DatabaseSyncConstructor)
+        : null;
+  } catch {
+    cachedDatabaseSync = null;
+  }
+  return cachedDatabaseSync ?? undefined;
+}
+
+function readVarint(
+  buffer: Buffer,
+  offset: number
+): { value: number; nextOffset: number } | undefined {
+  let value = 0;
+  let multiplier = 1;
+  for (
+    let bytesRead = 0;
+    bytesRead < 10 && offset < buffer.length;
+    bytesRead += 1
+  ) {
+    const byte = buffer[offset++];
+    value += (byte & 0x7f) * multiplier;
+    if (!Number.isSafeInteger(value)) {
+      return undefined;
+    }
+    if ((byte & 0x80) === 0) {
+      return { value, nextOffset: offset };
+    }
+    multiplier *= 128;
+  }
+  return undefined;
+}
+
+function isPrintableUtf8(str: string): boolean {
+  if (str.length < 2) return false;
+  const printableRegex = /^[\s\w\p{L}\p{N}\p{P}\p{S}]+$/u;
+  return printableRegex.test(str);
+}
+
+function extractPromptFromPayload(
+  payload: Buffer,
+  depth = 0
+): string | undefined {
+  if (
+    payload.length > MAX_PROMPT_PAYLOAD_BYTES ||
+    depth > MAX_PROMPT_PARSE_DEPTH
+  ) {
+    return undefined;
+  }
+  let offset = 0;
+  while (offset < payload.length) {
+    const tagResult = readVarint(payload, offset);
+    if (!tagResult || tagResult.value === 0) {
+      break;
+    }
+    offset = tagResult.nextOffset;
+    const tag = tagResult.value;
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >> 3;
+
+    if (wireType === 2) {
+      // length-delimited
+      const lengthResult = readVarint(payload, offset);
+      if (!lengthResult) {
+        break;
+      }
+      offset = lengthResult.nextOffset;
+      const len = lengthResult.value;
+      if (offset + len > payload.length) {
+        break;
+      }
+      if (len > MAX_PROMPT_FIELD_BYTES) {
+        offset += len;
+        continue;
+      }
+      if (fieldNumber === 2) {
+        // field 2 is the prompt text
+        const str = payload.subarray(offset, offset + len).toString("utf8");
+        if (isPrintableUtf8(str)) {
+          return str.trim();
+        }
+      }
+      // Recurse into the submessage
+      const nested = extractPromptFromPayload(
+        payload.subarray(offset, offset + len),
+        depth + 1
+      );
+      if (nested) {
+        return nested;
+      }
+      offset += len;
+    } else if (wireType === 0) {
+      // varint
+      const valueResult = readVarint(payload, offset);
+      if (!valueResult) {
+        break;
+      }
+      offset = valueResult.nextOffset;
+    } else if (wireType === 1) {
+      // 64-bit
+      offset += 8;
+    } else if (wireType === 5) {
+      // 32-bit
+      offset += 4;
+    } else {
+      break;
+    }
+  }
+  return undefined;
 }
