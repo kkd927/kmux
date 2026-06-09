@@ -26,7 +26,7 @@ describe("model pricing", () => {
     );
   });
 
-  it("falls back to the nearest lower Codex main-tier pricing for newer same-major models", () => {
+  it("uses exact pricing for the latest OpenAI text-token Codex model entries", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "codex",
       model: "gpt-5.5",
@@ -40,11 +40,121 @@ describe("model pricing", () => {
 
     expect(estimate).toEqual(
       expect.objectContaining({
-        modelId: "gpt-5.4",
-        inputCostUsd: expect.closeTo(0.005, 8),
-        outputCostUsd: expect.closeTo(0.006, 8),
-        thinkingCostUsd: expect.closeTo(0.0015, 8),
-        cacheReadCostUsd: expect.closeTo(0.0002, 8)
+        modelId: "gpt-5.5",
+        inputCostUsd: expect.closeTo(0.01, 8),
+        outputCostUsd: expect.closeTo(0.012, 8),
+        thinkingCostUsd: expect.closeTo(0.003, 8),
+        cacheReadCostUsd: expect.closeTo(0.0004, 8)
+      })
+    );
+  });
+
+  it("applies GPT-5.5 long-context pricing above the published threshold", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5.5",
+      inputTokens: 300_000,
+      outputTokens: 1_000,
+      thinkingTokens: 500,
+      cacheReadTokens: 20_000,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-5.5",
+        inputCostUsd: expect.closeTo(3, 8),
+        outputCostUsd: expect.closeTo(0.045, 8),
+        thinkingCostUsd: expect.closeTo(0.0225, 8),
+        cacheReadCostUsd: expect.closeTo(0.02, 8)
+      })
+    );
+  });
+
+  it.each(["gpt-5.5-pro", "gpt-5.4-pro"])(
+    "applies OpenAI pro long-context pricing above the published threshold for %s",
+    (model) => {
+      const estimate = estimateUsageComponentCosts({
+        vendor: "codex",
+        model,
+        inputTokens: 300_000,
+        outputTokens: 1_000,
+        thinkingTokens: 500,
+        cacheReadTokens: 20_000,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      });
+
+      expect(estimate).toEqual(
+        expect.objectContaining({
+          modelId: model,
+          inputCostUsd: expect.closeTo(18, 8),
+          outputCostUsd: expect.closeTo(0.27, 8),
+          thinkingCostUsd: expect.closeTo(0.135, 8),
+          cacheReadCostUsd: 0
+        })
+      );
+    }
+  );
+
+  it("uses exact pricing for current non-GPT Codex table entries", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "codex-mini-latest",
+      inputTokens: 2_000,
+      outputTokens: 400,
+      thinkingTokens: 100,
+      cacheReadTokens: 800,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "codex-mini-latest",
+        inputCostUsd: expect.closeTo(0.003, 8),
+        outputCostUsd: expect.closeTo(0.0024, 8),
+        thinkingCostUsd: expect.closeTo(0.0006, 8),
+        cacheReadCostUsd: expect.closeTo(0.0003, 8)
+      })
+    );
+  });
+
+  it("does not preserve manual Codex entries that are absent from current pricing tables", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5.3-codex-spark",
+      inputTokens: 2_000,
+      outputTokens: 400,
+      thinkingTokens: 100,
+      cacheReadTokens: 800,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toBeNull();
+  });
+
+  it("falls back to the nearest lower Codex main-tier pricing for newer same-major models", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5.6",
+      inputTokens: 2_000,
+      outputTokens: 400,
+      thinkingTokens: 100,
+      cacheReadTokens: 800,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-5.5",
+        inputCostUsd: expect.closeTo(0.01, 8),
+        outputCostUsd: expect.closeTo(0.012, 8),
+        thinkingCostUsd: expect.closeTo(0.003, 8),
+        cacheReadCostUsd: expect.closeTo(0.0004, 8)
       })
     );
   });
@@ -73,8 +183,8 @@ describe("model pricing", () => {
     );
   });
 
-  it.each(["claude-sonnet-4", "claude-sonnet-4-5"])(
-    "applies Claude Sonnet 4 long-context pricing for %s",
+  it.each(["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4"])(
+    "uses current Claude table pricing above 200K context for %s",
     (model) => {
       const estimate = estimateUsageComponentCosts({
         vendor: "claude",
@@ -90,11 +200,11 @@ describe("model pricing", () => {
       expect(estimate).toEqual(
         expect.objectContaining({
           modelId: model,
-          inputCostUsd: expect.closeTo(1.26, 8),
-          outputCostUsd: expect.closeTo(0.0225, 8),
-          thinkingCostUsd: expect.closeTo(0.01125, 8),
-          cacheReadCostUsd: expect.closeTo(0.0006, 8),
-          cacheWriteCostUsd: expect.closeTo(0.00075, 8)
+          inputCostUsd: expect.closeTo(0.63, 8),
+          outputCostUsd: expect.closeTo(0.015, 8),
+          thinkingCostUsd: expect.closeTo(0.0075, 8),
+          cacheReadCostUsd: expect.closeTo(0.0003, 8),
+          cacheWriteCostUsd: expect.closeTo(0.000375, 8)
         })
       );
     }
@@ -137,10 +247,48 @@ describe("model pricing", () => {
     );
   });
 
-  it("maps legacy Gemini 3 Pro preview labels to Gemini 3.1 Pro Preview pricing", () => {
+  it("does not preserve legacy Gemini model labels that are absent from current pricing tables", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "gemini",
       model: "gemini-3-pro-preview",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      thinkingTokens: 50,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toBeNull();
+  });
+
+  it("uses exact pricing for current Gemini 3.1 Flash-Lite table entries", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "gemini",
+      model: "gemini-3.1-flash-lite",
+      inputTokens: 2_000,
+      outputTokens: 300,
+      thinkingTokens: 100,
+      cacheReadTokens: 1_000,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gemini-3.1-flash-lite",
+        inputCostUsd: expect.closeTo(0.0005, 8),
+        outputCostUsd: expect.closeTo(0.00045, 8),
+        thinkingCostUsd: expect.closeTo(0.00015, 8),
+        cacheReadCostUsd: expect.closeTo(0.000025, 8)
+      })
+    );
+  });
+
+  it("uses official Gemini aliases when a pricing section lists multiple model IDs", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "gemini",
+      model: "gemini-3.1-pro-preview-customtools",
       inputTokens: 1_000,
       outputTokens: 100,
       thinkingTokens: 50,
@@ -156,29 +304,6 @@ describe("model pricing", () => {
         outputCostUsd: expect.closeTo(0.0012, 8),
         thinkingCostUsd: expect.closeTo(0.0006, 8),
         cacheReadCostUsd: expect.closeTo(0.00002, 8)
-      })
-    );
-  });
-
-  it("uses exact pricing for Gemini preview entries that now exist in the table", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "gemini",
-      model: "gemini-3.1-flash-lite-preview",
-      inputTokens: 2_000,
-      outputTokens: 300,
-      thinkingTokens: 100,
-      cacheReadTokens: 1_000,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gemini-3.1-flash-lite-preview",
-        inputCostUsd: expect.closeTo(0.0005, 8),
-        outputCostUsd: expect.closeTo(0.00045, 8),
-        thinkingCostUsd: expect.closeTo(0.00015, 8),
-        cacheReadCostUsd: expect.closeTo(0.000025, 8)
       })
     );
   });
