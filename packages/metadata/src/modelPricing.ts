@@ -74,11 +74,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerToken: 0.000015,
       cacheReadCostPerToken: 0.0000003,
       cacheCreateCostPerToken: 0.00000375,
-      inputCostPerTokenAboveThreshold: 0.000006,
-      outputCostPerTokenAboveThreshold: 0.0000225,
-      cacheReadCostPerTokenAboveThreshold: 0.0000006,
-      cacheCreateCostPerTokenAboveThreshold: 0.0000075,
-      aliases: ["claude-sonnet-4.5", "claude-sonnet-4-20250514"]
+      aliases: ["claude-sonnet-4.5"]
     },
     {
       modelId: "claude-opus-4-5",
@@ -86,7 +82,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerToken: 0.000025,
       cacheReadCostPerToken: 0.0000005,
       cacheCreateCostPerToken: 0.00000625,
-      aliases: ["claude-opus-4.5", "claude-opus-4-5-20251101"]
+      aliases: ["claude-opus-4.5"]
     },
     {
       modelId: "claude-haiku-4-5",
@@ -102,11 +98,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerToken: 0.000075,
       cacheReadCostPerToken: 0.0000015,
       cacheCreateCostPerToken: 0.00001875,
-      aliases: [
-        "claude-opus-4.1",
-        "claude-opus-4-1-20250805",
-        "claude-opus-4-20250514"
-      ]
+      aliases: ["claude-opus-4.1"]
     },
     {
       modelId: "claude-sonnet-4",
@@ -114,10 +106,6 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerToken: 0.000015,
       cacheReadCostPerToken: 0.0000003,
       cacheCreateCostPerToken: 0.00000375,
-      inputCostPerTokenAboveThreshold: 0.000006,
-      outputCostPerTokenAboveThreshold: 0.0000225,
-      cacheReadCostPerTokenAboveThreshold: 0.0000006,
-      cacheCreateCostPerTokenAboveThreshold: 0.0000075,
       aliases: ["claude-sonnet-4"]
     },
     {
@@ -139,11 +127,30 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   ],
   codex: [
     {
+      modelId: "gpt-5.5",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.00003,
+      cacheReadCostPerToken: 0.0000005,
+      inputCostPerTokenAboveThreshold: 0.00001,
+      outputCostPerTokenAboveThreshold: 0.000045,
+      cacheReadCostPerTokenAboveThreshold: 0.000001,
+      tieredPricingThresholdTokens: 272_000
+    },
+    {
+      modelId: "gpt-5.5-pro",
+      inputCostPerToken: 0.00003,
+      outputCostPerToken: 0.00018,
+      cacheReadCostPerToken: 0,
+      inputCostPerTokenAboveThreshold: 0.00006,
+      outputCostPerTokenAboveThreshold: 0.00027,
+      cacheReadCostPerTokenAboveThreshold: 0,
+      tieredPricingThresholdTokens: 272_000
+    },
+    {
       modelId: "gpt-5-codex",
       inputCostPerToken: 0.00000125,
       outputCostPerToken: 0.00001,
-      cacheReadCostPerToken: 0.000000125,
-      aliases: ["gpt-5.1-codex", "gpt-5.1-codex-max"]
+      cacheReadCostPerToken: 0.000000125
     },
     {
       modelId: "gpt-5.4",
@@ -153,8 +160,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       inputCostPerTokenAboveThreshold: 0.000005,
       outputCostPerTokenAboveThreshold: 0.0000225,
       cacheReadCostPerTokenAboveThreshold: 0.0000005,
-      tieredPricingThresholdTokens: 272_000,
-      aliases: ["gpt-5.4-codex"]
+      tieredPricingThresholdTokens: 272_000
     },
     {
       modelId: "gpt-5.4-mini",
@@ -163,20 +169,23 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       cacheReadCostPerToken: 0.000000075
     },
     {
+      modelId: "gpt-5.4-nano",
+      inputCostPerToken: 0.0000002,
+      outputCostPerToken: 0.00000125,
+      cacheReadCostPerToken: 0.00000002
+    },
+    {
       modelId: "gpt-5.4-pro",
       inputCostPerToken: 0.00003,
       outputCostPerToken: 0.00018,
-      cacheReadCostPerToken: 0
+      cacheReadCostPerToken: 0,
+      inputCostPerTokenAboveThreshold: 0.00006,
+      outputCostPerTokenAboveThreshold: 0.00027,
+      cacheReadCostPerTokenAboveThreshold: 0,
+      tieredPricingThresholdTokens: 272_000
     },
     {
       modelId: "gpt-5.3-codex",
-      inputCostPerToken: 0.00000175,
-      outputCostPerToken: 0.000014,
-      cacheReadCostPerToken: 0.000000175,
-      aliases: ["gpt-5.2-codex"]
-    },
-    {
-      modelId: "gpt-5.3-codex-spark",
       inputCostPerToken: 0.00000175,
       outputCostPerToken: 0.000014,
       cacheReadCostPerToken: 0.000000175
@@ -204,6 +213,12 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       inputCostPerToken: 0.00000025,
       outputCostPerToken: 0.000002,
       cacheReadCostPerToken: 0.000000025
+    },
+    {
+      modelId: "codex-mini-latest",
+      inputCostPerToken: 0.0000015,
+      outputCostPerToken: 0.000006,
+      cacheReadCostPerToken: 0.000000375
     }
   ],
   gemini: [
@@ -230,13 +245,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerTokenAboveThreshold: 0.000018,
       cacheReadCostPerTokenAboveThreshold: 0.0000004,
       cacheCreateCostPerTokenAboveThreshold: 0.0000004,
-      aliases: ["gemini-3-pro-preview"]
-    },
-    {
-      modelId: "gemini-3.1-flash-lite-preview",
-      inputCostPerToken: 0.00000025,
-      outputCostPerToken: 0.0000015,
-      cacheReadCostPerToken: 0.000000025
+      aliases: ["gemini-3.1-pro-preview-customtools"]
     },
     {
       modelId: "gemini-3.1-flash-lite",
@@ -258,13 +267,7 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       inputCostPerTokenAboveThreshold: 0.0000025,
       outputCostPerTokenAboveThreshold: 0.000015,
       cacheReadCostPerTokenAboveThreshold: 0.00000025,
-      cacheCreateCostPerTokenAboveThreshold: 0.00000025,
-      aliases: [
-        "gemini/gemini-2.5-pro",
-        "gemini-2.5-pro-preview-06-05",
-        "gemini-2.5-pro-preview-05-06",
-        "gemini-2.5-pro-preview-03-25"
-      ]
+      cacheCreateCostPerTokenAboveThreshold: 0.00000025
     },
     {
       modelId: "gemini-2.5-flash-lite-preview",
@@ -276,24 +279,13 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       modelId: "gemini-2.5-flash-lite",
       inputCostPerToken: 0.0000001,
       outputCostPerToken: 0.0000004,
-      cacheReadCostPerToken: 0.00000001,
-      aliases: [
-        "gemini/gemini-2.5-flash-lite",
-        "gemini-2.5-flash-lite-preview-06-17",
-        "gemini-2.5-flash-lite-preview-09-2025"
-      ]
+      cacheReadCostPerToken: 0.00000001
     },
     {
       modelId: "gemini-2.5-flash",
       inputCostPerToken: 0.0000003,
       outputCostPerToken: 0.0000025,
-      cacheReadCostPerToken: 0.00000003,
-      aliases: [
-        "gemini/gemini-2.5-flash",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-2.5-flash-preview-04-17",
-        "gemini-2.5-flash-preview-09-2025"
-      ]
+      cacheReadCostPerToken: 0.00000003
     },
     {
       modelId: "gemini-2.0-flash-lite",
@@ -337,7 +329,7 @@ type CodexForwardCompatSpec = {
   kind: "codex";
   major: number;
   minor: number;
-  tier: "main" | "mini" | "pro" | "spark";
+  tier: "main" | "mini" | "nano" | "pro" | "spark";
 };
 
 type ClaudeForwardCompatSpec = {
@@ -659,9 +651,10 @@ function parseForwardCompatSpec(
 function parseCodexForwardCompatSpec(
   normalizedKey: string
 ): CodexForwardCompatSpec | null {
-  const match = /^gpt-(\d+)\.(\d+)(?:-(codex-spark|mini|pro|codex))?$/u.exec(
-    normalizedKey
-  );
+  const match =
+    /^gpt-(\d+)\.(\d+)(?:-(codex-spark|mini|nano|pro|codex))?$/u.exec(
+      normalizedKey
+    );
   if (!match) {
     return null;
   }
@@ -673,11 +666,13 @@ function parseCodexForwardCompatSpec(
     tier:
       match[3] === "mini"
         ? "mini"
-        : match[3] === "pro"
-          ? "pro"
-          : match[3] === "codex-spark"
-            ? "spark"
-            : "main"
+        : match[3] === "nano"
+          ? "nano"
+          : match[3] === "pro"
+            ? "pro"
+            : match[3] === "codex-spark"
+              ? "spark"
+              : "main"
   };
 }
 

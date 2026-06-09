@@ -14,22 +14,13 @@ const MODEL_PRICING_PATH = path.join(
 
 const SOURCES = {
   claude: "https://docs.anthropic.com/en/docs/about-claude/pricing",
-  codex: "https://developers.openai.com/api/docs/pricing",
+  codex:
+    "https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens",
   gemini: "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
 };
 
 const MANUAL_ALIASES = {
-  claude: {
-    "claude-sonnet-4-5": ["claude-sonnet-4-20250514"],
-    "claude-opus-4-5": ["claude-opus-4-5-20251101"],
-    "claude-opus-4-1": ["claude-opus-4-1-20250805", "claude-opus-4-20250514"]
-  },
-  codex: {
-    "gpt-5-codex": ["gpt-5.1-codex", "gpt-5.1-codex-max"],
-    "gpt-5.3-codex": ["gpt-5.2-codex"]
-  },
   gemini: {
-    "gemini-3.1-pro-preview": ["gemini-3-pro-preview"],
     "gemini-3.5-flash": [
       "Gemini 3.5 Flash (Low)",
       "Gemini 3.5 Flash (Medium)",
@@ -37,103 +28,34 @@ const MANUAL_ALIASES = {
       "gemini-3.5-flash-low",
       "gemini-3.5-flash-medium",
       "gemini-3.5-flash-high"
-    ],
-    "gemini-2.5-pro": [
-      "gemini/gemini-2.5-pro",
-      "gemini-2.5-pro-preview-06-05",
-      "gemini-2.5-pro-preview-05-06",
-      "gemini-2.5-pro-preview-03-25"
-    ],
-    "gemini-2.5-flash": [
-      "gemini/gemini-2.5-flash",
-      "gemini-2.5-flash-preview-05-20",
-      "gemini-2.5-flash-preview-04-17",
-      "gemini-2.5-flash-preview-09-2025"
-    ],
-    "gemini-2.5-flash-lite": [
-      "gemini/gemini-2.5-flash-lite",
-      "gemini-2.5-flash-lite-preview-06-17",
-      "gemini-2.5-flash-lite-preview-09-2025"
     ]
   }
 };
 
-const MANUAL_ENTRIES = {
-  claude: [
-    {
-      modelId: "claude-sonnet-4-5",
-      inputCostPerTokenAboveThreshold: dollarsPerMillion(6),
-      outputCostPerTokenAboveThreshold: dollarsPerMillion(22.5),
-      cacheReadCostPerTokenAboveThreshold: dollarsPerMillion(0.6),
-      cacheCreateCostPerTokenAboveThreshold: dollarsPerMillion(7.5)
-    },
-    {
-      modelId: "claude-sonnet-4",
-      inputCostPerTokenAboveThreshold: dollarsPerMillion(6),
-      outputCostPerTokenAboveThreshold: dollarsPerMillion(22.5),
-      cacheReadCostPerTokenAboveThreshold: dollarsPerMillion(0.6),
-      cacheCreateCostPerTokenAboveThreshold: dollarsPerMillion(7.5)
-    }
-  ],
-  codex: [
-    {
-      modelId: "gpt-5.4",
-      inputCostPerToken: dollarsPerMillion(2.5),
-      outputCostPerToken: dollarsPerMillion(15),
-      cacheReadCostPerToken: dollarsPerMillion(0.25),
-      inputCostPerTokenAboveThreshold: dollarsPerMillion(5),
-      outputCostPerTokenAboveThreshold: dollarsPerMillion(22.5),
-      cacheReadCostPerTokenAboveThreshold: dollarsPerMillion(0.5),
-      tieredPricingThresholdTokens: 272_000,
-      aliases: ["gpt-5.4-codex"]
-    },
-    {
-      modelId: "gpt-5.4-mini",
-      inputCostPerToken: dollarsPerMillion(0.75),
-      outputCostPerToken: dollarsPerMillion(4.5),
-      cacheReadCostPerToken: dollarsPerMillion(0.075)
-    },
-    {
-      modelId: "gpt-5.4-pro",
-      inputCostPerToken: dollarsPerMillion(30),
-      outputCostPerToken: dollarsPerMillion(180),
-      cacheReadCostPerToken: 0
-    },
-    {
-      modelId: "gpt-5.3-codex-spark",
-      inputCostPerToken: dollarsPerMillion(1.75),
-      outputCostPerToken: dollarsPerMillion(14),
-      cacheReadCostPerToken: dollarsPerMillion(0.175)
-    }
-  ],
-  gemini: [
-    {
-      modelId: "gemini-3.1-flash-lite-preview",
-      inputCostPerToken: dollarsPerMillion(0.25),
-      outputCostPerToken: dollarsPerMillion(1.5),
-      cacheReadCostPerToken: dollarsPerMillion(0.025)
-    },
-    {
-      modelId: "gemini-3-flash-preview",
-      inputCostPerToken: dollarsPerMillion(0.5),
-      outputCostPerToken: dollarsPerMillion(3),
-      cacheReadCostPerToken: dollarsPerMillion(0.05)
-    }
-  ]
-};
+const MANUAL_ENTRIES = {};
 
 const VENDOR_ORDER = ["claude", "codex", "gemini"];
 const CODEX_MODEL_ORDER = [
+  "gpt-5.5",
+  "gpt-5.5-pro",
   "gpt-5-codex",
   "gpt-5.4",
   "gpt-5.4-mini",
+  "gpt-5.4-nano",
   "gpt-5.4-pro",
   "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
+  "gpt-5.2",
+  "gpt-5.2-pro",
   "gpt-5.2-codex",
   "gpt-5.1-codex-max",
   "gpt-5.1-codex",
-  "gpt-5.1-codex-mini"
+  "gpt-5.1-codex-mini",
+  "codex-mini-latest",
+  "gpt-5.1",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5-pro"
 ];
 
 async function main() {
@@ -205,6 +127,7 @@ async function fetchClaudePricing() {
 
 async function fetchCodexPricing() {
   const html = await fetchText(SOURCES.codex);
+  const textTokenEntries = fetchOpenAiTextTokenPricing(html);
   const tables = parseAstroPricingTables(html);
   const standardCodexTable = tables.find(
     (table) =>
@@ -217,15 +140,68 @@ async function fetchCodexPricing() {
     throw new Error("Could not find OpenAI Codex pricing table.");
   }
 
-  return standardCodexTable.rows
+  const codexEntries = standardCodexTable.rows
     .filter((row) => row[0] === "Codex")
-    .filter((row) => /^gpt-5(?:\.\d+)?-codex(?:-[a-z]+)?$/u.test(row[1]))
     .map((row) => ({
       modelId: row[1],
       inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[2])),
       outputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[4])),
       cacheReadCostPerToken: dollarsPerMillion(parseRequiredNumber(row[3]))
     }));
+
+  return [...textTokenEntries, ...codexEntries];
+}
+
+function fetchOpenAiTextTokenPricing(html) {
+  const standardTextTokenTable = parseTextTokenPricingTables(html).find(
+    (table) => table.tier === "standard"
+  );
+
+  if (!standardTextTokenTable) {
+    throw new Error("Could not find OpenAI standard text-token pricing table.");
+  }
+
+  const thresholdByModel = new Map(
+    standardTextTokenTable.propsRows
+      .map((row) => openAiTextModelInfo(row[0]))
+      .filter((model) => model.thresholdTokens)
+      .map((model) => [model.modelId, model.thresholdTokens])
+  );
+  const rows =
+    standardTextTokenTable.renderedRows.length > 0
+      ? standardTextTokenTable.renderedRows
+      : standardTextTokenTable.propsRows;
+
+  return rows
+    .map((row) => [openAiTextModelInfo(row[0]).modelId, ...row.slice(1)])
+    .filter((row) => /^gpt-5(?:\.\d+)?(?:-(?:mini|nano|pro))?$/u.test(row[0]))
+    .map((row) => {
+      const entry = {
+        modelId: row[0],
+        inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[1])),
+        outputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[3])),
+        cacheReadCostPerToken: dollarsPerMillion(parseOptionalNumber(row[2]))
+      };
+      if (hasPrice(row[4]) && hasPrice(row[6])) {
+        const threshold = thresholdByModel.get(entry.modelId);
+        if (!threshold) {
+          throw new Error(
+            `Could not find OpenAI long-context threshold for ${entry.modelId}.`
+          );
+        }
+        entry.inputCostPerTokenAboveThreshold = dollarsPerMillion(
+          parseRequiredNumber(row[4])
+        );
+        entry.outputCostPerTokenAboveThreshold = dollarsPerMillion(
+          parseRequiredNumber(row[6])
+        );
+        entry.cacheReadCostPerTokenAboveThreshold = dollarsPerMillion(
+          parseOptionalNumber(row[5])
+        );
+        entry.tieredPricingThresholdTokens = threshold;
+      }
+      return entry;
+    });
 }
 
 async function fetchGeminiPricing() {
@@ -234,7 +210,8 @@ async function fetchGeminiPricing() {
   const entries = [];
 
   for (const section of sections) {
-    const modelId = section.match(/<code[^>]*>(gemini-[^<]+)<\/code>/u)?.[1];
+    const modelIds = geminiTextModelIds(section);
+    const modelId = modelIds[0];
     if (!modelId || !isGeminiTextModel(modelId)) {
       continue;
     }
@@ -263,6 +240,10 @@ async function fetchGeminiPricing() {
       outputCostPerToken: dollarsPerMillion(outputPrices.base),
       cacheReadCostPerToken: dollarsPerMillion(cachePrices.base ?? 0)
     };
+    const aliases = modelIds.slice(1);
+    if (aliases.length > 0) {
+      entry.aliases = aliases;
+    }
 
     if (inputPrices.above || outputPrices.above || cachePrices.above) {
       entry.inputCostPerTokenAboveThreshold = dollarsPerMillion(
@@ -315,6 +296,21 @@ function parseAstroPricingTables(html) {
         rows: (props.rows ?? []).map((row) => row.map(cellText))
       });
     }
+  }
+  return tables;
+}
+
+function parseTextTokenPricingTables(html) {
+  const tables = [];
+  for (const match of html.matchAll(
+    /component-export="TextTokenPricingTables"[^>]*props="([^"]+)"[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/gu
+  )) {
+    const props = reviveAstroJson(JSON.parse(decodeHtml(match[1])));
+    tables.push({
+      tier: props.tier,
+      propsRows: (props.rows ?? []).map((row) => row.map(cellText)),
+      renderedRows: parseHtmlTable(`<table>${match[2]}</table>`)
+    });
   }
   return tables;
 }
@@ -505,6 +501,22 @@ function claudeDottedAlias(modelName) {
   return modelName.toLowerCase().replace(/\s+/gu, "-");
 }
 
+function geminiTextModelIds(section) {
+  return [
+    ...new Set(
+      [...section.matchAll(/<code[^>]*>(gemini-[^<]+)<\/code>/gu)]
+        .map((match) => match[1])
+        .filter((modelId) => isGeminiTextModelAlias(modelId))
+    )
+  ];
+}
+
+function isGeminiTextModelAlias(modelId) {
+  return isGeminiTextModel(
+    canonicalGeminiModelId(modelId).replace(/-customtools$/u, "")
+  );
+}
+
 function isGeminiTextModel(modelId) {
   return /^gemini-(?:3(?:\.\d+)?|2\.[05])-(?:pro|flash-lite|flash)(?:-preview(?:-\d{2}-\d{4})?)?$/u.test(
     modelId
@@ -552,6 +564,30 @@ function parseRequiredNumber(value) {
     throw new Error(`Expected numeric price, got ${value}`);
   }
   return parsed;
+}
+
+function parseOptionalNumber(value) {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "" || normalized === "-" || normalized === "null") {
+    return 0;
+  }
+  return parseRequiredNumber(value);
+}
+
+function hasPrice(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized !== "" && normalized !== "-" && normalized !== "null";
+}
+
+function openAiTextModelInfo(value) {
+  const text = cellText(value);
+  const thresholdMatch = /\(<\s*([0-9.]+)K context length\)/iu.exec(text);
+  return {
+    modelId: text.replace(/\s*\(<\s*[0-9.]+K context length\)\s*$/iu, ""),
+    thresholdTokens: thresholdMatch
+      ? Math.round(Number(thresholdMatch[1]) * 1_000)
+      : undefined
+  };
 }
 
 function dollarsPerMillion(dollars) {
