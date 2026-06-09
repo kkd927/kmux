@@ -241,7 +241,7 @@ describe("TerminalPane visibility cleanup", () => {
     container.remove();
   });
 
-  it("shows shell startup status until the active surface accepts input", async () => {
+  it("keeps shell startup status hidden while the active surface waits for input", async () => {
     const props = createProps("surface_1");
     props.surfaces = [
       {
@@ -256,25 +256,10 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(
       container.querySelector("[data-testid='terminal-shell-loading-surface_1']")
-        ?.textContent
-    ).toBe("Starting shell...");
-    expect(
-      container
-        .querySelector("[data-testid='terminal-shell-loading-surface_1']")
-        ?.parentElement?.querySelector("[data-testid='terminal-surface_1']")
     ).toBeNull();
-
-    await act(async () => {
-      root.render(
-        <TerminalPane
-          {...props}
-          surfaces={[{ ...props.surfaces[0], shellInputReady: true }]}
-        />
-      );
-    });
-
+    expect(container.textContent).not.toContain("Starting shell");
     expect(
-      container.querySelector("[data-testid='terminal-shell-loading-surface_1']")
-    ).toBeNull();
+      container.querySelector("[data-testid='terminal-surface_1']")
+    ).not.toBeNull();
   });
 });
