@@ -464,29 +464,6 @@
   white-space: nowrap;
 }
 
-.shellStartupStatus {
-  align-self: center;
-  max-width: min(34vw, 180px);
-  margin-left: 6px;
-  padding: 0 8px;
-  border-left: 1px solid var(--border-strong);
-  color: var(--text-secondary);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  font-size: 11px;
-  line-height: 28px;
-  letter-spacing: 0;
-  overflow: hidden;
-  pointer-events: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .terminalViewport {
   width: 100%;
   height: 100%;
