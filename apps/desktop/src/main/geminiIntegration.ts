@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import type { AgentStorageRoots } from "@kmux/metadata";
+
+import { shellAbsolutePathAssignment } from "./agentHookCommand";
+
 const GEMINI_SETTINGS_PATH_SEGMENTS = [".gemini", "settings.json"] as const;
 const KMUX_MANAGED_GEMINI_HOOK_MARKER = "KMUX_MANAGED_GEMINI_HOOK=1";
 
@@ -40,6 +44,12 @@ export interface GeminiIntegrationInstallResult {
   changed: boolean;
   settingsPath: string;
   warning?: string;
+}
+
+export interface GeminiHookRuntimePaths {
+  socketPath?: string;
+  agentBinDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
 }
 
 const MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
@@ -132,27 +142,42 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
-function buildGeminiHookCommand(eventName: GeminiHookEvent): string {
+function buildGeminiHookCommand(
+  eventName: GeminiHookEvent,
+  runtimePaths: GeminiHookRuntimePaths = {}
+): string {
   return [
     `${KMUX_MANAGED_GEMINI_HOOK_MARKER};`,
-    '[ -n "${KMUX_SOCKET_PATH:-}" ] || exit 0;',
-    '[ -n "${KMUX_AGENT_BIN_DIR:-}" ] || exit 0;',
-    '[ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ] || exit 0;',
-    `KMUX_AGENT_HOOK_OUTPUT_MODE=json "${"${KMUX_AGENT_BIN_DIR}"}/kmux-agent-hook" gemini ${eventName} || true`
+    shellAbsolutePathAssignment(
+      "_kmux_socket_path",
+      "KMUX_SOCKET_PATH",
+      runtimePaths.socketPath
+    ),
+    shellAbsolutePathAssignment(
+      "_kmux_agent_bin_dir",
+      "KMUX_AGENT_BIN_DIR",
+      runtimePaths.agentBinDir
+    ),
+    'if [ -n "$_kmux_socket_path" ] &&',
+    '[ -n "$_kmux_agent_bin_dir" ] &&',
+    '[ -x "$_kmux_agent_bin_dir/kmux-agent-hook" ]; then',
+    `KMUX_SOCKET_PATH="$_kmux_socket_path" KMUX_AGENT_BIN_DIR="$_kmux_agent_bin_dir" KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini ${eventName} || true;`,
+    "fi"
   ].join(" ");
 }
 
 function buildManagedMatcherGroup({
   eventName,
   matcher
-}: ManagedGeminiHookDefinition): HookMatcherGroup {
+}: ManagedGeminiHookDefinition,
+runtimePaths: GeminiHookRuntimePaths): HookMatcherGroup {
   return {
     ...(matcher ? { matcher } : {}),
     hooks: [
       {
         type: "command",
         name: `kmux-gemini-${eventName.toLowerCase()}`,
-        command: buildGeminiHookCommand(eventName)
+        command: buildGeminiHookCommand(eventName, runtimePaths)
       }
     ]
   };
@@ -173,7 +198,8 @@ function isManagedGeminiHookCommand(
 
 function mergeManagedMatcherGroups(
   existingGroups: unknown,
-  definition: ManagedGeminiHookDefinition
+  definition: ManagedGeminiHookDefinition,
+  runtimePaths: GeminiHookRuntimePaths
 ): HookMatcherGroup[] {
   const nextGroups: HookMatcherGroup[] = [];
   for (const group of Array.isArray(existingGroups) ? existingGroups : []) {
@@ -198,7 +224,7 @@ function mergeManagedMatcherGroups(
     });
   }
 
-  nextGroups.push(buildManagedMatcherGroup(definition));
+  nextGroups.push(buildManagedMatcherGroup(definition, runtimePaths));
   return nextGroups;
 }
 
@@ -217,14 +243,17 @@ function parseGeminiSettings(settingsPath: string): JsonObject | null {
 }
 
 export function ensureGeminiHooksInstalled(
-  homeDir: string | undefined
+  homeDir: string | undefined,
+  runtimePaths: GeminiHookRuntimePaths = {}
 ): GeminiIntegrationInstallResult {
   const normalizedHomeDir = homeDir?.trim();
-  const settingsPath = normalizedHomeDir
-    ? join(normalizedHomeDir, ...GEMINI_SETTINGS_PATH_SEGMENTS)
-    : join(...GEMINI_SETTINGS_PATH_SEGMENTS);
+  const settingsPath =
+    runtimePaths.agentStorageRoots?.gemini.settingsPath ??
+    (normalizedHomeDir
+      ? join(normalizedHomeDir, ...GEMINI_SETTINGS_PATH_SEGMENTS)
+      : join(...GEMINI_SETTINGS_PATH_SEGMENTS));
 
-  if (!normalizedHomeDir) {
+  if (!normalizedHomeDir && !runtimePaths.agentStorageRoots) {
     return {
       changed: false,
       settingsPath,
@@ -249,7 +278,8 @@ export function ensureGeminiHooksInstalled(
   for (const definition of MANAGED_GEMINI_HOOKS) {
     nextHooks[definition.eventName] = mergeManagedMatcherGroups(
       existingHooks[definition.eventName],
-      definition
+      definition,
+      runtimePaths
     );
   }
 

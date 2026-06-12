@@ -18,6 +18,7 @@ import type {
 const execFileAsync = promisify(execFile);
 
 const SYSTEM_PROFILER_MAX_BUFFER = 16 * 1024 * 1024;
+const FONTCONFIG_MAX_BUFFER = 16 * 1024 * 1024;
 const DIRECT_SYMBOL_FONTS = ["Symbols Nerd Font Mono", "Symbols Nerd Font"];
 const GENERIC_FONT_FAMILIES = new Set([
   "serif",
@@ -55,6 +56,17 @@ type SystemProfilerFontPayload = {
     }>;
   }>;
 };
+
+type FontInventoryExecFile = (
+  file: string,
+  args: string[],
+  options: {
+    env: NodeJS.ProcessEnv;
+    maxBuffer: number;
+  }
+) => Promise<{
+  stdout: string | Buffer;
+}>;
 
 export class TerminalTypographyController {
   private readonly fontInventoryProvider: FontInventoryProvider;
@@ -215,13 +227,18 @@ export class TerminalTypographyController {
 }
 
 export function createFontInventoryProvider(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  execFileImpl: FontInventoryExecFile = execFileAsync
 ): FontInventoryProvider {
   const fakeFamilies = parseFakeFontFamilies(env[FONT_INVENTORY_ENV_KEY]);
   if (fakeFamilies.length > 0) {
     return createStaticFontInventoryProvider(fakeFamilies);
   }
-  return createSystemProfilerFontInventoryProvider(env);
+  if (platform === "linux") {
+    return createFontConfigFontInventoryProvider(env, execFileImpl);
+  }
+  return createSystemProfilerFontInventoryProvider(env, execFileImpl);
 }
 
 export function createStaticFontInventoryProvider(
@@ -236,11 +253,12 @@ export function createStaticFontInventoryProvider(
 }
 
 function createSystemProfilerFontInventoryProvider(
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  execFileImpl: FontInventoryExecFile = execFileAsync
 ): FontInventoryProvider {
   return {
     async listFontFamilies() {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFileImpl(
         "system_profiler",
         ["SPFontsDataType", "-json"],
         {
@@ -248,7 +266,26 @@ function createSystemProfilerFontInventoryProvider(
           maxBuffer: SYSTEM_PROFILER_MAX_BUFFER
         }
       );
-      return parseSystemProfilerFonts(stdout);
+      return parseSystemProfilerFonts(String(stdout));
+    }
+  };
+}
+
+export function createFontConfigFontInventoryProvider(
+  env: NodeJS.ProcessEnv,
+  execFileImpl: FontInventoryExecFile = execFileAsync
+): FontInventoryProvider {
+  return {
+    async listFontFamilies() {
+      const { stdout } = await execFileImpl(
+        "fc-list",
+        ["--format", "%{family}\n"],
+        {
+          env,
+          maxBuffer: FONTCONFIG_MAX_BUFFER
+        }
+      );
+      return parseFontConfigFamilies(String(stdout));
     }
   };
 }
@@ -308,6 +345,16 @@ function parseSystemProfilerFonts(stdout: string): string[] {
       .filter((family): family is string => Boolean(family))
   );
   return dedupeFontFamilies(fontFamilies ?? []);
+}
+
+export function parseFontConfigFamilies(stdout: string): string[] {
+  return dedupeFontFamilies(
+    stdout
+      .split(/\r?\n/)
+      .flatMap((line) => line.split(","))
+      .map((family) => family.trim())
+      .filter(Boolean)
+  );
 }
 
 function buildCandidateGroups(

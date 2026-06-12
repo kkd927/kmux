@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ShellStoreSnapshot } from "@kmux/proto";
 
+import { buildPlatformKeyboardPolicy } from "../../../shared/platform/keyboardPolicy";
 import { useGlobalShortcuts } from "./useGlobalShortcuts";
 
 (
@@ -37,6 +38,15 @@ describe("useGlobalShortcuts", () => {
     root = ReactDOMClient.createRoot(container);
   });
 
+  const linuxKeyboardPolicy = buildPlatformKeyboardPolicy({
+    platform: "linux",
+    labelStyle: "text"
+  });
+  const darwinKeyboardPolicy = buildPlatformKeyboardPolicy({
+    platform: "darwin",
+    labelStyle: "mac-symbols"
+  });
+
   afterEach(() => {
     act(() => {
       root.unmount();
@@ -60,7 +70,7 @@ describe("useGlobalShortcuts", () => {
       });
 
       useGlobalShortcuts({
-        isMac: false,
+        keyboardPolicy: linuxKeyboardPolicy,
         viewRef,
         dismissibleUiStateRef,
         setShowWorkspaceShortcutHints: vi.fn(),
@@ -139,7 +149,7 @@ describe("useGlobalShortcuts", () => {
       });
 
       useGlobalShortcuts({
-        isMac: false,
+        keyboardPolicy: linuxKeyboardPolicy,
         viewRef,
         dismissibleUiStateRef,
         setShowWorkspaceShortcutHints: vi.fn(),
@@ -212,7 +222,7 @@ describe("useGlobalShortcuts", () => {
       });
 
       useGlobalShortcuts({
-        isMac: false,
+        keyboardPolicy: linuxKeyboardPolicy,
         viewRef,
         dismissibleUiStateRef,
         setShowWorkspaceShortcutHints: vi.fn(),
@@ -258,4 +268,350 @@ describe("useGlobalShortcuts", () => {
     expect(requestWorkspaceClose).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it("lets Linux reserved system chords pass through user shortcut bindings", () => {
+    const openPalette = vi.fn();
+    const requestWorkspaceClose = vi.fn(async () => undefined);
+    const dispatch = vi.fn(async () => undefined);
+
+    function Harness(): null {
+      const view = createViewSnapshot();
+      view.settings.shortcuts = {
+        "command.palette": "Ctrl+Alt+T",
+        "workspace.close": "Alt+F4"
+      };
+      const viewRef = useRef(view);
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: linuxKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        setSettingsOpen: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette,
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose,
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    const terminalShortcut = new KeyboardEvent("keydown", {
+      key: "t",
+      code: "KeyT",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    act(() => {
+      window.dispatchEvent(terminalShortcut);
+    });
+
+    const closeShortcut = new KeyboardEvent("keydown", {
+      key: "F4",
+      code: "F4",
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    act(() => {
+      window.dispatchEvent(closeShortcut);
+    });
+
+    expect(terminalShortcut.defaultPrevented).toBe(false);
+    expect(closeShortcut.defaultPrevented).toBe(false);
+    expect(openPalette).not.toHaveBeenCalled();
+    expect(requestWorkspaceClose).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("uses the keyboard policy for Linux number-row workspace switching", () => {
+    const dispatch = vi.fn(async () => undefined);
+    const setShowWorkspaceShortcutHints = vi.fn();
+
+    function Harness(): null {
+      const viewRef = useRef(createViewSnapshot());
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: linuxKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints,
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        setSettingsOpen: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose: vi.fn(async () => undefined),
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "1",
+          code: "Digit1",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(setShowWorkspaceShortcutHints).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "1",
+          code: "Digit1",
+          altKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "workspace.selectIndex",
+      index: 0
+    });
+  });
+
+  it("keeps macOS number-row workspace switching on the policy Meta modifier", () => {
+    const dispatch = vi.fn(async () => undefined);
+
+    function Harness(): null {
+      const viewRef = useRef(createViewSnapshot());
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: darwinKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        setSettingsOpen: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose: vi.fn(async () => undefined),
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "2",
+          code: "Digit2",
+          metaKey: true,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "workspace.selectIndex",
+      index: 1
+    });
+  });
+
+  it("uses the keyboard policy for Linux number-row surface switching", () => {
+    const dispatch = vi.fn(async () => undefined);
+
+    function Harness(): null {
+      const view = createViewSnapshot();
+      view.activeWorkspacePaneTree = {
+        id: "workspace_1",
+        rootNodeId: "split_1",
+        activePaneId: "pane_2",
+        nodes: {
+          split_1: {
+            id: "split_1",
+            kind: "split",
+            axis: "horizontal",
+            ratio: 0.5,
+            first: "leaf_1",
+            second: "leaf_2"
+          },
+          leaf_1: {
+            id: "leaf_1",
+            kind: "leaf",
+            paneId: "pane_1"
+          },
+          leaf_2: {
+            id: "leaf_2",
+            kind: "leaf",
+            paneId: "pane_2"
+          }
+        },
+        panes: {
+          pane_1: {
+            id: "pane_1",
+            surfaceIds: ["surface_1", "surface_2"],
+            activeSurfaceId: "surface_1",
+            focused: false
+          },
+          pane_2: {
+            id: "pane_2",
+            surfaceIds: ["surface_3"],
+            activeSurfaceId: "surface_3",
+            focused: true
+          }
+        },
+        surfaces: {
+          surface_1: createSurface("surface_1"),
+          surface_2: createSurface("surface_2"),
+          surface_3: createSurface("surface_3")
+        }
+      };
+      const viewRef = useRef(view);
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        worktreeDialogOpen: false
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: linuxKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        setSettingsOpen: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose: vi.fn(async () => undefined),
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "2",
+          code: "Digit2",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "surface.focus",
+      surfaceId: "surface_2"
+    });
+  });
 });
+
+function createSurface(
+  id: string
+): ShellStoreSnapshot["activeWorkspacePaneTree"]["surfaces"][string] {
+  return {
+    id,
+    title: id,
+    ports: [],
+    unreadCount: 0,
+    attention: false,
+    sessionState: "running",
+    shellInputReady: true
+  };
+}

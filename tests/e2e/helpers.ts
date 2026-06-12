@@ -18,8 +18,8 @@ import type {
   SurfaceSnapshotPayload
 } from "@kmux/proto";
 
-type TestActiveWorkspace =
-  ShellStoreSnapshot["activeWorkspace"] & ShellStoreSnapshot["activeWorkspacePaneTree"];
+type TestActiveWorkspace = ShellStoreSnapshot["activeWorkspace"] &
+  ShellStoreSnapshot["activeWorkspacePaneTree"];
 
 export type TestShellView = Omit<ShellStoreSnapshot, "activeWorkspace"> & {
   activeWorkspace: TestActiveWorkspace;
@@ -31,6 +31,7 @@ type KmuxWindow = {
     dispatch: (action: unknown) => Promise<void>;
   };
   kmuxTest?: {
+    getRuntimeEnv: () => Record<string, string>;
     snapshotSurface: (
       surfaceId: string,
       options?: SurfaceSnapshotOptions
@@ -62,6 +63,22 @@ export interface KmuxLaunchOptions {
   env?: Record<string, string | undefined>;
 }
 
+export interface TerminalCellMetrics {
+  fontStatus: string;
+  devicePixelRatio: number;
+  terminalCols: number | null;
+  terminalRows: number | null;
+  visibleRowCount: number;
+  screenWidth: number;
+  screenHeight: number;
+  cellWidth: number | null;
+  cellHeight: number | null;
+  averageRowHeight: number | null;
+  maxRowHeightDelta: number;
+}
+
+type ElectronLaunchOptions = NonNullable<Parameters<typeof electron.launch>[0]>;
+
 export function kmuxPaths(): {
   currentDir: string;
   appRoot: string;
@@ -86,11 +103,13 @@ export function kmuxPaths(): {
 }
 
 export function createSandbox(prefix: string): KmuxSandbox {
-  const profileRoot = mkdtempSync(path.join(tmpdir(), prefix));
-  const configDir = path.join(profileRoot, "config");
-  const runtimeDir = path.join(profileRoot, "runtime");
+  const profileRoot = mkdtempSync(
+    path.join(tmpdir(), shortSandboxPrefix(prefix))
+  );
+  const configDir = path.join(profileRoot, "c");
+  const runtimeDir = path.join(profileRoot, "r");
   const socketPath = path.join(runtimeDir, "control.sock");
-  const shellHomeDir = path.join(profileRoot, "shell-home");
+  const shellHomeDir = path.join(profileRoot, "h");
   const xdgConfigHome = path.join(shellHomeDir, ".config");
   const fishConfigDir = path.join(xdgConfigHome, "fish");
   const shellHistoryPath = path.join(shellHomeDir, ".zsh_history");
@@ -122,6 +141,49 @@ export function createSandbox(prefix: string): KmuxSandbox {
   };
 }
 
+function shortSandboxPrefix(prefix: string): string {
+  const label = prefix
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 4)
+    .toLowerCase();
+  return label ? `kx-${label}-` : "kx-";
+}
+
+export function buildElectronLaunchOptions({
+  sandbox,
+  options = {},
+  paths = kmuxPaths(),
+  env = process.env
+}: {
+  sandbox: KmuxSandbox;
+  options?: KmuxLaunchOptions;
+  paths?: ReturnType<typeof kmuxPaths>;
+  env?: NodeJS.ProcessEnv;
+}): ElectronLaunchOptions {
+  return {
+    args: options.executablePath ? [] : [paths.appRoot],
+    ...(options.executablePath
+      ? { executablePath: options.executablePath }
+      : {}),
+    env: {
+      ...env,
+      NODE_ENV: "test",
+      KMUX_E2E_WINDOW_MODE: env.KMUX_E2E_WINDOW_MODE ?? "background",
+      KMUX_E2E_DISABLE_QUIT_CONFIRM: env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
+      KMUX_CONFIG_DIR: sandbox.configDir,
+      KMUX_RUNTIME_DIR: sandbox.runtimeDir,
+      KMUX_TEST_FONT_FAMILIES:
+        env.KMUX_TEST_FONT_FAMILIES ??
+        JSON.stringify(["JetBrains Mono", "Fira Code", "Menlo"]),
+      HOME: sandbox.shellHomeDir,
+      ZDOTDIR: sandbox.shellHomeDir,
+      HISTFILE: sandbox.shellHistoryPath,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+      ...options.env
+    }
+  };
+}
+
 export function destroySandbox(sandbox: KmuxSandbox): void {
   killSandboxProcesses(sandbox);
   rmSync(sandbox.profileRoot, { force: true, recursive: true });
@@ -138,33 +200,19 @@ export async function launchKmuxWithSandbox(
   sandbox: KmuxSandbox,
   options: KmuxLaunchOptions = {}
 ): Promise<LaunchedKmux> {
-  const { appRoot, cliPath, workspaceRoot } = kmuxPaths();
-  const app = await electron.launch({
-    args: options.executablePath ? [] : [appRoot],
-    ...(options.executablePath
-      ? { executablePath: options.executablePath }
-      : {}),
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      KMUX_E2E_WINDOW_MODE: process.env.KMUX_E2E_WINDOW_MODE ?? "background",
-      KMUX_E2E_DISABLE_QUIT_CONFIRM:
-        process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
-      KMUX_CONFIG_DIR: sandbox.configDir,
-      KMUX_RUNTIME_DIR: sandbox.runtimeDir,
-      KMUX_TEST_FONT_FAMILIES:
-        process.env.KMUX_TEST_FONT_FAMILIES ??
-        JSON.stringify(["JetBrains Mono", "Fira Code", "Menlo"]),
-      HOME: sandbox.shellHomeDir,
-      ZDOTDIR: sandbox.shellHomeDir,
-      HISTFILE: sandbox.shellHistoryPath,
-      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
-      ...options.env
-    }
-  });
+  const paths = kmuxPaths();
+  const app = await electron.launch(
+    buildElectronLaunchOptions({ sandbox, options, paths })
+  );
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
-  return { app, page, sandbox, cliPath, workspaceRoot };
+  return {
+    app,
+    page,
+    sandbox,
+    cliPath: paths.cliPath,
+    workspaceRoot: paths.workspaceRoot
+  };
 }
 
 export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
@@ -249,7 +297,11 @@ async function waitForProcessExit(
   });
 }
 
-function listProcesses(): Array<{ pid: number; ppid: number; command: string }> {
+function listProcesses(): Array<{
+  pid: number;
+  ppid: number;
+  command: string;
+}> {
   const output = execFileSync("ps", ["-ax", "-o", "pid=,ppid=,command="], {
     encoding: "utf8"
   });
@@ -355,10 +407,16 @@ function toTestShellView(snapshot: ShellStoreSnapshot): TestShellView {
 
 export async function getView(page: Page): Promise<TestShellView> {
   return toTestShellView(
-    await page.evaluate(
-      () => (window as unknown as KmuxWindow).kmux.getShellState()
+    await page.evaluate(() =>
+      (window as unknown as KmuxWindow).kmux.getShellState()
     )
   );
+}
+
+export function terminalInputForSurface(page: Page, surfaceId: string) {
+  return page
+    .getByTestId(`terminal-${surfaceId}`)
+    .locator("textarea.xterm-helper-textarea");
 }
 
 export async function dispatch(
@@ -423,13 +481,99 @@ export async function getSurfaceSnapshot(
   surfaceId: string,
   options?: SurfaceSnapshotOptions
 ): Promise<SurfaceSnapshotPayload | null> {
-  return page.evaluate(({ targetSurfaceId, snapshotOptions }) => {
+  return page.evaluate(
+    ({ targetSurfaceId, snapshotOptions }) => {
+      const testApi = (window as unknown as KmuxWindow).kmuxTest;
+      if (!testApi) {
+        throw new Error("kmuxTest bridge unavailable");
+      }
+      return testApi.snapshotSurface(targetSurfaceId, snapshotOptions);
+    },
+    { targetSurfaceId: surfaceId, snapshotOptions: options }
+  );
+}
+
+export async function getRuntimeEnv(
+  page: Page
+): Promise<Record<string, string>> {
+  return page.evaluate(() => {
     const testApi = (window as unknown as KmuxWindow).kmuxTest;
     if (!testApi) {
       throw new Error("kmuxTest bridge unavailable");
     }
-    return testApi.snapshotSurface(targetSurfaceId, snapshotOptions);
-  }, { targetSurfaceId: surfaceId, snapshotOptions: options });
+    return testApi.getRuntimeEnv();
+  });
+}
+
+export async function getTerminalCellMetrics(
+  page: Page,
+  surfaceId: string
+): Promise<TerminalCellMetrics> {
+  return page.evaluate((targetSurfaceId) => {
+    type TerminalHostElement = HTMLElement & {
+      __kmuxTerminal?: { cols?: number; rows?: number };
+    };
+    const root = document.querySelector<TerminalHostElement>(
+      `[data-testid="terminal-${CSS.escape(targetSurfaceId)}"]`
+    );
+    if (!root) {
+      throw new Error(`terminal root unavailable: ${targetSurfaceId}`);
+    }
+    const screen = root.querySelector<HTMLElement>(".xterm-screen");
+    if (!screen) {
+      throw new Error(`terminal screen unavailable: ${targetSurfaceId}`);
+    }
+
+    const terminalHost = Array.from(root.children).find(
+      (child): child is TerminalHostElement =>
+        Boolean((child as TerminalHostElement).__kmuxTerminal)
+    );
+    const terminal = root.__kmuxTerminal ?? terminalHost?.__kmuxTerminal;
+    const terminalCols =
+      typeof terminal?.cols === "number" && Number.isFinite(terminal.cols)
+        ? terminal.cols
+        : null;
+    const terminalRows =
+      typeof terminal?.rows === "number" && Number.isFinite(terminal.rows)
+        ? terminal.rows
+        : null;
+    const rowHeights = Array.from(
+      root.querySelectorAll<HTMLElement>(".xterm-rows > div")
+    )
+      .map((row) => row.getBoundingClientRect().height)
+      .filter((height) => height > 0);
+    const screenRect = screen.getBoundingClientRect();
+    const averageRowHeight =
+      rowHeights.length > 0
+        ? rowHeights.reduce((sum, height) => sum + height, 0) /
+          rowHeights.length
+        : null;
+    return {
+      fontStatus:
+        "fonts" in document && document.fonts
+          ? document.fonts.status
+          : "unsupported",
+      devicePixelRatio: window.devicePixelRatio,
+      terminalCols,
+      terminalRows,
+      visibleRowCount: rowHeights.length,
+      screenWidth: screenRect.width,
+      screenHeight: screenRect.height,
+      cellWidth:
+        terminalCols && terminalCols > 0
+          ? screenRect.width / terminalCols
+          : null,
+      cellHeight:
+        terminalRows && terminalRows > 0
+          ? screenRect.height / terminalRows
+          : null,
+      averageRowHeight,
+      maxRowHeightDelta:
+        rowHeights.length > 0
+          ? Math.max(...rowHeights) - Math.min(...rowHeights)
+          : 0
+    };
+  }, surfaceId);
 }
 
 export function runCliJson<T>(

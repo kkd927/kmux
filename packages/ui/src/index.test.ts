@@ -14,7 +14,9 @@ import {
   normalizeShortcut,
   normalizeShortcutBinding,
   matchesShortcut,
-  DEFAULT_SHORTCUTS
+  DEFAULT_SHORTCUTS,
+  LINUX_DEFAULT_SHORTCUTS,
+  buildDefaultShortcuts
 } from "./index";
 
 describe("shortcut normalization", () => {
@@ -51,10 +53,33 @@ describe("shortcut normalization", () => {
     expect(normalizeShortcutBinding("Command+Option+K")).toBe("Meta+Alt+K");
   });
 
-  it("keeps default shortcuts in normalized matcher order", () => {
-    for (const binding of Object.values(DEFAULT_SHORTCUTS)) {
-      expect(normalizeShortcutBinding(binding)).toBe(binding);
+  it("keeps platform default shortcuts in normalized matcher order", () => {
+    for (const shortcuts of [DEFAULT_SHORTCUTS, LINUX_DEFAULT_SHORTCUTS]) {
+      for (const binding of Object.values(shortcuts)) {
+        expect(normalizeShortcutBinding(binding)).toBe(binding);
+      }
     }
+  });
+
+  it("ships a complete Linux default shortcut catalog without Meta chords", () => {
+    expect(Object.keys(LINUX_DEFAULT_SHORTCUTS).sort()).toEqual(
+      Object.keys(DEFAULT_SHORTCUTS).sort()
+    );
+    expect(new Set(Object.values(LINUX_DEFAULT_SHORTCUTS)).size).toBe(
+      Object.values(LINUX_DEFAULT_SHORTCUTS).length
+    );
+    for (const binding of Object.values(LINUX_DEFAULT_SHORTCUTS)) {
+      expect(binding.split("+")).not.toContain("Meta");
+    }
+  });
+
+  it("returns a mutable copy of the selected platform shortcut defaults", () => {
+    const linuxShortcuts = buildDefaultShortcuts("linux");
+    linuxShortcuts["workspace.create"] = "Ctrl+Alt+N";
+
+    expect(linuxShortcuts["workspace.create"]).toBe("Ctrl+Alt+N");
+    expect(LINUX_DEFAULT_SHORTCUTS["workspace.create"]).toBe("Ctrl+Shift+N");
+    expect(buildDefaultShortcuts("darwin")).toEqual(DEFAULT_SHORTCUTS);
   });
 
   it("matches stored shortcuts even when modifier order is legacy", () => {
@@ -80,12 +105,16 @@ describe("shared theme tokens", () => {
     expect(THEME_CSS_VARIABLES["--window-bg"]).toBe(THEME.windowBg);
     expect(THEME_CSS_VARIABLES["--tab-active-bg"]).toBe(THEME.tabActiveBg);
     expect(THEME_CSS_VARIABLES["--list-active"]).toBe(THEME.listActive);
-    expect(getThemeCssVariables("light")["--sidebar-bg"]).toBe(THEMES.light.sidebarBg);
+    expect(getThemeCssVariables("light")["--sidebar-bg"]).toBe(
+      THEMES.light.sidebarBg
+    );
   });
 
   it("keeps xterm colors aligned with the semantic shell palette", () => {
     expect(XTERM_THEME.background).toBe(THEME.panelBg);
-    expect(XTERM_THEME.cursor).toBe(BUILTIN_TERMINAL_THEME_PROFILE.variants.dark.cursor);
+    expect(XTERM_THEME.cursor).toBe(
+      BUILTIN_TERMINAL_THEME_PROFILE.variants.dark.cursor
+    );
     expect(TERMINAL_SEARCH_DECORATIONS.activeMatchBorder).toBe(THEME.accent);
     expect(getXtermTheme("light").background).toBe(THEMES.light.panelBg);
     expect(getTerminalSearchDecorations("light").activeMatchBorder).toBe(
@@ -106,7 +135,9 @@ describe("shared theme tokens", () => {
     const brightBlackContrast = contrastRatio(darkPalette.ansi[8], background);
 
     expect(BUILTIN_TERMINAL_THEME_PROFILE.minimumContrastRatio).toBe(2.5);
-    expect(contrastRatio(darkPalette.foreground, background)).toBeGreaterThan(10);
+    expect(contrastRatio(darkPalette.foreground, background)).toBeGreaterThan(
+      10
+    );
     expect(ansiBlackContrast).toBeGreaterThan(2);
     expect(brightBlackContrast).toBeGreaterThan(ansiBlackContrast);
   });
@@ -115,7 +146,9 @@ describe("shared theme tokens", () => {
     const lightPalette = BUILTIN_TERMINAL_THEME_PROFILE.variants.light;
     const background = lightPalette.background;
 
-    expect(contrastRatio(lightPalette.foreground, background)).toBeGreaterThan(14);
+    expect(contrastRatio(lightPalette.foreground, background)).toBeGreaterThan(
+      14
+    );
     expect(contrastRatio(lightPalette.ansi[7], background)).toBeGreaterThan(4);
     expect(contrastRatio(lightPalette.ansi[15], background)).toBeGreaterThan(
       contrastRatio(lightPalette.ansi[7], background)
@@ -123,27 +156,30 @@ describe("shared theme tokens", () => {
   });
 
   it("keeps kmux default and IntelliJ Islands plain-text tones intentionally distinct", () => {
-    expect(BUILTIN_TERMINAL_THEME_PROFILE.variants.dark.foreground).toBe("#e3e8ef");
-    expect(INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.foreground).toBe(
-      "#cccccc"
+    expect(BUILTIN_TERMINAL_THEME_PROFILE.variants.dark.foreground).toBe(
+      "#e3e8ef"
     );
-    expect(BUILTIN_TERMINAL_THEME_PROFILE.variants.light.foreground).toBe("#232c35");
-    expect(INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.light.foreground).toBe(
-      "#080808"
+    expect(
+      INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.foreground
+    ).toBe("#cccccc");
+    expect(BUILTIN_TERMINAL_THEME_PROFILE.variants.light.foreground).toBe(
+      "#232c35"
     );
+    expect(
+      INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.light.foreground
+    ).toBe("#080808");
   });
 
   it("ships both kmux default and IntelliJ Islands terminal presets", () => {
-    expect(BUILTIN_TERMINAL_THEME_PROFILES.map((profile) => profile.name)).toEqual([
-      "kmux Default",
-      "IntelliJ Islands"
-    ]);
-    expect(INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.background).toBe(
-      "#191a1c"
-    );
-    expect(INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.foreground).toBe(
-      "#cccccc"
-    );
+    expect(
+      BUILTIN_TERMINAL_THEME_PROFILES.map((profile) => profile.name)
+    ).toEqual(["kmux Default", "IntelliJ Islands"]);
+    expect(
+      INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.background
+    ).toBe("#191a1c");
+    expect(
+      INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE.variants.dark.foreground
+    ).toBe("#cccccc");
   });
 });
 
@@ -152,10 +188,16 @@ function contrastRatio(foreground: string, background: string): number {
   const bg = relativeLuminance(parseHexColor(background));
   const lighter = Math.max(fg, bg);
   const darker = Math.min(fg, bg);
-  return Number((((lighter + 0.05) / (darker + 0.05)) * 1000).toFixed(0)) / 1000;
+  return (
+    Number((((lighter + 0.05) / (darker + 0.05)) * 1000).toFixed(0)) / 1000
+  );
 }
 
-function relativeLuminance([red, green, blue]: [number, number, number]): number {
+function relativeLuminance([red, green, blue]: [
+  number,
+  number,
+  number
+]): number {
   const toLinear = (channel: number) => {
     const normalized = channel / 255;
     return normalized <= 0.03928
@@ -164,9 +206,7 @@ function relativeLuminance([red, green, blue]: [number, number, number]): number
   };
 
   return (
-    0.2126 * toLinear(red) +
-    0.7152 * toLinear(green) +
-    0.0722 * toLinear(blue)
+    0.2126 * toLinear(red) + 0.7152 * toLinear(green) + 0.0722 * toLinear(blue)
   );
 }
 

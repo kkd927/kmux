@@ -1,13 +1,15 @@
+export type ShortcutLabelStyle = "mac-symbols" | "text";
+
 export function formatShortcutParts(
   shortcut: string | undefined,
-  isMac: boolean
+  labelStyle: ShortcutLabelStyle
 ): string[] | undefined {
   if (!shortcut) {
     return undefined;
   }
 
   const parts = shortcut.split("+");
-  if (!isMac) {
+  if (labelStyle !== "mac-symbols") {
     return parts.map((part) => formatShortcutPart(part, false));
   }
 
@@ -19,22 +21,22 @@ export function formatShortcutParts(
   const keys = formattedParts.filter(
     (part) => part !== "⌃" && part !== "⌥" && part !== "⇧" && part !== "⌘"
   );
-  return ["⌃", "⌥", "⇧", "⌘"].filter((part) =>
-    formattedParts.includes(part)
-  ).concat(keys);
+  return ["⌃", "⌥", "⇧", "⌘"]
+    .filter((part) => formattedParts.includes(part))
+    .concat(keys);
 }
 
 export function formatShortcutLabel(
   shortcut: string | undefined,
-  isMac: boolean,
+  labelStyle: ShortcutLabelStyle,
   options: { separator?: string } = {}
 ): string | undefined {
-  const parts = formatShortcutParts(shortcut, isMac);
+  const parts = formatShortcutParts(shortcut, labelStyle);
   if (!parts) {
     return undefined;
   }
 
-  if (!isMac) {
+  if (labelStyle !== "mac-symbols") {
     return parts.join(options.separator ?? " + ");
   }
 

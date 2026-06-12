@@ -5,18 +5,28 @@ import { formatShortcutLabel, formatShortcutParts } from "./shortcutLabels";
 describe("formatShortcutLabel", () => {
   it("formats macOS shortcuts with symbolic keys and an optional separator", () => {
     expect(
-      formatShortcutLabel("Meta+Shift+P", true, { separator: " " })
+      formatShortcutLabel("Meta+Shift+P", "mac-symbols", { separator: " " })
     ).toBe("⌘ ⇧ P");
     expect(
-      formatShortcutLabel("Alt+Meta+ArrowLeft", true, { separator: " " })
+      formatShortcutLabel("Alt+Meta+ArrowLeft", "mac-symbols", {
+        separator: " "
+      })
     ).toBe("⌥ ⌘ ←");
     expect(
-      formatShortcutLabel("Meta+Alt+ArrowLeft", true, { separator: " " })
+      formatShortcutLabel("Meta+Alt+ArrowLeft", "mac-symbols", {
+        separator: " "
+      })
     ).toBe("⌥ ⌘ ←");
-    expect(formatShortcutParts("Meta+Shift+P", true)).toEqual(["⌘", "⇧", "P"]);
+    expect(formatShortcutParts("Meta+Shift+P", "mac-symbols")).toEqual([
+      "⌘",
+      "⇧",
+      "P"
+    ]);
   });
 
   it("keeps non-macOS shortcuts readable with textual modifier names", () => {
-    expect(formatShortcutLabel("Meta+Shift+P", false)).toBe("Meta + Shift + P");
+    expect(formatShortcutLabel("Meta+Shift+P", "text")).toBe(
+      "Meta + Shift + P"
+    );
   });
 });

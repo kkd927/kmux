@@ -17,8 +17,9 @@ vi.mock("./TerminalPane", () => ({
 
 import { PaneTree } from "./PaneTree";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createPaneTreeProps(): PaneTreeProps {
   return {
@@ -74,6 +75,9 @@ function createPaneTreeProps(): PaneTreeProps {
         profiles: []
       }
     },
+    reservedSystemChords: [],
+    shortcutLabelStyle: "text",
+    copyModeSelectAllShortcut: "Ctrl+A",
     terminalTypography: {
       stackHash: "stack_1",
       resolvedFontFamily: "SF Mono",

@@ -11,9 +11,10 @@ import { basename, join } from "node:path";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 
-import { resolveDefaultShellArgs } from "./shellLaunch";
+import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
 
 export const KMUX_ZSH_WRAPPER_DIR_ENV = "KMUX_ZSH_WRAPPER_DIR";
+export const KMUX_AGENT_WRAPPER_BIN_DIR_ENV = "KMUX_AGENT_WRAPPER_BIN_DIR";
 export const SHELL_READY_OSC = 6972;
 export const SHELL_READY_OSC_PAYLOAD = "shell.ready";
 
@@ -26,14 +27,17 @@ export interface PreparedShellLaunch {
 
 export interface PrepareShellIntegrationLaunchOptions {
   enabled?: boolean;
+  agentPath?: ShellLaunchPolicy["agentPath"];
 }
 
 let cachedZshWrapperDir: string | null = null;
 let cachedBashWrapperDir: string | null = null;
 let cachedFishWrapperDir: string | null = null;
+let cachedZshWrapperDirHasLegacyAgentBin = false;
+let cachedBashWrapperDirHasLegacyAgentBin = false;
+let cachedFishWrapperDirHasLegacyAgentBin = false;
 let cleanupRegistered = false;
 const SHELL_INTEGRATION_ENV_KEYS = [
-  "KMUX_AGENT_BIN_DIR",
   "KMUX_BASH_INTEGRATION_SCRIPT",
   "KMUX_FISH_INTEGRATION_SCRIPT",
   "KMUX_ORIGINAL_HISTFILE",
@@ -48,20 +52,6 @@ const SHELL_INTEGRATION_ENV_KEYS = [
   "__KMUX_OSC7_INSTALLED",
   "__KMUX_SHELL_READY_EMITTED"
 ] as const;
-
-export function shouldApplyShellIntegration(
-  shellPath: string | undefined,
-  launchArgs: string[] | undefined,
-  platform: NodeJS.Platform = process.platform
-): boolean {
-  if (platform !== "darwin" || launchArgs !== undefined || !shellPath) {
-    return false;
-  }
-  if (!isSupportedIntegrationShell(shellPath)) {
-    return false;
-  }
-  return resolveDefaultShellArgs(shellPath, platform).length > 0;
-}
 
 export function prepareShellIntegrationLaunch(
   shellPath: string,
@@ -82,11 +72,26 @@ export function prepareShellIntegrationLaunch(
 
   switch (basename(shellPath).toLowerCase()) {
     case "zsh":
-      return prepareZshShellLaunch(shellPath, args, shellIntegrationEnv);
+      return prepareZshShellLaunch(
+        shellPath,
+        args,
+        shellIntegrationEnv,
+        options.agentPath
+      );
     case "bash":
-      return prepareBashShellLaunch(shellPath, args, shellIntegrationEnv);
+      return prepareBashShellLaunch(
+        shellPath,
+        args,
+        shellIntegrationEnv,
+        options.agentPath
+      );
     case "fish":
-      return prepareFishShellLaunch(shellPath, args, shellIntegrationEnv);
+      return prepareFishShellLaunch(
+        shellPath,
+        args,
+        shellIntegrationEnv,
+        options.agentPath
+      );
     default:
       return {
         shellPath,
@@ -108,21 +113,11 @@ function stripShellIntegrationEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return nextEnv ?? env;
 }
 
-function isSupportedIntegrationShell(shellPath: string): boolean {
-  switch (basename(shellPath).toLowerCase()) {
-    case "zsh":
-    case "bash":
-    case "fish":
-      return true;
-    default:
-      return false;
-  }
-}
-
 function prepareZshShellLaunch(
   shellPath: string,
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  agentPath?: ShellLaunchPolicy["agentPath"]
 ): PreparedShellLaunch {
   const homeDir = env.HOME?.trim();
   if (!homeDir) {
@@ -134,7 +129,10 @@ function prepareZshShellLaunch(
     };
   }
 
-  const wrapperDir = ensureZshWrapperDir();
+  const wrapperDir = ensureZshWrapperDir({
+    includeLegacyAgentBin: !agentPath
+  });
+  const resolvedAgentPath = resolveIntegrationAgentPath(wrapperDir, agentPath);
   const originalZdotdir = resolveOriginalZdotdir(env.ZDOTDIR, homeDir);
 
   return {
@@ -142,7 +140,8 @@ function prepareZshShellLaunch(
     args,
     env: {
       ...env,
-      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
+      KMUX_AGENT_BIN_DIR: resolvedAgentPath.helperBinDir,
+      [KMUX_AGENT_WRAPPER_BIN_DIR_ENV]: resolvedAgentPath.wrapperBinDir,
       KMUX_ORIGINAL_HISTFILE:
         env.HISTFILE?.trim() || join(originalZdotdir, ".zsh_history"),
       KMUX_SHELL_INTEGRATION: "1",
@@ -157,7 +156,8 @@ function prepareZshShellLaunch(
 function prepareBashShellLaunch(
   shellPath: string,
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  agentPath?: ShellLaunchPolicy["agentPath"]
 ): PreparedShellLaunch {
   const homeDir = env.HOME?.trim();
   if (!homeDir) {
@@ -169,7 +169,10 @@ function prepareBashShellLaunch(
     };
   }
 
-  const wrapperDir = ensureBashWrapperDir();
+  const wrapperDir = ensureBashWrapperDir({
+    includeLegacyAgentBin: !agentPath
+  });
+  const resolvedAgentPath = resolveIntegrationAgentPath(wrapperDir, agentPath);
 
   return {
     shellPath,
@@ -177,7 +180,8 @@ function prepareBashShellLaunch(
     env: {
       ...env,
       HOME: wrapperDir,
-      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
+      KMUX_AGENT_BIN_DIR: resolvedAgentPath.helperBinDir,
+      [KMUX_AGENT_WRAPPER_BIN_DIR_ENV]: resolvedAgentPath.wrapperBinDir,
       KMUX_BASH_INTEGRATION_SCRIPT: join(wrapperDir, "kmux.bash"),
       KMUX_SHELL_INTEGRATION: "1",
       KMUX_ORIGINAL_HOME: homeDir
@@ -189,7 +193,8 @@ function prepareBashShellLaunch(
 function prepareFishShellLaunch(
   shellPath: string,
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  agentPath?: ShellLaunchPolicy["agentPath"]
 ): PreparedShellLaunch {
   const homeDir = env.HOME?.trim();
   if (!homeDir) {
@@ -201,14 +206,18 @@ function prepareFishShellLaunch(
     };
   }
 
-  const wrapperDir = ensureFishWrapperDir();
+  const wrapperDir = ensureFishWrapperDir({
+    includeLegacyAgentBin: !agentPath
+  });
+  const resolvedAgentPath = resolveIntegrationAgentPath(wrapperDir, agentPath);
 
   return {
     shellPath,
     args,
     env: {
       ...env,
-      KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
+      KMUX_AGENT_BIN_DIR: resolvedAgentPath.helperBinDir,
+      [KMUX_AGENT_WRAPPER_BIN_DIR_ENV]: resolvedAgentPath.wrapperBinDir,
       KMUX_FISH_INTEGRATION_SCRIPT: join(wrapperDir, "fish", "kmux.fish"),
       KMUX_ORIGINAL_XDG_CONFIG_HOME:
         env.XDG_CONFIG_HOME?.trim() || join(homeDir, ".config"),
@@ -219,8 +228,34 @@ function prepareFishShellLaunch(
   };
 }
 
-function ensureZshWrapperDir(): string {
+function resolveIntegrationAgentPath(
+  wrapperDir: string,
+  agentPath: ShellLaunchPolicy["agentPath"] | undefined
+): Pick<ShellLaunchPolicy["agentPath"], "helperBinDir" | "wrapperBinDir"> {
+  if (agentPath) {
+    return {
+      helperBinDir: agentPath.helperBinDir,
+      wrapperBinDir: agentPath.wrapperBinDir
+    };
+  }
+  const legacyBinDir = join(wrapperDir, "bin");
+  return {
+    helperBinDir: legacyBinDir,
+    wrapperBinDir: legacyBinDir
+  };
+}
+
+function ensureZshWrapperDir(
+  options: { includeLegacyAgentBin?: boolean } = {}
+): string {
   if (cachedZshWrapperDir) {
+    if (
+      options.includeLegacyAgentBin &&
+      !cachedZshWrapperDirHasLegacyAgentBin
+    ) {
+      writeLegacyAgentBin(cachedZshWrapperDir);
+      cachedZshWrapperDirHasLegacyAgentBin = true;
+    }
     return cachedZshWrapperDir;
   }
 
@@ -228,7 +263,10 @@ function ensureZshWrapperDir(): string {
   const wrapperDir =
     configuredWrapperDir || mkdtempSync(join(tmpdir(), "kmux-zsh-"));
   mkdirSync(wrapperDir, { recursive: true });
-  writeAgentWrappers(wrapperDir);
+  if (options.includeLegacyAgentBin) {
+    writeLegacyAgentBin(wrapperDir);
+    cachedZshWrapperDirHasLegacyAgentBin = true;
+  }
   writeFileSync(
     join(wrapperDir, ".zshenv"),
     buildZshWrapper(".zshenv"),
@@ -283,13 +321,25 @@ function isKmuxZshWrapperDir(candidate: string): boolean {
   return trimmed === tmpRoot || trimmed.startsWith(`${tmpRoot}/`);
 }
 
-function ensureBashWrapperDir(): string {
+function ensureBashWrapperDir(
+  options: { includeLegacyAgentBin?: boolean } = {}
+): string {
   if (cachedBashWrapperDir) {
+    if (
+      options.includeLegacyAgentBin &&
+      !cachedBashWrapperDirHasLegacyAgentBin
+    ) {
+      writeLegacyAgentBin(cachedBashWrapperDir);
+      cachedBashWrapperDirHasLegacyAgentBin = true;
+    }
     return cachedBashWrapperDir;
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-bash-"));
-  writeAgentWrappers(wrapperDir);
+  if (options.includeLegacyAgentBin) {
+    writeLegacyAgentBin(wrapperDir);
+    cachedBashWrapperDirHasLegacyAgentBin = true;
+  }
   writeFileSync(
     join(wrapperDir, ".bash_profile"),
     buildBashProfileWrapper(),
@@ -307,13 +357,25 @@ function ensureBashWrapperDir(): string {
   return wrapperDir;
 }
 
-function ensureFishWrapperDir(): string {
+function ensureFishWrapperDir(
+  options: { includeLegacyAgentBin?: boolean } = {}
+): string {
   if (cachedFishWrapperDir) {
+    if (
+      options.includeLegacyAgentBin &&
+      !cachedFishWrapperDirHasLegacyAgentBin
+    ) {
+      writeLegacyAgentBin(cachedFishWrapperDir);
+      cachedFishWrapperDirHasLegacyAgentBin = true;
+    }
     return cachedFishWrapperDir;
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-fish-"));
-  writeAgentWrappers(wrapperDir);
+  if (options.includeLegacyAgentBin) {
+    writeLegacyAgentBin(wrapperDir);
+    cachedFishWrapperDirHasLegacyAgentBin = true;
+  }
   const fishConfigDir = join(wrapperDir, "fish");
   mkdirSync(fishConfigDir, { recursive: true });
   writeFileSync(join(fishConfigDir, "config.fish"), buildFishWrapper(), "utf8");
@@ -358,10 +420,15 @@ export function writeAgentHookHelpers(binDir: string): void {
   );
 }
 
-function writeAgentWrappers(wrapperDir: string): void {
+export function writeAgentWrapperBinaries(binDir: string): void {
+  mkdirSync(binDir, { recursive: true });
+  writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
+}
+
+function writeLegacyAgentBin(wrapperDir: string): void {
   const binDir = join(wrapperDir, "bin");
   writeAgentHookHelpers(binDir);
-  writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
+  writeAgentWrapperBinaries(binDir);
 }
 
 function writeExecutableFile(path: string, contents: string): void {
@@ -441,7 +508,7 @@ function buildZshIntegrationScript(): string {
     "",
     "function _kmux_prepend_agent_bin() {",
     "  emulate -L zsh",
-    '  local agent_bin="${KMUX_AGENT_BIN_DIR:-}"',
+    '  local agent_bin="${KMUX_AGENT_WRAPPER_BIN_DIR:-${KMUX_AGENT_BIN_DIR:-}}"',
     '  [[ -n "$agent_bin" && -d "$agent_bin" ]] || return 0',
     '  case ":${PATH:-}:" in',
     '    *":${agent_bin}:"*) ;;',
@@ -539,7 +606,7 @@ function buildBashIntegrationScript(): string {
     "__KMUX_SHELL_READY_EMITTED=0",
     "",
     "_kmux_prepend_agent_bin() {",
-    '  local agent_bin="${KMUX_AGENT_BIN_DIR:-}"',
+    '  local agent_bin="${KMUX_AGENT_WRAPPER_BIN_DIR:-${KMUX_AGENT_BIN_DIR:-}}"',
     '  [[ -n "$agent_bin" && -d "$agent_bin" ]] || return 0',
     '  case ":${PATH:-}:" in',
     '    *":${agent_bin}:"*) ;;',
@@ -667,9 +734,12 @@ function buildFishIntegrationScript(): string {
     "set -g __KMUX_OSC7_INSTALLED 1",
     "set -g __KMUX_SHELL_READY_EMITTED 0",
     "",
-    'if set -q KMUX_AGENT_BIN_DIR; and test -d "$KMUX_AGENT_BIN_DIR"',
-    '  contains -- "$KMUX_AGENT_BIN_DIR" $PATH; or set -gx PATH "$KMUX_AGENT_BIN_DIR" $PATH',
+    'set -l _kmux_agent_wrapper_bin "$KMUX_AGENT_WRAPPER_BIN_DIR"',
+    'test -n "$_kmux_agent_wrapper_bin"; or set _kmux_agent_wrapper_bin "$KMUX_AGENT_BIN_DIR"',
+    'if test -n "$_kmux_agent_wrapper_bin"; and test -d "$_kmux_agent_wrapper_bin"',
+    '  contains -- "$_kmux_agent_wrapper_bin" $PATH; or set -gx PATH "$_kmux_agent_wrapper_bin" $PATH',
     "end",
+    "set -e _kmux_agent_wrapper_bin",
     "",
     "function __kmux_percent_encode",
     '  string escape --style=url -- $argv[1] | string replace -a "%2F" "/"',
@@ -712,7 +782,13 @@ function buildPathFilteringHelperLines(): string[] {
     '        _kmux_input_path=""',
     "        ;;",
     "    esac",
-    '    if [ "$_kmux_segment" != "$KMUX_AGENT_BIN_DIR" ]; then',
+    '    _kmux_skip_segment="0"',
+    '    for _kmux_filter_dir in "${KMUX_AGENT_BIN_DIR:-}" "${KMUX_AGENT_WRAPPER_BIN_DIR:-}"; do',
+    '      if [ -n "$_kmux_filter_dir" ] && [ "$_kmux_segment" = "$_kmux_filter_dir" ]; then',
+    '        _kmux_skip_segment="1"',
+    "      fi",
+    "    done",
+    '    if [ "$_kmux_skip_segment" != "1" ]; then',
     '      if [ "$_kmux_result_set" -eq 0 ]; then',
     '        _kmux_result="$_kmux_segment"',
     "        _kmux_result_set=1",
@@ -722,6 +798,7 @@ function buildPathFilteringHelperLines(): string[] {
     "    fi",
     '    [ -n "$_kmux_input_path" ] || break',
     "  done",
+    "  unset _kmux_filter_dir _kmux_skip_segment",
     '  printf "%s" "$_kmux_result"',
     "}",
     ""
@@ -938,7 +1015,8 @@ function buildCodexWrapperScript(): string {
     "#!/bin/sh",
     "set -u",
     "",
-    'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
+    'KMUX_AGENT_WRAPPER_BIN_DIR="${KMUX_AGENT_WRAPPER_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
+    'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$KMUX_AGENT_WRAPPER_BIN_DIR}"',
     ...buildPathFilteringHelperLines(),
     ...buildNodeRuntimeResolverLines(),
     'PATH="$(kmux_filter_path "${PATH:-}")"',
@@ -1004,8 +1082,8 @@ function buildCodexWrapperScript(): string {
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "",
-    "const logPath = process.env.KMUX_DEBUG_LOG_PATH;",
-    "if (!logPath) {",
+    "const logPath = (process.env.KMUX_DEBUG_LOG_PATH || '').trim();",
+    "if (!logPath || !path.isAbsolute(logPath)) {",
     "  process.exit(0);",
     "}",
     "",

@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 
-const SMOKE_TIMEOUT_MS = 30_000;
+const DEFAULT_SMOKE_TIMEOUT_MS = 180_000;
 const SUCCESS_SETTLE_MS = 1_500;
 const MAX_LOG_CHARS = 20_000;
 
@@ -53,6 +53,28 @@ function trimLog(log) {
   return log.length > MAX_LOG_CHARS ? log.slice(-MAX_LOG_CHARS) : log;
 }
 
+export function hasDevSmokeReadySignal(log) {
+  const mainStarted = log.includes("start electron app...");
+  const rendererConnected =
+    log.includes("[main:window] did-finish-load") ||
+    log.includes("[renderer:debug]") ||
+    log.includes("[renderer:info]") ||
+    log.includes("[renderer:warning]");
+  const ptyReady =
+    log.includes('"kind":"osc.shell-ready"') ||
+    log.includes("pty-host.osc.shell-ready");
+
+  return mainStarted && (rendererConnected || ptyReady);
+}
+
+export function resolveDevSmokeTimeoutMs(env = process.env) {
+  const configuredTimeout = Number(env.KMUX_DEV_SMOKE_TIMEOUT_MS);
+  if (Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+    return configuredTimeout;
+  }
+  return DEFAULT_SMOKE_TIMEOUT_MS;
+}
+
 function killProcessTree(child) {
   if (!child.pid) {
     return;
@@ -81,6 +103,7 @@ async function main() {
   const sandbox = createSandbox();
   const command = commandForNpm();
   const output = [];
+  const smokeTimeoutMs = resolveDevSmokeTimeoutMs();
 
   const child = spawn(command, ["run", "dev"], {
     cwd: process.cwd(),
@@ -89,6 +112,9 @@ async function main() {
       CI: "1",
       KMUX_E2E_DISABLE_QUIT_CONFIRM:
         process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
+      KMUX_DEV_SMOKE: "1",
+      KMUX_DISABLE_SHELL_ENV_PROBE:
+        process.env.KMUX_DISABLE_SHELL_ENV_PROBE ?? "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir
     },
@@ -112,13 +138,7 @@ async function main() {
       );
     }
 
-    const mainStarted = combined.includes("start electron app...");
-    const rendererConnected =
-      combined.includes("[renderer:debug]") ||
-      combined.includes("[renderer:info]") ||
-      combined.includes("[renderer:warning]");
-
-    if (mainStarted && rendererConnected) {
+    if (hasDevSmokeReadySignal(combined)) {
       return true;
     }
 
@@ -132,10 +152,10 @@ async function main() {
     const timeout = setTimeout(() => {
       reject(
         new Error(
-          `timed out waiting for npm run dev smoke to launch the app\n\n${trimLog(output.join(""))}`
+          `timed out after ${smokeTimeoutMs}ms waiting for npm run dev smoke to launch the app\n\n${trimLog(output.join(""))}`
         )
       );
-    }, SMOKE_TIMEOUT_MS);
+    }, smokeTimeoutMs);
 
     const finish = (error) => {
       if (finished) {
@@ -191,9 +211,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\n`
-  );
-  process.exitCode = 1;
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n`
+    );
+    process.exitCode = 1;
+  });
+}

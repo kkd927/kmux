@@ -2,6 +2,7 @@ import {
   type DragEvent,
   type MouseEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -37,6 +38,7 @@ import {
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  shouldDeferTerminalShortcutToIme,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme,
   type PendingTerminalEnterRewrite
@@ -55,10 +57,18 @@ import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import {
+  formatShortcutLabel,
+  type ShortcutLabelStyle
+} from "../shortcutLabels";
+import {
   isRendererSmoothnessProfileEnabled,
   recordRendererSmoothnessProfileEvent
 } from "../smoothnessProfile";
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
+import {
+  isReservedSystemChordBinding,
+  type KeyChord
+} from "../../../shared/platform/keyboardPolicy";
 import { TERMINAL_LIVE_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
 import {
   canDropSurfaceTabOnPane,
@@ -71,6 +81,11 @@ import {
   type SurfaceTabDropDirection
 } from "../surfaceTabDrag";
 
+export interface TerminalFocusRequest {
+  surfaceId: string;
+  token: number;
+}
+
 interface TerminalPaneProps {
   paneId: string;
   focused: boolean;
@@ -78,6 +93,9 @@ interface TerminalPaneProps {
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
   settings: KmuxSettings;
+  reservedSystemChords: KeyChord[];
+  shortcutLabelStyle: ShortcutLabelStyle;
+  copyModeSelectAllShortcut: KeyChord;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
@@ -99,6 +117,7 @@ interface TerminalPaneProps {
   onSplitDown: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
   onToggleSearch: (surfaceId: string | null) => void;
+  focusRequest?: TerminalFocusRequest | null;
 }
 
 type SearchMatch = {
@@ -184,6 +203,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const paneActiveRef = useRef(props.active);
+  const paneFocusedRef = useRef(props.focused);
   const previousPaneActiveRef = useRef(props.active);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
@@ -191,6 +211,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const queryRef = useRef(query);
   const showSearchRef = useRef(props.showSearch);
   const shortcutsRef = useRef(props.settings.shortcuts);
+  const reservedSystemChordsRef = useRef(props.reservedSystemChords);
+  const copyModeSelectAllShortcutRef = useRef(props.copyModeSelectAllShortcut);
   const onToggleSearchRef = useRef(props.onToggleSearch);
   const skipInitialTypographySyncRef = useRef(true);
   const attachmentStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -308,10 +330,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   activeSurfaceRef.current = activeSurface;
   paneActiveRef.current = props.active;
+  paneFocusedRef.current = props.focused;
   copyModeRef.current = copyMode;
   queryRef.current = query;
   showSearchRef.current = props.showSearch;
   shortcutsRef.current = props.settings.shortcuts;
+  reservedSystemChordsRef.current = props.reservedSystemChords;
+  copyModeSelectAllShortcutRef.current = props.copyModeSelectAllShortcut;
   onToggleSearchRef.current = props.onToggleSearch;
   searchDecorationsRef.current = terminalSearchDecorations;
   if (!resizeSyncRef.current) {
@@ -366,9 +391,45 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }
 
   function focusTerminalInput(): void {
-    requestAnimationFrame(() => {
-      terminalRef.current?.focus();
-    });
+    const focusActiveTerminal = (remainingAttempts: number): void => {
+      if (isEditingOutsideTerminal()) {
+        return;
+      }
+      const terminal = terminalRef.current;
+      const textarea = terminal?.textarea ?? null;
+      window.focus();
+      terminal?.focus();
+      textarea?.focus({ preventScroll: true });
+      if (remainingAttempts <= 0) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        focusActiveTerminal(remainingAttempts - 1);
+      });
+    };
+
+    focusActiveTerminal(30);
+  }
+
+  function isEditingOutsideTerminal(): boolean {
+    const activeElement = document.activeElement;
+    if (!activeElement || activeElement === document.body) {
+      return false;
+    }
+    return !(
+      activeElement instanceof HTMLTextAreaElement &&
+      activeElement.classList.contains("xterm-helper-textarea")
+    );
+  }
+
+  function shouldFocusActiveTerminal(surfaceId: string): boolean {
+    return (
+      paneFocusedRef.current &&
+      paneActiveRef.current &&
+      activeSurfaceRef.current?.id === surfaceId &&
+      !showSearchRef.current &&
+      !isEditingOutsideTerminal()
+    );
   }
 
   function showAttachmentStatus(message: string): void {
@@ -651,7 +712,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     >,
     actionId: string
   ): boolean {
-    return matchesBinding(event, shortcutsRef.current[actionId]);
+    return matchesBinding(
+      event,
+      shortcutsRef.current[actionId],
+      reservedSystemChordsRef.current
+    );
   }
 
   function writeTerminal(
@@ -800,7 +865,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const wrapper = surfaceWrapperRefs.current.get(activeSurface.id);
     if (!wrapper) {
       return;
@@ -909,12 +974,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
     const terminal = terminalRef.current;
     if (!container || !terminal) {
       return;
     }
+    const imeCompositionRef = { current: false };
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
@@ -949,6 +1015,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const handleTerminalShortcut = (event: KeyboardEvent) => {
       const currentSurface = activeSurfaceRef.current;
       if (!currentSurface) {
+        return;
+      }
+      if (shouldDeferTerminalShortcutToIme(event, imeCompositionRef.current)) {
         return;
       }
       queueEnterRewrite(event, currentSurface.id);
@@ -1003,10 +1072,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           return;
         }
         if (
-          event.metaKey &&
-          !event.ctrlKey &&
-          !event.altKey &&
-          event.key.toUpperCase() === "A"
+          matchesBinding(
+            event,
+            copyModeSelectAllShortcutRef.current,
+            reservedSystemChordsRef.current
+          )
         ) {
           terminal.selectAll();
           return;
@@ -1082,7 +1152,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
     container.addEventListener("paste", handleTerminalPaste, true);
-    const imeCompositionRef = { current: false };
     const handleCompositionStart = (): void => {
       imeCompositionRef.current = true;
     };
@@ -1410,6 +1479,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           onSnapshotRendered: markSnapshotRendered
         });
       }
+      if (attached && shouldFocusActiveTerminal(surfaceId)) {
+        focusTerminalInput();
+      }
     })().catch(() => {
       if (!attached) {
         return;
@@ -1455,21 +1527,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }, [props.draggedSurfaceTab]);
 
-  useEffect(() => {
-    if (!props.focused || !props.active || props.showSearch) {
-      return;
-    }
-    const activeElement = document.activeElement;
-    const editingOutsideTerminal =
-      activeElement instanceof HTMLInputElement ||
-      (activeElement instanceof HTMLTextAreaElement &&
-        !activeElement.classList.contains("xterm-helper-textarea")) ||
-      (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    if (editingOutsideTerminal) {
+  useLayoutEffect(() => {
+    if (!shouldFocusActiveTerminal(activeSurface.id)) {
       return;
     }
     focusTerminalInput();
-  }, [activeSurface.id, props.focused, props.active, props.showSearch]);
+  }, [
+    activeSurface.id,
+    props.focused,
+    props.active,
+    props.showSearch,
+    props.focusRequest
+  ]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
@@ -1596,6 +1665,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         console.warn("Failed to show surface context menu", error);
       });
   }
+
+  const copyModeSelectAllLabel =
+    formatShortcutLabel(
+      props.copyModeSelectAllShortcut,
+      props.shortcutLabelStyle
+    ) ?? props.copyModeSelectAllShortcut;
 
   return (
     <div
@@ -1738,7 +1813,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               if (
                 matchesBinding(
                   event,
-                  props.settings.shortcuts["terminal.search.prev"]
+                  props.settings.shortcuts["terminal.search.prev"],
+                  props.reservedSystemChords
                 )
               ) {
                 event.preventDefault();
@@ -1748,7 +1824,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               if (
                 matchesBinding(
                   event,
-                  props.settings.shortcuts["terminal.search.next"]
+                  props.settings.shortcuts["terminal.search.next"],
+                  props.reservedSystemChords
                 )
               ) {
                 event.preventDefault();
@@ -1788,7 +1865,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       ) : null}
       {copyMode ? (
         <div className={styles.copyModeBadge}>
-          Copy mode: arrows/page keys scroll, Cmd+A selects all, Esc exits
+          Copy mode: arrows/page keys scroll, {copyModeSelectAllLabel} selects
+          all, Esc exits
         </div>
       ) : null}
       {showMeta ? (
@@ -1894,9 +1972,13 @@ function matchesBinding(
     KeyboardEvent,
     "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "key" | "code"
   >,
-  binding: string | undefined
+  binding: string | undefined,
+  reservedSystemChords: KeyChord[] = []
 ): boolean {
   if (!binding) {
+    return false;
+  }
+  if (isReservedSystemChordBinding(binding, reservedSystemChords)) {
     return false;
   }
   return normalizeShortcutBinding(binding) === normalizeShortcut(event);

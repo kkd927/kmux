@@ -6,7 +6,7 @@ import type {
   TerminalThemeSettings
 } from "@kmux/proto";
 
-export const DEFAULT_SHORTCUTS: Record<string, string> = {
+export const DEFAULT_SHORTCUTS = {
   "workspace.create": "Meta+N",
   "workspace.rename": "Meta+Shift+R",
   "workspace.close": "Meta+Shift+W",
@@ -39,7 +39,58 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "terminal.copy": "Meta+C",
   "terminal.paste": "Meta+V",
   "terminal.copyMode": "Meta+Shift+M"
+} as const satisfies Record<string, string>;
+
+export type ShortcutCommandId = keyof typeof DEFAULT_SHORTCUTS;
+export type ShortcutPlatform = "darwin" | "linux";
+export type ShortcutMap = Record<ShortcutCommandId, string>;
+
+export const LINUX_DEFAULT_SHORTCUTS: ShortcutMap = {
+  "workspace.create": "Ctrl+Shift+N",
+  "workspace.rename": "Ctrl+Shift+R",
+  "workspace.close": "Ctrl+Alt+W",
+  "workspace.next": "Ctrl+PageDown",
+  "workspace.prev": "Ctrl+PageUp",
+  "workspace.sidebar.toggle": "Ctrl+Shift+B",
+  "pane.split.right": "Ctrl+Shift+D",
+  "pane.split.down": "Ctrl+Alt+Shift+D",
+  "pane.focus.left": "Alt+Shift+ArrowLeft",
+  "pane.focus.right": "Alt+Shift+ArrowRight",
+  "pane.focus.up": "Alt+Shift+ArrowUp",
+  "pane.focus.down": "Alt+Shift+ArrowDown",
+  "pane.resize.left": "Ctrl+Shift+ArrowLeft",
+  "pane.resize.right": "Ctrl+Shift+ArrowRight",
+  "pane.resize.up": "Ctrl+Shift+ArrowUp",
+  "pane.resize.down": "Ctrl+Shift+ArrowDown",
+  "pane.close": "Ctrl+Alt+K",
+  "surface.create": "Ctrl+Shift+T",
+  "surface.close": "Ctrl+Shift+W",
+  "surface.closeOthers": "Ctrl+Alt+Shift+W",
+  "surface.next": "Ctrl+Tab",
+  "surface.prev": "Ctrl+Shift+Tab",
+  "command.palette": "Ctrl+Shift+P",
+  "notifications.toggle": "Ctrl+Alt+N",
+  "usage.dashboard.toggle": "Ctrl+Alt+U",
+  "settings.toggle": "Ctrl+,",
+  "terminal.search": "Ctrl+Shift+F",
+  "terminal.search.next": "Ctrl+G",
+  "terminal.search.prev": "Ctrl+Shift+G",
+  "terminal.copy": "Ctrl+Shift+C",
+  "terminal.paste": "Ctrl+Shift+V",
+  "terminal.copyMode": "Ctrl+Shift+M"
 };
+
+export const DEFAULT_SHORTCUTS_BY_PLATFORM: Record<
+  ShortcutPlatform,
+  ShortcutMap
+> = {
+  darwin: { ...DEFAULT_SHORTCUTS },
+  linux: LINUX_DEFAULT_SHORTCUTS
+};
+
+export function buildDefaultShortcuts(platform: ShortcutPlatform): ShortcutMap {
+  return { ...DEFAULT_SHORTCUTS_BY_PLATFORM[platform] };
+}
 
 export type ColorTheme = "dark" | "light";
 export type ThemeMode = ColorTheme | "system";
@@ -386,19 +437,25 @@ export const BUILTIN_TERMINAL_THEME_PROFILE: Readonly<TerminalThemeProfile> =
     source: "builtin",
     minimumContrastRatio: KMUX_DEFAULT_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
     variants: {
-      dark: createTerminalColorPalette(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark),
-      light: createTerminalColorPalette(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light)
+      dark: createTerminalColorPalette(
+        KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark
+      ),
+      light: createTerminalColorPalette(
+        KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light
+      )
     }
   });
 
-export const KMUX_DEFAULT_TERMINAL_THEME_PROFILE = BUILTIN_TERMINAL_THEME_PROFILE;
+export const KMUX_DEFAULT_TERMINAL_THEME_PROFILE =
+  BUILTIN_TERMINAL_THEME_PROFILE;
 
 export const INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE: Readonly<TerminalThemeProfile> =
   Object.freeze({
     id: INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID,
     name: "IntelliJ Islands",
     source: "builtin",
-    minimumContrastRatio: INTELLIJ_ISLANDS_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
+    minimumContrastRatio:
+      INTELLIJ_ISLANDS_TERMINAL_THEME_MINIMUM_CONTRAST_RATIO,
     variants: {
       dark: createTerminalColorPalette(
         INTELLIJ_ISLANDS_TERMINAL_COLOR_PALETTES.dark
@@ -461,7 +518,10 @@ function sanitizeTerminalThemeName(name: string | undefined): string {
   return nextName || "Custom theme";
 }
 
-function sanitizeTerminalThemeId(id: string | undefined, fallback: string): string {
+function sanitizeTerminalThemeId(
+  id: string | undefined,
+  fallback: string
+): string {
   const nextId = typeof id === "string" ? id.trim() : "";
   return nextId || fallback;
 }
@@ -517,7 +577,10 @@ function sanitizeTerminalThemeProfile(
   const lightFallback = KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light;
 
   return {
-    id: sanitizeTerminalThemeId(profile.id, `terminal_theme_custom_${index + 1}`),
+    id: sanitizeTerminalThemeId(
+      profile.id,
+      `terminal_theme_custom_${index + 1}`
+    ),
     name: sanitizeTerminalThemeName(profile.name),
     source: sanitizeTerminalThemeSource(profile.source),
     minimumContrastRatio: sanitizeMinimumContrastRatio(
@@ -548,7 +611,8 @@ export function sanitizeTerminalThemeSettings(
   for (const [index, profile] of inputProfiles.entries()) {
     if (
       !profile ||
-      (typeof profile.id === "string" && isBuiltinTerminalThemeProfileId(profile.id))
+      (typeof profile.id === "string" &&
+        isBuiltinTerminalThemeProfileId(profile.id))
     ) {
       continue;
     }
@@ -583,7 +647,9 @@ export function resolveTerminalTheme(
   const profile =
     settings.profiles.find(
       (candidate) => candidate.id === settings.activeProfileId
-    ) ?? settings.profiles[0] ?? BUILTIN_TERMINAL_THEME_PROFILE;
+    ) ??
+    settings.profiles[0] ??
+    BUILTIN_TERMINAL_THEME_PROFILE;
 
   return {
     profileId: profile.id,
@@ -652,7 +718,9 @@ export function createXtermTheme(
 }
 
 const XTERM_THEMES = Object.freeze({
-  dark: Object.freeze(createXtermTheme(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark)),
+  dark: Object.freeze(
+    createXtermTheme(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.dark)
+  ),
   light: Object.freeze(
     createXtermTheme(KMUX_DEFAULT_TERMINAL_COLOR_PALETTES.light, "light")
   )
@@ -681,7 +749,9 @@ const TERMINAL_SEARCH_DECORATIONS_MAP = Object.freeze({
 
 export const TERMINAL_SEARCH_DECORATIONS = TERMINAL_SEARCH_DECORATIONS_MAP.dark;
 
-export function getThemeTokens(theme: ColorTheme = "dark"): Readonly<ThemeTokens> {
+export function getThemeTokens(
+  theme: ColorTheme = "dark"
+): Readonly<ThemeTokens> {
   return THEMES[theme];
 }
 

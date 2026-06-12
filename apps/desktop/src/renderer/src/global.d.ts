@@ -1,4 +1,5 @@
 import type { AppAction } from "@kmux/core";
+import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type {
   CreateImageAttachmentPayload,
@@ -31,6 +32,7 @@ import type { TerminalEvent } from "../../preload/index";
 declare global {
   interface Window {
     kmux: {
+      getPlatform(): Promise<RendererPlatformDescriptor>;
       getShellState(): Promise<ShellStoreSnapshot>;
       getUsageView(): Promise<UsageViewSnapshot>;
       getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
@@ -136,6 +138,7 @@ declare global {
       ): Promise<void>;
     };
     kmuxTest?: {
+      getRuntimeEnv(): Record<string, string>;
       snapshotSurface(
         surfaceId: string,
         options?: SurfaceSnapshotOptions

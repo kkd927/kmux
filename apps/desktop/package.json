@@ -16,6 +16,7 @@
     "dev": "electron-vite dev --config electron.vite.config.ts",
     "build": "electron-vite build --config electron.vite.config.ts",
     "dist:mac": "electron-builder --config electron-builder.yml --mac --publish never",
+    "dist:linux": "electron-builder --config electron-builder.yml --linux AppImage --publish never",
     "preview": "electron-vite preview --config electron.vite.config.ts"
   },
   "dependencies": {

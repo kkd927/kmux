@@ -19,13 +19,35 @@ export function exitCodeForSignal(signal) {
   }
 }
 
+export function resolveDevProfileDirs({
+  repoRoot = process.cwd(),
+  env = process.env
+} = {}) {
+  const defaultProfileRoot = path.join(repoRoot, ".kmux", "dev");
+  return {
+    configDir:
+      nonBlankEnvPath(env.KMUX_CONFIG_DIR) ??
+      path.join(defaultProfileRoot, "config"),
+    runtimeDir:
+      nonBlankEnvPath(env.KMUX_RUNTIME_DIR) ??
+      path.join(defaultProfileRoot, "runtime")
+  };
+}
+
+function nonBlankEnvPath(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function main() {
   const repoRoot = process.cwd();
-  const defaultProfileRoot = path.join(repoRoot, ".kmux", "dev");
-  const configDir =
-    process.env.KMUX_CONFIG_DIR ?? path.join(defaultProfileRoot, "config");
-  const runtimeDir =
-    process.env.KMUX_RUNTIME_DIR ?? path.join(defaultProfileRoot, "runtime");
+  const { configDir, runtimeDir } = resolveDevProfileDirs({
+    repoRoot,
+    env: process.env
+  });
 
   mkdirSync(configDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });

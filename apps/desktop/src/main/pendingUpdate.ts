@@ -27,12 +27,11 @@ export interface PendingInstallEvaluation {
 
 /**
  * Records the version targeted by the most recent `quitAndInstall` so the next
- * launch can tell whether Squirrel.Mac actually swapped the bundle. macOS only
- * installs one Squirrel update per login session; a second attempt stages the
- * update but never runs ShipIt, leaving the app on the old version with no
- * error surfaced. Comparing the recorded version against the running version on
- * startup lets us turn that silent failure into an actionable "restart your
- * Mac" hint.
+ * launch can tell whether the platform updater actually swapped the app.
+ * macOS can silently stage a Squirrel update without applying it, and Linux
+ * AppImage updates can likewise leave the app on the old version after a
+ * relaunch. Comparing the recorded version against the running version on
+ * startup lets us turn that silent failure into an actionable recovery hint.
  */
 export function createPendingUpdateStore(filePath: string): PendingUpdateStore {
   return {

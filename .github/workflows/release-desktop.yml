@@ -118,11 +118,14 @@ jobs:
       - package-macos
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
           pattern: macos-*-release-assets
           path: release-assets
           merge-multiple: true
+      - name: Verify Linux public release gate
+        run: node scripts/release-check-linux.mjs
       - name: Verify update manifest assets
         run: |
           shopt -s nullglob

@@ -47,6 +47,18 @@ describe("diagnostics logging", () => {
     );
   });
 
+  it("is a no-op when diagnostics path is blank or relative", () => {
+    process.env[DIAGNOSTICS_LOG_PATH_ENV] = "   ";
+    expect(logDiagnostics("terminal.notification", { protocol: 9 })).toBe(
+      false
+    );
+
+    process.env[DIAGNOSTICS_LOG_PATH_ENV] = "logs/diagnostics.log";
+    expect(logDiagnostics("terminal.notification", { protocol: 9 })).toBe(
+      false
+    );
+  });
+
   it("appends JSON lines to the configured diagnostics file", () => {
     const sandboxDir = mkdtempSync(join(tmpdir(), "kmux-diagnostics-test-"));
     const logPath = join(sandboxDir, "diagnostics.log");

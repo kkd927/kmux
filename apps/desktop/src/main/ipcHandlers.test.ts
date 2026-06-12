@@ -7,6 +7,7 @@ import type {
   ExternalAgentSessionsSnapshot,
   SurfaceCapturePayload
 } from "@kmux/proto";
+import { createRendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>()
@@ -54,6 +55,13 @@ function registerTestHandlers(options: {
 }): void {
   handlers.clear();
   registerIpcHandlers({
+    getPlatformDescriptor: () =>
+      createRendererPlatformDescriptor({
+        windowChrome: "native",
+        shortcutStyle: "mac-symbols",
+        supportsDock: true,
+        keepProcessAliveWhenLastWindowCloses: true
+      }),
     getShellState: vi.fn(),
     getWorkspaceContextView: vi.fn(),
     getUsageView: vi.fn(),
@@ -120,6 +128,31 @@ function registerTestHandlers(options: {
 }
 
 describe("ipc handlers", () => {
+  it("registers a dedicated renderer platform descriptor handler", async () => {
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      }
+    });
+
+    const handler = handlers.get("kmux:platform:get");
+
+    expect(handler).toBeTypeOf("function");
+    await expect(Promise.resolve(handler?.({}))).resolves.toMatchObject({
+      windowChrome: "native",
+      shortcutStyle: "mac-symbols",
+      desktop: {
+        supportsDock: true,
+        keepProcessAliveWhenLastWindowCloses: true
+      }
+    });
+  });
+
   it("registers external session list and resume handlers", async () => {
     const snapshot: ExternalAgentSessionsSnapshot = {
       updatedAt: "2026-04-26T12:00:00.000Z",

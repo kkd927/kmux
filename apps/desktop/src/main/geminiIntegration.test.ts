@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import { resolveAgentStorageRoots } from "@kmux/metadata";
 
 import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 
@@ -25,11 +28,35 @@ afterEach(() => {
 });
 
 describe("ensureGeminiHooksInstalled", () => {
+  it("uses AgentStorageRoots for the Gemini settings path", () => {
+    const homeDir = createSandboxHome();
+    const storageHomeDir = createSandboxHome();
+    sandboxDirs.push(homeDir, storageHomeDir);
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+
+    const result = ensureGeminiHooksInstalled(homeDir, {
+      agentStorageRoots: roots
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.settingsPath).toBe(roots.gemini.settingsPath);
+    expect(existsSync(roots.gemini.settingsPath)).toBe(true);
+    expect(existsSync(join(homeDir, ".gemini", "settings.json"))).toBe(false);
+  });
+
   it("installs kmux-managed Gemini hooks into the user settings file", () => {
     const homeDir = createSandboxHome();
     sandboxDirs.push(homeDir);
 
-    const result = ensureGeminiHooksInstalled(homeDir);
+    const socketPath = join(homeDir, ".kmux", "control.sock");
+    const agentBinDir = join(homeDir, ".local", "share", "kmux", "hooks");
+
+    const result = ensureGeminiHooksInstalled(homeDir, {
+      socketPath,
+      agentBinDir
+    });
 
     expect(result.changed).toBe(true);
     const settingsPath = join(homeDir, ".gemini", "settings.json");
@@ -50,7 +77,21 @@ describe("ensureGeminiHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" gemini BeforeAgent || true'
+          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini BeforeAgent || true'
+        )
+      })
+    ]);
+    expect(settings.hooks.BeforeAgent[0].hooks).toEqual([
+      expect.objectContaining({
+        command: expect.stringContaining(
+          `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
+        )
+      })
+    ]);
+    expect(settings.hooks.BeforeAgent[0].hooks).toEqual([
+      expect.objectContaining({
+        command: expect.stringContaining(
+          `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
         )
       })
     ]);
@@ -58,7 +99,7 @@ describe("ensureGeminiHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" gemini AfterAgent || true'
+          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini AfterAgent || true'
         )
       })
     ]);
@@ -66,7 +107,7 @@ describe("ensureGeminiHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" gemini AfterTool || true'
+          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini AfterTool || true'
         )
       })
     ]);
@@ -74,7 +115,7 @@ describe("ensureGeminiHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" gemini SessionEnd || true'
+          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini SessionEnd || true'
         )
       })
     ]);

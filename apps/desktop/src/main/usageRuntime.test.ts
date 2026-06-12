@@ -1850,6 +1850,73 @@ describe("usage runtime", () => {
     runtime.shutdown();
   });
 
+  it("keeps Linux Codex status probe failures isolated from other subscription provider polls", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
+    const state = createInitialState();
+    const codexFetcher = vi.fn(async () => {
+      throw new Error("script: command not found");
+    });
+    const geminiFetcher = vi.fn(
+      async (): Promise<SubscriptionProviderUsageVm> => ({
+        provider: "gemini",
+        providerLabel: "Gemini",
+        planLabel: "Paid",
+        source: "quota_api",
+        updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
+        rows: [
+          {
+            key: "pro",
+            label: "Pro",
+            usedPercent: 31,
+            resetLabel: "Resets in 6h 0m",
+            resetsAt: new Date("2026-04-17T17:00:00.000Z").toISOString(),
+            windowKind: "model"
+          }
+        ]
+      })
+    );
+
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [],
+      emitSnapshot: vi.fn(),
+      now: () => Date.now(),
+      subscriptionFetchers: {
+        codex: codexFetcher,
+        gemini: geminiFetcher
+      },
+      subscriptionAuthDetectors: {
+        codex: vi.fn(async () => true),
+        gemini: vi.fn(async () => true)
+      }
+    });
+
+    runtime.start();
+    runtime.setDashboardOpen(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(codexFetcher).toHaveBeenCalledTimes(1);
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot().subscriptionUsage).toEqual([
+      expect.objectContaining({
+        provider: "gemini",
+        rows: [expect.objectContaining({ key: "pro", usedPercent: 31 })]
+      })
+    ]);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(codexFetcher).toHaveBeenCalledTimes(1);
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(codexFetcher).toHaveBeenCalledTimes(2);
+    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+
+    runtime.shutdown();
+  });
+
   it("refreshes usage in the background even when the dashboard is closed so external writers do not require an app restart", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
@@ -1970,6 +2037,75 @@ describe("usage runtime", () => {
     expect(resolveAiCliProcesses).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(30_000);
+    expect(resolveAiCliProcesses).toHaveBeenCalledTimes(2);
+
+    runtime.shutdown();
+  });
+
+  it("isolates failed manual CLI process-table scans and retries without breaking usage refresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    state.surfaces[surfaceId].cwd = "/tmp/kmux-codex-manual-ps-failure";
+    state.sessions[sessionId].pid = 4242;
+    state.sessions[sessionId].runtimeState = "running";
+
+    const resolveAiCliProcesses = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("ps unavailable"))
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            4242,
+            {
+              parentPid: 4242,
+              pid: 5001,
+              vendor: "codex" as const,
+              commandLine: "/usr/local/bin/codex exec"
+            }
+          ]
+        ])
+      );
+    const adapter = new FakeUsageAdapter({
+      initialReads: [{ sourceCount: 1, samples: [] }]
+    });
+    const readIncrementalSpy = vi.spyOn(adapter, "readIncremental");
+
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [adapter],
+      resolveAiCliProcesses,
+      emitSnapshot: vi.fn(),
+      now: () => Date.now()
+    });
+
+    runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    resolveAiCliProcesses.mockClear();
+
+    runtime.handleTerminalInput(
+      surfaceId,
+      "codex exec --skip-git-repo-check\r"
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(resolveAiCliProcesses).toHaveBeenCalledTimes(1);
+    expect(readIncrementalSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[usage] manual CLI process scan failed:",
+      "ps unavailable"
+    );
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(resolveAiCliProcesses).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(resolveAiCliProcesses).toHaveBeenCalledTimes(2);
 
     runtime.shutdown();

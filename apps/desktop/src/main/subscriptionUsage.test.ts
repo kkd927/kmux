@@ -10,12 +10,15 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { resolveAgentStorageRoots } from "@kmux/metadata";
+
 import {
   createSubscriptionAuthDetectors,
   fetchAntigravitySubscriptionUsage,
   fetchClaudeSubscriptionUsage,
   fetchCodexSubscriptionUsage,
-  fetchGeminiSubscriptionUsage
+  fetchGeminiSubscriptionUsage,
+  resolveCodexStatusScriptArgs
 } from "./subscriptionUsage";
 
 const sandboxDirs: string[] = [];
@@ -32,6 +35,200 @@ afterEach(() => {
 });
 
 describe("subscription usage fetchers", () => {
+  it("uses AgentStorageRoots for Codex subscription auth", async () => {
+    const homeDir = createSandboxHome();
+    const storageHomeDir = createSandboxHome();
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+    writeJson(storageHomeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-storage-token",
+        account_id: "acct_storage"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "pro",
+            rate_limit: {
+              primary_window: {
+                used_percent: 24,
+                reset_at: 1_776_385_200,
+                limit_window_seconds: 18_000
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      agentStorageRoots: roots,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "codex",
+        planLabel: "Pro",
+        rows: [expect.objectContaining({ key: "session", usedPercent: 24 })]
+      })
+    );
+  });
+
+  it("ignores relative home inputs for Codex subscription auth roots", async () => {
+    const cwdDir = createSandboxHome();
+    const fallbackHomeDir = createSandboxHome();
+    writeJson(cwdDir, ["relative-home", ".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-relative-token",
+        account_id: "acct_relative"
+      }
+    });
+    writeJson(fallbackHomeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-fallback-token",
+        account_id: "acct_fallback"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "pro",
+            rate_limit: {
+              primary_window: {
+                used_percent: 31,
+                reset_at: 1_776_385_200,
+                limit_window_seconds: 18_000
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+    const previousCwd = process.cwd();
+    process.chdir(cwdDir);
+    try {
+      const usage = await fetchCodexSubscriptionUsage({
+        homeDir: "relative-home",
+        env: {
+          HOME: fallbackHomeDir
+        },
+        fetchImpl,
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      });
+
+      expect(usage).toEqual(
+        expect.objectContaining({
+          provider: "codex",
+          rows: [expect.objectContaining({ key: "session", usedPercent: 31 })]
+        })
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<
+      [RequestInfo | URL, RequestInit | undefined]
+    >;
+    const headers = fetchCalls[0]?.[1]?.headers as
+      | Record<string, string>
+      | undefined;
+    expect(headers?.Authorization).toBe("Bearer codex-fallback-token");
+    expect(headers?.["ChatGPT-Account-Id"]).toBe("acct_fallback");
+  });
+
+  it("uses platform-specific script arguments for Codex status probing", () => {
+    expect(resolveCodexStatusScriptArgs("darwin")).toEqual([
+      "-q",
+      "/dev/null",
+      "codex",
+      "-s",
+      "read-only",
+      "-a",
+      "untrusted"
+    ]);
+    expect(resolveCodexStatusScriptArgs("linux")).toEqual([
+      "-q",
+      "-c",
+      "codex -s read-only -a untrusted",
+      "/dev/null"
+    ]);
+    expect(resolveCodexStatusScriptArgs("win32")).toBeNull();
+  });
+
+  it("keeps Linux subscription auth unavailable without macOS security or network calls when credentials are missing", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async (command: string) => {
+      throw new Error(`unexpected subscription subprocess: ${command}`);
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("unexpected subscription network call");
+    });
+    const codexRpcProbe = vi.fn(async () => {
+      throw new Error("unexpected Codex RPC probe");
+    });
+    const codexStatusProbe = vi.fn(async () => {
+      throw new Error("unexpected Codex status probe");
+    });
+
+    await expect(
+      fetchCodexSubscriptionUsage({
+        homeDir,
+        platform: "linux",
+        fetchImpl,
+        codexRpcProbe,
+        codexStatusProbe
+      })
+    ).resolves.toBeNull();
+    await expect(
+      fetchClaudeSubscriptionUsage({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        fetchImpl
+      })
+    ).resolves.toBeNull();
+    await expect(
+      fetchGeminiSubscriptionUsage({
+        homeDir,
+        platform: "linux",
+        fetchImpl
+      })
+    ).resolves.toBeNull();
+    await expect(
+      fetchAntigravitySubscriptionUsage({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        fetchImpl
+      })
+    ).resolves.toBeNull();
+
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl
+    });
+
+    await expect(detectors.codex?.()).resolves.toBe(false);
+    await expect(detectors.claude?.()).resolves.toBe(false);
+    await expect(detectors.gemini?.()).resolves.toBe(false);
+    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(codexRpcProbe).not.toHaveBeenCalled();
+    expect(codexStatusProbe).not.toHaveBeenCalled();
+  });
+
   it("maps Codex OAuth usage windows into session and weekly rows", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".codex", "auth.json"], {
@@ -431,6 +628,24 @@ describe("subscription usage fetchers", () => {
     );
   });
 
+  it("does not spawn macOS security for Linux Claude credentials", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+
+    const usage = await fetchClaudeSubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl: vi.fn()
+    });
+
+    expect(usage).toBeNull();
+    expect(execFileImpl).not.toHaveBeenCalled();
+  });
+
   it("returns null when the Claude OAuth usage endpoint fails instead of spending quota on a fallback messages probe", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".claude", ".credentials.json"], {
@@ -827,6 +1042,7 @@ describe("subscription usage fetchers", () => {
 
     const usage = await fetchAntigravitySubscriptionUsage({
       homeDir,
+      platform: "darwin",
       execFileImpl,
       fetchImpl,
       googleOAuthClientConfig: {
@@ -913,6 +1129,7 @@ describe("subscription usage fetchers", () => {
 
     const usage = await fetchAntigravitySubscriptionUsage({
       homeDir,
+      platform: "darwin",
       execFileImpl,
       fetchImpl,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
@@ -969,6 +1186,32 @@ describe("subscription usage fetchers", () => {
     });
 
     expect(usage).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps Antigravity subscription usage unavailable on Linux without spawning security", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+    const fetchImpl = vi.fn();
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl
+    });
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl
+    });
+
+    expect(usage).toBeNull();
+    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    expect(execFileImpl).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -1450,6 +1693,7 @@ describe("subscription usage fetchers", () => {
 
     const detectors = createSubscriptionAuthDetectors({
       homeDir,
+      platform: "darwin",
       execFileImpl
     });
 

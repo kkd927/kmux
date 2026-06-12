@@ -1,10 +1,13 @@
-import { app, BrowserWindow, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, shell } from "electron";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
-import { USAGE_PRICING_REVISION } from "@kmux/metadata";
+import {
+  resolveAgentStorageRoots,
+  USAGE_PRICING_REVISION
+} from "@kmux/metadata";
 
 import {
   createSettingsStore,
@@ -25,7 +28,10 @@ import {
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
-import { resolveShellEnvironment } from "./shellEnvironment";
+import {
+  buildShellLaunchPolicy,
+  resolveShellEnvironment
+} from "./shellEnvironment";
 import { openSettingsJsonFile, openWithMacTextEditor } from "./settingsJson";
 import { createShellWrapperRuntime } from "./shellWrapperRuntime";
 import { KmuxSocketServer } from "./socketServer";
@@ -34,6 +40,7 @@ import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
 import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
+import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
 import { createWorktreeRuntime } from "./worktreeRuntime";
 import {
@@ -50,16 +57,31 @@ import {
   showQuitConfirmationDialog
 } from "./mainLifecycle";
 import {
+  requirePlatformRuntime,
+  UnsupportedPlatformError
+} from "./platform/runtime";
+import {
   exportItermcolorsPalette,
   importItermcolorsPalette
 } from "./itermcolors";
 import {
   DIAGNOSTICS_LOG_PATH_ENV,
-  logDiagnostics
+  logDiagnostics,
+  resolveDiagnosticsLogPath
 } from "../shared/diagnostics";
 import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
-import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
-import { writeAgentHookHelpers } from "../pty-host/shellIntegration";
+import {
+  KMUX_PROFILE_LOG_PATH_ENV,
+  isSmoothnessProfileLogPathAllowed
+} from "../shared/smoothnessProfile";
+import {
+  KMUX_NATIVE_CACHE_ROOT_ENV,
+  KMUX_RAW_OUTPUT_ROOT_ENV
+} from "../shared/platform/env";
+import {
+  writeAgentHookHelpers,
+  writeAgentWrapperBinaries
+} from "../pty-host/shellIntegration";
 import {
   createMainWindow,
   persistWindowState,
@@ -70,12 +92,19 @@ import {
   ensureAntigravityHooksInstalled,
   recordAntigravitySessionFromHook
 } from "./antigravityIntegration";
+import {
+  KMUX_APP_ID,
+  KMUX_APP_NAME,
+  LINUX_STARTUP_WM_CLASS
+} from "./appIdentity";
+import {
+  createNativeNotificationIdentity,
+  resolveNotificationIconPath
+} from "./nativeNotifications";
 
 const paths = defaultAppPaths(homedir(), process.env);
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
-const USER_VISIBLE_APP_NAME = "kmux";
-
 let ptyHost: PtyHostManager | null = null;
 let socketServer: KmuxSocketServer | null = null;
 
@@ -90,16 +119,39 @@ process.stdout.on("error", ignoreExpectedPipeClose);
 process.stderr.on("error", ignoreExpectedPipeClose);
 
 async function bootstrap(): Promise<void> {
-  app.setName(USER_VISIBLE_APP_NAME);
+  app.setName(KMUX_APP_NAME);
+  const platformRuntime = requirePlatformRuntime({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    env: process.env
+  });
+  const notificationIconPath = resolveNotificationIconPath({
+    currentDir,
+    resourcesPath: (process as NodeJS.Process & { resourcesPath?: string })
+      .resourcesPath
+  });
+  const nativeNotificationIdentity = createNativeNotificationIdentity({
+    appId: KMUX_APP_ID,
+    appName: KMUX_APP_NAME,
+    startupWmClass: LINUX_STARTUP_WM_CLASS,
+    ...(notificationIconPath ? { iconPath: notificationIconPath } : {})
+  });
   const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
     version: app.getVersion(),
+    platform: platformRuntime.platformId,
     diagnosticsLogPath: process.env[DIAGNOSTICS_LOG_PATH_ENV],
     smoothnessProfileEnabled: smoothnessProfile.enabled,
     smoothnessProfileLogPath: process.env[KMUX_PROFILE_LOG_PATH_ENV]
   });
-  setDevelopmentDockIcon(currentDir);
+  setDevelopmentDockIcon(currentDir, {
+    supportsDock: platformRuntime.desktop.supportsDock
+  });
+  socketServer = new KmuxSocketServer({
+    socketPath: paths.socketPath
+  });
+  await socketServer.start();
   app.setAboutPanelOptions({
     applicationName: app.getName(),
     applicationVersion: app.getVersion(),
@@ -114,50 +166,67 @@ async function bootstrap(): Promise<void> {
     USAGE_PRICING_REVISION
   );
   const savedSettings = settingsStore.load();
-  const shellWrapperRuntime = createShellWrapperRuntime();
+  const shellWrapperRuntime = createShellWrapperRuntime({
+    platform: platformRuntime.shell.platform
+  });
   process.once("exit", () => {
     shellWrapperRuntime.cleanup();
   });
   const resolvedShellEnv = await resolveShellEnvironment({
     preferredShell: savedSettings?.shell,
     env: process.env,
+    platform: platformRuntime.shell.platform,
     cachePath: paths.shellEnvCachePath
   });
   logDiagnostics("main.shell-environment.resolved", {
     shellPath: resolvedShellEnv.shellPath,
     source: resolvedShellEnv.source
   });
-  const diagnosticsLogPath = process.env[DIAGNOSTICS_LOG_PATH_ENV];
+  const userHomeDir = resolvedShellEnv.baseEnv.HOME ?? homedir();
+  const agentStorageRoots = resolveAgentStorageRoots({
+    homeDir: userHomeDir,
+    env: resolvedShellEnv.baseEnv
+  });
+  const diagnosticsLogPath = resolveDiagnosticsLogPath(
+    process.env[DIAGNOSTICS_LOG_PATH_ENV]
+  );
   if (diagnosticsLogPath) {
     resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV] = diagnosticsLogPath;
   } else {
     delete resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV];
   }
-  const smoothnessProfileLogPath = process.env[KMUX_PROFILE_LOG_PATH_ENV];
-  if (smoothnessProfileLogPath) {
+  const smoothnessProfileLogPath =
+    process.env[KMUX_PROFILE_LOG_PATH_ENV]?.trim();
+  if (isSmoothnessProfileLogPathAllowed(smoothnessProfileLogPath)) {
     resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV] =
       smoothnessProfileLogPath;
   } else {
     delete resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV];
   }
   writeAgentHookHelpers(paths.agentHookBinDir);
-  const claudeIntegrationResult = ensureClaudeHooksInstalled(
-    resolvedShellEnv.baseEnv.HOME ?? homedir()
-  );
+  writeAgentWrapperBinaries(paths.agentWrapperBinDir);
+  const claudeIntegrationResult = ensureClaudeHooksInstalled(userHomeDir, {
+    socketPath: paths.socketPath,
+    agentBinDir: paths.agentHookBinDir,
+    agentStorageRoots
+  });
   if (claudeIntegrationResult.warning) {
     console.warn(claudeIntegrationResult.warning);
   }
-  const geminiIntegrationResult = ensureGeminiHooksInstalled(
-    resolvedShellEnv.baseEnv.HOME ?? homedir()
-  );
+  const geminiIntegrationResult = ensureGeminiHooksInstalled(userHomeDir, {
+    socketPath: paths.socketPath,
+    agentBinDir: paths.agentHookBinDir,
+    agentStorageRoots
+  });
   if (geminiIntegrationResult.warning) {
     console.warn(geminiIntegrationResult.warning);
   }
   const antigravityIntegrationResult = ensureAntigravityHooksInstalled(
-    resolvedShellEnv.baseEnv.HOME ?? homedir(),
+    userHomeDir,
     {
       socketPath: paths.socketPath,
-      agentBinDir: paths.agentHookBinDir
+      agentBinDir: paths.agentHookBinDir,
+      agentStorageRoots
     }
   );
   if (antigravityIntegrationResult.warning) {
@@ -175,20 +244,37 @@ async function bootstrap(): Promise<void> {
     snapshotStore,
     windowStateStore,
     settingsStore,
+    createShellLaunchPolicy: (launch) =>
+      buildShellLaunchPolicy({
+        defaultShellPath: resolvedShellEnv.shellPath,
+        launchShell: launch.shell,
+        launchArgs: launch.args,
+        platform: platformRuntime.shell.platform,
+        enableShellIntegration:
+          platformRuntime.shell.enablePosixShellIntegration,
+        socketPath: paths.socketPath,
+        nodePath: process.execPath,
+        agentHookBinDir: paths.agentHookBinDir,
+        agentWrapperBinDir: paths.agentWrapperBinDir
+      }),
     defaultShellPath: resolvedShellEnv.shellPath,
+    shortcutDefaultsPlatform: platformRuntime.platformId,
     refreshMetadata: (...args) => metadataRuntime.refreshMetadata(...args),
     fontInventoryProvider: createFontInventoryProvider(
-      resolvedShellEnv.baseEnv
+      resolvedShellEnv.baseEnv,
+      platformRuntime.platformId
     ),
     onDidDispatchAppAction: (action) => {
       metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
     },
     externalSessionIndexer: createExternalSessionIndexer({
-      homeDir: resolvedShellEnv.baseEnv.HOME ?? homedir(),
+      homeDir: userHomeDir,
       env: resolvedShellEnv.baseEnv,
+      agentStorageRoots,
       antigravitySessionIndexPath: paths.antigravitySessionsPath
     }),
+    nativeNotificationIdentity,
     profileRecorder: smoothnessProfile,
     persistWindowState: (window) => {
       persistWindowState({
@@ -212,14 +298,17 @@ async function bootstrap(): Promise<void> {
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
     env: resolvedShellEnv.baseEnv,
-    historyStore: usageHistoryStore
+    historyStore: usageHistoryStore,
+    homeDir: userHomeDir,
+    agentStorageRoots,
+    platform: platformRuntime.platformId
   });
 
   worktreeRuntime = createWorktreeRuntime({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
     env: resolvedShellEnv.baseEnv,
-    homeDir: resolvedShellEnv.baseEnv.HOME ?? homedir()
+    homeDir: userHomeDir
   });
 
   const isSurfaceVisibleToUser = (surfaceId: string): boolean => {
@@ -253,7 +342,7 @@ async function bootstrap(): Promise<void> {
     profileRecorder: smoothnessProfile
   });
   const surfaceCaptureService = createSurfaceCaptureService({
-    captureRoot: join(dirname(paths.socketPath), "captures"),
+    captureRoot: paths.captureRoot,
     getState: runtime.getState,
     getWindow: () =>
       BrowserWindow.getFocusedWindow() ??
@@ -281,7 +370,7 @@ async function bootstrap(): Promise<void> {
     return capture;
   };
   const imageAttachmentService = createImageAttachmentService({
-    attachmentRoot: join(dirname(paths.socketPath), "attachments"),
+    attachmentRoot: paths.attachmentRoot,
     getSurfaceSessionId: terminalBridge.surfaceSessionId,
     getSurfaceVendor: usageRuntime.getSurfaceVendor
   });
@@ -318,12 +407,13 @@ async function bootstrap(): Promise<void> {
   });
   ptyHost.start({
     ...resolvedShellEnv.baseEnv,
-    ...shellWrapperRuntime.env
+    ...shellWrapperRuntime.env,
+    [KMUX_RAW_OUTPUT_ROOT_ENV]: paths.rawOutputRoot,
+    [KMUX_NATIVE_CACHE_ROOT_ENV]: paths.nativeCacheRoot
   });
   ptyHost.on("event", terminalBridge.handlePtyEvent);
 
-  socketServer = new KmuxSocketServer({
-    socketPath: paths.socketPath,
+  socketServer.setRuntime({
     getState: runtime.getState,
     dispatch: runtime.dispatchAppAction,
     sendSurfaceText: terminalBridge.sendText,
@@ -338,9 +428,9 @@ async function bootstrap(): Promise<void> {
       });
     }
   });
-  await socketServer.start();
 
   registerIpcHandlers({
+    getPlatformDescriptor: () => platformRuntime.rendererDescriptor,
     getShellState: runtime.getShellState,
     getWorkspaceContextView: () => {
       const shellState = runtime.getShellState();
@@ -382,10 +472,12 @@ async function bootstrap(): Promise<void> {
       settingsStore.save(runtime.getState().settings);
       const result = await openSettingsJsonFile({
         nodeEnv: process.env.NODE_ENV,
-        platform: process.platform,
+        platform: platformRuntime.opener.platform,
         settingsPath: paths.settingsPath,
         shell,
-        openWithTextEditor: openWithMacTextEditor
+        openWithTextEditor: platformRuntime.opener.useMacTextEditorFirst
+          ? openWithMacTextEditor
+          : undefined
       });
       if (result.action === "revealed") {
         logDiagnostics("settings-json.open.fallback", {
@@ -422,6 +514,7 @@ async function bootstrap(): Promise<void> {
     const window = createMainWindow({
       currentDir,
       loadWindowState: () => windowStateStore.load(),
+      platform: platformRuntime.desktop.window,
       onClose: (closingWindow) => {
         persistWindowState({
           windowStateStore,
@@ -436,6 +529,9 @@ async function bootstrap(): Promise<void> {
     currentMainWindow = window;
     runtime.setMainWindow(window);
     window.webContents.once("did-finish-load", () => {
+      if (process.env.KMUX_DEV_SMOKE === "1") {
+        console.log("[main:window] did-finish-load");
+      }
       runtime.syncWindowTitles();
       broadcastUpdaterState();
     });
@@ -449,8 +545,12 @@ async function bootstrap(): Promise<void> {
       }
     });
   };
-  if (process.arch === "arm64") {
-    autoUpdater.channel = "latest-arm64";
+  const autoUpdaterChannel = resolveAutoUpdaterChannel({
+    platform: process.platform,
+    arch: process.arch
+  });
+  if (autoUpdaterChannel) {
+    autoUpdater.channel = autoUpdaterChannel;
   }
   autoUpdater.allowDowngrade = false;
   const pendingUpdateStore = createPendingUpdateStore(
@@ -463,11 +563,13 @@ async function bootstrap(): Promise<void> {
       getWindow: getCurrentWindow
     }),
     notifier: createNativeUpdaterNotifier({
-      appName: app.getName()
+      appName: app.getName(),
+      nativeNotificationIdentity
     }),
     currentVersion: app.getVersion(),
     platform: process.platform,
     isPackaged: app.isPackaged,
+    enabled: platformRuntime.updater.enabled,
     env: process.env,
     beforeQuitAndInstall: (version) => {
       lifecycle.allowQuit();
@@ -513,7 +615,7 @@ async function bootstrap(): Promise<void> {
     return shutdownPromise;
   };
   lifecycle = createMainLifecycleController({
-    isMac: process.platform === "darwin",
+    isMac: platformRuntime.desktop.isMac,
     // E2E cleanup should not depend on mutating persisted warn-before-quit
     // settings or dismissing a native macOS dialog.
     shouldConfirmQuit: process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM !== "1",
@@ -551,6 +653,7 @@ async function bootstrap(): Promise<void> {
     ) {
       void showUpdateInstallIncompleteDialog(getCurrentWindow(), {
         appName: app.getName(),
+        platform: process.platform,
         version: pendingInstall.version
       });
     }
@@ -558,7 +661,7 @@ async function bootstrap(): Promise<void> {
   const updateApplicationMenu = () => {
     const template = buildApplicationMenuTemplate({
       appName: app.getName(),
-      isMac: process.platform === "darwin",
+      isMac: platformRuntime.desktop.isMac,
       isDevelopment: !app.isPackaged,
       updaterState: updater.getState(),
       actions: {
@@ -594,6 +697,11 @@ app
   .whenReady()
   .then(bootstrap)
   .catch((error) => {
-    console.error(error);
+    if (error instanceof UnsupportedPlatformError) {
+      console.error("[main:unsupported-platform]", error.message);
+      dialog.showErrorBox("Unsupported platform", error.message);
+    } else {
+      console.error(error);
+    }
     app.quit();
   });

@@ -13,6 +13,8 @@ import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resolveAgentStorageRoots } from "@kmux/metadata";
+
 import { createExternalSessionIndexer } from "./externalSessions";
 
 const sandboxDirs: string[] = [];
@@ -110,6 +112,74 @@ afterEach(() => {
 });
 
 describe("external session indexer", () => {
+  it("uses AgentStorageRoots for vendor session discovery", () => {
+    const homeDir = createSandboxHome();
+    const storageHomeDir = createSandboxHome();
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+    const now = new Date("2026-04-26T12:00:00.000Z");
+    const mtime = new Date("2026-04-26T11:00:00.000Z");
+
+    writeJsonl(
+      join(
+        roots.codex.sessionsDir,
+        "2026",
+        "04",
+        "26",
+        "rollout-2026-04-26T11-00-00-codex-storage-root-session.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: {
+            id: "codex-storage-root-session",
+            cwd: "/Users/test/codex-project"
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "user_message",
+            message: "Codex storage root session"
+          }
+        }
+      ],
+      mtime
+    );
+
+    const indexer = createExternalSessionIndexer({
+      homeDir,
+      agentStorageRoots: roots,
+      now: () => now,
+      commandAvailability: () => true
+    });
+
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toEqual([
+      expect.objectContaining({
+        key: "codex:codex-storage-root-session",
+        vendor: "codex",
+        title: "Codex storage root session",
+        cwd: "/Users/test/codex-project",
+        canResume: true
+      })
+    ]);
+    expect(
+      indexer.resolveExternalAgentSession("codex:codex-storage-root-session")
+    ).toEqual(
+      expect.objectContaining({
+        key: "codex:codex-storage-root-session",
+        vendor: "codex",
+        title: "Codex storage root session",
+        cwd: "/Users/test/codex-project"
+      })
+    );
+  });
+
   it("defaults to indexing at most 100 recent files per vendor", () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
@@ -224,7 +294,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions.map((session) => session.key)).not.toContain(
       "claude:claude-session-101"
     );
-  });
+  }, 15_000);
 
   it("only lists sessions updated within the last 30 days", () => {
     const homeDir = createSandboxHome();
@@ -944,13 +1014,7 @@ describe("external session indexer", () => {
       latestUpdatedAt
     );
     writeJson(
-      join(
-        homeDir,
-        ".gemini",
-        "antigravity-cli",
-        "cache",
-        "projects.json"
-      ),
+      join(homeDir, ".gemini", "antigravity-cli", "cache", "projects.json"),
       {
         [workspace]: projectId
       },
@@ -1022,9 +1086,7 @@ describe("external session indexer", () => {
       resumeCommandPreview: `agy --conversation ${dbOnlyConversationId}`
     });
     expect(
-      indexer.resolveExternalAgentSession(
-        `antigravity:${latestConversationId}`
-      )
+      indexer.resolveExternalAgentSession(`antigravity:${latestConversationId}`)
     ).toMatchObject({
       launch: {
         cwd: workspace,

@@ -9,6 +9,10 @@ import type {
 } from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 
+import type {
+  KeyChord,
+  PlatformKeyboardPolicy
+} from "../../../shared/platform/keyboardPolicy";
 import styles from "../styles/PaneTree.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import { recordRendererSmoothnessProfileEvent } from "../smoothnessProfile";
@@ -16,16 +20,20 @@ import type {
   SurfaceTabDragPayload,
   SurfaceTabDropDirection
 } from "../surfaceTabDrag";
-import { TerminalPane } from "./TerminalPane";
+import { TerminalPane, type TerminalFocusRequest } from "./TerminalPane";
 
 export interface PaneTreeProps {
   workspace: ActiveWorkspacePaneTreeVm;
   active: boolean;
   settings: KmuxSettings;
+  reservedSystemChords: KeyChord[];
+  shortcutLabelStyle: PlatformKeyboardPolicy["labelStyle"];
+  copyModeSelectAllShortcut: KeyChord;
   terminalTypography: ResolvedTerminalTypographyVm;
   terminalTheme: ResolvedTerminalThemeVm;
   colorTheme: ColorTheme;
   searchSurfaceId: string | null;
+  terminalFocusRequest?: TerminalFocusRequest | null;
   draggedSurfaceTab: SurfaceTabDragPayload | null;
   onSetSplitRatio: (splitNodeId: string, ratio: number) => void;
   onFocusPane: (paneId: string) => void;
@@ -55,10 +63,7 @@ export const PaneTree = memo(function PaneTree(
     surfaceCount: Object.keys(props.workspace.surfaces).length
   }));
   return (
-    <div
-      className={styles.tree}
-      data-active={props.active ? "true" : "false"}
-    >
+    <div className={styles.tree} data-active={props.active ? "true" : "false"}>
       <PaneNode nodeId={props.workspace.rootNodeId} {...props} />
     </div>
   );
@@ -72,10 +77,14 @@ function arePaneTreePropsEqual(
     left.workspace === right.workspace &&
     left.active === right.active &&
     left.settings === right.settings &&
+    left.reservedSystemChords === right.reservedSystemChords &&
+    left.shortcutLabelStyle === right.shortcutLabelStyle &&
+    left.copyModeSelectAllShortcut === right.copyModeSelectAllShortcut &&
     left.terminalTypography === right.terminalTypography &&
     left.terminalTheme === right.terminalTheme &&
     left.colorTheme === right.colorTheme &&
     left.searchSurfaceId === right.searchSurfaceId &&
+    left.terminalFocusRequest === right.terminalFocusRequest &&
     left.draggedSurfaceTab === right.draggedSurfaceTab;
   if (equal) {
     recordRendererSmoothnessProfileEvent("pane-tree.memo-skip", {
@@ -113,10 +122,14 @@ function PaneNode(
         surfaces={surfaces}
         activeSurfaceId={pane.activeSurfaceId}
         settings={props.settings}
+        reservedSystemChords={props.reservedSystemChords}
+        shortcutLabelStyle={props.shortcutLabelStyle}
+        copyModeSelectAllShortcut={props.copyModeSelectAllShortcut}
         terminalTypography={props.terminalTypography}
         terminalTheme={props.terminalTheme}
         colorTheme={props.colorTheme}
         showSearch={props.searchSurfaceId === pane.activeSurfaceId}
+        focusRequest={props.terminalFocusRequest}
         draggedSurfaceTab={props.draggedSurfaceTab}
         onFocusPane={props.onFocusPane}
         onFocusSurface={props.onFocusSurface}

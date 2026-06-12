@@ -6,6 +6,7 @@ import {
   getView,
   launchKmux,
   runCliJson,
+  terminalInputForSurface,
   waitForSurfaceSnapshotContains,
   waitForView
 } from "./helpers";
@@ -684,8 +685,9 @@ test("terminal paste shortcut preserves bracketed paste markers", async () => {
       window.kmux.writeClipboardText("alpha\nbeta");
     });
 
-    const terminalInput = page.locator("textarea.xterm-helper-textarea");
+    const terminalInput = terminalInputForSurface(page, activeSurfaceId);
     await terminalInput.focus();
+    await expect(terminalInput).toBeFocused();
     await page.keyboard.press("Meta+V");
 
     const snapshot = await waitForSurfaceSnapshotContains(
@@ -802,8 +804,9 @@ test("terminal shortcuts cover paste, search navigation, copy mode, and copy", a
       window.kmux.writeClipboardText("printf 'kmux-paste-shortcut\\n'\r");
     });
 
-    const terminalInput = page.locator("textarea.xterm-helper-textarea");
+    const terminalInput = terminalInputForSurface(page, activeSurfaceId);
     await terminalInput.focus();
+    await expect(terminalInput).toBeFocused();
     await page.keyboard.press("Meta+V");
     await waitForSurfaceSnapshotContains(
       page,

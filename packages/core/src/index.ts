@@ -1,8 +1,10 @@
 import {
-  DEFAULT_SHORTCUTS,
+  buildDefaultShortcuts,
   createDefaultTerminalThemeSettings,
   normalizeShortcutBinding,
-  sanitizeTerminalThemeSettings
+  sanitizeTerminalThemeSettings,
+  type ShortcutCommandId,
+  type ShortcutPlatform
 } from "@kmux/ui";
 import {
   type AgentEventName,
@@ -16,7 +18,6 @@ import {
   makeId,
   type NotificationItem,
   type PaneTreeNode,
-  type PtySessionSpec,
   type TerminalTypographySettings,
   type SessionLaunchConfig,
   type SessionRuntimeState,
@@ -138,6 +139,19 @@ const MAX_VIEW_STATUS_ENTRIES = 3;
 export const CURRENT_SETTINGS_VERSION = 4;
 const TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION = 4;
 
+export interface SessionSpawnEffect {
+  type: "session.spawn";
+  sessionId: Id;
+  surfaceId: Id;
+  workspaceId: Id;
+  launch: SessionLaunchConfig;
+  initialSize: {
+    cols: number;
+    rows: number;
+  };
+  sessionEnv: Record<string, string>;
+}
+
 function defaultHomeDirectory(): string {
   const homeDirectory =
     typeof process !== "undefined"
@@ -147,10 +161,7 @@ function defaultHomeDirectory(): string {
 }
 
 export type AppEffect =
-  | {
-      type: "session.spawn";
-      spec: PtySessionSpec;
-    }
+  | SessionSpawnEffect
   | {
       type: "session.close";
       sessionId: Id;
@@ -314,8 +325,12 @@ export type AppAction =
 
 export function createDefaultSettings(
   mode: SocketMode = "kmuxOnly",
-  shellPath: string | undefined = process.env.SHELL
+  shellPath: string | undefined = process.env.SHELL,
+  options: {
+    shortcutDefaultsPlatform?: ShortcutPlatform;
+  } = {}
 ): KmuxSettings {
+  const shortcutDefaultsPlatform = options.shortcutDefaultsPlatform ?? "darwin";
   return {
     settingsVersion: CURRENT_SETTINGS_VERSION,
     socketMode: mode,
@@ -324,7 +339,8 @@ export function createDefaultSettings(
     notificationSound: true,
     themeMode: "dark",
     shell: shellPath,
-    shortcuts: { ...DEFAULT_SHORTCUTS },
+    shortcutDefaultsPlatform,
+    shortcuts: buildDefaultShortcuts(shortcutDefaultsPlatform),
     terminalTypography: createDefaultTerminalTypographySettings(),
     terminalThemes: createDefaultTerminalThemeSettings()
   };
@@ -410,6 +426,9 @@ export function mergeSettings(
         : current.notificationSound,
     themeMode: sanitizeThemeMode(nextPatch.themeMode ?? current.themeMode),
     shell: nextPatch.shell ?? current.shell,
+    shortcutDefaultsPlatform:
+      sanitizeShortcutDefaultsPlatform(nextPatch.shortcutDefaultsPlatform) ??
+      current.shortcutDefaultsPlatform,
     terminalTypography: sanitizeTerminalTypographySettings(
       nextPatch.terminalTypography,
       patch,
@@ -440,6 +459,40 @@ export function sanitizeSettings(
     migratedSettings
   );
   return migrateSettingsAfterSanitize(sanitizedSettings, settingsVersion);
+}
+
+export function migrateShortcutDefaultsForPlatform(
+  settings: KmuxSettings,
+  targetPlatform: ShortcutPlatform
+): KmuxSettings {
+  const sourcePlatform =
+    sanitizeShortcutDefaultsPlatform(settings.shortcutDefaultsPlatform) ??
+    "darwin";
+  if (sourcePlatform === targetPlatform) {
+    return {
+      ...settings,
+      shortcutDefaultsPlatform: targetPlatform
+    };
+  }
+
+  const sourceDefaults = buildDefaultShortcuts(sourcePlatform);
+  const targetDefaults = buildDefaultShortcuts(targetPlatform);
+  const shortcuts = { ...settings.shortcuts };
+
+  for (const command of Object.keys(targetDefaults) as ShortcutCommandId[]) {
+    const currentBinding = normalizeShortcutBinding(shortcuts[command] ?? "");
+    const sourceBinding = normalizeShortcutBinding(sourceDefaults[command]);
+    if (!currentBinding || currentBinding === sourceBinding) {
+      shortcuts[command] = targetDefaults[command];
+    }
+  }
+
+  return {
+    ...settings,
+    settingsVersion: CURRENT_SETTINGS_VERSION,
+    shortcutDefaultsPlatform: targetPlatform,
+    shortcuts: sanitizeShortcuts(shortcuts)
+  };
 }
 
 function migrateSettingsAfterSanitize(
@@ -1064,10 +1117,7 @@ function createWorkspace(
   window.activeWorkspaceId = workspaceId;
 
   return [
-    {
-      type: "session.spawn",
-      spec: buildPtySpec(state, workspaceId, surfaceId, sessionId)
-    },
+    buildSessionSpawnEffect(state, workspaceId, surfaceId, sessionId),
     { type: "persist" }
   ];
 }
@@ -1396,10 +1446,7 @@ function splitPane(
   workspace.activePaneId = newPaneId;
 
   return [
-    {
-      type: "session.spawn",
-      spec: buildPtySpec(state, workspace.id, newSurfaceId, newSessionId)
-    },
+    buildSessionSpawnEffect(state, workspace.id, newSurfaceId, newSessionId),
     { type: "persist" }
   ];
 }
@@ -1642,10 +1689,7 @@ function createSurface(
   workspace.activePaneId = paneId;
 
   return [
-    {
-      type: "session.spawn",
-      spec: buildPtySpec(state, workspace.id, surfaceId, sessionId)
-    },
+    buildSessionSpawnEffect(state, workspace.id, surfaceId, sessionId),
     { type: "persist" }
   ];
 }
@@ -2601,22 +2645,25 @@ function defaultNewSurfaceCwd(
   return workspace?.worktree?.path ?? activeSurface(state, paneId)?.cwd;
 }
 
-function buildPtySpec(
+function buildSessionSpawnEffect(
   state: AppState,
   workspaceId: Id,
   surfaceId: Id,
   sessionId: Id
-): PtySessionSpec {
+): SessionSpawnEffect {
   const session = state.sessions[sessionId];
   const paneId = state.surfaces[surfaceId]?.paneId;
   return {
+    type: "session.spawn",
     sessionId,
     surfaceId,
     workspaceId,
     launch: session.launch,
-    cols: 120,
-    rows: 30,
-    env: {
+    initialSize: {
+      cols: 120,
+      rows: 30
+    },
+    sessionEnv: {
       KMUX_SOCKET_MODE: state.settings.socketMode,
       KMUX_WORKSPACE_ID: workspaceId,
       ...(paneId ? { KMUX_PANE_ID: paneId } : {}),
@@ -3321,6 +3368,15 @@ function sanitizeThemeMode(
     return themeMode;
   }
   return "dark";
+}
+
+function sanitizeShortcutDefaultsPlatform(
+  platform: KmuxSettings["shortcutDefaultsPlatform"] | undefined
+): ShortcutPlatform | undefined {
+  if (platform === "darwin" || platform === "linux") {
+    return platform;
+  }
+  return undefined;
 }
 
 function sanitizeSettingsVersion(settingsVersion: unknown): number {

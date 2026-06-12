@@ -4,7 +4,10 @@ import type {
   WorkspaceContextAction,
   WorkspaceContextMenuEntry
 } from "../../../shared/workspaceContextMenu";
-import { formatShortcutLabel } from "../shortcutLabels";
+import {
+  formatShortcutLabel,
+  type ShortcutLabelStyle
+} from "../shortcutLabels";
 import { Codicon } from "./Codicon";
 import styles from "../styles/App.module.css";
 
@@ -12,7 +15,7 @@ interface WorkspaceContextMenuProps {
   workspaceName: string;
   position: { x: number; y: number };
   items: WorkspaceContextMenuEntry[];
-  isMac: boolean;
+  shortcutLabelStyle: ShortcutLabelStyle;
   menuRef: Ref<HTMLDivElement>;
   onClose: () => void;
   onAction: (action: WorkspaceContextAction) => void;
@@ -77,8 +80,9 @@ export function WorkspaceContextMenu(
 
           if (event.key === "Home" || event.key === "End") {
             event.preventDefault();
-            enabledItems[event.key === "Home" ? 0 : enabledItems.length - 1]
-              ?.focus();
+            enabledItems[
+              event.key === "Home" ? 0 : enabledItems.length - 1
+            ]?.focus();
           }
         }}
       >
@@ -111,7 +115,7 @@ export function WorkspaceContextMenu(
                   className={styles.workspaceMenuShortcut}
                   aria-hidden="true"
                 >
-                  {formatShortcutLabel(item.shortcut, props.isMac)}
+                  {formatShortcutLabel(item.shortcut, props.shortcutLabelStyle)}
                 </span>
               ) : null}
             </button>

@@ -1,5 +1,5 @@
-import { createServer, type Socket } from "node:net";
-import { mkdirSync, rmSync } from "node:fs";
+import { createConnection, createServer, type Socket } from "node:net";
+import { chmodSync, lstatSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
@@ -37,6 +37,224 @@ type SurfaceScopedPaneParams = {
 };
 
 const RECENT_STRUCTURED_AGENT_DEDUPE_MS = 5 * 60 * 1000;
+const POSIX_SOCKET_PATH_MAX_BYTES = 103;
+const SOCKET_PROBE_TIMEOUT_MS = 300;
+
+export type SocketStartupFailureReason =
+  | "socket-path-too-long"
+  | "unsafe-runtime-directory"
+  | "socket-path-not-socket"
+  | "live-owner"
+  | "bind-failure";
+
+export class SocketStartupError extends Error {
+  constructor(
+    readonly reason: SocketStartupFailureReason,
+    readonly socketPath: string,
+    message: string,
+    readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "SocketStartupError";
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function errnoCode(error: unknown): string {
+  return error instanceof Error && "code" in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : "";
+}
+
+function validateSocketPathLength(socketPath: string): void {
+  const byteLength = Buffer.byteLength(socketPath, "utf8");
+  if (byteLength <= POSIX_SOCKET_PATH_MAX_BYTES) {
+    return;
+  }
+  throw new SocketStartupError(
+    "socket-path-too-long",
+    socketPath,
+    `Unix socket path is too long (${byteLength} bytes): ${socketPath}`
+  );
+}
+
+export function ensureSocketRuntimeDirectory(socketPath: string): void {
+  const runtimeDir = dirname(socketPath);
+  try {
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Unable to create socket runtime directory ${runtimeDir}`,
+      error
+    );
+  }
+
+  let runtimeStats;
+  try {
+    runtimeStats = lstatSync(runtimeDir);
+  } catch (error) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Unable to inspect socket runtime directory ${runtimeDir}`,
+      error
+    );
+  }
+  if (runtimeStats.isSymbolicLink() || !runtimeStats.isDirectory()) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Socket runtime path is not a real directory: ${runtimeDir}`
+    );
+  }
+  const getuid = process.getuid;
+  if (typeof getuid === "function" && runtimeStats.uid !== getuid()) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Socket runtime directory is owned by uid ${runtimeStats.uid}, expected ${getuid()}: ${runtimeDir}`
+    );
+  }
+
+  try {
+    chmodSync(runtimeDir, 0o700);
+  } catch (error) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Unable to make socket runtime directory private: ${runtimeDir}`,
+      error
+    );
+  }
+
+  const mode = statSync(runtimeDir).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new SocketStartupError(
+      "unsafe-runtime-directory",
+      socketPath,
+      `Socket runtime directory is not private: ${runtimeDir}`
+    );
+  }
+}
+
+function assertExistingSocketPathIsSafe(
+  socketPath: string
+): "missing" | "socket" {
+  try {
+    const socketStats = lstatSync(socketPath);
+    if (socketStats.isSocket()) {
+      return "socket";
+    }
+    throw new SocketStartupError(
+      "socket-path-not-socket",
+      socketPath,
+      `Refusing to replace non-socket path: ${socketPath}`
+    );
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return "missing";
+    }
+    if (error instanceof SocketStartupError) {
+      throw error;
+    }
+    throw new SocketStartupError(
+      "bind-failure",
+      socketPath,
+      `Unable to inspect socket path: ${socketPath}`,
+      error
+    );
+  }
+}
+
+type SocketProbeResult = "missing" | "live" | "stale";
+
+export function probeExistingSocket(
+  socketPath: string,
+  timeoutMs = SOCKET_PROBE_TIMEOUT_MS
+): Promise<SocketProbeResult> {
+  const pathState = assertExistingSocketPathIsSafe(socketPath);
+  if (pathState === "missing") {
+    return Promise.resolve("missing");
+  }
+
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    let settled = false;
+    const finish = (result: SocketProbeResult, error?: unknown): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      socket.removeAllListeners();
+      socket.destroy();
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    };
+    const timeout = setTimeout(() => {
+      finish(
+        "stale",
+        new SocketStartupError(
+          "live-owner",
+          socketPath,
+          `Timed out probing existing kmux socket: ${socketPath}`
+        )
+      );
+    }, timeoutMs);
+
+    socket.once("connect", () => finish("live"));
+    socket.once("error", (error) => {
+      const code = errnoCode(error);
+      if (code === "ENOENT") {
+        finish("missing");
+        return;
+      }
+      if (code === "ECONNREFUSED" || code === "ECONNRESET") {
+        finish("stale");
+        return;
+      }
+      finish(
+        "stale",
+        new SocketStartupError(
+          "bind-failure",
+          socketPath,
+          `Unable to probe existing socket: ${socketPath}`,
+          error
+        )
+      );
+    });
+  });
+}
+
+export async function prepareSocketPathForListen(
+  socketPath: string
+): Promise<void> {
+  validateSocketPathLength(socketPath);
+  ensureSocketRuntimeDirectory(socketPath);
+  const probeResult = await probeExistingSocket(socketPath);
+  if (probeResult === "live") {
+    throw new SocketStartupError(
+      "live-owner",
+      socketPath,
+      `Another kmux instance is already listening on ${socketPath}`
+    );
+  }
+  if (probeResult === "stale") {
+    rmSync(socketPath, { force: true });
+  }
+}
 
 function hasRecentStructuredAgentNotification(
   state: AppState,
@@ -107,6 +325,20 @@ function resolveLivePaneIdForStableTarget(
 
 interface SocketServerOptions {
   socketPath: string;
+  getState?: () => AppState;
+  dispatch?: (action: AppAction) => void;
+  sendSurfaceText?: (surfaceId: string, text: string) => void;
+  sendSurfaceKey?: (surfaceId: string, key: string) => void;
+  identify?: () => ShellIdentity;
+  isSurfaceVisibleToUser?: (surfaceId: string) => boolean;
+  onAgentHook?: (hook: {
+    agent: string;
+    hookEvent: string;
+    payload: Record<string, unknown>;
+  }) => void;
+}
+
+interface SocketServerRuntime {
   getState: () => AppState;
   dispatch: (action: AppAction) => void;
   sendSurfaceText: (surfaceId: string, text: string) => void;
@@ -120,20 +352,66 @@ interface SocketServerOptions {
   }) => void;
 }
 
+class SocketServerStartingError extends Error {
+  constructor() {
+    super("kmux socket server is still starting");
+    this.name = "SocketServerStartingError";
+  }
+}
+
+function extractRuntime(
+  options: SocketServerOptions
+): SocketServerRuntime | null {
+  if (
+    !options.getState ||
+    !options.dispatch ||
+    !options.sendSurfaceText ||
+    !options.sendSurfaceKey ||
+    !options.identify
+  ) {
+    return null;
+  }
+
+  return {
+    getState: options.getState,
+    dispatch: options.dispatch,
+    sendSurfaceText: options.sendSurfaceText,
+    sendSurfaceKey: options.sendSurfaceKey,
+    identify: options.identify,
+    isSurfaceVisibleToUser: options.isSurfaceVisibleToUser,
+    onAgentHook: options.onAgentHook
+  };
+}
+
 export class KmuxSocketServer {
   private readonly server;
+  private runtime: SocketServerRuntime | null;
 
   constructor(private readonly options: SocketServerOptions) {
+    this.runtime = extractRuntime(options);
     this.server = createServer((socket) => this.handleConnection(socket));
   }
 
-  start(): Promise<void> {
-    mkdirSync(dirname(this.options.socketPath), { recursive: true });
-    rmSync(this.options.socketPath, { force: true });
+  setRuntime(runtime: SocketServerRuntime): void {
+    this.runtime = runtime;
+  }
+
+  async start(): Promise<void> {
+    await prepareSocketPathForListen(this.options.socketPath);
     return new Promise((resolve, reject) => {
-      this.server.once("error", reject);
+      const onError = (error: Error) => {
+        reject(
+          new SocketStartupError(
+            "bind-failure",
+            this.options.socketPath,
+            `Unable to listen on kmux socket ${this.options.socketPath}`,
+            error
+          )
+        );
+      };
+      this.server.once("error", onError);
       this.server.listen(this.options.socketPath, () => {
-        this.server.off("error", reject);
+        this.server.off("error", onError);
         resolve();
       });
     });
@@ -170,7 +448,8 @@ export class KmuxSocketServer {
     try {
       envelope = parseSocketEnvelope(line);
       const parsedEnvelope = envelope;
-      const state = this.options.getState();
+      const runtime = this.getRuntime();
+      const state = runtime.getState();
       const allowed =
         state.settings.socketMode === "allowAll" ||
         (state.settings.socketMode === "kmuxOnly" &&
@@ -192,9 +471,16 @@ export class KmuxSocketServer {
         parsedEnvelope.id,
         parsedEnvelope.authToken
       );
-      const result = this.route(request);
+      const result = this.route(request, runtime);
       this.reply(socket, request.id, result);
     } catch (error) {
+      if (error instanceof SocketServerStartingError) {
+        this.reply(socket, envelope?.id, undefined, {
+          code: -32002,
+          message: error.message
+        });
+        return;
+      }
       if (error instanceof ZodError) {
         this.reply(socket, envelope?.id, undefined, {
           code: envelope ? -32602 : -32600,
@@ -216,8 +502,18 @@ export class KmuxSocketServer {
     }
   }
 
-  private route(request: ParsedSocketRequest): unknown {
-    const state = this.options.getState();
+  private getRuntime(): SocketServerRuntime {
+    if (!this.runtime) {
+      throw new SocketServerStartingError();
+    }
+    return this.runtime;
+  }
+
+  private route(
+    request: ParsedSocketRequest,
+    runtime: SocketServerRuntime
+  ): unknown {
+    const state = runtime.getState();
     const activeWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
     const activeWorkspace = state.workspaces[activeWorkspaceId];
@@ -230,14 +526,14 @@ export class KmuxSocketServer {
           (workspaceId) => state.workspaces[workspaceId]
         );
       case "workspace.create":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "workspace.create",
           name: request.params.name,
           cwd: request.params.cwd
         });
         return { ok: true };
       case "workspace.select":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "workspace.select",
           workspaceId: request.params.workspaceId
         });
@@ -245,7 +541,7 @@ export class KmuxSocketServer {
       case "workspace.current":
         return activeWorkspace;
       case "workspace.close":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "workspace.close",
           workspaceId: request.params.workspaceId
         });
@@ -257,7 +553,7 @@ export class KmuxSocketServer {
         );
       }
       case "surface.split":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "pane.split",
           paneId:
             resolveLivePaneIdForStableTarget(
@@ -271,25 +567,25 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "surface.focus":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "surface.focus",
           surfaceId: request.params.surfaceId ?? activeSurfaceId
         });
         return { ok: true };
       case "surface.send_text":
-        this.options.sendSurfaceText(
+        runtime.sendSurfaceText(
           request.params.surfaceId ?? activeSurfaceId,
           request.params.text
         );
         return { ok: true };
       case "surface.send_key":
-        this.options.sendSurfaceKey(
+        runtime.sendSurfaceKey(
           request.params.surfaceId ?? activeSurfaceId,
           request.params.key
         );
         return { ok: true };
       case "notification.create":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "notification.create",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           title: request.params.title,
@@ -301,13 +597,13 @@ export class KmuxSocketServer {
       case "notification.list":
         return state.notifications;
       case "notification.clear":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "notification.clear",
           notificationId: request.params.notificationId
         });
         return { ok: true };
       case "sidebar.set_status":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.setStatus",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           text: request.params.text,
@@ -318,16 +614,20 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "sidebar.clear_status":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.clearStatus",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           key: request.params.key
         });
         return { ok: true };
       case "agent.event":
-        return this.dispatchAgentEvent(request.params, activeWorkspaceId);
+        return this.dispatchAgentEvent(
+          request.params,
+          activeWorkspaceId,
+          runtime
+        );
       case "agent.hook": {
-        const onAgentHook = this.options.onAgentHook;
+        const onAgentHook = runtime.onAgentHook;
         if (onAgentHook) {
           setImmediate(() => {
             try {
@@ -353,7 +653,7 @@ export class KmuxSocketServer {
           }
         );
         if (event) {
-          return this.dispatchAgentEvent(event, activeWorkspaceId);
+          return this.dispatchAgentEvent(event, activeWorkspaceId, runtime);
         }
         const notification = normalizeHookNotificationInvocation(
           request.params.agent,
@@ -367,12 +667,16 @@ export class KmuxSocketServer {
           }
         );
         if (notification) {
-          return this.dispatchHookNotification(notification, activeWorkspaceId);
+          return this.dispatchHookNotification(
+            notification,
+            activeWorkspaceId,
+            runtime
+          );
         }
         return { ok: true, handled: false };
       }
       case "sidebar.set_progress":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.setProgress",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           progress: {
@@ -382,13 +686,13 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "sidebar.clear_progress":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.clearProgress",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId
         });
         return { ok: true };
       case "sidebar.log":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.log",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId,
           level: request.params.level ?? "info",
@@ -396,7 +700,7 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "sidebar.clear_log":
-        this.options.dispatch({
+        runtime.dispatch({
           type: "sidebar.clearLog",
           workspaceId: request.params.workspaceId ?? activeWorkspaceId
         });
@@ -407,9 +711,9 @@ export class KmuxSocketServer {
       case "system.ping":
         return { pong: true, id: makeId("pong") };
       case "system.capabilities":
-        return this.options.identify().capabilities;
+        return runtime.identify().capabilities;
       case "system.identify":
-        return this.options.identify();
+        return runtime.identify();
       default:
         throw new Error("Unhandled socket method");
     }
@@ -443,10 +747,11 @@ export class KmuxSocketServer {
 
   private dispatchAgentEvent(
     params: AgentEventParams,
-    fallbackWorkspaceId: string
+    fallbackWorkspaceId: string,
+    runtime: SocketServerRuntime
   ): { ok: true } {
     logAgentEvent(params, fallbackWorkspaceId);
-    const state = this.options.getState();
+    const state = runtime.getState();
     const surfaceId =
       params.surfaceId ??
       (params.sessionId
@@ -454,11 +759,11 @@ export class KmuxSocketServer {
         : undefined);
     const details = {
       ...(params.details ?? {}),
-      ...(surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)
+      ...(surfaceId && runtime.isSurfaceVisibleToUser?.(surfaceId)
         ? { visibleToUser: true }
         : {})
     };
-    this.options.dispatch({
+    runtime.dispatch({
       type: "agent.event",
       workspaceId: params.workspaceId ?? fallbackWorkspaceId,
       paneId: params.paneId
@@ -481,15 +786,16 @@ export class KmuxSocketServer {
     > extends infer TResult
       ? Exclude<TResult, null>
       : never,
-    fallbackWorkspaceId: string
+    fallbackWorkspaceId: string,
+    runtime: SocketServerRuntime
   ): { ok: true } {
-    const state = this.options.getState();
+    const state = runtime.getState();
     const surfaceId =
       params.surfaceId ??
       (params.sessionId
         ? state.sessions[params.sessionId]?.surfaceId
         : undefined);
-    if (surfaceId && this.options.isSurfaceVisibleToUser?.(surfaceId)) {
+    if (surfaceId && runtime.isSurfaceVisibleToUser?.(surfaceId)) {
       return { ok: true };
     }
     if (
@@ -500,7 +806,7 @@ export class KmuxSocketServer {
     }
     const paneId =
       resolveLivePaneIdForStableTarget(state, params) ?? params.paneId;
-    this.options.dispatch({
+    runtime.dispatch({
       type: "notification.create",
       workspaceId: params.workspaceId ?? fallbackWorkspaceId,
       paneId,

@@ -4,14 +4,29 @@ import type { AppAction } from "@kmux/core";
 import type { Id } from "@kmux/proto";
 
 import {
+  isReservedSystemChordBinding,
+  type KeyChord
+} from "../shared/platform/keyboardPolicy";
+import {
   buildWorkspaceContextMenuEntries,
   findWorkspaceContext,
   runWorkspaceContextAction
 } from "../shared/workspaceContextMenu";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 
-function toElectronAccelerator(shortcut?: string): string | undefined {
+export function toElectronAccelerator(
+  shortcut?: string,
+  options: { reservedSystemChords?: KeyChord[] } = {}
+): string | undefined {
   if (!shortcut) {
+    return undefined;
+  }
+  if (
+    isReservedSystemChordBinding(
+      shortcut,
+      options.reservedSystemChords ?? []
+    )
+  ) {
     return undefined;
   }
 
@@ -42,6 +57,7 @@ export function buildNativeWorkspaceContextMenu(params: {
   closeOtherWorkspaces(workspaceId: Id): void;
   rename(workspaceId: Id): void;
   dispatch(action: AppAction): void;
+  reservedSystemChords?: KeyChord[];
 }): Menu | null {
   const initialContext = findWorkspaceContext(
     params.getContextView(),
@@ -60,7 +76,9 @@ export function buildNativeWorkspaceContextMenu(params: {
             type: typeof item.checked === "boolean" ? "checkbox" : "normal",
             checked: item.checked,
             enabled: !item.disabled,
-            accelerator: toElectronAccelerator(item.shortcut),
+            accelerator: toElectronAccelerator(item.shortcut, {
+              reservedSystemChords: params.reservedSystemChords
+            }),
             click: () => {
               void runWorkspaceContextAction(
                 params.workspaceId,

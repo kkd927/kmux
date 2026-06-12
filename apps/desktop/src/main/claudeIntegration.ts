@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+import type { AgentStorageRoots } from "@kmux/metadata";
+
+import { shellAbsolutePathAssignment } from "./agentHookCommand";
+
 const CLAUDE_SETTINGS_PATH_SEGMENTS = [".claude", "settings.json"] as const;
 const KMUX_MANAGED_CLAUDE_HOOK_MARKER = "KMUX_MANAGED_CLAUDE_HOOK=1";
 
@@ -44,6 +48,12 @@ export interface ClaudeIntegrationInstallResult {
   warning?: string;
 }
 
+export interface ClaudeHookRuntimePaths {
+  socketPath?: string;
+  agentBinDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+}
+
 const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
   { eventName: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
@@ -74,26 +84,41 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
-function buildClaudeHookCommand(eventName: ClaudeHookEvent): string {
+function buildClaudeHookCommand(
+  eventName: ClaudeHookEvent,
+  runtimePaths: ClaudeHookRuntimePaths = {}
+): string {
   return [
     `${KMUX_MANAGED_CLAUDE_HOOK_MARKER};`,
-    '[ -n "${KMUX_SOCKET_PATH:-}" ] || exit 0;',
-    '[ -n "${KMUX_AGENT_BIN_DIR:-}" ] || exit 0;',
-    '[ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ] || exit 0;',
-    `"${"${KMUX_AGENT_BIN_DIR}"}/kmux-agent-hook" claude ${eventName} || true`
+    shellAbsolutePathAssignment(
+      "_kmux_socket_path",
+      "KMUX_SOCKET_PATH",
+      runtimePaths.socketPath
+    ),
+    shellAbsolutePathAssignment(
+      "_kmux_agent_bin_dir",
+      "KMUX_AGENT_BIN_DIR",
+      runtimePaths.agentBinDir
+    ),
+    'if [ -n "$_kmux_socket_path" ] &&',
+    '[ -n "$_kmux_agent_bin_dir" ] &&',
+    '[ -x "$_kmux_agent_bin_dir/kmux-agent-hook" ]; then',
+    `KMUX_SOCKET_PATH="$_kmux_socket_path" KMUX_AGENT_BIN_DIR="$_kmux_agent_bin_dir" "$_kmux_agent_bin_dir/kmux-agent-hook" claude ${eventName} || true;`,
+    "fi"
   ].join(" ");
 }
 
 function buildManagedMatcherGroup({
   eventName,
   matcher
-}: ManagedClaudeHookDefinition): HookMatcherGroup {
+}: ManagedClaudeHookDefinition,
+runtimePaths: ClaudeHookRuntimePaths): HookMatcherGroup {
   return {
     ...(matcher ? { matcher } : {}),
     hooks: [
       {
         type: "command",
-        command: buildClaudeHookCommand(eventName)
+        command: buildClaudeHookCommand(eventName, runtimePaths)
       }
     ]
   };
@@ -126,14 +151,15 @@ function hasManagedClaudeHookCommand(
 
 function mergeManagedMatcherGroups(
   existingGroups: unknown,
-  definition: ManagedClaudeHookDefinition
+  definition: ManagedClaudeHookDefinition,
+  runtimePaths: ClaudeHookRuntimePaths
 ): HookMatcherGroup[] {
   const nextGroups = pruneManagedMatcherGroups(
     existingGroups,
     definition.eventName
   );
 
-  nextGroups.push(buildManagedMatcherGroup(definition));
+  nextGroups.push(buildManagedMatcherGroup(definition, runtimePaths));
   return nextGroups;
 }
 
@@ -180,14 +206,17 @@ function parseClaudeSettings(settingsPath: string): JsonObject | null {
 }
 
 export function ensureClaudeHooksInstalled(
-  homeDir: string | undefined
+  homeDir: string | undefined,
+  runtimePaths: ClaudeHookRuntimePaths = {}
 ): ClaudeIntegrationInstallResult {
   const normalizedHomeDir = homeDir?.trim();
-  const settingsPath = normalizedHomeDir
-    ? join(normalizedHomeDir, ...CLAUDE_SETTINGS_PATH_SEGMENTS)
-    : join(...CLAUDE_SETTINGS_PATH_SEGMENTS);
+  const settingsPath =
+    runtimePaths.agentStorageRoots?.claude.settingsPath ??
+    (normalizedHomeDir
+      ? join(normalizedHomeDir, ...CLAUDE_SETTINGS_PATH_SEGMENTS)
+      : join(...CLAUDE_SETTINGS_PATH_SEGMENTS));
 
-  if (!normalizedHomeDir) {
+  if (!normalizedHomeDir && !runtimePaths.agentStorageRoots) {
     return {
       changed: false,
       settingsPath,
@@ -231,7 +260,8 @@ export function ensureClaudeHooksInstalled(
   for (const definition of MANAGED_CLAUDE_HOOKS) {
     nextHooks[definition.eventName] = mergeManagedMatcherGroups(
       nextHooks[definition.eventName],
-      definition
+      definition,
+      runtimePaths
     );
   }
 

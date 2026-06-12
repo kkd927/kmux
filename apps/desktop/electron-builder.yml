@@ -13,7 +13,9 @@ asarUnpack:
 extraResources:
   - from: ../../packages/cli/dist
     to: cli
-artifactBuildCompleted: ./build/custom-mac-artifact-notarize.cjs
+  - from: build/icon.png
+    to: notificationIcon.png
+artifactBuildCompleted: ./build/artifact-build-completed.cjs
 
 publish:
   provider: github
@@ -33,3 +35,24 @@ mac:
   target:
     - dmg
     - zip
+
+linux:
+  category: Development
+  icon: build/icon.png
+  synopsis: Keyboard-first terminal workspace manager for coding agents
+  description: Run coding agents side by side without losing terminal output continuity.
+  executableName: kmux
+  desktop:
+    entry:
+      Name: kmux
+      GenericName: AI Coding Agent Terminal
+      Comment: Run coding agents side by side without losing terminal output continuity.
+      Icon: kmux
+      Categories: Development;TerminalEmulator;Utility;
+      StartupWMClass: kmux
+      StartupNotify: "true"
+      Terminal: "false"
+      Keywords: AI;agent;terminal;developer;coding;
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  target:
+    - AppImage

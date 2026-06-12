@@ -7,7 +7,8 @@ import {
   KMUX_PROFILE_LOG_PATH_ENV,
   type SmoothnessProfileEvent,
   type SmoothnessProfileRecorder,
-  isSmoothnessProfileEnabled
+  isSmoothnessProfileEnabled,
+  isSmoothnessProfileLogPathAllowed
 } from "./smoothnessProfile";
 
 export function createNodeSmoothnessProfileRecorder(
@@ -37,11 +38,15 @@ export function createNodeSmoothnessProfileRecorder(
 
 export function resolveNodeSmoothnessProfileLogPath(
   configuredPath: string
-): string {
-  if (isDirectoryLikeProfilePath(configuredPath)) {
-    return join(configuredPath, DEFAULT_SMOOTHNESS_PROFILE_FILENAME);
+): string | null {
+  const normalized = configuredPath.trim();
+  if (!isSmoothnessProfileLogPathAllowed(normalized)) {
+    return null;
   }
-  return configuredPath;
+  if (isDirectoryLikeProfilePath(normalized)) {
+    return join(normalized, DEFAULT_SMOOTHNESS_PROFILE_FILENAME);
+  }
+  return normalized;
 }
 
 export function profileNowMs(): number {

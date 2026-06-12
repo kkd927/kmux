@@ -4,7 +4,6 @@ import type { AppAction, AppState } from "@kmux/core";
 import { makeId } from "@kmux/proto";
 import type {
   Id,
-  PtyEvent,
   SurfaceAttachCompletionResult,
   SurfaceAttachPayload,
   SurfaceChunkSegment,
@@ -16,6 +15,7 @@ import type {
   TerminalKeyInput,
   UsageVendor
 } from "@kmux/proto";
+import type { PtyEvent } from "../shared/ptyProtocol";
 
 import type { PtyHostManager } from "./ptyHost";
 import { logDiagnostics } from "../shared/diagnostics";

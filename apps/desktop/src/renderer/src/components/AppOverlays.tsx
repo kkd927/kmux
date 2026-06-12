@@ -20,13 +20,20 @@ import type {
 import type { TerminalThemeVariant } from "@kmux/proto";
 import { normalizeShortcut } from "@kmux/ui";
 
+import {
+  isReservedSystemChordBinding,
+  type KeyChord
+} from "../../../shared/platform/keyboardPolicy";
 import type {
   WorkspaceContext,
   WorkspaceContextAction,
   WorkspaceContextMenuEntry
 } from "../../../shared/workspaceContextMenu";
 import type { WorkspaceContextMenuState } from "../hooks/useWorkspaceContextMenu";
-import { formatShortcutLabel } from "../shortcutLabels";
+import {
+  formatShortcutLabel,
+  type ShortcutLabelStyle
+} from "../shortcutLabels";
 import styles from "../styles/App.module.css";
 import {
   describeTerminalTypographyHeadline,
@@ -37,7 +44,8 @@ import { NotificationsPanel } from "./NotificationsPanel";
 import { WorkspaceContextMenu } from "./WorkspaceContextMenu";
 
 interface AppOverlaysProps {
-  isMac: boolean;
+  shortcutLabelStyle: ShortcutLabelStyle;
+  reservedSystemChords: KeyChord[];
   paletteOpen: boolean;
   paletteQuery: string;
   paletteSelectedIndex: number;
@@ -346,16 +354,20 @@ function isShortcutClearEvent(
   );
 }
 
-function formatRecordedShortcut(
+export function formatRecordedShortcut(
   event: Pick<
     KeyboardEvent,
     "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
-  >
+  >,
+  reservedSystemChords: KeyChord[] = []
 ): string | null {
   if (isModifierOnlyShortcutEvent(event)) {
     return null;
   }
-  return normalizeShortcut(event);
+  const shortcut = normalizeShortcut(event);
+  return isReservedSystemChordBinding(shortcut, reservedSystemChords)
+    ? null
+    : shortcut;
 }
 
 export function AppOverlays(props: AppOverlaysProps): JSX.Element {
@@ -435,7 +447,10 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
       return;
     }
 
-    const nextBinding = formatRecordedShortcut(event);
+    const nextBinding = formatRecordedShortcut(
+      event,
+      props.reservedSystemChords
+    );
     if (!nextBinding) {
       return;
     }
@@ -532,7 +547,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           workspaceName={activeWorkspaceContext.row.name}
           position={props.workspaceContextMenu}
           items={props.workspaceContextMenuItems}
-          isMac={props.isMac}
+          shortcutLabelStyle={props.shortcutLabelStyle}
           menuRef={props.workspaceMenuRef}
           onClose={props.onCloseWorkspaceContextMenu}
           onAction={(action) =>
@@ -1348,9 +1363,16 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           const isRecording =
                             recordingShortcutCommand === command;
                           const visibleBinding =
-                            formatShortcutLabel(binding, props.isMac, {
-                              separator: props.isMac ? " " : undefined
-                            }) ?? "Unassigned";
+                            formatShortcutLabel(
+                              binding,
+                              props.shortcutLabelStyle,
+                              {
+                                separator:
+                                  props.shortcutLabelStyle === "mac-symbols"
+                                    ? " "
+                                    : undefined
+                              }
+                            ) ?? "Unassigned";
                           return (
                             <div
                               key={command}

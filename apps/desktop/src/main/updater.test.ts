@@ -36,7 +36,9 @@ class FakeUpdater extends EventEmitter implements UpdaterDriver {
 
 function createHarness(options?: {
   isPackaged?: boolean;
+  enabled?: boolean;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
   beforeQuitAndInstall?: ReturnType<typeof vi.fn>;
 }): {
   updater: FakeUpdater;
@@ -80,8 +82,9 @@ function createHarness(options?: {
     notifier,
     logger,
     currentVersion: "0.1.11",
-    platform: "darwin",
+    platform: options?.platform ?? "darwin",
     isPackaged: options?.isPackaged ?? true,
+    enabled: options?.enabled,
     env: options?.env ?? {},
     beforeQuitAndInstall: options?.beforeQuitAndInstall
   });
@@ -111,6 +114,87 @@ describe("updater controller", () => {
     expect(unpackaged.updater.autoDownload).toBe(false);
     expect(unpackaged.updater.autoInstallOnAppQuit).toBe(false);
     expect(unpackaged.updater.allowPrerelease).toBe(false);
+  });
+
+  it("enables packaged Linux updater checks for AppImage runtime outside tests", async () => {
+    const packagedLinux = createHarness({
+      platform: "linux",
+      isPackaged: true,
+      env: {
+        APPIMAGE: "/tmp/kmux-0.3.12-linux-x64.AppImage"
+      }
+    });
+    const nonAppImageLinux = createHarness({
+      platform: "linux",
+      isPackaged: true,
+      env: {}
+    });
+    const invalidAppImageEnvLinux = createHarness({
+      platform: "linux",
+      isPackaged: true,
+      env: {
+        APPIMAGE: "/tmp/kmux-extracted"
+      }
+    });
+    const unpackagedLinux = createHarness({
+      platform: "linux",
+      isPackaged: false,
+      env: {}
+    });
+    const testLinux = createHarness({
+      platform: "linux",
+      isPackaged: true,
+      env: {
+        APPIMAGE: "/tmp/kmux-0.3.12-linux-x64.AppImage",
+        NODE_ENV: "test"
+      }
+    });
+
+    expect(packagedLinux.controller.getState()).toEqual({ status: "idle" });
+    expect(nonAppImageLinux.controller.getState()).toEqual({
+      status: "disabled"
+    });
+    expect(invalidAppImageEnvLinux.controller.getState()).toEqual({
+      status: "disabled"
+    });
+    expect(unpackagedLinux.controller.getState()).toEqual({
+      status: "disabled"
+    });
+    expect(testLinux.controller.getState()).toEqual({ status: "disabled" });
+
+    await packagedLinux.controller.checkForUpdates("foreground");
+    await nonAppImageLinux.controller.checkForUpdates("foreground");
+    await invalidAppImageEnvLinux.controller.checkForUpdates("foreground");
+    await unpackagedLinux.controller.checkForUpdates("foreground");
+    await testLinux.controller.checkForUpdates("foreground");
+
+    expect(packagedLinux.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(nonAppImageLinux.updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(
+      invalidAppImageEnvLinux.updater.checkForUpdates
+    ).not.toHaveBeenCalled();
+    expect(unpackagedLinux.updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(testLinux.updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("accepts platform-composed updater enablement", async () => {
+    const disabledByRuntime = createHarness({ enabled: false });
+    const enabledByRuntime = createHarness({
+      enabled: true,
+      isPackaged: false,
+      env: { NODE_ENV: "test" }
+    });
+
+    expect(disabledByRuntime.controller.getState()).toEqual({
+      status: "disabled"
+    });
+    expect(enabledByRuntime.controller.getState()).toEqual({ status: "idle" });
+
+    await disabledByRuntime.controller.checkForUpdates("foreground");
+    await enabledByRuntime.controller.checkForUpdates("foreground");
+
+    expect(disabledByRuntime.updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(enabledByRuntime.updater.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 
   it("shows a foreground confirmation when no update is available", async () => {
@@ -288,7 +372,9 @@ describe("updater controller", () => {
 
   it("shows inline download failures to the user", async () => {
     const harness = createHarness();
-    harness.updater.downloadUpdate.mockRejectedValueOnce(new Error("disk full"));
+    harness.updater.downloadUpdate.mockRejectedValueOnce(
+      new Error("disk full")
+    );
 
     await harness.controller.checkForUpdates("background");
     harness.updater.emit("update-available", { version: "0.1.12" });

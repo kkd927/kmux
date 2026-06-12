@@ -1,8 +1,28 @@
-import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync} from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync
+} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {spawnSync} from "node:child_process";
+
+const DEFAULT_RELEASE_SEARCH_ROOTS = [
+  path.resolve("apps/desktop/release"),
+  path.resolve("release-assets")
+];
+
+function readPathArg(argv, index, flagName) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${flagName} requires a path value`);
+  }
+  return value;
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -26,19 +46,24 @@ function run(command, args, options = {}) {
   return result.stdout.trim();
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const parsed = {};
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
-    if (token === "--dmg" && argv[index + 1]) {
-      parsed.dmgPath = path.resolve(argv[index + 1]);
+    if (token === "--dmg") {
+      parsed.dmgPath = path.resolve(readPathArg(argv, index, "--dmg"));
       index += 1;
+    } else {
+      throw new Error(`unknown smoke:packaged:mac argument: ${token}`);
     }
   }
   return parsed;
 }
 
-function findDmgPath(explicitPath) {
+export function findDmgPath(
+  explicitPath,
+  releaseSearchRoots = DEFAULT_RELEASE_SEARCH_ROOTS
+) {
   if (explicitPath) {
     if (!existsSync(explicitPath)) {
       throw new Error(`DMG not found at ${explicitPath}`);
@@ -46,20 +71,26 @@ function findDmgPath(explicitPath) {
     return explicitPath;
   }
 
-  const releaseSearchRoots = [
-    path.resolve("apps/desktop/release"),
-    path.resolve("release-assets")
-  ];
-
   for (const root of releaseSearchRoots) {
     if (!existsSync(root)) {
       continue;
     }
     const entries = readdirSync(root)
       .filter((entry) => entry.endsWith(".dmg"))
-      .sort();
+      .map((entry) => {
+        const dmgPath = path.join(root, entry);
+        return {
+          dmgPath,
+          mtimeMs: statSync(dmgPath).mtimeMs
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.mtimeMs - left.mtimeMs ||
+          left.dmgPath.localeCompare(right.dmgPath)
+      );
     if (entries.length > 0) {
-      return path.join(root, entries[0]);
+      return entries[0].dmgPath;
     }
   }
 
@@ -92,12 +123,12 @@ function copyMountedApp(mountPoint, destinationRoot) {
   };
 }
 
-function main() {
+export function main(argv = process.argv.slice(2)) {
   if (process.platform !== "darwin") {
     throw new Error("smoke:packaged:mac only runs on macOS");
   }
 
-  const { dmgPath: explicitDmgPath } = parseArgs(process.argv.slice(2));
+  const { dmgPath: explicitDmgPath } = parseArgs(argv);
   const dmgPath = findDmgPath(explicitDmgPath);
   const tempRoot = mkdtempSync(path.join(tmpdir(), "kmux-packaged-smoke-"));
   const mountPoint = path.join(tempRoot, "mount");
@@ -142,4 +173,6 @@ function main() {
   }
 }
 
-main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

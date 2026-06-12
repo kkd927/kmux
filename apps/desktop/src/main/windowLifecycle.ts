@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   nativeImage,
   shell,
+  type BrowserWindowConstructorOptions,
   type WebContents
 } from "electron";
 import { existsSync } from "node:fs";
@@ -13,11 +14,13 @@ import type {
   PersistedWindowState,
   WindowStateFileStore
 } from "@kmux/persistence";
+import type { MainWindowPlatformPolicy } from "./platform/runtime";
 
 interface CreateMainWindowOptions {
   currentDir: string;
   loadWindowState: () => PersistedWindowState | null;
   onClose: (window: BrowserWindow) => void;
+  platform: MainWindowPlatformPolicy;
 }
 
 interface PersistWindowStateOptions {
@@ -26,8 +29,11 @@ interface PersistWindowStateOptions {
   getSidebarWidth: () => number | undefined;
 }
 
-export function setDevelopmentDockIcon(currentDir: string): void {
-  if (process.platform !== "darwin" || app.isPackaged) {
+export function setDevelopmentDockIcon(
+  currentDir: string,
+  platform: { supportsDock: boolean }
+): void {
+  if (!platform.supportsDock || app.isPackaged) {
     return;
   }
 
@@ -50,41 +56,21 @@ export function setDevelopmentDockIcon(currentDir: string): void {
 export function createMainWindow(
   options: CreateMainWindowOptions
 ): BrowserWindow {
-  setDevelopmentDockIcon(options.currentDir);
-  const savedWindowState = options.loadWindowState();
-  const isMac = process.platform === "darwin";
-  const backgroundTestWindow =
-    process.env.NODE_ENV === "test" &&
-    process.env.KMUX_E2E_WINDOW_MODE === "background";
-  const offscreenTestX = -24000;
-  const offscreenTestY = 120;
-  const window = new BrowserWindow({
-    width: savedWindowState?.width ?? 1277,
-    height: savedWindowState?.height ?? 1179,
-    x: backgroundTestWindow ? offscreenTestX : savedWindowState?.x,
-    y: backgroundTestWindow ? offscreenTestY : savedWindowState?.y,
-    show: !backgroundTestWindow,
-    paintWhenInitiallyHidden: backgroundTestWindow,
-    skipTaskbar: backgroundTestWindow,
-    minWidth: 1024,
-    minHeight: 760,
-    frame: false,
-    titleBarStyle: isMac ? "hiddenInset" : "hidden",
-    ...(isMac
-      ? {
-          trafficLightPosition: {
-            x: 11,
-            y: 10
-          }
-        }
-      : {}),
-    backgroundColor: "#12110f",
-    webPreferences: {
-      preload: join(options.currentDir, "../preload/index.mjs"),
-      sandbox: false,
-      backgroundThrottling: false
-    }
+  setDevelopmentDockIcon(options.currentDir, {
+    supportsDock: options.platform.supportsDock
   });
+  const savedWindowState = options.loadWindowState();
+  const window = new BrowserWindow(
+    buildMainWindowBrowserOptions({
+      currentDir: options.currentDir,
+      savedWindowState,
+      platform: options.platform,
+      env: process.env
+    })
+  );
+
+  const backgroundTestWindow = isBackgroundTestWindow(process.env);
+  const offscreenTestPosition = getOffscreenTestPosition();
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -92,7 +78,7 @@ export function createMainWindow(
     void window.loadFile(join(options.currentDir, "../renderer/index.html"));
   }
 
-  if (isMac) {
+  if (options.platform.isMac) {
     window.setWindowButtonVisibility(true);
   }
 
@@ -100,7 +86,7 @@ export function createMainWindow(
 
   window.once("ready-to-show", () => {
     if (backgroundTestWindow) {
-      window.setPosition(offscreenTestX, offscreenTestY);
+      window.setPosition(offscreenTestPosition.x, offscreenTestPosition.y);
       window.showInactive();
       return;
     }
@@ -111,6 +97,53 @@ export function createMainWindow(
   window.on("close", () => options.onClose(window));
 
   return window;
+}
+
+export function buildMainWindowBrowserOptions(options: {
+  currentDir: string;
+  savedWindowState: PersistedWindowState | null;
+  platform: MainWindowPlatformPolicy;
+  env?: NodeJS.ProcessEnv;
+}): BrowserWindowConstructorOptions {
+  const backgroundTestWindow = isBackgroundTestWindow(options.env ?? {});
+  const offscreenTestPosition = getOffscreenTestPosition();
+  const useNativeFrame =
+    options.platform.windowChrome === "native" && !options.platform.isMac;
+  const browserOptions: BrowserWindowConstructorOptions = {
+    width: options.savedWindowState?.width ?? 1277,
+    height: options.savedWindowState?.height ?? 1179,
+    x: backgroundTestWindow
+      ? offscreenTestPosition.x
+      : options.savedWindowState?.x,
+    y: backgroundTestWindow
+      ? offscreenTestPosition.y
+      : options.savedWindowState?.y,
+    show: !backgroundTestWindow,
+    paintWhenInitiallyHidden: backgroundTestWindow,
+    skipTaskbar: backgroundTestWindow,
+    minWidth: 1024,
+    minHeight: 760,
+    frame: useNativeFrame,
+    backgroundColor: "#12110f",
+    webPreferences: {
+      preload: join(options.currentDir, "../preload/index.mjs"),
+      sandbox: false,
+      backgroundThrottling: false
+    }
+  };
+
+  if (options.platform.isMac) {
+    browserOptions.frame = false;
+    browserOptions.titleBarStyle = "hiddenInset";
+    browserOptions.trafficLightPosition = {
+      x: 11,
+      y: 10
+    };
+  } else if (!useNativeFrame) {
+    browserOptions.titleBarStyle = "hidden";
+  }
+
+  return browserOptions;
 }
 
 export function persistWindowState(options: PersistWindowStateOptions): void {
@@ -151,4 +184,12 @@ function configureWindowWebContents(webContents: WebContents): void {
       );
     }
   );
+}
+
+function isBackgroundTestWindow(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === "test" && env.KMUX_E2E_WINDOW_MODE === "background";
+}
+
+function getOffscreenTestPosition(): { x: number; y: number } {
+  return { x: -24000, y: 120 };
 }

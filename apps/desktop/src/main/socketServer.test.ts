@@ -1,5 +1,13 @@
-import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { EventEmitter, once } from "node:events";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +15,7 @@ import { join } from "node:path";
 import { applyAction, createInitialState } from "@kmux/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { KmuxSocketServer } from "./socketServer";
+import { KmuxSocketServer, SocketStartupError } from "./socketServer";
 
 async function sendSocketMessage(
   socketPath: string,
@@ -37,6 +45,230 @@ async function sendSocketMessage(
     socket.on("error", reject);
   });
 }
+
+function createTestSocketServer(socketPath: string): KmuxSocketServer {
+  const state = createInitialState("/bin/zsh");
+  state.settings.socketMode = "allowAll";
+  const activeWorkspaceId =
+    state.windows[state.activeWindowId].activeWorkspaceId;
+  return new KmuxSocketServer({
+    socketPath,
+    getState: () => state,
+    dispatch: vi.fn(),
+    sendSurfaceText: vi.fn(),
+    sendSurfaceKey: vi.fn(),
+    identify: () => ({
+      socketPath,
+      socketMode: state.settings.socketMode,
+      windowId: state.activeWindowId,
+      activeWorkspaceId,
+      activeSurfaceId:
+        state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+          .activeSurfaceId,
+      capabilities: []
+    })
+  });
+}
+
+describe("kmux socket server startup", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a private runtime directory before listening", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-start-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "runtime", "control.sock");
+    const server = createTestSocketServer(socketPath);
+
+    await server.start();
+
+    try {
+      expect(statSync(join(tempDir, "runtime")).mode & 0o777).toBe(0o700);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("refuses to unlink a live socket owner", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-live-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const first = createTestSocketServer(socketPath);
+    const second = createTestSocketServer(socketPath);
+
+    await first.start();
+
+    try {
+      await expect(second.start()).rejects.toMatchObject({
+        reason: "live-owner",
+        socketPath
+      });
+    } finally {
+      await first.stop();
+    }
+  });
+
+  it("claims the socket before runtime handlers are attached", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-early-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const server = new KmuxSocketServer({ socketPath });
+    const second = createTestSocketServer(socketPath);
+
+    await server.start();
+
+    try {
+      await expect(second.start()).rejects.toMatchObject({
+        reason: "live-owner",
+        socketPath
+      });
+
+      await expect(
+        sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: "starting",
+          method: "system.ping",
+          params: {}
+        })
+      ).resolves.toMatchObject({
+        id: "starting",
+        error: {
+          code: -32002,
+          message: "kmux socket server is still starting"
+        }
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("unlinks a stale socket left by a crashed owner", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-stale-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `
+          const { createServer } = require("node:net");
+          const server = createServer();
+          server.listen(process.argv[1], () => process.send("ready"));
+          setInterval(() => {}, 1000);
+        `,
+        socketPath
+      ],
+      {
+        stdio: ["ignore", "ignore", "ignore", "ipc"]
+      }
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      child.once("message", () => resolve());
+      child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        reject(
+          new Error(
+            `stale socket fixture exited before ready: code=${code} signal=${signal}`
+          )
+        );
+      });
+    });
+
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    expect(existsSync(socketPath)).toBe(true);
+    expect(lstatSync(socketPath).isSocket()).toBe(true);
+
+    const server = createTestSocketServer(socketPath);
+    await server.start();
+
+    try {
+      await expect(
+        sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: "rpc_stale",
+          method: "system.identify",
+          params: {}
+        })
+      ).resolves.toMatchObject({
+        result: { socketPath }
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("allows isolated runtimes to listen side by side", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-isolated-"));
+    tempDirs.push(tempDir);
+    const first = createTestSocketServer(join(tempDir, "one", "control.sock"));
+    const second = createTestSocketServer(join(tempDir, "two", "control.sock"));
+
+    await first.start();
+    await second.start();
+
+    try {
+      await expect(
+        sendSocketMessage(join(tempDir, "one", "control.sock"), {
+          jsonrpc: "2.0",
+          id: "rpc_one",
+          method: "system.identify",
+          params: {}
+        })
+      ).resolves.toMatchObject({
+        result: { socketPath: join(tempDir, "one", "control.sock") }
+      });
+      await expect(
+        sendSocketMessage(join(tempDir, "two", "control.sock"), {
+          jsonrpc: "2.0",
+          id: "rpc_two",
+          method: "system.identify",
+          params: {}
+        })
+      ).resolves.toMatchObject({
+        result: { socketPath: join(tempDir, "two", "control.sock") }
+      });
+    } finally {
+      await second.stop();
+      await first.stop();
+    }
+  });
+
+  it("does not replace a non-socket file at the socket path", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-file-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    writeFileSync(socketPath, "not a socket", "utf8");
+    const server = createTestSocketServer(socketPath);
+    const startResult = server.start();
+
+    await expect(startResult).rejects.toBeInstanceOf(SocketStartupError);
+    await expect(startResult).rejects.toMatchObject({
+      reason: "socket-path-not-socket",
+      socketPath
+    });
+  });
+
+  it("fails clearly when the socket path exceeds POSIX limits", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-long-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "x".repeat(120), "control.sock");
+    const server = createTestSocketServer(socketPath);
+    const startResult = server.start();
+
+    await expect(startResult).rejects.toBeInstanceOf(SocketStartupError);
+    await expect(startResult).rejects.toMatchObject({
+      reason: "socket-path-too-long",
+      socketPath
+    });
+  });
+});
 
 describe("kmux socket server agent hooks", () => {
   const tempDirs: string[] = [];

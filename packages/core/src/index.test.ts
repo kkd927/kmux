@@ -1,7 +1,8 @@
 import {
   BUILTIN_TERMINAL_THEME_PROFILE_ID,
   BUILTIN_TERMINAL_THEME_PROFILES,
-  INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID
+  INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID,
+  LINUX_DEFAULT_SHORTCUTS
 } from "@kmux/ui";
 
 import {
@@ -19,6 +20,7 @@ import {
   listPaneIds,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  migrateShortcutDefaultsForPlatform,
   sanitizeSettings
 } from "./index";
 import type { SettingsPatch } from "./index";
@@ -32,8 +34,7 @@ describe("core reducer", () => {
   const legacyRendererSettingKey = ["terminalUse", "Web", "gl"].join("");
   const legacyTerminalTextFontFamily =
     'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
-  const previousBundledTerminalTextFontFamily =
-    `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${legacyTerminalTextFontFamily}`;
+  const previousBundledTerminalTextFontFamily = `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${legacyTerminalTextFontFamily}`;
 
   it("reports sidebar mutations as workspace row and active workspace activity only", () => {
     const state = createInitialState();
@@ -316,11 +317,22 @@ describe("core reducer", () => {
     expect(effects).toContainEqual(
       expect.objectContaining({
         type: "session.spawn",
-        spec: expect.objectContaining({
-          launch: expect.objectContaining({
-            shell: "codex",
-            args: ["resume", "session-123"]
-          })
+        sessionId: session.id,
+        surfaceId: surface.id,
+        workspaceId: workspace!.id,
+        launch: expect.objectContaining({
+          shell: "codex",
+          args: ["resume", "session-123"]
+        }),
+        initialSize: {
+          cols: 120,
+          rows: 30
+        },
+        sessionEnv: expect.objectContaining({
+          KMUX_WORKSPACE_ID: workspace!.id,
+          KMUX_SURFACE_ID: surface.id,
+          KMUX_SESSION_ID: session.id,
+          TERM_PROGRAM: "kmux"
         })
       })
     );
@@ -1575,6 +1587,29 @@ describe("core reducer", () => {
 
     expect(settings.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
     expect(settings.notificationSound).toBe(true);
+    expect(settings.shortcutDefaultsPlatform).toBe("darwin");
+  });
+
+  it("creates Linux default settings with Linux shortcut defaults", () => {
+    const settings = createDefaultSettings("kmuxOnly", "/bin/bash", {
+      shortcutDefaultsPlatform: "linux"
+    });
+
+    expect(settings.shortcutDefaultsPlatform).toBe("linux");
+    expect(settings.shortcuts).toEqual(LINUX_DEFAULT_SHORTCUTS);
+  });
+
+  it("migrates generated shortcut defaults without overwriting user-edited bindings", () => {
+    const settings = createDefaultSettings();
+    settings.shortcuts["pane.close"] = "Ctrl+Alt+K";
+
+    const migrated = migrateShortcutDefaultsForPlatform(settings, "linux");
+
+    expect(migrated.shortcutDefaultsPlatform).toBe("linux");
+    expect(migrated.shortcuts["workspace.create"]).toBe(
+      LINUX_DEFAULT_SHORTCUTS["workspace.create"]
+    );
+    expect(migrated.shortcuts["pane.close"]).toBe("Ctrl+Alt+K");
   });
 
   it("migrates pre-versioned bell sound settings to enabled once", () => {

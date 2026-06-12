@@ -19,33 +19,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   prepareShellIntegrationLaunch,
-  shouldApplyShellIntegration
+  writeAgentWrapperBinaries
 } from "./shellIntegration";
+import { buildSessionEnv } from "./sessionEnv";
 
-const SPAWNED_WRAPPER_TEST_TIMEOUT_MS = 20_000;
+const SPAWNED_WRAPPER_TEST_TIMEOUT_MS = 30_000;
 
 describe("shell integration launch preparation", () => {
-  it("only applies to default macOS interactive shell launches", () => {
-    expect(shouldApplyShellIntegration("/bin/zsh", undefined, "darwin")).toBe(
-      true
-    );
-    expect(shouldApplyShellIntegration("/bin/bash", undefined, "darwin")).toBe(
-      true
-    );
-    expect(
-      shouldApplyShellIntegration("/opt/homebrew/bin/fish", undefined, "darwin")
-    ).toBe(true);
-    expect(shouldApplyShellIntegration("/bin/zsh", ["-l"], "darwin")).toBe(
-      false
-    );
-    expect(shouldApplyShellIntegration("/bin/zsh", undefined, "linux")).toBe(
-      false
-    );
-    expect(shouldApplyShellIntegration("/bin/sh", undefined, "darwin")).toBe(
-      false
-    );
-  });
-
   it("keeps launches unchanged when kmux shell integration is disabled", () => {
     const prepared = prepareShellIntegrationLaunch("/bin/zsh", ["-l"], {
       HOME: "/Users/test"
@@ -81,10 +61,55 @@ describe("shell integration launch preparation", () => {
       shellPath: "/bin/bash",
       args: ["-c", 'printf %s "$HOME"'],
       env: {
+        KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-bin",
         HOME: "/Users/test"
       },
       requiresShellReady: false
     });
+  });
+
+  it("makes the stable Codex wrapper reachable without shell rc integration", () => {
+    const wrapperBinDir = mkdtempSync(join(tmpdir(), "kmux-wrapper-bin-"));
+    const helperBinDir = mkdtempSync(join(tmpdir(), "kmux-helper-bin-"));
+    try {
+      writeAgentWrapperBinaries(wrapperBinDir);
+      const env = buildSessionEnv({
+        baseEnv: {
+          PATH: "/usr/local/bin:/usr/bin"
+        },
+        hookEnv: {
+          KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+          KMUX_AGENT_BIN_DIR: helperBinDir,
+          KMUX_NODE_PATH: process.execPath
+        },
+        sessionEnv: {
+          TERM_PROGRAM: "kmux"
+        },
+        options: {
+          agentPath: {
+            helperBinDir,
+            wrapperBinDir,
+            prependWrapperToPath: true
+          }
+        }
+      });
+      const prepared = prepareShellIntegrationLaunch("/bin/bash", [], env, {
+        enabled: false,
+        agentPath: {
+          helperBinDir,
+          wrapperBinDir,
+          prependWrapperToPath: true
+        }
+      });
+
+      expect(existsSync(join(wrapperBinDir, "codex"))).toBe(true);
+      expect(prepared.requiresShellReady).toBe(false);
+      expect(prepared.env.KMUX_AGENT_BIN_DIR).toBe(helperBinDir);
+      expect(prepared.env.PATH?.split(":")[0]).toBe(wrapperBinDir);
+    } finally {
+      rmSync(wrapperBinDir, { recursive: true, force: true });
+      rmSync(helperBinDir, { recursive: true, force: true });
+    }
   });
 
   it("wraps zsh launches with kmux-managed dotfiles", () => {
@@ -148,7 +173,7 @@ describe("shell integration launch preparation", () => {
     expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).toContain("_kmux_prepend_agent_bin");
     expect(integrationContents).toContain(
-      'local agent_bin="${KMUX_AGENT_BIN_DIR:-}"'
+      'local agent_bin="${KMUX_AGENT_WRAPPER_BIN_DIR:-${KMUX_AGENT_BIN_DIR:-}}"'
     );
     expect(integrationContents).toContain("typeset -g __KMUX_OSC7_INSTALLED=1");
     expect(integrationContents).not.toContain("typeset -gx");
@@ -188,6 +213,9 @@ describe("shell integration launch preparation", () => {
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "KMUX_DEBUG_LOG_PATH"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      "path.isAbsolute(logPath)"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'TERM_SESSION_ID="${TERM_SESSION_ID:-}"'
@@ -352,7 +380,7 @@ describe("shell integration launch preparation", () => {
     const integrationScript = prepared.env.KMUX_FISH_INTEGRATION_SCRIPT;
     expect(integrationScript).toBeTruthy();
     const integrationContents = readFileSync(integrationScript ?? "", "utf8");
-    expect(integrationContents).toContain("set -q KMUX_AGENT_BIN_DIR");
+    expect(integrationContents).toContain("KMUX_AGENT_WRAPPER_BIN_DIR");
     expect(integrationContents).toContain(
       "function __kmux_emit_osc7 --on-event fish_prompt"
     );

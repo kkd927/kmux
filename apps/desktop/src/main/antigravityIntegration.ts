@@ -6,7 +6,12 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
+
+import type { AgentStorageRoots } from "@kmux/metadata";
+
+import { shellAbsolutePathAssignment } from "./agentHookCommand";
 
 const ANTIGRAVITY_HOOKS_PATH_SEGMENTS = [
   ".gemini",
@@ -39,6 +44,7 @@ export interface AntigravityIntegrationInstallResult {
 export interface AntigravityHookRuntimePaths {
   socketPath?: string;
   agentBinDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
 }
 
 export interface AntigravitySessionIndexRecord {
@@ -88,19 +94,6 @@ function antigravityHookFallbackJson(eventName: AntigravityHookEvent): string {
   return JSON.stringify({});
 }
 
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function shellParameterDefault(
-  envName: "KMUX_SOCKET_PATH" | "KMUX_AGENT_BIN_DIR",
-  fallback: string | undefined
-): string {
-  return fallback?.trim()
-    ? `\${${envName}:-${shellSingleQuote(fallback.trim())}}`
-    : `"\${${envName}:-}"`;
-}
-
 function buildAntigravityHookCommand(
   eventName: AntigravityHookEvent,
   runtimePaths: AntigravityHookRuntimePaths = {}
@@ -108,8 +101,16 @@ function buildAntigravityHookCommand(
   const fallbackCommand = `printf '%s\\n' '${antigravityHookFallbackJson(eventName)}'`;
   return [
     `${KMUX_MANAGED_ANTIGRAVITY_HOOK_MARKER};`,
-    `_kmux_socket_path=${shellParameterDefault("KMUX_SOCKET_PATH", runtimePaths.socketPath)};`,
-    `_kmux_agent_bin_dir=${shellParameterDefault("KMUX_AGENT_BIN_DIR", runtimePaths.agentBinDir)};`,
+    shellAbsolutePathAssignment(
+      "_kmux_socket_path",
+      "KMUX_SOCKET_PATH",
+      runtimePaths.socketPath
+    ),
+    shellAbsolutePathAssignment(
+      "_kmux_agent_bin_dir",
+      "KMUX_AGENT_BIN_DIR",
+      runtimePaths.agentBinDir
+    ),
     'if [ -n "$_kmux_socket_path" ] &&',
     '[ -n "$_kmux_agent_bin_dir" ] &&',
     '[ -x "$_kmux_agent_bin_dir/kmux-agent-hook" ]; then',
@@ -199,11 +200,13 @@ export function ensureAntigravityHooksInstalled(
   runtimePaths: AntigravityHookRuntimePaths = {}
 ): AntigravityIntegrationInstallResult {
   const normalizedHomeDir = homeDir?.trim();
-  const hooksPath = normalizedHomeDir
-    ? join(normalizedHomeDir, ...ANTIGRAVITY_HOOKS_PATH_SEGMENTS)
-    : join(...ANTIGRAVITY_HOOKS_PATH_SEGMENTS);
+  const hooksPath =
+    runtimePaths.agentStorageRoots?.antigravity.hooksPath ??
+    (normalizedHomeDir
+      ? join(normalizedHomeDir, ...ANTIGRAVITY_HOOKS_PATH_SEGMENTS)
+      : join(...ANTIGRAVITY_HOOKS_PATH_SEGMENTS));
 
-  if (!normalizedHomeDir) {
+  if (!normalizedHomeDir && !runtimePaths.agentStorageRoots) {
     return {
       changed: false,
       hooksPath,
@@ -242,8 +245,18 @@ export function antigravitySessionIndexPath(
   homeDir: string,
   env: NodeJS.ProcessEnv = process.env
 ): string {
-  const configDir = env.KMUX_CONFIG_DIR ?? join(homeDir, ".config", "kmux");
+  const configDir =
+    normalizedAbsolutePath(env.KMUX_CONFIG_DIR) ??
+    join(normalizedAbsolutePath(homeDir) ?? homedir(), ".config", "kmux");
   return join(configDir, ANTIGRAVITY_SESSION_INDEX_FILENAME);
+}
+
+function normalizedAbsolutePath(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !isAbsolute(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 export function recordAntigravitySessionFromHook(options: {

@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
 
 import { PtyHostManager, resolvePtyHostLaunchOptions } from "./ptyHost";
+import { DIAGNOSTICS_LOG_PATH_ENV } from "../shared/diagnostics";
+import {
+  KMUX_NATIVE_CACHE_ROOT_ENV,
+  KMUX_RAW_OUTPUT_ROOT_ENV
+} from "../shared/platform/env";
+import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
 
 describe("resolvePtyHostLaunchOptions", () => {
   it("uses the unpacked pty-host bundle when running from app.asar", () => {
@@ -70,6 +76,144 @@ describe("resolvePtyHostLaunchOptions", () => {
           PATH: "/usr/local/bin",
           KMUX_PTY_STDOUT_LOGS: "1"
         }
+      })
+    );
+  });
+
+  it("forwards explicit storage roots to the pty-host child", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start({
+      PATH: "/usr/local/bin",
+      KMUX_RUNTIME_DIR: "/run/user/1000/kmux",
+      [KMUX_RAW_OUTPUT_ROOT_ENV]: "/home/test/.local/state/kmux/pty-raw",
+      [KMUX_NATIVE_CACHE_ROOT_ENV]: "/home/test/.cache/kmux/native"
+    });
+
+    expect(forkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          KMUX_RUNTIME_DIR: "/run/user/1000/kmux",
+          [KMUX_RAW_OUTPUT_ROOT_ENV]: "/home/test/.local/state/kmux/pty-raw",
+          [KMUX_NATIVE_CACHE_ROOT_ENV]: "/home/test/.cache/kmux/native"
+        })
+      })
+    );
+  });
+
+  it("forwards only absolute smoothness profile log paths to the pty-host child", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start({
+      PATH: "/usr/local/bin",
+      [KMUX_PROFILE_LOG_PATH_ENV]: "logs/kmux-smoothness.jsonl"
+    });
+
+    expect(forkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
+      [],
+      expect.objectContaining({
+        env: expect.not.objectContaining({
+          [KMUX_PROFILE_LOG_PATH_ENV]: "logs/kmux-smoothness.jsonl"
+        })
+      })
+    );
+    const firstCallEnv = (
+      vi.mocked(forkProcess).mock.calls[0]?.[2] as
+        | { env?: NodeJS.ProcessEnv }
+        | undefined
+    )?.env;
+    expect(firstCallEnv).not.toHaveProperty(KMUX_PROFILE_LOG_PATH_ENV);
+
+    manager.stop();
+
+    const secondFakeChild = new EventEmitter() as ChildProcess;
+    (secondFakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (secondFakeChild as ChildProcess & { kill: () => boolean }).kill =
+      () => true;
+    (secondFakeChild as ChildProcess & { send: () => boolean }).send =
+      () => true;
+    const secondForkProcess = vi.fn(
+      () => secondFakeChild
+    ) as unknown as typeof fork;
+    const secondManager = new PtyHostManager(secondForkProcess);
+
+    secondManager.start({
+      PATH: "/usr/local/bin",
+      [KMUX_PROFILE_LOG_PATH_ENV]: " /tmp/kmux-smoothness.jsonl "
+    });
+
+    expect(secondForkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          [KMUX_PROFILE_LOG_PATH_ENV]: "/tmp/kmux-smoothness.jsonl"
+        })
+      })
+    );
+  });
+
+  it("forwards only absolute diagnostics log paths to the pty-host child", () => {
+    const fakeChild = new EventEmitter() as ChildProcess;
+    (fakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (fakeChild as ChildProcess & { kill: () => boolean }).kill = () => true;
+    (fakeChild as ChildProcess & { send: () => boolean }).send = () => true;
+
+    const forkProcess = vi.fn(() => fakeChild) as unknown as typeof fork;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start({
+      PATH: "/usr/local/bin",
+      [DIAGNOSTICS_LOG_PATH_ENV]: "logs/kmux-debug.jsonl"
+    });
+
+    const firstCallEnv = (
+      vi.mocked(forkProcess).mock.calls[0]?.[2] as
+        | { env?: NodeJS.ProcessEnv }
+        | undefined
+    )?.env;
+    expect(firstCallEnv).not.toHaveProperty(DIAGNOSTICS_LOG_PATH_ENV);
+
+    manager.stop();
+
+    const secondFakeChild = new EventEmitter() as ChildProcess;
+    (secondFakeChild as ChildProcess & { connected: boolean }).connected = true;
+    (secondFakeChild as ChildProcess & { kill: () => boolean }).kill =
+      () => true;
+    (secondFakeChild as ChildProcess & { send: () => boolean }).send =
+      () => true;
+    const secondForkProcess = vi.fn(
+      () => secondFakeChild
+    ) as unknown as typeof fork;
+    const secondManager = new PtyHostManager(secondForkProcess);
+
+    secondManager.start({
+      PATH: "/usr/local/bin",
+      [DIAGNOSTICS_LOG_PATH_ENV]: " /tmp/kmux-debug.jsonl "
+    });
+
+    expect(secondForkProcess).toHaveBeenCalledWith(
+      expect.stringContaining("/apps/desktop/src/pty-host/index.ts"),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          [DIAGNOSTICS_LOG_PATH_ENV]: "/tmp/kmux-debug.jsonl"
+        })
       })
     );
   });

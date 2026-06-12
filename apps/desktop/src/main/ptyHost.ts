@@ -5,15 +5,21 @@ import { fileURLToPath } from "node:url";
 
 import type {
   Id,
-  PtyEvent,
-  PtyRequest,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalKeyInput
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
-import { PTY_STDOUT_LOGS_ENV } from "../shared/diagnostics";
-import { KMUX_PROFILE_LOG_PATH_ENV } from "../shared/smoothnessProfile";
+import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
+import {
+  DIAGNOSTICS_LOG_PATH_ENV,
+  PTY_STDOUT_LOGS_ENV,
+  resolveDiagnosticsLogPath
+} from "../shared/diagnostics";
+import {
+  KMUX_PROFILE_LOG_PATH_ENV,
+  isSmoothnessProfileLogPathAllowed
+} from "../shared/smoothnessProfile";
 
 export interface PtyHostLaunchOptions {
   cwd: string;
@@ -87,11 +93,25 @@ export class PtyHostManager extends EventEmitter {
 
     const currentDir = dirname(fileURLToPath(import.meta.url));
     const launchOptions = resolvePtyHostLaunchOptions(currentDir);
-    const childEnv = {
+    const diagnosticsLogPath = resolveDiagnosticsLogPath(
+      env[DIAGNOSTICS_LOG_PATH_ENV]
+    );
+    const smoothnessProfileLogPath =
+      env[KMUX_PROFILE_LOG_PATH_ENV]?.trim();
+    const childEnv: NodeJS.ProcessEnv = {
       ...env,
-      [PTY_STDOUT_LOGS_ENV]: launchOptions.enableStdoutLogs ? "1" : "0",
-      [KMUX_PROFILE_LOG_PATH_ENV]: env[KMUX_PROFILE_LOG_PATH_ENV]
+      [PTY_STDOUT_LOGS_ENV]: launchOptions.enableStdoutLogs ? "1" : "0"
     };
+    if (diagnosticsLogPath) {
+      childEnv[DIAGNOSTICS_LOG_PATH_ENV] = diagnosticsLogPath;
+    } else {
+      delete childEnv[DIAGNOSTICS_LOG_PATH_ENV];
+    }
+    if (isSmoothnessProfileLogPathAllowed(smoothnessProfileLogPath)) {
+      childEnv[KMUX_PROFILE_LOG_PATH_ENV] = smoothnessProfileLogPath;
+    } else {
+      delete childEnv[KMUX_PROFILE_LOG_PATH_ENV];
+    }
 
     const child = this.forkProcess(launchOptions.entry, [], {
       cwd: launchOptions.cwd,
