@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -11,8 +12,10 @@ import { join } from "node:path";
 import { createInitialState } from "@kmux/core";
 
 import {
+  AppPathResolutionError,
   createSettingsStore,
   createSnapshotStore,
+  resolveAppPaths,
   createWindowStateStore,
   type PersistedWindowState
 } from "./index";
@@ -147,10 +150,8 @@ describe("file-store persistence", () => {
 
   it("strips legacy startupRestore settings when loading from disk", () => {
     const settingsPath = join(sandboxDir, "legacy-settings.json");
-    const settings = createInitialState("/bin/zsh").settings as unknown as Record<
-      string,
-      unknown
-    >;
+    const settings = createInitialState("/bin/zsh")
+      .settings as unknown as Record<string, unknown>;
 
     writeFileSync(
       settingsPath,
@@ -229,7 +230,10 @@ describe("file-store persistence", () => {
   it("roundtrips usage history with a versioned envelope", async () => {
     const usageHistoryPath = join(sandboxDir, "usage-history.json");
     const persistenceModule = (await import("./index")) as {
-      createUsageHistoryStore?: (path: string, pricingRevision?: string) => {
+      createUsageHistoryStore?: (
+        path: string,
+        pricingRevision?: string
+      ) => {
         load(): unknown;
         save(value: unknown): void;
       };
@@ -278,9 +282,15 @@ describe("file-store persistence", () => {
   });
 
   it("treats usage history as stale when the pricing revision changes", async () => {
-    const usageHistoryPath = join(sandboxDir, "usage-history-pricing-revision.json");
+    const usageHistoryPath = join(
+      sandboxDir,
+      "usage-history-pricing-revision.json"
+    );
     const persistenceModule = (await import("./index")) as {
-      createUsageHistoryStore?: (path: string, pricingRevision?: string) => {
+      createUsageHistoryStore?: (
+        path: string,
+        pricingRevision?: string
+      ) => {
         load(): unknown;
         save(value: unknown): void;
       };
@@ -338,5 +348,465 @@ describe("file-store persistence", () => {
         KMUX_RUNTIME_DIR: runtimeDir
       }).shellEnvCachePath
     ).toBe(join(configDir, "shell-env.json"));
+  });
+});
+
+describe("resolveAppPaths", () => {
+  let sandboxDir: string;
+
+  beforeEach(() => {
+    sandboxDir = mkdtempSync(join(tmpdir(), "kmux-paths-"));
+  });
+
+  afterEach(() => {
+    rmSync(sandboxDir, { force: true, recursive: true });
+  });
+
+  it("keeps macOS config and runtime defaults compatible", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/Users/example",
+      env: {},
+      platform: "darwin",
+      tmpDir: "/tmp",
+      uid: 501
+    });
+
+    expect(paths.configDir).toBe("/Users/example/.config/kmux");
+    expect(paths.runtimeDir).toBe("/Users/example/.kmux");
+    expect(paths.socketPath).toBe("/Users/example/.kmux/control.sock");
+    expect(paths.settingsPath).toBe(
+      "/Users/example/.config/kmux/settings.json"
+    );
+    expect(paths.captureRoot).toBe("/Users/example/.kmux/captures");
+    expect(paths.attachmentRoot).toBe("/Users/example/.kmux/attachments");
+  });
+
+  it("resolves CLI and desktop paths from the same explicit runtime override", () => {
+    const configDir = join(sandboxDir, "config");
+    const runtimeDir = join(sandboxDir, "runtime");
+    const env = {
+      KMUX_CONFIG_DIR: configDir,
+      KMUX_RUNTIME_DIR: runtimeDir
+    };
+
+    const desktopPaths = resolveAppPaths({
+      homeDir: "/Users/example",
+      env,
+      platform: "darwin"
+    });
+    const cliPaths = resolveAppPaths({
+      homeDir: "/Users/example",
+      env,
+      platform: "darwin"
+    });
+
+    expect(cliPaths.socketPath).toBe(desktopPaths.socketPath);
+    expect(cliPaths.socketPath).toBe(join(runtimeDir, "control.sock"));
+  });
+
+  it("is side-effect-free for absent path roots", () => {
+    const configDir = join(sandboxDir, "missing-config");
+    const runtimeDir = join(sandboxDir, "missing-runtime");
+
+    const paths = resolveAppPaths({
+      homeDir: "/Users/example",
+      env: {
+        KMUX_CONFIG_DIR: configDir,
+        KMUX_RUNTIME_DIR: runtimeDir
+      },
+      platform: "darwin"
+    });
+
+    expect(paths.settingsPath).toBe(join(configDir, "settings.json"));
+    expect(paths.socketPath).toBe(join(runtimeDir, "control.sock"));
+    expect(existsSync(configDir)).toBe(false);
+    expect(existsSync(runtimeDir)).toBe(false);
+  });
+
+  it("uses Linux XDG roots without placing app storage under runtime", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        XDG_CONFIG_HOME: "/xdg/config",
+        XDG_RUNTIME_DIR: "/run/user/1000",
+        XDG_STATE_HOME: "/xdg/state",
+        XDG_DATA_HOME: "/xdg/data",
+        XDG_CACHE_HOME: "/xdg/cache"
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+
+    expect(paths.configDir).toBe("/xdg/config/kmux");
+    expect(paths.runtimeDir).toBe("/run/user/1000/kmux");
+    expect(paths.socketPath).toBe("/run/user/1000/kmux/control.sock");
+    expect(paths.statePath).toBe("/xdg/state/kmux/state.json");
+    expect(paths.usageHistoryPath).toBe("/xdg/state/kmux/usage-history.json");
+    expect(paths.captureRoot).toBe("/xdg/state/kmux/captures");
+    expect(paths.attachmentRoot).toBe("/xdg/data/kmux/attachments");
+    expect(paths.nativeCacheRoot).toBe("/xdg/cache/kmux/native");
+  });
+
+  it("uses a safe /run/user runtime base when XDG_RUNTIME_DIR is absent", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {},
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000,
+      statRuntimeDir: (path) =>
+        path === "/run/user/1000"
+          ? {
+              isDirectory: true,
+              isSymbolicLink: false,
+              uid: 1000,
+              mode: 0o40700
+            }
+          : null
+    });
+
+    expect(paths.runtimeDir).toBe("/run/user/1000/kmux");
+    expect(paths.socketPath).toBe("/run/user/1000/kmux/control.sock");
+    expect(paths.sources.runtimeDir).toBe("run-user");
+  });
+
+  it("falls back to private tmp runtime when /run/user is unsafe", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {},
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000,
+      statRuntimeDir: () => ({
+        isDirectory: true,
+        isSymbolicLink: false,
+        uid: 2000,
+        mode: 0o40777
+      })
+    });
+
+    expect(paths.runtimeDir).toBe("/tmp/kmux-runtime-1000");
+    expect(paths.socketPath).toBe("/tmp/kmux-runtime-1000/control.sock");
+    expect(paths.sources.runtimeDir).toBe("tmp-fallback");
+  });
+
+  it("resolves the same Linux socket path for CLI and desktop cases", () => {
+    const cases = [
+      {
+        name: "default",
+        env: {},
+        expectedSocketPath: "/tmp/kmux-runtime-1000/control.sock"
+      },
+      {
+        name: "xdg",
+        env: {
+          XDG_RUNTIME_DIR: "/run/user/1000"
+        },
+        expectedSocketPath: "/run/user/1000/kmux/control.sock"
+      },
+      {
+        name: "explicit",
+        env: {
+          KMUX_RUNTIME_DIR: "/profiles/kmux/runtime"
+        },
+        expectedSocketPath: "/profiles/kmux/runtime/control.sock"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const desktopPaths = resolveAppPaths({
+        homeDir: "/home/example",
+        env: testCase.env,
+        platform: "linux",
+        tmpDir: "/tmp",
+        uid: 1000,
+        statRuntimeDir: () => null
+      });
+      const cliPaths = resolveAppPaths({
+        homeDir: "/home/example",
+        env: testCase.env,
+        platform: "linux",
+        tmpDir: "/tmp",
+        uid: 1000,
+        statRuntimeDir: () => null
+      });
+
+      expect(`${testCase.name}:${cliPaths.socketPath}`).toBe(
+        `${testCase.name}:${desktopPaths.socketPath}`
+      );
+      expect(cliPaths.socketPath).toBe(testCase.expectedSocketPath);
+    }
+  });
+
+  it("falls back to a short socket path when a default runtime path is too long", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        XDG_RUNTIME_DIR: join("/", "tmp", "x".repeat(120))
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+
+    expect(paths.sources.socketPath).toBe("path-length-fallback");
+    expect(paths.sources.runtimeDir).toBe("path-length-fallback");
+    expect(paths.runtimeDir).toMatch(/^\/tmp\/kmux-1000-[0-9a-f]{8}$/);
+    expect(paths.socketPath).toBe(`${paths.runtimeDir}/c.sock`);
+  });
+
+  it("honors explicit Linux state, data, and cache roots independently", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        XDG_RUNTIME_DIR: "/run/user/1000",
+        KMUX_STATE_DIR: "/profiles/kmux/state",
+        KMUX_DATA_DIR: "/profiles/kmux/data",
+        KMUX_CACHE_DIR: "/profiles/kmux/cache"
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+
+    expect(paths.statePath).toBe("/profiles/kmux/state/state.json");
+    expect(paths.usageHistoryPath).toBe(
+      "/profiles/kmux/state/usage-history.json"
+    );
+    expect(paths.shellEnvCachePath).toBe("/profiles/kmux/state/shell-env.json");
+    expect(paths.antigravitySessionsPath).toBe(
+      "/profiles/kmux/state/antigravity-sessions.json"
+    );
+    expect(paths.captureRoot).toBe("/profiles/kmux/state/captures");
+    expect(paths.rawOutputRoot).toBe("/profiles/kmux/state/pty-raw");
+    expect(paths.diagnosticsRoot).toBe("/profiles/kmux/state/diagnostics");
+    expect(paths.attachmentRoot).toBe("/profiles/kmux/data/attachments");
+    expect(paths.agentHookBinDir).toBe("/profiles/kmux/data/bin");
+    expect(paths.agentWrapperBinDir).toBe("/profiles/kmux/data/wrappers");
+    expect(paths.nativeCacheRoot).toBe("/profiles/kmux/cache/native");
+  });
+
+  it("treats blank Linux path root env values as absent", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        KMUX_CONFIG_DIR: "   ",
+        KMUX_RUNTIME_DIR: "   ",
+        KMUX_STATE_DIR: "   ",
+        KMUX_DATA_DIR: "   ",
+        KMUX_CACHE_DIR: "   ",
+        XDG_CONFIG_HOME: "   ",
+        XDG_RUNTIME_DIR: "   ",
+        XDG_STATE_HOME: "   ",
+        XDG_DATA_HOME: "   ",
+        XDG_CACHE_HOME: "   "
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000,
+      statRuntimeDir: () => null
+    });
+
+    expect(paths.configDir).toBe("/home/example/.config/kmux");
+    expect(paths.runtimeDir).toBe("/tmp/kmux-runtime-1000");
+    expect(paths.socketPath).toBe("/tmp/kmux-runtime-1000/control.sock");
+    expect(paths.statePath).toBe("/home/example/.local/state/kmux/state.json");
+    expect(paths.attachmentRoot).toBe(
+      "/home/example/.local/share/kmux/attachments"
+    );
+    expect(paths.nativeCacheRoot).toBe("/home/example/.cache/kmux/native");
+    expect(paths.sources.configDir).toBe("home");
+    expect(paths.sources.runtimeDir).toBe("tmp-fallback");
+    expect(paths.sources.stateDir).toBe("home");
+    expect(paths.sources.dataDir).toBe("home");
+    expect(paths.sources.cacheDir).toBe("home");
+  });
+
+  it("ignores relative Linux XDG roots before deriving app paths", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        XDG_CONFIG_HOME: "relative-config",
+        XDG_RUNTIME_DIR: "relative-runtime",
+        XDG_STATE_HOME: "relative-state",
+        XDG_DATA_HOME: "relative-data",
+        XDG_CACHE_HOME: "relative-cache"
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000,
+      statRuntimeDir: () => null
+    });
+
+    expect(paths.configDir).toBe("/home/example/.config/kmux");
+    expect(paths.runtimeDir).toBe("/tmp/kmux-runtime-1000");
+    expect(paths.socketPath).toBe("/tmp/kmux-runtime-1000/control.sock");
+    expect(paths.statePath).toBe("/home/example/.local/state/kmux/state.json");
+    expect(paths.attachmentRoot).toBe(
+      "/home/example/.local/share/kmux/attachments"
+    );
+    expect(paths.nativeCacheRoot).toBe("/home/example/.cache/kmux/native");
+    expect(paths.sources.configDir).toBe("home");
+    expect(paths.sources.runtimeDir).toBe("tmp-fallback");
+    expect(paths.sources.stateDir).toBe("home");
+    expect(paths.sources.dataDir).toBe("home");
+    expect(paths.sources.cacheDir).toBe("home");
+  });
+
+  it("fails relative explicit Linux app root overrides", () => {
+    const cases = [
+      ["KMUX_CONFIG_DIR", "relative-config"],
+      ["KMUX_RUNTIME_DIR", "relative-runtime"],
+      ["KMUX_STATE_DIR", "relative-state"],
+      ["KMUX_DATA_DIR", "relative-data"],
+      ["KMUX_CACHE_DIR", "relative-cache"]
+    ] as const;
+
+    for (const [key, value] of cases) {
+      let thrown: unknown;
+      try {
+        resolveAppPaths({
+          homeDir: "/home/example",
+          env: {
+            XDG_RUNTIME_DIR: "/run/user/1000",
+            [key]: value
+          },
+          platform: "linux",
+          tmpDir: "/tmp",
+          uid: 1000
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(AppPathResolutionError);
+      expect((thrown as AppPathResolutionError).code).toBe(
+        "path-root-not-absolute"
+      );
+      expect((thrown as Error).message).toContain(
+        `${key} must be an absolute path on Linux`
+      );
+    }
+  });
+
+  it("keeps macOS relative explicit app root compatibility", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/Users/example",
+      env: {
+        KMUX_CONFIG_DIR: "relative-config",
+        KMUX_RUNTIME_DIR: "relative-runtime",
+        KMUX_STATE_DIR: "relative-state",
+        KMUX_DATA_DIR: "relative-data",
+        KMUX_CACHE_DIR: "relative-cache"
+      },
+      platform: "darwin",
+      tmpDir: "/tmp",
+      uid: 501
+    });
+
+    expect(paths.settingsPath).toBe("relative-config/settings.json");
+    expect(paths.socketPath).toBe("relative-runtime/control.sock");
+    expect(paths.statePath).toBe("relative-state/state.json");
+    expect(paths.attachmentRoot).toBe("relative-runtime/attachments");
+    expect(paths.nativeCacheRoot).toBe("relative-cache/native");
+  });
+
+  it("trims Linux path root env overrides before deriving app paths", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        KMUX_CONFIG_DIR: " /profiles/kmux/config ",
+        KMUX_RUNTIME_DIR: " /profiles/kmux/runtime ",
+        KMUX_STATE_DIR: " /profiles/kmux/state ",
+        KMUX_DATA_DIR: " /profiles/kmux/data ",
+        KMUX_CACHE_DIR: " /profiles/kmux/cache "
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+
+    expect(paths.settingsPath).toBe("/profiles/kmux/config/settings.json");
+    expect(paths.socketPath).toBe("/profiles/kmux/runtime/control.sock");
+    expect(paths.statePath).toBe("/profiles/kmux/state/state.json");
+    expect(paths.attachmentRoot).toBe("/profiles/kmux/data/attachments");
+    expect(paths.nativeCacheRoot).toBe("/profiles/kmux/cache/native");
+  });
+
+  it("keeps Linux non-socket storage out of runtime storage", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        XDG_RUNTIME_DIR: "/run/user/1000"
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+    const nonSocketPaths = [
+      paths.statePath,
+      paths.windowStatePath,
+      paths.settingsPath,
+      paths.usageHistoryPath,
+      paths.shellEnvCachePath,
+      paths.antigravitySessionsPath,
+      paths.captureRoot,
+      paths.attachmentRoot,
+      paths.rawOutputRoot,
+      paths.nativeCacheRoot,
+      paths.diagnosticsRoot,
+      paths.agentHookBinDir,
+      paths.agentWrapperBinDir
+    ];
+
+    for (const path of nonSocketPaths) {
+      expect(path.startsWith("/run/user/1000/kmux")).toBe(false);
+    }
+  });
+
+  it("keeps Linux non-socket storage out of explicit runtime overrides", () => {
+    const paths = resolveAppPaths({
+      homeDir: "/home/example",
+      env: {
+        KMUX_RUNTIME_DIR: "/profiles/kmux/runtime"
+      },
+      platform: "linux",
+      tmpDir: "/tmp",
+      uid: 1000
+    });
+    const nonSocketPaths = [
+      paths.statePath,
+      paths.windowStatePath,
+      paths.settingsPath,
+      paths.usageHistoryPath,
+      paths.shellEnvCachePath,
+      paths.antigravitySessionsPath,
+      paths.captureRoot,
+      paths.attachmentRoot,
+      paths.rawOutputRoot,
+      paths.nativeCacheRoot,
+      paths.diagnosticsRoot,
+      paths.agentHookBinDir,
+      paths.agentWrapperBinDir
+    ];
+
+    expect(paths.socketPath).toBe("/profiles/kmux/runtime/control.sock");
+    for (const path of nonSocketPaths) {
+      expect(path.startsWith("/profiles/kmux/runtime")).toBe(false);
+    }
+  });
+
+  it("fails an explicit runtime override that produces an overlong socket path", () => {
+    expect(() =>
+      resolveAppPaths({
+        homeDir: "/Users/example",
+        env: {
+          KMUX_RUNTIME_DIR: join("/", "tmp", "x".repeat(120))
+        },
+        platform: "darwin",
+        tmpDir: "/tmp"
+      })
+    ).toThrow("KMUX_RUNTIME_DIR produces an overlong Unix socket path");
   });
 });

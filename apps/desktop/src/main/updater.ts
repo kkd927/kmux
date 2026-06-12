@@ -1,5 +1,7 @@
 import type { UpdaterState } from "@kmux/proto";
 
+import { hasAppImageRuntimeEnv } from "./platform/posix";
+
 export type UpdateCheckSource = "background" | "foreground" | "inline";
 export type UpdateDownloadSource = UpdateCheckSource | "inline";
 export type { UpdaterState, UpdaterStatus } from "@kmux/proto";
@@ -66,6 +68,7 @@ interface UpdaterControllerOptions {
   beforeQuitAndInstall?: (version?: string) => void;
   logger?: UpdaterLogger;
   scheduler?: UpdaterScheduler;
+  enabled?: boolean;
   platform?: NodeJS.Platform;
   isPackaged?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -109,11 +112,16 @@ export function isUpdaterEnabled(options: {
   isPackaged?: boolean;
   env?: NodeJS.ProcessEnv;
 }): boolean {
-  return (
-    options.platform === "darwin" &&
-    options.isPackaged === true &&
-    options.env?.NODE_ENV !== "test"
-  );
+  if (options.isPackaged !== true || options.env?.NODE_ENV === "test") {
+    return false;
+  }
+  if (options.platform === "darwin") {
+    return true;
+  }
+  if (options.platform === "linux") {
+    return hasAppImageRuntimeEnv(options.env);
+  }
+  return false;
 }
 
 export function createUpdaterController(
@@ -121,11 +129,13 @@ export function createUpdaterController(
 ): UpdaterController {
   const logger = options.logger ?? DEFAULT_LOGGER;
   const scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
-  const enabled = isUpdaterEnabled({
-    platform: options.platform ?? process.platform,
-    isPackaged: options.isPackaged ?? false,
-    env: options.env ?? process.env
-  });
+  const enabled =
+    options.enabled ??
+    isUpdaterEnabled({
+      platform: options.platform ?? process.platform,
+      isPackaged: options.isPackaged ?? false,
+      env: options.env ?? process.env
+    });
   let state: UpdaterState = enabled
     ? { status: "idle" }
     : { status: "disabled" };

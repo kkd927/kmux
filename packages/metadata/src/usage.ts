@@ -9,9 +9,19 @@ import {
   watch,
   type FSWatcher
 } from "node:fs";
-import { homedir } from "node:os";
-import { delimiter, dirname, extname, join, resolve } from "node:path";
-import { readAntigravityWorkspaceByConversation } from "./antigravityStorage";
+import {
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve
+} from "node:path";
+import {
+  type AgentStorageRoots,
+  resolveAgentStorageRoots
+} from "./agentStorage";
+import { readAntigravityWorkspaceByConversationFromRoot } from "./antigravityStorage";
 import { estimateModelCost } from "./modelPricing";
 
 const JSON_EXTENSIONS = new Set([".json"]);
@@ -75,6 +85,8 @@ export interface UsageAdapter {
 interface CreateUsageAdaptersOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
 }
 
 export interface UsageHistoryDay {
@@ -162,6 +174,7 @@ interface FileUsageAdapterOptions {
   geminiProjectRootsDir?: string;
   includeJson?: boolean;
   includeHiddenDirs?: boolean;
+  watchRecursive?: boolean;
   antigravityWorkspaceByConversation?: Map<string, string>;
   antigravityWorkspaceByConversationLoader?: () => Map<string, string>;
 }
@@ -185,6 +198,7 @@ class FileUsageAdapter implements UsageAdapter {
   >;
   private readonly includeJson: boolean;
   private readonly includeHiddenDirs: boolean;
+  private readonly watchRecursive: boolean;
   private readonly roots: string[];
   private readonly cursors = new Map<string, SourceCursor>();
   private readonly sources = new Map<string, SourceDescriptor>();
@@ -212,6 +226,7 @@ class FileUsageAdapter implements UsageAdapter {
       new Map();
     this.includeJson = options.includeJson ?? false;
     this.includeHiddenDirs = options.includeHiddenDirs ?? false;
+    this.watchRecursive = options.watchRecursive ?? false;
   }
 
   async initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult> {
@@ -476,7 +491,7 @@ class FileUsageAdapter implements UsageAdapter {
     try {
       const watcher = watch(
         watchRoot,
-        { recursive: true },
+        { recursive: this.watchRecursive },
         (_eventType, filename) => {
           this.markSourceDirty(watchRoot, filename);
           if (timer) {
@@ -639,14 +654,22 @@ export function createUsageAdapters(
   options: CreateUsageAdaptersOptions = {}
 ): UsageAdapter[] {
   const env = options.env ?? process.env;
-  const homeDirectory = options.homeDir ?? homedir();
+  const watchRecursive = shouldUseRecursiveUsageWatch(
+    options.platform ?? process.platform
+  );
+  const agentStorageRoots =
+    options.agentStorageRoots ??
+    resolveAgentStorageRoots({
+      homeDir: options.homeDir,
+      env
+    });
   const geminiRoots = resolveRoots(
     env.KMUX_GEMINI_USAGE_DIR,
-    join(homeDirectory, ".gemini", "tmp")
+    agentStorageRoots.gemini.tmpDir
   );
   const antigravityRoots = resolveRoots(
     env.KMUX_ANTIGRAVITY_USAGE_DIR,
-    join(homeDirectory, ".gemini", "antigravity-cli", "brain")
+    agentStorageRoots.antigravity.brainDir
   );
 
   return [
@@ -654,27 +677,33 @@ export function createUsageAdapters(
       "claude",
       resolveRoots(
         env.KMUX_CLAUDE_USAGE_DIR,
-        join(homeDirectory, ".claude", "projects")
-      )
+        agentStorageRoots.claude.projectsDir
+      ),
+      { watchRecursive }
     ),
     new FileUsageAdapter(
       "codex",
       resolveRoots(
         env.KMUX_CODEX_USAGE_DIR,
-        join(homeDirectory, ".codex", "sessions")
-      )
+        agentStorageRoots.codex.sessionsDir
+      ),
+      { watchRecursive }
     ),
     new FileUsageAdapter("gemini", geminiRoots, {
       geminiProjectRootsDir: resolveGeminiProjectRootsDir(
         geminiRoots,
-        homeDirectory
+        agentStorageRoots.gemini.historyDir
       ),
-      includeJson: true
+      includeJson: true,
+      watchRecursive
     }),
     new FileUsageAdapter("antigravity", antigravityRoots, {
       antigravityWorkspaceByConversationLoader: () =>
-        readAntigravityWorkspaceByConversation(homeDirectory),
-      includeHiddenDirs: true
+        readAntigravityWorkspaceByConversationFromRoot(
+          agentStorageRoots.antigravity.root
+        ),
+      includeHiddenDirs: true,
+      watchRecursive
     })
   ];
 }
@@ -682,12 +711,16 @@ export function createUsageAdapters(
 export async function scanUsageHistoryDays(options: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   fromMs: number;
   toMs: number;
 }): Promise<UsageHistoryDay[]> {
   const adapters = createUsageAdapters({
     env: options.env,
-    homeDir: options.homeDir
+    homeDir: options.homeDir,
+    agentStorageRoots: options.agentStorageRoots,
+    platform: options.platform
   });
   const bucketMap = new Map<
     string,
@@ -807,28 +840,34 @@ export async function scanUsageHistoryDays(options: {
     }));
 }
 
+function shouldUseRecursiveUsageWatch(platform: NodeJS.Platform): boolean {
+  return platform === "darwin" || platform === "win32";
+}
+
 function resolveRoots(
   overrideValue: string | undefined,
   fallbackRoot: string
 ): string[] {
-  const source = overrideValue?.trim() ? overrideValue : fallbackRoot;
-  return source
-    .split(delimiter)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => resolve(entry));
+  const overrideRoots = overrideValue?.trim()
+    ? overrideValue
+        .split(delimiter)
+        .map((entry) => entry.trim())
+        .filter((entry) => isAbsolute(entry))
+    : [];
+  const roots = overrideRoots.length > 0 ? overrideRoots : [fallbackRoot];
+  return roots.map((entry) => resolve(entry));
 }
 
 function resolveGeminiProjectRootsDir(
   geminiRoots: string[],
-  homeDirectory: string
+  defaultHistoryDir: string
 ): string {
   for (const root of geminiRoots) {
     if (root.endsWith("/tmp") || root.endsWith("\\tmp")) {
       return resolve(root, "..", "history");
     }
   }
-  return join(homeDirectory, ".gemini", "history");
+  return defaultHistoryDir;
 }
 
 function collectUsageSources(

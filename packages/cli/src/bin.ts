@@ -9,7 +9,9 @@ import { Command } from "commander";
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
 import { AGENT_HOOK_RPC_TIMEOUT_MS, makeId } from "@kmux/proto";
 
-const SOCKET_PATH = env.KMUX_SOCKET_PATH ?? `${env.HOME}/.kmux/control.sock`;
+import { resolveCliSocketPath } from "./socketPath";
+
+const SOCKET_PATH = resolveCliSocketPath({ env });
 
 function sendRpc(
   method: string,

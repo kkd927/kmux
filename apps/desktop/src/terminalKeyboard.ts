@@ -26,6 +26,13 @@ function isImeProcessKey(
   return event.keyCode === 229 || event.which === 229;
 }
 
+export function shouldDeferTerminalShortcutToIme(
+  event: Pick<TerminalKeyboardEventLike, "isComposing" | "keyCode" | "which">,
+  isComposing: boolean
+): boolean {
+  return isComposing || event.isComposing === true || isImeProcessKey(event);
+}
+
 function isTerminalEnterKey(
   event: Pick<TerminalKeyboardEventLike, "key" | "code" | "keyCode" | "which">
 ): boolean {
@@ -65,6 +72,9 @@ function resolveModifiedEnterSequence(
 export function resolveTerminalEnterRewrite(
   event: TerminalKeyboardEventLike
 ): TerminalEnterRewrite | null {
+  if (shouldDeferTerminalShortcutToIme(event, false)) {
+    return null;
+  }
   if (!isTerminalEnterKey(event)) {
     return null;
   }

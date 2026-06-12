@@ -12,6 +12,7 @@ import {
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  shouldDeferTerminalShortcutToIme,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme
 } from "./terminalRenderer";
@@ -228,6 +229,38 @@ describe("terminal renderer helpers", () => {
         })
       )
     ).toBeNull();
+    expect(
+      resolveTerminalEnterRewrite(
+        keyboardEvent({
+          ctrlKey: true,
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("defers terminal shortcut handling to active IME composition", () => {
+    expect(shouldDeferTerminalShortcutToIme(keyboardEvent(), true)).toBe(true);
+    expect(
+      shouldDeferTerminalShortcutToIme(
+        keyboardEvent({
+          isComposing: true
+        }),
+        false
+      )
+    ).toBe(true);
+    expect(
+      shouldDeferTerminalShortcutToIme(
+        keyboardEvent({
+          key: "Process",
+          keyCode: 229
+        }),
+        false
+      )
+    ).toBe(true);
+    expect(shouldDeferTerminalShortcutToIme(keyboardEvent(), false)).toBe(
+      false
+    );
   });
 
   it("leaves Alt Enter to xterm's native IME path", () => {

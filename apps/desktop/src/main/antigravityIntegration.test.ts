@@ -3,6 +3,7 @@ import {
   type ChildProcess
 } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,12 +11,15 @@ import {
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resolveAgentStorageRoots } from "@kmux/metadata";
+
 import {
+  antigravitySessionIndexPath,
   ensureAntigravityHooksInstalled,
   recordAntigravitySessionFromHook
 } from "./antigravityIntegration";
@@ -33,7 +37,53 @@ afterEach(() => {
   }
 });
 
+describe("antigravitySessionIndexPath", () => {
+  it("treats a blank KMUX_CONFIG_DIR as absent", () => {
+    expect(
+      antigravitySessionIndexPath("/home/test", {
+        KMUX_CONFIG_DIR: "   "
+      })
+    ).toBe("/home/test/.config/kmux/antigravity-sessions.json");
+  });
+
+  it("trims a configured KMUX_CONFIG_DIR before deriving the index path", () => {
+    expect(
+      antigravitySessionIndexPath("/home/test", {
+        KMUX_CONFIG_DIR: " /profiles/kmux/config "
+      })
+    ).toBe("/profiles/kmux/config/antigravity-sessions.json");
+  });
+
+  it("ignores relative config and home paths instead of deriving cwd-relative indexes", () => {
+    expect(
+      antigravitySessionIndexPath("relative-home", {
+        KMUX_CONFIG_DIR: " profiles/kmux/config "
+      })
+    ).toBe(join(homedir(), ".config", "kmux", "antigravity-sessions.json"));
+  });
+});
+
 describe("ensureAntigravityHooksInstalled", () => {
+  it("uses AgentStorageRoots for the Antigravity hooks path", () => {
+    const homeDir = createSandboxHome();
+    const storageHomeDir = createSandboxHome();
+    sandboxDirs.push(homeDir, storageHomeDir);
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+
+    const result = ensureAntigravityHooksInstalled(homeDir, {
+      agentStorageRoots: roots
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.hooksPath).toBe(roots.antigravity.hooksPath);
+    expect(existsSync(roots.antigravity.hooksPath)).toBe(true);
+    expect(existsSync(join(homeDir, ".gemini", "config", "hooks.json"))).toBe(
+      false
+    );
+  });
+
   it("installs a kmux-managed global Antigravity hook entry", () => {
     const homeDir = createSandboxHome();
     sandboxDirs.push(homeDir);
@@ -79,10 +129,14 @@ describe("ensureAntigravityHooksInstalled", () => {
     ).toContain("$_kmux_agent_bin_dir/kmux-agent-hook");
     expect(
       (managed.PreInvocation[0] as { command?: string }).command
-    ).toContain(`\${KMUX_SOCKET_PATH:-'${socketPath}'}`);
+    ).toContain(
+      `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
+    );
     expect(
       (managed.PreInvocation[0] as { command?: string }).command
-    ).toContain(`\${KMUX_AGENT_BIN_DIR:-'${agentBinDir}'}`);
+    ).toContain(
+      `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
+    );
     expect(
       (managed.PreInvocation[0] as { command?: string }).command
     ).toContain("antigravity PreInvocation");
@@ -95,7 +149,7 @@ describe("ensureAntigravityHooksInstalled", () => {
   });
 
   it(
-    "routes a global hook to kmux through installed fallback paths without inherited env",
+    "routes a global hook to kmux through installed fallback paths when inherited env is relative",
     async () => {
       const homeDir = createSandboxHome();
       sandboxDirs.push(homeDir);
@@ -155,6 +209,10 @@ describe("ensureAntigravityHooksInstalled", () => {
             "/Users/test/antigravity-project/.gemini/jetski/transcript.jsonl",
           artifactDirectoryPath:
             "/Users/test/antigravity-project/.gemini/jetski/artifacts"
+        },
+        {
+          KMUX_SOCKET_PATH: "relative.sock",
+          KMUX_AGENT_BIN_DIR: "relative-hooks"
         }
       );
 
@@ -245,15 +303,21 @@ describe("ensureAntigravityHooksInstalled", () => {
 
 function runHookCommand(
   command: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  envOverrides: NodeJS.ProcessEnv = {}
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...envOverrides,
       KMUX_NODE_PATH: process.execPath
     };
-    delete env.KMUX_SOCKET_PATH;
-    delete env.KMUX_AGENT_BIN_DIR;
+    if (!("KMUX_SOCKET_PATH" in envOverrides)) {
+      delete env.KMUX_SOCKET_PATH;
+    }
+    if (!("KMUX_AGENT_BIN_DIR" in envOverrides)) {
+      delete env.KMUX_AGENT_BIN_DIR;
+    }
     const child: ChildProcess = spawn("/bin/sh", ["-c", command], {
       env,
       stdio: ["pipe", "pipe", "pipe"]

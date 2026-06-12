@@ -17,7 +17,11 @@ import type {
   ExternalAgentSessionsSnapshot,
   SessionLaunchConfig
 } from "@kmux/proto";
-import { readAntigravityConversationMetadata } from "@kmux/metadata";
+import {
+  type AgentStorageRoots,
+  readAntigravityConversationMetadataFromRoot,
+  resolveAgentStorageRoots
+} from "@kmux/metadata";
 import {
   antigravitySessionIndexPath,
   readAntigravitySessionIndex
@@ -29,6 +33,7 @@ export interface ExternalSessionIndexerOptions {
   maxFilesPerVendor?: number;
   env?: NodeJS.ProcessEnv;
   commandAvailability?: (command: string) => boolean;
+  agentStorageRoots?: AgentStorageRoots;
   antigravitySessionIndexPath?: string;
 }
 
@@ -71,15 +76,31 @@ export function createExternalSessionIndexer(
   const maxFilesPerVendor =
     options.maxFilesPerVendor ?? DEFAULT_MAX_FILES_PER_VENDOR;
   const canRunCommand = createCommandAvailability(options);
+  const agentStorageRoots =
+    options.agentStorageRoots ??
+    resolveAgentStorageRoots({
+      homeDir: options.homeDir,
+      env: options.env
+    });
 
   function listRecords(currentNow: Date): ExternalSessionRecord[] {
     const cutoffMs = currentNow.getTime() - SESSION_LOOKBACK_MS;
     const records = [
-      ...listCodexSessions(options.homeDir, maxFilesPerVendor),
-      ...listGeminiSessions(options.homeDir, maxFilesPerVendor),
-      ...listClaudeSessions(options.homeDir, maxFilesPerVendor),
+      ...listCodexSessions(
+        agentStorageRoots.codex.sessionsDir,
+        maxFilesPerVendor
+      ),
+      ...listGeminiSessions(
+        agentStorageRoots.gemini.tmpDir,
+        agentStorageRoots.gemini.historyDir,
+        maxFilesPerVendor
+      ),
+      ...listClaudeSessions(
+        agentStorageRoots.claude.projectsDir,
+        maxFilesPerVendor
+      ),
       ...listAntigravitySessions(
-        options.homeDir,
+        agentStorageRoots.antigravity.root,
         resolveAntigravityIndexPath(options),
         maxFilesPerVendor
       )
@@ -121,7 +142,7 @@ function resolveAntigravityIndexPath(
 }
 
 function listAntigravitySessions(
-  homeDir: string,
+  antigravityRoot: string,
   indexPath: string,
   maxFiles: number
 ): ExternalSessionRecord[] {
@@ -160,9 +181,12 @@ function listAntigravitySessions(
     });
   };
 
-  for (const session of readAntigravityConversationMetadata(homeDir, {
-    maxConversationFiles: maxFiles
-  })) {
+  for (const session of readAntigravityConversationMetadataFromRoot(
+    antigravityRoot,
+    {
+      maxConversationFiles: maxFiles
+    }
+  )) {
     upsert({
       conversationId: session.conversationId,
       cwd: session.workspace,
@@ -197,10 +221,9 @@ function listAntigravitySessions(
 }
 
 function listCodexSessions(
-  homeDir: string,
+  root: string,
   maxFiles: number
 ): ExternalSessionRecord[] {
-  const root = join(homeDir, ".codex", "sessions");
   return collectCandidateFiles(
     root,
     (path) => basename(path).startsWith("rollout-") && path.endsWith(".jsonl")
@@ -276,11 +299,11 @@ function listCodexSessions(
 }
 
 function listGeminiSessions(
-  homeDir: string,
+  root: string,
+  historyRoot: string,
   maxFiles: number
 ): ExternalSessionRecord[] {
-  const root = join(homeDir, ".gemini", "tmp");
-  const projectRoots = readGeminiProjectRoots(homeDir);
+  const projectRoots = readGeminiProjectRoots(historyRoot);
   return collectCandidateFiles(root, (path) => {
     const name = basename(path);
     return (
@@ -318,10 +341,9 @@ function listGeminiSessions(
 }
 
 function listClaudeSessions(
-  homeDir: string,
+  root: string,
   maxFiles: number
 ): ExternalSessionRecord[] {
-  const root = join(homeDir, ".claude", "projects");
   return collectCandidateFiles(
     root,
     (path) => path.endsWith(".jsonl") && dirname(dirname(path)) === root
@@ -892,8 +914,7 @@ function readFileSuffix(path: string): string {
   }
 }
 
-function readGeminiProjectRoots(homeDir: string): Map<string, string> {
-  const root = join(homeDir, ".gemini", "history");
+function readGeminiProjectRoots(root: string): Map<string, string> {
   const projectRoots = new Map<string, string>();
   if (!existsSync(root)) {
     return projectRoots;

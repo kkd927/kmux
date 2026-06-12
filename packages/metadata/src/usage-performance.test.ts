@@ -155,7 +155,8 @@ describe("usage adapter performance", () => {
     mkdirSync(path.join(root, ".codex"), { recursive: true });
 
     const [, adapter] = createUsageAdapters({
-      homeDir: root
+      homeDir: root,
+      platform: "darwin"
     });
 
     const unwatch = adapter.watch(() => undefined);
@@ -163,6 +164,28 @@ describe("usage adapter performance", () => {
     expect(fs.watch).toHaveBeenCalledWith(
       path.join(root, ".codex"),
       { recursive: true },
+      expect.any(Function)
+    );
+
+    unwatch();
+    adapter.close();
+  });
+
+  it("uses a non-recursive watch policy on Linux", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-linux-watch-"));
+    cleanupPaths.push(root);
+    mkdirSync(path.join(root, ".codex"), { recursive: true });
+
+    const [, adapter] = createUsageAdapters({
+      homeDir: root,
+      platform: "linux"
+    });
+
+    const unwatch = adapter.watch(() => undefined);
+
+    expect(fs.watch).toHaveBeenCalledWith(
+      path.join(root, ".codex"),
+      { recursive: false },
       expect.any(Function)
     );
 

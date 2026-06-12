@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AppAction } from "@kmux/core";
+import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
+import { createFallbackRendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type {
   ImportedTerminalThemePalette,
   KmuxSettings,
@@ -31,6 +33,7 @@ import { Codicon } from "./components/Codicon";
 import { PaneTree } from "./components/PaneTree";
 import { RightSidebarHost } from "./components/RightSidebarHost";
 import { TitlebarUpdateAction } from "./components/TitlebarUpdateAction";
+import { TitlebarWindowControls } from "./components/TitlebarWindowControls";
 import { UsageDashboard } from "./components/UsageDashboard";
 import { ExternalSessionsPanelContainer } from "./components/ExternalSessionsPanel";
 import {
@@ -150,7 +153,13 @@ export function App(): JSX.Element {
   const terminalTypography = useShellSelector(
     (snapshot) => snapshot?.terminalTypography ?? null
   );
-  const isMac = navigator.userAgent.includes("Mac");
+  const [platformDescriptor, setPlatformDescriptor] =
+    useState<RendererPlatformDescriptor>(() =>
+      createFallbackRendererPlatformDescriptor(
+        navigator.userAgent.includes("Mac") ? "darwin" : "other"
+      )
+    );
+  const isMac = platformDescriptor.shortcutStyle === "mac-symbols";
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
@@ -171,6 +180,11 @@ export function App(): JSX.Element {
     useState<SurfaceTabDragPayload | null>(null);
   const [showWorkspaceShortcutHints, setShowWorkspaceShortcutHints] =
     useState(false);
+  const terminalFocusRequestTokenRef = useRef(0);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState<{
+    surfaceId: string;
+    token: number;
+  } | null>(null);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
   const [windowWidth, setWindowWidth] = useState(
     () => document.documentElement.clientWidth || window.innerWidth
@@ -296,6 +310,15 @@ export function App(): JSX.Element {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [workspaceRows, worktreeDialog]);
+
+  useEffect(() => {
+    void window.kmux
+      .getPlatform()
+      .then(setPlatformDescriptor)
+      .catch((error: unknown) => {
+        console.warn("[platform:get]", error);
+      });
+  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -479,7 +502,7 @@ export function App(): JSX.Element {
   });
 
   useGlobalShortcuts({
-    isMac,
+    keyboardPolicy: platformDescriptor.keyboard,
     viewRef,
     dismissibleUiStateRef,
     setShowWorkspaceShortcutHints,
@@ -495,6 +518,7 @@ export function App(): JSX.Element {
     openSettingsModal,
     beginWorkspaceRename,
     dispatch,
+    requestTerminalFocus,
     requestWorkspaceClose,
     withLatestActiveShortcutContext,
     requestPaneClose,
@@ -809,25 +833,16 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className={styles.window} data-platform={isMac ? "darwin" : "other"}>
+    <div
+      className={styles.window}
+      data-platform={isMac ? "darwin" : "other"}
+      data-window-chrome={platformDescriptor.windowChrome}
+    >
       <div className={styles.titlebar}>
         <div className={styles.titlebarLeft}>
-          {!isMac ? (
-            <div className={styles.trafficLights}>
-              <button
-                aria-label="Close window"
-                onClick={() => void window.kmux.windowControl("close")}
-              />
-              <button
-                aria-label="Minimize window"
-                onClick={() => void window.kmux.windowControl("minimize")}
-              />
-              <button
-                aria-label="Maximize window"
-                onClick={() => void window.kmux.windowControl("maximize")}
-              />
-            </div>
-          ) : null}
+          <TitlebarWindowControls
+            windowChrome={platformDescriptor.windowChrome}
+          />
           <div className={styles.titlebarTools}>
             <button
               aria-label="Toggle sidebar"
@@ -992,10 +1007,18 @@ export function App(): JSX.Element {
               workspace={tree}
               active={tree.id === activeWorkspacePaneTree?.id}
               settings={settings}
+              reservedSystemChords={
+                platformDescriptor.keyboard.reservedSystemChords
+              }
+              shortcutLabelStyle={platformDescriptor.keyboard.labelStyle}
+              copyModeSelectAllShortcut={
+                platformDescriptor.keyboard.copyModeSelectAllShortcut
+              }
               terminalTypography={terminalTypography}
               terminalTheme={resolvedTerminalTheme}
               colorTheme={resolvedColorTheme}
               searchSurfaceId={searchSurfaceId}
+              terminalFocusRequest={terminalFocusRequest}
               draggedSurfaceTab={draggedSurfaceTab}
               onSetSplitRatio={(splitNodeId, ratio) =>
                 void dispatch({
@@ -1092,7 +1115,8 @@ export function App(): JSX.Element {
         ) : null}
       </div>
       <AppOverlays
-        isMac={isMac}
+        shortcutLabelStyle={platformDescriptor.keyboard.labelStyle}
+        reservedSystemChords={platformDescriptor.keyboard.reservedSystemChords}
         paletteOpen={paletteOpen}
         paletteQuery={paletteQuery}
         paletteSelectedIndex={paletteSelectedIndex}
@@ -1189,6 +1213,14 @@ export function App(): JSX.Element {
 
   async function dispatch(action: AppAction): Promise<void> {
     await window.kmux.dispatch(action);
+  }
+
+  function requestTerminalFocus(surfaceId: string): void {
+    terminalFocusRequestTokenRef.current += 1;
+    setTerminalFocusRequest({
+      surfaceId,
+      token: terminalFocusRequestTokenRef.current
+    });
   }
 
   function clearWorkspaceDragState(): void {

@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resolveAgentStorageRoots } from "./agentStorage";
 import { createUsageAdapters, scanUsageHistoryDays } from "./usage";
 
 const cleanupPaths: string[] = [];
@@ -15,6 +16,175 @@ afterEach(() => {
 });
 
 describe("usage adapters", () => {
+  it("uses AgentStorageRoots for default vendor usage locations", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-home-"));
+    const storageHomeDir = mkdtempSync(
+      path.join(tmpdir(), "kmux-usage-storage-")
+    );
+    cleanupPaths.push(homeDir, storageHomeDir);
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+    const usageDir = path.join(roots.codex.sessionsDir, "2026", "04", "17");
+    mkdirSync(usageDir, { recursive: true });
+    writeFileSync(
+      path.join(usageDir, "rollout-2026-04-17T09-00-00-codex.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-storage-root-session",
+          cwd: "/work/project"
+        }
+      })}\n${JSON.stringify({
+        timestamp: "2026-04-17T09:01:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              total_tokens: 15
+            }
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const codexAdapter = createUsageAdapters({
+      homeDir,
+      agentStorageRoots: roots
+    }).find((adapter) => adapter.vendor === "codex");
+
+    expect(codexAdapter).toBeTruthy();
+    const result = await codexAdapter!.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+    expect(result.samples).toEqual([
+      expect.objectContaining({
+        vendor: "codex",
+        sessionId: "codex-storage-root-session",
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15
+      })
+    ]);
+  });
+
+  it("ignores blank or relative usage root overrides", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-home-"));
+    cleanupPaths.push(homeDir);
+    const roots = resolveAgentStorageRoots({
+      homeDir
+    });
+    const usageDir = path.join(roots.codex.sessionsDir, "2026", "04", "17");
+    mkdirSync(usageDir, { recursive: true });
+    writeFileSync(
+      path.join(usageDir, "rollout-2026-04-17T10-00-00-codex.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-04-17T10:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-default-root-session",
+          cwd: "/work/project"
+        }
+      })}\n${JSON.stringify({
+        timestamp: "2026-04-17T10:01:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 7,
+              output_tokens: 3,
+              total_tokens: 10
+            }
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const codexAdapter = createUsageAdapters({
+      env: {
+        KMUX_CODEX_USAGE_DIR: `   ${path.delimiter}relative/sessions`
+      },
+      homeDir
+    }).find((adapter) => adapter.vendor === "codex");
+
+    const result = await codexAdapter!.initialScan(
+      startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime())
+    );
+    expect(result.samples).toEqual([
+      expect.objectContaining({
+        vendor: "codex",
+        sessionId: "codex-default-root-session",
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10
+      })
+    ]);
+  });
+
+  it("uses only absolute entries from usage root override lists", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-home-"));
+    const usageRoot = mkdtempSync(path.join(tmpdir(), "kmux-usage-override-"));
+    cleanupPaths.push(homeDir, usageRoot);
+    const usageDir = path.join(usageRoot, "2026", "04", "17");
+    mkdirSync(usageDir, { recursive: true });
+    writeFileSync(
+      path.join(usageDir, "rollout-2026-04-17T11-00-00-codex.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-04-17T11:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-absolute-override-session",
+          cwd: "/work/project"
+        }
+      })}\n${JSON.stringify({
+        timestamp: "2026-04-17T11:01:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 5,
+              output_tokens: 2,
+              total_tokens: 7
+            }
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const codexAdapter = createUsageAdapters({
+      env: {
+        KMUX_CODEX_USAGE_DIR: [
+          "relative/sessions",
+          ` ${usageRoot} `,
+          "also-relative"
+        ].join(path.delimiter)
+      },
+      homeDir
+    }).find((adapter) => adapter.vendor === "codex");
+
+    const result = await codexAdapter!.initialScan(
+      startOfLocalDay(new Date("2026-04-17T11:00:00.000Z").getTime())
+    );
+    expect(result.samples).toEqual([
+      expect.objectContaining({
+        vendor: "codex",
+        sessionId: "codex-absolute-override-session",
+        inputTokens: 5,
+        outputTokens: 2,
+        totalTokens: 7
+      })
+    ]);
+  });
+
   it("parses JSONL usage files incrementally and resets on day rollover", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-adapter-"));
     cleanupPaths.push(root);
@@ -853,20 +1023,21 @@ describe("usage adapters", () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-"));
     cleanupPaths.push(root);
     const homeDir = path.join(root, "home");
+    const storageHomeDir = path.join(root, "storage-home");
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
     const conversationId = "4814da0a-b93c-41cc-837d-8a747e9d5b2e";
     const workspace = "/tmp/kmux-antigravity-real";
     const logDir = path.join(
-      homeDir,
-      ".gemini",
-      "antigravity-cli",
-      "brain",
+      roots.antigravity.brainDir,
       conversationId,
       ".system_generated",
       "logs"
     );
     mkdirSync(logDir, { recursive: true });
     writeFileSync(
-      path.join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
+      roots.antigravity.historyPath,
       `${JSON.stringify({
         display: "hello",
         timestamp: new Date("2026-06-02T03:55:54.000Z").getTime(),
@@ -920,7 +1091,8 @@ describe("usage adapters", () => {
     );
 
     const [, , , antigravityAdapter] = createUsageAdapters({
-      homeDir
+      homeDir,
+      agentStorageRoots: roots
     });
 
     const initial = await antigravityAdapter.initialScan(

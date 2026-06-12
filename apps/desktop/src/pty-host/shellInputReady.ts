@@ -1,4 +1,6 @@
-import type { Id, PtyEvent } from "@kmux/proto";
+import type { Id } from "@kmux/proto";
+
+import type { PtyEvent } from "../shared/ptyProtocol";
 
 import { SHELL_READY_OSC_PAYLOAD } from "./shellIntegration";
 

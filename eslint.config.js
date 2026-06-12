@@ -13,7 +13,9 @@ export default [
       "**/test-results/**",
       ".kmux/**",
       "apps/desktop/out/**",
-      "apps/desktop/dist/**"
+      "apps/desktop/dist/**",
+      "apps/desktop/release/**",
+      "release-assets/**"
     ]
   },
   js.configs.recommended,

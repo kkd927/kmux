@@ -2,6 +2,7 @@ import { clipboard, contextBridge, ipcRenderer } from "electron";
 import { readFileSync, statSync } from "node:fs";
 
 import type { AppAction } from "@kmux/core";
+import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import {
   KMUX_PROFILE_LOG_PATH_ENV,
@@ -47,6 +48,9 @@ export type TerminalEvent =
   | { type: "exit"; payload: SurfaceExitPayload };
 
 const api = {
+  getPlatform(): Promise<RendererPlatformDescriptor> {
+    return ipcRenderer.invoke("kmux:platform:get");
+  },
   getShellState(): Promise<ShellStoreSnapshot> {
     return ipcRenderer.invoke("kmux:shell:get");
   },
@@ -372,6 +376,14 @@ function readClipboardBuffer(format: string): Uint8Array | null {
 }
 
 const testApi = {
+  getRuntimeEnv(): Record<string, string> {
+    return {
+      APPIMAGE: process.env.APPIMAGE ?? "",
+      APPIMAGE_EXTRACT_AND_RUN: process.env.APPIMAGE_EXTRACT_AND_RUN ?? "",
+      KMUX_PACKAGED_EXECUTABLE_PATH:
+        process.env.KMUX_PACKAGED_EXECUTABLE_PATH ?? ""
+    };
+  },
   snapshotSurface(
     surfaceId: string,
     options?: SurfaceSnapshotOptions

@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import { resolveAgentStorageRoots } from "@kmux/metadata";
 
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 
@@ -25,11 +28,35 @@ afterEach(() => {
 });
 
 describe("ensureClaudeHooksInstalled", () => {
+  it("uses AgentStorageRoots for the Claude settings path", () => {
+    const homeDir = createSandboxHome();
+    const storageHomeDir = createSandboxHome();
+    sandboxDirs.push(homeDir, storageHomeDir);
+    const roots = resolveAgentStorageRoots({
+      homeDir: storageHomeDir
+    });
+
+    const result = ensureClaudeHooksInstalled(homeDir, {
+      agentStorageRoots: roots
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.settingsPath).toBe(roots.claude.settingsPath);
+    expect(existsSync(roots.claude.settingsPath)).toBe(true);
+    expect(existsSync(join(homeDir, ".claude", "settings.json"))).toBe(false);
+  });
+
   it("installs kmux-managed Claude hooks into the user settings file", () => {
     const homeDir = createSandboxHome();
     sandboxDirs.push(homeDir);
 
-    const result = ensureClaudeHooksInstalled(homeDir);
+    const socketPath = join(homeDir, ".kmux", "control.sock");
+    const agentBinDir = join(homeDir, ".local", "share", "kmux", "hooks");
+
+    const result = ensureClaudeHooksInstalled(homeDir, {
+      socketPath,
+      agentBinDir
+    });
 
     expect(result.changed).toBe(true);
     const settingsPath = join(homeDir, ".claude", "settings.json");
@@ -53,7 +80,21 @@ describe("ensureClaudeHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude PostToolUse || true'
+          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude PostToolUse || true'
+        )
+      })
+    ]);
+    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
+      expect.objectContaining({
+        command: expect.stringContaining(
+          `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
+        )
+      })
+    ]);
+    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
+      expect.objectContaining({
+        command: expect.stringContaining(
+          `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
         )
       })
     ]);
@@ -62,7 +103,7 @@ describe("ensureClaudeHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude UserPromptSubmit || true'
+          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude UserPromptSubmit || true'
         )
       })
     ]);
@@ -70,7 +111,7 @@ describe("ensureClaudeHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude SessionEnd || true'
+          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude SessionEnd || true'
         )
       })
     ]);
@@ -78,7 +119,7 @@ describe("ensureClaudeHooksInstalled", () => {
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          '"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude Stop || true'
+          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude Stop || true'
         )
       })
     ]);

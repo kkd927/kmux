@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { basename } from "node:path";
 import { promisify } from "node:util";
 
 import type { UsageVendor } from "./usage";
@@ -139,8 +138,11 @@ function parseProcessTable(output: string): ProcessEntry[] {
     );
 }
 
+const MAX_COMMAND_TOKENS_TO_INSPECT = 12;
+const SCRIPT_EXTENSIONS = [".js", ".cjs", ".mjs"] as const;
+
 function detectVendorFromCommandLine(commandLine: string): UsageVendor {
-  const commandNames = tokenizeProcessCommandLine(commandLine);
+  const commandNames = commandNameHints(commandLine);
 
   if (commandNames.includes("codex")) {
     return "codex";
@@ -161,16 +163,74 @@ function detectVendorFromCommandLine(commandLine: string): UsageVendor {
   return "unknown";
 }
 
-function tokenizeProcessCommandLine(commandLine: string): string[] {
-  return commandLine
-    .split(/\s+/u)
-    .filter(Boolean)
-    .filter((token) => !token.startsWith("-"))
-    .slice(0, 4)
-    .map(stripShellQuotes)
-    .map((token) => basename(token))
-    .map((token) => token.trim().toLowerCase())
-    .filter(Boolean);
+function commandNameHints(commandLine: string): string[] {
+  return uniqueStrings(
+    commandLine
+      .split(/\s+/u)
+      .filter(Boolean)
+      .filter((token) => !token.startsWith("-"))
+      .slice(0, MAX_COMMAND_TOKENS_TO_INSPECT)
+      .flatMap(commandTokenNameHints)
+  );
+}
+
+function commandTokenNameHints(rawToken: string): string[] {
+  const token = stripShellQuotes(rawToken).trim().toLowerCase();
+  if (!token || token.startsWith("-") || isEnvironmentAssignment(token)) {
+    return [];
+  }
+
+  const basename = pathBasename(token);
+  return uniqueStrings([
+    basename,
+    stripScriptExtension(basename),
+    nodeModulesPackageBasename(token)
+  ]);
+}
+
+function pathBasename(value: string): string {
+  const segments = value.split(/[\\/]+/u).filter(Boolean);
+  return segments.at(-1) ?? value;
+}
+
+function stripScriptExtension(value: string): string {
+  const extension = SCRIPT_EXTENSIONS.find((candidate) =>
+    value.endsWith(candidate)
+  );
+  return extension ? value.slice(0, -extension.length) : value;
+}
+
+function nodeModulesPackageBasename(value: string): string {
+  const segments = value.split(/[\\/]+/u).filter(Boolean);
+  const nodeModulesIndex = segments.lastIndexOf("node_modules");
+  if (nodeModulesIndex < 0) {
+    return "";
+  }
+
+  const packageName = segments[nodeModulesIndex + 1];
+  if (!packageName) {
+    return "";
+  }
+
+  if (packageName.startsWith("@")) {
+    return segments[nodeModulesIndex + 2] ?? "";
+  }
+
+  return packageName;
+}
+
+function isEnvironmentAssignment(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(value);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 function stripShellQuotes(value: string): string {

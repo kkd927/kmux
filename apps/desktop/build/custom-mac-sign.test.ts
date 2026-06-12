@@ -25,6 +25,8 @@ const {
   shouldRequireSigning
 } = customMacSignModule._test;
 
+const macOnlyIt = process.platform === "darwin" ? it : it.skip;
+
 async function createFrameworkFixture() {
   const root = await mkdtemp(join(tmpdir(), "kmux-custom-sign-"));
   const appPath = join(root, "Fixture.app");
@@ -114,7 +116,7 @@ describe("custom-mac-sign", () => {
     }
   });
 
-  it("shrinks Electron.app signing to a code-only unique set", async () => {
+  macOnlyIt("shrinks Electron.app signing to a code-only unique set", async () => {
     const electronAppPath = resolve("node_modules/electron/dist/Electron.app");
     await access(electronAppPath);
 

@@ -15,11 +15,16 @@ import {
 } from "./nodeSmoothnessProfile";
 
 describe("smoothness profiling", () => {
-  it("is enabled when a profile log path is configured", () => {
+  it("is enabled only when an absolute profile log path is configured", () => {
     expect(isSmoothnessProfileEnabled({})).toBe(false);
     expect(
       isSmoothnessProfileEnabled({
         [KMUX_PROFILE_LOG_PATH_ENV]: ""
+      })
+    ).toBe(false);
+    expect(
+      isSmoothnessProfileEnabled({
+        [KMUX_PROFILE_LOG_PATH_ENV]: "logs/kmux-smoothness.jsonl"
       })
     ).toBe(false);
     expect(
@@ -32,6 +37,8 @@ describe("smoothness profiling", () => {
   it("resolves directory-like profile paths to the default JSONL file", () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-profile-test-"));
     try {
+      expect(resolveNodeSmoothnessProfileLogPath("")).toBe(null);
+      expect(resolveNodeSmoothnessProfileLogPath("profile")).toBe(null);
       expect(resolveNodeSmoothnessProfileLogPath(sandbox)).toBe(
         join(sandbox, DEFAULT_SMOOTHNESS_PROFILE_FILENAME)
       );
@@ -46,6 +53,19 @@ describe("smoothness profiling", () => {
     } finally {
       rmSync(sandbox, { force: true, recursive: true });
     }
+  });
+
+  it("does not enable the recorder for blank or relative profile paths", () => {
+    expect(
+      createNodeSmoothnessProfileRecorder({
+        [KMUX_PROFILE_LOG_PATH_ENV]: "   "
+      }).enabled
+    ).toBe(false);
+    expect(
+      createNodeSmoothnessProfileRecorder({
+        [KMUX_PROFILE_LOG_PATH_ENV]: "logs/kmux-smoothness.jsonl"
+      }).enabled
+    ).toBe(false);
   });
 
   it("writes profile records as JSON lines when enabled", () => {

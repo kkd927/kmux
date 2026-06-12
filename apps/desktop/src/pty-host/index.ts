@@ -11,10 +11,9 @@ import { join } from "node:path";
 
 import type {
   Id,
-  PtyEvent,
-  PtyRequest,
   SurfaceSnapshotPayload
 } from "@kmux/proto";
+import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
 import { encodeTerminalKeyInput } from "./terminalInput";
@@ -25,26 +24,15 @@ import {
   type Osc99NotificationState
 } from "./terminalNotifications";
 import { resolveOsc7Cwd } from "./osc7";
-import {
-  SHELL_READY_OSC,
-  prepareShellIntegrationLaunch,
-  shouldApplyShellIntegration
-} from "./shellIntegration";
+import { SHELL_READY_OSC } from "./shellIntegration";
 import {
   armShellReadyFallback,
   disposeShellReadyFallback,
   isShellReadyOscPayload,
   markShellInputReady
 } from "./shellInputReady";
-import {
-  resolveDefaultShellArgs,
-  shouldStripShellManagedEnv
-} from "./shellLaunch";
-import { buildSessionEnv } from "./sessionEnv";
-import {
-  PTY_STDOUT_LOGS_ENV,
-  logDiagnostics
-} from "../shared/diagnostics";
+import { resolvePtySpawnLaunch } from "./ptySpawnLaunch";
+import { PTY_STDOUT_LOGS_ENV, logDiagnostics } from "../shared/diagnostics";
 import {
   TERMINAL_LIVE_SCROLLBACK_LINES,
   TERMINAL_RESTORE_SCROLLBACK_LINES
@@ -55,6 +43,7 @@ import {
 } from "../shared/nodeSmoothnessProfile";
 import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
+import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import { OutputBatcher } from "./outputBatcher";
 import { handleTerminalResizeRequest } from "./resizeRuntime";
 import { SnapshotCache } from "./snapshotCache";
@@ -179,11 +168,14 @@ function recordPtyChunk(record: SessionRecord, chunk: string): void {
     return;
   }
   const bytes = Buffer.byteLength(chunk, "utf8");
-  ptyBucket.record(`${record.surfaceId}\u0000${record.sessionId}`, (details) => {
-    details.chunks += 1;
-    details.bytes += bytes;
-    details.maxChunkBytes = Math.max(details.maxChunkBytes, bytes);
-  });
+  ptyBucket.record(
+    `${record.surfaceId}\u0000${record.sessionId}`,
+    (details) => {
+      details.chunks += 1;
+      details.bytes += bytes;
+      details.maxChunkBytes = Math.max(details.maxChunkBytes, bytes);
+    }
+  );
 }
 
 function appendRawOutputTail(record: SessionRecord, chunk: string): void {
@@ -210,13 +202,7 @@ function createRawOutputHistory(
   }
 
   try {
-    const root =
-      process.env.KMUX_RUNTIME_DIR ?? join(process.cwd(), ".kmux/dev/runtime");
-    const dir = join(
-      root,
-      "pty-raw",
-      `${safePathSegment(sessionId)}-${safePathSegment(surfaceId)}`
-    );
+    const dir = resolveRawOutputHistoryDir(sessionId, surfaceId);
     mkdirSync(dir, { recursive: true });
     const rawOutputLogPath = join(dir, "stream.ansi");
     const rawOutputIndexPath = join(dir, "chunks.jsonl");
@@ -231,10 +217,6 @@ function createRawOutputHistory(
     });
     return undefined;
   }
-}
-
-function safePathSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9_.-]/g, "_");
 }
 
 function appendRawOutputHistory(
@@ -357,39 +339,18 @@ function sendTerminalNotification(
   });
 }
 
-function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
+function spawnSession(
+  request: Extract<PtyRequest, { type: "spawn" }>
+): void {
   const pty = resolvePtyModule();
-  const shell = request.spec.launch.shell || process.env.SHELL || "/bin/zsh";
-  const args =
-    request.spec.launch.args ??
-    resolveDefaultShellArgs(shell, process.platform);
-  const stripShellManagedEnv = shouldStripShellManagedEnv(
-    shell,
-    request.spec.launch.args,
-    process.platform
-  );
-  const env = buildSessionEnv(
-    process.env,
-    request.spec.launch.env,
-    request.spec.env,
-    {
-      stripShellManagedEnv
-    }
-  );
-  const preparedLaunch = prepareShellIntegrationLaunch(shell, args, env, {
-    enabled: shouldApplyShellIntegration(
-      shell,
-      request.spec.launch.args,
-      process.platform
-    )
-  });
+  const preparedLaunch = resolvePtySpawnLaunch(request, process.env);
   let ptyProcess: PtyModule.IPty;
   try {
     ptyProcess = pty.spawn(preparedLaunch.shellPath, preparedLaunch.args, {
       name: "xterm-256color",
       cols: request.spec.cols,
       rows: request.spec.rows,
-      cwd: request.spec.launch.cwd ?? process.env.HOME,
+      cwd: preparedLaunch.cwd,
       env: preparedLaunch.env
     });
   } catch (error) {
@@ -397,7 +358,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     send({
       type: "error",
       sessionId: request.spec.sessionId,
-      message: `session spawn failed for ${shell}: ${errorMessage}`
+      message: `session spawn failed for ${preparedLaunch.shellPath}: ${errorMessage}`
     });
     send({
       type: "exit",
@@ -427,7 +388,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   const record: SessionRecord = {
     sessionId: request.spec.sessionId,
     surfaceId: request.spec.surfaceId,
-    cwd: request.spec.launch.cwd,
+    cwd: preparedLaunch.cwd,
     title: request.spec.launch.title || request.spec.surfaceId,
     pty: ptyProcess,
     terminal,

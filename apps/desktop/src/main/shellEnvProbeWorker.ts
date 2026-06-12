@@ -1,4 +1,5 @@
 import type * as PtyModule from "node-pty";
+import { isAbsolute } from "node:path";
 
 import { loadNodePty } from "../pty-host/nodePtyLoader";
 
@@ -6,6 +7,7 @@ interface ShellEnvProbeWorkerRequest {
   type: "probe";
   shellPath: string;
   args: string[];
+  cwd?: string;
   env: NodeJS.ProcessEnv;
 }
 
@@ -76,7 +78,7 @@ async function runProbe(request: ShellEnvProbeWorkerRequest): Promise<string> {
         name: "xterm-256color",
         cols: 80,
         rows: 24,
-        cwd: request.env.HOME ?? process.cwd(),
+        cwd: resolveProbeCwd(request),
         env: request.env
       });
     } catch (error) {
@@ -102,6 +104,18 @@ async function runProbe(request: ShellEnvProbeWorkerRequest): Promise<string> {
       );
     });
   });
+}
+
+function resolveProbeCwd(request: ShellEnvProbeWorkerRequest): string {
+  const requestedCwd = request.cwd?.trim();
+  if (requestedCwd && isAbsolute(requestedCwd)) {
+    return requestedCwd;
+  }
+  const homeDir = request.env.HOME?.trim();
+  if (homeDir && isAbsolute(homeDir)) {
+    return homeDir;
+  }
+  return process.cwd();
 }
 
 process.once("message", async (message: ShellEnvProbeWorkerRequest) => {

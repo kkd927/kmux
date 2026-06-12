@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 
+import { buildPlatformKeyboardPolicy } from "../../../shared/platform/keyboardPolicy";
+
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn(() => ({
     proposeDimensions: () => ({ cols: 120, rows: 40 })
@@ -84,6 +86,7 @@ vi.mock("@xterm/xterm", () => ({
   })
 }));
 
+import { Terminal } from "@xterm/xterm";
 import { TerminalPane } from "./TerminalPane";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 
@@ -141,6 +144,9 @@ function createProps(surfaceId: string): TerminalPaneProps {
     surfaces: [surface],
     activeSurfaceId: surfaceId,
     settings: createSettings(),
+    reservedSystemChords: [],
+    shortcutLabelStyle: "text",
+    copyModeSelectAllShortcut: "Ctrl+A",
     terminalTypography: {
       stackHash: "test-stack",
       textFontFamily: "JetBrains Mono",
@@ -187,9 +193,11 @@ function createProps(surfaceId: string): TerminalPaneProps {
 describe("TerminalPane visibility cleanup", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
+  let windowFocus: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    windowFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
     (
       globalThis as typeof globalThis & { ResizeObserver: unknown }
     ).ResizeObserver = MockResizeObserver;
@@ -238,6 +246,7 @@ describe("TerminalPane visibility cleanup", () => {
       root.unmount();
     });
     terminalInstanceStore.releaseAll();
+    windowFocus.mockRestore();
     container.remove();
   });
 
@@ -255,11 +264,231 @@ describe("TerminalPane visibility cleanup", () => {
     });
 
     expect(
-      container.querySelector("[data-testid='terminal-shell-loading-surface_1']")
+      container.querySelector(
+        "[data-testid='terminal-shell-loading-surface_1']"
+      )
     ).toBeNull();
     expect(container.textContent).not.toContain("Starting shell");
     expect(
       container.querySelector("[data-testid='terminal-surface_1']")
     ).not.toBeNull();
+  });
+
+  it("passes reserved system chords through terminal shortcuts", async () => {
+    const policy = buildPlatformKeyboardPolicy({
+      platform: "linux",
+      labelStyle: "text"
+    });
+    const props = createProps("surface_1");
+    props.reservedSystemChords = policy.reservedSystemChords;
+    props.settings = {
+      ...props.settings,
+      shortcuts: {
+        ...props.settings.shortcuts,
+        "terminal.search": "Ctrl+Alt+T"
+      }
+    };
+    const onToggleSearch = vi.fn();
+    props.onToggleSearch = onToggleSearch;
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    expect(terminalHost).not.toBeNull();
+    const event = new KeyboardEvent("keydown", {
+      key: "t",
+      code: "KeyT",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    act(() => {
+      terminalHost!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onToggleSearch).not.toHaveBeenCalled();
+  });
+
+  it("keeps non-reserved terminal shortcuts active", async () => {
+    const policy = buildPlatformKeyboardPolicy({
+      platform: "linux",
+      labelStyle: "text"
+    });
+    const props = createProps("surface_1");
+    props.reservedSystemChords = policy.reservedSystemChords;
+    props.settings = {
+      ...props.settings,
+      shortcuts: {
+        ...props.settings.shortcuts,
+        "terminal.search": "Ctrl+Alt+W"
+      }
+    };
+    const onToggleSearch = vi.fn();
+    props.onToggleSearch = onToggleSearch;
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    expect(terminalHost).not.toBeNull();
+    const event = new KeyboardEvent("keydown", {
+      key: "w",
+      code: "KeyW",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    act(() => {
+      terminalHost!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onToggleSearch).toHaveBeenCalledWith("surface_1");
+  });
+
+  it("uses the Linux copy-mode select-all binding and label", async () => {
+    const policy = buildPlatformKeyboardPolicy({
+      platform: "linux",
+      labelStyle: "text"
+    });
+    const props = createProps("surface_1");
+    props.reservedSystemChords = policy.reservedSystemChords;
+    props.shortcutLabelStyle = policy.labelStyle;
+    props.copyModeSelectAllShortcut = policy.copyModeSelectAllShortcut;
+    props.settings = {
+      ...props.settings,
+      shortcuts: {
+        ...props.settings.shortcuts,
+        "terminal.copyMode": "Ctrl+Shift+M"
+      }
+    };
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    expect(terminalHost).not.toBeNull();
+
+    act(() => {
+      terminalHost!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "m",
+          code: "KeyM",
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(container.textContent).toContain("Ctrl + A selects all");
+
+    const ctrlA = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    act(() => {
+      terminalHost!.dispatchEvent(ctrlA);
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { selectAll: ReturnType<typeof vi.fn> }
+      | undefined;
+    expect(ctrlA.defaultPrevented).toBe(true);
+    expect(terminal?.selectAll).toHaveBeenCalledOnce();
+  });
+
+  it("defers terminal shortcuts to active IME composition", async () => {
+    const policy = buildPlatformKeyboardPolicy({
+      platform: "linux",
+      labelStyle: "text"
+    });
+    const props = createProps("surface_1");
+    props.reservedSystemChords = policy.reservedSystemChords;
+    props.settings = {
+      ...props.settings,
+      shortcuts: {
+        ...props.settings.shortcuts,
+        "terminal.search": "Ctrl+Alt+W"
+      }
+    };
+    const onToggleSearch = vi.fn();
+    props.onToggleSearch = onToggleSearch;
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    const terminalTextarea = container.querySelector(
+      "[data-testid='terminal-surface_1'] textarea"
+    );
+    expect(terminalHost).not.toBeNull();
+    expect(terminalTextarea).not.toBeNull();
+
+    act(() => {
+      terminalTextarea!.dispatchEvent(
+        new Event("compositionstart", { bubbles: true })
+      );
+    });
+
+    const composingEvent = new KeyboardEvent("keydown", {
+      key: "w",
+      code: "KeyW",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    act(() => {
+      terminalHost!.dispatchEvent(composingEvent);
+    });
+
+    expect(composingEvent.defaultPrevented).toBe(false);
+    expect(onToggleSearch).not.toHaveBeenCalled();
+
+    act(() => {
+      terminalTextarea!.dispatchEvent(
+        new Event("compositionend", { bubbles: true })
+      );
+    });
+
+    const afterCompositionEvent = new KeyboardEvent("keydown", {
+      key: "w",
+      code: "KeyW",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    act(() => {
+      terminalHost!.dispatchEvent(afterCompositionEvent);
+    });
+
+    expect(afterCompositionEvent.defaultPrevented).toBe(true);
+    expect(onToggleSearch).toHaveBeenCalledWith("surface_1");
   });
 });

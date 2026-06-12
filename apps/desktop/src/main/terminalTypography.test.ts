@@ -5,12 +5,71 @@ import {
 
 import {
   TerminalTypographyController,
-  createStaticFontInventoryProvider
+  createFontInventoryProvider,
+  createStaticFontInventoryProvider,
+  parseFontConfigFamilies
 } from "./terminalTypography";
 
 describe("terminal typography controller", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("parses fontconfig family output from Linux fc-list", () => {
+    expect(
+      parseFontConfigFamilies(
+        [
+          "JetBrains Mono,JetBrainsMono Nerd Font Mono",
+          "Noto Sans",
+          "JetBrains Mono",
+          ""
+        ].join("\n")
+      )
+    ).toEqual(["JetBrains Mono", "JetBrainsMono Nerd Font Mono", "Noto Sans"]);
+  });
+
+  it("uses fc-list for Linux font inventory", async () => {
+    const execFile = vi.fn(async () => ({
+      stdout: "JetBrains Mono,JetBrainsMono Nerd Font Mono\nNoto Sans\n"
+    }));
+    const provider = createFontInventoryProvider(
+      { PATH: "/usr/bin" },
+      "linux",
+      execFile
+    );
+
+    await expect(provider.listFontFamilies()).resolves.toEqual([
+      "JetBrains Mono",
+      "JetBrainsMono Nerd Font Mono",
+      "Noto Sans"
+    ]);
+    expect(execFile).toHaveBeenCalledWith(
+      "fc-list",
+      ["--format", "%{family}\n"],
+      expect.objectContaining({
+        env: { PATH: "/usr/bin" }
+      })
+    );
+  });
+
+  it("falls back to pending typography state when Linux fc-list is unavailable", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const provider = createFontInventoryProvider(
+      {},
+      "linux",
+      vi.fn(async () => {
+        throw new Error("fc-list unavailable");
+      })
+    );
+    const controller = new TerminalTypographyController({
+      initialSettings: createDefaultTerminalTypographySettings(),
+      fontInventoryProvider: provider,
+      shouldLogInventoryErrors: () => false
+    });
+
+    await expect(controller.listFontFamilies()).resolves.toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(controller.getViewModel().status).toBe("pending");
   });
 
   it("always includes the built-in glyph font and appends compatible installed fonts", async () => {

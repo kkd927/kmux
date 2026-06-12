@@ -69,6 +69,29 @@ describe("settings json opener", () => {
     expect(shell.showItemInFolder).not.toHaveBeenCalled();
   });
 
+  it("uses shell.openPath directly on Linux", async () => {
+    const shell = {
+      openPath: vi.fn(async () => ""),
+      showItemInFolder: vi.fn()
+    };
+    const openWithTextEditor = vi.fn(async () => "");
+
+    const result = await openSettingsJsonFile({
+      nodeEnv: "production",
+      platform: "linux",
+      settingsPath: "/home/test/.config/kmux/settings.json",
+      shell,
+      openWithTextEditor
+    });
+
+    expect(result).toEqual({ action: "opened" });
+    expect(openWithTextEditor).not.toHaveBeenCalled();
+    expect(shell.openPath).toHaveBeenCalledWith(
+      "/home/test/.config/kmux/settings.json"
+    );
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
+  });
+
   it("does not launch external applications during e2e test runs", async () => {
     const shell = {
       openPath: vi.fn(async () => ""),

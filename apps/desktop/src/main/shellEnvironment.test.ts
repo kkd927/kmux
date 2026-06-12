@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  buildShellLaunchPolicy,
   buildShellEnvProbeArgs,
   buildShellEnvProbeInvocation,
   parseShellEnvOutput,
@@ -50,6 +51,64 @@ describe("shell environment resolver", () => {
     expect(resolveShellPath(undefined, {}, "linux", "")).toBe("/bin/bash");
   });
 
+  it("builds a macOS launch policy with login shell args and shell integration", () => {
+    const policy = buildShellLaunchPolicy({
+      defaultShellPath: "/bin/zsh",
+      platform: "darwin",
+      enableShellIntegration: true,
+      socketPath: "/tmp/kmux.sock",
+      nodePath: "/Applications/kmux.app/Contents/MacOS/kmux",
+      agentHookBinDir: "/Users/test/.local/share/kmux/hooks",
+      agentWrapperBinDir: "/Users/test/.local/share/kmux/wrappers"
+    });
+
+    expect(policy).toEqual({
+      defaultShellPath: "/bin/zsh",
+      defaultShellArgs: ["-l"],
+      stripManagedEnv: true,
+      integration: {
+        enabled: true,
+        mode: "posix-wrapper"
+      },
+      agentPath: {
+        helperBinDir: "/Users/test/.local/share/kmux/hooks",
+        wrapperBinDir: "/Users/test/.local/share/kmux/wrappers",
+        prependWrapperToPath: true
+      },
+      hookEnv: {
+        KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+        KMUX_AGENT_BIN_DIR: "/Users/test/.local/share/kmux/hooks",
+        KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"
+      }
+    });
+  });
+
+  it("builds a Linux launch policy without shell rc integration", () => {
+    const policy = buildShellLaunchPolicy({
+      defaultShellPath: "/bin/bash",
+      launchShell: "/usr/bin/fish",
+      platform: "linux",
+      enableShellIntegration: false,
+      socketPath: "/run/user/1000/kmux/control.sock",
+      nodePath: "/opt/kmux/kmux",
+      agentHookBinDir: "/home/test/.local/share/kmux/hooks",
+      agentWrapperBinDir: "/home/test/.local/share/kmux/wrappers"
+    });
+
+    expect(policy.defaultShellPath).toBe("/usr/bin/fish");
+    expect(policy.defaultShellArgs).toEqual([]);
+    expect(policy.stripManagedEnv).toBe(false);
+    expect(policy.integration).toEqual({
+      enabled: false,
+      mode: "none"
+    });
+    expect(policy.hookEnv).toMatchObject({
+      KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
+      KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
+      KMUX_NODE_PATH: "/opt/kmux/kmux"
+    });
+  });
+
   it("extracts env json between markers even when shell noise surrounds it", () => {
     const env = parseShellEnvOutput(
       'warning\n__MARK__{"PATH":"/usr/local/bin","SHELL":"/bin/zsh"}__MARK__\ntrailer',
@@ -92,6 +151,7 @@ describe("shell environment resolver", () => {
     expect(receivedOptions.args.slice(0, 3)).toEqual(["-i", "-l", "-c"]);
     expect(receivedOptions.args[3]).toContain("ELECTRON_RUN_AS_NODE=1");
     expect(receivedOptions.args[3]).toContain("exec 2>/dev/null");
+    expect(receivedOptions.cwd).toBe(process.cwd());
     expect(receivedOptions.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(receivedOptions.env.KMUX_SHELL_ENV_PROBE).toBe("1");
     expect(receivedOptions.env.POWERLEVEL9K_DISABLE_GITSTATUS).toBeUndefined();
@@ -105,6 +165,46 @@ describe("shell environment resolver", () => {
       },
       source: "resolved"
     });
+  });
+
+  it("uses only an absolute HOME as the PTY shell env probe cwd", async () => {
+    const ptyProbe = vi.fn(async (_options: ShellPtyProbeOptions) => {
+      return '__TOKEN__{"PATH":"/usr/local/bin","SHELL":"/bin/zsh"}__TOKEN__';
+    });
+
+    await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: {
+        HOME: "relative-home",
+        PATH: "/usr/bin"
+      },
+      platform: "darwin",
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      exec: vi.fn(async () => {
+        throw new Error("exec path should not run on macOS PTY probes");
+      }),
+      ptyProbe
+    });
+
+    expect(ptyProbe.mock.calls[0]?.[0].cwd).toBe(process.cwd());
+
+    await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: {
+        HOME: " /Users/test ",
+        PATH: "/usr/bin"
+      },
+      platform: "darwin",
+      processExecPath: "/usr/local/bin/node",
+      randomToken: "__TOKEN__",
+      exec: vi.fn(async () => {
+        throw new Error("exec path should not run on macOS PTY probes");
+      }),
+      ptyProbe
+    });
+
+    expect(ptyProbe.mock.calls[1]?.[0].cwd).toBe("/Users/test");
   });
 
   it("preserves user Powerlevel10k gitstatus preferences from the probe result", async () => {
@@ -205,6 +305,37 @@ describe("shell environment resolver", () => {
     expect(resolved.baseEnv.SHELL).toBe("/bin/bash");
     expect(warning).toHaveBeenCalled();
     warning.mockRestore();
+  });
+
+  it("can skip shell env probing for smoke and gate runs", async () => {
+    const exec = vi.fn(async () => ({
+      stdout: "",
+      stderr: ""
+    }));
+    const ptyProbe = vi.fn(async () => "");
+
+    const resolved = await resolveShellEnvironment({
+      preferredShell: "/bin/zsh",
+      env: {
+        PATH: "/usr/bin",
+        ELECTRON_RUN_AS_NODE: "1",
+        KMUX_DISABLE_SHELL_ENV_PROBE: "1"
+      },
+      platform: "darwin",
+      exec,
+      ptyProbe
+    });
+
+    expect(resolved).toEqual({
+      shellPath: "/bin/zsh",
+      source: "fallback",
+      baseEnv: {
+        PATH: "/usr/bin",
+        SHELL: "/bin/zsh"
+      }
+    });
+    expect(exec).not.toHaveBeenCalled();
+    expect(ptyProbe).not.toHaveBeenCalled();
   });
 
   it("uses powershell-specific probe args when pwsh is configured", () => {

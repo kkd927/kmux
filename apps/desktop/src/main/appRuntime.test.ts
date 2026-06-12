@@ -1,4 +1,13 @@
-import { applyAction, createInitialState } from "@kmux/core";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  applyAction,
+  createDefaultSettings,
+  createInitialState
+} from "@kmux/core";
+import { LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
 import { vi } from "vitest";
 
 import type { AppState } from "@kmux/core";
@@ -8,13 +17,21 @@ import type {
   ShellPatch
 } from "@kmux/proto";
 
-const { beep, browserWindows, showNotification } = vi.hoisted(() => ({
+const {
+  beep,
+  browserWindows,
+  showNotification,
+  showNotificationFailure
+} = vi.hoisted(() => ({
   beep: vi.fn(),
   browserWindows: [] as Array<{
     webContents: { send: ReturnType<typeof vi.fn> };
     setTitle: ReturnType<typeof vi.fn>;
   }>,
-  showNotification: vi.fn()
+  showNotification: vi.fn(),
+  showNotificationFailure: {
+    current: null as unknown | null
+  }
 }));
 
 vi.mock("electron", () => ({
@@ -22,9 +39,14 @@ vi.mock("electron", () => ({
     getAllWindows: () => browserWindows
   },
   Notification: class {
-    constructor(private readonly options: { title: string; body: string }) {}
+    constructor(
+      private readonly options: { title: string; body: string; icon?: string }
+    ) {}
 
     show(): void {
+      if (showNotificationFailure.current) {
+        throw showNotificationFailure.current;
+      }
       showNotification(this.options);
     }
   },
@@ -35,6 +57,7 @@ vi.mock("electron", () => ({
 
 import { AppStore } from "./store";
 import { createAppRuntime, type AppRuntimeOptions } from "./appRuntime";
+import { DIAGNOSTICS_LOG_PATH_ENV } from "../shared/diagnostics";
 
 function createRuntime(
   notificationSound: boolean,
@@ -51,6 +74,25 @@ function createRuntime(
       socketPath: "/tmp/kmux.sock",
       nodePath: "/Applications/kmux.app/Contents/MacOS/kmux"
     },
+    createShellLaunchPolicy: (launch) => ({
+      defaultShellPath: launch.shell ?? "/bin/zsh",
+      defaultShellArgs: ["-l"],
+      stripManagedEnv: true,
+      integration: {
+        enabled: true,
+        mode: "posix-wrapper"
+      },
+      agentPath: {
+        helperBinDir: "/tmp/kmux-agent-hooks",
+        wrapperBinDir: "/tmp/kmux-agent-wrappers",
+        prependWrapperToPath: true
+      },
+      hookEnv: {
+        KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+        KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-hooks",
+        KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"
+      }
+    }),
     snapshotStore: {
       path: "/tmp/kmux-snapshot.json",
       load: () => options.snapshotRecord?.snapshot ?? null,
@@ -68,10 +110,12 @@ function createRuntime(
       save: vi.fn()
     },
     defaultShellPath: "/bin/zsh",
+    shortcutDefaultsPlatform: options.shortcutDefaultsPlatform,
     refreshMetadata: options.refreshMetadata ?? vi.fn(),
     persistWindowState: vi.fn(),
     profileRecorder: options.profileRecorder,
-    externalSessionIndexer: options.externalSessionIndexer
+    externalSessionIndexer: options.externalSessionIndexer,
+    nativeNotificationIdentity: options.nativeNotificationIdentity
   });
 
   runtime.setStore(new AppStore(initialState));
@@ -106,6 +150,45 @@ beforeEach(() => {
   beep.mockClear();
   browserWindows.length = 0;
   showNotification.mockClear();
+  showNotificationFailure.current = null;
+});
+
+describe("app runtime shortcut default migration", () => {
+  it("uses Linux shortcut defaults for first-run Linux settings", () => {
+    const runtime = createRuntime(false, {
+      shortcutDefaultsPlatform: "linux"
+    });
+
+    try {
+      const state = runtime.restoreInitialState();
+
+      expect(state.settings.shortcutDefaultsPlatform).toBe("linux");
+      expect(state.settings.shortcuts).toEqual(LINUX_DEFAULT_SHORTCUTS);
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
+  it("migrates generated macOS shortcuts to Linux while preserving user edits", () => {
+    const settings = createDefaultSettings();
+    settings.shortcuts["pane.close"] = "Ctrl+Alt+K";
+    const runtime = createRuntime(false, {
+      shortcutDefaultsPlatform: "linux",
+      settings
+    });
+
+    try {
+      const state = runtime.restoreInitialState();
+
+      expect(state.settings.shortcutDefaultsPlatform).toBe("linux");
+      expect(state.settings.shortcuts["workspace.create"]).toBe(
+        LINUX_DEFAULT_SHORTCUTS["workspace.create"]
+      );
+      expect(state.settings.shortcuts["pane.close"]).toBe("Ctrl+Alt+K");
+    } finally {
+      runtime.shutdown();
+    }
+  });
 });
 
 describe("app runtime bell sound effects", () => {
@@ -137,6 +220,114 @@ describe("app runtime bell sound effects", () => {
     createRuntime(false).runEffects([{ type: "bell.sound" }]);
 
     expect(beep).not.toHaveBeenCalled();
+  });
+
+  it("adds native notification icon identity to desktop notifications", () => {
+    const runtime = createRuntime(false, {
+      nativeNotificationIdentity: {
+        appId: "dev.kmux.desktop",
+        appName: "kmux",
+        iconPath: "/tmp/kmux/resources/notificationIcon.png"
+      }
+    });
+
+    runtime.runEffects([
+      {
+        type: "notify.desktop",
+        notification: {
+          title: "Codex finished",
+          message: "Ready for review"
+        }
+      } as never
+    ]);
+
+    expect(showNotification).toHaveBeenCalledWith({
+      title: "Codex finished",
+      body: "Ready for review",
+      icon: "/tmp/kmux/resources/notificationIcon.png"
+    });
+  });
+
+  it("keeps in-app notifications when native desktop notification delivery fails", () => {
+    const sandboxDir = mkdtempSync(join(tmpdir(), "kmux-runtime-test-"));
+    const logPath = join(sandboxDir, "diagnostics.log");
+    const previousLogPath = process.env[DIAGNOSTICS_LOG_PATH_ENV];
+    showNotificationFailure.current = new Error(
+      "org.freedesktop.Notifications unavailable"
+    );
+    process.env[DIAGNOSTICS_LOG_PATH_ENV] = logPath;
+
+    try {
+      const runtime = createRuntime(false, {
+        nativeNotificationIdentity: {
+          appId: "dev.kmux.desktop",
+          appName: "kmux",
+          startupWmClass: "kmux",
+          iconPath: "/tmp/kmux/resources/notificationIcon.png"
+        }
+      });
+      const state = runtime.getState();
+      const workspaceId = Object.keys(state.workspaces)[0];
+      const paneId = Object.keys(state.panes)[0];
+      const surfaceId = Object.keys(state.surfaces)[0];
+
+      expect(() =>
+        runtime.dispatchAppAction({
+          type: "notification.create",
+          workspaceId,
+          paneId,
+          surfaceId,
+          title: "Codex finished",
+          message: "Ready for review",
+          source: "agent",
+          kind: "turn_complete",
+          agent: "codex"
+        })
+      ).not.toThrow();
+
+      expect(showNotification).not.toHaveBeenCalled();
+      expect(runtime.getState().notifications[0]).toEqual(
+        expect.objectContaining({
+          workspaceId,
+          paneId,
+          surfaceId,
+          title: "Codex finished",
+          message: "Ready for review",
+          source: "agent",
+          kind: "turn_complete",
+          agent: "codex"
+        })
+      );
+      expect(runtime.getState().surfaces[surfaceId]).toEqual(
+        expect.objectContaining({
+          attention: true,
+          unreadCount: 1
+        })
+      );
+
+      const contents = readFileSync(logPath, "utf8");
+      expect(contents).toContain('"scope":"main.effect.notify.desktop.failed"');
+      expect(contents).toContain(`"workspaceId":"${workspaceId}"`);
+      expect(contents).toContain(`"surfaceId":"${surfaceId}"`);
+      expect(contents).toContain('"source":"agent"');
+      expect(contents).toContain('"agent":"codex"');
+      expect(contents).toContain('"appId":"dev.kmux.desktop"');
+      expect(contents).toContain('"appName":"kmux"');
+      expect(contents).toContain('"startupWmClass":"kmux"');
+      expect(contents).toContain('"hasIcon":true');
+      expect(contents).toContain(
+        '"iconPath":"/tmp/kmux/resources/notificationIcon.png"'
+      );
+      expect(contents).toContain("org.freedesktop.Notifications unavailable");
+    } finally {
+      showNotificationFailure.current = null;
+      if (typeof previousLogPath === "string") {
+        process.env[DIAGNOSTICS_LOG_PATH_ENV] = previousLogPath;
+      } else {
+        delete process.env[DIAGNOSTICS_LOG_PATH_ENV];
+      }
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -242,7 +433,8 @@ describe("app runtime external sessions", () => {
       "gemini:gemini-session"
     );
     const state = runtime.getState();
-    const activeWorkspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
     const activeWorkspace = state.workspaces[activeWorkspaceId];
     const activeSurfaceId =
       state.panes[activeWorkspace.activePaneId].activeSurfaceId;
@@ -534,7 +726,9 @@ describe("app runtime shell patches", () => {
       );
       expect(getLastShellPatch(window)).not.toHaveProperty("settings");
       expect(getLastShellPatch(window)).not.toHaveProperty("notifications");
-      expect(getLastShellPatch(window)).not.toHaveProperty("terminalTypography");
+      expect(getLastShellPatch(window)).not.toHaveProperty(
+        "terminalTypography"
+      );
       expect(getLastShellPatch(window)).not.toHaveProperty("workspaceRows");
       expect(getLastShellPatch(window)).not.toHaveProperty(
         "activeWorkspacePaneTree"
@@ -670,7 +864,8 @@ describe("app runtime shell patches", () => {
       const alertsWorkspaceId =
         runtime.getState().windows[runtime.getState().activeWindowId]
           .activeWorkspaceId;
-      const alertsPaneId = runtime.getState().workspaces[alertsWorkspaceId].activePaneId;
+      const alertsPaneId =
+        runtime.getState().workspaces[alertsWorkspaceId].activePaneId;
       const alertsSurfaceId =
         runtime.getState().panes[alertsPaneId].activeSurfaceId;
 
@@ -793,20 +988,71 @@ describe("app runtime shell patches", () => {
     runtime.runEffects([
       {
         type: "session.spawn",
-        spec: {
-          sessionId: "session_1",
-          surfaceId: "surface_1",
-          workspaceId: "workspace_1",
-          launch: {},
+        sessionId: "session_1",
+        surfaceId: "surface_1",
+        workspaceId: "workspace_1",
+        launch: {},
+        initialSize: {
           cols: 120,
-          rows: 30,
-          env: {}
-        }
+          rows: 30
+        },
+        sessionEnv: {}
       }
     ]);
 
     expect(window.webContents.send).not.toHaveBeenCalled();
     expect(window.setTitle).not.toHaveBeenCalled();
+  });
+
+  it("sends hook runtime env through the shell launch policy before pty spawn", () => {
+    const runtime = createRuntime(false);
+    const send = vi.fn();
+    runtime.setPtyHost({ send } as never);
+
+    runtime.runEffects([
+      {
+        type: "session.spawn",
+        sessionId: "session_1",
+        surfaceId: "surface_1",
+        workspaceId: "workspace_1",
+        launch: {
+          shell: "/bin/zsh"
+        },
+        initialSize: {
+          cols: 120,
+          rows: 30
+        },
+        sessionEnv: {
+          KMUX_WORKSPACE_ID: "workspace_1",
+          KMUX_SURFACE_ID: "surface_1",
+          KMUX_SESSION_ID: "session_1",
+          TERM_PROGRAM: "kmux"
+        }
+      }
+    ]);
+
+    expect(send).toHaveBeenCalledWith({
+      type: "spawn",
+      spec: expect.objectContaining({
+        sessionId: "session_1",
+        env: expect.not.objectContaining({
+          KMUX_SOCKET_PATH: expect.any(String),
+          KMUX_NODE_PATH: expect.any(String)
+        })
+      }),
+      shellLaunchPolicy: expect.objectContaining({
+        hookEnv: {
+          KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+          KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-hooks",
+          KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"
+        },
+        agentPath: {
+          helperBinDir: "/tmp/kmux-agent-hooks",
+          wrapperBinDir: "/tmp/kmux-agent-wrappers",
+          prependWrapperToPath: true
+        }
+      })
+    });
   });
 
   it("records shell patch profiling metrics when a recorder is provided", () => {

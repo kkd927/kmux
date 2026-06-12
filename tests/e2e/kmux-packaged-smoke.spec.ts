@@ -5,6 +5,8 @@ import {
   createSandbox,
   destroySandbox,
   dispatch,
+  getRuntimeEnv,
+  getSurfaceSnapshot,
   getView,
   launchKmuxWithSandbox,
   runCliJson,
@@ -30,6 +32,20 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
   try {
     await page.waitForLoadState("domcontentloaded");
     await page.setViewportSize({ width: 1277, height: 1179 });
+
+    const runtimeEnv = await getRuntimeEnv(page);
+    expect(runtimeEnv.KMUX_PACKAGED_EXECUTABLE_PATH).toBe(
+      packagedExecutablePath
+    );
+    if (process.env.APPIMAGE) {
+      expect(runtimeEnv.APPIMAGE).toBe(process.env.APPIMAGE);
+      expect(runtimeEnv.APPIMAGE).toBe(packagedExecutablePath);
+      if (process.env.APPIMAGE_EXTRACT_AND_RUN) {
+        expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe(
+          process.env.APPIMAGE_EXTRACT_AND_RUN
+        );
+      }
+    }
 
     const initial = await getView(page);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
@@ -130,6 +146,75 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       15_000
     );
     expect(snapshot).toContain(marker);
+
+    await dispatch(page, {
+      type: "pane.split",
+      paneId: activePaneId,
+      direction: "right"
+    });
+    await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 2,
+      "packaged smoke split should create a second pane"
+    );
+    const originalRows = page.locator(
+      `[data-testid="terminal-${activeSurfaceId}"] .xterm-rows`
+    );
+    await expect(originalRows).toContainText(marker);
+
+    await dispatch(page, {
+      type: "surface.create",
+      paneId: activePaneId,
+      title: "packaged hidden continuity"
+    });
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[activePaneId].activeSurfaceId !==
+        activeSurfaceId,
+      "packaged smoke should switch away from the original surface"
+    );
+
+    const hiddenMarker = "packaged-smoke-hidden-output";
+    runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
+      "surface",
+      "send-text",
+      "--surface",
+      activeSurfaceId,
+      "--text",
+      `echo ${hiddenMarker}\r`
+    ]);
+    await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      hiddenMarker,
+      15_000
+    );
+    await expect(originalRows).not.toContainText(hiddenMarker);
+
+    await dispatch(page, {
+      type: "surface.focus",
+      surfaceId: activeSurfaceId
+    });
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[activePaneId].activeSurfaceId ===
+        activeSurfaceId,
+      "packaged smoke should restore focus to the original surface"
+    );
+    await expect(originalRows).toContainText(marker);
+    await expect(originalRows).toContainText(hiddenMarker);
+    const restoredSnapshot = await getSurfaceSnapshot(page, activeSurfaceId);
+    expect(restoredSnapshot?.vt).toContain(marker);
+    expect(restoredSnapshot?.vt).toContain(hiddenMarker);
+
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await expect(originalRows).toContainText(marker);
+    await expect(originalRows).toContainText(hiddenMarker);
+    const resizedSnapshot = await getSurfaceSnapshot(page, activeSurfaceId);
+    expect(resizedSnapshot?.vt).toContain(marker);
+    expect(resizedSnapshot?.vt).toContain(hiddenMarker);
 
     runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
       "notification",

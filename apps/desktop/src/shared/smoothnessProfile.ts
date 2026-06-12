@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 export const KMUX_PROFILE_LOG_PATH_ENV = "KMUX_PROFILE_LOG_PATH";
 export const DEFAULT_SMOOTHNESS_PROFILE_FILENAME = "kmux-smoothness.jsonl";
 
@@ -36,5 +38,12 @@ export interface SmoothnessProfileRecorder {
 export function isSmoothnessProfileEnabled(
   env: Partial<Record<string, string | undefined>> = process.env
 ): boolean {
-  return Boolean(env[KMUX_PROFILE_LOG_PATH_ENV]?.trim());
+  return isSmoothnessProfileLogPathAllowed(env[KMUX_PROFILE_LOG_PATH_ENV]);
+}
+
+export function isSmoothnessProfileLogPathAllowed(
+  configuredPath: string | undefined
+): boolean {
+  const normalized = configuredPath?.trim();
+  return Boolean(normalized && isAbsolute(normalized));
 }

@@ -13,6 +13,13 @@ import type {
 } from "@kmux/proto";
 import { normalizeShortcut, normalizeShortcutBinding } from "@kmux/ui";
 
+import {
+  isReservedSystemChordBinding,
+  type KeyboardShortcutModifier,
+  type KeyChord,
+  type PlatformKeyboardPolicy
+} from "../../../shared/platform/keyboardPolicy";
+
 type RightPanelKind = "usage" | "sessions" | null;
 
 interface DismissibleUiState {
@@ -32,7 +39,7 @@ interface ActiveShortcutContext {
 }
 
 interface UseGlobalShortcutsOptions {
-  isMac: boolean;
+  keyboardPolicy: PlatformKeyboardPolicy;
   viewRef: MutableRefObject<ShellStoreSnapshot | null>;
   dismissibleUiStateRef: MutableRefObject<DismissibleUiState>;
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
@@ -48,6 +55,7 @@ interface UseGlobalShortcutsOptions {
   openSettingsModal: () => void;
   beginWorkspaceRename: (workspaceId: string, sidebarVisible?: boolean) => void;
   dispatch: (action: AppAction) => Promise<void>;
+  requestTerminalFocus?: (surfaceId: string) => void;
   requestWorkspaceClose: (workspaceId: string) => Promise<void>;
   requestPaneClose: (paneId: string) => Promise<void>;
   requestSurfaceClose: (surfaceId: string) => Promise<void>;
@@ -64,13 +72,28 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const currentOptions = optionsRef.current;
-      if (currentOptions.isMac) {
-        currentOptions.setShowWorkspaceShortcutHints(event.metaKey);
+      const hintModifier =
+        currentOptions.keyboardPolicy.workspaceShortcutHintModifier;
+      if (hintModifier) {
+        currentOptions.setShowWorkspaceShortcutHints(
+          isModifierPressed(event, hintModifier)
+        );
       }
       const currentView = currentOptions.viewRef.current;
       if (!currentView) {
         return;
       }
+      const requestTerminalFocus = (surfaceId: string): void => {
+        currentOptions.requestTerminalFocus?.(surfaceId);
+      };
+      const requestActiveTerminalFocusAfter = async (
+        run: () => Promise<void>
+      ): Promise<void> => {
+        await run();
+        await currentOptions.withLatestActiveShortcutContext(
+          ({ activeSurfaceId }) => requestTerminalFocus(activeSurfaceId)
+        );
+      };
 
       const {
         paletteOpen: currentPaletteOpen,
@@ -86,6 +109,10 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         target instanceof HTMLElement &&
         target.closest("[data-shortcut-recorder]");
       if (isShortcutRecorder) {
+        return;
+      }
+
+      if (isReservedSystemChord(event, currentOptions.keyboardPolicy)) {
         return;
       }
 
@@ -161,10 +188,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
           : Number.NaN;
 
       if (
-        event.metaKey &&
-        !event.shiftKey &&
-        !event.altKey &&
-        !Number.isNaN(digitIndex)
+        matchesNumberRowShortcut(
+          event,
+          currentOptions.keyboardPolicy.numberRowShortcuts.workspaceModifier,
+          digitIndex
+        )
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -175,11 +203,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         return;
       }
       if (
-        event.ctrlKey &&
-        !event.altKey &&
-        !event.metaKey &&
-        !event.shiftKey &&
-        !Number.isNaN(digitIndex)
+        matchesNumberRowShortcut(
+          event,
+          currentOptions.keyboardPolicy.numberRowShortcuts.surfaceModifier,
+          digitIndex
+        )
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -193,10 +221,12 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         if (!targetSurfaceId) {
           return;
         }
-        void currentOptions.dispatch({
-          type: "surface.focus",
-          surfaceId: targetSurfaceId
-        });
+        void requestActiveTerminalFocusAfter(() =>
+          currentOptions.dispatch({
+            type: "surface.focus",
+            surfaceId: targetSurfaceId
+          })
+        );
         return;
       }
       if (matchShortcut(currentView, event, "command.palette")) {
@@ -276,11 +306,13 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({
-              type: "pane.split",
-              paneId: latestPaneId,
-              direction: "right"
-            })
+            requestActiveTerminalFocusAfter(() =>
+              currentOptions.dispatch({
+                type: "pane.split",
+                paneId: latestPaneId,
+                direction: "right"
+              })
+            )
         );
         return;
       }
@@ -288,44 +320,54 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({
-              type: "pane.split",
-              paneId: latestPaneId,
-              direction: "down"
-            })
+            requestActiveTerminalFocusAfter(() =>
+              currentOptions.dispatch({
+                type: "pane.split",
+                paneId: latestPaneId,
+                direction: "down"
+              })
+            )
         );
         return;
       }
       if (matchShortcut(currentView, event, "pane.focus.left")) {
         event.preventDefault();
-        void currentOptions.dispatch({
-          type: "pane.focusDirection",
-          direction: "left"
-        });
+        void requestActiveTerminalFocusAfter(() =>
+          currentOptions.dispatch({
+            type: "pane.focusDirection",
+            direction: "left"
+          })
+        );
         return;
       }
       if (matchShortcut(currentView, event, "pane.focus.right")) {
         event.preventDefault();
-        void currentOptions.dispatch({
-          type: "pane.focusDirection",
-          direction: "right"
-        });
+        void requestActiveTerminalFocusAfter(() =>
+          currentOptions.dispatch({
+            type: "pane.focusDirection",
+            direction: "right"
+          })
+        );
         return;
       }
       if (matchShortcut(currentView, event, "pane.focus.up")) {
         event.preventDefault();
-        void currentOptions.dispatch({
-          type: "pane.focusDirection",
-          direction: "up"
-        });
+        void requestActiveTerminalFocusAfter(() =>
+          currentOptions.dispatch({
+            type: "pane.focusDirection",
+            direction: "up"
+          })
+        );
         return;
       }
       if (matchShortcut(currentView, event, "pane.focus.down")) {
         event.preventDefault();
-        void currentOptions.dispatch({
-          type: "pane.focusDirection",
-          direction: "down"
-        });
+        void requestActiveTerminalFocusAfter(() =>
+          currentOptions.dispatch({
+            type: "pane.focusDirection",
+            direction: "down"
+          })
+        );
         return;
       }
       if (matchShortcut(currentView, event, "pane.resize.left")) {
@@ -392,10 +434,12 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({
-              type: "surface.create",
-              paneId: latestPaneId
-            })
+            requestActiveTerminalFocusAfter(() =>
+              currentOptions.dispatch({
+                type: "surface.create",
+                paneId: latestPaneId
+              })
+            )
         );
         return;
       }
@@ -422,11 +466,13 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({
-              type: "surface.focusRelative",
-              paneId: latestPaneId,
-              delta: 1
-            })
+            requestActiveTerminalFocusAfter(() =>
+              currentOptions.dispatch({
+                type: "surface.focusRelative",
+                paneId: latestPaneId,
+                delta: 1
+              })
+            )
         );
         return;
       }
@@ -434,11 +480,13 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activePaneId: latestPaneId }) =>
-            currentOptions.dispatch({
-              type: "surface.focusRelative",
-              paneId: latestPaneId,
-              delta: -1
-            })
+            requestActiveTerminalFocusAfter(() =>
+              currentOptions.dispatch({
+                type: "surface.focusRelative",
+                paneId: latestPaneId,
+                delta: -1
+              })
+            )
         );
         return;
       }
@@ -456,37 +504,51 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [options.isMac]);
+  }, [options.keyboardPolicy]);
 
   useEffect(() => {
     const hideWorkspaceShortcutHints = () => {
       optionsRef.current.setShowWorkspaceShortcutHints(false);
     };
-    const syncWorkspaceShortcutHints = (metaKey: boolean) => {
-      optionsRef.current.setShowWorkspaceShortcutHints(metaKey);
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (!optionsRef.current.isMac) {
+    const syncWorkspaceShortcutHints = (
+      event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">
+    ) => {
+      const hintModifier =
+        optionsRef.current.keyboardPolicy.workspaceShortcutHintModifier;
+      if (!hintModifier) {
         return;
       }
-      syncWorkspaceShortcutHints(event.metaKey);
+      optionsRef.current.setShowWorkspaceShortcutHints(
+        isModifierPressed(event, hintModifier)
+      );
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!optionsRef.current.keyboardPolicy.workspaceShortcutHintModifier) {
+        return;
+      }
+      syncWorkspaceShortcutHints(event);
     };
     const onPointerInteraction = (
       event: MouseEvent | PointerEvent | WheelEvent
     ) => {
-      if (!optionsRef.current.isMac || event.metaKey) {
+      const hintModifier =
+        optionsRef.current.keyboardPolicy.workspaceShortcutHintModifier;
+      if (!hintModifier || isModifierPressed(event, hintModifier)) {
         return;
       }
       hideWorkspaceShortcutHints();
     };
     const onWindowFocus = () => {
-      if (!optionsRef.current.isMac) {
+      if (!optionsRef.current.keyboardPolicy.workspaceShortcutHintModifier) {
         return;
       }
       hideWorkspaceShortcutHints();
     };
     const onVisibilityChange = () => {
-      if (!optionsRef.current.isMac || document.visibilityState === "visible") {
+      if (
+        !optionsRef.current.keyboardPolicy.workspaceShortcutHintModifier ||
+        document.visibilityState === "visible"
+      ) {
         return;
       }
       hideWorkspaceShortcutHints();
@@ -506,7 +568,53 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
       window.removeEventListener("wheel", onPointerInteraction, true);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [options.isMac]);
+  }, [options.keyboardPolicy]);
+}
+
+function isModifierPressed(
+  event: Pick<
+    KeyboardEvent | MouseEvent,
+    "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
+  >,
+  modifier: KeyboardShortcutModifier
+): boolean {
+  switch (modifier) {
+    case "Meta":
+      return event.metaKey;
+    case "Ctrl":
+      return event.ctrlKey;
+    case "Alt":
+      return event.altKey;
+    case "Shift":
+      return event.shiftKey;
+  }
+}
+
+function matchesNumberRowShortcut(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+  modifier: KeyboardShortcutModifier | null,
+  digitIndex: number
+): boolean {
+  if (!modifier || Number.isNaN(digitIndex)) {
+    return false;
+  }
+
+  switch (modifier) {
+    case "Meta":
+      return event.metaKey && !event.altKey && !event.shiftKey;
+    case "Ctrl":
+      return (
+        event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+      );
+    case "Alt":
+      return (
+        event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+      );
+    case "Shift":
+      return (
+        event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey
+      );
+  }
 }
 
 function matchShortcut(
@@ -518,6 +626,62 @@ function matchShortcut(
     normalizeShortcutBinding(view.settings.shortcuts[commandId] ?? "") ===
     normalizeShortcut(event)
   );
+}
+
+const keyboardShortcutModifiers: KeyboardShortcutModifier[] = [
+  "Meta",
+  "Ctrl",
+  "Alt",
+  "Shift"
+];
+
+function isReservedSystemChord(
+  event: KeyboardEvent,
+  keyboardPolicy: PlatformKeyboardPolicy
+): boolean {
+  const eventShortcut = normalizeShortcutForReservedSystemChord(event);
+  return isReservedSystemChordBinding(
+    eventShortcut,
+    keyboardPolicy.reservedSystemChords
+  );
+}
+
+function normalizeShortcutForReservedSystemChord(
+  event: KeyboardEvent
+): KeyChord {
+  return normalizeModifierOnlyShortcut(event) ?? normalizeShortcut(event);
+}
+
+function normalizeModifierOnlyShortcut(event: KeyboardEvent): string | null {
+  const modifier = shortcutModifierFromKey(event.key);
+  if (!modifier) {
+    return null;
+  }
+
+  const activeModifiers = keyboardShortcutModifiers.filter((current) =>
+    isModifierPressed(event, current)
+  );
+  return activeModifiers.length === 1 && activeModifiers[0] === modifier
+    ? modifier
+    : null;
+}
+
+function shortcutModifierFromKey(key: string): KeyboardShortcutModifier | null {
+  switch (key) {
+    case "Meta":
+    case "OS":
+      return "Meta";
+    case "Control":
+    case "Ctrl":
+      return "Ctrl";
+    case "Alt":
+    case "Option":
+      return "Alt";
+    case "Shift":
+      return "Shift";
+    default:
+      return null;
+  }
 }
 
 function listWorkspaceSurfaceShortcutTargets(

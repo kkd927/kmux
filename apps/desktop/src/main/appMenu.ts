@@ -48,7 +48,11 @@ export function buildApplicationMenuTemplate(
   template.push(
     {
       label: "File",
-      submenu: [options.isMac ? { role: "close" } : { role: "quit" }]
+      submenu: buildFileMenu(
+        options.isMac,
+        options.updaterState,
+        options.actions
+      )
     },
     {
       label: "Edit",
@@ -69,6 +73,22 @@ export function buildApplicationMenuTemplate(
 
 export function getUpdaterMenuLabel(state: UpdaterState): string {
   return getSharedUpdaterMenuLabel(state);
+}
+
+function buildFileMenu(
+  isMac: boolean,
+  updaterState: UpdaterState,
+  actions: AppMenuActions
+): MenuItemConstructorOptions[] {
+  if (isMac) {
+    return [{ role: "close" }];
+  }
+
+  return [
+    buildUpdaterMenuItem(updaterState, actions),
+    separatorItem(),
+    { role: "quit" }
+  ];
 }
 
 function buildUpdaterMenuItem(

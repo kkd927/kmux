@@ -17,10 +17,7 @@ export type UsageVendor =
   | "gemini"
   | "antigravity"
   | "unknown";
-export type SubscriptionUsageProvider = Exclude<
-  UsageVendor,
-  "unknown"
->;
+export type SubscriptionUsageProvider = Exclude<UsageVendor, "unknown">;
 export type ImageAttachmentMimeType =
   | "image/png"
   | "image/jpeg"
@@ -431,74 +428,6 @@ export interface SurfaceMetadataPayload {
   unreadDelta?: number;
 }
 
-export interface PtySessionSpec {
-  sessionId: Id;
-  surfaceId: Id;
-  workspaceId: Id;
-  launch: SessionLaunchConfig;
-  cols: number;
-  rows: number;
-  env: Record<string, string>;
-}
-
-export type PtyRequest =
-  | { type: "spawn"; spec: PtySessionSpec }
-  | { type: "close"; sessionId: Id }
-  | {
-      type: "resize";
-      sessionId: Id;
-      cols: number;
-      rows: number;
-      attachId?: Id;
-      requestId?: Id;
-    }
-  | { type: "input:text"; sessionId: Id; text: string }
-  | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
-  | {
-      type: "snapshot";
-      sessionId: Id;
-      surfaceId: Id;
-      requestId: Id;
-      settleForMs?: number;
-      includeRawOutputTail?: boolean;
-    };
-
-export type PtyEvent =
-  | { type: "ready" }
-  | {
-      type: "spawned";
-      sessionId: Id;
-      pid: number;
-      shellInputReady: boolean;
-    }
-  | {
-      type: "shell.ready";
-      sessionId: Id;
-      surfaceId: Id;
-    }
-  | { type: "snapshot"; requestId: Id; payload: SurfaceSnapshotPayload }
-  | { type: "chunk"; payload: SurfaceChunkPayload }
-  | { type: "resize"; payload: SurfaceResizePayload }
-  | { type: "metadata"; payload: SurfaceMetadataPayload }
-  | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }
-  | {
-      type: "terminal.notification";
-      surfaceId: Id;
-      sessionId: Id;
-      protocol: TerminalNotificationProtocol;
-      title?: string;
-      message?: string;
-    }
-  | {
-      type: "resize:ack";
-      sessionId: Id;
-      requestId: Id;
-      cols: number;
-      rows: number;
-    }
-  | { type: "exit"; payload: SurfaceExitPayload }
-  | { type: "error"; sessionId?: Id; message: string };
-
 export interface JsonRpcEnvelope<T = unknown> {
   jsonrpc: "2.0";
   id?: Id;
@@ -588,6 +517,8 @@ export interface TerminalTypographyProbeReport {
   issues: TerminalTypographyIssue[];
 }
 
+export type ShortcutDefaultsPlatform = "darwin" | "linux";
+
 export interface KmuxSettings {
   settingsVersion?: number;
   socketMode: SocketMode;
@@ -596,6 +527,7 @@ export interface KmuxSettings {
   notificationSound: boolean;
   themeMode: ThemeMode;
   shell?: string;
+  shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
   shortcuts: Record<string, string>;
   terminalTypography: TerminalTypographySettings;
   terminalThemes: TerminalThemeSettings;

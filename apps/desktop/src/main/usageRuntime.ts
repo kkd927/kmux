@@ -21,6 +21,7 @@ import {
 import {
   resolveAiCliProcessMatches,
   isProcessAlive,
+  type AgentStorageRoots,
   type AiCliProcessMatch,
   type AiCliProcessProbe,
   createUsageAdapters,
@@ -240,6 +241,8 @@ interface UsageRuntimeOptions {
   resolveAiCliProcesses?: ResolveAiCliProcesses;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   now?: () => number;
   emitSnapshot?: (snapshot: UsageViewSnapshot) => void;
   subscriptionFetchers?: Partial<
@@ -266,7 +269,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     options.adapters ??
     createUsageAdapters({
       env: options.env,
-      homeDir: options.homeDir
+      homeDir: options.homeDir,
+      agentStorageRoots: options.agentStorageRoots,
+      platform: options.platform
     });
   const emitSnapshot =
     options.emitSnapshot ??
@@ -284,6 +289,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     ...createSubscriptionUsageFetchers({
       env: options.env,
       homeDir: options.homeDir,
+      agentStorageRoots: options.agentStorageRoots,
       now
     }),
     ...(options.subscriptionFetchers ?? {})
@@ -293,6 +299,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     createSubscriptionAuthDetectors({
       env: options.env,
       homeDir: options.homeDir,
+      agentStorageRoots: options.agentStorageRoots,
       now
     });
 
@@ -828,6 +835,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       const backfilledDays = await scanUsageHistoryDays({
         env: options.env,
         homeDir: options.homeDir,
+        agentStorageRoots: options.agentStorageRoots,
+        platform: options.platform,
         fromMs: rangeStartMs,
         toMs: endOfLocalDay(now())
       });
@@ -915,7 +924,22 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
 
-    const matchesByPid = await resolveAiCliProcesses(probes);
+    let matchesByPid: Map<number, AiCliProcessMatch>;
+    try {
+      matchesByPid = await resolveAiCliProcesses(probes);
+    } catch (error) {
+      console.warn(
+        "[usage] manual CLI process scan failed:",
+        error instanceof Error ? error.message : String(error)
+      );
+      for (const surfaceId of surfaceProbeMeta.keys()) {
+        const candidate = manualCandidates.get(surfaceId);
+        if (candidate) {
+          candidate.nextProbeAtMs = nowMs + ACTIVE_REFRESH_MS;
+        }
+      }
+      return;
+    }
 
     for (const [surfaceId, probeMeta] of surfaceProbeMeta.entries()) {
       const surface = state.surfaces[surfaceId];

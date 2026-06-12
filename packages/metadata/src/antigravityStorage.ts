@@ -49,6 +49,13 @@ export function readAntigravityConversationMetadata(
   options: { maxConversationFiles?: number } = {}
 ): AntigravityConversationMetadata[] {
   const antigravityRoot = join(homeDirectory, ".gemini", "antigravity-cli");
+  return readAntigravityConversationMetadataFromRoot(antigravityRoot, options);
+}
+
+export function readAntigravityConversationMetadataFromRoot(
+  antigravityRoot: string,
+  options: { maxConversationFiles?: number } = {}
+): AntigravityConversationMetadata[] {
   const cacheKey = `${antigravityRoot}:${options.maxConversationFiles ?? "all"}`;
   const signature = antigravityStorageSignature(
     antigravityRoot,
@@ -187,8 +194,16 @@ function conversationsSignature(
 export function readAntigravityWorkspaceByConversation(
   homeDirectory: string
 ): Map<string, string> {
+  return readAntigravityWorkspaceByConversationFromRoot(
+    join(homeDirectory, ".gemini", "antigravity-cli")
+  );
+}
+
+export function readAntigravityWorkspaceByConversationFromRoot(
+  antigravityRoot: string
+): Map<string, string> {
   return new Map(
-    readAntigravityConversationMetadata(homeDirectory)
+    readAntigravityConversationMetadataFromRoot(antigravityRoot)
       .filter((conversation) => conversation.workspace)
       .map((conversation) => [
         conversation.conversationId,

@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { createInterface } from "node:readline";
@@ -12,6 +11,10 @@ import type {
   SubscriptionUsageRowVm,
   UsageVendor
 } from "@kmux/proto";
+import {
+  type AgentStorageRoots,
+  resolveAgentStorageRoots
+} from "@kmux/metadata";
 
 const execFileAsync = promisify(execFile);
 const requireForMeta = createRequire(import.meta.url);
@@ -76,6 +79,8 @@ export type SubscriptionProviderAuthDetector = () => Promise<boolean>;
 export interface CodexSubscriptionUsageOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   now?: () => number;
   fetchImpl?: FetchLike;
   readTextFile?: ReadTextFile;
@@ -86,6 +91,8 @@ export interface CodexSubscriptionUsageOptions {
 export interface ClaudeSubscriptionUsageOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   now?: () => number;
   fetchImpl?: FetchLike;
   readTextFile?: ReadTextFile;
@@ -95,6 +102,8 @@ export interface ClaudeSubscriptionUsageOptions {
 export interface GeminiSubscriptionUsageOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   now?: () => number;
   fetchImpl?: FetchLike;
   readTextFile?: ReadTextFile;
@@ -108,6 +117,8 @@ export interface GeminiSubscriptionUsageOptions {
 type FetcherFactoryOptions = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  agentStorageRoots?: AgentStorageRoots;
+  platform?: NodeJS.Platform;
   now?: () => number;
   execFileImpl?: ExecFileLike;
 };
@@ -159,23 +170,24 @@ export function createSubscriptionAuthDetectors(
   return {
     codex: async () => {
       const readTextFile = defaultReadTextFile;
-      const homeDir = resolveHomeDir(options.homeDir, options.env);
+      const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
       const auth = await readJsonFile<{
         tokens?: {
           access_token?: string;
         };
-      }>(join(homeDir, ".codex", "auth.json"), readTextFile);
+      }>(agentStorageRoots.codex.authPath, readTextFile);
       return Boolean(auth?.tokens?.access_token?.trim());
     },
     claude: async () => {
       const now = options.now ?? (() => Date.now());
       const readTextFile = defaultReadTextFile;
-      const execFileImpl = defaultExecFile;
-      const homeDir = resolveHomeDir(options.homeDir, options.env);
+      const execFileImpl = options.execFileImpl ?? defaultExecFile;
+      const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
       const credentials = await loadClaudeCredentials({
-        homeDir,
+        credentialsPath: agentStorageRoots.claude.credentialsPath,
         readTextFile,
-        execFileImpl
+        execFileImpl,
+        platform: options.platform ?? process.platform
       });
       if (!credentials) {
         return false;
@@ -189,8 +201,11 @@ export function createSubscriptionAuthDetectors(
     gemini: async () => {
       const now = options.now ?? (() => Date.now());
       const readTextFile = defaultReadTextFile;
-      const homeDir = resolveHomeDir(options.homeDir, options.env);
-      const settings = await readGeminiSettings(homeDir, readTextFile);
+      const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
+      const settings = await readGeminiSettings(
+        agentStorageRoots.gemini.settingsPath,
+        readTextFile
+      );
       if (settings.selectedType && settings.selectedType !== "oauth-personal") {
         return false;
       }
@@ -198,7 +213,7 @@ export function createSubscriptionAuthDetectors(
         access_token?: string;
         refresh_token?: string;
         expiry_date?: number;
-      }>(join(homeDir, ".gemini", "oauth_creds.json"), readTextFile);
+      }>(agentStorageRoots.gemini.oauthCredentialsPath, readTextFile);
       const accessToken = credentials?.access_token?.trim();
       const refreshToken = credentials?.refresh_token?.trim();
       if (!accessToken && !refreshToken) {
@@ -221,7 +236,10 @@ export function createSubscriptionAuthDetectors(
     antigravity: async () => {
       const now = options.now ?? (() => Date.now());
       const execFileImpl = options.execFileImpl ?? defaultExecFile;
-      const credentials = await loadAntigravityCredentials({ execFileImpl });
+      const credentials = await loadAntigravityCredentials({
+        execFileImpl,
+        platform: options.platform ?? process.platform
+      });
       const accessToken = credentials?.access_token?.trim();
       const refreshToken = credentials?.refresh_token?.trim();
       if (accessToken && !isCredentialsExpired(credentials, now())) {
@@ -238,8 +256,8 @@ export async function fetchCodexSubscriptionUsage(
   const now = options.now ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const readTextFile = options.readTextFile ?? defaultReadTextFile;
-  const homeDir = resolveHomeDir(options.homeDir, options.env);
-  const authPath = join(homeDir, ".codex", "auth.json");
+  const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
+  const authPath = agentStorageRoots.codex.authPath;
   const auth = await readJsonFile<{
     tokens?: {
       access_token?: string;
@@ -303,7 +321,8 @@ export async function fetchCodexSubscriptionUsage(
   }
 
   const codexStatusProbe =
-    options.codexStatusProbe ?? (() => probeCodexViaStatus(options.env));
+    options.codexStatusProbe ??
+    (() => probeCodexViaStatus(options.env, options.platform ?? process.platform));
   try {
     const statusUsage = await codexStatusProbe();
     if (statusUsage) {
@@ -323,11 +342,12 @@ export async function fetchClaudeSubscriptionUsage(
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const readTextFile = options.readTextFile ?? defaultReadTextFile;
   const execFileImpl = options.execFileImpl ?? defaultExecFile;
-  const homeDir = resolveHomeDir(options.homeDir, options.env);
+  const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
   const credentials = await loadClaudeCredentials({
-    homeDir,
+    credentialsPath: agentStorageRoots.claude.credentialsPath,
     readTextFile,
-    execFileImpl
+    execFileImpl,
+    platform: options.platform ?? process.platform
   });
   if (!credentials) {
     return null;
@@ -418,8 +438,11 @@ export async function fetchGeminiSubscriptionUsage(
   const now = options.now ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const readTextFile = options.readTextFile ?? defaultReadTextFile;
-  const homeDir = resolveHomeDir(options.homeDir, options.env);
-  const settings = await readGeminiSettings(homeDir, readTextFile);
+  const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
+  const settings = await readGeminiSettings(
+    agentStorageRoots.gemini.settingsPath,
+    readTextFile
+  );
   if (settings.selectedType && settings.selectedType !== "oauth-personal") {
     return null;
   }
@@ -429,7 +452,7 @@ export async function fetchGeminiSubscriptionUsage(
     refresh_token?: string;
     id_token?: string;
     expiry_date?: number;
-  }>(join(homeDir, ".gemini", "oauth_creds.json"), readTextFile);
+  }>(agentStorageRoots.gemini.oauthCredentialsPath, readTextFile);
   let nextCredentials = credentials;
   const accessToken = credentials?.access_token?.trim();
   const refreshToken = credentials?.refresh_token?.trim();
@@ -438,7 +461,7 @@ export async function fetchGeminiSubscriptionUsage(
     now() >= credentials.expiry_date;
   if ((!accessToken || isExpired) && refreshToken) {
     nextCredentials = await refreshGeminiAccessToken({
-      homeDir,
+      oauthCredentialsPath: agentStorageRoots.gemini.oauthCredentialsPath,
       fetchImpl,
       now,
       credentials,
@@ -473,8 +496,11 @@ export async function fetchAntigravitySubscriptionUsage(
   const now = options.now ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const execFileImpl = options.execFileImpl ?? defaultExecFile;
-  const homeDir = resolveHomeDir(options.homeDir, options.env);
-  const credentials = await loadAntigravityCredentials({ execFileImpl });
+  const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
+  const credentials = await loadAntigravityCredentials({
+    execFileImpl,
+    platform: options.platform ?? process.platform
+  });
 
   const existingAccessToken = credentials?.access_token?.trim();
   if (existingAccessToken && !isCredentialsExpired(credentials, now())) {
@@ -500,7 +526,7 @@ export async function fetchAntigravitySubscriptionUsage(
 
   if (credentials?.refresh_token) {
     const refreshed = await refreshAntigravityAccessToken({
-      homeDir,
+      oauthCredentialsPath: agentStorageRoots.gemini.oauthCredentialsPath,
       fetchImpl,
       now,
       credentials,
@@ -944,26 +970,29 @@ function isReliableGeminiQuotaBucket(bucket: GeminiQuotaBucket): boolean {
 }
 
 async function loadClaudeCredentials(options: {
-  homeDir: string;
+  credentialsPath: string;
   readTextFile: ReadTextFile;
   execFileImpl: ExecFileLike;
+  platform: NodeJS.Platform;
 }): Promise<ClaudeCredentialsRecord | null> {
-  try {
-    const { stdout } = await options.execFileImpl("security", [
-      "find-generic-password",
-      "-s",
-      "Claude Code-credentials",
-      "-w"
-    ]);
-    const fromKeychain = parseClaudeCredentials(stdout);
-    if (fromKeychain) {
-      return {
-        source: "keychain",
-        credentials: fromKeychain
-      };
+  if (options.platform === "darwin") {
+    try {
+      const { stdout } = await options.execFileImpl("security", [
+        "find-generic-password",
+        "-s",
+        "Claude Code-credentials",
+        "-w"
+      ]);
+      const fromKeychain = parseClaudeCredentials(stdout);
+      if (fromKeychain) {
+        return {
+          source: "keychain",
+          credentials: fromKeychain
+        };
+      }
+    } catch {
+      // Fall back to the credentials file.
     }
-  } catch {
-    // Fall back to the credentials file.
   }
 
   const filePayload = await readJsonFile<{
@@ -975,7 +1004,7 @@ async function loadClaudeCredentials(options: {
       rateLimitTier?: string;
     };
   }>(
-    join(options.homeDir, ".claude", ".credentials.json"),
+    options.credentialsPath,
     options.readTextFile
   );
   const fromFile = parseClaudeCredentials(filePayload);
@@ -1016,7 +1045,11 @@ function parseClaudeCredentials(input: unknown): ClaudeCredentials | null {
 
 async function loadAntigravityCredentials(options: {
   execFileImpl: ExecFileLike;
+  platform: NodeJS.Platform;
 }): Promise<AntigravityCredentials | null> {
+  if (options.platform !== "darwin") {
+    return null;
+  }
   try {
     const { stdout } = await options.execFileImpl("security", [
       "find-generic-password",
@@ -1119,13 +1152,10 @@ function isCredentialsExpired(
 }
 
 async function readGeminiSettings(
-  homeDir: string,
+  settingsPath: string,
   readTextFile: ReadTextFile
 ): Promise<{ selectedType?: string }> {
-  const raw = await defaultReadJsonText(
-    join(homeDir, ".gemini", "settings.json"),
-    readTextFile
-  );
+  const raw = await defaultReadJsonText(settingsPath, readTextFile);
   if (!raw) {
     return {};
   }
@@ -1446,11 +1476,16 @@ function normalizeCodexRpcWindow(
 }
 
 async function probeCodexViaStatus(
-  env: NodeJS.ProcessEnv | undefined
+  env: NodeJS.ProcessEnv | undefined,
+  platform: NodeJS.Platform
 ): Promise<CodexProbeResult | null> {
+  const scriptArgs = resolveCodexStatusScriptArgs(platform);
+  if (!scriptArgs) {
+    return null;
+  }
   const output = await captureCommandOutput(
     "script",
-    ["-q", "/dev/null", "codex", "-s", "read-only", "-a", "untrusted"],
+    scriptArgs,
     "/status\n",
     env
   );
@@ -1466,6 +1501,18 @@ async function probeCodexViaStatus(
     planType: null,
     windows
   };
+}
+
+export function resolveCodexStatusScriptArgs(
+  platform: NodeJS.Platform
+): string[] | null {
+  if (platform === "darwin") {
+    return ["-q", "/dev/null", "codex", "-s", "read-only", "-a", "untrusted"];
+  }
+  if (platform === "linux") {
+    return ["-q", "-c", "codex -s read-only -a untrusted", "/dev/null"];
+  }
+  return null;
 }
 
 function parseCodexStatusWindow(
@@ -1577,7 +1624,7 @@ function normalizeGeminiProjectId(
 }
 
 async function refreshGeminiAccessToken(options: {
-  homeDir: string;
+  oauthCredentialsPath: string;
   fetchImpl: FetchLike;
   now: () => number;
   credentials: {
@@ -1663,7 +1710,7 @@ async function refreshGeminiAccessToken(options: {
   if (options.persist !== false) {
     try {
       await writeFile(
-        join(options.homeDir, ".gemini", "oauth_creds.json"),
+        options.oauthCredentialsPath,
         `${JSON.stringify(nextCredentials, null, 2)}\n`,
         "utf8"
       );
@@ -1675,7 +1722,7 @@ async function refreshGeminiAccessToken(options: {
 }
 
 async function refreshAntigravityAccessToken(options: {
-  homeDir: string;
+  oauthCredentialsPath: string;
   fetchImpl: FetchLike;
   now: () => number;
   credentials: AntigravityCredentials | null;
@@ -1690,7 +1737,7 @@ async function refreshAntigravityAccessToken(options: {
     : resolveAntigravityOAuthClientConfigs(options.env);
   for (const clientConfig of clientConfigs) {
     const refreshed = await refreshGeminiAccessToken({
-      homeDir: options.homeDir,
+      oauthCredentialsPath: options.oauthCredentialsPath,
       fetchImpl: options.fetchImpl,
       now: options.now,
       credentials: options.credentials,
@@ -2143,9 +2190,16 @@ function stripAnsiCodes(value: string): string {
   return value.replace(new RegExp(`${ansiEscape}\\[[0-9;]*[A-Za-z]`, "gu"), "");
 }
 
-function resolveHomeDir(
-  homeDir: string | undefined,
-  env: NodeJS.ProcessEnv | undefined
-): string {
-  return homeDir?.trim() || env?.HOME?.trim() || homedir();
+function resolveSubscriptionAgentStorageRoots(options: {
+  agentStorageRoots?: AgentStorageRoots;
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
+}): AgentStorageRoots {
+  return (
+    options.agentStorageRoots ??
+    resolveAgentStorageRoots({
+      homeDir: options.homeDir,
+      env: options.env
+    })
+  );
 }

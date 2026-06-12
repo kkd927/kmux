@@ -29,10 +29,12 @@ import type {
 } from "@kmux/proto";
 
 import { buildNativeWorkspaceContextMenu } from "./workspaceContextMenu";
+import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 
 interface IpcHandlersOptions {
+  getPlatformDescriptor: () => RendererPlatformDescriptor;
   getShellState: () => ShellStoreSnapshot;
   getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
@@ -112,6 +114,7 @@ interface IpcHandlersOptions {
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
+  ipcMain.handle("kmux:platform:get", () => options.getPlatformDescriptor());
   ipcMain.handle("kmux:shell:get", () => options.getShellState());
   ipcMain.handle("kmux:usage:get", () => options.getUsageView());
   ipcMain.handle("kmux:external-sessions:get", () =>
@@ -337,9 +340,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       }
 
       const window = BrowserWindow.fromWebContents(event.sender);
+      const keyboardPolicy = options.getPlatformDescriptor().keyboard;
       const menu = buildNativeWorkspaceContextMenu({
         workspaceId: payload.workspaceId,
         getContextView: options.getWorkspaceContextView,
+        reservedSystemChords: keyboardPolicy.reservedSystemChords,
         convertToWorktree: (workspaceId) => {
           event.sender.send(
             "kmux:workspace-worktree-convert-request",

@@ -231,7 +231,13 @@ interface ShellLaunchPolicy {
     wrapperBinDir: string;
     prependWrapperToPath: boolean;
   };
-  hookEnv: Record<string, string>;
+  hookEnv: ShellLaunchHookEnv;
+}
+
+interface ShellLaunchHookEnv extends Record<string, string> {
+  KMUX_SOCKET_PATH: string;
+  KMUX_AGENT_BIN_DIR: string;
+  KMUX_NODE_PATH: string;
 }
 ```
 
@@ -240,11 +246,12 @@ interface ShellLaunchPolicy {
 `ShellLaunchPolicy` must also define env precedence so hook behavior does not depend on incidental object spread order. The recommended merge order is:
 
 1. resolved base env from shell env recovery.
-2. session launch env and user/session overrides.
-3. hook runtime env, including `KMUX_SOCKET_PATH`, `KMUX_NODE_PATH`, and `KMUX_AGENT_BIN_DIR`.
-4. session identity env for workspace, pane, surface, session, and agent context.
-5. agent wrapper PATH prepend applied to the effective `PATH`.
-6. shell integration env for the selected wrapper mode.
+2. session launch env, user overrides, and session identity env for workspace, pane, surface, session, and agent context.
+3. hook runtime env from `ShellLaunchPolicy.hookEnv`, including authoritative `KMUX_SOCKET_PATH`, `KMUX_NODE_PATH`, and `KMUX_AGENT_BIN_DIR`.
+4. agent wrapper PATH prepend applied to the effective `PATH`.
+5. shell integration env for the selected wrapper mode.
+
+Session identity env must not be allowed to replace the hook runtime socket, helper-bin, or node-runtime values. Those values are owned by main's serialized launch policy so pty-host and hooks use the same socket and wrapper runtime even if launch or session env contains stale copies.
 
 If shell integration needs to change `KMUX_AGENT_BIN_DIR` or `PATH`, that behavior must be represented in the serialized policy as `helperBinDir`, `wrapperBinDir`, and `prependWrapperToPath`; it should not be hidden in pty-host platform checks. Tests should cover the final env for macOS and Linux with shell integration both enabled and disabled.
 
@@ -582,6 +589,8 @@ The build scripts should become explicit:
 - `release:check:mac`
 - `release:check:linux`
 
+`release:check:linux` is the Ubuntu Desktop/AppImage signoff wrapper, not a lightweight artifact-only check. It must run the Ubuntu Desktop target preflight, the strict `gate:walking-skeleton:linux`, `package:linux`, `smoke:packaged:linux`, and the public-publishing guard in order. The public GitHub release workflow may still call `node scripts/release-check-linux.mjs` directly as a lightweight macOS-only publishing guard while Linux public assets remain gated.
+
 ## Data Flow
 
 Startup flow:
@@ -623,7 +632,7 @@ Terminal spawn flow:
 - Missing agent CLIs should mark that vendor unavailable rather than failing indexing. Installed agent CLIs with verified Linux storage must be indexable.
 - Missing credentials should show a disconnected/unavailable subscription state, not break terminal behavior. Missing Linux credential providers for authenticated supported agents are release blockers only for providers whose Linux credential source has been verified as stable and accessible.
 - Socket startup should distinguish second live GUI instance, live socket owner, stale socket, bind failure, and explicit runtime path length failure.
-- Linux updater should report disabled only in dev/unpackaged builds or when update metadata is intentionally unavailable in tests. Packaged Linux release builds must support update checks.
+- Linux updater should report disabled in dev/unpackaged builds, tests, or packaged Linux runs that are not executing from the AppImage runtime with `APPIMAGE` set. Packaged Linux AppImage release builds must support update checks.
 - Linux notification failures should be logged and reflected in app diagnostics without breaking in-app agent event records. Ubuntu Desktop notification delivery is a release requirement.
 
 ## Testing Strategy
@@ -680,6 +689,7 @@ E2E and smoke tests:
 - run an early Linux spike before the broad refactor.
 - add Linux dev smoke where Electron can launch in CI or local desktop environment.
 - add Linux packaged smoke for AppImage when CI environment supports it.
+- keep `release:check:linux` wired as the full Ubuntu Desktop signoff command that includes `gate:walking-skeleton:linux`, `package:linux`, and `smoke:packaged:linux`; the RC ledger must still record the exact individual command markers and their outputs.
 - test Ubuntu Desktop launch from GUI-like env, not only an interactive terminal.
 - test AppImage `node-pty` native module loading and shell spawn.
 - test Linux credential/storage discovery for Codex, Claude, Gemini, and Antigravity before broad refactor.

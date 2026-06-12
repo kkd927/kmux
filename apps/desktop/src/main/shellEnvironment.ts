@@ -8,14 +8,24 @@ import {
   writeFileSync
 } from "node:fs";
 import { userInfo } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import {
+  resolveDefaultShellArgs,
+  shouldApplyShellIntegration,
+  shouldStripShellManagedEnv,
+  type ShellLaunchPolicy
+} from "../shared/ptyProtocol";
 
 const execFileAsync = promisify(execFile);
 
 const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
-const PROBE_ONLY_ENV_KEYS = ["KMUX_SHELL_ENV_PROBE"] as const;
+const PROBE_ONLY_ENV_KEYS = [
+  "KMUX_DISABLE_SHELL_ENV_PROBE",
+  "KMUX_SHELL_ENV_PROBE"
+] as const;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 
@@ -34,6 +44,7 @@ interface ShellEnvProbeWorkerRequest {
   type: "probe";
   shellPath: string;
   args: string[];
+  cwd: string;
   env: NodeJS.ProcessEnv;
 }
 
@@ -77,6 +88,7 @@ export interface ShellProbeLaunchOptions {
 export interface ShellPtyProbeOptions {
   shellPath: string;
   args: string[];
+  cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
 }
@@ -102,6 +114,18 @@ interface ResolveShellEnvironmentOptions {
   cachePath?: string;
 }
 
+export interface BuildShellLaunchPolicyOptions {
+  defaultShellPath: string;
+  launchShell?: string;
+  launchArgs?: string[];
+  platform: NodeJS.Platform;
+  enableShellIntegration: boolean;
+  socketPath: string;
+  nodePath: string;
+  agentHookBinDir: string;
+  agentWrapperBinDir: string;
+}
+
 export function resolveShellPath(
   preferredShell: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -124,6 +148,39 @@ export function resolveShellPath(
   }
 
   return PLATFORM_FALLBACK_SHELLS[platform] ?? "/bin/sh";
+}
+
+export function buildShellLaunchPolicy(
+  options: BuildShellLaunchPolicyOptions
+): ShellLaunchPolicy {
+  const shellPath = options.launchShell?.trim() || options.defaultShellPath;
+  const integrationEnabled =
+    options.enableShellIntegration &&
+    shouldApplyShellIntegration(shellPath, options.launchArgs, options.platform);
+
+  return {
+    defaultShellPath: shellPath,
+    defaultShellArgs: resolveDefaultShellArgs(shellPath, options.platform),
+    stripManagedEnv: shouldStripShellManagedEnv(
+      shellPath,
+      options.launchArgs,
+      options.platform
+    ),
+    integration: {
+      enabled: integrationEnabled,
+      mode: integrationEnabled ? "posix-wrapper" : "none"
+    },
+    agentPath: {
+      helperBinDir: options.agentHookBinDir,
+      wrapperBinDir: options.agentWrapperBinDir,
+      prependWrapperToPath: true
+    },
+    hookEnv: {
+      KMUX_SOCKET_PATH: options.socketPath,
+      KMUX_AGENT_BIN_DIR: options.agentHookBinDir,
+      KMUX_NODE_PATH: options.nodePath
+    }
+  };
 }
 
 export function buildShellEnvProbeArgs(
@@ -239,6 +296,17 @@ export async function resolveShellEnvironment(
   const exec = options.exec ?? defaultShellCommandExecutor;
   const ptyProbe = options.ptyProbe ?? defaultShellPtyProbe;
 
+  if (inheritedEnv.KMUX_DISABLE_SHELL_ENV_PROBE === "1") {
+    return {
+      shellPath,
+      baseEnv: {
+        ...baseEnv,
+        SHELL: baseEnv.SHELL ?? shellPath
+      },
+      source: "fallback"
+    };
+  }
+
   try {
     const resolvedEnv = await probeShellEnvironment({
       shellPath,
@@ -311,6 +379,7 @@ async function probeShellEnvironment(options: {
         options.processExecPath,
         options.marker
       ),
+      cwd: resolveShellProbeCwd(options.probeEnv),
       env: options.probeEnv,
       timeoutMs: options.timeoutMs
     });
@@ -421,6 +490,14 @@ function buildShellProbeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     ...env,
     KMUX_SHELL_ENV_PROBE: "1"
   };
+}
+
+function resolveShellProbeCwd(env: NodeJS.ProcessEnv): string {
+  const homeDir = env.HOME?.trim();
+  if (homeDir && isAbsolute(homeDir)) {
+    return homeDir;
+  }
+  return process.cwd();
 }
 
 function buildShellEnvProbeCommand(
@@ -553,6 +630,7 @@ async function defaultShellPtyProbe(
         type: "probe",
         shellPath: options.shellPath,
         args: options.args,
+        cwd: options.cwd,
         env: options.env
       } satisfies ShellEnvProbeWorkerRequest);
     } catch (error) {

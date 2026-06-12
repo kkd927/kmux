@@ -1,21 +1,33 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
-import { closeKmux, dispatch, getView, launchKmux } from "./helpers";
+import {
+  closeKmux,
+  dispatch,
+  getView,
+  launchKmux,
+  waitForView
+} from "./helpers";
 
 async function expectWorkspaceRowsNotOverlapping(
   page: Parameters<typeof dispatch>[0]
 ): Promise<void> {
-  const layout = await page.locator("[data-workspace-id]").evaluateAll((elements) =>
-    elements.map((element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        text: element.textContent ?? "",
-        top: rect.top,
-        bottom: rect.bottom,
-        height: rect.height
-      };
-    })
-  );
+  const layout = await page
+    .locator("[data-workspace-id]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          text: element.textContent ?? "",
+          top: rect.top,
+          bottom: rect.bottom,
+          height: rect.height
+        };
+      })
+    );
 
   expect(layout.length).toBeGreaterThan(1);
 
@@ -39,6 +51,31 @@ async function readWorkspaceRowHeights(
       };
     })
   );
+}
+
+function createGitFixtureRepo(root: string): string {
+  const repoDir = join(root, "sidebar-meta-repo");
+  mkdirSync(repoDir, { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], {
+    cwd: repoDir,
+    stdio: "ignore"
+  });
+  writeFileSync(join(repoDir, "README.md"), "kmux\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=kmux",
+      "-c",
+      "user.email=kmux@example.invalid",
+      "commit",
+      "-m",
+      "initial"
+    ],
+    { cwd: repoDir, stdio: "ignore" }
+  );
+  return repoDir;
 }
 
 test("single-pane layout fills the main shell area without a large dead zone", async () => {
@@ -110,8 +147,12 @@ test("workspace sidebar rows stay separated while active workspace details expan
     }
 
     const view = await getView(page);
-    const betaId = view.workspaceRows.find((row) => row.name === "beta")?.workspaceId;
-    const gammaId = view.workspaceRows.find((row) => row.name === "gamma")?.workspaceId;
+    const betaId = view.workspaceRows.find(
+      (row) => row.name === "beta"
+    )?.workspaceId;
+    const gammaId = view.workspaceRows.find(
+      (row) => row.name === "gamma"
+    )?.workspaceId;
 
     expect(betaId).toBeTruthy();
     expect(gammaId).toBeTruthy();
@@ -161,7 +202,7 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
   const launched = await launchKmux("kmux-e2e-sidebar-info-");
 
   try {
-    const {page, sandbox} = launched;
+    const { page, sandbox } = launched;
     await page.setViewportSize({ width: 1277, height: 1179 });
 
     const created = await dispatch(page, {
@@ -170,7 +211,8 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     });
     const activeWorkspaceId = created.activeWorkspace.id;
     const activePaneId = created.activeWorkspace.activePaneId;
-    const firstSurfaceId = created.activeWorkspace.panes[activePaneId].surfaceIds[0];
+    const firstSurfaceId =
+      created.activeWorkspace.panes[activePaneId].surfaceIds[0];
 
     await dispatch(page, {
       type: "sidebar.setStatus",
@@ -191,13 +233,19 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     const activeRow = page.locator(
       `[data-workspace-id="${activeWorkspaceId}"]`
     );
-    const inactiveRow = page.locator('[data-workspace-id][data-active="false"]').first();
+    const inactiveRow = page
+      .locator('[data-workspace-id][data-active="false"]')
+      .first();
     const activeBranchRow = activeRow.locator("[data-workspace-branch-row]");
-    const inactiveBranchRow = inactiveRow.locator("[data-workspace-branch-row]");
+    const inactiveBranchRow = inactiveRow.locator(
+      "[data-workspace-branch-row]"
+    );
 
     await expect(activeRow).toContainText("agents");
     await expect(inactiveRow).toContainText("new workspace");
-    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
+    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(
+      0
+    );
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
     await expect(activeRow.locator("[data-workspace-summary]")).toHaveText(
       "claude / planning"
@@ -208,7 +256,9 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
       sandbox.profileRoot
     );
     await expect(activeRow.locator("[data-workspace-branch]")).toHaveText("-");
-    await expect(activeRow.locator("[data-workspace-branch-icon]")).toHaveCount(0);
+    await expect(activeRow.locator("[data-workspace-branch-icon]")).toHaveCount(
+      0
+    );
     await expect(inactiveRow.locator("[data-workspace-path]")).toHaveCount(1);
     await expect(inactiveRow.locator("[data-workspace-branch]")).toHaveCount(1);
     const inactiveHeightBefore = Math.round(
@@ -219,58 +269,83 @@ test("workspace sidebar keeps default names stable, reveals command hints only w
     );
 
     await page.keyboard.down("Meta");
-    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘1");
-    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText(
+      "⌘1"
+    );
+    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText(
+      "⌘2"
+    );
     await expect(inactiveBranchRow).toContainText("⌘1");
     await expect(activeBranchRow).toContainText("⌘2");
     await expect
-      .poll(async () => Math.round((await inactiveRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await inactiveRow.boundingBox())?.height ?? 0)
+      )
       .toBe(inactiveHeightBefore);
     await expect
-      .poll(async () => Math.round((await activeRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await activeRow.boundingBox())?.height ?? 0)
+      )
       .toBe(activeHeightBefore);
     await page.evaluate(() => {
       window.dispatchEvent(new Event("focus"));
     });
-    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
+    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(
+      0
+    );
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
     await expect
-      .poll(async () => Math.round((await inactiveRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await inactiveRow.boundingBox())?.height ?? 0)
+      )
       .toBe(inactiveHeightBefore);
     await expect
-      .poll(async () => Math.round((await activeRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await activeRow.boundingBox())?.height ?? 0)
+      )
       .toBe(activeHeightBefore);
     await page.keyboard.up("Meta");
 
     await page.keyboard.down("Meta");
-    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘1");
-    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveText(
+      "⌘1"
+    );
+    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText(
+      "⌘2"
+    );
     await expect(inactiveBranchRow).toContainText("⌘1");
     await expect(activeBranchRow).toContainText("⌘2");
     await expect
-      .poll(async () => Math.round((await inactiveRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await inactiveRow.boundingBox())?.height ?? 0)
+      )
       .toBe(inactiveHeightBefore);
     await expect
-      .poll(async () => Math.round((await activeRow.boundingBox())?.height ?? 0))
+      .poll(async () =>
+        Math.round((await activeRow.boundingBox())?.height ?? 0)
+      )
       .toBe(activeHeightBefore);
     await page.keyboard.up("Meta");
-    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
+    await expect(inactiveRow.locator("[data-workspace-shortcut]")).toHaveCount(
+      0
+    );
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
   } finally {
     await closeKmux(launched);
   }
 });
 
-test("workspace sidebar keeps representative metadata stable across background tabs while aggregating active workspace ports", async () => {
+test("workspace sidebar keeps representative metadata stable across background tabs", async () => {
   const launched = await launchKmux("kmux-e2e-sidebar-representative-meta-");
 
   try {
     const { page, sandbox } = launched;
     await page.setViewportSize({ width: 1277, height: 1179 });
+    const repoDir = createGitFixtureRepo(sandbox.profileRoot);
 
     const created = await dispatch(page, {
       type: "workspace.create",
-      cwd: sandbox.profileRoot
+      cwd: repoDir
     });
     const workspaceId = created.activeWorkspace.id;
     const paneId = created.activeWorkspace.activePaneId;
@@ -288,36 +363,56 @@ test("workspace sidebar keeps representative metadata stable across background t
       type: "surface.focus",
       surfaceId: representativeSurfaceId
     });
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.panes[paneId]?.activeSurfaceId ===
+        representativeSurfaceId,
+      "representative surface should be active before metadata updates"
+    );
     await dispatch(page, {
       type: "surface.metadata",
       surfaceId: representativeSurfaceId,
-      title: "repo / shell",
-      branch: "main",
-      ports: [3000, 3001]
+      title: "repo / shell"
     });
-    const updated = await dispatch(page, {
+    await dispatch(page, {
       type: "surface.metadata",
       surfaceId: backgroundSurfaceId,
-      title: "background / logs",
-      branch: "feature/background",
-      ports: [5173, 3000, 8080]
+      title: "background / logs"
     });
+    const updated = await waitForView(
+      page,
+      (view) => {
+        const row = view.workspaceRows.find(
+          (candidate) => candidate.workspaceId === workspaceId
+        );
+        return (
+          row?.summary === "repo / shell" &&
+          row.cwd === repoDir &&
+          row.branch === "main"
+        );
+      },
+      "workspace row should use the active representative surface metadata"
+    );
 
     const activeRow = page.locator(`[data-workspace-id="${workspaceId}"]`);
 
     expect(updated.activeWorkspace.name).toBe("new workspace");
     expect(
-      updated.workspaceRows.find((row) => row.workspaceId === workspaceId)?.ports
-    ).toEqual([3000, 3001, 5173]);
+      updated.workspaceRows.find((row) => row.workspaceId === workspaceId)
+        ?.branch
+    ).toBe("main");
 
     await expect(activeRow).toContainText("new workspace");
     await expect(activeRow.locator("[data-workspace-summary]")).toHaveText(
       "repo / shell"
     );
     await expect(activeRow.locator("[data-workspace-path]")).toHaveText(
-      sandbox.profileRoot
+      repoDir
     );
-    await expect(activeRow.locator("[data-workspace-branch]")).toHaveText("main");
+    await expect(activeRow.locator("[data-workspace-branch]")).toHaveText(
+      "main"
+    );
   } finally {
     await closeKmux(launched);
   }
@@ -331,27 +426,37 @@ test("workspace create affordances keep default names while exposing command-num
     await page.setViewportSize({ width: 1277, height: 1179 });
 
     await page.getByRole("button", { name: "Create workspace" }).click();
-    const activeRow = page.locator('[data-workspace-id][data-active="true"]').first();
+    const activeRow = page
+      .locator('[data-workspace-id][data-active="true"]')
+      .first();
     const activeBranchRow = activeRow.locator("[data-workspace-branch-row]");
     await expect(activeRow).toContainText("new workspace");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
 
     await page.keyboard.down("Meta");
-    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText("⌘2");
+    await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveText(
+      "⌘2"
+    );
     await expect(activeBranchRow).toContainText("⌘2");
     await page.keyboard.up("Meta");
     await expect(activeRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
 
     await page.keyboard.press("Meta+N");
-    const latestActiveRow = page.locator('[data-workspace-id][data-active="true"]').first();
+    const latestActiveRow = page
+      .locator('[data-workspace-id][data-active="true"]')
+      .first();
     const latestActiveBranchRow = latestActiveRow.locator(
       "[data-workspace-branch-row]"
     );
     await expect(latestActiveRow).toContainText("new workspace");
-    await expect(latestActiveRow.locator("[data-workspace-shortcut]")).toHaveCount(0);
+    await expect(
+      latestActiveRow.locator("[data-workspace-shortcut]")
+    ).toHaveCount(0);
 
     await page.keyboard.down("Meta");
-    await expect(latestActiveRow.locator("[data-workspace-shortcut]")).toHaveText("⌘3");
+    await expect(
+      latestActiveRow.locator("[data-workspace-shortcut]")
+    ).toHaveText("⌘3");
     await expect(latestActiveBranchRow).toContainText("⌘3");
     await page.keyboard.up("Meta");
   } finally {
@@ -372,7 +477,9 @@ test("workspace sidebar row heights stay stable when the sidebar is resized and 
 
     await page.waitForTimeout(200);
     await expect(
-      page.locator('[data-workspace-id][data-active="true"] [data-workspace-path]')
+      page.locator(
+        '[data-workspace-id][data-active="true"] [data-workspace-path]'
+      )
     ).toHaveCount(1);
     await expectWorkspaceRowsNotOverlapping(page);
 
@@ -410,7 +517,9 @@ test("workspace sidebar row heights stay stable when the sidebar is resized and 
     await dispatch(page, { type: "workspace.create" });
     await page.waitForTimeout(200);
     await expect(
-      page.locator('[data-workspace-id][data-active="true"] [data-workspace-path]')
+      page.locator(
+        '[data-workspace-id][data-active="true"] [data-workspace-path]'
+      )
     ).toHaveCount(1);
     await expectWorkspaceRowsNotOverlapping(page);
 
@@ -565,9 +674,9 @@ test("narrow pane tabs keep the close button visible for long titles", async () 
             opacity: closeButton ? getComputedStyle(closeButton).opacity : "0",
             withinTablist: Boolean(
               tablistRect &&
-                closeRect &&
-                closeRect.left >= tablistRect.left &&
-                closeRect.right <= tablistRect.right
+              closeRect &&
+              closeRect.left >= tablistRect.left &&
+              closeRect.right <= tablistRect.right
             )
           };
         }

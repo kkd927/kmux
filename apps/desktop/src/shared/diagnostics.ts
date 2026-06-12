@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 export const DIAGNOSTICS_LOG_PATH_ENV = "KMUX_DEBUG_LOG_PATH";
 export const PTY_STDOUT_LOGS_ENV = "KMUX_PTY_STDOUT_LOGS";
@@ -28,15 +28,27 @@ export function logDiagnostics(
   details: Record<string, unknown> = {},
   logPath: string | undefined = process.env[DIAGNOSTICS_LOG_PATH_ENV]
 ): boolean {
-  if (!logPath) {
+  const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+  if (!resolvedLogPath) {
     return false;
   }
 
   try {
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, formatDiagnosticsRecord(scope, details), "utf8");
+    mkdirSync(dirname(resolvedLogPath), { recursive: true });
+    appendFileSync(
+      resolvedLogPath,
+      formatDiagnosticsRecord(scope, details),
+      "utf8"
+    );
     return true;
   } catch {
     return false;
   }
+}
+
+export function resolveDiagnosticsLogPath(
+  logPath: string | undefined
+): string | undefined {
+  const normalized = logPath?.trim();
+  return normalized && isAbsolute(normalized) ? normalized : undefined;
 }

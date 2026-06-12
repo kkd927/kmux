@@ -1,12 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { BrowserWindow, Notification, shell } from "electron";
+import { BrowserWindow, shell } from "electron";
 
 import {
   type AppAction,
   type AppEffect,
   type AppMutationSummary,
   type AppState,
+  type SessionSpawnEffect,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
   buildAllWorkspacePaneTreesVm,
@@ -18,7 +19,8 @@ import {
   cloneState,
   createDefaultSettings,
   createInitialState,
-  mergeSettings
+  mergeSettings,
+  migrateShortcutDefaultsForPlatform
 } from "@kmux/core";
 import type {
   ActiveWorkspacePaneTreeVm,
@@ -30,6 +32,7 @@ import type {
   ShellPatch,
   ShellIdentity,
   ShellStoreSnapshot,
+  ShortcutDefaultsPlatform,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   WorkspacePaneTreesPatch,
@@ -41,6 +44,7 @@ import type {
   SnapshotFileStore,
   WindowStateFileStore
 } from "@kmux/persistence";
+import type { PtySessionSpec, ShellLaunchPolicy } from "../shared/ptyProtocol";
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
@@ -50,30 +54,31 @@ import {
   type FontInventoryProvider,
   TerminalTypographyController
 } from "./terminalTypography";
-import {
-  profileNowMs
-} from "../shared/nodeSmoothnessProfile";
+import { profileNowMs } from "../shared/nodeSmoothnessProfile";
 import type { SmoothnessProfileRecorder } from "../shared/smoothnessProfile";
+import {
+  showNativeNotification,
+  type NativeNotificationIdentity
+} from "./nativeNotifications";
 
 export interface AppRuntimeOptions {
   paths: {
     socketPath: string;
     nodePath: string;
   };
+  createShellLaunchPolicy: (launch: SessionLaunchConfig) => ShellLaunchPolicy;
   snapshotStore: SnapshotFileStore;
   windowStateStore: WindowStateFileStore;
   settingsStore: SettingsFileStore;
   defaultShellPath: string;
-  refreshMetadata: (
-    surfaceId: Id,
-    cwd?: string,
-    pid?: number
-  ) => void;
+  shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
+  refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
   fontInventoryProvider?: FontInventoryProvider;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
+  nativeNotificationIdentity?: NativeNotificationIdentity;
 }
 
 export interface ExternalSessionIndexerRuntime {
@@ -115,8 +120,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let shellState: ShellStoreSnapshot | null = null;
   let suppressTerminalTypographyPatch = 0;
   const terminalTypographyController = new TerminalTypographyController({
-    initialSettings: createDefaultSettings("kmuxOnly", options.defaultShellPath)
-      .terminalTypography,
+    initialSettings: createRuntimeDefaultSettings().terminalTypography,
     fontInventoryProvider: options.fontInventoryProvider,
     shouldLogInventoryErrors: () => !shuttingDown,
     onDidChange: () => {
@@ -138,6 +142,23 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       shellState = buildShellStateSnapshot(0);
     }
     return shellState;
+  }
+
+  function createRuntimeDefaultSettings(): ReturnType<
+    typeof createDefaultSettings
+  > {
+    return createDefaultSettings("kmuxOnly", options.defaultShellPath, {
+      shortcutDefaultsPlatform: options.shortcutDefaultsPlatform
+    });
+  }
+
+  function migrateRuntimeShortcutDefaults(
+    settings: ReturnType<typeof createDefaultSettings>
+  ): ReturnType<typeof createDefaultSettings> {
+    return migrateShortcutDefaultsForPlatform(
+      settings,
+      options.shortcutDefaultsPlatform ?? "darwin"
+    );
   }
 
   function buildShellStateSnapshot(version: number): ShellStoreSnapshot {
@@ -203,12 +224,18 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const nextPatch: ShellPatch = {
       version: currentShellState.version
     };
-    const nextShellStatePatch: Partial<Omit<ShellStoreSnapshot, "version">> = {};
+    const nextShellStatePatch: Partial<Omit<ShellStoreSnapshot, "version">> =
+      {};
     let didChange = false;
 
     if (groups.has("window")) {
       const nextWindowChrome = buildShellWindowChromeVm(getState());
-      if (!isDeepStrictEqual(currentShellState.windowId, nextWindowChrome.windowId)) {
+      if (
+        !isDeepStrictEqual(
+          currentShellState.windowId,
+          nextWindowChrome.windowId
+        )
+      ) {
         nextPatch.windowId = nextWindowChrome.windowId;
         nextShellStatePatch.windowId = nextWindowChrome.windowId;
         didChange = true;
@@ -280,7 +307,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
 
     if (groups.has("activeWorkspacePaneTree")) {
-      const activeWorkspacePaneTree = buildActiveWorkspacePaneTreeVm(getState());
+      const activeWorkspacePaneTree =
+        buildActiveWorkspacePaneTreeVm(getState());
       if (
         !isDeepStrictEqual(
           currentShellState.activeWorkspacePaneTree,
@@ -297,7 +325,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       const state = getState();
       const currentTrees = currentShellState.workspacePaneTrees;
       const nextTrees: Record<Id, ActiveWorkspacePaneTreeVm> = {};
-      const paneTreesPatch = buildWorkspacePaneTreesPatch(state, currentTrees, nextTrees);
+      const paneTreesPatch = buildWorkspacePaneTreesPatch(
+        state,
+        currentTrees,
+        nextTrees
+      );
       if (paneTreesPatch) {
         nextPatch.workspacePaneTreesPatch = paneTreesPatch;
         nextShellStatePatch.workspacePaneTrees = nextTrees;
@@ -366,7 +398,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           changedKeys: Object.keys(outgoingPatch).filter(
             (key) => key !== "version"
           ),
-          payloadBytes: Buffer.byteLength(JSON.stringify(outgoingPatch), "utf8"),
+          payloadBytes: Buffer.byteLength(
+            JSON.stringify(outgoingPatch),
+            "utf8"
+          ),
           durationMs: profileEndedAt - profileStartedAt
         }
       });
@@ -383,14 +418,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         case "session.spawn":
           ptyHost?.send({
             type: "spawn",
-            spec: {
-              ...effect.spec,
-              env: {
-                ...effect.spec.env,
-                KMUX_NODE_PATH: options.paths.nodePath,
-                KMUX_SOCKET_PATH: options.paths.socketPath
-              }
-            }
+            spec: buildPtySessionSpec(effect),
+            shellLaunchPolicy: options.createShellLaunchPolicy(effect.launch)
           });
           break;
         case "session.close":
@@ -413,10 +442,25 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
             message: effect.notification.message
           });
           if (getState().settings.notificationDesktop) {
-            new Notification({
-              title: effect.notification.title,
-              body: effect.notification.message
-            }).show();
+            showNativeNotification(
+              {
+                title: effect.notification.title,
+                body: effect.notification.message
+              },
+              options.nativeNotificationIdentity,
+              {
+                diagnosticsScope: "main.effect.notify.desktop.failed",
+                diagnosticsDetails: {
+                  notificationId: effect.notification.id,
+                  workspaceId: effect.notification.workspaceId,
+                  paneId: effect.notification.paneId,
+                  surfaceId: effect.notification.surfaceId,
+                  source: effect.notification.source,
+                  kind: effect.notification.kind,
+                  agent: effect.notification.agent
+                }
+              }
+            );
           }
           break;
         case "bell.sound":
@@ -465,7 +509,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
               ? action.source
               : undefined,
         uiOnly:
-          action.type === "agent.event" ? action.details?.uiOnly === true : undefined,
+          action.type === "agent.event"
+            ? action.details?.uiOnly === true
+            : undefined,
         visibleToUser:
           action.type === "agent.event"
             ? action.details?.visibleToUser === true
@@ -488,11 +534,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const terminalTypographySettingsChanged =
       Boolean(previousSettings && nextSettings) &&
       !areTerminalTypographySettingsEqual(previousSettings!, nextSettings!);
-    if (
-      previousSettings &&
-      nextSettings &&
-      terminalTypographySettingsChanged
-    ) {
+    if (previousSettings && nextSettings && terminalTypographySettingsChanged) {
       suppressTerminalTypographyPatch += 1;
       try {
         terminalTypographyController.setSettings(nextSettings);
@@ -512,15 +554,14 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const snapshotRecord = options.snapshotStore.loadRecord();
     const snapshot = snapshotRecord?.snapshot ?? null;
     const savedWindowState = options.windowStateStore.load();
-    const settings =
-      options.settingsStore.load() ??
-      createDefaultSettings("kmuxOnly", options.defaultShellPath);
+    const settings = migrateRuntimeShortcutDefaults(
+      options.settingsStore.load() ?? createRuntimeDefaultSettings()
+    );
     const shouldRestoreSnapshot =
       snapshot !== null && snapshotRecord?.cleanShutdown !== true;
-    const initial =
-      shouldRestoreSnapshot
-        ? cloneState(snapshot)
-        : createInitialState(options.defaultShellPath);
+    const initial = shouldRestoreSnapshot
+      ? cloneState(snapshot)
+      : createInitialState(options.defaultShellPath);
 
     initial.settings = mergeSettings(initial.settings, settings ?? {});
 
@@ -622,7 +663,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   function resumeExternalAgentSession(
     key: string
   ): ExternalAgentSessionResumeResult {
-    const spec = options.externalSessionIndexer?.resolveExternalAgentSession(key);
+    const spec =
+      options.externalSessionIndexer?.resolveExternalAgentSession(key);
     if (!spec) {
       throw new Error("External session not found");
     }
@@ -711,25 +753,31 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
       if (session.runtimeState !== "exited") {
-        const workspaceId =
-          state.panes[state.surfaces[session.surfaceId].paneId].workspaceId;
+        const surface = state.surfaces[session.surfaceId];
+        const pane = surface ? state.panes[surface.paneId] : undefined;
+        const workspaceId = pane?.workspaceId;
+        if (!surface || !pane || !workspaceId) {
+          continue;
+        }
         runEffects([
           {
             type: "session.spawn",
-            spec: {
-              sessionId: session.id,
-              surfaceId: session.surfaceId,
-              workspaceId,
-              launch: session.launch,
+            sessionId: session.id,
+            surfaceId: session.surfaceId,
+            workspaceId,
+            launch: session.launch,
+            initialSize: {
               cols: 120,
-              rows: 30,
-              env: {
-                KMUX_SOCKET_MODE: state.settings.socketMode,
-                KMUX_WORKSPACE_ID: workspaceId,
-                KMUX_SURFACE_ID: session.surfaceId,
-                KMUX_AUTH_TOKEN: session.authToken,
-                TERM_PROGRAM: "kmux"
-              }
+              rows: 30
+            },
+            sessionEnv: {
+              KMUX_SOCKET_MODE: state.settings.socketMode,
+              KMUX_WORKSPACE_ID: workspaceId,
+              KMUX_PANE_ID: pane.id,
+              KMUX_SURFACE_ID: session.surfaceId,
+              KMUX_SESSION_ID: session.id,
+              KMUX_AUTH_TOKEN: session.authToken,
+              TERM_PROGRAM: "kmux"
             }
           }
         ]);
@@ -797,6 +845,18 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   };
 }
 
+function buildPtySessionSpec(effect: SessionSpawnEffect): PtySessionSpec {
+  return {
+    sessionId: effect.sessionId,
+    surfaceId: effect.surfaceId,
+    workspaceId: effect.workspaceId,
+    launch: effect.launch,
+    cols: effect.initialSize.cols,
+    rows: effect.initialSize.rows,
+    env: effect.sessionEnv
+  };
+}
+
 function clearSnapshotNotifications(state: AppState): void {
   if (state.notifications.length === 0) {
     return;
@@ -813,7 +873,10 @@ function createCleanShutdownSnapshot(
   defaultShellPath: string
 ): AppState {
   const cleanState = createInitialState(defaultShellPath);
-  cleanState.settings = mergeSettings(cleanState.settings, currentState.settings);
+  cleanState.settings = mergeSettings(
+    cleanState.settings,
+    currentState.settings
+  );
 
   const currentWindow = currentState.windows[currentState.activeWindowId];
   const cleanWindow = cleanState.windows[cleanState.activeWindowId];
@@ -886,7 +949,9 @@ function buildWorkspaceRowsPatch(
   const currentById = new Map(
     currentRows.map((row) => [row.workspaceId, row] as const)
   );
-  const nextById = new Map(nextRows.map((row) => [row.workspaceId, row] as const));
+  const nextById = new Map(
+    nextRows.map((row) => [row.workspaceId, row] as const)
+  );
   const remove = currentRows
     .map((row) => row.workspaceId)
     .filter((workspaceId) => !nextById.has(workspaceId));
@@ -911,7 +976,9 @@ function buildWorkspaceRowsPatch(
   };
 }
 
-function shellGroupsFromMutation(mutation: AppMutationSummary): Set<ShellGroup> {
+function shellGroupsFromMutation(
+  mutation: AppMutationSummary
+): Set<ShellGroup> {
   const groups = new Set<ShellGroup>();
   if (mutation.window) {
     groups.add("window");
