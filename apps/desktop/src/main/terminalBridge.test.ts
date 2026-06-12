@@ -2207,20 +2207,8 @@ describe("terminal bridge", () => {
     bridge.sendText(surfaceId, "\u001b");
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "codex",
-      event: "idle",
-      message: "Dismissed input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        dismissKey: "escape"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
   });
@@ -2260,20 +2248,8 @@ describe("terminal bridge", () => {
     bridge.sendKeyInput(surfaceId, { key: "Escape" });
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "codex",
-      event: "idle",
-      message: "Dismissed input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        dismissKey: "escape"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
       key: "Escape"
@@ -2311,20 +2287,8 @@ describe("terminal bridge", () => {
     bridge.sendText(surfaceId, "\u001b");
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "claude",
-      event: "idle",
-      message: "Dismissed input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        dismissKey: "escape"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\u001b");
   });
@@ -2360,20 +2324,8 @@ describe("terminal bridge", () => {
     bridge.sendKeyInput(surfaceId, { key: "Escape" });
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "claude",
-      event: "idle",
-      message: "Dismissed input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        dismissKey: "escape"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
       key: "Escape"
@@ -2449,20 +2401,8 @@ describe("terminal bridge", () => {
     bridge.sendText(surfaceId, "\r");
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "codex",
-      event: "idle",
-      message: "Submitted input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        submitKey: "enter"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(surface.sessionId, "\r");
   });
@@ -2502,20 +2442,8 @@ describe("terminal bridge", () => {
     bridge.sendKeyInput(surfaceId, { key: "Enter" });
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "codex",
-      event: "idle",
-      message: "Submitted input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        submitKey: "enter"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
       key: "Enter"
@@ -2553,27 +2481,15 @@ describe("terminal bridge", () => {
     bridge.sendKeyInput(surfaceId, { key: "Enter" });
 
     expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "agent.event",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      sessionId: surface.sessionId,
-      agent: "gemini",
-      event: "idle",
-      message: "Submitted input prompt",
-      details: expect.objectContaining({
-        uiOnly: true,
-        visibleToUser: true,
-        source: "terminal-input",
-        submitKey: "enter"
-      })
+      type: "agent.attention.clear",
+      surfaceId
     });
     expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
       key: "Enter"
     });
   });
 
-  it("does not clear Claude needs-input on Enter submit (Claude is covered by hooks)", () => {
+  it("clears visible Claude needs-input attention when Enter submits the prompt", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
@@ -2603,7 +2519,10 @@ describe("terminal bridge", () => {
 
     bridge.sendKeyInput(surfaceId, { key: "Enter" });
 
-    expect(dispatchAppAction).not.toHaveBeenCalled();
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "agent.attention.clear",
+      surfaceId
+    });
     expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.sessionId, {
       key: "Enter"
     });

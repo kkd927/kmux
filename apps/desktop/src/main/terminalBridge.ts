@@ -184,9 +184,6 @@ export function createTerminalBridge(
     return surface ? surface.sessionId : null;
   }
 
-  const VISIBLE_DISMISS_AGENTS = ["codex", "claude"] as const;
-  const VISIBLE_SUBMIT_AGENTS = ["codex", "gemini"] as const;
-
   type VisibleInputClearTrigger =
     | { kind: "dismiss"; key: "escape" | "ctrl-c" | "ctrl-d" }
     | { kind: "submit" };
@@ -209,55 +206,38 @@ export function createTerminalBridge(
       return;
     }
     const workspace = state.workspaces[pane.workspaceId];
-    const agents =
-      trigger.kind === "dismiss"
-        ? VISIBLE_DISMISS_AGENTS
-        : VISIBLE_SUBMIT_AGENTS;
+    const hasNeedsInput = Object.values(workspace?.statusEntries ?? {}).some(
+      (entry) =>
+        entry.surfaceId === surfaceId &&
+        entry.text === "needs input" &&
+        entry.key.startsWith("agent:")
+    );
+    if (!hasNeedsInput) {
+      return;
+    }
     const diagnosticSuffix =
       trigger.kind === "dismiss" ? "dismissed" : "submitted";
-    const promptMessage =
+    const triggerInfo =
       trigger.kind === "dismiss"
-        ? "Dismissed input prompt"
-        : "Submitted input prompt";
-    for (const agent of agents) {
-      const statusKey = `agent:${agent}:${surfaceId}`;
-      if (workspace?.statusEntries?.[statusKey]?.text !== "needs input") {
-        continue;
-      }
-      const triggerInfo =
-        trigger.kind === "dismiss"
-          ? { dismissKey: trigger.key }
-          : { submitKey: "enter" as const };
-      logDiagnostics(`main.terminal.${agent}-input-${diagnosticSuffix}`, {
-        workspaceId: pane.workspaceId,
-        paneId: surface.paneId,
-        surfaceId,
-        sessionId: surface.sessionId,
-        ...triggerInfo
-      });
-      options.dispatchAppAction({
-        type: "agent.event",
-        workspaceId: pane.workspaceId,
-        paneId: surface.paneId,
-        surfaceId,
-        sessionId: surface.sessionId,
-        agent,
-        event: "idle",
-        message: promptMessage,
-        details: {
-          uiOnly: true,
-          visibleToUser: true,
-          source: "terminal-input",
-          ...triggerInfo
-        }
-      });
-    }
+        ? { dismissKey: trigger.key }
+        : { submitKey: "enter" as const };
+    logDiagnostics(`main.terminal.agent-input-${diagnosticSuffix}`, {
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      sessionId: surface.sessionId,
+      ...triggerInfo
+    });
+    options.dispatchAppAction({
+      type: "agent.attention.clear",
+      surfaceId
+    });
   }
 
   function sendText(surfaceId: Id, text: string): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
-      const dismissKey = codexDismissKeyFromText(text);
+      const dismissKey = dismissKeyFromText(text);
       if (dismissKey) {
         clearVisibleAgentNeedsInput(surfaceId, {
           kind: "dismiss",
@@ -274,7 +254,7 @@ export function createTerminalBridge(
   function sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
-      const dismissKey = codexDismissKeyFromKeyInput(input);
+      const dismissKey = dismissKeyFromKeyInput(input);
       if (dismissKey) {
         clearVisibleAgentNeedsInput(surfaceId, {
           kind: "dismiss",
@@ -1210,7 +1190,7 @@ function isStrictCodexInputAttention(title: string, message: string): boolean {
   );
 }
 
-function codexDismissKeyFromText(
+function dismissKeyFromText(
   text: string
 ): "escape" | "ctrl-c" | "ctrl-d" | null {
   if (text === "\u001b") {
@@ -1225,7 +1205,7 @@ function codexDismissKeyFromText(
   return null;
 }
 
-function codexDismissKeyFromKeyInput(
+function dismissKeyFromKeyInput(
   input: TerminalKeyInput
 ): "escape" | "ctrl-c" | "ctrl-d" | null {
   const key = input.key.trim().toLowerCase();
@@ -1238,7 +1218,7 @@ function codexDismissKeyFromKeyInput(
   if (input.ctrlKey && key === "d") {
     return "ctrl-d";
   }
-  return input.text ? codexDismissKeyFromText(input.text) : null;
+  return input.text ? dismissKeyFromText(input.text) : null;
 }
 
 function isSubmitText(text: string): boolean {

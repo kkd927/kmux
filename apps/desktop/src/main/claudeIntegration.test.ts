@@ -68,30 +68,21 @@ describe("ensureClaudeHooksInstalled", () => {
     expect(settings.hooks.Notification).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
-    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(settings.hooks.UserPromptSubmit).toBeUndefined();
     expect(settings.hooks.Stop).toHaveLength(1);
     expect(settings.hooks.PreToolUse).toHaveLength(1);
     expect(settings.hooks.PreToolUse[0].matcher).toBe(
       "AskUserQuestion|ExitPlanMode"
     );
-    expect(settings.hooks.PostToolUse).toHaveLength(1);
-    expect(settings.hooks.PostToolUse[0].matcher).toBeUndefined();
-    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
-      expect.objectContaining({
-        type: "command",
-        command: expect.stringContaining(
-          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude PostToolUse || true'
-        )
-      })
-    ]);
-    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
+    expect(settings.hooks.PostToolUse).toBeUndefined();
+    expect(settings.hooks.SessionStart[0].hooks).toEqual([
       expect.objectContaining({
         command: expect.stringContaining(
           `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
         )
       })
     ]);
-    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
+    expect(settings.hooks.SessionStart[0].hooks).toEqual([
       expect.objectContaining({
         command: expect.stringContaining(
           `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
@@ -99,14 +90,6 @@ describe("ensureClaudeHooksInstalled", () => {
       })
     ]);
     expect(JSON.stringify(settings)).toContain("KMUX_MANAGED_CLAUDE_HOOK=1");
-    expect(settings.hooks.UserPromptSubmit[0].hooks).toEqual([
-      expect.objectContaining({
-        type: "command",
-        command: expect.stringContaining(
-          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude UserPromptSubmit || true'
-        )
-      })
-    ]);
     expect(settings.hooks.SessionEnd[0].hooks).toEqual([
       expect.objectContaining({
         type: "command",
@@ -151,6 +134,32 @@ describe("ensureClaudeHooksInstalled", () => {
                 ]
               }
             ],
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command: "echo user-post-tool-use"
+                  },
+                  {
+                    type: "command",
+                    command:
+                      'KMUX_MANAGED_CLAUDE_HOOK=1; "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude PostToolUse || true'
+                  }
+                ]
+              }
+            ],
+            UserPromptSubmit: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command:
+                      'KMUX_MANAGED_CLAUDE_HOOK=1; "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" claude UserPromptSubmit || true'
+                  }
+                ]
+              }
+            ],
             Stop: [
               {
                 hooks: [
@@ -184,9 +193,15 @@ describe("ensureClaudeHooksInstalled", () => {
         command: "echo user-notification-hook"
       }
     ]);
+    expect(settings.hooks.PostToolUse[0].hooks).toEqual([
+      {
+        type: "command",
+        command: "echo user-post-tool-use"
+      }
+    ]);
+    expect(settings.hooks.UserPromptSubmit).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
-    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
     expect(settings.hooks.Stop).toHaveLength(2);
     expect(settings.hooks.Stop[0].hooks[0]?.command).toBe(
       "echo user-stop-hook"

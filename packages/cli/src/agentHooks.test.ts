@@ -78,37 +78,28 @@ describe("agent hook normalization", () => {
     });
   });
 
-  it("maps Claude PostToolUse AskUserQuestion completions to running events", () => {
+  it("ignores deprecated Claude PostToolUse AskUserQuestion hooks", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PostToolUse", {
         tool_name: "AskUserQuestion"
       })
-    ).toMatchObject({
-      agent: "claude",
-      event: "running"
-    });
+    ).toBeNull();
   });
 
-  it("maps Claude PostToolUse for other tools to running events", () => {
+  it("ignores deprecated Claude PostToolUse hooks for other tools", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PostToolUse", {
         tool_name: "Read"
       })
-    ).toMatchObject({
-      agent: "claude",
-      event: "running"
-    });
+    ).toBeNull();
   });
 
-  it("maps Claude PostToolUse ExitPlanMode to running so plan-mode approval clears needs_input", () => {
+  it("ignores deprecated Claude PostToolUse ExitPlanMode hooks", () => {
     expect(
       normalizeAgentHookInvocation("claude", "PostToolUse", {
         tool_name: "ExitPlanMode"
       })
-    ).toMatchObject({
-      agent: "claude",
-      event: "running"
-    });
+    ).toBeNull();
   });
 
   it("maps Claude permission requests to needs_input events", () => {
@@ -174,25 +165,13 @@ describe("agent hook normalization", () => {
     });
   });
 
-  it("treats Gemini before-agent hooks as running events", () => {
-    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toMatchObject(
-      {
-        agent: "gemini",
-        event: "running",
-        message: "Running"
-      }
-    );
+  it("ignores deprecated Gemini before-agent hooks", () => {
+    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toBeNull();
   });
 
-  it("maps Gemini BeforeTool / AfterTool hooks to running so tool-permission approval clears needs_input", () => {
-    expect(normalizeAgentHookInvocation("gemini", "BeforeTool")).toMatchObject({
-      agent: "gemini",
-      event: "running"
-    });
-    expect(normalizeAgentHookInvocation("gemini", "AfterTool")).toMatchObject({
-      agent: "gemini",
-      event: "running"
-    });
+  it("ignores deprecated Gemini BeforeTool / AfterTool hooks", () => {
+    expect(normalizeAgentHookInvocation("gemini", "BeforeTool")).toBeNull();
+    expect(normalizeAgentHookInvocation("gemini", "AfterTool")).toBeNull();
   });
 
   it("treats Codex stop hooks as turn completion events", () => {
@@ -212,8 +191,7 @@ describe("agent hook normalization", () => {
       })
     ).toMatchObject({
       agent: "antigravity",
-      event: "running",
-      message: "Running",
+      event: "session_start",
       details: {
         conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
         transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
@@ -225,10 +203,7 @@ describe("agent hook normalization", () => {
 
     expect(
       normalizeAgentHookInvocation("antigravity-cli", "PostInvocation")
-    ).toMatchObject({
-      agent: "antigravity",
-      event: "running"
-    });
+    ).toBeNull();
   });
 
   it("maps Antigravity permission and question tools to needs_input", () => {
@@ -271,9 +246,6 @@ describe("agent hook normalization", () => {
       normalizeAgentHookInvocation("antigravity", "Stop", {
         fullyIdle: false
       })
-    ).toMatchObject({
-      agent: "antigravity",
-      event: "running"
-    });
+    ).toBeNull();
   });
 });

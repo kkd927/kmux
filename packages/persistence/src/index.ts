@@ -147,7 +147,6 @@ export interface UsageHistoryVendorRecord {
   vendor: Exclude<UsageVendor, "unknown">;
   totalCostUsd: number;
   totalTokens: number;
-  activeSessionCount: number;
 }
 
 export interface UsageHistoryDayRecord {
@@ -157,7 +156,6 @@ export interface UsageHistoryDayRecord {
   estimatedCostUsd: number;
   unknownCostTokens: number;
   totalTokens: number;
-  activeSessionCount: number;
   vendors: UsageHistoryVendorRecord[];
 }
 

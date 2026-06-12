@@ -788,7 +788,7 @@ describe("core reducer", () => {
     expect(state.notifications[0].agent).toBe("gemini");
   });
 
-  it("clears only the matching agent status entry when the agent becomes idle", () => {
+  it("clears only the matching agent needs-input entry when the agent becomes idle", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -798,8 +798,8 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
+      event: "needs_input",
+      message: "Approve tool use?"
     });
     applyAction(state, {
       type: "agent.event",
@@ -814,7 +814,7 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(0);
   });
 
-  it("keeps other Codex surface attention when one surface clears", () => {
+  it("clears needs-input attention for the submitted surface only", () => {
     const state = createInitialState();
     const workspaceId = Object.keys(state.workspaces)[0];
     const paneId = Object.keys(state.panes)[0];
@@ -849,17 +849,8 @@ describe("core reducer", () => {
       message: "Second prompt"
     });
     applyAction(state, {
-      type: "agent.event",
-      workspaceId,
-      paneId,
-      surfaceId: firstSurfaceId,
-      sessionId: state.surfaces[firstSurfaceId].sessionId,
-      agent: "codex",
-      event: "idle",
-      details: {
-        uiOnly: true,
-        visibleToUser: true
-      }
+      type: "agent.attention.clear",
+      surfaceId: firstSurfaceId
     });
 
     expect(buildViewModel(state).workspaceRows[0]?.statusEntries).toEqual([
@@ -891,14 +882,6 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
-    });
-    applyAction(state, {
-      type: "agent.event",
-      workspaceId,
-      surfaceId,
-      agent: "claude",
       event: "turn_complete"
     });
 
@@ -915,7 +898,7 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
-  it("clears stale agent needs-input notifications when the agent resumes running", () => {
+  it("clears stale agent needs-input notifications when attention is handled", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -929,12 +912,8 @@ describe("core reducer", () => {
       message: "Plan mode prompt: Depth"
     });
     applyAction(state, {
-      type: "agent.event",
-      workspaceId,
-      surfaceId,
-      agent: "codex",
-      event: "running",
-      message: "Running"
+      type: "agent.attention.clear",
+      surfaceId
     });
 
     expect(state.notifications).toHaveLength(0);
@@ -1021,7 +1000,7 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
-  it("clears stale Gemini needs-input notifications when the agent resumes running", () => {
+  it("clears stale Gemini needs-input notifications when attention is handled", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -1035,12 +1014,8 @@ describe("core reducer", () => {
       message: "Tool permission requested: WriteFile"
     });
     applyAction(state, {
-      type: "agent.event",
-      workspaceId,
-      surfaceId,
-      agent: "gemini",
-      event: "running",
-      message: "Running"
+      type: "agent.attention.clear",
+      surfaceId
     });
 
     expect(state.notifications).toHaveLength(0);
@@ -1166,8 +1141,8 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
+      event: "needs_input",
+      message: "Approve tool use?"
     });
     applyAction(state, {
       type: "agent.event",
@@ -1192,14 +1167,6 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
-    });
-    applyAction(state, {
-      type: "agent.event",
-      workspaceId,
-      surfaceId,
-      agent: "claude",
       event: "turn_complete"
     });
     applyAction(state, {
@@ -1213,7 +1180,7 @@ describe("core reducer", () => {
     expect(state.notifications).toHaveLength(1);
   });
 
-  it("ignores agent running events for sidebar state", () => {
+  it("ignores agent session-start events for sidebar state", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -1223,8 +1190,8 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
+      event: "session_start",
+      message: "Started"
     });
 
     const secondEffects = applyAction(state, {
@@ -1232,8 +1199,8 @@ describe("core reducer", () => {
       workspaceId,
       surfaceId,
       agent: "claude",
-      event: "running",
-      message: "Running"
+      event: "session_start",
+      message: "Started"
     });
 
     expect(firstEffects).toEqual([]);
@@ -2033,6 +2000,142 @@ describe("core reducer", () => {
     expect(state.panes[paneId].surfaceIds).toEqual([secondSurfaceId]);
     expect(state.panes[paneId].activeSurfaceId).toBe(secondSurfaceId);
     expect(state.surfaces[firstSurfaceId]).toBeUndefined();
+  });
+
+  it("purges agent attention when closing a surface", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+    const firstSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId });
+    const secondSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: firstSurfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "First"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: secondSurfaceId,
+      agent: "claude",
+      event: "needs_input",
+      message: "Second"
+    });
+
+    applyAction(state, { type: "surface.close", surfaceId: firstSurfaceId });
+
+    expect(state.surfaces[firstSurfaceId]).toBeUndefined();
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toEqual(
+      expect.objectContaining({ surfaceId: secondSurfaceId })
+    );
+    expect(
+      state.workspaces[workspaceId].statusEntries[
+        `agent:claude:${firstSurfaceId}`
+      ]
+    ).toBeUndefined();
+    expect(
+      state.workspaces[workspaceId].statusEntries[
+        `agent:claude:${secondSurfaceId}`
+      ]
+    ).toBeDefined();
+  });
+
+  it("purges agent attention when closing other surfaces", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+    const keptSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId });
+    const closedSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId: closedSurfaceId,
+      agent: "codex",
+      event: "needs_input",
+      message: "Closed"
+    });
+
+    applyAction(state, {
+      type: "surface.closeOthers",
+      surfaceId: keptSurfaceId
+    });
+
+    expect(state.panes[paneId].surfaceIds).toEqual([keptSurfaceId]);
+    expect(state.notifications).toHaveLength(0);
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
+  it("purges agent attention when closing a pane", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const originalPaneId = state.workspaces[workspaceId].activePaneId;
+
+    applyAction(state, {
+      type: "pane.split",
+      paneId: originalPaneId,
+      direction: "right"
+    });
+    const closingPaneId = state.workspaces[workspaceId].activePaneId;
+    const closingSurfaceId = state.panes[closingPaneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId: closingPaneId,
+      surfaceId: closingSurfaceId,
+      agent: "gemini",
+      event: "needs_input",
+      message: "Closed pane"
+    });
+
+    applyAction(state, { type: "pane.close", paneId: closingPaneId });
+
+    expect(state.panes[closingPaneId]).toBeUndefined();
+    expect(state.surfaces[closingSurfaceId]).toBeUndefined();
+    expect(state.notifications).toHaveLength(0);
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
+  it("purges agent attention when closing a workspace", () => {
+    const state = createInitialState();
+    applyAction(state, { type: "workspace.create", name: "stale" });
+
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      paneId,
+      surfaceId,
+      agent: "antigravity",
+      event: "needs_input",
+      message: "Closed workspace"
+    });
+
+    applyAction(state, { type: "workspace.close", workspaceId });
+
+    expect(state.workspaces[workspaceId]).toBeUndefined();
+    expect(state.notifications).toHaveLength(0);
+    expect(
+      Object.values(state.workspaces).some(
+        (workspace) => Object.keys(workspace.statusEntries).length > 0
+      )
+    ).toBe(false);
   });
 
   it("refreshes derived metadata only when cwd changes", () => {

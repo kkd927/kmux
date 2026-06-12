@@ -65,8 +65,6 @@ interface AntigravitySessionIndexEnvelope {
 const MANAGED_ANTIGRAVITY_HOOK_EVENTS: AntigravityHookEvent[] = [
   "PreInvocation",
   "PreToolUse",
-  "PostToolUse",
-  "PostInvocation",
   "Stop"
 ];
 
@@ -136,7 +134,7 @@ function buildManagedEventConfig(
   runtimePaths: AntigravityHookRuntimePaths
 ): unknown[] {
   const hook = buildManagedHookCommand(eventName, runtimePaths);
-  if (eventName === "PreToolUse" || eventName === "PostToolUse") {
+  if (eventName === "PreToolUse") {
     return [
       {
         matcher: ".*",

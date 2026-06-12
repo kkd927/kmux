@@ -253,19 +253,16 @@ describe("file-store persistence", () => {
         estimatedCostUsd: 0.8,
         unknownCostTokens: 320,
         totalTokens: 2480,
-        activeSessionCount: 3,
         vendors: [
           {
             vendor: "claude",
             totalCostUsd: 1.9,
-            totalTokens: 1880,
-            activeSessionCount: 2
+            totalTokens: 1880
           },
           {
             vendor: "codex",
             totalCostUsd: 0.5,
-            totalTokens: 600,
-            activeSessionCount: 1
+            totalTokens: 600
           }
         ]
       }
@@ -310,7 +307,6 @@ describe("file-store persistence", () => {
         estimatedCostUsd: 1.1,
         unknownCostTokens: 0,
         totalTokens: 4200,
-        activeSessionCount: 2,
         vendors: []
       }
     ];

@@ -107,18 +107,15 @@ describe("ensureAntigravityHooksInstalled", () => {
         matcher?: string;
         hooks: Array<{ command?: string }>;
       }>;
-      PostToolUse: Array<{
-        matcher?: string;
-        hooks: Array<{ command?: string }>;
-      }>;
-      PostInvocation: unknown[];
+      PostToolUse?: unknown[];
+      PostInvocation?: unknown[];
       Stop: unknown[];
     };
 
     expect(managed.PreInvocation).toHaveLength(1);
     expect(managed.PreToolUse).toHaveLength(1);
-    expect(managed.PostToolUse).toHaveLength(1);
-    expect(managed.PostInvocation).toHaveLength(1);
+    expect(managed.PostToolUse).toBeUndefined();
+    expect(managed.PostInvocation).toBeUndefined();
     expect(managed.Stop).toHaveLength(1);
     expect(managed.PreToolUse[0].matcher).toBe(".*");
     expect(JSON.stringify(managed)).toContain(
@@ -297,7 +294,7 @@ describe("ensureAntigravityHooksInstalled", () => {
     );
     expect(
       JSON.stringify(hooks).match(/KMUX_MANAGED_ANTIGRAVITY_HOOK=1/g)
-    )?.toHaveLength(5);
+    )?.toHaveLength(3);
   });
 });
 

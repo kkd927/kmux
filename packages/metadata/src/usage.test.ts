@@ -1239,7 +1239,6 @@ describe("usage adapters", () => {
           dayKey: string;
           totalCostUsd: number;
           totalTokens: number;
-          activeSessionCount: number;
         }>
       >;
     };
@@ -1259,14 +1258,12 @@ describe("usage adapters", () => {
       expect.objectContaining({
         dayKey: "2026-04-16",
         totalCostUsd: 1.2,
-        totalTokens: 1120,
-        activeSessionCount: 1
+        totalTokens: 1120
       }),
       expect.objectContaining({
         dayKey: "2026-04-17",
         totalCostUsd: 0.8,
-        totalTokens: 680,
-        activeSessionCount: 1
+        totalTokens: 680
       })
     ]);
   });
@@ -1363,13 +1360,11 @@ describe("usage adapters", () => {
         totalCostUsd: 0.017,
         reportedCostUsd: 0.017,
         totalTokens: 265,
-        activeSessionCount: 1,
         vendors: [
           expect.objectContaining({
             vendor: "claude",
             totalCostUsd: 0.017,
-            totalTokens: 265,
-            activeSessionCount: 1
+            totalTokens: 265
           })
         ]
       })
@@ -1442,12 +1437,10 @@ describe("usage adapters", () => {
       expect.objectContaining({
         dayKey: "2026-04-16",
         totalTokens: 1940,
-        activeSessionCount: 1,
         vendors: [
           expect.objectContaining({
             vendor: "codex",
-            totalTokens: 1940,
-            activeSessionCount: 1
+            totalTokens: 1940
           })
         ]
       })

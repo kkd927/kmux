@@ -309,6 +309,7 @@ export type AppAction =
       message?: string;
       details?: Record<string, unknown>;
     }
+  | { type: "agent.attention.clear"; surfaceId: Id }
   | { type: "notification.clear"; notificationId?: Id }
   | { type: "notification.jumpLatestUnread" }
   | { type: "terminal.bell" }
@@ -806,6 +807,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return createNotification(state, action);
     case "agent.event":
       return applyAgentEvent(state, action);
+    case "agent.attention.clear":
+      return clearSurfaceAgentAttention(state, action.surfaceId);
     case "notification.clear":
       return clearNotifications(state, action.notificationId);
     case "notification.jumpLatestUnread":
@@ -945,6 +948,15 @@ function mutationSummaryForAction(
         paneTreeWorkspaceIds: new Set([action.workspaceId]),
         notifications: true
       };
+    case "agent.attention.clear":
+      return {
+        window: true,
+        workspaceRows: true,
+        activeWorkspaceActivity: true,
+        activeWorkspacePaneTree: true,
+        paneTreeWorkspaceIds: surfaceWorkspaceSet(state, action.surfaceId),
+        notifications: true
+      };
     case "notification.clear":
     case "notification.jumpLatestUnread":
       return {
@@ -1036,6 +1048,12 @@ function allWorkspaceSet(state: AppState): Set<Id> {
 function sessionWorkspaceSet(state: AppState, sessionId: Id): Set<Id> {
   const session = state.sessions[sessionId];
   const surface = session ? state.surfaces[session.surfaceId] : undefined;
+  const pane = surface ? state.panes[surface.paneId] : undefined;
+  return pane ? new Set([pane.workspaceId]) : activeWorkspaceSet(state);
+}
+
+function surfaceWorkspaceSet(state: AppState, surfaceId: Id): Set<Id> {
+  const surface = state.surfaces[surfaceId];
   const pane = surface ? state.panes[surface.paneId] : undefined;
   return pane ? new Set([pane.workspaceId]) : activeWorkspaceSet(state);
 }
@@ -1379,6 +1397,7 @@ function removeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
 
   for (const paneId of paneIds) {
     for (const surfaceId of state.panes[paneId].surfaceIds) {
+      purgeSurfaceReferences(state, surfaceId);
       delete state.sessions[state.surfaces[surfaceId].sessionId];
       delete state.surfaces[surfaceId];
     }
@@ -1628,6 +1647,7 @@ function closePane(state: AppState, paneId: Id): AppEffect[] {
   const closeEffects: AppEffect[] = [];
   for (const surfaceId of pane.surfaceIds) {
     const surface = state.surfaces[surfaceId];
+    purgeSurfaceReferences(state, surfaceId);
     closeEffects.push({ type: "session.close", sessionId: surface.sessionId });
     delete state.sessions[surface.sessionId];
     delete state.surfaces[surfaceId];
@@ -1749,6 +1769,7 @@ function closeSurface(state: AppState, surfaceId: Id): AppEffect[] {
     pane.activeSurfaceId =
       remainingSurfaceIds[nextActiveIndex] ?? remainingSurfaceIds[0];
   }
+  purgeSurfaceReferences(state, surfaceId);
   delete state.sessions[surface.sessionId];
   delete state.surfaces[surfaceId];
   return [
@@ -1996,16 +2017,6 @@ function applyAgentEvent(
       : notificationEffects;
   }
 
-  if (action.event === "running") {
-    return clearAgentAttentionUi(
-      state,
-      target.workspace,
-      agentName,
-      statusScopeId,
-      target.surface?.id
-    );
-  }
-
   if (action.event === "idle") {
     return clearAgentAttentionUi(
       state,
@@ -2203,6 +2214,68 @@ function clearAgentAttentionUi(
   return clearedStatus || clearedNotifications || clearedGenericReminders
     ? [{ type: "persist" }]
     : [];
+}
+
+function clearSurfaceAgentAttention(
+  state: AppState,
+  surfaceId: Id
+): AppEffect[] {
+  let changed = false;
+
+  for (const workspace of Object.values(state.workspaces)) {
+    workspace.statusEntries ??= {};
+    for (const [key, entry] of Object.entries(workspace.statusEntries)) {
+      if (
+        entry.surfaceId === surfaceId &&
+        entry.text === "needs input" &&
+        key.startsWith("agent:")
+      ) {
+        delete workspace.statusEntries[key];
+        changed = true;
+      }
+    }
+  }
+
+  const beforeCount = state.notifications.length;
+  state.notifications = state.notifications.filter(
+    (notification) =>
+      !(
+        notification.surfaceId === surfaceId &&
+        notification.source === "agent" &&
+        notification.kind === "needs_input"
+      )
+  );
+  if (state.notifications.length !== beforeCount) {
+    changed = true;
+    syncSurfaceNotificationState(state, surfaceId);
+  }
+
+  return changed ? [{ type: "persist" }] : [];
+}
+
+function purgeSurfaceReferences(state: AppState, surfaceId: Id): boolean {
+  let changed = false;
+
+  for (const workspace of Object.values(state.workspaces)) {
+    workspace.statusEntries ??= {};
+    for (const [key, entry] of Object.entries(workspace.statusEntries)) {
+      if (entry.surfaceId === surfaceId) {
+        delete workspace.statusEntries[key];
+        changed = true;
+      }
+    }
+  }
+
+  const beforeCount = state.notifications.length;
+  state.notifications = state.notifications.filter(
+    (notification) => notification.surfaceId !== surfaceId
+  );
+  if (state.notifications.length !== beforeCount) {
+    changed = true;
+    syncSurfaceNotificationState(state, surfaceId);
+  }
+
+  return changed;
 }
 
 function resolveAgentTarget(

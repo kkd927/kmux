@@ -86,7 +86,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "claude-session-1",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     expect(emitSnapshot).toHaveBeenCalledTimes(1);
@@ -140,7 +140,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "claude-session-2",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     await runtime.refreshNow();
@@ -161,7 +161,7 @@ describe("usage runtime", () => {
     );
   });
 
-  it("ignores ui-only agent attention events for usage binding and active counts", () => {
+  it("ignores ui-only agent attention events for usage binding", () => {
     const state = createInitialState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
@@ -190,7 +190,6 @@ describe("usage runtime", () => {
       }
     });
 
-    expect(runtime.getSnapshot().activeSessionCount).toBe(0);
     expect(runtime.getSnapshot().surfaces[surfaceId]).toBeUndefined();
   });
 
@@ -231,7 +230,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "claude-session-live",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     expect(runtime.getSnapshot().surfaces[surfaceId]).toEqual(
@@ -413,7 +412,6 @@ describe("usage runtime", () => {
       expect.objectContaining({
         vendor: "codex",
         attributionState: "bound",
-        state: "active",
         sessionTokens: 544,
         todayTokens: 544
       })
@@ -472,7 +470,6 @@ describe("usage runtime", () => {
       expect.objectContaining({
         vendor: "antigravity",
         attributionState: "bound",
-        state: "active",
         sessionTokens: 0,
         todayTokens: 0
       })
@@ -680,13 +677,11 @@ describe("usage runtime", () => {
           estimatedCostUsd: 0,
           unknownCostTokens: 0,
           totalTokens: 2100,
-          activeSessionCount: 2,
           vendors: [
             {
               vendor: "claude",
               totalCostUsd: 2.1,
-              totalTokens: 2100,
-              activeSessionCount: 2
+              totalTokens: 2100
             }
           ]
         }
@@ -700,7 +695,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "codex-dashboard-session",
       agent: "codex",
-      event: "running"
+      event: "session_start"
     });
 
     await runtime.refreshNow();
@@ -1375,7 +1370,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "codex-live-session",
       agent: "codex",
-      event: "running"
+      event: "session_start"
     });
 
     runtime.start();
@@ -1824,7 +1819,7 @@ describe("usage runtime", () => {
       surfaceId,
       sessionId: "claude-live-session",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     runtime.start();

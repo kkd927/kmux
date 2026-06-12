@@ -147,14 +147,6 @@ function mapAgentHookEvent(
     if (hookEvent === "pre-tool-use" && isClaudeInputTool(toolName)) {
       return "needs_input";
     }
-    if (
-      hookEvent === "pre-tool-use" ||
-      hookEvent === "post-tool-use" ||
-      hookEvent === "prompt-submit" ||
-      hookEvent === "user-prompt-submit"
-    ) {
-      return "running";
-    }
     if (hookEvent === "stop" || hookEvent === "idle") {
       return "turn_complete";
     }
@@ -173,13 +165,6 @@ function mapAgentHookEvent(
     ) {
       return "needs_input";
     }
-    if (
-      hookEvent === "before-agent" ||
-      hookEvent === "before-tool" ||
-      hookEvent === "after-tool"
-    ) {
-      return "running";
-    }
     if (hookEvent === "after-agent" || hookEvent === "idle") {
       return "turn_complete";
     }
@@ -192,13 +177,6 @@ function mapAgentHookEvent(
   }
 
   if (agent === "codex") {
-    if (
-      hookEvent === "user-prompt-submit" ||
-      hookEvent === "prompt-submit" ||
-      hookEvent === "pre-tool-use"
-    ) {
-      return "running";
-    }
     if (hookEvent === "stop" || hookEvent === "idle") {
       return "turn_complete";
     }
@@ -212,23 +190,18 @@ function mapAgentHookEvent(
 
   if (agent === "antigravity") {
     const toolName = antigravityToolName(payload);
+    if (hookEvent === "pre-invocation") {
+      return "session_start";
+    }
     if (
       hookEvent === "pre-tool-use" &&
       (toolName === "ask_permission" || toolName === "ask_question")
     ) {
       return "needs_input";
     }
-    if (
-      hookEvent === "pre-invocation" ||
-      hookEvent === "pre-tool-use" ||
-      hookEvent === "post-tool-use" ||
-      hookEvent === "post-invocation"
-    ) {
-      return "running";
-    }
     if (hookEvent === "stop") {
       return booleanField(payload, "fullyIdle") === false
-        ? "running"
+        ? null
         : "turn_complete";
     }
   }
@@ -303,9 +276,6 @@ function extractHookMessage(
   event: AgentEventName,
   payload: HookPayload
 ): string | undefined {
-  if (event === "running") {
-    return "Running";
-  }
   if (event !== "needs_input") {
     return undefined;
   }

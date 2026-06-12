@@ -77,7 +77,6 @@ describe("UsageDashboard", () => {
           outputTokens: 288,
           cacheTokens: 0,
           totalTokens: 1288,
-          activeSessionCount: 1,
           costSource: "estimated"
         }
       ]
@@ -240,14 +239,12 @@ describe("UsageDashboard", () => {
           dayKey: "2026-04-19",
           totalCostUsd: 0,
           totalTokens: 100,
-          activeSessionCount: 1,
           costSource: "reported"
         },
         {
           dayKey: "2026-04-29",
           totalCostUsd: 0,
           totalTokens: 200,
-          activeSessionCount: 1,
           costSource: "reported"
         }
       ]

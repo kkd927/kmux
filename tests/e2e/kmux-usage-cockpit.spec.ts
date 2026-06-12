@@ -91,9 +91,8 @@ printf 'DONE\\n'
       (snapshot) =>
         snapshot.surfaces[surfaceId]?.vendor === "codex" &&
         snapshot.surfaces[surfaceId]?.attributionState === "bound" &&
-        snapshot.surfaces[surfaceId]?.state === "active" &&
         snapshot.surfaces[surfaceId]?.sessionTokens === 544,
-      "manual codex execution should become a live bound usage surface"
+      "manual codex execution should become a bound usage surface"
     );
 
     await expect(page.getByTestId(`usage-hud-${surfaceId}`)).toHaveCount(0);
@@ -154,7 +153,7 @@ test("hook-bound surfaces keep usage details out of the tab header and open a do
       surfaceId,
       sessionId: "claude-bound-1",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     await waitForUsageView(
@@ -319,7 +318,7 @@ test("usage dashboard shows directory hotspot rows as informational summaries", 
       surfaceId: alphaSurfaceId,
       sessionId: "claude-alpha-session",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
     await dispatch(page, {
       type: "agent.event",
@@ -328,7 +327,7 @@ test("usage dashboard shows directory hotspot rows as informational summaries", 
       surfaceId: betaSurfaceId,
       sessionId: "claude-beta-session",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     await waitForUsageView(
@@ -393,7 +392,7 @@ test("moderate daily spend does not create budget alerts, sidebar statuses, or t
       surfaceId,
       sessionId: "claude-alert-session",
       agent: "claude",
-      event: "running"
+      event: "session_start"
     });
 
     await waitForUsageView(

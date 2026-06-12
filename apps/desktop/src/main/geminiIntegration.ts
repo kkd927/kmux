@@ -53,13 +53,15 @@ export interface GeminiHookRuntimePaths {
 }
 
 const MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
-  { eventName: "BeforeAgent" },
   { eventName: "AfterAgent" },
-  { eventName: "BeforeTool" },
-  { eventName: "AfterTool" },
   { eventName: "SessionStart" },
   { eventName: "SessionEnd" },
   { eventName: "Notification", matcher: "ToolPermission" }
+];
+const DEPRECATED_MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
+  { eventName: "BeforeAgent" },
+  { eventName: "BeforeTool" },
+  { eventName: "AfterTool" }
 ];
 
 function isPlainObject(value: unknown): value is JsonObject {
@@ -228,6 +230,35 @@ function mergeManagedMatcherGroups(
   return nextGroups;
 }
 
+function pruneManagedMatcherGroups(
+  existingGroups: unknown,
+  eventName: GeminiHookEvent
+): HookMatcherGroup[] {
+  const nextGroups: HookMatcherGroup[] = [];
+  for (const group of Array.isArray(existingGroups) ? existingGroups : []) {
+    if (!isPlainObject(group) || !Array.isArray(group.hooks)) {
+      nextGroups.push(group as HookMatcherGroup);
+      continue;
+    }
+
+    const filteredHooks = group.hooks.filter(
+      (hook) => !isManagedGeminiHookCommand(hook, eventName)
+    );
+    if (filteredHooks.length === 0) {
+      continue;
+    }
+    if (filteredHooks.length === group.hooks.length) {
+      nextGroups.push(group as HookMatcherGroup);
+      continue;
+    }
+    nextGroups.push({
+      ...group,
+      hooks: filteredHooks
+    });
+  }
+  return nextGroups;
+}
+
 function parseGeminiSettings(settingsPath: string): JsonObject | null {
   if (!existsSync(settingsPath)) {
     return {};
@@ -275,9 +306,20 @@ export function ensureGeminiHooksInstalled(
     ? existingSettings.hooks
     : {};
   const nextHooks: JsonObject = { ...existingHooks };
+  for (const definition of DEPRECATED_MANAGED_GEMINI_HOOKS) {
+    const prunedGroups = pruneManagedMatcherGroups(
+      nextHooks[definition.eventName],
+      definition.eventName
+    );
+    if (prunedGroups.length === 0) {
+      delete nextHooks[definition.eventName];
+    } else {
+      nextHooks[definition.eventName] = prunedGroups;
+    }
+  }
   for (const definition of MANAGED_GEMINI_HOOKS) {
     nextHooks[definition.eventName] = mergeManagedMatcherGroups(
-      existingHooks[definition.eventName],
+      nextHooks[definition.eventName],
       definition,
       runtimePaths
     );

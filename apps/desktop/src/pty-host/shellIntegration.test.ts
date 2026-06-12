@@ -236,7 +236,10 @@ describe("shell integration launch preparation", () => {
       readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
     ).not.toContain('export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"');
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "const managedEvents = ['SessionStart', 'UserPromptSubmit', 'Stop'];"
+      "const managedEvents = ['SessionStart', 'Stop'];"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      "const deprecatedManagedEvents = ['UserPromptSubmit'];"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "kmux_has_notification_method_override() {"
@@ -805,6 +808,38 @@ describe("shell integration launch preparation", () => {
       const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
       const hooksPath = join(fakeHome, ".codex", "hooks.json");
       const capturePath = join(fakeCodexDir, "argv.txt");
+      mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+      writeFileSync(
+        hooksPath,
+        JSON.stringify(
+          {
+            hooks: {
+              UserPromptSubmit: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: "echo user-prompt-submit"
+                    }
+                  ]
+                },
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command:
+                        "KMUX_MANAGED_CODEX_HOOK=1; kmux-agent-hook codex UserPromptSubmit || true"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
 
       writeFileSync(
         fakeCodex,
@@ -841,6 +876,15 @@ describe("shell integration launch preparation", () => {
       try {
         await runWrapper();
         const firstContents = readFileSync(hooksPath, "utf8");
+        const firstHooks = JSON.parse(firstContents) as {
+          hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+        };
+        expect(firstHooks.hooks.UserPromptSubmit).toHaveLength(1);
+        expect(firstHooks.hooks.UserPromptSubmit[0].hooks?.[0].command).toBe(
+          "echo user-prompt-submit"
+        );
+        expect(firstHooks.hooks.SessionStart).toHaveLength(1);
+        expect(firstHooks.hooks.Stop).toHaveLength(1);
         const firstMtimeMs = statSync(hooksPath).mtimeMs;
         await new Promise((resolve) => setTimeout(resolve, 25));
         await runWrapper();
