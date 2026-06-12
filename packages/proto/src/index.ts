@@ -37,7 +37,6 @@ export type UpdaterStatus =
   | "error";
 export type AgentEventName =
   | "session_start"
-  | "running"
   | "needs_input"
   | "turn_complete"
   | "idle"
@@ -45,12 +44,6 @@ export type AgentEventName =
 export type TerminalNotificationProtocol = 9 | 99 | 777;
 export type TerminalThemeVariant = "dark" | "light";
 export type TerminalThemeProfileSource = "builtin" | "itermcolors" | "custom";
-export type UsageSessionState =
-  | "active"
-  | "waiting"
-  | "warning"
-  | "overBudget"
-  | "unknown";
 export type UsageAttributionState = "bound" | "aggregate_only";
 export type UsageCostSource = "reported" | "estimated" | "partial";
 
@@ -614,7 +607,6 @@ export interface SurfaceUsageVm {
   sessionTokens: number;
   todayCostUsd: number;
   todayTokens: number;
-  state: UsageSessionState;
   attributionState: UsageAttributionState;
   costSource?: UsageCostSource;
   updatedAt: string;
@@ -625,7 +617,6 @@ export interface WorkspaceUsageVm {
   workspaceName: string;
   todayCostUsd: number;
   todayTokens: number;
-  activeCount: number;
   costSource?: UsageCostSource;
 }
 
@@ -641,7 +632,6 @@ export interface VendorUsageVm {
   vendor: UsageVendor;
   todayCostUsd: number;
   todayTokens: number;
-  activeCount: number;
   costSource?: UsageCostSource;
 }
 
@@ -654,7 +644,6 @@ export interface ModelUsageVm {
   outputTokens: number;
   cacheTokens: number;
   totalTokens: number;
-  activeSessionCount: number;
   costSource: UsageCostSource;
 }
 
@@ -684,7 +673,6 @@ export interface UsageDailyActivityVm {
   dayKey: string;
   totalCostUsd: number;
   totalTokens: number;
-  activeSessionCount: number;
   costSource: UsageCostSource;
 }
 
@@ -740,7 +728,6 @@ export interface UsageViewSnapshot {
   updatedAt: string;
   totalTodayCostUsd: number;
   totalTodayTokens: number;
-  activeSessionCount: number;
   unattributedTodayCostUsd: number;
   unattributedTodayTokens: number;
   surfaces: Record<Id, SurfaceUsageVm>;
@@ -822,7 +809,6 @@ export function createEmptyUsageViewSnapshot(
     updatedAt,
     totalTodayCostUsd: 0,
     totalTodayTokens: 0,
-    activeSessionCount: 0,
     unattributedTodayCostUsd: 0,
     unattributedTodayTokens: 0,
     surfaces: {},

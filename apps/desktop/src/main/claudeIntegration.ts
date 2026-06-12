@@ -57,14 +57,14 @@ export interface ClaudeHookRuntimePaths {
 const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
   { eventName: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
-  { eventName: "PostToolUse" },
   { eventName: "SessionStart" },
   { eventName: "SessionEnd" },
-  { eventName: "UserPromptSubmit" },
   { eventName: "Stop" }
 ];
 const DEPRECATED_MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
-  { eventName: "Notification" }
+  { eventName: "Notification" },
+  { eventName: "PostToolUse" },
+  { eventName: "UserPromptSubmit" }
 ];
 
 function isPlainObject(value: unknown): value is JsonObject {

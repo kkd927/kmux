@@ -12,7 +12,6 @@ import {
   type UsageDailyActivityVm,
   type UsageAttributionState,
   type UsagePricingCoverageVm,
-  type UsageSessionState,
   type UsageTokenCostBreakdownVm,
   type UsageTokenBreakdownVm,
   type UsageVendor,
@@ -83,7 +82,6 @@ type SurfaceBinding = {
   vendorProcessId?: number;
   cwd?: string;
   boundAtMs: number;
-  state: UsageSessionState;
   lastAgentEventAtMs: number;
 };
 
@@ -96,7 +94,6 @@ type DerivedSurface = {
   sessionTokens: number;
   todayCostUsd: number;
   todayTokens: number;
-  state: UsageSessionState;
   updatedAtMs: number;
   attributionState: UsageAttributionState;
   costSource: UsageCostSource;
@@ -109,7 +106,6 @@ type DerivedWorkspace = {
   workspaceId: Id;
   todayCostUsd: number;
   todayTokens: number;
-  activeCount: number;
   costSource: UsageCostSource;
   reportedCostUsd: number;
   estimatedCostUsd: number;
@@ -130,7 +126,6 @@ type DerivedVendor = {
   vendor: Exclude<UsageVendor, "unknown">;
   todayCostUsd: number;
   todayTokens: number;
-  activeCount: number;
   costSource: UsageCostSource;
   reportedCostUsd: number;
   estimatedCostUsd: number;
@@ -146,7 +141,6 @@ type DerivedModel = {
   outputTokens: number;
   cacheTokens: number;
   totalTokens: number;
-  activeKeys: Set<string>;
   costSource: UsageCostSource;
   reportedCostUsd: number;
   estimatedCostUsd: number;
@@ -655,12 +649,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       SubscriptionProvider,
       SubscriptionVisibility
     >();
+    const state = options.getState();
 
     for (const binding of bindings.values()) {
-      if (binding.state === "unknown") {
+      if (!isSubscriptionProvider(binding.vendor)) {
         continue;
       }
-      if (!isSubscriptionProvider(binding.vendor)) {
+      const surface = state.surfaces[binding.surfaceId];
+      const session = surface ? state.sessions[surface.sessionId] : undefined;
+      if (!surface || session?.runtimeState === "exited") {
         continue;
       }
       visibleProviders.set(binding.vendor, "live");
@@ -961,7 +958,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           vendorProcessId: match.pid,
           cwd: surface.cwd,
           boundAtMs: existingBinding?.boundAtMs ?? probeMeta.boundAtMs,
-          state: "active",
           lastAgentEventAtMs: nowMs
         });
         manualCandidates.delete(surfaceId);
@@ -984,12 +980,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     if (action.type === "session.exited") {
       const binding = findBindingByKmuxSessionId(action.sessionId);
-      if (binding) {
-        if (binding.source === "manual_cli") {
-          bindings.delete(binding.surfaceId);
-        } else {
-          binding.state = "unknown";
-        }
+      if (binding?.source === "manual_cli") {
+        bindings.delete(binding.surfaceId);
       }
       const surfaceId =
         options.getState().sessions[action.sessionId]?.surfaceId;
@@ -1089,8 +1081,17 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
 
     const existing = bindings.get(surfaceId);
+    if (action.event !== "session_start" && action.event !== "needs_input") {
+      if (existing?.vendor === vendor) {
+        existing.workspaceId = pane.workspaceId;
+        existing.kmuxSessionId = surface.sessionId;
+        existing.cwd = surface.cwd;
+        existing.lastAgentEventAtMs = now();
+      }
+      return;
+    }
+
     const kmuxSessionId = surface.sessionId;
-    const currentState = eventToUsageState(action.event);
     const vendorSessionId =
       action.sessionId && action.sessionId !== kmuxSessionId
         ? action.sessionId
@@ -1104,7 +1105,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       vendorSessionId,
       cwd: surface.cwd,
       boundAtMs: existing?.boundAtMs ?? now(),
-      state: currentState,
       lastAgentEventAtMs: now()
     });
     manualCandidates.delete(surfaceId);
@@ -1211,7 +1211,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         sessionTokens: 0,
         todayCostUsd: 0,
         todayTokens: 0,
-        state: binding.state,
         updatedAtMs: binding.lastAgentEventAtMs,
         attributionState: "bound",
         costSource: "reported",
@@ -1245,7 +1244,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         vendor: sample.vendor,
         todayCostUsd: 0,
         todayTokens: 0,
-        activeCount: 0,
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
@@ -1268,7 +1266,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           outputTokens: 0,
           cacheTokens: 0,
           totalTokens: 0,
-          activeKeys: new Set<string>(),
           costSource: "reported",
           reportedCostUsd: 0,
           estimatedCostUsd: 0,
@@ -1279,7 +1276,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         modelTotal.outputTokens += sample.outputTokens;
         modelTotal.cacheTokens += sample.cacheTokens;
         modelTotal.totalTokens += sample.totalTokens;
-        modelTotal.activeKeys.add(usageSampleKey(sample));
         applyCostBreakdown(modelTotal, sample, sampleCostSource);
         modelTotals.set(modelKey, modelTotal);
       }
@@ -1375,7 +1371,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         workspaceId,
         todayCostUsd: 0,
         todayTokens: 0,
-        activeCount: 0,
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
@@ -1392,30 +1387,22 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         workspaceId: binding.workspaceId,
         todayCostUsd: 0,
         todayTokens: 0,
-        activeCount: 0,
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
         unknownCostTokens: 0
       };
-      if (binding.state !== "unknown") {
-        workspaceTotal.activeCount += 1;
-      }
       workspaceTotals.set(binding.workspaceId, workspaceTotal);
 
       const vendorTotal = vendorTotals.get(binding.vendor) ?? {
         vendor: binding.vendor,
         todayCostUsd: 0,
         todayTokens: 0,
-        activeCount: 0,
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
         unknownCostTokens: 0
       };
-      if (binding.state !== "unknown") {
-        vendorTotal.activeCount += 1;
-      }
       vendorTotals.set(binding.vendor, vendorTotal);
     }
 
@@ -1451,7 +1438,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         outputTokens: Math.round(model.outputTokens),
         cacheTokens: Math.round(model.cacheTokens),
         totalTokens: Math.round(model.totalTokens),
-        activeSessionCount: model.activeKeys.size,
         costSource: resolveCostSource(model)
       }))
       .sort(
@@ -1466,9 +1452,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       updatedAt: isoNow(),
       totalTodayCostUsd: roundUsd(totalTodayCostUsd),
       totalTodayTokens: Math.round(totalTodayTokens),
-      activeSessionCount: Array.from(derivedSurfaces.values()).filter(
-        (surface) => surface.state !== "unknown"
-      ).length,
       unattributedTodayCostUsd: roundUsd(unattributedTodayCostUsd),
       unattributedTodayTokens: Math.round(unattributedTodayTokens),
       surfaces: Object.fromEntries(
@@ -1492,7 +1475,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
                 sessionTokens: Math.round(surface.sessionTokens),
                 todayCostUsd: roundUsd(surface.todayCostUsd),
                 todayTokens: Math.round(surface.todayTokens),
-                state: surface.state,
                 attributionState: surface.attributionState,
                 costSource: surface.costSource,
                 updatedAt: new Date(surface.updatedAtMs || now()).toISOString()
@@ -1513,7 +1495,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
               workspaceName: workspace.name,
               todayCostUsd: roundUsd(workspaceTotal.todayCostUsd),
               todayTokens: Math.round(workspaceTotal.todayTokens),
-              activeCount: workspaceTotal.activeCount,
               costSource: workspaceTotal.costSource
             }
           ];
@@ -1525,15 +1506,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       vendors: Array.from(vendorTotals.values())
         .filter(
           (vendorTotal) =>
-            vendorTotal.todayCostUsd > 0 ||
-            vendorTotal.todayTokens > 0 ||
-            vendorTotal.activeCount > 0
+            vendorTotal.todayCostUsd > 0 || vendorTotal.todayTokens > 0
         )
         .map((vendorTotal) => ({
           vendor: vendorTotal.vendor,
           todayCostUsd: roundUsd(vendorTotal.todayCostUsd),
           todayTokens: Math.round(vendorTotal.todayTokens),
-          activeCount: vendorTotal.activeCount,
           costSource: vendorTotal.costSource
         }))
         .sort((left, right) => right.todayCostUsd - left.todayCostUsd),
@@ -1554,7 +1532,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             sessionTokens: Math.round(surface.sessionTokens),
             todayCostUsd: roundUsd(surface.todayCostUsd),
             todayTokens: Math.round(surface.todayTokens),
-            state: surface.state,
             attributionState: surface.attributionState,
             costSource: surface.costSource,
             updatedAt: new Date(surface.updatedAtMs || now()).toISOString()
@@ -1639,7 +1616,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         dayKey: expectedDayKey,
         totalCostUsd: roundUsd(history?.totalCostUsd ?? 0),
         totalTokens: Math.round(history?.totalTokens ?? 0),
-        activeSessionCount: history?.activeSessionCount ?? 0,
         costSource: resolveHistoryCostSource(history)
       };
     });
@@ -1916,7 +1892,6 @@ function createDerivedSurfaceForMatch(
     sessionTokens: 0,
     todayCostUsd: 0,
     todayTokens: 0,
-    state: "unknown",
     updatedAtMs: timestampMs,
     attributionState,
     costSource: "reported",
@@ -1944,18 +1919,6 @@ function createSnapshotSignature(snapshot: UsageViewSnapshot): string {
     ...snapshot,
     updatedAt: ""
   });
-}
-
-function eventToUsageState(
-  event: Extract<AppAction, { type: "agent.event" }>["event"]
-): UsageSessionState {
-  if (event === "needs_input") {
-    return "waiting";
-  }
-  if (event === "running" || event === "session_start") {
-    return "active";
-  }
-  return "unknown";
 }
 
 function normalizeVendor(agent: string): UsageVendor {
@@ -2137,16 +2100,6 @@ function costedUsageSampleUsd(
   costSource = normalizeUsageSampleCostSource(sample)
 ): number {
   return costSource === "unavailable" ? 0 : sample.estimatedCostUsd;
-}
-
-function usageSampleKey(sample: UsageEventSample): string {
-  return (
-    sample.sessionId ??
-    sample.threadId ??
-    sample.projectPath ??
-    sample.cwd ??
-    sample.sourcePath
-  );
 }
 
 function buildDirectoryHotspots(
@@ -2363,16 +2316,11 @@ function buildTodayHistoryRecord(
     estimatedCostUsd: roundUsd(pricingCoverage.estimatedCostUsd),
     unknownCostTokens: Math.round(pricingCoverage.unknownCostTokens),
     totalTokens: Math.round(totalTodayTokens),
-    activeSessionCount: Array.from(vendorTotals.values()).reduce(
-      (sum, vendor) => sum + vendor.activeCount,
-      0
-    ),
     vendors: Array.from(vendorTotals.values())
       .map((vendor) => ({
         vendor: vendor.vendor,
         totalCostUsd: roundUsd(vendor.todayCostUsd),
-        totalTokens: Math.round(vendor.todayTokens),
-        activeSessionCount: vendor.activeCount
+        totalTokens: Math.round(vendor.todayTokens)
       }))
       .sort((left, right) => right.totalCostUsd - left.totalCostUsd)
   };

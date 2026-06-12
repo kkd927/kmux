@@ -96,12 +96,10 @@ export interface UsageHistoryDay {
   estimatedCostUsd: number;
   unknownCostTokens: number;
   totalTokens: number;
-  activeSessionCount: number;
   vendors: Array<{
     vendor: Exclude<UsageVendor, "unknown">;
     totalCostUsd: number;
     totalTokens: number;
-    activeSessionCount: number;
   }>;
 }
 
@@ -731,14 +729,12 @@ export async function scanUsageHistoryDays(options: {
       estimatedCostUsd: number;
       unknownCostTokens: number;
       totalTokens: number;
-      activeKeys: Set<string>;
       vendors: Map<
         Exclude<UsageVendor, "unknown">,
         {
           vendor: Exclude<UsageVendor, "unknown">;
           totalCostUsd: number;
           totalTokens: number;
-          activeKeys: Set<string>;
         }
       >;
     }
@@ -787,11 +783,9 @@ export async function scanUsageHistoryDays(options: {
       estimatedCostUsd: 0,
       unknownCostTokens: 0,
       totalTokens: 0,
-      activeKeys: new Set<string>(),
       vendors: new Map()
     };
     const sampleCostSource = normalizeSampleCostSource(sample);
-    const sessionKey = usageSampleSessionKey(sample);
     dayBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
     dayBucket.totalTokens += sample.totalTokens;
     if (sampleCostSource === "reported") {
@@ -801,20 +795,17 @@ export async function scanUsageHistoryDays(options: {
     } else {
       dayBucket.unknownCostTokens += sample.totalTokens;
     }
-    dayBucket.activeKeys.add(sessionKey);
 
     const vendorBucket = dayBucket.vendors.get(sample.vendor) ?? {
       vendor: sample.vendor,
       totalCostUsd: 0,
-      totalTokens: 0,
-      activeKeys: new Set<string>()
+      totalTokens: 0
     };
     vendorBucket.totalCostUsd += pricedCostForSample(
       sample,
       sampleCostSource
     );
     vendorBucket.totalTokens += sample.totalTokens;
-    vendorBucket.activeKeys.add(sessionKey);
     dayBucket.vendors.set(sample.vendor, vendorBucket);
     bucketMap.set(dayKey, dayBucket);
   }
@@ -828,13 +819,11 @@ export async function scanUsageHistoryDays(options: {
       estimatedCostUsd: bucket.estimatedCostUsd,
       unknownCostTokens: bucket.unknownCostTokens,
       totalTokens: bucket.totalTokens,
-      activeSessionCount: bucket.activeKeys.size,
       vendors: Array.from(bucket.vendors.values())
         .map((vendor) => ({
           vendor: vendor.vendor,
           totalCostUsd: vendor.totalCostUsd,
-          totalTokens: vendor.totalTokens,
-          activeSessionCount: vendor.activeKeys.size
+          totalTokens: vendor.totalTokens
         }))
         .sort((left, right) => right.totalCostUsd - left.totalCostUsd)
     }));
@@ -2037,16 +2026,6 @@ function pricedCostForSample(
   costSource = normalizeSampleCostSource(sample)
 ): number {
   return costSource === "unavailable" ? 0 : sample.estimatedCostUsd;
-}
-
-function usageSampleSessionKey(sample: UsageEventSample): string {
-  return (
-    sample.sessionId ??
-    sample.threadId ??
-    sample.projectPath ??
-    sample.cwd ??
-    sample.sourcePath
-  );
 }
 
 export function usageSampleIdentity(sample: UsageEventSample): string {

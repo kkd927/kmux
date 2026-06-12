@@ -7,7 +7,7 @@ Date: 2026-04-20
 This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, Gemini, and Antigravity, and how those signals are consumed by:
 
 - notifications and sidebar attention
-- usage binding and live usage state
+- usage binding and attribution
 - external session indexing and deterministic resume
 
 The goal is to prevent the same signal from being reused for incompatible purposes.
@@ -18,7 +18,7 @@ The goal is to prevent the same signal from being reused for incompatible purpos
    It must not decide vendor-specific meaning beyond raw OSC protocol parsing.
 2. `electron-main` is the only place that may promote a raw signal into agent semantics.
 3. Usage binding must only consume lifecycle signals that are safe for attribution.
-4. UI-only attention signals must never affect usage binding or active session counts.
+4. UI-only attention signals must never affect usage binding.
 
 ## Signal Paths
 
@@ -77,25 +77,24 @@ Flow:
 
 - renderer terminal input
 - [`apps/desktop/src/main/terminalBridge.ts`](../apps/desktop/src/main/terminalBridge.ts)
-- synthetic `agent.event(idle)` for every agent that has a matching visible `needs_input` status on the focused surface
+- internal `agent.attention.clear` for the visible surface when that surface currently has an agent `needs input` status entry
 
 Two trigger kinds:
 
-- **dismiss** (`Esc`, `Ctrl-C`, `Ctrl-D`) — applies to `codex` and `claude`. Carries `details.dismissKey`.
-- **submit** (`Enter` / `Return`) — applies to `codex` and `gemini`. Carries `details.submitKey = "enter"`.
+- **dismiss** (`Esc`, `Ctrl-C`, `Ctrl-D`)
+- **submit** (`Enter` / `Return`)
 
 Primary use:
 
 - clear visible `needs_input` attention when the user dismisses the prompt locally with `Esc`, `Ctrl-C`, or `Ctrl-D`
-- clear visible `needs_input` for agents that do not emit a reliable hook-based completion signal for their own prompts — Codex has no hook-based `needs_input` at all, and Gemini has no hook fired when the user responds to a `ToolPermission` notification. On submit (`Enter`) on the visible Codex/Gemini surface, kmux synthesizes an `idle` event so the sidebar attention clears immediately instead of waiting for `Stop` / `AfterAgent`.
-
-Claude is intentionally excluded from the submit trigger because its `PostToolUse` hook (mapped to `running`) clears `needs_input` on approval; the dismiss trigger still covers `Esc` because Claude does not fire `PostToolUse` when `AskUserQuestion`, `ExitPlanMode`, or `PermissionRequest` is declined.
+- clear visible `needs_input` attention as soon as the user submits input on that surface, without waiting for a lifecycle hook
+- cover all agents by scanning `workspace.statusEntries` for entries scoped to the surface where `entry.text === "needs input"` and the status key starts with `agent:`
 
 Not allowed:
 
-- usage binding from this fallback (events are marked `details.uiOnly = true`)
+- usage binding from this fallback
 - cross-surface clearing — a keypress on one surface must never clear status on a different surface
-- clearing a different agent's status on the same surface — only agents that currently own a `needs input` status entry for this `surfaceId` are affected
+- hard-coded agent lists — any agent with a surface-scoped `needs input` status is affected
 - clearing on non-Enter, non-dismiss keys (e.g. arrow keys) — navigation inside a prompt must not clear attention
 
 ## Vendor Matrix
@@ -107,35 +106,30 @@ Installed hooks:
 - [`apps/desktop/src/main/claudeIntegration.ts`](../apps/desktop/src/main/claudeIntegration.ts)
 - `PermissionRequest`
 - `PreToolUse` with matcher `AskUserQuestion|ExitPlanMode`
-- `PostToolUse`
 - `SessionStart`
 - `SessionEnd`
-- `UserPromptSubmit`
 - `Stop`
 
 Canonical notification signals:
 
 - hook `PermissionRequest` / `PreToolUse AskUserQuestion|ExitPlanMode` -> `agent.event(needs_input)`
-- hook `PostToolUse` (any tool, including `AskUserQuestion` and `ExitPlanMode`) -> `agent.event(running)`. This clears `needs_input` as soon as the approved tool finishes, which is how plan-mode approval clears the sidebar attention without waiting for the next `PreToolUse`. Claude does not fire `PostToolUse` when the prompt is cancelled via `Esc`, so the visible-input dismiss fallback in `terminalBridge.ts` covers that case.
-- kmux no longer installs Claude `Notification` hooks. Older kmux-managed `Notification` hooks are removed on startup while user-defined `Notification` hooks are preserved.
+- kmux no longer installs Claude `Notification`, `PostToolUse`, or `UserPromptSubmit` hooks. Older kmux-managed entries for those hooks are removed on startup while user-defined hooks are preserved.
 - if a legacy/user-defined generic `Notification` hook reaches kmux, it is suppressed in `main` before reducer dispatch when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same agent and surface still exists.
-- the reducer performs the reverse cleanup: when a structured `needs_input` arrives, or when `clearAgentAttentionUi` runs (on `running`/`idle`/`turn_complete`/`session_end`), any generic `source = "agent"` notification for the same agent and surface is removed. This covers the case where a generic hook arrived first and the structured hook arrived afterwards.
-- hook `UserPromptSubmit`, plus any non-input-tool `PreToolUse` payload that reaches kmux, -> `agent.event(running)`
+- the reducer performs the reverse cleanup: when a structured `needs_input` arrives, or when `clearAgentAttentionUi` runs (on `idle`/`turn_complete`/`session_end`), any generic `source = "agent"` notification for the same agent and surface is removed. This covers the case where a generic hook arrived first and the structured hook arrived afterwards.
 - hook `SessionStart` -> `agent.event(session_start)`
 - hook `SessionEnd` -> `agent.event(session_end)`
 - hook `Stop` -> `agent.event(turn_complete)`
-- visible-surface `Esc` / `Ctrl-C` / `Ctrl-D` dismiss input -> synthetic `agent.event(idle)` with `details.uiOnly = true` (dismiss trigger of the Visible terminal input fallback signal path)
+- visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
 
 Important:
 
-- Claude does not fire `PostToolUse` when an `AskUserQuestion`, `ExitPlanMode`, or `PermissionRequest` prompt is cancelled (e.g. the user hits `Esc`) — the tool invocation is blocked at the pre-stage, so there is no post-stage hook. The visible-input dismiss fallback is the only signal `kmux` has to clear `needs_input` in that case, so do not remove or weaken it without a replacement.
-- Claude does not participate in the visible-input _submit_ trigger — approval is covered by the generic `PostToolUse` -> `running` mapping above.
+- Claude prompt response and dismissal are both handled by the visible-input attention clear path for visible surfaces.
 
 Usage consumption:
 
 - real `agent.event` values are consumed by [`apps/desktop/src/main/usageRuntime.ts`](../apps/desktop/src/main/usageRuntime.ts)
-- legacy/user-defined generic Claude `Notification` hook entries must not affect usage binding or waiting state
-- visible-input fallback events carry `details.uiOnly = true` and are ignored by `usageRuntime` (same rule as Codex)
+- legacy/user-defined generic Claude `Notification` hook entries must not affect usage binding
+- `agent.attention.clear` is UI-only and is ignored by `usageRuntime`
 
 OSC policy:
 
@@ -147,10 +141,7 @@ OSC policy:
 Installed hooks:
 
 - [`apps/desktop/src/main/geminiIntegration.ts`](../apps/desktop/src/main/geminiIntegration.ts)
-- `BeforeAgent`
 - `AfterAgent`
-- `BeforeTool`
-- `AfterTool`
 - `SessionStart`
 - `SessionEnd`
 - `Notification` with matcher `ToolPermission`
@@ -158,16 +149,16 @@ Installed hooks:
 Canonical notification signals:
 
 - hook `Notification matcher=ToolPermission` -> `agent.event(needs_input)`
-- hook `BeforeAgent` / `BeforeTool` / `AfterTool` -> `agent.event(running)`. `AfterTool` is the primary way `needs_input` from a `ToolPermission` notification gets cleared once the user approves — Gemini has no dedicated "permission response" hook.
+- kmux no longer installs Gemini `BeforeAgent`, `BeforeTool`, or `AfterTool` hooks. Older kmux-managed entries for those hooks are removed on startup while user-defined hooks are preserved.
 - hook `AfterAgent` -> `agent.event(turn_complete)`
 - hook `SessionStart` -> `agent.event(session_start)`
 - hook `SessionEnd` -> `agent.event(session_end)`
-- visible-surface `Enter` submit -> synthetic `agent.event(idle)` with `details.uiOnly = true` (submit trigger of the Visible terminal input fallback). This covers cases where the `ToolPermission` was denied or where `AfterTool` is delayed, so the sidebar attention clears on the user's Enter rather than waiting for `AfterAgent`.
+- visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
 
 Usage consumption:
 
 - real `agent.event` values are consumed by `usageRuntime`
-- visible-input fallback events carry `details.uiOnly = true` and are ignored by `usageRuntime` (same rule as Codex and Claude)
+- `agent.attention.clear` is UI-only and is ignored by `usageRuntime`
 
 OSC policy:
 
@@ -179,22 +170,20 @@ Installed hooks:
 
 - [`apps/desktop/src/pty-host/shellIntegration.ts`](../apps/desktop/src/pty-host/shellIntegration.ts)
 - `SessionStart`
-- `UserPromptSubmit`
 - `Stop`
 
 Canonical notification signals:
 
 - hook `SessionStart` -> `agent.event(session_start)`
-- hook `UserPromptSubmit` -> `agent.event(running)`
+- kmux no longer installs Codex `UserPromptSubmit` hooks. Older kmux-managed entries for that hook are removed when the wrapper updates while user-defined hooks are preserved.
 - hook `Stop` -> `agent.event(turn_complete)`
 - filtered terminal OSC attention -> synthetic `agent.event(needs_input)` with `details.uiOnly = true`
-- visible-surface `Esc` / `Ctrl-C` / `Ctrl-D` dismiss input -> synthetic `agent.event(idle)` with `details.uiOnly = true`
-- visible-surface `Enter` submit input -> synthetic `agent.event(idle)` with `details.uiOnly = true`. Codex's `UserPromptSubmit` hook only fires for outer CLI prompts, not internal plan-mode / selection prompts, so without this fallback the sidebar `needs input` would linger until the whole turn finishes (`Stop`).
+- visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
 
 Important:
 
 - Codex does not currently provide a reliable hook-based `needs_input` signal in `kmux`
-- Codex does not fire `UserPromptSubmit` for in-turn prompts (plan-mode approval, selection menus, free-form answers), so the visible-input submit fallback is the only way kmux learns that the user has responded until `Stop`. Do not remove or weaken it without a replacement.
+- visible-input submit/dismiss is the only reliable immediate signal that the user handled an in-turn prompt before `Stop`
 - Codex terminal chatter must not be treated as a normal desktop notification by default
 
 OSC policy:
@@ -210,7 +199,7 @@ OSC policy:
 Usage policy:
 
 - [`usageRuntime.ts`](../apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
-- this prevents UI-only promotions (Codex OSC-derived attention, visible-input clear fallbacks for any agent, and similar synthetic events) from creating bindings, waiting state, or active session count changes
+- this prevents UI-only promotions (Codex OSC-derived attention and similar synthetic events) from creating bindings
 
 ### Antigravity
 
@@ -221,16 +210,15 @@ Installed hooks:
 - top-level managed hook entry `kmux-antigravity`
 - `PreInvocation`
 - `PreToolUse`
-- `PostToolUse`
-- `PostInvocation`
 - `Stop`
 
 Canonical notification signals:
 
-- hook `PreInvocation` / `PreToolUse` / `PostToolUse` / `PostInvocation` -> `agent.event(running)`
+- hook `PreInvocation` -> `agent.event(session_start)` with conversation metadata for indexing and usage binding
 - hook `PreToolUse` with tool `ask_permission` or `ask_question` -> `agent.event(needs_input)`
 - hook `Stop` with `fullyIdle !== false` -> `agent.event(turn_complete)`
-- hook `Stop` with `fullyIdle === false` -> `agent.event(running)` because background work is still active
+- hook `Stop` with `fullyIdle === false` -> no-op because background work is still active and no attention state should change
+- kmux no longer installs Antigravity `PostToolUse` or `PostInvocation` hooks. Older kmux-managed entries are removed on startup while user-defined hooks are preserved.
 
 Session indexing:
 
@@ -244,7 +232,7 @@ Session indexing:
 
 Usage policy:
 
-- Antigravity lifecycle events bind only the live surface state (`active`, `waiting`, `turn_complete`) for workflow parity.
+- Antigravity `PreInvocation`, `SessionStart`-style lifecycle signals, and `needs_input` can bind a surface for attribution without creating live usage state.
 - Usage samples come from Antigravity transcript storage under `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl`.
 - If Antigravity transcript records expose explicit token metrics, kmux uses those metrics.
 - If no explicit token metrics are present, kmux estimates visible transcript tokens and prices them with Gemini pricing when the Antigravity model label resolves to a Gemini model.
@@ -273,7 +261,8 @@ Reducer behavior in [`packages/core/src/index.ts`](../packages/core/src/index.ts
 
 - `agent.event(needs_input)` creates an agent notification with `kind = "needs_input"` and clears any generic `source = "agent"` reminder for the same agent/surface so the structured entry replaces stale previews
 - `agent.event(turn_complete)` creates an agent notification with `kind = "turn_complete"`
-- `running`, `idle`, and `session_end` clear stale `needs_input` status, structured `needs_input` notifications, and generic `source = "agent"` reminders for the same agent/surface
+- `idle` and `session_end` clear stale `needs_input` status, structured `needs_input` notifications, and generic `source = "agent"` reminders for the same agent/surface
+- `agent.attention.clear` clears surface-scoped `needs_input` status entries and structured `needs_input` notifications for the handled surface
 - `turn_complete` also clears stale `needs_input` UI before creating the completion notification
 
 Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](../apps/desktop/src/main/socketServer.ts):
@@ -297,11 +286,11 @@ This keeps hook and OSC semantics separate while making delivery behavior consis
 
 ## Usage Semantics
 
-`usageRuntime` uses agent events to bind a vendor session to a surface and to derive live state:
+`usageRuntime` uses attribution-safe agent events to bind a vendor session to a surface:
 
-- `running` / `session_start` -> active
-- `needs_input` -> waiting
-- other lifecycle events may leave the surface in `unknown`
+- `session_start` and equivalent metadata hooks such as Antigravity `PreInvocation` bind the vendor session to the surface
+- `needs_input` can also bind attribution when it is a real hook event
+- `agent.attention.clear` and UI-only `agent.event` signals must not create or change usage bindings
 
 This is safe only for real lifecycle signals.
 
@@ -309,6 +298,7 @@ Never feed these sources into usage binding:
 
 - raw `terminal.notification`
 - synthetic attention events marked `details.uiOnly = true`
+- `agent.attention.clear`
 - generic desktop chatter with no attribution-safe lifecycle meaning
 
 ## Change Checklist

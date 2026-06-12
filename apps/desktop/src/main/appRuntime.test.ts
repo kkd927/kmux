@@ -933,7 +933,7 @@ describe("app runtime shell patches", () => {
     }
   });
 
-  it("does not emit redundant patches for repeated agent running events", () => {
+  it("does not emit redundant patches for repeated agent session-start events", () => {
     const runtime = createRuntime(false);
     const window = createMockWindow();
     browserWindows.push(window);
@@ -948,13 +948,15 @@ describe("app runtime shell patches", () => {
         workspaceId,
         surfaceId,
         agent: "claude",
-        event: "running",
-        message: "Running"
+        event: "session_start",
+        message: "Started"
       });
-      const firstUpdatedAt =
+
+      expect(
         runtime.getState().workspaces[workspaceId].statusEntries[
           `agent:claude:${surfaceId}`
-        ]?.updatedAt;
+        ]
+      ).toBeUndefined();
 
       window.webContents.send.mockClear();
       window.setTitle.mockClear();
@@ -964,8 +966,8 @@ describe("app runtime shell patches", () => {
         workspaceId,
         surfaceId,
         agent: "claude",
-        event: "running",
-        message: "Running"
+        event: "session_start",
+        message: "Started"
       });
 
       expect(window.webContents.send).not.toHaveBeenCalled();
@@ -973,8 +975,8 @@ describe("app runtime shell patches", () => {
       expect(
         runtime.getState().workspaces[workspaceId].statusEntries[
           `agent:claude:${surfaceId}`
-        ]?.updatedAt
-      ).toBe(firstUpdatedAt);
+        ]
+      ).toBeUndefined();
     } finally {
       runtime.shutdown();
     }

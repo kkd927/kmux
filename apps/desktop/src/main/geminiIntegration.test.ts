@@ -64,31 +64,23 @@ describe("ensureGeminiHooksInstalled", () => {
       hooks: Record<string, Array<{ matcher?: string; hooks: unknown[] }>>;
     };
 
-    expect(settings.hooks.BeforeAgent).toHaveLength(1);
+    expect(settings.hooks.BeforeAgent).toBeUndefined();
     expect(settings.hooks.AfterAgent).toHaveLength(1);
-    expect(settings.hooks.BeforeTool).toHaveLength(1);
-    expect(settings.hooks.AfterTool).toHaveLength(1);
+    expect(settings.hooks.BeforeTool).toBeUndefined();
+    expect(settings.hooks.AfterTool).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks.Notification).toHaveLength(1);
     expect(settings.hooks.Notification[0].matcher).toBe("ToolPermission");
     expect(JSON.stringify(settings)).toContain("KMUX_MANAGED_GEMINI_HOOK=1");
-    expect(settings.hooks.BeforeAgent[0].hooks).toEqual([
-      expect.objectContaining({
-        type: "command",
-        command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini BeforeAgent || true'
-        )
-      })
-    ]);
-    expect(settings.hooks.BeforeAgent[0].hooks).toEqual([
+    expect(settings.hooks.AfterAgent[0].hooks).toEqual([
       expect.objectContaining({
         command: expect.stringContaining(
           `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
         )
       })
     ]);
-    expect(settings.hooks.BeforeAgent[0].hooks).toEqual([
+    expect(settings.hooks.AfterAgent[0].hooks).toEqual([
       expect.objectContaining({
         command: expect.stringContaining(
           `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
@@ -100,14 +92,6 @@ describe("ensureGeminiHooksInstalled", () => {
         type: "command",
         command: expect.stringContaining(
           'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini AfterAgent || true'
-        )
-      })
-    ]);
-    expect(settings.hooks.AfterTool[0].hooks).toEqual([
-      expect.objectContaining({
-        type: "command",
-        command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini AfterTool || true'
         )
       })
     ]);
@@ -137,6 +121,21 @@ describe("ensureGeminiHooksInstalled", () => {
         "      {",
         '        "hooks": [{"type": "command", "command": "echo user-after-agent"}]',
         "      }",
+        "    ],",
+        '    "BeforeAgent": [',
+        "      {",
+        '        "hooks": [{"type": "command", "command": "KMUX_MANAGED_GEMINI_HOOK=1; kmux-agent-hook gemini BeforeAgent || true"}]',
+        "      }",
+        "    ],",
+        '    "BeforeTool": [',
+        "      {",
+        '        "hooks": [{"type": "command", "command": "echo user-before-tool"}, {"type": "command", "command": "KMUX_MANAGED_GEMINI_HOOK=1; kmux-agent-hook gemini BeforeTool || true"}]',
+        "      }",
+        "    ],",
+        '    "AfterTool": [',
+        "      {",
+        '        "hooks": [{"type": "command", "command": "KMUX_MANAGED_GEMINI_HOOK=1; kmux-agent-hook gemini AfterTool || true"}]',
+        "      }",
         "    ]",
         "  }",
         "}"
@@ -152,10 +151,13 @@ describe("ensureGeminiHooksInstalled", () => {
 
     expect(firstResult.changed).toBe(true);
     expect(secondResult.changed).toBe(false);
-    expect(settings.hooks.BeforeAgent).toHaveLength(1);
+    expect(settings.hooks.BeforeAgent).toBeUndefined();
     expect(settings.hooks.AfterAgent).toHaveLength(2);
     expect(settings.hooks.BeforeTool).toHaveLength(1);
-    expect(settings.hooks.AfterTool).toHaveLength(1);
+    expect(settings.hooks.BeforeTool[0].hooks[0]?.command).toBe(
+      "echo user-before-tool"
+    );
+    expect(settings.hooks.AfterTool).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks.AfterAgent[0].hooks[0]?.command).toBe(

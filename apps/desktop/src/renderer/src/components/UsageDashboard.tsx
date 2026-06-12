@@ -24,7 +24,6 @@ type HeatmapCell = {
   dayKey: string | null;
   totalCostUsd: number;
   totalTokens: number;
-  activeSessionCount: number;
   costSource: string;
   intensity: number;
   tooltipLabel: string;
@@ -276,7 +275,6 @@ function UsageHeatmap(props: {
     dayKey: string;
     totalCostUsd: number;
     totalTokens: number;
-    activeSessionCount: number;
     costSource: string;
   }>;
 }): JSX.Element {
@@ -717,7 +715,6 @@ function buildHeatmap(
     dayKey: string;
     totalCostUsd: number;
     totalTokens: number;
-    activeSessionCount: number;
     costSource: string;
   }>,
   heatmapColumns: number
@@ -732,7 +729,6 @@ function buildHeatmap(
       dayKey: string;
       totalCostUsd: number;
       totalTokens: number;
-      activeSessionCount: number;
       costSource: string;
     }
   >();
@@ -745,7 +741,6 @@ function buildHeatmap(
     }
     current.totalCostUsd += day.totalCostUsd;
     current.totalTokens += day.totalTokens;
-    current.activeSessionCount += day.activeSessionCount;
     current.costSource =
       current.costSource === day.costSource ? current.costSource : "partial";
   }
@@ -773,7 +768,6 @@ function buildHeatmap(
         dayKey,
         totalCostUsd: 0,
         totalTokens: 0,
-        activeSessionCount: 0,
         costSource: "reported"
       };
 
@@ -781,7 +775,6 @@ function buildHeatmap(
         dayKey,
         totalCostUsd: day.totalCostUsd,
         totalTokens: day.totalTokens,
-        activeSessionCount: day.activeSessionCount,
         costSource: day.costSource,
         intensity: 0,
         tooltipLabel: "",
