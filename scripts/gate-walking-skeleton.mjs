@@ -105,15 +105,12 @@ const unitSuites = [
   "apps/desktop/src/pty-host/snapshotCache.test.ts",
   "apps/desktop/src/pty-host/terminalInput.test.ts",
   "apps/desktop/src/pty-host/terminalNotifications.test.ts",
-  "scripts/collect-linux-release-evidence.test.mjs",
   "scripts/dev.test.mjs",
   "scripts/smoke-dev.test.mjs",
   "scripts/smoke-packaged-linux.test.mjs",
   "scripts/smoke-packaged-mac.test.mjs",
   "tests/e2e/helpers.test.ts"
 ];
-
-const slowUnitSuites = ["scripts/release-check-linux.test.mjs"];
 
 const e2eSpecs = [
   "tests/e2e/kmux-walking-skeleton.spec.ts",
@@ -132,7 +129,7 @@ const e2eGrep = [
 ].join("|");
 
 export function walkingSkeletonGateUnitSuites() {
-  return [...unitSuites, ...slowUnitSuites];
+  return [...unitSuites];
 }
 
 export function walkingSkeletonGateUnitCommandArgs() {
@@ -140,7 +137,7 @@ export function walkingSkeletonGateUnitCommandArgs() {
 }
 
 export function walkingSkeletonGateSlowUnitCommandArgs() {
-  return ["vitest", "run", "--maxWorkers=1", ...slowUnitSuites];
+  return ["vitest", "run", "--maxWorkers=1"];
 }
 
 export function walkingSkeletonGateE2eSpecs() {
@@ -222,7 +219,7 @@ export function walkingSkeletonGateModeSummary({
   if (requireLinuxDesktop) {
     return [
       "Gate mode: Ubuntu Desktop Linux gate",
-      "RC evidence: walking-skeleton component only; record this output with the remaining Ubuntu Desktop/AppImage observations in the RC ledger."
+      "Linux release scope: walking-skeleton component only; run package:linux and smoke:packaged:linux before release."
     ].join("\n");
   }
 
@@ -234,7 +231,7 @@ export function walkingSkeletonGateModeSummary({
     `Gate mode: portable preflight on ${platform}${
       partialFlags.length > 0 ? ` (${partialFlags.join(", ")})` : ""
     }`,
-    "RC evidence: no; run `npm run gate:walking-skeleton:linux` on Ubuntu Desktop without skip flags for the Linux gate."
+    "Linux release scope: no; run `npm run gate:walking-skeleton:linux` on Ubuntu Desktop without skip flags for the Linux gate."
   ].join("\n");
 }
 

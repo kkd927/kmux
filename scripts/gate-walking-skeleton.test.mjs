@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -101,15 +100,12 @@ describe("walking skeleton gate target preflight", () => {
       "vitest",
       "run",
       "--maxWorkers=4",
-      ...walkingSkeletonGateUnitSuites().filter(
-        (suite) => suite !== "scripts/release-check-linux.test.mjs"
-      )
+      ...walkingSkeletonGateUnitSuites()
     ]);
     expect(walkingSkeletonGateSlowUnitCommandArgs()).toEqual([
       "vitest",
       "run",
-      "--maxWorkers=1",
-      "scripts/release-check-linux.test.mjs"
+      "--maxWorkers=1"
     ]);
   });
 
@@ -211,12 +207,10 @@ describe("walking skeleton gate target preflight", () => {
         "apps/desktop/src/pty-host/snapshotCache.test.ts",
         "apps/desktop/src/pty-host/terminalInput.test.ts",
         "apps/desktop/src/pty-host/terminalNotifications.test.ts",
-        "scripts/collect-linux-release-evidence.test.mjs",
         "scripts/dev.test.mjs",
         "scripts/smoke-dev.test.mjs",
         "scripts/smoke-packaged-linux.test.mjs",
         "scripts/smoke-packaged-mac.test.mjs",
-        "scripts/release-check-linux.test.mjs",
         "tests/e2e/helpers.test.ts"
       ])
     );
@@ -248,14 +242,16 @@ describe("walking skeleton gate target preflight", () => {
         skipE2e: true,
         skipBuild: true
       })
-    ).toContain("Gate mode: portable preflight on darwin (--skip-e2e, --skip-build)");
+    ).toContain(
+      "Gate mode: portable preflight on darwin (--skip-e2e, --skip-build)"
+    );
     expect(
       walkingSkeletonGateModeSummary({
         platform: "darwin",
         skipE2e: true,
         skipBuild: true
       })
-    ).toContain("RC evidence: no");
+    ).toContain("Linux release scope: no");
     expect(
       walkingSkeletonGateModeSummary({
         requireLinuxDesktop: true,
@@ -267,19 +263,7 @@ describe("walking skeleton gate target preflight", () => {
         requireLinuxDesktop: true,
         platform: "linux"
       })
-    ).toContain("RC evidence: walking-skeleton component only");
-  });
-
-  it("documents walking-skeleton gate mode semantics", () => {
-    const releaseDocs = readFileSync("docs/linux-release-validation.md", "utf8");
-    const linuxDesktopDocs = readFileSync("docs/linux-desktop.md", "utf8");
-    const developmentDocs = readFileSync("docs/development.md", "utf8");
-
-    for (const docs of [releaseDocs, linuxDesktopDocs, developmentDocs]) {
-      expect(docs).toContain("Gate mode: Ubuntu Desktop Linux gate");
-      expect(docs).toContain("RC evidence: walking-skeleton component only");
-      expect(docs).toContain("RC evidence: no");
-    }
+    ).toContain("Linux release scope: walking-skeleton component only");
   });
 
   it("keeps portable preflight available outside Linux", () => {

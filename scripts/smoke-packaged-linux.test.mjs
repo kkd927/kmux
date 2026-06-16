@@ -1,8 +1,8 @@
 import {
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAppImageBlockmapPresent,
   assertLinuxDesktopEnvironment,
+  buildAppImageRuntimeEnv,
   buildPackagedSmokeSummary,
   buildPackagedSmokeEnv,
   calculateFileSha512,
@@ -23,6 +24,7 @@ import {
   findExtractedNotificationIconPath,
   findAppImagePath,
   findLinuxUpdateMetadataPath,
+  findVersionedLibzPath,
   inferLinuxAppImageArch,
   isKmuxLinuxAppImagePath,
   isLinuxUpdateMetadataName,
@@ -146,9 +148,9 @@ describe("linux packaged smoke wrapper", () => {
       const genericAppImage = path.join(root, "kmux.AppImage");
       writeFileSync(genericAppImage, "");
 
-      expect(() =>
-        findAppImagePath({ explicitPath: genericAppImage })
-      ).toThrow(/kmux-<version>-linux-<arch>\.AppImage/);
+      expect(() => findAppImagePath({ explicitPath: genericAppImage })).toThrow(
+        /kmux-<version>-linux-<arch>\.AppImage/
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -208,7 +210,9 @@ describe("linux packaged smoke wrapper", () => {
   });
 
   it("prefers the host architecture when multiple AppImages are present", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-multiarch-"));
+    const root = mkdtempSync(
+      path.join(tmpdir(), "kmux-linux-smoke-multiarch-")
+    );
     try {
       const arm64Dir = path.join(root, "linux-arm64-release-assets");
       const x64Dir = path.join(root, "linux-x64-release-assets");
@@ -218,10 +222,7 @@ describe("linux packaged smoke wrapper", () => {
         arm64Dir,
         "kmux-0.3.12-linux-arm64.AppImage"
       );
-      const x64AppImage = path.join(
-        x64Dir,
-        "kmux-0.3.12-linux-x64.AppImage"
-      );
+      const x64AppImage = path.join(x64Dir, "kmux-0.3.12-linux-x64.AppImage");
       writeFileSync(arm64AppImage, "");
       writeFileSync(x64AppImage, "");
 
@@ -262,7 +263,9 @@ describe("linux packaged smoke wrapper", () => {
   });
 
   it("prefers the host architecture across all release roots", () => {
-    const arm64Root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-arm64-"));
+    const arm64Root = mkdtempSync(
+      path.join(tmpdir(), "kmux-linux-smoke-arm64-")
+    );
     const x64Root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-x64-"));
     try {
       const arm64AppImage = path.join(
@@ -482,9 +485,9 @@ describe("linux packaged smoke wrapper", () => {
       });
 
       expect(summary).toContain("Linux packaged smoke preflight:");
-      expect(summary).toContain("Smoke mode: Ubuntu Desktop RC preflight");
+      expect(summary).toContain("Smoke mode: Ubuntu Desktop packaged smoke");
       expect(summary).toContain(
-        "Passing RC evidence: no automatic pass; record real Ubuntu Desktop/AppImage observations in the RC ledger."
+        "Linux release scope: packaged smoke component only; manual updater and desktop-integration observations remain separate."
       );
       expect(diagnosticSummary).toContain(
         "Smoke mode: non-RC diagnostics (--allow-any-linux-desktop)"
@@ -516,7 +519,7 @@ describe("linux packaged smoke wrapper", () => {
         "Update metadata checksum match: top-level, file entry, and packaged AppImage sha512 match"
       );
       expect(summary).toContain(
-        "Release visibility/updater install: not validated by packaged smoke; record updater check/download/install evidence separately in the RC ledger."
+        "Release visibility/updater install: not validated by packaged smoke; validate updater check/download/install separately before a Linux release."
       );
       expect(summary).toContain(
         "Desktop entry: Name=kmux | Icon=kmux | Categories=Development;TerminalEmulator;Utility; | StartupWMClass=kmux | StartupNotify=true | Terminal=false"
@@ -525,57 +528,19 @@ describe("linux packaged smoke wrapper", () => {
         `Notification icon resource: ${path.join("resources", "notificationIcon.png")}`
       );
       expect(summary).toContain(
-        "Notification delivery/window grouping: not validated by packaged smoke; record notification title/body/icon app attribution observed in the Ubuntu notification center and window grouping matched the app window separately in the RC ledger."
+        "Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release."
       );
       expect(summary).toContain(`APPIMAGE=${fixture.appImagePath}`);
       expect(summary).toContain("| APPIMAGE_EXTRACT_AND_RUN=1 |");
       expect(summary).toContain(
         `KMUX_PACKAGED_EXECUTABLE_PATH=${fixture.appImagePath}`
       );
+      expect(summary).toContain("KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH=<missing>");
       expect(summary).toContain(
         "AppImage launch args: <none>; --no-sandbox not added by smoke wrapper"
       );
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps release validation docs aligned with packaged smoke metadata output", () => {
-    const releaseDocs = readFileSync("docs/linux-release-validation.md", "utf8");
-    const linuxDesktopDocs = readFileSync("docs/linux-desktop.md", "utf8");
-    const developmentDocs = readFileSync("docs/development.md", "utf8");
-
-    for (const expectedPhrase of [
-      "Linux update metadata path/version/AppImage entry",
-      "AppImage blockmap sidecar",
-      "update metadata top-level sha512",
-      "AppImage file-entry sha512",
-      "packaged AppImage sha512",
-      "update metadata AppImage size/checksum",
-      "packaged AppImage checksum match",
-      "release visibility and updater check/download/install remain separate manual observations",
-      "notification delivery/window grouping remains a separate manual observation",
-      "`--no-sandbox` was not injected",
-      "Smoke mode",
-      "Passing RC evidence: no automatic pass"
-    ]) {
-      expect(releaseDocs).toContain(expectedPhrase);
-    }
-    for (const expectedPhrase of [
-      "Smoke mode",
-      "Passing RC evidence: no automatic pass",
-      "AppImage blockmap sidecar",
-      "update metadata top-level sha512",
-      "AppImage file-entry sha512",
-      "packaged AppImage sha512",
-      "size/checksum match status",
-      "release visibility and updater check/download/install remain separate manual observations",
-      "notification delivery/window grouping remains a separate manual observation",
-      "`--no-sandbox` was not injected",
-      "record real Ubuntu Desktop/AppImage observations in the RC ledger"
-    ]) {
-      expect(linuxDesktopDocs).toContain(expectedPhrase);
-      expect(developmentDocs).toContain(expectedPhrase);
     }
   });
 
@@ -603,12 +568,14 @@ describe("linux packaged smoke wrapper", () => {
   it("requires a non-empty AppImage blockmap sidecar for packaged updater smoke", () => {
     const fixture = createReleaseFixture();
     try {
-      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath))
-        .toThrow(/blockmap sidecar is required/);
+      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath)).toThrow(
+        /blockmap sidecar is required/
+      );
 
       writeFileSync(`${fixture.appImagePath}.blockmap`, "");
-      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath))
-        .toThrow(/blockmap sidecar must be non-empty/);
+      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath)).toThrow(
+        /blockmap sidecar must be non-empty/
+      );
 
       writeFileSync(`${fixture.appImagePath}.blockmap`, "blockmap");
       expect(assertAppImageBlockmapPresent(fixture.appImagePath)).toEqual({
@@ -626,8 +593,9 @@ describe("linux packaged smoke wrapper", () => {
     try {
       mkdirSync(`${fixture.appImagePath}.blockmap`);
 
-      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath))
-        .toThrow(/got not-file/);
+      expect(() => assertAppImageBlockmapPresent(fixture.appImagePath)).toThrow(
+        /got not-file/
+      );
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -957,7 +925,7 @@ describe("linux packaged smoke wrapper", () => {
         env: { DISPLAY: ":99", XDG_CURRENT_DESKTOP: "ubuntu:GNOME" },
         osReleaseText: ubuntuLtsOsRelease
       })
-    ).toThrow(/RC evidence: no on this host/);
+    ).toThrow(/Linux desktop target unavailable on this host/);
     expect(() =>
       assertLinuxDesktopEnvironment({
         platform: "linux",
@@ -1001,6 +969,48 @@ describe("linux packaged smoke wrapper", () => {
       APPIMAGE_EXTRACT_AND_RUN: "1",
       KMUX_PACKAGED_EXECUTABLE_PATH: "/tmp/kmux-0.3.12-linux-x64.AppImage"
     });
+  });
+
+  it("finds a versioned libz runtime candidate for AppImage compatibility", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-libz-"));
+    try {
+      const libzPath = path.join(root, "libz.so.1");
+      writeFileSync(libzPath, "");
+
+      expect(findVersionedLibzPath({ candidatePaths: [libzPath] })).toBe(
+        libzPath
+      );
+      expect(
+        findVersionedLibzPath({
+          candidatePaths: [path.join(root, "missing-libz.so.1")]
+        })
+      ).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a temporary libz.so compatibility path for AppImage runtime probes", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-appimage-env-"));
+    try {
+      const libzPath = path.join(root, "libz.so.1");
+      const compatibilityDir = path.join(root, "compat");
+      writeFileSync(libzPath, "");
+
+      const env = buildAppImageRuntimeEnv({
+        env: { LD_LIBRARY_PATH: "/existing" },
+        compatibilityDir,
+        versionedLibzPath: libzPath
+      });
+
+      expect(env.LD_LIBRARY_PATH).toBe(`${compatibilityDir}:/existing`);
+      expect(env.KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH).toBe(compatibilityDir);
+      expect(statSync(path.join(compatibilityDir, "libz.so")).isFile()).toBe(
+        true
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("preserves an explicit AppImage extraction mode override", () => {

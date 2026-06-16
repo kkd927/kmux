@@ -5,13 +5,15 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
   rmSync,
-  statSync
+  statSync,
+  symlinkSync
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -36,6 +38,16 @@ const DEFAULT_RELEASE_SEARCH_ROOTS = [
 const DEFAULT_BUILDER_CONFIG_PATH = path.resolve(
   "apps/desktop/electron-builder.yml"
 );
+const DEFAULT_VERSIONED_LIBZ_PATHS = [
+  "/usr/lib/aarch64-linux-gnu/libz.so.1",
+  "/lib/aarch64-linux-gnu/libz.so.1",
+  "/usr/lib/x86_64-linux-gnu/libz.so.1",
+  "/lib/x86_64-linux-gnu/libz.so.1",
+  "/usr/lib/arm-linux-gnueabihf/libz.so.1",
+  "/lib/arm-linux-gnueabihf/libz.so.1",
+  "/usr/lib/libz.so.1",
+  "/lib/libz.so.1"
+];
 const KMUX_LINUX_APPIMAGE_NAME_PATTERN =
   /^kmux-\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?-linux-[A-Za-z0-9_-]+\.AppImage$/i;
 
@@ -45,6 +57,38 @@ function isRecord(value) {
 
 function isExistingFile(filePath) {
   return existsSync(filePath) && statSync(filePath).isFile();
+}
+
+function prependPathValue(currentValue, pathEntry) {
+  return currentValue ? `${pathEntry}:${currentValue}` : pathEntry;
+}
+
+export function findVersionedLibzPath({
+  candidatePaths = DEFAULT_VERSIONED_LIBZ_PATHS
+} = {}) {
+  return candidatePaths.find((candidatePath) => isExistingFile(candidatePath));
+}
+
+export function buildAppImageRuntimeEnv({
+  env = process.env,
+  compatibilityDir,
+  versionedLibzPath = findVersionedLibzPath()
+} = {}) {
+  if (!compatibilityDir || !versionedLibzPath) {
+    return { ...env };
+  }
+
+  mkdirSync(compatibilityDir, { recursive: true });
+  const libzCompatPath = path.join(compatibilityDir, "libz.so");
+  if (!existsSync(libzCompatPath)) {
+    symlinkSync(versionedLibzPath, libzCompatPath);
+  }
+
+  return {
+    ...env,
+    LD_LIBRARY_PATH: prependPathValue(env.LD_LIBRARY_PATH, compatibilityDir),
+    KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH: compatibilityDir
+  };
 }
 
 function assertExistingFile(filePath, label) {
@@ -271,7 +315,9 @@ export function findLinuxUpdateMetadataPath({
         }
       }
       const matchingMetadata = files
-        .filter((filePath) => isLinuxUpdateMetadataName(path.basename(filePath)))
+        .filter((filePath) =>
+          isLinuxUpdateMetadataName(path.basename(filePath))
+        )
         .sort();
       if (matchingMetadata.length > 0) {
         return matchingMetadata[0];
@@ -664,20 +710,27 @@ export function assertLinuxDesktopEnvironment({
 
 export function extractAppImageDesktopEntry({
   appImagePath,
+  env = process.env,
   runCommand = spawnSync
 }) {
-  return extractAppImageDesktopIdentity({ appImagePath, runCommand })
+  return extractAppImageDesktopIdentity({ appImagePath, env, runCommand })
     .desktopEntry;
 }
 
 export function extractAppImageDesktopIdentity({
   appImagePath,
+  env = process.env,
   runCommand = spawnSync
 }) {
   const tempRoot = mkdtempSync(path.join(tmpdir(), "kmux-appimage-desktop-"));
   try {
+    const appImageRuntimeEnv = buildAppImageRuntimeEnv({
+      env,
+      compatibilityDir: path.join(tempRoot, "appimage-runtime-libs")
+    });
     const result = runCommand(appImagePath, ["--appimage-extract"], {
       cwd: tempRoot,
+      env: appImageRuntimeEnv,
       stdio: "pipe",
       encoding: "utf8"
     });
@@ -724,8 +777,17 @@ function expectedPackageVersion() {
 
 export function runPackagedPlaywrightSmoke({
   appImagePath,
-  env = process.env
+  env = process.env,
+  runtimeLibraryRoot
 }) {
+  const ownsRuntimeLibraryRoot = !runtimeLibraryRoot;
+  const runtimeRoot =
+    runtimeLibraryRoot ??
+    mkdtempSync(path.join(tmpdir(), "kmux-appimage-run-"));
+  const appImageRuntimeEnv = buildAppImageRuntimeEnv({
+    env,
+    compatibilityDir: path.join(runtimeRoot, "appimage-runtime-libs")
+  });
   const playwrightCli = path.resolve("node_modules", "playwright", "cli.js");
   const result = spawnSync(
     process.execPath,
@@ -738,9 +800,12 @@ export function runPackagedPlaywrightSmoke({
     ],
     {
       stdio: "inherit",
-      env: buildPackagedSmokeEnv({ appImagePath, env })
+      env: buildPackagedSmokeEnv({ appImagePath, env: appImageRuntimeEnv })
     }
   );
+  if (ownsRuntimeLibraryRoot) {
+    rmSync(runtimeRoot, { force: true, recursive: true });
+  }
 
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
@@ -798,6 +863,7 @@ export function buildPackagedSmokeSummary({
   updateMetadata,
   desktopIdentity,
   updateMetadataValidation,
+  smokeEnv,
   allowAnyLinuxDesktop = false,
   env = process.env
 }) {
@@ -818,7 +884,8 @@ export function buildPackagedSmokeSummary({
   const topLevelSha512 =
     updateMetadataValidation?.topLevelSha512 ?? updateMetadata.sha512;
   const desktopEntry = normalizeLinuxDesktopEntry(desktopIdentity.desktopEntry);
-  const smokeEnv = buildPackagedSmokeEnv({ appImagePath, env });
+  const resolvedSmokeEnv =
+    smokeEnv ?? buildPackagedSmokeEnv({ appImagePath, env });
   const blockmap = describeAppImageBlockmap(appImagePath);
 
   return [
@@ -826,9 +893,9 @@ export function buildPackagedSmokeSummary({
     `- Smoke mode: ${
       allowAnyLinuxDesktop
         ? "non-RC diagnostics (--allow-any-linux-desktop)"
-        : "Ubuntu Desktop RC preflight"
+        : "Ubuntu Desktop packaged smoke"
     }`,
-    "- Passing RC evidence: no automatic pass; record real Ubuntu Desktop/AppImage observations in the RC ledger.",
+    "- Linux release scope: packaged smoke component only; manual updater and desktop-integration observations remain separate.",
     `- AppImage artifact: ${appImagePath}`,
     `- AppImage arch: ${summaryValue(inferLinuxAppImageArch(appImagePath))}`,
     `- AppImage size: ${appImageSize}`,
@@ -846,7 +913,7 @@ export function buildPackagedSmokeSummary({
       appImageSha512,
       topLevelSha512
     })}`,
-    "- Release visibility/updater install: not validated by packaged smoke; record updater check/download/install evidence separately in the RC ledger.",
+    "- Release visibility/updater install: not validated by packaged smoke; validate updater check/download/install separately before a Linux release.",
     `- Desktop entry: ${[
       `Name=${summaryValue(desktopEntry.Name)}`,
       `Icon=${summaryValue(desktopEntry.Icon)}`,
@@ -856,11 +923,12 @@ export function buildPackagedSmokeSummary({
       `Terminal=${summaryValue(desktopEntry.Terminal)}`
     ].join(" | ")}`,
     `- Notification icon resource: ${summaryValue(desktopIdentity.notificationIconResourcePath)}`,
-    "- Notification delivery/window grouping: not validated by packaged smoke; record notification title/body/icon app attribution observed in the Ubuntu notification center and window grouping matched the app window separately in the RC ledger.",
+    "- Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release.",
     `- AppImage runtime env: ${[
-      `APPIMAGE=${summaryValue(smokeEnv.APPIMAGE)}`,
-      `APPIMAGE_EXTRACT_AND_RUN=${summaryValue(smokeEnv.APPIMAGE_EXTRACT_AND_RUN)}`,
-      `KMUX_PACKAGED_EXECUTABLE_PATH=${summaryValue(smokeEnv.KMUX_PACKAGED_EXECUTABLE_PATH)}`
+      `APPIMAGE=${summaryValue(resolvedSmokeEnv.APPIMAGE)}`,
+      `APPIMAGE_EXTRACT_AND_RUN=${summaryValue(resolvedSmokeEnv.APPIMAGE_EXTRACT_AND_RUN)}`,
+      `KMUX_PACKAGED_EXECUTABLE_PATH=${summaryValue(resolvedSmokeEnv.KMUX_PACKAGED_EXECUTABLE_PATH)}`,
+      `KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH=${summaryValue(resolvedSmokeEnv.KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH)}`
     ].join(" | ")}`,
     "- AppImage launch args: <none>; --no-sandbox not added by smoke wrapper"
   ].join("\n");
@@ -888,21 +956,41 @@ export function main(argv = process.argv.slice(2)) {
     metadataPath: updateMetadataPath
   });
   assertAppImageBlockmapPresent(appImagePath);
-  const desktopIdentity = extractAppImageDesktopIdentity({
-    appImagePath
-  });
-  validateLinuxDesktopEntry(desktopIdentity.desktopEntry);
-  process.stdout.write(
-    `${buildPackagedSmokeSummary({
-      appImagePath,
-      updateMetadataPath,
-      updateMetadata,
-      desktopIdentity,
-      updateMetadataValidation,
-      allowAnyLinuxDesktop
-    })}\n`
+  const runtimeLibraryRoot = mkdtempSync(
+    path.join(tmpdir(), "kmux-appimage-runtime-")
   );
-  runPackagedPlaywrightSmoke({ appImagePath });
+  try {
+    const appImageRuntimeEnv = buildAppImageRuntimeEnv({
+      env: process.env,
+      compatibilityDir: path.join(runtimeLibraryRoot, "appimage-runtime-libs")
+    });
+    const desktopIdentity = extractAppImageDesktopIdentity({
+      appImagePath,
+      env: appImageRuntimeEnv
+    });
+    validateLinuxDesktopEntry(desktopIdentity.desktopEntry);
+    process.stdout.write(
+      `${buildPackagedSmokeSummary({
+        appImagePath,
+        updateMetadataPath,
+        updateMetadata,
+        desktopIdentity,
+        updateMetadataValidation,
+        smokeEnv: buildPackagedSmokeEnv({
+          appImagePath,
+          env: appImageRuntimeEnv
+        }),
+        allowAnyLinuxDesktop
+      })}\n`
+    );
+    runPackagedPlaywrightSmoke({
+      appImagePath,
+      env: appImageRuntimeEnv,
+      runtimeLibraryRoot
+    });
+  } finally {
+    rmSync(runtimeLibraryRoot, { force: true, recursive: true });
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

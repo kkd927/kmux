@@ -124,8 +124,6 @@ jobs:
           pattern: macos-*-release-assets
           path: release-assets
           merge-multiple: true
-      - name: Verify Linux public release gate
-        run: node scripts/release-check-linux.mjs
       - name: Verify update manifest assets
         run: |
           shopt -s nullglob

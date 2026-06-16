@@ -3,7 +3,7 @@ import process from "node:process";
 
 export const DEFAULT_OS_RELEASE_PATH = "/etc/os-release";
 export const UBUNTU_DESKTOP_RC_TARGET_HINT =
-  "RC evidence: no on this host; run the command on Ubuntu Desktop LTS with a real desktop session for RC validation, or record blocked/manual validation if that target is unavailable.";
+  "Linux desktop target unavailable on this host; run the command on Ubuntu Desktop LTS with a real desktop session.";
 
 function withUbuntuDesktopRcTargetHint(message) {
   return message.includes(UBUNTU_DESKTOP_RC_TARGET_HINT)
@@ -17,10 +17,7 @@ function unquoteOsReleaseValue(value) {
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
   ) {
-    return trimmed
-      .slice(1, -1)
-      .replaceAll('\\"', '"')
-      .replaceAll("\\'", "'");
+    return trimmed.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\'", "'");
   }
   return trimmed;
 }

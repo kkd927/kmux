@@ -44,17 +44,17 @@ The first supported Linux target is GUI desktop Linux, not headless Linux. Ubunt
 
 Linux support is a feature-complete desktop target for kmux's main workflows. A feature may show a normal unavailable state when an agent CLI is not installed, the user is not authenticated, or a vendor API returns no data. That is different from platform-level degradation. Platform-level gaps in the required areas below are release blockers.
 
-| Area | Linux initial release requirement |
-| --- | --- |
-| Shell spawn and pty sessions | Required |
-| CLI and socket control path | Required |
-| Terminal restore, split panes, surface switching, and output continuity | Required |
-| Codex, Claude, Gemini, and Antigravity hook notifications | Required |
-| External agent session discovery and resume | Required |
-| Usage history and verified subscription usage providers | Required |
-| Desktop notifications and app identity | Required |
-| Linux packaged updater | Required |
-| Windows named pipe, shell, hook, and updater behavior | Out of scope for this phase |
+| Area                                                                    | Linux initial release requirement |
+| ----------------------------------------------------------------------- | --------------------------------- |
+| Shell spawn and pty sessions                                            | Required                          |
+| CLI and socket control path                                             | Required                          |
+| Terminal restore, split panes, surface switching, and output continuity | Required                          |
+| Codex, Claude, Gemini, and Antigravity hook notifications               | Required                          |
+| External agent session discovery and resume                             | Required                          |
+| Usage history and verified subscription usage providers                 | Required                          |
+| Desktop notifications and app identity                                  | Required                          |
+| Linux packaged updater                                                  | Required                          |
+| Windows named pipe, shell, hook, and updater behavior                   | Out of scope for this phase       |
 
 In this document, "Linux initial release" means the public stable packaged Linux release. Internal/dev Linux builds may exist earlier with known gaps for spike work, but those gaps must not be described as acceptable stable-release behavior. The stable release gate is the baseline table above.
 
@@ -74,12 +74,12 @@ The macOS compatibility baseline for this refactor is:
 
 Separate the product release gate from implementation milestones. Linux can be enabled incrementally for development while the stable packaged release remains held to the required baseline above.
 
-| Milestone | Purpose | Exit criteria |
-| --- | --- | --- |
-| Linux spike | Prove unknown Linux facts before broad abstractions | Ubuntu Desktop window launch, dev `node-pty` shell spawn, AppImage native loading, shell PATH recovery strategy, credential/storage facts, hook env visibility, packaging sanity, and Linux subprocess audit are known |
-| Walking skeleton | Establish the minimum vertical slice | Linux app launches, resolves shared CLI/desktop socket paths, claims socket safely, spawns pty sessions, injects hook runtime env, exposes renderer platform descriptor, and preserves terminal output through basic split/switch/restore flows |
-| Agent workflow complete | Bring kmux's main workflows to parity | Codex, Claude, Gemini, and Antigravity hooks fire when installed; external session discovery/resume works; usage/subscription providers work for authenticated users; agent storage roots are verified |
-| Stable release candidate | Validate public Linux release quality | packaged updater, desktop identity, notifications, font/rendering continuity, X11/Wayland smoke, updater metadata, docs, and macOS behavior-preserving checks all pass |
+| Milestone                | Purpose                                             | Exit criteria                                                                                                                                                                                                                                   |
+| ------------------------ | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux spike              | Prove unknown Linux facts before broad abstractions | Ubuntu Desktop window launch, dev `node-pty` shell spawn, AppImage native loading, shell PATH recovery strategy, credential/storage facts, hook env visibility, packaging sanity, and Linux subprocess audit are known                          |
+| Walking skeleton         | Establish the minimum vertical slice                | Linux app launches, resolves shared CLI/desktop socket paths, claims socket safely, spawns pty sessions, injects hook runtime env, exposes renderer platform descriptor, and preserves terminal output through basic split/switch/restore flows |
+| Agent workflow complete  | Bring kmux's main workflows to parity               | Codex, Claude, Gemini, and Antigravity hooks fire when installed; external session discovery/resume works; usage/subscription providers work for authenticated users; agent storage roots are verified                                          |
+| Stable release candidate | Validate public Linux release quality               | packaged updater, desktop identity, notifications, font/rendering continuity, X11/Wayland smoke, updater metadata, docs, and macOS behavior-preserving checks all pass                                                                          |
 
 ## Recommended Approach
 
@@ -589,7 +589,7 @@ The build scripts should become explicit:
 - `release:check:mac`
 - `release:check:linux`
 
-`release:check:linux` is the Ubuntu Desktop/AppImage signoff wrapper, not a lightweight artifact-only check. It must run the Ubuntu Desktop target preflight, the strict `gate:walking-skeleton:linux`, `package:linux`, `smoke:packaged:linux`, and the public-publishing guard in order. The public GitHub release workflow may still call `node scripts/release-check-linux.mjs` directly as a lightweight macOS-only publishing guard while Linux public assets remain gated.
+`release:check:linux` is the Ubuntu Desktop/AppImage signoff wrapper, not a lightweight artifact-only check. It must run the strict `gate:walking-skeleton:linux`, `package:linux`, and `smoke:packaged:linux` stages in order.
 
 ## Data Flow
 
@@ -689,7 +689,7 @@ E2E and smoke tests:
 - run an early Linux spike before the broad refactor.
 - add Linux dev smoke where Electron can launch in CI or local desktop environment.
 - add Linux packaged smoke for AppImage when CI environment supports it.
-- keep `release:check:linux` wired as the full Ubuntu Desktop signoff command that includes `gate:walking-skeleton:linux`, `package:linux`, and `smoke:packaged:linux`; the RC ledger must still record the exact individual command markers and their outputs.
+- keep `release:check:linux` wired as the full Ubuntu Desktop signoff command that includes `gate:walking-skeleton:linux`, `package:linux`, and `smoke:packaged:linux`.
 - test Ubuntu Desktop launch from GUI-like env, not only an interactive terminal.
 - test AppImage `node-pty` native module loading and shell spawn.
 - test Linux credential/storage discovery for Codex, Claude, Gemini, and Antigravity before broad refactor.
@@ -708,14 +708,14 @@ E2E and smoke tests:
 
 Linux validation matrix:
 
-| Environment | Required checks |
-| --- | --- |
-| Ubuntu Desktop LTS, GUI launcher | window launch, shell PATH recovery, pty spawn, hook env, desktop notifications, app identity, terminal output continuity |
-| Ubuntu Desktop LTS, terminal launch | socket/CLI path equality, pty spawn, agent wrapper PATH, hook delivery, restore/split/switch flows |
-| Ubuntu Desktop LTS, packaged AppImage | native `node-pty` loading, AppImage sandbox/startup behavior, updater metadata/check, desktop integration, notification identity |
-| Ubuntu Desktop LTS, dev build | platform runtime composition, pty-host protocol migration checks, shared resolver behavior, macOS compatibility tests still green |
-| X11 session where available | native window frame, terminal resize/paint stability, keyboard shortcuts, notifications |
-| Wayland session where available | native window frame, compositor/GPU paint stability, keyboard shortcuts, notifications |
+| Environment                           | Required checks                                                                                                                   |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Ubuntu Desktop LTS, GUI launcher      | window launch, shell PATH recovery, pty spawn, hook env, desktop notifications, app identity, terminal output continuity          |
+| Ubuntu Desktop LTS, terminal launch   | socket/CLI path equality, pty spawn, agent wrapper PATH, hook delivery, restore/split/switch flows                                |
+| Ubuntu Desktop LTS, packaged AppImage | native `node-pty` loading, AppImage sandbox/startup behavior, updater metadata/check, desktop integration, notification identity  |
+| Ubuntu Desktop LTS, dev build         | platform runtime composition, pty-host protocol migration checks, shared resolver behavior, macOS compatibility tests still green |
+| X11 session where available           | native window frame, terminal resize/paint stability, keyboard shortcuts, notifications                                           |
+| Wayland session where available       | native window frame, compositor/GPU paint stability, keyboard shortcuts, notifications                                            |
 
 CI may cover dev launch, unit/integration tests, and `xvfb` startup smoke. Local or VM desktop validation is still required for Wayland, compositor/GPU behavior, real notifications, desktop integration, and packaged AppImage updater behavior.
 
