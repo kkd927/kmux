@@ -21,6 +21,16 @@ const { getConfig, validateConfiguration } =
 const { DebugLogger } = require("builder-util") as {
   DebugLogger: new (isEnabled: boolean) => unknown;
 };
+const { LinuxTargetHelper } =
+  require("app-builder-lib/out/targets/LinuxTargetHelper") as {
+    LinuxTargetHelper: new (packager: unknown) => {
+      computeDesktopEntry: (
+        targetSpecificOptions: Record<string, unknown>,
+        exec?: string | null,
+        extra?: Record<string, string>
+      ) => Promise<string>;
+    };
+  };
 
 function readBuilderConfig(): Record<string, unknown> {
   return yaml.load(
@@ -54,7 +64,7 @@ describe("electron builder config", () => {
       to: "notificationIcon.png"
     });
     expect(linux).toMatchObject({
-      category: "Development",
+      category: "Development;TerminalEmulator;Utility;",
       icon: "build/icon.png",
       synopsis: "Keyboard-first terminal workspace manager for coding agents",
       description:
@@ -69,12 +79,38 @@ describe("electron builder config", () => {
       Comment:
         "Run coding agents side by side without losing terminal output continuity.",
       Icon: "kmux",
-      Categories: "Development;TerminalEmulator;Utility;",
       StartupWMClass: "kmux",
       StartupNotify: "true",
       Terminal: "false",
       Keywords: "AI;agent;terminal;developer;coding;"
     });
+    expect(desktopEntry).not.toHaveProperty("Categories");
+  });
+
+  it("generates Linux desktop entry categories from linux.category", async () => {
+    const config = readBuilderConfig();
+    const linux = config.linux as Record<string, unknown>;
+    const helper = new LinuxTargetHelper({
+      appInfo: {
+        productName: "kmux",
+        description: config.description,
+        sanitizedProductName: "kmux"
+      },
+      executableName: "kmux",
+      fileAssociations: [],
+      config: {
+        mac: config.mac,
+        protocols: []
+      },
+      platformSpecificBuildOptions: {}
+    });
+
+    const desktopEntry = await helper.computeDesktopEntry(linux, null, {});
+
+    expect(desktopEntry).toContain(
+      "\nCategories=Development;TerminalEmulator;Utility;\n"
+    );
+    expect(desktopEntry).toContain("\nStartupWMClass=kmux\n");
   });
 
   it("passes electron-builder config validation", async () => {
