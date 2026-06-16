@@ -16,6 +16,8 @@ export interface TerminalKeyboardEventLike {
   type?: string;
 }
 
+export type TerminalImeKeySuppressionPlatform = "darwin" | "linux";
+
 export interface TerminalEnterRewrite {
   sequence: string;
 }
@@ -98,29 +100,32 @@ const IME_NAVIGATION_KEYS = new Set([
   "PageDown"
 ]);
 
-// xterm.js's CompositionHelper only whitelists keyCodes 16/17/18/20/229 as
-// modifier keys to ignore during IME composition. Anything else received while
-// composing triggers _finalizeComposition(false), which flushes a substring of
-// the textarea to the PTY but does not clear the textarea. macOS IMEs stay
-// alive across that flush, so on the next input the residual text is combined
-// with the new composition and re-sent — visible as the previous syllable
-// repeating. Two real-world cases reach xterm in this state:
-//   1) bare Cmd keydown — Meta (keyCode 91/93/224) isn't in xterm's whitelist.
-//   2) modifier + navigation keys (Cmd/Alt + Arrow/Home/End/PageUp/Down) — the
-//      OS IME routinely consumes these for line edits, word jumps, or pane
-//      shortcuts, but xterm treats the navigation key as ordinary input and
-//      finalizes composition.
-// Returning true here lets attachCustomKeyEventHandler short-circuit xterm
-// without preventDefault, so the DOM/OS still routes the key to the IME.
+// xterm.js's CompositionHelper only keeps composition alive for keyCodes
+// 16/17/18/20/229. Linux ibus/fcitx can deliver ordinary physical keydown
+// events while KeyboardEvent.isComposing is true; if those reach xterm,
+// CompositionHelper calls _finalizeComposition(false) and flushes the current
+// preedit substring to the PTY before the IME commit. That is visible as
+// repeated Korean syllables. macOS does not need that broad suppression, but it
+// still needs the narrower Meta/navigation guards below for xterm's whitelist.
 export function shouldSuppressXtermDuringIme(
   event: TerminalKeyboardEventLike,
-  isComposing: boolean
+  isComposing: boolean,
+  platform: TerminalImeKeySuppressionPlatform
 ): boolean {
-  if (!isComposing) {
-    return false;
-  }
   if (event.type !== undefined && event.type !== "keydown") {
     return false;
+  }
+  const composing =
+    isComposing ||
+    event.isComposing === true ||
+    isImeProcessKey(event) ||
+    event.key === "Process";
+  if (!composing) {
+    return false;
+  }
+
+  if (platform === "linux") {
+    return true;
   }
 
   if (

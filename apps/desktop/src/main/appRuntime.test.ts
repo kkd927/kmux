@@ -56,7 +56,11 @@ vi.mock("electron", () => ({
 }));
 
 import { AppStore } from "./store";
-import { createAppRuntime, type AppRuntimeOptions } from "./appRuntime";
+import {
+  createAppRuntime,
+  shouldUseNativeShellBeep,
+  type AppRuntimeOptions
+} from "./appRuntime";
 import { DIAGNOSTICS_LOG_PATH_ENV } from "../shared/diagnostics";
 
 function createRuntime(
@@ -115,7 +119,8 @@ function createRuntime(
     persistWindowState: vi.fn(),
     profileRecorder: options.profileRecorder,
     externalSessionIndexer: options.externalSessionIndexer,
-    nativeNotificationIdentity: options.nativeNotificationIdentity
+    nativeNotificationIdentity: options.nativeNotificationIdentity,
+    playBellSound: options.playBellSound
   });
 
   runtime.setStore(new AppStore(initialState));
@@ -210,16 +215,26 @@ describe("app runtime bell sound effects", () => {
   });
 
   it("plays a bell sound when enabled", () => {
-    createRuntime(true).runEffects([{ type: "bell.sound" }]);
+    createRuntime(true, { playBellSound: beep }).runEffects([
+      { type: "bell.sound" }
+    ]);
 
     expect(beep).toHaveBeenCalledTimes(1);
     expect(showNotification).not.toHaveBeenCalled();
   });
 
   it("skips bell sounds when disabled", () => {
-    createRuntime(false).runEffects([{ type: "bell.sound" }]);
+    createRuntime(false, { playBellSound: beep }).runEffects([
+      { type: "bell.sound" }
+    ]);
 
     expect(beep).not.toHaveBeenCalled();
+  });
+
+  it("does not use Electron native shell beep on Linux", () => {
+    expect(shouldUseNativeShellBeep("linux")).toBe(false);
+    expect(shouldUseNativeShellBeep("darwin")).toBe(true);
+    expect(shouldUseNativeShellBeep("win32")).toBe(true);
   });
 
   it("adds native notification icon identity to desktop notifications", () => {

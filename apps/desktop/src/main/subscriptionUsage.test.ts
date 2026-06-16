@@ -209,14 +209,16 @@ describe("subscription usage fetchers", () => {
         homeDir,
         platform: "linux",
         execFileImpl,
-        fetchImpl
+        fetchImpl,
+        antigravityKeyringReader: () => null
       })
     ).resolves.toBeNull();
 
     const detectors = createSubscriptionAuthDetectors({
       homeDir,
       platform: "linux",
-      execFileImpl
+      execFileImpl,
+      antigravityKeyringReader: () => null
     });
 
     await expect(detectors.codex?.()).resolves.toBe(false);
@@ -1158,6 +1160,76 @@ describe("subscription usage fetchers", () => {
     );
   });
 
+  it("reads Antigravity Linux keyring credentials for AGY quota rows", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            },
+            cloudaicompanionProject: "projects/agy-project"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-3.5-flash",
+                remainingFraction: 0.15,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl,
+      antigravityKeyringReader: () =>
+        JSON.stringify({
+          token: {
+            access_token: "agy-linux-access-token",
+            refresh_token: "agy-linux-refresh-token",
+            token_type: "Bearer",
+            expiry: "2026-04-19T00:00:00.000Z"
+          },
+          auth_method: "consumer"
+        }),
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Paid",
+        rows: [
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 85
+          })
+        ]
+      })
+    );
+    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("does not relabel Gemini quota as Antigravity when AGY auth is unavailable", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".gemini", "oauth_creds.json"], {
@@ -1180,6 +1252,7 @@ describe("subscription usage fetchers", () => {
 
     const usage = await fetchAntigravitySubscriptionUsage({
       homeDir,
+      platform: "darwin",
       execFileImpl,
       fetchImpl,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
@@ -1201,12 +1274,14 @@ describe("subscription usage fetchers", () => {
       homeDir,
       platform: "linux",
       execFileImpl,
-      fetchImpl
+      fetchImpl,
+      antigravityKeyringReader: () => null
     });
     const detectors = createSubscriptionAuthDetectors({
       homeDir,
       platform: "linux",
-      execFileImpl
+      execFileImpl,
+      antigravityKeyringReader: () => null
     });
 
     expect(usage).toBeNull();
@@ -1698,6 +1773,33 @@ describe("subscription usage fetchers", () => {
     });
 
     await expect(detectors.antigravity?.()).resolves.toBe(true);
+  });
+
+  it("treats Antigravity Linux keyring auth as visible local auth", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      antigravityKeyringReader: () =>
+        JSON.stringify({
+          token: {
+            access_token: "agy-linux-access-token",
+            refresh_token: "agy-linux-refresh-token",
+            expiry: "2026-04-19T00:00:00.000Z"
+          },
+          auth_method: "consumer"
+        }),
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    expect(execFileImpl).not.toHaveBeenCalled();
   });
 });
 

@@ -35,6 +35,28 @@ class FakeDocument extends EventTarget {
   visibilityState: DocumentVisibilityState = "visible";
 }
 
+class FakeFitElement {
+  private width: number;
+  private height: number;
+
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+  }
+
+  setSize(width: number, height: number): void {
+    this.width = width;
+    this.height = height;
+  }
+
+  getBoundingClientRect(): Pick<DOMRect, "width" | "height"> {
+    return {
+      width: this.width,
+      height: this.height
+    };
+  }
+}
+
 function dispatch(target: EventTarget, type: string): void {
   target.dispatchEvent(new Event(type));
 }
@@ -94,6 +116,83 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("fits after the renderer viewport resizes", () => {
+    const targetWindow = new FakeWindow();
+    const targetDocument = new FakeDocument();
+    const fitAndSync = vi.fn();
+    const controller = installTerminalForegroundFit({
+      targetWindow,
+      targetDocument,
+      isActive: () => true,
+      fitAndSync
+    });
+
+    dispatch(targetWindow, "resize");
+
+    vi.advanceTimersByTime(120);
+    targetWindow.runNextAnimationFrame();
+    targetWindow.runNextAnimationFrame();
+
+    expect(fitAndSync).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("uses a timeout fallback when animation frames are throttled", () => {
+    const targetWindow = new FakeWindow();
+    const targetDocument = new FakeDocument();
+    const fitAndSync = vi.fn();
+    const controller = installTerminalForegroundFit({
+      targetWindow,
+      targetDocument,
+      isActive: () => true,
+      fitAndSync,
+      frameFallbackMs: 80
+    });
+
+    dispatch(targetWindow, "resize");
+
+    vi.advanceTimersByTime(120);
+    expect(fitAndSync).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(80);
+    expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(targetWindow.pendingAnimationFrameCount()).toBe(0);
+    controller.dispose();
+  });
+
+  it("polls the fit element when browser resize events are missed", () => {
+    const targetWindow = new FakeWindow();
+    const targetDocument = new FakeDocument();
+    const fitElement = new FakeFitElement(640, 400);
+    const fitAndSync = vi.fn();
+    const controller = installTerminalForegroundFit({
+      targetWindow,
+      targetDocument,
+      isActive: () => true,
+      getFitElement: () => fitElement,
+      fitAndSync,
+      dimensionPollMs: 50
+    });
+
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(120);
+    targetWindow.runNextAnimationFrame();
+    targetWindow.runNextAnimationFrame();
+    expect(fitAndSync).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(50);
+    expect(fitAndSync).toHaveBeenCalledTimes(1);
+
+    fitElement.setSize(900, 600);
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(120);
+    targetWindow.runNextAnimationFrame();
+    targetWindow.runNextAnimationFrame();
+
+    expect(fitAndSync).toHaveBeenCalledTimes(2);
     controller.dispose();
   });
 
@@ -195,6 +294,7 @@ describe("terminal foreground fit", () => {
     dispatch(targetWindow, "focus");
     targetDocument.visibilityState = "visible";
     dispatch(targetDocument, "visibilitychange");
+    dispatch(targetWindow, "resize");
     controller.scheduleFit();
     vi.advanceTimersByTime(120);
 

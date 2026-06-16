@@ -67,14 +67,15 @@ test("unclean shutdown reuses the saved workspace snapshot on relaunch", async (
       "split should be reflected before relaunch"
     );
 
-    expect(existsSync(join(sandbox.configDir, "state.json"))).toBe(true);
+    const statePath = join(sandbox.stateDir, "state.json");
+    expect(existsSync(statePath)).toBe(true);
     await expect
       .poll(() => {
-        if (!existsSync(join(sandbox.configDir, "state.json"))) {
+        if (!existsSync(statePath)) {
           return false;
         }
         const stateJson = JSON.parse(
-          readFileSync(join(sandbox.configDir, "state.json"), "utf8")
+          readFileSync(statePath, "utf8")
         ) as {
           snapshot?: {
             workspaces?: Record<string, { name?: string }>;

@@ -127,4 +127,26 @@ describe("OutputBatcher", () => {
       chunk: "pending"
     });
   });
+
+  it("clears pending batches without flushing", () => {
+    vi.useFakeTimers();
+    const onFlush = vi.fn();
+    const batcher = new OutputBatcher({
+      flushMs: 8,
+      maxBatchBytes: 64 * 1024,
+      onFlush
+    });
+
+    batcher.push({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      sequence: 1,
+      chunk: "pending"
+    });
+
+    batcher.clearAll();
+    vi.advanceTimersByTime(8);
+
+    expect(onFlush).not.toHaveBeenCalled();
+  });
 });

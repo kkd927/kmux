@@ -95,9 +95,27 @@ export class OutputBatcher {
     });
   }
 
+  clear(sessionId: string): void {
+    const batch = this.pending.get(sessionId);
+    if (!batch) {
+      return;
+    }
+
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+    this.pending.delete(sessionId);
+  }
+
   flushAll(): void {
     for (const sessionId of [...this.pending.keys()]) {
       this.flush(sessionId);
+    }
+  }
+
+  clearAll(): void {
+    for (const sessionId of [...this.pending.keys()]) {
+      this.clear(sessionId);
     }
   }
 }

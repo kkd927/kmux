@@ -1280,8 +1280,23 @@ test("right sidebar toggles keep streaming terminal output visible during resize
     );
     await expect(terminalRows).toContainText(marker);
 
+    const usageToggle = page.getByRole("button", {
+      name: "Toggle usage dashboard"
+    });
+    const usagePanel = page.getByTestId("usage-right-panel");
     for (let index = 0; index < 6; index += 1) {
-      await page.getByRole("button", { name: "Toggle usage dashboard" }).click();
+      await expect(usageToggle).toBeVisible();
+      await usageToggle.evaluate((button) => {
+        if (!(button instanceof HTMLElement)) {
+          throw new Error("usage dashboard toggle is not an HTMLElement");
+        }
+        button.click();
+      });
+      if (index % 2 === 0) {
+        await expect(usagePanel).toBeVisible();
+      } else {
+        await expect(usagePanel).toHaveCount(0);
+      }
       await expectTerminalContinuitySamples(
         page,
         activeSurfaceId,

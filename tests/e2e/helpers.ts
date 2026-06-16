@@ -44,6 +44,9 @@ export interface KmuxSandbox {
   profileRoot: string;
   configDir: string;
   runtimeDir: string;
+  stateDir: string;
+  dataDir: string;
+  cacheDir: string;
   socketPath: string;
   shellHomeDir: string;
   shellHistoryPath: string;
@@ -108,6 +111,9 @@ export function createSandbox(prefix: string): KmuxSandbox {
   );
   const configDir = path.join(profileRoot, "c");
   const runtimeDir = path.join(profileRoot, "r");
+  const stateDir = path.join(profileRoot, "s");
+  const dataDir = path.join(profileRoot, "d");
+  const cacheDir = path.join(profileRoot, "cache");
   const socketPath = path.join(runtimeDir, "control.sock");
   const shellHomeDir = path.join(profileRoot, "h");
   const xdgConfigHome = path.join(shellHomeDir, ".config");
@@ -115,6 +121,9 @@ export function createSandbox(prefix: string): KmuxSandbox {
   const shellHistoryPath = path.join(shellHomeDir, ".zsh_history");
   mkdirSync(configDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(cacheDir, { recursive: true });
   mkdirSync(shellHomeDir, { recursive: true });
   mkdirSync(fishConfigDir, { recursive: true });
   for (const relativePath of [
@@ -134,6 +143,9 @@ export function createSandbox(prefix: string): KmuxSandbox {
     profileRoot,
     configDir,
     runtimeDir,
+    stateDir,
+    dataDir,
+    cacheDir,
     socketPath,
     shellHomeDir,
     shellHistoryPath,
@@ -172,6 +184,13 @@ export function buildElectronLaunchOptions({
       KMUX_E2E_DISABLE_QUIT_CONFIRM: env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir,
+      KMUX_STATE_DIR: sandbox.stateDir,
+      KMUX_DATA_DIR: sandbox.dataDir,
+      KMUX_CACHE_DIR: sandbox.cacheDir,
+      KMUX_SOCKET_PATH: sandbox.socketPath,
+      KMUX_AGENT_BIN_DIR: path.join(sandbox.dataDir, "bin"),
+      KMUX_NATIVE_CACHE_ROOT: path.join(sandbox.cacheDir, "native"),
+      KMUX_RAW_OUTPUT_ROOT: path.join(sandbox.stateDir, "pty-raw"),
       KMUX_TEST_FONT_FAMILIES:
         env.KMUX_TEST_FONT_FAMILIES ??
         JSON.stringify(["JetBrains Mono", "Fira Code", "Menlo"]),

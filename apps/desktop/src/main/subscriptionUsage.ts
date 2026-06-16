@@ -29,6 +29,7 @@ type ExecFileLike = (
   file: string,
   args: readonly string[]
 ) => Promise<{ stdout: string; stderr: string }>;
+type AntigravityKeyringReader = () => string | null | undefined;
 
 type CodexProbeWindow = {
   key: "session" | "weekly";
@@ -112,6 +113,7 @@ export interface GeminiSubscriptionUsageOptions {
     clientId: string;
     clientSecret?: string;
   };
+  antigravityKeyringReader?: AntigravityKeyringReader;
 }
 
 type FetcherFactoryOptions = {
@@ -121,6 +123,7 @@ type FetcherFactoryOptions = {
   platform?: NodeJS.Platform;
   now?: () => number;
   execFileImpl?: ExecFileLike;
+  antigravityKeyringReader?: AntigravityKeyringReader;
 };
 
 const GEMINI_OAUTH_CLIENT_ID_ENV_KEYS = [
@@ -238,7 +241,8 @@ export function createSubscriptionAuthDetectors(
       const execFileImpl = options.execFileImpl ?? defaultExecFile;
       const credentials = await loadAntigravityCredentials({
         execFileImpl,
-        platform: options.platform ?? process.platform
+        platform: options.platform ?? process.platform,
+        keyringReader: options.antigravityKeyringReader
       });
       const accessToken = credentials?.access_token?.trim();
       const refreshToken = credentials?.refresh_token?.trim();
@@ -499,7 +503,8 @@ export async function fetchAntigravitySubscriptionUsage(
   const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
   const credentials = await loadAntigravityCredentials({
     execFileImpl,
-    platform: options.platform ?? process.platform
+    platform: options.platform ?? process.platform,
+    keyringReader: options.antigravityKeyringReader
   });
 
   const existingAccessToken = credentials?.access_token?.trim();
@@ -1046,7 +1051,20 @@ function parseClaudeCredentials(input: unknown): ClaudeCredentials | null {
 async function loadAntigravityCredentials(options: {
   execFileImpl: ExecFileLike;
   platform: NodeJS.Platform;
+  keyringReader?: AntigravityKeyringReader;
 }): Promise<AntigravityCredentials | null> {
+  if (options.platform === "linux") {
+    try {
+      const secret = options.keyringReader
+        ? options.keyringReader()
+        : readLinuxAntigravityKeyringSecret();
+      return typeof secret === "string"
+        ? parseAntigravityKeychainSecret(secret)
+        : null;
+    } catch {
+      return null;
+    }
+  }
   if (options.platform !== "darwin") {
     return null;
   }
@@ -1062,6 +1080,39 @@ async function loadAntigravityCredentials(options: {
     return parseAntigravityKeychainSecret(stdout);
   } catch {
     return null;
+  }
+}
+
+function readLinuxAntigravityKeyringSecret(): string | null {
+  const keyringPackage = resolveLinuxKeyringPackage();
+  if (!keyringPackage) {
+    return null;
+  }
+  try {
+    const keyring = requireForMeta(keyringPackage) as {
+      Entry?: new (
+        service: string,
+        account: string
+      ) => { getPassword(): string | null | undefined };
+    };
+    if (typeof keyring.Entry !== "function") {
+      return null;
+    }
+    const secret = new keyring.Entry("gemini", "antigravity").getPassword();
+    return typeof secret === "string" && secret.trim() ? secret : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLinuxKeyringPackage(): string | null {
+  switch (process.arch) {
+    case "arm64":
+      return "@napi-rs/keyring-linux-arm64-gnu";
+    case "x64":
+      return "@napi-rs/keyring-linux-x64-gnu";
+    default:
+      return null;
   }
 }
 

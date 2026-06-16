@@ -7,6 +7,9 @@ interface TerminalReplayVisibilityOptions {
   wrapper: ReplayElement;
   requestAnimationFrame?: (callback: FrameRequestCallback) => number;
   cancelAnimationFrame?: (handle: number) => void;
+  revealFallbackMs?: number;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
 }
 
 export interface TerminalReplayVisibilityController {
@@ -21,12 +24,16 @@ export function createTerminalReplayVisibility({
   host,
   wrapper,
   requestAnimationFrame = defaultRequestAnimationFrame,
-  cancelAnimationFrame = defaultCancelAnimationFrame
+  cancelAnimationFrame = defaultCancelAnimationFrame,
+  revealFallbackMs = 160,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout
 }: TerminalReplayVisibilityOptions): TerminalReplayVisibilityController {
   const ownerId = `replay-${nextReplayVisibilityId++}`;
   let generation = 0;
   let activeToken: string | null = null;
   let revealFrame: number | null = null;
+  let revealFallback: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   let hiddenElements = new Set<HTMLElement>();
 
@@ -39,10 +46,18 @@ export function createTerminalReplayVisibility({
 
   const cancelReveal = (): void => {
     if (revealFrame === null) {
+      if (revealFallback !== null) {
+        clearTimeoutFn(revealFallback);
+        revealFallback = null;
+      }
       return;
     }
     cancelAnimationFrame(revealFrame);
     revealFrame = null;
+    if (revealFallback !== null) {
+      clearTimeoutFn(revealFallback);
+      revealFallback = null;
+    }
   };
 
   const revealOwned = (token: string | null): void => {
@@ -79,9 +94,19 @@ export function createTerminalReplayVisibility({
       }
       cancelReveal();
       const token = activeToken;
+      revealFallback = setTimeoutFn(() => {
+        revealFallback = null;
+        if (!disposed) {
+          revealOwned(token);
+        }
+      }, revealFallbackMs);
       revealFrame = requestAnimationFrame(() => {
         revealFrame = requestAnimationFrame(() => {
           revealFrame = null;
+          if (revealFallback !== null) {
+            clearTimeoutFn(revealFallback);
+            revealFallback = null;
+          }
           if (!disposed) {
             revealOwned(token);
           }

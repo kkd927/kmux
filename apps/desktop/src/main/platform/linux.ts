@@ -10,7 +10,7 @@ export function createLinuxPlatformRuntime(options: {
   env?: NodeJS.ProcessEnv;
 }): PlatformRuntime {
   const rendererDescriptor = createRendererPlatformDescriptor({
-    windowChrome: "native",
+    windowChrome: "custom",
     shortcutStyle: "text",
     keyboardPlatform: "linux",
     supportsDock: false,

@@ -101,6 +101,7 @@ interface SessionRecord {
 const sessions = new Map<Id, SessionRecord>();
 const logRawTerminalEvent = createRawTerminalEventStdoutLogger();
 const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
+let ipcChannelClosed = false;
 const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
 const OUTPUT_BATCH_FLUSH_MS = 8;
@@ -158,9 +159,62 @@ logDiagnostics("pty-host.bootstrap", {
 });
 
 function send(message: PtyEvent): void {
-  if (process.send) {
-    process.send(message);
+  if (!process.send || ipcChannelClosed) {
+    return;
   }
+  if (process.connected === false) {
+    handleIpcChannelClosed();
+    return;
+  }
+
+  try {
+    process.send(message, (error: Error | null) => {
+      if (!error) {
+        return;
+      }
+      handleIpcSendError(error);
+    });
+  } catch (error) {
+    handleIpcSendError(error);
+  }
+}
+
+function handleIpcSendError(error: unknown): void {
+  if (isIpcChannelClosedError(error)) {
+    handleIpcChannelClosed(error);
+    return;
+  }
+
+  logDiagnostics("pty-host.ipc.send.failed", {
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
+
+function isIpcChannelClosedError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = "code" in error ? error.code : undefined;
+  return (
+    code === "ERR_IPC_CHANNEL_CLOSED" ||
+    code === "ERR_IPC_CHANNEL_DISCONNECTED" ||
+    code === "EPIPE"
+  );
+}
+
+function handleIpcChannelClosed(error?: unknown): void {
+  if (ipcChannelClosed) {
+    return;
+  }
+
+  ipcChannelClosed = true;
+  if (error) {
+    logDiagnostics("pty-host.ipc.closed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+  outputBatcher.clearAll();
+  disposeAllSessions();
 }
 
 function recordPtyChunk(record: SessionRecord, chunk: string): void {
@@ -714,6 +768,10 @@ process.on("message", (request: PtyRequest) => {
   }
 });
 
+process.on("disconnect", () => {
+  handleIpcChannelClosed();
+});
+
 send({ type: "ready" });
 
 function scheduleSettledSnapshotCheck(record: SessionRecord): void {
@@ -767,4 +825,23 @@ function disposeSettledSnapshotState(record: SessionRecord): void {
     record.settledSnapshotTimer = null;
   }
   record.pendingSettledSnapshots = [];
+}
+
+function disposeAllSessions(): void {
+  for (const record of [...sessions.values()]) {
+    flushPtyProfileBucket(record);
+    outputBatcher.clear(record.sessionId);
+    disposeSettledSnapshotState(record);
+    disposeShellReadyFallback(record);
+    try {
+      record.pty.kill();
+    } catch (error) {
+      logDiagnostics("pty-host.session.kill.failed", {
+        surfaceId: record.surfaceId,
+        sessionId: record.sessionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    sessions.delete(record.sessionId);
+  }
 }

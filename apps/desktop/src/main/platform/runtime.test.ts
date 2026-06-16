@@ -52,7 +52,7 @@ describe("platform runtime", () => {
     });
   });
 
-  it("describes Linux as native chrome with text shortcuts and no Dock lifetime", () => {
+  it("describes Linux as custom chrome with text shortcuts and no Dock lifetime", () => {
     const runtime = requirePlatformRuntime({
       platform: "linux",
       isPackaged: true,
@@ -71,7 +71,7 @@ describe("platform runtime", () => {
         window: {
           isMac: false,
           supportsDock: false,
-          windowChrome: "native"
+          windowChrome: "custom"
         }
       },
       opener: {
@@ -86,7 +86,7 @@ describe("platform runtime", () => {
         enabled: true
       },
       rendererDescriptor: {
-        windowChrome: "native",
+        windowChrome: "custom",
         shortcutStyle: "text",
         keyboard: {
           platform: "linux"

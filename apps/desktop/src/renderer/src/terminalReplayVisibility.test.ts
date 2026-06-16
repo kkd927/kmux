@@ -32,6 +32,36 @@ class FakeAnimationFrameTarget {
 }
 
 describe("terminal replay visibility", () => {
+  it("reveals with a timeout fallback when animation frames are throttled", () => {
+    vi.useFakeTimers();
+    try {
+      const frameTarget = new FakeAnimationFrameTarget();
+      const host = document.createElement("div");
+      const wrapper = document.createElement("div");
+      const visibility = createTerminalReplayVisibility({
+        host,
+        wrapper,
+        requestAnimationFrame: frameTarget.requestAnimationFrame,
+        cancelAnimationFrame: frameTarget.cancelAnimationFrame,
+        revealFallbackMs: 160
+      });
+
+      visibility.hide();
+      visibility.revealAfterPaint();
+
+      expect(host.dataset.terminalReplayHidden).toBeDefined();
+      expect(wrapper.dataset.terminalReplayHidden).toBeDefined();
+
+      vi.advanceTimersByTime(160);
+
+      expect(host.dataset.terminalReplayHidden).toBeUndefined();
+      expect(wrapper.dataset.terminalReplayHidden).toBeUndefined();
+      visibility.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not let a stale reveal clear a newer hide on the same terminal elements", () => {
     const frameTarget = new FakeAnimationFrameTarget();
     const host = document.createElement("div");

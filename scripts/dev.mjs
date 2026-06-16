@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
+
+const CHROME_SANDBOX_RELATIVE_PATH = path.join(
+  "node_modules",
+  "electron",
+  "dist",
+  "chrome-sandbox"
+);
 
 function commandForNpm() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -34,6 +41,46 @@ export function resolveDevProfileDirs({
   };
 }
 
+export function isConfiguredChromeSandbox(stats) {
+  return (
+    stats?.isFile?.() === true &&
+    stats.uid === 0 &&
+    stats.gid === 0 &&
+    (stats.mode & 0o4777) === 0o4755
+  );
+}
+
+export function resolveDevElectronSandboxEnv({
+  repoRoot = process.cwd(),
+  env = process.env,
+  platform = process.platform,
+  statFile = statSync
+} = {}) {
+  if (platform !== "linux" || nonBlankEnvPath(env.NO_SANDBOX)) {
+    return { env: { ...env }, fallback: null };
+  }
+
+  const chromeSandboxPath = path.join(repoRoot, CHROME_SANDBOX_RELATIVE_PATH);
+  try {
+    if (isConfiguredChromeSandbox(statFile(chromeSandboxPath))) {
+      return { env: { ...env }, fallback: null };
+    }
+  } catch {
+    return { env: { ...env }, fallback: null };
+  }
+
+  return {
+    env: {
+      ...env,
+      NO_SANDBOX: "1"
+    },
+    fallback: {
+      chromeSandboxPath,
+      reason: "linux-dev-chrome-sandbox-helper-not-configured"
+    }
+  };
+}
+
 function nonBlankEnvPath(value) {
   if (typeof value !== "string") {
     return null;
@@ -52,13 +99,27 @@ export function main() {
   mkdirSync(configDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
 
+  const sandboxEnv = resolveDevElectronSandboxEnv({
+    repoRoot,
+    env: process.env
+  });
+  if (sandboxEnv.fallback) {
+    process.stderr.write(
+      [
+        "Linux dev Electron sandbox helper is not configured; running `npm run dev` with NO_SANDBOX=1.",
+        `Helper: ${sandboxEnv.fallback.chromeSandboxPath}`,
+        "This fallback is limited to the local dev launcher; packaged AppImage validation remains unaffected."
+      ].join("\n") + "\n"
+    );
+  }
+
   const child = spawn(
     commandForNpm(),
     ["run", "dev", "--workspace", "@kmux/desktop"],
     {
       cwd: repoRoot,
       env: {
-        ...process.env,
+        ...sandboxEnv.env,
         KMUX_CONFIG_DIR: configDir,
         KMUX_RUNTIME_DIR: runtimeDir
       },

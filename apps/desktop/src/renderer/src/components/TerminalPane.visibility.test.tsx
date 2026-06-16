@@ -145,6 +145,7 @@ function createProps(surfaceId: string): TerminalPaneProps {
     activeSurfaceId: surfaceId,
     settings: createSettings(),
     reservedSystemChords: [],
+    keyboardPlatform: "linux",
     shortcutLabelStyle: "text",
     copyModeSelectAllShortcut: "Ctrl+A",
     terminalTypography: {
@@ -490,5 +491,84 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(afterCompositionEvent.defaultPrevented).toBe(true);
     expect(onToggleSearch).toHaveBeenCalledWith("surface_1");
+  });
+
+  it("suppresses xterm key handling while IME composition is active", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const terminalTextarea = container.querySelector(
+      "[data-testid='terminal-surface_1'] textarea"
+    );
+    expect(terminalTextarea).not.toBeNull();
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    const handler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    expect(
+      handler!(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          code: "KeyA"
+        })
+      )
+    ).toBe(true);
+    expect(
+      handler!(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          code: "KeyA",
+          isComposing: true
+        })
+      )
+    ).toBe(false);
+
+    act(() => {
+      terminalTextarea!.dispatchEvent(
+        new Event("compositionstart", { bubbles: true })
+      );
+    });
+
+    expect(
+      handler!(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          code: "KeyA"
+        })
+      )
+    ).toBe(false);
+    expect(
+      handler!(
+        new KeyboardEvent("keyup", {
+          key: "a",
+          code: "KeyA"
+        })
+      )
+    ).toBe(true);
+
+    act(() => {
+      terminalTextarea!.dispatchEvent(
+        new Event("compositionend", { bubbles: true })
+      );
+    });
+
+    expect(
+      handler!(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          code: "KeyA"
+        })
+      )
+    ).toBe(true);
   });
 });

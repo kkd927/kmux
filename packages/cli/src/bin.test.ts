@@ -183,8 +183,9 @@ describe("kmux cli agent hook forwarding", () => {
     async () => {
       const homeDir = mkdtempSync(join(tmpdir(), "kmux-cli-home-test-"));
       tempDirs.push(homeDir);
-      const socketPath = join(homeDir, ".kmux", "control.sock");
-      mkdirSync(join(homeDir, ".kmux"), { recursive: true });
+      const runtimeDir = join(homeDir, "runtime");
+      const socketPath = join(runtimeDir, "kmux", "control.sock");
+      mkdirSync(join(runtimeDir, "kmux"), { recursive: true });
       const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
       let request:
         | {
@@ -236,6 +237,7 @@ describe("kmux cli agent hook forwarding", () => {
             env: {
               ...process.env,
               HOME: homeDir,
+              XDG_RUNTIME_DIR: runtimeDir,
               KMUX_SOCKET_PATH: undefined,
               KMUX_RUNTIME_DIR: undefined
             },

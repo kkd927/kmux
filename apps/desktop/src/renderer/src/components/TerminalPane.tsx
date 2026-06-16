@@ -34,6 +34,7 @@ import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   countSupportedImageFiles,
+  createTerminalImeDuplicateCommitGuard,
   createTerminalPaneXtermTheme,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
@@ -52,6 +53,7 @@ import {
   type TerminalForegroundFitController
 } from "../terminalForegroundFit";
 import { createTerminalReplayVisibility } from "../terminalReplayVisibility";
+import { resumeAndRefreshTerminalRenderer } from "../terminalRenderRefresh";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
@@ -67,7 +69,8 @@ import {
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
 import {
   isReservedSystemChordBinding,
-  type KeyChord
+  type KeyChord,
+  type KeyboardShortcutPlatform
 } from "../../../shared/platform/keyboardPolicy";
 import { TERMINAL_LIVE_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
 import {
@@ -94,6 +97,7 @@ interface TerminalPaneProps {
   activeSurfaceId: string;
   settings: KmuxSettings;
   reservedSystemChords: KeyChord[];
+  keyboardPlatform: KeyboardShortcutPlatform;
   shortcutLabelStyle: ShortcutLabelStyle;
   copyModeSelectAllShortcut: KeyChord;
   terminalTypography: ResolvedTerminalTypographyVm;
@@ -264,6 +268,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     })
   );
+  const linuxImeDuplicateCommitGuardRef = useRef(
+    createTerminalImeDuplicateCommitGuard()
+  );
+  const isPastingRef = useRef(false);
 
   function updateTerminalDiagnostics(
     surfaceId: string,
@@ -303,6 +311,50 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       }
     }
+  }
+
+  function clearWrapperTerminalDiagnostics(
+    wrapper: ParentNode | null,
+    terminal: Terminal
+  ): void {
+    const diagnosticWrapper = wrapper as TerminalDiagnosticElement | null;
+    if (diagnosticWrapper?.__kmuxTerminal !== terminal) {
+      return;
+    }
+    delete diagnosticWrapper.__kmuxTerminal;
+    delete diagnosticWrapper.__kmuxTerminalDiagnostics;
+    delete diagnosticWrapper.dataset.terminalHydratedSequence;
+    delete diagnosticWrapper.dataset.terminalRenderedSequence;
+    delete diagnosticWrapper.dataset.terminalViewportY;
+    delete diagnosticWrapper.dataset.terminalBaseY;
+    delete diagnosticWrapper.dataset.terminalBracketedPasteMode;
+  }
+
+  function attachTerminalHostToCurrentWrapper(
+    surfaceId: string,
+    terminal: Terminal,
+    host: HTMLDivElement
+  ): boolean {
+    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+    if (!wrapper) {
+      return false;
+    }
+
+    const previousParent = host.parentNode;
+    const moved = previousParent !== wrapper;
+    if (moved) {
+      clearWrapperTerminalDiagnostics(previousParent, terminal);
+      wrapper.appendChild(host);
+    }
+
+    const diagnosticWrapper = wrapper as TerminalDiagnosticElement;
+    diagnosticWrapper.__kmuxTerminal = terminal;
+    diagnosticWrapper.__kmuxTerminalDiagnostics = (
+      host as TerminalDiagnosticElement
+    ).__kmuxTerminalDiagnostics;
+    syncSurfaceTerminalMetrics(surfaceId, terminal);
+    refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
+    return moved;
   }
 
   const terminalPaletteSignature = [
@@ -368,6 +420,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     wrapper.dataset.terminalBracketedPasteMode = String(
       terminal.modes.bracketedPasteMode
     );
+  }
+
+  function refreshVisibleSurfaceRenderer(
+    surfaceId: string,
+    terminal: Terminal,
+    options: { force?: boolean } = {}
+  ): void {
+    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+    if (wrapper?.dataset.active !== "true") {
+      return;
+    }
+    resumeAndRefreshTerminalRenderer(terminal, options);
   }
 
   function syncTerminalViewportBackground(): void {
@@ -555,6 +619,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
     const surfaceId = options.surfaceId ?? activeSurfaceRef.current?.id ?? null;
     const requiresActiveSurface = !options.surfaceId;
+    if (surfaceId) {
+      refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
+    }
     const previousCols = terminal.cols;
     const previousRows = terminal.rows;
     const fitStartedAt = performance.now();
@@ -729,6 +796,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       terminal.write(data, () => {
         if (profileSurfaceId) {
           syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
+          refreshVisibleSurfaceRenderer(profileSurfaceId, terminal, {
+            force: true
+          });
         } else {
           syncTerminalMetrics(terminal);
         }
@@ -757,6 +827,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       });
       syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
+      refreshVisibleSurfaceRenderer(profileSurfaceId, terminal, {
+        force: true
+      });
       afterWrite?.();
     });
   }
@@ -927,21 +1000,22 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     terminalRef.current = instance.terminal;
     fitRef.current = instance.fit;
     searchRef.current = instance.search;
-    if (instance.host.parentNode !== wrapper) {
-      wrapper.appendChild(instance.host);
+    const moved = attachTerminalHostToCurrentWrapper(
+      activeSurface.id,
+      instance.terminal,
+      instance.host
+    );
+    if (moved) {
+      void fitAndSyncTerminal(instance.terminal, {
+        fit: instance.fit,
+        surfaceId: activeSurface.id
+      });
     }
-    const diagnosticWrapper = wrapper as TerminalDiagnosticElement;
-    diagnosticWrapper.__kmuxTerminal = instance.terminal;
-    diagnosticWrapper.__kmuxTerminalDiagnostics = (
-      instance.host as TerminalDiagnosticElement
-    ).__kmuxTerminalDiagnostics;
     return () => {
-      if (diagnosticWrapper.__kmuxTerminal === instance.terminal) {
-        delete diagnosticWrapper.__kmuxTerminal;
-        delete diagnosticWrapper.__kmuxTerminalDiagnostics;
-        delete diagnosticWrapper.dataset.terminalHydratedSequence;
-        delete diagnosticWrapper.dataset.terminalRenderedSequence;
-      }
+      clearWrapperTerminalDiagnostics(
+        instance.host.parentNode,
+        instance.terminal
+      );
       if (terminalRef.current === instance.terminal) {
         terminalRef.current = null;
         fitRef.current = null;
@@ -950,6 +1024,27 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     };
   }, [activeSurface.id, terminalInstanceKey]);
+
+  useLayoutEffect(() => {
+    const terminal = terminalRef.current;
+    const fit = fitRef.current;
+    const host = containerRef.current;
+    if (!terminal || !fit || !host || !activeSurface) {
+      return;
+    }
+
+    const moved = attachTerminalHostToCurrentWrapper(
+      activeSurface.id,
+      terminal,
+      host
+    );
+    if (moved) {
+      void fitAndSyncTerminal(terminal, {
+        fit,
+        surfaceId: activeSurface.id
+      });
+    }
+  });
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1132,6 +1227,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           text
         })
       ) {
+        isPastingRef.current = true;
+        setTimeout(() => {
+          isPastingRef.current = false;
+        }, 0);
         return;
       }
 
@@ -1152,28 +1251,64 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
     container.addEventListener("paste", handleTerminalPaste, true);
+    const xtermTextarea = terminal.textarea;
     const handleCompositionStart = (): void => {
       imeCompositionRef.current = true;
+      if (props.keyboardPlatform === "linux") {
+        linuxImeDuplicateCommitGuardRef.current.compositionStart(
+          xtermTextarea?.value ?? ""
+        );
+      }
     };
-    const handleCompositionEnd = (): void => {
+    const handleCompositionUpdate = (event: CompositionEvent): void => {
+      if (props.keyboardPlatform === "linux") {
+        linuxImeDuplicateCommitGuardRef.current.compositionUpdate(event.data);
+      }
+    };
+    const handleCompositionEnd = (event: CompositionEvent): void => {
       imeCompositionRef.current = false;
+      if (props.keyboardPlatform === "linux") {
+        const commitText =
+          linuxImeDuplicateCommitGuardRef.current.compositionEnd(
+            xtermTextarea?.value ?? "",
+            event.data
+          );
+        const currentSurface = activeSurfaceRef.current;
+        if (commitText && currentSurface) {
+          void window.kmux.sendText(currentSurface.id, commitText);
+          if (xtermTextarea) {
+            xtermTextarea.value = "";
+          }
+        }
+      }
     };
     // Reset stale composition state if focus leaves the textarea (e.g. surface
     // switch, OS-level shortcut) without a matching compositionend.
     const handleTextareaBlur = (): void => {
       imeCompositionRef.current = false;
+      if (props.keyboardPlatform === "linux") {
+        linuxImeDuplicateCommitGuardRef.current.reset();
+      }
     };
-    const xtermTextarea = terminal.textarea;
     if (xtermTextarea) {
       xtermTextarea.addEventListener(
         "compositionstart",
         handleCompositionStart
       );
+      xtermTextarea.addEventListener(
+        "compositionupdate",
+        handleCompositionUpdate
+      );
       xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
       xtermTextarea.addEventListener("blur", handleTextareaBlur);
     }
     terminal.attachCustomKeyEventHandler(
-      (event) => !shouldSuppressXtermDuringIme(event, imeCompositionRef.current)
+      (event) =>
+        !shouldSuppressXtermDuringIme(
+          event,
+          imeCompositionRef.current,
+          props.keyboardPlatform
+        )
     );
     syncTerminalViewportBackground();
     requestAnimationFrame(() => {
@@ -1185,6 +1320,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         paneActiveRef.current &&
         terminalRef.current === terminal &&
         Boolean(activeSurfaceRef.current),
+      getFitElement: () => containerRef.current,
       fitAndSync: () => fitAndSyncTerminal(terminal),
       onError: () => {
         // Ignore foreground revalidation races during unmount/surface switches.
@@ -1210,9 +1346,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!currentSurface) {
         return;
       }
+      let dataToSend = data;
+      if (
+        props.keyboardPlatform === "linux" &&
+        !isPastingRef.current
+      ) {
+        const filteredData =
+          linuxImeDuplicateCommitGuardRef.current.filterData(data);
+        if (!filteredData) {
+          return;
+        }
+        dataToSend = filteredData;
+      }
       const rewrite = applyPendingTerminalEnterRewrite(
         currentSurface.id,
-        data,
+        dataToSend,
         pendingEnterRewriteRef.current
       );
       if (rewrite.clearPending) {
@@ -1248,6 +1396,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           handleCompositionStart
         );
         xtermTextarea.removeEventListener(
+          "compositionupdate",
+          handleCompositionUpdate
+        );
+        xtermTextarea.removeEventListener(
           "compositionend",
           handleCompositionEnd
         );
@@ -1255,7 +1407,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       clearPendingEnterRewrite();
     };
-  }, [props.paneId, terminalInstanceKey]);
+  }, [props.keyboardPlatform, props.paneId, terminalInstanceKey]);
 
   useEffect(() => {
     const wasActive = previousPaneActiveRef.current;

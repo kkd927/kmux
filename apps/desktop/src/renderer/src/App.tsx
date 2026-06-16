@@ -1010,6 +1010,7 @@ export function App(): JSX.Element {
               reservedSystemChords={
                 platformDescriptor.keyboard.reservedSystemChords
               }
+              keyboardPlatform={platformDescriptor.keyboard.platform}
               shortcutLabelStyle={platformDescriptor.keyboard.labelStyle}
               copyModeSelectAllShortcut={
                 platformDescriptor.keyboard.copyModeSelectAllShortcut

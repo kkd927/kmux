@@ -79,6 +79,7 @@ export interface AppRuntimeOptions {
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
   nativeNotificationIdentity?: NativeNotificationIdentity;
+  playBellSound?: () => void;
 }
 
 export interface ExternalSessionIndexerRuntime {
@@ -468,7 +469,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
             enabled: getState().settings.notificationSound
           });
           if (getState().settings.notificationSound) {
-            shell.beep();
+            playBellSound(options.playBellSound);
           }
           break;
         case "persist":
@@ -843,6 +844,26 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     respawnRestoredSessions,
     shutdown
   };
+}
+
+export function shouldUseNativeShellBeep(
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform !== "linux";
+}
+
+function playBellSound(playBellSoundOverride?: () => void): void {
+  if (playBellSoundOverride) {
+    playBellSoundOverride();
+    return;
+  }
+  if (!shouldUseNativeShellBeep()) {
+    logDiagnostics("main.effect.bell.sound.skipped", {
+      reason: "native-shell-beep-disabled-on-linux"
+    });
+    return;
+  }
+  shell.beep();
 }
 
 function buildPtySessionSpec(effect: SessionSpawnEffect): PtySessionSpec {

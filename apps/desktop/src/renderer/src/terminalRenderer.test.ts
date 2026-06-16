@@ -8,6 +8,7 @@ import {
 import {
   applyPendingTerminalEnterRewrite,
   countSupportedImageFiles,
+  createTerminalImeDuplicateCommitGuard,
   createTerminalPaneXtermTheme,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
@@ -307,75 +308,58 @@ describe("terminal renderer helpers", () => {
     ).toBeNull();
   });
 
-  it("swallows bare Meta keydown during IME composition", () => {
+  it("swallows Linux keydown events during IME composition", () => {
     expect(
       shouldSuppressXtermDuringIme(
         keyboardEvent({
-          code: "MetaLeft",
-          key: "Meta",
-          keyCode: 91,
-          metaKey: true,
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
           type: "keydown"
         }),
-        true
+        true,
+        "linux"
       )
     ).toBe(true);
     expect(
       shouldSuppressXtermDuringIme(
         keyboardEvent({
-          code: "MetaRight",
-          key: "Meta",
-          keyCode: 93,
-          metaKey: true,
+          code: "",
+          key: "Process",
+          keyCode: 229,
+          isComposing: true,
           type: "keydown"
         }),
-        true
+        false,
+        "linux"
       )
     ).toBe(true);
-  });
-
-  it("does not swallow Meta when not composing", () => {
     expect(
       shouldSuppressXtermDuringIme(
         keyboardEvent({
-          code: "MetaLeft",
-          key: "Meta",
-          keyCode: 91,
-          metaKey: true,
-          type: "keydown"
-        }),
-        false
-      )
-    ).toBe(false);
-  });
-
-  it("does not swallow Cmd combined with letter keys (e.g., Cmd+C)", () => {
-    expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          code: "KeyC",
-          key: "c",
-          keyCode: 67,
-          metaKey: true,
-          type: "keydown"
-        }),
-        true
-      )
-    ).toBe(false);
-  });
-
-  it("does not swallow bare Meta when another modifier is also held", () => {
-    expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          code: "MetaLeft",
-          key: "Meta",
-          keyCode: 91,
-          metaKey: true,
+          code: "Enter",
+          key: "Enter",
+          keyCode: 13,
           shiftKey: true,
           type: "keydown"
         }),
-        true
+        true,
+        "linux"
+      )
+    ).toBe(true);
+  });
+
+  it("does not swallow keydown events when not composing", () => {
+    expect(
+      shouldSuppressXtermDuringIme(
+        keyboardEvent({
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
+          type: "keydown"
+        }),
+        false,
+        "linux"
       )
     ).toBe(false);
   });
@@ -384,18 +368,51 @@ describe("terminal renderer helpers", () => {
     expect(
       shouldSuppressXtermDuringIme(
         keyboardEvent({
-          code: "MetaLeft",
-          key: "Meta",
-          keyCode: 91,
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
           metaKey: true,
           type: "keyup"
         }),
-        true
+        true,
+        "linux"
       )
     ).toBe(false);
   });
 
-  it("swallows Cmd + navigation keys during IME composition", () => {
+  it("leaves ordinary macOS composing letters to xterm", () => {
+    expect(
+      shouldSuppressXtermDuringIme(
+        keyboardEvent({
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
+          isComposing: true,
+          type: "keydown"
+        }),
+        false,
+        "darwin"
+      )
+    ).toBe(false);
+  });
+
+  it("still swallows bare Meta keydown during macOS IME composition", () => {
+    expect(
+      shouldSuppressXtermDuringIme(
+        keyboardEvent({
+          code: "MetaLeft",
+          key: "Meta",
+          keyCode: 91,
+          metaKey: true,
+          type: "keydown"
+        }),
+        true,
+        "darwin"
+      )
+    ).toBe(true);
+  });
+
+  it("swallows Cmd + navigation keys during macOS IME composition", () => {
     for (const key of [
       "ArrowLeft",
       "ArrowRight",
@@ -413,13 +430,14 @@ describe("terminal renderer helpers", () => {
             metaKey: true,
             type: "keydown"
           }),
-          true
+          true,
+          "darwin"
         )
       ).toBe(true);
     }
   });
 
-  it("swallows Alt + navigation keys during IME composition", () => {
+  it("swallows Alt + navigation keys during macOS IME composition", () => {
     for (const key of [
       "ArrowLeft",
       "ArrowRight",
@@ -437,20 +455,22 @@ describe("terminal renderer helpers", () => {
             altKey: true,
             type: "keydown"
           }),
-          true
+          true,
+          "darwin"
         )
       ).toBe(true);
     }
   });
 
-  it("does not swallow bare navigation keys (no modifier) even when composing", () => {
+  it("leaves bare navigation keys to xterm during macOS IME composition", () => {
     expect(
       shouldSuppressXtermDuringIme(
         keyboardEvent({
           key: "ArrowLeft",
           type: "keydown"
         }),
-        true
+        true,
+        "darwin"
       )
     ).toBe(false);
   });
@@ -463,46 +483,106 @@ describe("terminal renderer helpers", () => {
           metaKey: true,
           type: "keydown"
         }),
-        false
+        false,
+        "darwin"
       )
     ).toBe(false);
   });
 
-  it("does not swallow other keys (Enter, letters, IME process) even when composing", () => {
-    expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          code: "Enter",
-          key: "Enter",
-          keyCode: 13,
-          shiftKey: true,
-          type: "keydown"
-        }),
-        true
-      )
-    ).toBe(false);
-    expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          code: "KeyA",
-          key: "a",
-          keyCode: 65,
-          type: "keydown"
-        }),
-        true
-      )
-    ).toBe(false);
-    expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          code: "",
-          key: "Process",
-          keyCode: 229,
-          type: "keydown"
-        }),
-        true
-      )
-    ).toBe(false);
+  it("uses one explicit Linux IME commit while suppressing xterm composition data", () => {
+    let time = 0;
+    const guard = createTerminalImeDuplicateCommitGuard({
+      now: () => time,
+      duplicateWindowMs: 20
+    });
+
+    guard.compositionStart("");
+    guard.compositionUpdate("가");
+    expect(guard.filterData("가")).toBeNull();
+    time = 1;
+    expect(guard.compositionEnd("가", "가")).toBe("가");
+
+    time = 2;
+    expect(guard.filterData("가")).toBeNull();
+
+    guard.compositionStart("");
+    guard.compositionUpdate("가");
+    expect(guard.filterData("가")).toBeNull();
+    expect(guard.compositionEnd("가", "가")).toBe("가");
+    time = 30;
+    expect(guard.filterData("가")).toBe("가");
+  });
+
+  it("keeps a space typed immediately after a Linux IME commit while removing the duplicate commit", () => {
+    let time = 0;
+    const guard = createTerminalImeDuplicateCommitGuard({
+      now: () => time,
+      duplicateWindowMs: 20
+    });
+
+    guard.compositionStart("");
+    guard.compositionUpdate("한");
+    time = 1;
+    expect(guard.compositionEnd("한", "한")).toBe("한");
+
+    time = 2;
+    expect(guard.filterData("한 ")).toBe(" ");
+    expect(guard.filterData(" ")).toBe(" ");
+  });
+
+  it("removes a duplicate Linux IME commit even when xterm emits a different Unicode normalization form", () => {
+    let time = 0;
+    const guard = createTerminalImeDuplicateCommitGuard({
+      now: () => time,
+      duplicateWindowMs: 20
+    });
+    const composed = "한";
+    const decomposed = composed.normalize("NFD");
+
+    guard.compositionStart("");
+    guard.compositionUpdate(composed);
+    time = 1;
+    expect(guard.compositionEnd(composed, composed)).toBe(composed);
+
+    time = 2;
+    expect(guard.filterData(`${decomposed} `)).toBe(" ");
+    expect(guard.filterData(decomposed)).toBeNull();
+  });
+
+  it("allows the first post-composition commit when ibus ends composition with empty data", () => {
+    let time = 0;
+    const guard = createTerminalImeDuplicateCommitGuard({
+      now: () => time,
+      duplicateWindowMs: 20
+    });
+
+    guard.compositionStart("안");
+    guard.compositionUpdate("녕");
+    guard.compositionUpdate("");
+    time = 1;
+    expect(guard.compositionEnd("안", "")).toBe("");
+
+    time = 2;
+    expect(guard.filterData("녕")).toBe("녕");
+  });
+
+  it("suppresses only an immediate repeated post-composition commit from xterm", () => {
+    let time = 0;
+    const guard = createTerminalImeDuplicateCommitGuard({
+      now: () => time,
+      duplicateWindowMs: 20
+    });
+
+    guard.compositionStart("안");
+    guard.compositionUpdate("녕");
+    guard.compositionUpdate("");
+    time = 1;
+    expect(guard.compositionEnd("안", "")).toBe("");
+
+    time = 2;
+    expect(guard.filterData("녕")).toBe("녕");
+    expect(guard.filterData("녕")).toBeNull();
+    expect(guard.filterData(" ")).toBe(" ");
   });
 
   it("applies pending Enter rewrites only to the originating surface CR", () => {

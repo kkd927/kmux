@@ -27,6 +27,7 @@ export interface PaneTreeProps {
   active: boolean;
   settings: KmuxSettings;
   reservedSystemChords: KeyChord[];
+  keyboardPlatform: PlatformKeyboardPolicy["platform"];
   shortcutLabelStyle: PlatformKeyboardPolicy["labelStyle"];
   copyModeSelectAllShortcut: KeyChord;
   terminalTypography: ResolvedTerminalTypographyVm;
@@ -78,6 +79,7 @@ function arePaneTreePropsEqual(
     left.active === right.active &&
     left.settings === right.settings &&
     left.reservedSystemChords === right.reservedSystemChords &&
+    left.keyboardPlatform === right.keyboardPlatform &&
     left.shortcutLabelStyle === right.shortcutLabelStyle &&
     left.copyModeSelectAllShortcut === right.copyModeSelectAllShortcut &&
     left.terminalTypography === right.terminalTypography &&
@@ -123,6 +125,7 @@ function PaneNode(
         activeSurfaceId={pane.activeSurfaceId}
         settings={props.settings}
         reservedSystemChords={props.reservedSystemChords}
+        keyboardPlatform={props.keyboardPlatform}
         shortcutLabelStyle={props.shortcutLabelStyle}
         copyModeSelectAllShortcut={props.copyModeSelectAllShortcut}
         terminalTypography={props.terminalTypography}

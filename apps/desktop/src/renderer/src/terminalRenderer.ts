@@ -31,12 +31,21 @@ export interface TerminalEnterRewriteResult {
   clearPending: boolean;
 }
 
+export interface TerminalImeDuplicateCommitGuard {
+  compositionStart(textareaValue: string): void;
+  compositionUpdate(text: string): void;
+  compositionEnd(textareaValue: string, fallbackText?: string): string;
+  reset(): void;
+  filterData(data: string): string | null;
+}
+
 const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
   "image/png",
   "image/jpeg",
   "image/gif",
   "image/webp"
 ]);
+const IME_DUPLICATE_COMMIT_WINDOW_MS = 1500;
 
 export function createTerminalPaneXtermTheme(
   palette: Parameters<typeof createXtermTheme>[0],
@@ -150,4 +159,184 @@ export function applyPendingTerminalEnterRewrite(
       data.slice(carriageReturnIndex + 1),
     clearPending: true
   };
+}
+
+export function createTerminalImeDuplicateCommitGuard(options: {
+  now?: () => number;
+  duplicateWindowMs?: number;
+} = {}): TerminalImeDuplicateCommitGuard {
+  const now = options.now ?? (() => performance.now());
+  const duplicateWindowMs =
+    options.duplicateWindowMs ?? IME_DUPLICATE_COMMIT_WINDOW_MS;
+  let active = false;
+  let startValue = "";
+  let lastCompositionText = "";
+  let endedCompositionText = "";
+  let endedCommitText = "";
+  let endedAt = 0;
+
+  const hasImeText = (data: string): boolean => {
+    for (const character of data) {
+      const codePoint = character.codePointAt(0) ?? 0;
+      if (codePoint > 0x7f && codePoint !== 0x7f) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return {
+    compositionStart(textareaValue: string): void {
+      active = true;
+      startValue = textareaValue;
+      lastCompositionText = "";
+      endedCompositionText = "";
+      endedCommitText = "";
+      endedAt = 0;
+    },
+    compositionUpdate(text: string): void {
+      if (active) {
+        lastCompositionText = text;
+      }
+    },
+    compositionEnd(textareaValue: string, fallbackText = ""): string {
+      active = false;
+      endedAt = now();
+      endedCompositionText = lastCompositionText;
+      endedCommitText =
+        insertedTextBetween(startValue, textareaValue) ||
+        fallbackText ||
+        endedCompositionText;
+      startValue = textareaValue;
+      lastCompositionText = "";
+      return endedCommitText;
+    },
+    reset(): void {
+      active = false;
+      startValue = "";
+      lastCompositionText = "";
+      endedCompositionText = "";
+      endedCommitText = "";
+      endedAt = 0;
+    },
+    filterData(data: string): string | null {
+      if (!data) {
+        return null;
+      }
+      if (active) {
+        return hasImeText(data) ? null : data;
+      }
+      if (!endedAt || now() - endedAt > duplicateWindowMs) {
+        endedCompositionText = "";
+        endedCommitText = "";
+        endedAt = 0;
+        return data;
+      }
+
+      if (!endedCommitText && !endedCompositionText && hasImeText(data)) {
+        endedCommitText = data;
+        return data;
+      }
+
+      let filtered = data;
+      let consumedRecentCommit = false;
+      for (const committedText of [endedCommitText, endedCompositionText]) {
+        let consumedLength = consumedNormalizedPrefixLength(
+          filtered,
+          committedText
+        );
+        while (consumedLength > 0) {
+          filtered = filtered.slice(consumedLength);
+          consumedRecentCommit = true;
+          consumedLength = consumedNormalizedPrefixLength(
+            filtered,
+            committedText
+          );
+        }
+      }
+
+      if (consumedRecentCommit) {
+        return filtered || null;
+      }
+
+      if (
+        isNormalizedPrefix(data, endedCommitText) ||
+        isNormalizedPrefix(data, endedCompositionText)
+      ) {
+        return null;
+      }
+
+      if (!hasImeText(data)) {
+        return data;
+      }
+
+      // If the incoming data is Korean but does not match the recently ended
+      // composition, the user must have started a different Korean character.
+      // Reset immediately so this new input is not blocked.
+      endedCompositionText = "";
+      endedCommitText = "";
+      endedAt = 0;
+      return data;
+    }
+  };
+}
+
+function normalizeTerminalImeText(value: string): string {
+  return value.normalize("NFC");
+}
+
+function consumedNormalizedPrefixLength(
+  input: string,
+  committedText: string
+): number {
+  if (!input || !committedText) {
+    return 0;
+  }
+  const normalizedCommittedText = normalizeTerminalImeText(committedText);
+  let prefix = "";
+  for (const character of input) {
+    prefix += character;
+    if (normalizeTerminalImeText(prefix) === normalizedCommittedText) {
+      return prefix.length;
+    }
+  }
+  return 0;
+}
+
+function isNormalizedPrefix(input: string, committedText: string): boolean {
+  if (!input || !committedText) {
+    return false;
+  }
+  return normalizeTerminalImeText(committedText).startsWith(
+    normalizeTerminalImeText(input)
+  );
+}
+
+function insertedTextBetween(previousValue: string, nextValue: string): string {
+  if (!previousValue) {
+    return nextValue;
+  }
+  let prefixLength = 0;
+  while (
+    prefixLength < previousValue.length &&
+    prefixLength < nextValue.length &&
+    previousValue[prefixLength] === nextValue[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < previousValue.length - prefixLength &&
+    suffixLength < nextValue.length - prefixLength &&
+    previousValue[previousValue.length - 1 - suffixLength] ===
+      nextValue[nextValue.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1;
+  }
+
+  return nextValue.slice(
+    prefixLength,
+    suffixLength > 0 ? nextValue.length - suffixLength : nextValue.length
+  );
 }

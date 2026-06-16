@@ -76,6 +76,7 @@ function createPaneTreeProps(): PaneTreeProps {
       }
     },
     reservedSystemChords: [],
+    keyboardPlatform: "linux",
     shortcutLabelStyle: "text",
     copyModeSelectAllShortcut: "Ctrl+A",
     terminalTypography: {

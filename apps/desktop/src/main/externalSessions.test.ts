@@ -931,6 +931,7 @@ describe("external session indexer", () => {
 
     const indexer = createExternalSessionIndexer({
       homeDir,
+      env: {},
       now: () => now,
       commandAvailability: (command) => command === "agy"
     });
@@ -1168,6 +1169,7 @@ describe("external session indexer", () => {
 
     const indexer = createExternalSessionIndexer({
       homeDir,
+      env: {},
       now: () => now,
       commandAvailability: (command) => command !== "agy"
     });

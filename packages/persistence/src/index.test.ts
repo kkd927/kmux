@@ -325,12 +325,16 @@ describe("file-store persistence", () => {
     const runtimeDir = join(sandboxDir, "runtime");
     const { defaultAppPaths } = await import("./index");
 
-    expect(
-      defaultAppPaths("/Users/example", {
-        KMUX_CONFIG_DIR: configDir,
-        KMUX_RUNTIME_DIR: runtimeDir
-      }).usageHistoryPath
-    ).toBe(join(configDir, "usage-history.json"));
+    const paths = defaultAppPaths("/Users/example", {
+      KMUX_CONFIG_DIR: configDir,
+      KMUX_RUNTIME_DIR: runtimeDir
+    });
+
+    expect(paths.usageHistoryPath).toBe(
+      process.platform === "linux"
+        ? join("/Users/example", ".local", "state", "kmux", "usage-history.json")
+        : join(configDir, "usage-history.json")
+    );
   });
 
   it("returns the dedicated shell env cache path in the default app paths", async () => {
@@ -338,12 +342,16 @@ describe("file-store persistence", () => {
     const runtimeDir = join(sandboxDir, "runtime");
     const { defaultAppPaths } = await import("./index");
 
-    expect(
-      defaultAppPaths("/Users/example", {
-        KMUX_CONFIG_DIR: configDir,
-        KMUX_RUNTIME_DIR: runtimeDir
-      }).shellEnvCachePath
-    ).toBe(join(configDir, "shell-env.json"));
+    const paths = defaultAppPaths("/Users/example", {
+      KMUX_CONFIG_DIR: configDir,
+      KMUX_RUNTIME_DIR: runtimeDir
+    });
+
+    expect(paths.shellEnvCachePath).toBe(
+      process.platform === "linux"
+        ? join("/Users/example", ".local", "state", "kmux", "shell-env.json")
+        : join(configDir, "shell-env.json")
+    );
   });
 });
 
