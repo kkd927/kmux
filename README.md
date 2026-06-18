@@ -17,11 +17,18 @@ English | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简�
 <br>
 <br>
 
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Download for Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Download for Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Download for Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+<p>
+  <strong>macOS</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Download for Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Download for Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+</p>
+<p>
+  <strong>Linux</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Download for Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Download for Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 <br>
 <br>
@@ -114,11 +121,16 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 ## 📦 Install
 
 <p>
+  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Download for Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Download for Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-  &nbsp;
+</p>
+<p>
+  <strong>Linux</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Download for Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Download for Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
 </p>
 
 ### macOS
@@ -129,9 +141,9 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 
 ### Linux
 
-1. Download the Linux x64 AppImage
-2. Make it executable: `chmod +x kmux-linux-x64.AppImage`
-3. Run it: `./kmux-linux-x64.AppImage`
+1. Choose the AppImage for your Linux CPU (x64 → Intel/AMD 64-bit, ARM64 → ARM 64-bit)
+2. Make it executable: `chmod +x kmux-linux-x64.AppImage` or `chmod +x kmux-linux-arm64.AppImage`
+3. Run the matching file: `./kmux-linux-x64.AppImage` or `./kmux-linux-arm64.AppImage`
 
 <br>
 

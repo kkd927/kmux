@@ -816,6 +816,7 @@ export function buildPackagedSmokeEnv({ appImagePath, env = process.env }) {
   return {
     ...env,
     APPIMAGE: appImagePath,
+    APPIMAGELAUNCHER_DISABLE: env.APPIMAGELAUNCHER_DISABLE ?? "1",
     APPIMAGE_EXTRACT_AND_RUN: env.APPIMAGE_EXTRACT_AND_RUN ?? "1",
     KMUX_PACKAGED_EXECUTABLE_PATH: appImagePath
   };
@@ -926,6 +927,7 @@ export function buildPackagedSmokeSummary({
     "- Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release.",
     `- AppImage runtime env: ${[
       `APPIMAGE=${summaryValue(resolvedSmokeEnv.APPIMAGE)}`,
+      `APPIMAGELAUNCHER_DISABLE=${summaryValue(resolvedSmokeEnv.APPIMAGELAUNCHER_DISABLE)}`,
       `APPIMAGE_EXTRACT_AND_RUN=${summaryValue(resolvedSmokeEnv.APPIMAGE_EXTRACT_AND_RUN)}`,
       `KMUX_PACKAGED_EXECUTABLE_PATH=${summaryValue(resolvedSmokeEnv.KMUX_PACKAGED_EXECUTABLE_PATH)}`,
       `KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH=${summaryValue(resolvedSmokeEnv.KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH)}`

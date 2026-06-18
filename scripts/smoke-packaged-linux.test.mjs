@@ -531,6 +531,7 @@ describe("linux packaged smoke wrapper", () => {
         "Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release."
       );
       expect(summary).toContain(`APPIMAGE=${fixture.appImagePath}`);
+      expect(summary).toContain("| APPIMAGELAUNCHER_DISABLE=1 |");
       expect(summary).toContain("| APPIMAGE_EXTRACT_AND_RUN=1 |");
       expect(summary).toContain(
         `KMUX_PACKAGED_EXECUTABLE_PATH=${fixture.appImagePath}`
@@ -966,6 +967,7 @@ describe("linux packaged smoke wrapper", () => {
     expect(env).toMatchObject({
       PATH: "/usr/bin",
       APPIMAGE: "/tmp/kmux-0.3.12-linux-x64.AppImage",
+      APPIMAGELAUNCHER_DISABLE: "1",
       APPIMAGE_EXTRACT_AND_RUN: "1",
       KMUX_PACKAGED_EXECUTABLE_PATH: "/tmp/kmux-0.3.12-linux-x64.AppImage"
     });

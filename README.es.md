@@ -17,11 +17,18 @@ Un emulador de terminal centrado en el teclado diseñado para Claude Code, Codex
 <br>
 <br>
 
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+<p>
+  <strong>macOS</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+</p>
+<p>
+  <strong>Linux</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Descarga para Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 <br>
 <br>
@@ -114,11 +121,16 @@ kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de
 ## 📦 Instalación
 
 <p>
+  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-  &nbsp;
+</p>
+<p>
+  <strong>Linux</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Descarga para Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
 </p>
 
 ### macOS
@@ -129,9 +141,9 @@ kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de
 
 ### Linux
 
-1. Descarga la AppImage de Linux x64.
-2. Dale permisos de ejecución: `chmod +x kmux-linux-x64.AppImage`
-3. Ejecútala: `./kmux-linux-x64.AppImage`
+1. Elige la AppImage que coincida con tu CPU Linux (x64 → Intel/AMD 64-bit, ARM64 → ARM 64-bit).
+2. Dale permisos de ejecución: `chmod +x kmux-linux-x64.AppImage` o `chmod +x kmux-linux-arm64.AppImage`
+3. Ejecuta el archivo correspondiente: `./kmux-linux-x64.AppImage` o `./kmux-linux-arm64.AppImage`
 
 <br>
 

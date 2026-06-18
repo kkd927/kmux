@@ -17,11 +17,18 @@
 <br>
 <br>
 
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="下载 Apple Silicon 版本" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="下载 Intel Mac 版本" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-&nbsp;
-<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="下载 Linux x64 版本" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+<p>
+  <strong>macOS</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="下载 Apple Silicon 版本" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="下载 Intel Mac 版本" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+</p>
+<p>
+  <strong>Linux</strong><br>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="下载 Linux x64 版本" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="下载 Linux ARM64 版本" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 <br>
 <br>
@@ -114,11 +121,16 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 ## 📦 安装方法
 
 <p>
+  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="下载 Apple Silicon 版本" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="下载 Intel Mac 版本" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
-  &nbsp;
+</p>
+<p>
+  <strong>Linux</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="下载 Linux x64 版本" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="下载 Linux ARM64 版本" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
 </p>
 
 ### macOS
@@ -129,9 +141,9 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 
 ### Linux
 
-1. 下载 Linux x64 AppImage。
-2. 授予执行权限：`chmod +x kmux-linux-x64.AppImage`
-3. 运行：`./kmux-linux-x64.AppImage`
+1. 选择与你的 Linux CPU 匹配的 AppImage（x64 → Intel/AMD 64-bit，ARM64 → ARM 64-bit）。
+2. 授予执行权限：`chmod +x kmux-linux-x64.AppImage` 或 `chmod +x kmux-linux-arm64.AppImage`
+3. 运行对应文件：`./kmux-linux-x64.AppImage` 或 `./kmux-linux-arm64.AppImage`
 
 <br>
 

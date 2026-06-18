@@ -1,0 +1,41 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 500 176"
+  role="img"
+  aria-label="Download kmux for Linux ARM64"
+>
+  <title>Download for Linux ARM64</title>
+  <rect width="500" height="176" rx="28" ry="28" fill="#000" />
+  <g
+    transform="translate(30 38)"
+    fill="none"
+    stroke="#fff"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect x="0" y="0" width="96" height="96" rx="16" />
+    <path d="M24 34l20 18-20 18" />
+    <path d="M52 70h22" />
+  </g>
+  <text
+    x="160"
+    y="73"
+    font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+    font-size="42"
+    font-weight="300"
+    fill="#fff"
+  >
+    Download for
+  </text>
+  <text
+    x="160"
+    y="136"
+    font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+    font-size="66"
+    font-weight="500"
+    fill="#fff"
+  >
+    Linux ARM64
+  </text>
+</svg>
