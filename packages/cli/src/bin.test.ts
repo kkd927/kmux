@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 
@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveCliSocketPath } from "./socketPath";
 
 const SPAWNED_CLI_TEST_TIMEOUT_MS = 15_000;
+const macOnlyIt = process.platform === "darwin" ? it : it.skip;
+const linuxOnlyIt = process.platform === "linux" ? it : it.skip;
 
 describe("kmux cli socket path resolution", () => {
   it("prefers KMUX_SOCKET_PATH over platform defaults", () => {
@@ -69,6 +71,98 @@ describe("kmux cli agent hook forwarding", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  async function expectWorkspaceCurrentViaDefaultSocket({
+    homeDir,
+    env,
+    socketPath
+  }: {
+    homeDir: string;
+    env: NodeJS.ProcessEnv;
+    socketPath: string;
+  }) {
+    mkdirSync(dirname(socketPath), { recursive: true });
+    const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
+    let request:
+      | {
+          jsonrpc?: string;
+          method?: string;
+          params?: Record<string, unknown>;
+          id?: string;
+        }
+      | undefined;
+
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          request = JSON.parse(line) as typeof request;
+          socket.write(
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              id: request?.id,
+              result: { ok: true }
+            })}\n`
+          );
+          socket.end();
+        }
+      });
+      socket.on("error", () => {});
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", cliEntry, "workspace", "current"],
+        {
+          cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+          env: {
+            ...process.env,
+            ...env,
+            HOME: homeDir,
+            KMUX_SOCKET_PATH: undefined,
+            KMUX_RUNTIME_DIR: undefined
+          },
+          stdio: ["ignore", "pipe", "pipe"]
+        }
+      );
+
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+
+      const [exitCode] = (await once(child, "close")) as [number | null];
+
+      expect(exitCode).toBe(0);
+      expect(stdout.trim()).toBe(JSON.stringify({ ok: true }, null, 2));
+      expect(stderr).toBe("");
+      expect(request).toMatchObject({
+        jsonrpc: "2.0",
+        method: "workspace.current"
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
 
   it(
     "waits for delayed hook replies within the shared timeout budget",
@@ -178,94 +272,35 @@ describe("kmux cli agent hook forwarding", () => {
     SPAWNED_CLI_TEST_TIMEOUT_MS
   );
 
-  it(
-    "uses the shared default socket resolver when KMUX_SOCKET_PATH is absent",
+  macOnlyIt(
+    "uses the macOS home socket resolver when KMUX_SOCKET_PATH is absent",
+    async () => {
+      const homeDir = mkdtempSync(join(tmpdir(), "kmux-cli-home-test-"));
+      tempDirs.push(homeDir);
+      const socketPath = join(homeDir, ".kmux", "control.sock");
+
+      await expectWorkspaceCurrentViaDefaultSocket({
+        homeDir,
+        env: {},
+        socketPath
+      });
+    },
+    SPAWNED_CLI_TEST_TIMEOUT_MS
+  );
+
+  linuxOnlyIt(
+    "uses the Linux XDG runtime socket resolver when KMUX_SOCKET_PATH is absent",
     async () => {
       const homeDir = mkdtempSync(join(tmpdir(), "kmux-cli-home-test-"));
       tempDirs.push(homeDir);
       const runtimeDir = join(homeDir, "runtime");
       const socketPath = join(runtimeDir, "kmux", "control.sock");
-      mkdirSync(join(runtimeDir, "kmux"), { recursive: true });
-      const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
-      let request:
-        | {
-            jsonrpc?: string;
-            method?: string;
-            params?: Record<string, unknown>;
-            id?: string;
-          }
-        | undefined;
 
-      const server = createServer((socket) => {
-        let buffer = "";
-        socket.on("data", (chunk) => {
-          buffer += chunk.toString("utf8");
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.trim()) {
-              continue;
-            }
-            request = JSON.parse(line) as typeof request;
-            socket.write(
-              `${JSON.stringify({
-                jsonrpc: "2.0",
-                id: request?.id,
-                result: { ok: true }
-              })}\n`
-            );
-            socket.end();
-          }
-        });
-        socket.on("error", () => {});
+      await expectWorkspaceCurrentViaDefaultSocket({
+        homeDir,
+        env: { XDG_RUNTIME_DIR: runtimeDir },
+        socketPath
       });
-
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(socketPath, () => {
-          server.off("error", reject);
-          resolve();
-        });
-      });
-
-      try {
-        const child = spawn(
-          process.execPath,
-          ["--import", "tsx", cliEntry, "workspace", "current"],
-          {
-            cwd: fileURLToPath(new URL("../../..", import.meta.url)),
-            env: {
-              ...process.env,
-              HOME: homeDir,
-              XDG_RUNTIME_DIR: runtimeDir,
-              KMUX_SOCKET_PATH: undefined,
-              KMUX_RUNTIME_DIR: undefined
-            },
-            stdio: ["ignore", "pipe", "pipe"]
-          }
-        );
-
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk.toString("utf8");
-        });
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString("utf8");
-        });
-
-        const [exitCode] = (await once(child, "close")) as [number | null];
-
-        expect(exitCode).toBe(0);
-        expect(stdout.trim()).toBe(JSON.stringify({ ok: true }, null, 2));
-        expect(stderr).toBe("");
-        expect(request).toMatchObject({
-          jsonrpc: "2.0",
-          method: "workspace.current"
-        });
-      } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      }
     },
     SPAWNED_CLI_TEST_TIMEOUT_MS
   );
