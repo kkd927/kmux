@@ -127,6 +127,14 @@ export function markSurfaceHydrated(
   }
 }
 
+export function invalidateHydration(key: string): void {
+  const instance = store.get(key);
+  if (instance) {
+    instance.lastHydratedSurfaceId = null;
+    instance.lastHydratedSurfaceSequence = null;
+  }
+}
+
 function maxSequence(
   current: number | null,
   next: number | null

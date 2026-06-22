@@ -29,6 +29,7 @@ interface DismissibleUiState {
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
+  surfaceRestartConfirmOpen: boolean;
   worktreeDialogOpen: boolean;
 }
 
@@ -45,6 +46,7 @@ interface UseGlobalShortcutsOptions {
   setShowWorkspaceShortcutHints: Dispatch<SetStateAction<boolean>>;
   closeWorkspaceContextMenu: () => void;
   closeWorkspaceCloseConfirm: () => void;
+  closeSurfaceRestartConfirm: () => void;
   closeWorktreeDialog: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
   setSettingsOpen: Dispatch<SetStateAction<boolean>>;
@@ -102,6 +104,7 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         searchSurfaceId: currentSearchSurfaceId,
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
         workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen,
+        surfaceRestartConfirmOpen: currentSurfaceRestartConfirmOpen,
         worktreeDialogOpen: currentWorktreeDialogOpen
       } = currentOptions.dismissibleUiStateRef.current;
       const target = event.target;
@@ -120,6 +123,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         if (currentWorkspaceCloseConfirmOpen) {
           event.preventDefault();
           currentOptions.closeWorkspaceCloseConfirm();
+          return;
+        }
+        if (currentSurfaceRestartConfirmOpen) {
+          event.preventDefault();
+          currentOptions.closeSurfaceRestartConfirm();
           return;
         }
         if (currentWorktreeDialogOpen) {
@@ -157,6 +165,7 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
       if (
         currentWorkspaceContextMenuOpen ||
         currentWorkspaceCloseConfirmOpen ||
+        currentSurfaceRestartConfirmOpen ||
         currentWorktreeDialogOpen
       ) {
         return;

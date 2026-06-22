@@ -8,8 +8,9 @@ import type { ShellPatch, ShellStoreSnapshot } from "@kmux/proto";
 
 import { useShellSelector } from "./useShellStore";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const EMPTY_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_TREES: ShellStoreSnapshot["workspacePaneTrees"] = {};
@@ -76,6 +77,7 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
       surfaces: {
         surface_1: {
           id: "surface_1",
+          sessionId: "session_1",
           title: "repo / shell",
           cwd: "/repo",
           branch: "main",
@@ -110,6 +112,7 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
         surfaces: {
           surface_1: {
             id: "surface_1",
+            sessionId: "session_1",
             title: "repo / shell",
             cwd: "/repo",
             branch: "main",
@@ -334,9 +337,9 @@ describe("useShellStore", () => {
       await initialSnapshot.promise;
     });
 
-    expect(container.querySelector("[data-testid='sidebar']")?.textContent).toBe(
-      "false"
-    );
+    expect(
+      container.querySelector("[data-testid='sidebar']")?.textContent
+    ).toBe("false");
   });
 
   it("refetches the full shell snapshot instead of applying out-of-order patch gaps", async () => {
@@ -382,9 +385,9 @@ describe("useShellStore", () => {
     });
 
     expect(window.kmux.getShellState).toHaveBeenCalledTimes(2);
-    expect(container.querySelector("[data-testid='sidebar']")?.textContent).toBe(
-      "true"
-    );
+    expect(
+      container.querySelector("[data-testid='sidebar']")?.textContent
+    ).toBe("true");
   });
 
   it("preserves newer patches that arrive while a gap recovery refetch is in flight", async () => {

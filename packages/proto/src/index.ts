@@ -412,6 +412,7 @@ export interface SurfaceExitPayload {
 
 export interface SurfaceMetadataPayload {
   surfaceId: Id;
+  sessionId: Id;
   cwd?: string;
   title?: string;
   branch?: string | null;
@@ -545,6 +546,7 @@ export type PaneTreeNode = PaneLeafNode | PaneSplitNode;
 
 export interface SurfaceVm {
   id: Id;
+  sessionId: Id;
   title: string;
   cwd?: string;
   branch?: string;

@@ -44,6 +44,7 @@ function createPaneTreeProps(): PaneTreeProps {
       surfaces: {
         surface_1: {
           id: "surface_1",
+          sessionId: "session_1",
           title: "repo / shell",
           cwd: "/repo",
           branch: "main",
@@ -120,6 +121,7 @@ function createPaneTreeProps(): PaneTreeProps {
     onSplitRight: vi.fn(),
     onSplitDown: vi.fn(),
     onClosePane: vi.fn(),
+    onRestartSurface: vi.fn(),
     onToggleSearch: vi.fn()
   };
 }

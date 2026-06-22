@@ -79,6 +79,7 @@ type DismissibleUiState = {
   searchSurfaceId: string | null;
   workspaceContextMenuOpen: boolean;
   workspaceCloseConfirmOpen: boolean;
+  surfaceRestartConfirmOpen: boolean;
   worktreeDialogOpen: boolean;
 };
 
@@ -96,6 +97,12 @@ type PendingWorkspaceClose = {
   dirtyWorktrees?: WorktreeDirtyEntryGroup[];
   error?: string | null;
   busy?: boolean;
+};
+
+type PendingSurfaceRestart = {
+  surfaceId: string;
+  sessionId: string;
+  title: string;
 };
 
 type WorktreeConversionDialog =
@@ -204,6 +211,8 @@ export function App(): JSX.Element {
   );
   const [pendingWorkspaceClose, setPendingWorkspaceClose] =
     useState<PendingWorkspaceClose | null>(null);
+  const [pendingSurfaceRestart, setPendingSurfaceRestart] =
+    useState<PendingSurfaceRestart | null>(null);
   const [worktreeDialog, setWorktreeDialog] =
     useState<WorktreeConversionDialog | null>(null);
   const usageDashboardOpen = activeRightPanel === "usage";
@@ -218,6 +227,7 @@ export function App(): JSX.Element {
     searchSurfaceId,
     workspaceContextMenuOpen: false,
     workspaceCloseConfirmOpen: false,
+    surfaceRestartConfirmOpen: false,
     worktreeDialogOpen: false
   });
   useEffect(() => {
@@ -491,6 +501,7 @@ export function App(): JSX.Element {
     searchSurfaceId,
     workspaceContextMenuOpen: Boolean(workspaceContextMenu),
     workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose),
+    surfaceRestartConfirmOpen: Boolean(pendingSurfaceRestart),
     worktreeDialogOpen: Boolean(worktreeDialog)
   };
 
@@ -522,7 +533,8 @@ export function App(): JSX.Element {
     requestWorkspaceClose,
     withLatestActiveShortcutContext,
     requestPaneClose,
-    requestSurfaceClose
+    requestSurfaceClose,
+    closeSurfaceRestartConfirm: () => setPendingSurfaceRestart(null)
   });
 
   const paletteItems = useMemo(() => {
@@ -1074,6 +1086,9 @@ export function App(): JSX.Element {
               onClosePane={(paneId) => {
                 void requestPaneClose(paneId);
               }}
+              onRestartSurface={(surfaceId) => {
+                void requestSurfaceRestart(surfaceId);
+              }}
               onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
             />
           ))}
@@ -1164,6 +1179,9 @@ export function App(): JSX.Element {
           )
         }
         onConfirmWorkspaceClose={() => void confirmPendingWorkspaceClose()}
+        surfaceRestartConfirm={pendingSurfaceRestart}
+        onCloseSurfaceRestartConfirm={() => setPendingSurfaceRestart(null)}
+        onConfirmSurfaceRestart={() => void confirmPendingSurfaceRestart()}
         worktreeDialog={worktreeDialog}
         onCloseWorktreeDialog={closeWorktreeDialog}
         onDismissDetectedWorktree={dismissDetectedWorktreeDialog}
@@ -1281,6 +1299,45 @@ export function App(): JSX.Element {
         (row) => row.workspaceId === strategy.workspaceId
       )?.worktree,
       removeWorktree: false
+    });
+  }
+
+  async function requestSurfaceRestart(surfaceId: string): Promise<void> {
+    const latestView = await window.kmux.getShellState();
+    const surface = latestView.activeWorkspacePaneTree.surfaces[surfaceId];
+    if (!surface || surface.sessionState === "pending") {
+      return;
+    }
+    if (surface.sessionState === "running") {
+      setPendingSurfaceRestart({
+        surfaceId,
+        sessionId: surface.sessionId,
+        title: surface.title
+      });
+      return;
+    }
+    await dispatch({ type: "surface.restartSession", surfaceId });
+  }
+
+  async function confirmPendingSurfaceRestart(): Promise<void> {
+    const pendingRestart = pendingSurfaceRestart;
+    if (!pendingRestart) {
+      return;
+    }
+    setPendingSurfaceRestart(null);
+    const latestView = await window.kmux.getShellState();
+    const surface =
+      latestView.activeWorkspacePaneTree.surfaces[pendingRestart.surfaceId];
+    if (
+      !surface ||
+      surface.sessionId !== pendingRestart.sessionId ||
+      surface.sessionState === "pending"
+    ) {
+      return;
+    }
+    await dispatch({
+      type: "surface.restartSession",
+      surfaceId: pendingRestart.surfaceId
     });
   }
 

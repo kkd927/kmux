@@ -1,6 +1,7 @@
 import {
   type DragEvent,
   type MouseEvent,
+  type RefObject,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -83,6 +84,11 @@ import {
   type SurfaceTabDragPayload,
   type SurfaceTabDropDirection
 } from "../surfaceTabDrag";
+import {
+  buildSurfaceContextMenuEntries,
+  type SurfaceContextAction,
+  type SurfaceContextMenuEntry
+} from "../../../shared/surfaceContextMenu";
 
 export interface TerminalFocusRequest {
   surfaceId: string;
@@ -120,6 +126,7 @@ interface TerminalPaneProps {
   onSplitRight: (paneId: string) => void;
   onSplitDown: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
+  onRestartSurface: (surfaceId: string) => void;
   onToggleSearch: (surfaceId: string | null) => void;
   focusRequest?: TerminalFocusRequest | null;
 }
@@ -155,6 +162,13 @@ type TerminalDiagnosticMetadata = {
 type TerminalDiagnosticElement = HTMLDivElement & {
   __kmuxTerminal?: Terminal;
   __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
+};
+
+type SurfaceContextMenuState = {
+  surfaceId: string;
+  x: number;
+  y: number;
+  items: SurfaceContextMenuEntry[];
 };
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
@@ -205,6 +219,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     useState<SurfaceTabDropDirection | null>(null);
   const [imageDropActive, setImageDropActive] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
+  const [surfaceContextMenu, setSurfaceContextMenu] =
+    useState<SurfaceContextMenuState | null>(null);
+  const surfaceContextMenuRef = useRef<HTMLDivElement>(null!);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const paneActiveRef = useRef(props.active);
   const paneFocusedRef = useRef(props.focused);
@@ -218,6 +235,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const reservedSystemChordsRef = useRef(props.reservedSystemChords);
   const copyModeSelectAllShortcutRef = useRef(props.copyModeSelectAllShortcut);
   const onToggleSearchRef = useRef(props.onToggleSearch);
+  const surfaceContextActionRef = useRef<
+    (surfaceId: string, action: SurfaceContextAction) => void
+  >(() => {});
+  const surfaceSessionIdsRef = useRef(new Map<string, string>());
   const skipInitialTypographySyncRef = useRef(true);
   const attachmentStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -928,6 +949,85 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }
 
+  function canPasteIntoSurface(): boolean {
+    if (copyModeRef.current || showSearchRef.current) {
+      return false;
+    }
+    try {
+      return (
+        window.kmux.readClipboardText().length > 0 ||
+        window.kmux.readClipboardImages().length > 0
+      );
+    } catch (error) {
+      console.warn("Failed to inspect clipboard for surface menu", error);
+      return false;
+    }
+  }
+
+  function surfaceMenuContextFor(surface: SurfaceVm) {
+    const surfaceIsActive = activeSurfaceRef.current?.id === surface.id;
+    return {
+      canCopy: surfaceIsActive && Boolean(terminalRef.current?.getSelection()),
+      canPaste: surfaceIsActive && canPasteIntoSurface(),
+      canRestart: surface.sessionState !== "pending",
+      sessionState: surface.sessionState,
+      settings: {
+        shortcuts: props.settings.shortcuts
+      }
+    };
+  }
+
+  function closeSurfaceContextMenu(): void {
+    setSurfaceContextMenu(null);
+  }
+
+  function runSurfaceContextAction(
+    surfaceId: string,
+    action: SurfaceContextAction
+  ): void {
+    const targetSurface = props.surfaces.find(
+      (surface) => surface.id === surfaceId
+    );
+    if (!targetSurface) {
+      return;
+    }
+    closeSurfaceContextMenu();
+    props.onFocusPane(props.paneId);
+    props.onFocusSurface(surfaceId);
+
+    const terminal = terminalRef.current;
+    switch (action) {
+      case "copy":
+        if (terminal) {
+          void copyTerminalSelection(terminal, false);
+        }
+        return;
+      case "paste":
+        if (terminal && !copyModeRef.current && !showSearchRef.current) {
+          void pasteClipboard(terminal, surfaceId);
+        }
+        return;
+      case "split-horizontally":
+        props.onSplitDown(props.paneId);
+        return;
+      case "split-vertically":
+        props.onSplitRight(props.paneId);
+        return;
+      case "restart-session":
+        if (targetSurface.sessionState !== "pending") {
+          props.onRestartSurface(surfaceId);
+        }
+        return;
+      case "capture-diagnostics":
+        void window.kmux.captureSurfaceDiagnostics(surfaceId).catch((error) => {
+          console.warn("Failed to capture surface diagnostics", error);
+        });
+        return;
+    }
+  }
+
+  surfaceContextActionRef.current = runSurfaceContextAction;
+
   useEffect(() => {
     return () => {
       writeProfileBucketRef.current.flushAll();
@@ -937,6 +1037,29 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     };
   }, []);
+
+  useEffect(() => {
+    return window.kmux.subscribeSurfaceContextMenuAction((event) => {
+      if (!props.surfaces.some((surface) => surface.id === event.surfaceId)) {
+        return;
+      }
+      surfaceContextActionRef.current(event.surfaceId, event.action);
+    });
+  }, [props.surfaces]);
+
+  useEffect(() => {
+    if (!surfaceContextMenu) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      surfaceContextMenuRef.current
+        ?.querySelector<HTMLButtonElement>(
+          'button[role="menuitem"]:not(:disabled)'
+        )
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [surfaceContextMenu]);
 
   useLayoutEffect(() => {
     const wrapper = surfaceWrapperRefs.current.get(activeSurface.id);
@@ -1045,6 +1168,29 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       });
     }
   });
+
+  useLayoutEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !activeSurface) {
+      return;
+    }
+    const previousSessionId = surfaceSessionIdsRef.current.get(
+      activeSurface.id
+    );
+    surfaceSessionIdsRef.current.set(activeSurface.id, activeSurface.sessionId);
+    if (!previousSessionId || previousSessionId === activeSurface.sessionId) {
+      return;
+    }
+    terminal.reset();
+    terminal.clearSelection();
+    terminalInstanceStore.invalidateHydration(terminalInstanceKey);
+    streamReadySurfaceIdsRef.current.delete(activeSurface.id);
+    readySurfaceAttachIdsRef.current.delete(activeSurface.id);
+    updateTerminalDiagnostics(activeSurface.id, terminal, {
+      hydratedSequence: null,
+      renderedSequence: null
+    });
+  }, [activeSurface.id, activeSurface.sessionId, terminalInstanceKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1347,10 +1493,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
       let dataToSend = data;
-      if (
-        props.keyboardPlatform === "linux" &&
-        !isPastingRef.current
-      ) {
+      if (props.keyboardPlatform === "linux" && !isPastingRef.current) {
         const filteredData =
           linuxImeDuplicateCommitGuardRef.current.filterData(data);
         if (!filteredData) {
@@ -1459,6 +1602,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     let attached = true;
     const surfaceId = activeSurface.id;
+    const sessionId = activeSurface.sessionId;
     const instanceKey = terminalInstanceKey;
     const replayVisibility = createTerminalReplayVisibility({
       host: containerRef.current,
@@ -1481,10 +1625,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const fitAttachedTerminal = async (): Promise<void> => {
       await terminalInstanceStore.getRenderSink(instanceKey)?.fitAndSync();
     };
+    const isCurrentAttachedSession = (): boolean =>
+      attached &&
+      activeSurfaceRef.current?.id === surfaceId &&
+      activeSurfaceRef.current.sessionId === sessionId;
     const markSnapshotRendered = (
       attachId: string,
       snapshot: { sequence: number | null }
     ) => {
+      if (!isCurrentAttachedSession()) {
+        return Promise.resolve({ status: "stale" as const });
+      }
       terminalInstanceStore.markSurfaceHydrated(
         instanceKey,
         surfaceId,
@@ -1497,7 +1648,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         renderedSequence
       });
       return window.kmux
-        .completeAttachSurface(surfaceId, attachId)
+        .completeAttachSurface(surfaceId, attachId, sessionId)
         .then((completion) => {
           if (completion.status === "ready") {
             streamReadySurfaceIdsRef.current.add(surfaceId);
@@ -1510,8 +1661,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         });
     };
 
+    const isCurrentSessionEvent = (payload: {
+      surfaceId: string;
+      sessionId: string;
+    }): boolean =>
+      payload.surfaceId === surfaceId &&
+      payload.sessionId === sessionId &&
+      activeSurfaceRef.current?.id === surfaceId &&
+      activeSurfaceRef.current.sessionId === sessionId;
+
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
-      if (event.type === "chunk" && event.payload.surfaceId === surfaceId) {
+      if (event.type === "chunk" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
         writeAttachedTerminal(
           payload.chunk,
@@ -1534,7 +1694,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           payload.surfaceId
         );
       }
-      if (event.type === "resize" && event.payload.surfaceId === surfaceId) {
+      if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
         if (
           !payload.attachId ||
@@ -1557,7 +1717,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         });
         syncSurfaceTerminalMetrics(payload.surfaceId, terminal);
       }
-      if (event.type === "exit" && event.payload.surfaceId === surfaceId) {
+      if (event.type === "exit" && isCurrentSessionEvent(event.payload)) {
         writeAttachedTerminal(
           `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`,
           undefined,
@@ -1575,7 +1735,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       replayVisibility.dispose();
       unsubscribe();
-      void window.kmux.detachSurface(surfaceId);
+      void window.kmux.detachSurface(surfaceId, sessionId);
     };
     const registered = terminalInstanceStore.registerAttachment(
       surfaceId,
@@ -1596,10 +1756,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (lastHydratedSurfaceId === surfaceId) {
         await reattachPreservedTerminal({
           terminal,
-          isMounted: () => attached,
+          isMounted: isCurrentAttachedSession,
           isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
-          attachSurface: () => window.kmux.attachSurface(surfaceId),
+          attachSurface: () => window.kmux.attachSurface(surfaceId, sessionId),
           lastRenderedSequence:
             terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
           beforeFitAndSync: () => {
@@ -1619,11 +1779,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       } else {
         await hydrateAttachedTerminal({
           terminal,
-          isMounted: () => attached,
+          isMounted: isCurrentAttachedSession,
           isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
           fitAndSyncTerminal: fitAttachedTerminal,
-          attachSurface: () => window.kmux.attachSurface(surfaceId),
+          attachSurface: () => window.kmux.attachSurface(surfaceId, sessionId),
           writeTerminal: (_terminal, data, afterWrite) =>
             writeAttachedTerminal(data, afterWrite, surfaceId),
           onReplayStart: replayVisibility.hide,
@@ -1631,7 +1791,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           onSnapshotRendered: markSnapshotRendered
         });
       }
-      if (attached && shouldFocusActiveTerminal(surfaceId)) {
+      if (isCurrentAttachedSession() && shouldFocusActiveTerminal(surfaceId)) {
         focusTerminalInput();
       }
     })().catch(() => {
@@ -1641,7 +1801,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       cleanupAttachment();
     });
     return cleanupAttachment;
-  }, [activeSurface?.id, terminalInstanceKey]);
+  }, [activeSurface?.id, activeSurface?.sessionId, terminalInstanceKey]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -1809,10 +1969,43 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   ): void {
     event.preventDefault();
     event.stopPropagation();
+    openSurfaceContextMenu(surfaceId, event.clientX, event.clientY);
+  }
+
+  function handleTerminalContextMenu(event: MouseEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    openSurfaceContextMenu(activeSurface.id, event.clientX, event.clientY);
+  }
+
+  function openSurfaceContextMenu(
+    surfaceId: string,
+    x: number,
+    y: number
+  ): void {
+    const surface = props.surfaces.find((entry) => entry.id === surfaceId);
+    if (!surface) {
+      return;
+    }
     props.onFocusPane(props.paneId);
     props.onFocusSurface(surfaceId);
+    const context = surfaceMenuContextFor(surface);
+    const items = buildSurfaceContextMenuEntries(context);
     void window.kmux
-      .showSurfaceContextMenu(surfaceId, event.clientX, event.clientY)
+      .showSurfaceContextMenu(surfaceId, x, y, context)
+      .then((usedNative) => {
+        if (usedNative) {
+          return;
+        }
+        const menuWidth = 248;
+        const menuHeight = 224;
+        setSurfaceContextMenu({
+          surfaceId,
+          items,
+          x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
+          y: Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8))
+        });
+      })
       .catch((error) => {
         console.warn("Failed to show surface context menu", error);
       });
@@ -2045,6 +2238,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         onDrop={(event) => {
           void handleSurfaceDrop(event);
         }}
+        onContextMenu={handleTerminalContextMenu}
       >
         {showSurfaceDropPrompt ? (
           <div className={styles.surfaceDropPrompt} role="status">
@@ -2070,6 +2264,113 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             />
           );
         })}
+      </div>
+      {surfaceContextMenu ? (
+        <SurfaceContextMenu
+          position={surfaceContextMenu}
+          items={surfaceContextMenu.items}
+          shortcutLabelStyle={props.shortcutLabelStyle}
+          menuRef={surfaceContextMenuRef}
+          onClose={closeSurfaceContextMenu}
+          onAction={(action) =>
+            runSurfaceContextAction(surfaceContextMenu.surfaceId, action)
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function SurfaceContextMenu(props: {
+  position: { x: number; y: number };
+  items: SurfaceContextMenuEntry[];
+  shortcutLabelStyle: ShortcutLabelStyle;
+  menuRef: RefObject<HTMLDivElement>;
+  onClose: () => void;
+  onAction: (action: SurfaceContextAction) => void;
+}): JSX.Element {
+  return (
+    <div
+      className={styles.surfaceMenuOverlay}
+      onClick={props.onClose}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        props.onClose();
+      }}
+    >
+      <div
+        className={styles.surfaceMenu}
+        ref={props.menuRef}
+        role="menu"
+        aria-label="Surface menu"
+        style={{
+          left: props.position.x,
+          top: props.position.y
+        }}
+        onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => event.preventDefault()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            props.onClose();
+            return;
+          }
+          const enabledItems = Array.from(
+            event.currentTarget.querySelectorAll<HTMLButtonElement>(
+              'button[role="menuitem"]:not(:disabled)'
+            )
+          );
+          if (!enabledItems.length) {
+            return;
+          }
+          const currentIndex = enabledItems.findIndex(
+            (item) => item === document.activeElement
+          );
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            const nextIndex =
+              currentIndex === -1
+                ? step > 0
+                  ? 0
+                  : enabledItems.length - 1
+                : (currentIndex + step + enabledItems.length) %
+                  enabledItems.length;
+            enabledItems[nextIndex]?.focus();
+            return;
+          }
+          if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            enabledItems[
+              event.key === "Home" ? 0 : enabledItems.length - 1
+            ]?.focus();
+          }
+        }}
+      >
+        {props.items.map((item) =>
+          item.kind === "separator" ? (
+            <div
+              key={item.id}
+              className={styles.surfaceMenuSeparator}
+              role="separator"
+            />
+          ) : (
+            <button
+              key={item.id}
+              role="menuitem"
+              className={styles.surfaceMenuItem}
+              disabled={item.disabled}
+              onClick={() => props.onAction(item.action)}
+            >
+              <span className={styles.surfaceMenuLabel}>{item.label}</span>
+              {item.shortcut ? (
+                <span className={styles.surfaceMenuShortcut} aria-hidden="true">
+                  {formatShortcutLabel(item.shortcut, props.shortcutLabelStyle)}
+                </span>
+              ) : null}
+            </button>
+          )
+        )}
       </div>
     </div>
   );

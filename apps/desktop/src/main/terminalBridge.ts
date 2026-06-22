@@ -35,6 +35,7 @@ interface TerminalBridgeOptions {
 
 interface SurfaceAttachmentState {
   attachId: Id;
+  sessionId: Id;
   status: "hydrating" | "ready";
   queuedChunks: SurfaceChunkPayload[];
   queuedBytes: number;
@@ -111,14 +112,16 @@ export interface TerminalBridge {
   ): Promise<SurfaceSnapshotPayload | null>;
   attachSurface(
     contentsId: number,
-    surfaceId: Id
+    surfaceId: Id,
+    expectedSessionId: Id
   ): Promise<SurfaceAttachPayload | null>;
   completeAttachSurface(
     contentsId: number,
     surfaceId: Id,
-    attachId: Id
+    attachId: Id,
+    expectedSessionId: Id
   ): Promise<SurfaceAttachCompletionResult>;
-  detachSurface(contentsId: number, surfaceId: Id): void;
+  detachSurface(contentsId: number, surfaceId: Id, expectedSessionId: Id): void;
   handlePtyEvent(event: PtyEvent): void;
 }
 
@@ -129,16 +132,18 @@ export function createTerminalBridge(
     number,
     Map<Id, SurfaceAttachmentState>
   >();
-  const hydratedSurfaceIds = new Set<Id>();
+  const hydratedSurfaceSessions = new Set<string>();
   const pendingTitleMetadata = new Map<
-    Id,
+    string,
     {
+      surfaceId: Id;
+      sessionId: Id;
       title: string;
       timer: ReturnType<typeof setTimeout>;
     }
   >();
-  const lastTitleMetadataDispatchAt = new Map<Id, number>();
-  const lastDispatchedTitleMetadata = new Map<Id, string>();
+  const lastTitleMetadataDispatchAt = new Map<string, number>();
+  const lastDispatchedTitleMetadata = new Map<string, string>();
   const terminalIpcBucket = createSmoothnessProfileBucket<{
     surfaceId: Id;
     sessionId: Id;
@@ -182,6 +187,18 @@ export function createTerminalBridge(
   function surfaceSessionId(surfaceId: Id): Id | null {
     const surface = options.getState().surfaces[surfaceId];
     return surface ? surface.sessionId : null;
+  }
+
+  function isCurrentSurfaceSession(surfaceId: Id, sessionId: Id): boolean {
+    return surfaceSessionId(surfaceId) === sessionId;
+  }
+
+  function titleMetadataKey(surfaceId: Id, sessionId: Id): string {
+    return `${surfaceId}\u0000${sessionId}`;
+  }
+
+  function surfaceSessionKey(surfaceId: Id, sessionId: Id): string {
+    return `${surfaceId}\u0000${sessionId}`;
   }
 
   type VisibleInputClearTrigger =
@@ -274,6 +291,14 @@ export function createTerminalBridge(
   function handleTerminalMetadata(
     payload: Extract<PtyEvent, { type: "metadata" }>["payload"]
   ): void {
+    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
+      logDiagnostics("main.terminal.metadata.dropped", {
+        reason: "stale-session",
+        surfaceId: payload.surfaceId,
+        sessionId: payload.sessionId
+      });
+      return;
+    }
     if (
       payload.cwd !== undefined ||
       payload.attention !== undefined ||
@@ -288,67 +313,85 @@ export function createTerminalBridge(
       });
     }
     if (payload.title !== undefined) {
-      queueTitleMetadata(payload.surfaceId, payload.title);
+      queueTitleMetadata(payload.surfaceId, payload.sessionId, payload.title);
     }
   }
 
-  function queueTitleMetadata(surfaceId: Id, title: string): void {
-    if (!shouldDispatchTitleMetadata(surfaceId, title)) {
-      if (pendingTitleMetadata.get(surfaceId)?.title !== title) {
-        clearPendingTitleMetadata(surfaceId);
+  function queueTitleMetadata(
+    surfaceId: Id,
+    sessionId: Id,
+    title: string
+  ): void {
+    const key = titleMetadataKey(surfaceId, sessionId);
+    if (!shouldDispatchTitleMetadata(surfaceId, sessionId, title)) {
+      if (pendingTitleMetadata.get(key)?.title !== title) {
+        clearPendingTitleMetadata(surfaceId, sessionId);
       }
       return;
     }
 
     const now = Date.now();
-    const lastDispatchAt = lastTitleMetadataDispatchAt.get(surfaceId);
+    const lastDispatchAt = lastTitleMetadataDispatchAt.get(key);
     if (
       lastDispatchAt === undefined ||
       now - lastDispatchAt >= TITLE_METADATA_COALESCE_MS
     ) {
-      clearPendingTitleMetadata(surfaceId);
-      dispatchTitleMetadata(surfaceId, title);
+      clearPendingTitleMetadata(surfaceId, sessionId);
+      dispatchTitleMetadata(surfaceId, sessionId, title);
       return;
     }
 
-    const existing = pendingTitleMetadata.get(surfaceId);
+    const existing = pendingTitleMetadata.get(key);
     if (existing) {
       existing.title = title;
       return;
     }
 
-    const timer = setTimeout(() => {
-      flushPendingTitleMetadata(surfaceId);
-    }, TITLE_METADATA_COALESCE_MS - (now - lastDispatchAt));
+    const timer = setTimeout(
+      () => {
+        flushPendingTitleMetadata(surfaceId, sessionId);
+      },
+      TITLE_METADATA_COALESCE_MS - (now - lastDispatchAt)
+    );
     if (typeof timer === "object" && "unref" in timer) {
       timer.unref();
     }
-    pendingTitleMetadata.set(surfaceId, { title, timer });
+    pendingTitleMetadata.set(key, { surfaceId, sessionId, title, timer });
   }
 
-  function shouldDispatchTitleMetadata(surfaceId: Id, title: string): boolean {
+  function shouldDispatchTitleMetadata(
+    surfaceId: Id,
+    sessionId: Id,
+    title: string
+  ): boolean {
     const surface = options.getState().surfaces[surfaceId];
-    if (!surface || surface.titleLocked) {
+    if (!surface || surface.sessionId !== sessionId || surface.titleLocked) {
       return false;
     }
     if (surface.title === title) {
       return false;
     }
-    if (lastDispatchedTitleMetadata.get(surfaceId) === title) {
+    const key = titleMetadataKey(surfaceId, sessionId);
+    if (lastDispatchedTitleMetadata.get(key) === title) {
       return false;
     }
-    if (pendingTitleMetadata.get(surfaceId)?.title === title) {
+    if (pendingTitleMetadata.get(key)?.title === title) {
       return false;
     }
     return true;
   }
 
-  function dispatchTitleMetadata(surfaceId: Id, title: string): void {
-    if (!shouldDispatchTitleMetadata(surfaceId, title)) {
+  function dispatchTitleMetadata(
+    surfaceId: Id,
+    sessionId: Id,
+    title: string
+  ): void {
+    if (!shouldDispatchTitleMetadata(surfaceId, sessionId, title)) {
       return;
     }
-    lastTitleMetadataDispatchAt.set(surfaceId, Date.now());
-    lastDispatchedTitleMetadata.set(surfaceId, title);
+    const key = titleMetadataKey(surfaceId, sessionId);
+    lastTitleMetadataDispatchAt.set(key, Date.now());
+    lastDispatchedTitleMetadata.set(key, title);
     options.dispatchAppAction({
       type: "surface.metadata",
       surfaceId,
@@ -356,23 +399,25 @@ export function createTerminalBridge(
     });
   }
 
-  function flushPendingTitleMetadata(surfaceId: Id): void {
-    const pending = pendingTitleMetadata.get(surfaceId);
+  function flushPendingTitleMetadata(surfaceId: Id, sessionId: Id): void {
+    const key = titleMetadataKey(surfaceId, sessionId);
+    const pending = pendingTitleMetadata.get(key);
     if (!pending) {
       return;
     }
     clearTimeout(pending.timer);
-    pendingTitleMetadata.delete(surfaceId);
-    dispatchTitleMetadata(surfaceId, pending.title);
+    pendingTitleMetadata.delete(key);
+    dispatchTitleMetadata(surfaceId, sessionId, pending.title);
   }
 
-  function clearPendingTitleMetadata(surfaceId: Id): void {
-    const pending = pendingTitleMetadata.get(surfaceId);
+  function clearPendingTitleMetadata(surfaceId: Id, sessionId: Id): void {
+    const key = titleMetadataKey(surfaceId, sessionId);
+    const pending = pendingTitleMetadata.get(key);
     if (!pending) {
       return;
     }
     clearTimeout(pending.timer);
-    pendingTitleMetadata.delete(surfaceId);
+    pendingTitleMetadata.delete(key);
   }
 
   async function resizeSurface(
@@ -390,7 +435,11 @@ export function createTerminalBridge(
       const attachment = attachedSurfacesByContents
         .get(contentsId)
         ?.get(surfaceId);
-      if (attachment?.status !== "ready" || attachment.attachId !== attachId) {
+      if (
+        attachment?.status !== "ready" ||
+        attachment.attachId !== attachId ||
+        attachment.sessionId !== sessionId
+      ) {
         return;
       }
     }
@@ -453,9 +502,10 @@ export function createTerminalBridge(
     );
   }
 
-  function createHydratingAttachment(): SurfaceAttachmentState {
+  function createHydratingAttachment(sessionId: Id): SurfaceAttachmentState {
     return {
       attachId: makeId("attach"),
+      sessionId,
       status: "hydrating",
       queuedChunks: [],
       queuedBytes: 0,
@@ -469,9 +519,10 @@ export function createTerminalBridge(
   }
 
   function resetAttachmentForHydration(
-    attachment: SurfaceAttachmentState
+    attachment: SurfaceAttachmentState,
+    sessionId: Id
   ): void {
-    Object.assign(attachment, createHydratingAttachment());
+    Object.assign(attachment, createHydratingAttachment(sessionId));
   }
 
   function markAttachmentReady(
@@ -484,15 +535,23 @@ export function createTerminalBridge(
     attachment.hydratePromise = null;
     attachment.pendingSnapshotSequence = null;
     attachment.replayCount = 0;
-    hydratedSurfaceIds.add(surfaceId);
-    flushQueuedTerminalEvents(contentsId, surfaceId, snapshotSequence);
+    hydratedSurfaceSessions.add(
+      surfaceSessionKey(surfaceId, attachment.sessionId)
+    );
+    flushQueuedTerminalEvents(
+      contentsId,
+      surfaceId,
+      attachment.sessionId,
+      snapshotSequence
+    );
   }
 
   async function attachSurface(
     contentsId: number,
-    surfaceId: Id
+    surfaceId: Id,
+    expectedSessionId: Id
   ): Promise<SurfaceAttachPayload | null> {
-    if (!options.getState().surfaces[surfaceId]) {
+    if (!isCurrentSurfaceSession(surfaceId, expectedSessionId)) {
       return null;
     }
 
@@ -501,21 +560,35 @@ export function createTerminalBridge(
       new Map<Id, SurfaceAttachmentState>();
     attachedSurfacesByContents.set(contentsId, attached);
 
-    const existingAttachment = attached.get(surfaceId);
+    let existingAttachment = attached.get(surfaceId);
+    if (
+      existingAttachment &&
+      existingAttachment.sessionId !== expectedSessionId
+    ) {
+      removeAttachment(contentsId, surfaceId, existingAttachment);
+      existingAttachment = undefined;
+    }
     if (existingAttachment?.hydratePromise) {
       return existingAttachment.hydratePromise;
     }
 
-    const attachment = existingAttachment ?? createHydratingAttachment();
+    const attachment =
+      existingAttachment ?? createHydratingAttachment(expectedSessionId);
     if (existingAttachment) {
-      resetAttachmentForHydration(attachment);
+      resetAttachmentForHydration(attachment, expectedSessionId);
     }
     attached.set(surfaceId, attachment);
 
     attachment.hydratePromise = (async () => {
+      if (!isCurrentSurfaceSession(surfaceId, expectedSessionId)) {
+        removeAttachment(contentsId, surfaceId, attachment);
+        return null;
+      }
       let snapshot = await snapshotSurface(
         surfaceId,
-        hydratedSurfaceIds.has(surfaceId)
+        hydratedSurfaceSessions.has(
+          surfaceSessionKey(surfaceId, expectedSessionId)
+        )
           ? {}
           : {
               settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
@@ -524,12 +597,17 @@ export function createTerminalBridge(
       const currentAttachment = attachedSurfacesByContents
         .get(contentsId)
         ?.get(surfaceId);
-      if (currentAttachment !== attachment) {
+      if (
+        currentAttachment !== attachment ||
+        !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
+        (snapshot && snapshot.sessionId !== expectedSessionId)
+      ) {
         return null;
       }
       const recovery = await recoverHydrationOverflow({
         contentsId,
         surfaceId,
+        expectedSessionId,
         attachment,
         snapshot
       });
@@ -558,7 +636,8 @@ export function createTerminalBridge(
   async function completeAttachSurface(
     contentsId: number,
     surfaceId: Id,
-    attachId: Id
+    attachId: Id,
+    expectedSessionId: Id
   ): Promise<SurfaceAttachCompletionResult> {
     const attachment = attachedSurfacesByContents
       .get(contentsId)
@@ -566,7 +645,9 @@ export function createTerminalBridge(
     if (
       !attachment ||
       attachment.status === "ready" ||
-      attachment.attachId !== attachId
+      attachment.attachId !== attachId ||
+      attachment.sessionId !== expectedSessionId ||
+      !isCurrentSurfaceSession(surfaceId, expectedSessionId)
     ) {
       return { status: "stale" };
     }
@@ -591,13 +672,16 @@ export function createTerminalBridge(
           ?.get(surfaceId);
         if (
           currentAttachment !== attachment ||
-          attachment.attachId !== attachId
+          attachment.attachId !== attachId ||
+          !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
+          (recoverySnapshot && recoverySnapshot.sessionId !== expectedSessionId)
         ) {
           return { status: "stale" };
         }
         const recovery = await recoverHydrationOverflow({
           contentsId,
           surfaceId,
+          expectedSessionId,
           attachment,
           snapshot: recoverySnapshot
         });
@@ -628,11 +712,13 @@ export function createTerminalBridge(
   async function recoverHydrationOverflow({
     contentsId,
     surfaceId,
+    expectedSessionId,
     attachment,
     snapshot
   }: {
     contentsId: number;
     surfaceId: Id;
+    expectedSessionId: Id;
     attachment: SurfaceAttachmentState;
     snapshot: SurfaceSnapshotPayload | null;
   }): Promise<
@@ -651,7 +737,12 @@ export function createTerminalBridge(
       const latestAttachment = attachedSurfacesByContents
         .get(contentsId)
         ?.get(surfaceId);
-      if (latestAttachment !== attachment) {
+      if (
+        latestAttachment !== attachment ||
+        attachment.sessionId !== expectedSessionId ||
+        !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
+        (snapshot && snapshot.sessionId !== expectedSessionId)
+      ) {
         return { status: "stale" };
       }
     }
@@ -673,8 +764,18 @@ export function createTerminalBridge(
     return { status: "current", snapshot };
   }
 
-  function detachSurface(contentsId: number, surfaceId: Id): void {
-    removeAttachment(contentsId, surfaceId);
+  function detachSurface(
+    contentsId: number,
+    surfaceId: Id,
+    expectedSessionId: Id
+  ): void {
+    const attachment = attachedSurfacesByContents
+      .get(contentsId)
+      ?.get(surfaceId);
+    if (!attachment || attachment.sessionId !== expectedSessionId) {
+      return;
+    }
+    removeAttachment(contentsId, surfaceId, attachment);
   }
 
   function removeAttachment(
@@ -722,12 +823,13 @@ export function createTerminalBridge(
   }
 
   function surfaceAttachmentEntries(
-    surfaceId: Id
+    surfaceId: Id,
+    sessionId: Id
   ): Array<[number, SurfaceAttachmentState]> {
     const entries: Array<[number, SurfaceAttachmentState]> = [];
     for (const [contentsId, attached] of attachedSurfacesByContents.entries()) {
       const attachment = attached.get(surfaceId);
-      if (attachment) {
+      if (attachment?.sessionId === sessionId) {
         entries.push([contentsId, attachment]);
       }
     }
@@ -737,12 +839,13 @@ export function createTerminalBridge(
   function flushQueuedTerminalEvents(
     contentsId: number,
     surfaceId: Id,
+    sessionId: Id,
     snapshotSequence: number
   ): void {
     const attachment = attachedSurfacesByContents
       .get(contentsId)
       ?.get(surfaceId);
-    if (!attachment) {
+    if (!attachment || attachment.sessionId !== sessionId) {
       return;
     }
 
@@ -763,6 +866,7 @@ export function createTerminalBridge(
       details: {
         contentsId,
         surfaceId,
+        sessionId,
         queuedChunks: queuedChunks.length,
         queuedBytes: attachment.queuedBytes,
         queueOverflowed: attachment.queueOverflowed,
@@ -787,8 +891,12 @@ export function createTerminalBridge(
   }
 
   function forwardTerminalChunk(payload: SurfaceChunkPayload): void {
+    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
+      return;
+    }
     for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId
+      payload.surfaceId,
+      payload.sessionId
     )) {
       if (attachment.status === "hydrating") {
         queueHydrationChunk(attachment, payload);
@@ -802,11 +910,15 @@ export function createTerminalBridge(
   }
 
   function forwardTerminalResize(payload: SurfaceResizePayload): void {
+    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
+      return;
+    }
     if (!payload.attachId) {
       return;
     }
     for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId
+      payload.surfaceId,
+      payload.sessionId
     )) {
       if (
         attachment.status === "hydrating" ||
@@ -971,8 +1083,12 @@ export function createTerminalBridge(
   }
 
   function forwardTerminalExit(payload: SurfaceExitPayload): void {
+    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
+      return;
+    }
     for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId
+      payload.surfaceId,
+      payload.sessionId
     )) {
       if (attachment.status === "hydrating") {
         attachment.pendingExit = payload;
@@ -1019,6 +1135,14 @@ export function createTerminalBridge(
           });
           return;
         }
+        if (!isCurrentSurfaceSession(event.surfaceId, event.sessionId)) {
+          logDiagnostics("main.terminal.bell.dropped", {
+            reason: "stale-session",
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId
+          });
+          return;
+        }
         options.dispatchAppAction({
           type: "terminal.bell"
         });
@@ -1042,6 +1166,15 @@ export function createTerminalBridge(
         if (!surface) {
           logDiagnostics("main.terminal.notification.dropped", {
             reason: "missing-surface",
+            surfaceId: event.surfaceId,
+            sessionId: event.sessionId,
+            protocol: event.protocol
+          });
+          return;
+        }
+        if (surface.sessionId !== event.sessionId) {
+          logDiagnostics("main.terminal.notification.dropped", {
+            reason: "stale-session",
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
             protocol: event.protocol
@@ -1142,7 +1275,10 @@ export function createTerminalBridge(
         forwardTerminalResize(event.payload);
         return;
       case "exit":
-        flushPendingTitleMetadata(event.payload.surfaceId);
+        flushPendingTitleMetadata(
+          event.payload.surfaceId,
+          event.payload.sessionId
+        );
         options.dispatchAppAction({
           type: "session.exited",
           sessionId: event.payload.sessionId,

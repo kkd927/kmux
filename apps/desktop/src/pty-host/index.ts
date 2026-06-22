@@ -9,10 +9,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type {
-  Id,
-  SurfaceSnapshotPayload
-} from "@kmux/proto";
+import type { Id, SurfaceSnapshotPayload } from "@kmux/proto";
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
@@ -393,9 +390,7 @@ function sendTerminalNotification(
   });
 }
 
-function spawnSession(
-  request: Extract<PtyRequest, { type: "spawn" }>
-): void {
+function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   const pty = resolvePtyModule();
   const preparedLaunch = resolvePtySpawnLaunch(request, process.env);
   let ptyProcess: PtyModule.IPty;
@@ -492,6 +487,7 @@ function spawnSession(
         type: "metadata",
         payload: {
           surfaceId: record.surfaceId,
+          sessionId: record.sessionId,
           cwd
         }
       });
@@ -528,6 +524,7 @@ function spawnSession(
       type: "metadata",
       payload: {
         surfaceId: record.surfaceId,
+        sessionId: record.sessionId,
         title
       }
     });

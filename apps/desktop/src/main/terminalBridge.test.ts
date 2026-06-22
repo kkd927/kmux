@@ -48,6 +48,31 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("drops stale BEL events after a surface session changes", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const oldSessionId = state.surfaces[surfaceId].sessionId;
+    state.surfaces[surfaceId] = {
+      ...state.surfaces[surfaceId],
+      sessionId: "session-restarted"
+    };
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "bell",
+      surfaceId,
+      sessionId: oldSessionId,
+      title: "old shell"
+    });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+  });
+
   it("routes spawned shell input readiness into session.started", () => {
     const state = createInitialState();
     const dispatchAppAction = vi.fn<(action: AppAction) => void>();
@@ -113,6 +138,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "first"
       }
     });
@@ -120,6 +146,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "second"
       }
     });
@@ -127,6 +154,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "third"
       }
     });
@@ -153,10 +181,39 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "third"
       }
     });
     expect(dispatchAppAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops stale metadata after a surface session changes", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const oldSessionId = state.surfaces[surfaceId].sessionId;
+    state.surfaces[surfaceId] = {
+      ...state.surfaces[surfaceId],
+      sessionId: "session-restarted"
+    };
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.handlePtyEvent({
+      type: "metadata",
+      payload: {
+        surfaceId,
+        sessionId: oldSessionId,
+        cwd: "/tmp/old",
+        title: "old title"
+      }
+    });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
   });
 
   it("drops pending title metadata when the title reverts to the current value", () => {
@@ -176,6 +233,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "first"
       }
     });
@@ -183,6 +241,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "stale"
       }
     });
@@ -190,6 +249,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "first"
       }
     });
@@ -221,6 +281,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "first"
       }
     });
@@ -228,6 +289,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "pending"
       }
     });
@@ -235,6 +297,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         cwd: "/tmp/kmux"
       }
     });
@@ -275,6 +338,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "first"
       }
     });
@@ -282,6 +346,7 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
+        sessionId: state.surfaces[surfaceId].sessionId,
         title: "final"
       }
     });
@@ -337,6 +402,34 @@ describe("terminal bridge", () => {
       message: surface.cwd ?? "Terminal notification",
       source: "terminal"
     });
+  });
+
+  it("drops stale terminal notifications after a surface session changes", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const oldSessionId = state.surfaces[surfaceId].sessionId;
+    state.surfaces[surfaceId] = {
+      ...state.surfaces[surfaceId],
+      sessionId: "session-restarted"
+    };
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "codex"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: oldSessionId,
+      protocol: 9,
+      title: "CodexBar",
+      message: "Plan mode prompt: stale"
+    });
+
+    expect(dispatchAppAction).not.toHaveBeenCalled();
   });
 
   it("suppresses visible terminal notifications for the active surface", () => {
@@ -541,6 +634,118 @@ describe("terminal bridge", () => {
     expect(dispatchAppAction).not.toHaveBeenCalled();
   });
 
+  it("cancels an in-flight attach snapshot when the surface session changes", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 1,
+      vt: "old snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    let resolveSnapshot: ((value: typeof snapshot) => void) | undefined;
+    const ptyHost = {
+      snapshot: vi.fn(
+        () =>
+          new Promise<typeof snapshot>((resolve) => {
+            resolveSnapshot = resolve;
+          })
+      )
+    };
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      surface.sessionId
+    );
+    state.surfaces[surfaceId] = {
+      ...surface,
+      sessionId: "session-restarted"
+    };
+
+    const resolve = resolveSnapshot;
+    expect(resolve).toBeTypeOf("function");
+    if (!resolve) {
+      throw new Error("expected snapshot resolver to be set");
+    }
+    resolve(snapshot);
+
+    await expect(attachPromise).resolves.toBeNull();
+  });
+
+  it("does not forward old session chunks through a stale attachment", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 0,
+      vt: "",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () =>
+        ({
+          snapshot: vi.fn().mockResolvedValue(snapshot)
+        }) as never
+    });
+
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      surface.sessionId
+    );
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? "",
+      surface.sessionId
+    );
+    state.surfaces[surfaceId] = {
+      ...surface,
+      sessionId: "session-restarted"
+    };
+
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        sequence: 1,
+        chunk: "old output"
+      }
+    });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("flushes only post-snapshot chunks after attach hydration completes", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -580,7 +785,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -615,7 +824,8 @@ describe("terminal bridge", () => {
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
@@ -668,7 +878,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -707,7 +921,8 @@ describe("terminal bridge", () => {
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
@@ -769,7 +984,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     expect(attachPayload?.snapshot).toEqual(initialSnapshot);
 
     bridge.handlePtyEvent({
@@ -785,7 +1004,8 @@ describe("terminal bridge", () => {
     const completion = await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
 
     expect(ptyHost.snapshot).toHaveBeenCalledTimes(2);
@@ -891,7 +1111,11 @@ describe("terminal bridge", () => {
       }
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     let attachId = attachPayload?.attachId ?? "";
 
     for (let sequence = 1; sequence <= 3; sequence += 1) {
@@ -907,7 +1131,8 @@ describe("terminal bridge", () => {
       const completion = await bridge.completeAttachSurface(
         77,
         surfaceId,
-        attachId
+        attachId,
+        state.surfaces[surfaceId].sessionId
       );
       expect(completion.status).toBe("replay");
       if (completion.status === "replay") {
@@ -926,7 +1151,12 @@ describe("terminal bridge", () => {
     });
 
     await expect(
-      bridge.completeAttachSurface(77, surfaceId, attachId)
+      bridge.completeAttachSurface(
+        77,
+        surfaceId,
+        attachId,
+        state.surfaces[surfaceId].sessionId
+      )
     ).resolves.toEqual({ status: "ready" });
 
     expect(record).toHaveBeenCalledWith(
@@ -986,15 +1216,24 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const firstAttach = await bridge.attachSurface(77, surfaceId);
+    const firstAttach = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      firstAttach?.attachId ?? ""
+      firstAttach?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
     send.mockClear();
 
-    const secondAttach = await bridge.attachSurface(77, surfaceId);
+    const secondAttach = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     expect(secondAttach?.snapshot).toEqual(secondSnapshot);
 
     bridge.handlePtyEvent({
@@ -1009,7 +1248,12 @@ describe("terminal bridge", () => {
 
     expect(send).not.toHaveBeenCalled();
     await expect(
-      bridge.completeAttachSurface(77, surfaceId, secondAttach?.attachId ?? "")
+      bridge.completeAttachSurface(
+        77,
+        surfaceId,
+        secondAttach?.attachId ?? "",
+        state.surfaces[surfaceId].sessionId
+      )
     ).resolves.toEqual({ status: "ready" });
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
       type: "chunk",
@@ -1055,11 +1299,16 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
     send.mockClear();
 
@@ -1128,17 +1377,27 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const firstAttach = await bridge.attachSurface(77, surfaceId);
+    const firstAttach = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      firstAttach?.attachId ?? ""
+      firstAttach?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
-    const secondAttach = await bridge.attachSurface(88, surfaceId);
+    const secondAttach = await bridge.attachSurface(
+      88,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       88,
       surfaceId,
-      secondAttach?.attachId ?? ""
+      secondAttach?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
     firstSend.mockClear();
     secondSend.mockClear();
@@ -1200,7 +1459,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1223,7 +1486,8 @@ describe("terminal bridge", () => {
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -1273,10 +1537,12 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    await expect(bridge.attachSurface(77, surfaceId)).rejects.toThrow(
-      "snapshot failed"
-    );
-    await expect(bridge.attachSurface(77, surfaceId)).resolves.toEqual({
+    await expect(
+      bridge.attachSurface(77, surfaceId, state.surfaces[surfaceId].sessionId)
+    ).rejects.toThrow("snapshot failed");
+    await expect(
+      bridge.attachSurface(77, surfaceId, state.surfaces[surfaceId].sessionId)
+    ).resolves.toEqual({
       attachId: expect.any(String),
       snapshot: retrySnapshot
     });
@@ -1315,7 +1581,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1327,12 +1597,22 @@ describe("terminal bridge", () => {
     });
 
     await expect(
-      bridge.completeAttachSurface(77, surfaceId, "stale-attach")
+      bridge.completeAttachSurface(
+        77,
+        surfaceId,
+        "stale-attach",
+        state.surfaces[surfaceId].sessionId
+      )
     ).resolves.toEqual({ status: "stale" });
     expect(send).not.toHaveBeenCalled();
 
     await expect(
-      bridge.completeAttachSurface(77, surfaceId, attachPayload?.attachId ?? "")
+      bridge.completeAttachSurface(
+        77,
+        surfaceId,
+        attachPayload?.attachId ?? "",
+        state.surfaces[surfaceId].sessionId
+      )
     ).resolves.toEqual({ status: "ready" });
     expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
       type: "chunk",
@@ -1388,7 +1668,11 @@ describe("terminal bridge", () => {
       }
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1409,7 +1693,8 @@ describe("terminal bridge", () => {
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
 
     expect(record).toHaveBeenCalledWith(
@@ -1475,7 +1760,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     for (let sequence = 1; sequence <= 1001; sequence += 1) {
       bridge.handlePtyEvent({
         type: "chunk",
@@ -1549,7 +1838,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1610,7 +1903,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1712,7 +2009,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     bridge.handlePtyEvent({
       type: "chunk",
       payload: {
@@ -1793,7 +2094,11 @@ describe("terminal bridge", () => {
       }
     });
 
-    const attachPromise = bridge.attachSurface(77, surfaceId);
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
 
     async function waitForSnapshotResolver(index: number) {
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -1899,11 +2204,16 @@ describe("terminal bridge", () => {
       }
     });
 
-    const attachPayload = await bridge.attachSurface(77, surfaceId);
+    const attachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      attachPayload?.attachId ?? ""
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
 
     for (let index = 1; index <= 100; index += 1) {
@@ -2050,7 +2360,11 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    await bridge.attachSurface(77, surfaceId);
+    await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
 
     expect(ptyHost.snapshot).toHaveBeenCalledWith(
       surface.sessionId,
@@ -2095,14 +2409,23 @@ describe("terminal bridge", () => {
       getPtyHost: () => ptyHost as never
     });
 
-    const firstAttachPayload = await bridge.attachSurface(77, surfaceId);
+    const firstAttachPayload = await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
     await bridge.completeAttachSurface(
       77,
       surfaceId,
-      firstAttachPayload?.attachId ?? ""
+      firstAttachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
     );
-    bridge.detachSurface(77, surfaceId);
-    await bridge.attachSurface(77, surfaceId);
+    bridge.detachSurface(77, surfaceId, state.surfaces[surfaceId].sessionId);
+    await bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
 
     expect(ptyHost.snapshot).toHaveBeenNthCalledWith(
       1,

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Menu, type MenuItemConstructorOptions } from "electron";
 
-import { LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
+import { buildDefaultShortcuts, LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
 
 import { buildPlatformKeyboardPolicy } from "../shared/platform/keyboardPolicy";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
@@ -14,6 +14,7 @@ vi.mock("electron", () => ({
 }));
 
 import {
+  buildNativeSurfaceContextMenu,
   buildNativeWorkspaceContextMenu,
   toElectronAccelerator
 } from "./workspaceContextMenu";
@@ -82,8 +83,8 @@ describe("native workspace context menu", () => {
       dispatch: vi.fn()
     });
 
-    const template =
-      buildFromTemplate.mock.calls[0]?.[0] as MenuItemConstructorOptions[];
+    const template = buildFromTemplate.mock
+      .calls[0]?.[0] as MenuItemConstructorOptions[];
 
     expect(
       template.find((item) => item.label === "Rename Workspace…")
@@ -91,6 +92,41 @@ describe("native workspace context menu", () => {
     expect(
       template.find((item) => item.label === "Close Workspace")
     ).toMatchObject({ accelerator: undefined });
+  });
+
+  it("builds native surface menu items and routes actions back to the renderer", () => {
+    const buildFromTemplate = vi.mocked(Menu.buildFromTemplate);
+    const popup = vi.fn();
+    buildFromTemplate.mockClear();
+    buildFromTemplate.mockReturnValue({ popup } as unknown as Menu);
+    const onAction = vi.fn();
+
+    buildNativeSurfaceContextMenu({
+      surfaceId: "surface_1",
+      context: {
+        canCopy: true,
+        canPaste: true,
+        canRestart: true,
+        sessionState: "running",
+        settings: {
+          shortcuts: buildDefaultShortcuts("darwin")
+        }
+      },
+      onAction
+    });
+
+    const template = buildFromTemplate.mock
+      .calls[0]?.[0] as MenuItemConstructorOptions[];
+    const splitHorizontally = template.find(
+      (item) => item.label === "Split Horizontally"
+    );
+
+    expect(splitHorizontally).toMatchObject({
+      accelerator: "Command+Shift+D"
+    });
+    splitHorizontally?.click?.({} as never, {} as never, {} as never);
+
+    expect(onAction).toHaveBeenCalledWith("surface_1", "split-horizontally");
   });
 });
 

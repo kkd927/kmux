@@ -38,7 +38,8 @@ function registerTestHandlers(options: {
   completeAttachSurface?: (
     contentsId: number,
     surfaceId: string,
-    attachId: string
+    attachId: string,
+    expectedSessionId: string
   ) => Promise<{ status: "ready" }>;
   resizeSurface?: (
     contentsId: number,
@@ -288,13 +289,14 @@ describe("ipc handlers", () => {
     expect(handler).toBeTypeOf("function");
     await expect(
       Promise.resolve(
-        handler?.({ sender: { id: 44 } }, "surface-1", "attach-1")
+        handler?.({ sender: { id: 44 } }, "surface-1", "attach-1", "session-1")
       )
     ).resolves.toEqual({ status: "ready" });
     expect(completeAttachSurface).toHaveBeenCalledWith(
       44,
       "surface-1",
-      "attach-1"
+      "attach-1",
+      "session-1"
     );
   });
 

@@ -4,12 +4,16 @@ import { act } from "react";
 import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ActiveWorkspacePaneTreeVm, ShellStoreSnapshot } from "@kmux/proto";
+import type {
+  ActiveWorkspacePaneTreeVm,
+  ShellStoreSnapshot
+} from "@kmux/proto";
 
 import { useTerminalInstanceCleanup } from "./useTerminalInstanceCleanup";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
-  .IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createWorkspacePaneTree(
   paneIds: string[] = ["pane_a", "pane_b"]
@@ -40,6 +44,7 @@ function createWorkspacePaneTree(
         `surface_${paneId}`,
         {
           id: `surface_${paneId}`,
+          sessionId: `session_${paneId}`,
           title: paneId,
           ports: [],
           unreadCount: 0,

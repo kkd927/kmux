@@ -52,6 +52,7 @@ export interface PaneTreeProps {
   onSplitRight: (paneId: string) => void;
   onSplitDown: (paneId: string) => void;
   onClosePane: (paneId: string) => void;
+  onRestartSurface: (surfaceId: string) => void;
   onToggleSearch: (surfaceId: string | null) => void;
 }
 
@@ -145,6 +146,7 @@ function PaneNode(
         onSplitRight={props.onSplitRight}
         onSplitDown={props.onSplitDown}
         onClosePane={props.onClosePane}
+        onRestartSurface={props.onRestartSurface}
         onToggleSearch={props.onToggleSearch}
       />
     );

@@ -256,6 +256,7 @@ export type AppAction =
   | { type: "surface.rename"; surfaceId: Id; title: string }
   | { type: "surface.close"; surfaceId: Id }
   | { type: "surface.closeOthers"; surfaceId: Id }
+  | { type: "surface.restartSession"; surfaceId: Id }
   | {
       type: "surface.metadata";
       surfaceId: Id;
@@ -766,6 +767,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return closeSurface(state, action.surfaceId);
     case "surface.closeOthers":
       return closeOtherSurfaces(state, action.surfaceId);
+    case "surface.restartSession":
+      return restartSurfaceSession(state, action.surfaceId);
     case "surface.metadata":
       return updateSurfaceMetadata(state, action);
     case "sidebar.setStatus":
@@ -991,6 +994,7 @@ function mutationSummaryForAction(
     case "surface.rename":
     case "surface.close":
     case "surface.closeOthers":
+    case "surface.restartSession":
     case "surface.metadata":
       return {
         workspaceRows: true,
@@ -1789,6 +1793,52 @@ function closeOtherSurfaces(state: AppState, surfaceId: Id): AppEffect[] {
   pane.activeSurfaceId = surfaceId;
   pane.surfaceIds = [surfaceId];
   return [...effects, { type: "persist" }];
+}
+
+function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
+  const surface = state.surfaces[surfaceId];
+  if (!surface) {
+    return [];
+  }
+  const pane = state.panes[surface.paneId];
+  if (!pane) {
+    return [];
+  }
+  const workspace = state.workspaces[pane.workspaceId];
+  const oldSession = state.sessions[surface.sessionId];
+  if (!oldSession || oldSession.runtimeState === "pending") {
+    return [];
+  }
+
+  const newSessionId = makeId("session");
+  const launch = sanitizeSessionLaunchConfig(
+    {
+      ...oldSession.launch,
+      cwd: oldSession.launch.cwd ?? surface.cwd
+    },
+    state.settings.shell || process.env.SHELL
+  );
+
+  delete state.sessions[oldSession.id];
+  state.sessions[newSessionId] = {
+    id: newSessionId,
+    surfaceId,
+    launch,
+    authToken: makeId("auth"),
+    runtimeState: "pending",
+    shellInputReady: false
+  };
+  surface.sessionId = newSessionId;
+  surface.attention = false;
+  surface.unreadCount = 0;
+  pane.activeSurfaceId = surfaceId;
+  workspace.activePaneId = pane.id;
+
+  return [
+    { type: "session.close", sessionId: oldSession.id },
+    buildSessionSpawnEffect(state, workspace.id, surfaceId, newSessionId),
+    { type: "persist" }
+  ];
 }
 
 function updateSurfaceMetadata(
@@ -2980,6 +3030,7 @@ export function buildWorkspacePaneTreeVm(
           surface.id,
           {
             id: surface.id,
+            sessionId: surface.sessionId,
             title: surface.title,
             cwd: surface.cwd,
             branch: surface.branch,

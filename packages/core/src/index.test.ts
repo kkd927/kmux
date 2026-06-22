@@ -1965,6 +1965,74 @@ describe("core reducer", () => {
     expect(state.surfaces[activeSurfaceId].title).toBe("logs");
   });
 
+  it("restarts a surface by replacing only its session", () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const oldSessionId = state.surfaces[surfaceId].sessionId;
+
+    applyAction(state, {
+      type: "session.started",
+      sessionId: oldSessionId,
+      pid: 1234,
+      shellInputReady: true
+    });
+
+    const effects = applyAction(state, {
+      type: "surface.restartSession",
+      surfaceId
+    });
+    const nextSessionId = state.surfaces[surfaceId].sessionId;
+
+    expect(nextSessionId).not.toBe(oldSessionId);
+    expect(state.surfaces[surfaceId]).toMatchObject({
+      id: surfaceId,
+      paneId,
+      title: "new workspace"
+    });
+    expect(state.panes[paneId].activeSurfaceId).toBe(surfaceId);
+    expect(state.sessions[oldSessionId]).toBeUndefined();
+    expect(state.sessions[nextSessionId]).toMatchObject({
+      id: nextSessionId,
+      surfaceId,
+      runtimeState: "pending",
+      shellInputReady: false
+    });
+    expect(effects).toEqual([
+      { type: "session.close", sessionId: oldSessionId },
+      expect.objectContaining({
+        type: "session.spawn",
+        sessionId: nextSessionId,
+        surfaceId,
+        workspaceId
+      }),
+      { type: "persist" }
+    ]);
+
+    applyAction(state, {
+      type: "session.exited",
+      sessionId: oldSessionId,
+      exitCode: 0
+    });
+    expect(state.sessions[nextSessionId].runtimeState).toBe("pending");
+  });
+
+  it("does not restart pending sessions", () => {
+    const state = createInitialState("/bin/zsh");
+    const paneId = Object.keys(state.panes)[0];
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const sessionId = state.surfaces[surfaceId].sessionId;
+
+    const effects = applyAction(state, {
+      type: "surface.restartSession",
+      surfaceId
+    });
+
+    expect(effects).toEqual([]);
+    expect(state.surfaces[surfaceId].sessionId).toBe(sessionId);
+  });
+
   it("focuses the previous tab when closing an active surface", () => {
     const state = createInitialState();
     const paneId = Object.keys(state.panes)[0];

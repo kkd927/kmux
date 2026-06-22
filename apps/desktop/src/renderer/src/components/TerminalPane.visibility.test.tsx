@@ -105,6 +105,7 @@ type TerminalPaneProps = React.ComponentProps<typeof TerminalPane>;
 function createSurface(id: string): SurfaceVm {
   return {
     id,
+    sessionId: `session_${id}`,
     title: id,
     ports: [],
     unreadCount: 0,
@@ -187,6 +188,7 @@ function createProps(surfaceId: string): TerminalPaneProps {
     onSplitRight: vi.fn(),
     onSplitDown: vi.fn(),
     onClosePane: vi.fn(),
+    onRestartSurface: vi.fn(),
     onToggleSearch: vi.fn()
   };
 }
@@ -209,7 +211,7 @@ describe("TerminalPane visibility cleanup", () => {
         attachId: "attach_1",
         snapshot: {
           surfaceId: "surface_1",
-          sessionId: "session_1",
+          sessionId: "session_surface_1",
           sequence: 0,
           vt: "",
           cols: 120,
@@ -235,7 +237,9 @@ describe("TerminalPane visibility cleanup", () => {
       readClipboardText: vi.fn(() => ""),
       writeClipboardText: vi.fn(),
       openExternalUrl: vi.fn(async () => {}),
-      showSurfaceContextMenu: vi.fn(async () => true)
+      showSurfaceContextMenu: vi.fn(async () => true),
+      subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
+      captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -273,6 +277,125 @@ describe("TerminalPane visibility cleanup", () => {
     expect(
       container.querySelector("[data-testid='terminal-surface_1']")
     ).not.toBeNull();
+  });
+
+  it("passes the active session id through attach completion and detach", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    expect(window.kmux.attachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "session_surface_1"
+    );
+    expect(window.kmux.completeAttachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      "session_surface_1"
+    );
+
+    await act(async () => {
+      root.render(<div />);
+    });
+
+    expect(window.kmux.detachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "session_surface_1"
+    );
+  });
+
+  it("opens the fallback surface menu from the terminal viewport", async () => {
+    const props = createProps("surface_1");
+    const onSplitDown = vi.fn();
+    props.onSplitDown = onSplitDown;
+    window.kmux.showSurfaceContextMenu = vi.fn(async () => false);
+    window.kmux.readClipboardText = vi.fn(() => "echo hi");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const viewport = container.querySelector(
+      "[data-testid='terminal-surface_1']"
+    );
+    expect(viewport).not.toBeNull();
+
+    await act(async () => {
+      viewport!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          clientX: 24,
+          clientY: 32,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    const menu = container.querySelector(
+      '[role="menu"][aria-label="Surface menu"]'
+    );
+    expect(menu).not.toBeNull();
+    expect(menu?.textContent).toContain("Copy");
+    expect(menu?.textContent).toContain("Paste");
+    expect(menu?.textContent).toContain("Split Horizontally");
+    expect(menu?.textContent).toContain("Split Vertically");
+    expect(menu?.textContent).toContain("Restart Session…");
+
+    const copyButton = Array.from(
+      menu!.querySelectorAll<HTMLButtonElement>("button")
+    ).find((button) => button.textContent?.includes("Copy"));
+    expect(copyButton?.disabled).toBe(true);
+
+    const splitButton = Array.from(
+      menu!.querySelectorAll<HTMLButtonElement>("button")
+    ).find((button) => button.textContent?.includes("Split Horizontally"));
+    expect(splitButton).toBeTruthy();
+
+    act(() => {
+      splitButton!.click();
+    });
+
+    expect(onSplitDown).toHaveBeenCalledWith("pane_1");
+  });
+
+  it("routes fallback restart through the surface restart callback", async () => {
+    const props = createProps("surface_1");
+    const onRestartSurface = vi.fn();
+    props.onRestartSurface = onRestartSurface;
+    window.kmux.showSurfaceContextMenu = vi.fn(async () => false);
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    const viewport = container.querySelector(
+      "[data-testid='terminal-surface_1']"
+    );
+    await act(async () => {
+      viewport!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          clientX: 24,
+          clientY: 32,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    const restartButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '[role="menu"] button[role="menuitem"]'
+      )
+    ).find((button) => button.textContent?.includes("Restart Session"));
+    expect(restartButton).toBeTruthy();
+
+    act(() => {
+      restartButton!.click();
+    });
+
+    expect(onRestartSurface).toHaveBeenCalledWith("surface_1");
   });
 
   it("passes reserved system chords through terminal shortcuts", async () => {
@@ -510,9 +633,9 @@ describe("TerminalPane visibility cleanup", () => {
           attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
         }
       | undefined;
-    const handler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as
-      | ((event: KeyboardEvent) => boolean)
-      | undefined;
+    const handler = terminal?.attachCustomKeyEventHandler.mock.calls.at(
+      -1
+    )?.[0] as ((event: KeyboardEvent) => boolean) | undefined;
     expect(handler).toBeTypeOf("function");
 
     expect(

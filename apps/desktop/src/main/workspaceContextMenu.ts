@@ -13,6 +13,11 @@ import {
   runWorkspaceContextAction
 } from "../shared/workspaceContextMenu";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
+import {
+  buildSurfaceContextMenuEntries,
+  type SurfaceContextAction,
+  type SurfaceContextMenuContext
+} from "../shared/surfaceContextMenu";
 
 export function toElectronAccelerator(
   shortcut?: string,
@@ -22,10 +27,7 @@ export function toElectronAccelerator(
     return undefined;
   }
   if (
-    isReservedSystemChordBinding(
-      shortcut,
-      options.reservedSystemChords ?? []
-    )
+    isReservedSystemChordBinding(shortcut, options.reservedSystemChords ?? [])
   ) {
     return undefined;
   }
@@ -97,6 +99,29 @@ export function buildNativeWorkspaceContextMenu(params: {
                 }
               );
             }
+          }
+    );
+
+  return Menu.buildFromTemplate(menuTemplate);
+}
+
+export function buildNativeSurfaceContextMenu(params: {
+  surfaceId: Id;
+  context: SurfaceContextMenuContext;
+  onAction(surfaceId: Id, action: SurfaceContextAction): void;
+  reservedSystemChords?: KeyChord[];
+}): Menu | null {
+  const menuTemplate: MenuItemConstructorOptions[] =
+    buildSurfaceContextMenuEntries(params.context).map((item) =>
+      item.kind === "separator"
+        ? { type: "separator" }
+        : {
+            label: item.label,
+            enabled: !item.disabled,
+            accelerator: toElectronAccelerator(item.shortcut, {
+              reservedSystemChords: params.reservedSystemChords
+            }),
+            click: () => params.onAction(params.surfaceId, item.action)
           }
     );
 

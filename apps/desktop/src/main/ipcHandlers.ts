@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu, ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type {
@@ -28,10 +28,14 @@ import type {
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 
-import { buildNativeWorkspaceContextMenu } from "./workspaceContextMenu";
+import {
+  buildNativeSurfaceContextMenu,
+  buildNativeWorkspaceContextMenu
+} from "./workspaceContextMenu";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
+import type { SurfaceContextMenuContext } from "../shared/surfaceContextMenu";
 
 interface IpcHandlersOptions {
   getPlatformDescriptor: () => RendererPlatformDescriptor;
@@ -48,18 +52,24 @@ interface IpcHandlersOptions {
   dispatchAppAction: (action: AppAction) => void;
   attachSurface: (
     contentsId: number,
-    surfaceId: Id
+    surfaceId: Id,
+    expectedSessionId: Id
   ) => Promise<SurfaceAttachPayload | null>;
   completeAttachSurface: (
     contentsId: number,
     surfaceId: Id,
-    attachId: Id
+    attachId: Id,
+    expectedSessionId: Id
   ) => Promise<SurfaceAttachCompletionResult>;
   snapshotSurface: (
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
   ) => Promise<SurfaceSnapshotPayload | null>;
-  detachSurface: (contentsId: number, surfaceId: Id) => void;
+  detachSurface: (
+    contentsId: number,
+    surfaceId: Id,
+    expectedSessionId: Id
+  ) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
   openExternalUrl: (url: string) => Promise<void>;
@@ -149,17 +159,27 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   );
   ipcMain.handle(
     "kmux:attach-surface",
-    async (event, surfaceId: Id): Promise<SurfaceAttachPayload | null> =>
-      options.attachSurface(event.sender.id, surfaceId)
+    async (
+      event,
+      surfaceId: Id,
+      expectedSessionId: Id
+    ): Promise<SurfaceAttachPayload | null> =>
+      options.attachSurface(event.sender.id, surfaceId, expectedSessionId)
   );
   ipcMain.handle(
     "kmux:attach-surface-complete",
     (
       event,
       surfaceId: Id,
-      attachId: Id
+      attachId: Id,
+      expectedSessionId: Id
     ): Promise<SurfaceAttachCompletionResult> =>
-      options.completeAttachSurface(event.sender.id, surfaceId, attachId)
+      options.completeAttachSurface(
+        event.sender.id,
+        surfaceId,
+        attachId,
+        expectedSessionId
+      )
   );
   ipcMain.handle(
     "kmux:snapshot-surface",
@@ -170,9 +190,12 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     ): Promise<SurfaceSnapshotPayload | null> =>
       options.snapshotSurface(surfaceId, snapshotOptions)
   );
-  ipcMain.handle("kmux:detach-surface", (event, surfaceId: Id) => {
-    options.detachSurface(event.sender.id, surfaceId);
-  });
+  ipcMain.handle(
+    "kmux:detach-surface",
+    (event, surfaceId: Id, expectedSessionId: Id) => {
+      options.detachSurface(event.sender.id, surfaceId, expectedSessionId);
+    }
+  );
   ipcMain.handle("kmux:terminal:text", (_event, surfaceId: Id, text: string) =>
     options.sendText(surfaceId, text)
   );
@@ -295,12 +318,14 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:surface-context-menu",
     async (
       event,
-      payload: { surfaceId: Id; x: number; y: number }
+      payload: {
+        surfaceId: Id;
+        x: number;
+        y: number;
+        context: SurfaceContextMenuContext;
+      }
     ): Promise<boolean> => {
-      if (
-        !options.surfaceDiagnosticsEnabled ||
-        process.env.NODE_ENV === "test"
-      ) {
+      if (process.env.NODE_ENV === "test") {
         return false;
       }
 
@@ -309,18 +334,25 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         return false;
       }
 
-      const menu = Menu.buildFromTemplate([
-        {
-          label: "Capture Diagnostics",
-          click: () => {
-            void options
-              .captureSurfaceDiagnostics(payload.surfaceId)
-              .catch((error: unknown) => {
-                console.warn("[surface-diagnostics:capture]", error);
-              });
-          }
+      const keyboardPolicy = options.getPlatformDescriptor().keyboard;
+      const menu = buildNativeSurfaceContextMenu({
+        surfaceId: payload.surfaceId,
+        context: {
+          ...payload.context,
+          diagnosticsEnabled: options.surfaceDiagnosticsEnabled
+        },
+        reservedSystemChords: keyboardPolicy.reservedSystemChords,
+        onAction: (surfaceId, action) => {
+          event.sender.send("kmux:surface-context-menu-action", {
+            surfaceId,
+            action
+          });
         }
-      ]);
+      });
+      if (!menu) {
+        return false;
+      }
+
       menu.popup({
         window,
         x: Math.round(payload.x),

@@ -4,6 +4,10 @@ import { readFileSync, statSync } from "node:fs";
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
+import type {
+  SurfaceContextAction,
+  SurfaceContextMenuContext
+} from "../shared/surfaceContextMenu";
 import {
   KMUX_PROFILE_LOG_PATH_ENV,
   isSmoothnessProfileEnabled
@@ -99,21 +103,34 @@ const api = {
     ipcRenderer.on("kmux:terminal-event", handler);
     return () => ipcRenderer.off("kmux:terminal-event", handler);
   },
-  attachSurface(surfaceId: string): Promise<SurfaceAttachPayload | null> {
-    return ipcRenderer.invoke("kmux:attach-surface", surfaceId);
+  attachSurface(
+    surfaceId: string,
+    expectedSessionId: string
+  ): Promise<SurfaceAttachPayload | null> {
+    return ipcRenderer.invoke(
+      "kmux:attach-surface",
+      surfaceId,
+      expectedSessionId
+    );
   },
   completeAttachSurface(
     surfaceId: string,
-    attachId: string
+    attachId: string,
+    expectedSessionId: string
   ): Promise<SurfaceAttachCompletionResult> {
     return ipcRenderer.invoke(
       "kmux:attach-surface-complete",
       surfaceId,
-      attachId
+      attachId,
+      expectedSessionId
     );
   },
-  detachSurface(surfaceId: string): Promise<void> {
-    return ipcRenderer.invoke("kmux:detach-surface", surfaceId);
+  detachSurface(surfaceId: string, expectedSessionId: string): Promise<void> {
+    return ipcRenderer.invoke(
+      "kmux:detach-surface",
+      surfaceId,
+      expectedSessionId
+    );
   },
   sendText(surfaceId: string, text: string): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:text", surfaceId, text);
@@ -249,13 +266,28 @@ const api = {
   showSurfaceContextMenu(
     surfaceId: string,
     x: number,
-    y: number
+    y: number,
+    context: SurfaceContextMenuContext
   ): Promise<boolean> {
     return ipcRenderer.invoke("kmux:surface-context-menu", {
       surfaceId,
       x,
-      y
+      y,
+      context
     });
+  },
+  subscribeSurfaceContextMenuAction(
+    listener: (event: {
+      surfaceId: string;
+      action: SurfaceContextAction;
+    }) => void
+  ): () => void {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { surfaceId: string; action: SurfaceContextAction }
+    ) => listener(payload);
+    ipcRenderer.on("kmux:surface-context-menu-action", handler);
+    return () => ipcRenderer.off("kmux:surface-context-menu-action", handler);
   },
   subscribeWorkspaceRenameRequest(
     listener: (workspaceId: string) => void

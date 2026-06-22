@@ -66,6 +66,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -76,6 +77,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -145,6 +147,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -155,6 +158,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -218,6 +222,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: true
       });
 
@@ -228,6 +233,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -288,6 +294,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -298,6 +305,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -364,6 +372,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -374,6 +383,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints,
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -441,6 +451,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -451,6 +462,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -550,6 +562,7 @@ describe("useGlobalShortcuts", () => {
         searchSurfaceId: null,
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
         worktreeDialogOpen: false
       });
 
@@ -560,6 +573,7 @@ describe("useGlobalShortcuts", () => {
         setShowWorkspaceShortcutHints: vi.fn(),
         closeWorkspaceContextMenu: vi.fn(),
         closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         setSettingsOpen: vi.fn(),
@@ -607,6 +621,7 @@ function createSurface(
 ): ShellStoreSnapshot["activeWorkspacePaneTree"]["surfaces"][string] {
   return {
     id,
+    sessionId: `session_${id}`,
     title: id,
     ports: [],
     unreadCount: 0,

@@ -91,6 +91,12 @@ interface AppOverlaysProps {
   onCloseWorkspaceCloseConfirm: () => void;
   onToggleWorkspaceCloseRemoveWorktree: (removeWorktree: boolean) => void;
   onConfirmWorkspaceClose: () => void;
+  surfaceRestartConfirm: {
+    surfaceId: string;
+    title: string;
+  } | null;
+  onCloseSurfaceRestartConfirm: () => void;
+  onConfirmSurfaceRestart: () => void;
   worktreeDialog:
     | {
         kind: "create";
@@ -716,6 +722,55 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                     ? "Force Remove and Close"
                     : "Remove and Close"
                   : "Close Workspace"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {props.surfaceRestartConfirm ? (
+        <div
+          className={`${styles.overlay} ${styles.settingsOverlay}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              props.onCloseSurfaceRestartConfirm();
+            }
+          }}
+        >
+          <div
+            className={styles.workspaceCloseConfirm}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Restart session?"
+            data-testid="surface-restart-confirm-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={styles.modalHeader}>
+              <h2>Restart Session?</h2>
+              <button
+                aria-label="Dismiss restart session dialog"
+                onClick={props.onCloseSurfaceRestartConfirm}
+              >
+                ×
+              </button>
+            </div>
+            <p className={styles.confirmBody}>
+              Restarting "{props.surfaceRestartConfirm.title}" will stop the
+              running process and start the same surface again.
+            </p>
+            <div className={styles.modalActions}>
+              <button
+                autoFocus
+                aria-label="Cancel restart session"
+                onClick={props.onCloseSurfaceRestartConfirm}
+              >
+                Cancel
+              </button>
+              <button
+                aria-label="Restart Session"
+                onClick={props.onConfirmSurfaceRestart}
+              >
+                Restart Session
               </button>
             </div>
           </div>

@@ -2,6 +2,10 @@ import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type {
+  SurfaceContextAction,
+  SurfaceContextMenuContext
+} from "../../shared/surfaceContextMenu";
+import type {
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
   ExternalAgentSessionResumeResult,
@@ -47,12 +51,19 @@ declare global {
       ): () => void;
       subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
       subscribeTerminal(listener: (event: TerminalEvent) => void): () => void;
-      attachSurface(surfaceId: string): Promise<SurfaceAttachPayload | null>;
+      attachSurface(
+        surfaceId: string,
+        expectedSessionId: string
+      ): Promise<SurfaceAttachPayload | null>;
       completeAttachSurface(
         surfaceId: string,
-        attachId: string
+        attachId: string,
+        expectedSessionId: string
       ): Promise<SurfaceAttachCompletionResult>;
-      detachSurface(surfaceId: string): Promise<void>;
+      detachSurface(
+        surfaceId: string,
+        expectedSessionId: string
+      ): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
       openExternalUrl(url: string): Promise<void>;
@@ -96,8 +107,15 @@ declare global {
       showSurfaceContextMenu(
         surfaceId: string,
         x: number,
-        y: number
+        y: number,
+        context: SurfaceContextMenuContext
       ): Promise<boolean>;
+      subscribeSurfaceContextMenuAction(
+        listener: (event: {
+          surfaceId: string;
+          action: SurfaceContextAction;
+        }) => void
+      ): () => void;
       subscribeWorkspaceRenameRequest(
         listener: (workspaceId: string) => void
       ): () => void;
