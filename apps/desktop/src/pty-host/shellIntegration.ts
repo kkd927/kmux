@@ -248,24 +248,51 @@ function resolveIntegrationAgentPath(
 function ensureZshWrapperDir(
   options: { includeLegacyAgentBin?: boolean } = {}
 ): string {
+  const includeLegacyAgentBin = options.includeLegacyAgentBin === true;
   if (cachedZshWrapperDir) {
+    const shouldIncludeLegacyAgentBin =
+      includeLegacyAgentBin || cachedZshWrapperDirHasLegacyAgentBin;
     if (
-      options.includeLegacyAgentBin &&
+      !isZshWrapperDirReady(cachedZshWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      })
+    ) {
+      writeZshWrapperFiles(cachedZshWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      });
+    } else if (
+      includeLegacyAgentBin &&
       !cachedZshWrapperDirHasLegacyAgentBin
     ) {
       writeLegacyAgentBin(cachedZshWrapperDir);
-      cachedZshWrapperDirHasLegacyAgentBin = true;
     }
+    cachedZshWrapperDirHasLegacyAgentBin =
+      cachedZshWrapperDirHasLegacyAgentBin || includeLegacyAgentBin;
     return cachedZshWrapperDir;
   }
 
   const configuredWrapperDir = process.env[KMUX_ZSH_WRAPPER_DIR_ENV]?.trim();
   const wrapperDir =
     configuredWrapperDir || mkdtempSync(join(tmpdir(), "kmux-zsh-"));
+  writeZshWrapperFiles(wrapperDir, {
+    includeLegacyAgentBin
+  });
+
+  cachedZshWrapperDir = wrapperDir;
+  cachedZshWrapperDirHasLegacyAgentBin = includeLegacyAgentBin;
+  if (!configuredWrapperDir) {
+    registerCleanup();
+  }
+  return wrapperDir;
+}
+
+function writeZshWrapperFiles(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): void {
   mkdirSync(wrapperDir, { recursive: true });
   if (options.includeLegacyAgentBin) {
     writeLegacyAgentBin(wrapperDir);
-    cachedZshWrapperDirHasLegacyAgentBin = true;
   }
   writeFileSync(
     join(wrapperDir, ".zshenv"),
@@ -290,12 +317,22 @@ function ensureZshWrapperDir(
     buildZshIntegrationScript(),
     "utf8"
   );
+}
 
-  cachedZshWrapperDir = wrapperDir;
-  if (!configuredWrapperDir) {
-    registerCleanup();
-  }
-  return wrapperDir;
+function isZshWrapperDirReady(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): boolean {
+  return (
+    existsSync(join(wrapperDir, ".zshenv")) &&
+    existsSync(join(wrapperDir, ".zprofile")) &&
+    existsSync(join(wrapperDir, ".zshrc")) &&
+    existsSync(join(wrapperDir, "kmux.zsh")) &&
+    (!options.includeLegacyAgentBin ||
+      (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
+        existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
+        existsSync(join(wrapperDir, "bin", "codex"))))
+  );
 }
 
 function resolveOriginalZdotdir(
@@ -313,9 +350,18 @@ function resolveOriginalZdotdir(
 }
 
 function isKmuxZshWrapperDir(candidate: string): boolean {
-  const trimmed = candidate.trim();
+  const trimmed = candidate.trim().replace(/\/+$/, "");
   if (!basename(trimmed).startsWith("kmux-zsh-")) {
     return false;
+  }
+  const configuredWrapperDir = process.env[KMUX_ZSH_WRAPPER_DIR_ENV]
+    ?.trim()
+    .replace(/\/+$/, "");
+  if (configuredWrapperDir && trimmed === configuredWrapperDir) {
+    return true;
+  }
+  if (basename(trimmed).startsWith("kmux-zsh-app-")) {
+    return true;
   }
   const tmpRoot = tmpdir().replace(/\/+$/, "");
   return trimmed === tmpRoot || trimmed.startsWith(`${tmpRoot}/`);
@@ -324,21 +370,45 @@ function isKmuxZshWrapperDir(candidate: string): boolean {
 function ensureBashWrapperDir(
   options: { includeLegacyAgentBin?: boolean } = {}
 ): string {
+  const includeLegacyAgentBin = options.includeLegacyAgentBin === true;
   if (cachedBashWrapperDir) {
+    const shouldIncludeLegacyAgentBin =
+      includeLegacyAgentBin || cachedBashWrapperDirHasLegacyAgentBin;
     if (
-      options.includeLegacyAgentBin &&
+      !isBashWrapperDirReady(cachedBashWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      })
+    ) {
+      writeBashWrapperFiles(cachedBashWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      });
+    } else if (
+      includeLegacyAgentBin &&
       !cachedBashWrapperDirHasLegacyAgentBin
     ) {
       writeLegacyAgentBin(cachedBashWrapperDir);
-      cachedBashWrapperDirHasLegacyAgentBin = true;
     }
+    cachedBashWrapperDirHasLegacyAgentBin =
+      cachedBashWrapperDirHasLegacyAgentBin || includeLegacyAgentBin;
     return cachedBashWrapperDir;
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-bash-"));
+  writeBashWrapperFiles(wrapperDir, { includeLegacyAgentBin });
+
+  cachedBashWrapperDir = wrapperDir;
+  cachedBashWrapperDirHasLegacyAgentBin = includeLegacyAgentBin;
+  registerCleanup();
+  return wrapperDir;
+}
+
+function writeBashWrapperFiles(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): void {
+  mkdirSync(wrapperDir, { recursive: true });
   if (options.includeLegacyAgentBin) {
     writeLegacyAgentBin(wrapperDir);
-    cachedBashWrapperDirHasLegacyAgentBin = true;
   }
   writeFileSync(
     join(wrapperDir, ".bash_profile"),
@@ -351,30 +421,65 @@ function ensureBashWrapperDir(
     buildBashIntegrationScript(),
     "utf8"
   );
+}
 
-  cachedBashWrapperDir = wrapperDir;
-  registerCleanup();
-  return wrapperDir;
+function isBashWrapperDirReady(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): boolean {
+  return (
+    existsSync(join(wrapperDir, ".bash_profile")) &&
+    existsSync(join(wrapperDir, ".bashrc")) &&
+    existsSync(join(wrapperDir, "kmux.bash")) &&
+    (!options.includeLegacyAgentBin ||
+      (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
+        existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
+        existsSync(join(wrapperDir, "bin", "codex"))))
+  );
 }
 
 function ensureFishWrapperDir(
   options: { includeLegacyAgentBin?: boolean } = {}
 ): string {
+  const includeLegacyAgentBin = options.includeLegacyAgentBin === true;
   if (cachedFishWrapperDir) {
+    const shouldIncludeLegacyAgentBin =
+      includeLegacyAgentBin || cachedFishWrapperDirHasLegacyAgentBin;
     if (
-      options.includeLegacyAgentBin &&
+      !isFishWrapperDirReady(cachedFishWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      })
+    ) {
+      writeFishWrapperFiles(cachedFishWrapperDir, {
+        includeLegacyAgentBin: shouldIncludeLegacyAgentBin
+      });
+    } else if (
+      includeLegacyAgentBin &&
       !cachedFishWrapperDirHasLegacyAgentBin
     ) {
       writeLegacyAgentBin(cachedFishWrapperDir);
-      cachedFishWrapperDirHasLegacyAgentBin = true;
     }
+    cachedFishWrapperDirHasLegacyAgentBin =
+      cachedFishWrapperDirHasLegacyAgentBin || includeLegacyAgentBin;
     return cachedFishWrapperDir;
   }
 
   const wrapperDir = mkdtempSync(join(tmpdir(), "kmux-fish-"));
+  writeFishWrapperFiles(wrapperDir, { includeLegacyAgentBin });
+
+  cachedFishWrapperDir = wrapperDir;
+  cachedFishWrapperDirHasLegacyAgentBin = includeLegacyAgentBin;
+  registerCleanup();
+  return wrapperDir;
+}
+
+function writeFishWrapperFiles(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): void {
+  mkdirSync(wrapperDir, { recursive: true });
   if (options.includeLegacyAgentBin) {
     writeLegacyAgentBin(wrapperDir);
-    cachedFishWrapperDirHasLegacyAgentBin = true;
   }
   const fishConfigDir = join(wrapperDir, "fish");
   mkdirSync(fishConfigDir, { recursive: true });
@@ -384,10 +489,20 @@ function ensureFishWrapperDir(
     buildFishIntegrationScript(),
     "utf8"
   );
+}
 
-  cachedFishWrapperDir = wrapperDir;
-  registerCleanup();
-  return wrapperDir;
+function isFishWrapperDirReady(
+  wrapperDir: string,
+  options: { includeLegacyAgentBin?: boolean } = {}
+): boolean {
+  return (
+    existsSync(join(wrapperDir, "fish", "config.fish")) &&
+    existsSync(join(wrapperDir, "fish", "kmux.fish")) &&
+    (!options.includeLegacyAgentBin ||
+      (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
+        existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
+        existsSync(join(wrapperDir, "bin", "codex"))))
+  );
 }
 
 function registerCleanup(): void {

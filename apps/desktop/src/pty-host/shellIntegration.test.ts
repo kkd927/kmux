@@ -263,6 +263,50 @@ describe("shell integration launch preparation", () => {
     rmSync(fakeHome, { recursive: true, force: true });
   });
 
+  it("recreates the cached zsh wrapper after temp cleanup removes it", () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-home-"));
+
+    try {
+      const first = prepareShellIntegrationLaunch(
+        "/bin/zsh",
+        ["-l"],
+        {
+          HOME: fakeHome
+        },
+        { enabled: true }
+      );
+      const wrapperDir = first.env.ZDOTDIR;
+      expect(wrapperDir).toBeTruthy();
+      if (!wrapperDir) {
+        throw new Error("expected zsh wrapper dir");
+      }
+
+      rmSync(wrapperDir, { recursive: true, force: true });
+      expect(existsSync(wrapperDir)).toBe(false);
+
+      const second = prepareShellIntegrationLaunch(
+        "/bin/zsh",
+        ["-l"],
+        {
+          HOME: fakeHome
+        },
+        { enabled: true }
+      );
+
+      expect(second.env.ZDOTDIR).toBe(wrapperDir);
+      expect(existsSync(join(wrapperDir, ".zshenv"))).toBe(true);
+      expect(existsSync(join(wrapperDir, ".zprofile"))).toBe(true);
+      expect(existsSync(join(wrapperDir, ".zshrc"))).toBe(true);
+      expect(existsSync(join(wrapperDir, "kmux.zsh"))).toBe(true);
+      expect(existsSync(join(wrapperDir, "bin", "kmux-agent-hook"))).toBe(
+        true
+      );
+      expect(existsSync(join(wrapperDir, "bin", "codex"))).toBe(true);
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat leaked or missing kmux ZDOTDIR values as user dotfile roots", () => {
     const missingKmuxZdotdir = join(tmpdir(), "kmux-zsh-missing");
     const prepared = prepareShellIntegrationLaunch(
@@ -279,6 +323,35 @@ describe("shell integration launch preparation", () => {
     expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
       "/Users/test/.zsh_history"
     );
+  });
+
+  it("does not treat leaked app-scoped kmux ZDOTDIR values as user dotfile roots", () => {
+    const leakedAppWrapper = join(
+      tmpdir(),
+      "kmux-cache",
+      "shell-wrappers",
+      "kmux-zsh-app-leaked"
+    );
+    mkdirSync(leakedAppWrapper, { recursive: true });
+
+    try {
+      const prepared = prepareShellIntegrationLaunch(
+        "/bin/zsh",
+        ["-l"],
+        {
+          HOME: "/Users/test",
+          ZDOTDIR: leakedAppWrapper
+        },
+        { enabled: true }
+      );
+
+      expect(prepared.env.KMUX_ORIGINAL_ZDOTDIR).toBe("/Users/test");
+      expect(prepared.env.KMUX_ORIGINAL_HISTFILE).toBe(
+        "/Users/test/.zsh_history"
+      );
+    } finally {
+      rmSync(leakedAppWrapper, { recursive: true, force: true });
+    }
   });
 
   it("preserves explicit HISTFILE overrides when wrapping zsh", () => {

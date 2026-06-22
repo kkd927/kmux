@@ -167,7 +167,8 @@ async function bootstrap(): Promise<void> {
   );
   const savedSettings = settingsStore.load();
   const shellWrapperRuntime = createShellWrapperRuntime({
-    platform: platformRuntime.shell.platform
+    platform: platformRuntime.shell.platform,
+    tmpDir: join(paths.cacheDir, "shell-wrappers")
   });
   process.once("exit", () => {
     shellWrapperRuntime.cleanup();

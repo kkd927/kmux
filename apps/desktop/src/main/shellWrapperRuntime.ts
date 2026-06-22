@@ -1,13 +1,14 @@
 import {
   readFileSync,
   mkdtempSync,
+  mkdirSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { KMUX_ZSH_WRAPPER_DIR_ENV } from "../pty-host/shellIntegration";
 
@@ -43,7 +44,8 @@ export function createShellWrapperRuntime(
     };
   }
 
-  const tempRoot = options.tmpDir ?? tmpdir();
+  const tempRoot = resolve(options.tmpDir ?? tmpdir());
+  mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   cleanupStaleAppZshWrapperDirs(tempRoot, {
     nowMs: options.nowMs,
     staleWrapperAgeMs: options.staleWrapperAgeMs,

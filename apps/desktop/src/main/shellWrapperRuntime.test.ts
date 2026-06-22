@@ -45,6 +45,39 @@ describe("shell wrapper runtime", () => {
     expect(runtime.zshWrapperDir).toBeUndefined();
   });
 
+  it("creates a missing wrapper root before allocating the app wrapper", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "kmux-wrapper-runtime-"));
+    const root = join(tempRoot, "nested", "shell-wrappers");
+
+    try {
+      const runtime = createShellWrapperRuntime({
+        platform: "darwin",
+        tmpDir: root
+      });
+
+      expect(runtime.zshWrapperDir?.startsWith(root)).toBe(true);
+      expect(existsSync(runtime.zshWrapperDir ?? "")).toBe(true);
+      runtime.cleanup();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes relative wrapper roots before exporting ZDOTDIR", () => {
+    const runtime = createShellWrapperRuntime({
+      platform: "darwin",
+      tmpDir: "relative-shell-wrappers"
+    });
+
+    try {
+      expect(runtime.zshWrapperDir).toMatch(/^\//);
+      expect(runtime.env.KMUX_ZSH_WRAPPER_DIR).toBe(runtime.zshWrapperDir);
+    } finally {
+      runtime.cleanup();
+      rmSync("relative-shell-wrappers", { recursive: true, force: true });
+    }
+  });
+
   it("removes only stale app-run wrapper directories whose owner is gone", () => {
     const root = mkdtempSync(join(tmpdir(), "kmux-wrapper-runtime-"));
     const staleInactive = join(root, "kmux-zsh-app-stale-inactive");
