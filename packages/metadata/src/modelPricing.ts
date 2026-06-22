@@ -37,6 +37,22 @@ export type UsageComponentCostEstimate = {
 const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   claude: [
     {
+      modelId: "claude-mythos-5",
+      inputCostPerToken: 0.00001,
+      outputCostPerToken: 0.00005,
+      cacheReadCostPerToken: 0.000001,
+      cacheCreateCostPerToken: 0.0000125,
+      aliases: ["claude-mythos-5"]
+    },
+    {
+      modelId: "claude-fable-5",
+      inputCostPerToken: 0.00001,
+      outputCostPerToken: 0.00005,
+      cacheReadCostPerToken: 0.000001,
+      cacheCreateCostPerToken: 0.0000125,
+      aliases: ["claude-fable-5"]
+    },
+    {
       modelId: "claude-opus-4-8",
       inputCostPerToken: 0.000005,
       outputCostPerToken: 0.000025,
@@ -329,12 +345,12 @@ type CodexForwardCompatSpec = {
   kind: "codex";
   major: number;
   minor: number;
-  tier: "main" | "mini" | "nano" | "pro" | "spark";
+  tier: "main" | "mini" | "nano" | "pro" | "codex" | "spark";
 };
 
 type ClaudeForwardCompatSpec = {
   kind: "claude";
-  line: "sonnet" | "opus" | "haiku";
+  line: "fable" | "mythos" | "sonnet" | "opus" | "haiku";
   major: number;
   minor: number;
 };
@@ -603,7 +619,9 @@ function resolveForwardCompatPricingEntry(
         candidate
       ): candidate is { entry: PricingEntry; spec: GeminiForwardCompatSpec } =>
         candidate.spec.kind === "gemini" &&
+        candidate.spec.major === requestedSpec.major &&
         candidate.spec.tier === requestedSpec.tier &&
+        candidate.spec.preview === requestedSpec.preview &&
         compareVersion(candidate.spec, requestedSpec) <= 0
     )
     .sort((left, right) => {
@@ -652,17 +670,20 @@ function parseCodexForwardCompatSpec(
   normalizedKey: string
 ): CodexForwardCompatSpec | null {
   const match =
-    /^gpt-(\d+)\.(\d+)(?:-(codex-spark|mini|nano|pro|codex))?$/u.exec(
+    /^gpt-(\d+)(?:\.(\d+))?(?:-(codex-spark|mini|nano|pro|codex))?$/u.exec(
       normalizedKey
     );
   if (!match) {
+    return null;
+  }
+  if (!match[2] && !match[3]) {
     return null;
   }
 
   return {
     kind: "codex",
     major: Number(match[1]),
-    minor: Number(match[2]),
+    minor: Number(match[2] ?? 0),
     tier:
       match[3] === "mini"
         ? "mini"
@@ -670,18 +691,21 @@ function parseCodexForwardCompatSpec(
           ? "nano"
           : match[3] === "pro"
             ? "pro"
-            : match[3] === "codex-spark"
-              ? "spark"
-              : "main"
+            : match[3] === "codex"
+              ? "codex"
+              : match[3] === "codex-spark"
+                ? "spark"
+                : "main"
   };
 }
 
 function parseClaudeForwardCompatSpec(
   normalizedKey: string
 ): ClaudeForwardCompatSpec | null {
-  const match = /^claude-(sonnet|opus|haiku)-(\d+)(?:[.-](\d+))?$/u.exec(
-    normalizedKey
-  );
+  const match =
+    /^claude-(fable|mythos|sonnet|opus|haiku)-(\d+)(?:[.-](\d+))?$/u.exec(
+      normalizedKey
+    );
   if (!match) {
     return null;
   }
@@ -698,7 +722,7 @@ function parseGeminiForwardCompatSpec(
   normalizedKey: string
 ): GeminiForwardCompatSpec | null {
   const match =
-    /^gemini-(\d+)\.(\d+)-(pro|flash-lite|flash)(?:-(preview))?$/u.exec(
+    /^gemini-(\d+)(?:\.(\d+))?-(pro|flash-lite|flash)(?:-(preview))?$/u.exec(
       normalizedKey
     );
   if (!match) {
@@ -708,7 +732,7 @@ function parseGeminiForwardCompatSpec(
   return {
     kind: "gemini",
     major: Number(match[1]),
-    minor: Number(match[2]),
+    minor: Number(match[2] ?? 0),
     tier: match[3] as GeminiForwardCompatSpec["tier"],
     preview: match[4] === "preview"
   };

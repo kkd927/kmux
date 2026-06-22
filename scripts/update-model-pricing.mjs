@@ -104,7 +104,9 @@ async function fetchClaudePricing() {
   }
 
   return parseHtmlTable(table)
-    .filter((row) => /^Claude (Opus|Sonnet|Haiku) /u.test(row[0] ?? ""))
+    .filter((row) =>
+      /^Claude (Fable|Mythos|Opus|Sonnet|Haiku) /u.test(row[0] ?? "")
+    )
     .map((row) => {
       const modelName = row[0].replace(/\s*\(.+?\)\s*$/u, "");
       const prices = row.slice(1).map(parseFirstDollar);
@@ -174,7 +176,7 @@ function fetchOpenAiTextTokenPricing(html) {
 
   return rows
     .map((row) => [openAiTextModelInfo(row[0]).modelId, ...row.slice(1)])
-    .filter((row) => /^gpt-5(?:\.\d+)?(?:-(?:mini|nano|pro))?$/u.test(row[0]))
+    .filter((row) => /^gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro))?$/u.test(row[0]))
     .map((row) => {
       const entry = {
         modelId: row[0],
@@ -518,7 +520,7 @@ function isGeminiTextModelAlias(modelId) {
 }
 
 function isGeminiTextModel(modelId) {
-  return /^gemini-(?:3(?:\.\d+)?|2\.[05])-(?:pro|flash-lite|flash)(?:-preview(?:-\d{2}-\d{4})?)?$/u.test(
+  return /^gemini-\d+(?:\.\d+)?-(?:pro|flash-lite|flash)(?:-preview(?:-\d{2}-\d{4})?)?$/u.test(
     modelId
   );
 }

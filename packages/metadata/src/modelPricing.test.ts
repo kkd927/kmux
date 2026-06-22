@@ -159,6 +159,20 @@ describe("model pricing", () => {
     );
   });
 
+  it("does not apply Codex-specific pricing to a bare GPT model without explicit pricing", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toBeNull();
+  });
+
   it("falls back to the nearest lower Claude family pricing within the same line", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "claude",
@@ -182,6 +196,36 @@ describe("model pricing", () => {
       })
     );
   });
+
+  it.each([
+    ["claude-fable-5", "claude-fable-5"],
+    ["claude-mythos-5", "claude-mythos-5"]
+  ])(
+    "uses exact pricing for current Claude 5 model entries: %s",
+    (model, modelId) => {
+      const estimate = estimateUsageComponentCosts({
+        vendor: "claude",
+        model,
+        inputTokens: 1_000,
+        outputTokens: 200,
+        thinkingTokens: 50,
+        cacheReadTokens: 500,
+        cacheWriteTokens: 100,
+        cacheWriteTokensKnown: true
+      });
+
+      expect(estimate).toEqual(
+        expect.objectContaining({
+          modelId,
+          inputCostUsd: expect.closeTo(0.01, 8),
+          outputCostUsd: expect.closeTo(0.01, 8),
+          thinkingCostUsd: expect.closeTo(0.0025, 8),
+          cacheReadCostUsd: expect.closeTo(0.0005, 8),
+          cacheWriteCostUsd: expect.closeTo(0.00125, 8)
+        })
+      );
+    }
+  );
 
   it.each(["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4"])(
     "uses current Claude table pricing above 200K context for %s",
@@ -251,6 +295,21 @@ describe("model pricing", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "gemini",
       model: "gemini-3-pro-preview",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      thinkingTokens: 50,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 0,
+      cacheWriteTokensKnown: true
+    });
+
+    expect(estimate).toBeNull();
+  });
+
+  it("does not apply Gemini preview pricing to a stable model without explicit pricing", () => {
+    const estimate = estimateUsageComponentCosts({
+      vendor: "gemini",
+      model: "gemini-3-flash",
       inputTokens: 1_000,
       outputTokens: 100,
       thinkingTokens: 50,
