@@ -49,6 +49,11 @@ function registerTestHandlers(options: {
     rows: number
   ) => Promise<void>;
   openExternalUrl?: (url: string) => Promise<void>;
+  openTerminalFilePath?: (
+    surfaceId: string,
+    rawPath: string,
+    baseCwd?: string
+  ) => Promise<void>;
   surfaceDiagnosticsEnabled?: boolean;
   captureSurfaceDiagnostics?: (
     surfaceId: string
@@ -75,6 +80,7 @@ function registerTestHandlers(options: {
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
     openExternalUrl: options.openExternalUrl ?? vi.fn(),
+    openTerminalFilePath: options.openTerminalFilePath ?? vi.fn(),
     resizeSurface: options.resizeSurface ?? vi.fn(),
     identify: vi.fn(),
     listTerminalFontFamilies: vi.fn(),
@@ -352,6 +358,33 @@ describe("ipc handlers", () => {
     expect(sender.send).toHaveBeenCalledWith(
       "kmux:external-url:opened",
       "https://example.com/path"
+    );
+  });
+
+  it("registers terminal file open handler", async () => {
+    const openTerminalFilePath = vi.fn(async () => {});
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-13T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      openTerminalFilePath
+    });
+
+    const handler = handlers.get("kmux:terminal-file:open");
+
+    expect(handler).toBeTypeOf("function");
+    await Promise.resolve(
+      handler?.({}, "surface-1", "src/App.tsx:12:3", "/repo/old")
+    );
+    expect(openTerminalFilePath).toHaveBeenCalledWith(
+      "surface-1",
+      "src/App.tsx:12:3",
+      "/repo/old"
     );
   });
 });

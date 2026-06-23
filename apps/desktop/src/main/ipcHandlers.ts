@@ -73,6 +73,11 @@ interface IpcHandlersOptions {
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
   openExternalUrl: (url: string) => Promise<void>;
+  openTerminalFilePath: (
+    surfaceId: Id,
+    rawPath: string,
+    baseCwd?: string
+  ) => Promise<void>;
   resizeSurface: (
     contentsId: number,
     surfaceId: Id,
@@ -209,6 +214,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     await options.openExternalUrl(url);
     event.sender.send("kmux:external-url:opened", url);
   });
+  ipcMain.handle(
+    "kmux:terminal-file:open",
+    (_event, surfaceId: Id, rawPath: string, baseCwd?: string) =>
+      options.openTerminalFilePath(surfaceId, rawPath, baseCwd)
+  );
   ipcMain.handle(
     "kmux:terminal:resize",
     async (

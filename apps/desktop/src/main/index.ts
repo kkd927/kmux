@@ -38,6 +38,7 @@ import { KmuxSocketServer } from "./socketServer";
 import { createSurfaceCaptureService } from "./surfaceCapture";
 import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
+import { openTerminalFilePath as openTerminalFilePathFromTerminal } from "./terminalFileOpen";
 import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
@@ -468,6 +469,13 @@ async function bootstrap(): Promise<void> {
       }
       await shell.openExternal(url.toString());
     },
+    openTerminalFilePath: (surfaceId, rawPath, baseCwd) =>
+      openTerminalFilePathFromTerminal({
+        surfaceId,
+        rawPath,
+        baseCwd,
+        getState: runtime.getState
+      }),
     resizeSurface: terminalBridge.resizeSurface,
     identify: runtime.identify,
     listTerminalFontFamilies: runtime.listTerminalFontFamilies,

@@ -67,6 +67,11 @@ declare global {
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
       openExternalUrl(url: string): Promise<void>;
+      openTerminalFilePath(
+        surfaceId: string,
+        rawPath: string,
+        baseCwd?: string
+      ): Promise<void>;
       createImageAttachments(
         surfaceId: string,
         payloads: CreateImageAttachmentPayload[]

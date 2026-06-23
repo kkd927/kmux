@@ -141,6 +141,18 @@ const api = {
   openExternalUrl(url: string): Promise<void> {
     return ipcRenderer.invoke("kmux:external-url:open", url);
   },
+  openTerminalFilePath(
+    surfaceId: string,
+    rawPath: string,
+    baseCwd?: string
+  ): Promise<void> {
+    return ipcRenderer.invoke(
+      "kmux:terminal-file:open",
+      surfaceId,
+      rawPath,
+      baseCwd
+    );
+  },
   createImageAttachments(
     surfaceId: string,
     payloads: CreateImageAttachmentPayload[]

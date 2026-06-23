@@ -28,6 +28,7 @@ import {
   detachAttachment,
   getAttachmentSessionId,
   getReadyAttachId,
+  invalidateHydration,
   isCurrentAttachment,
   getRenderSink,
   release,
@@ -54,6 +55,16 @@ function makeInstance(): TerminalInstance {
     search: {} as TerminalInstance["search"],
     unicode11: {} as TerminalInstance["unicode11"],
     webLinks: {} as TerminalInstance["webLinks"],
+    fileLinks: { dispose: vi.fn() },
+    lineCwdTrimListener: { dispose: vi.fn() },
+    lineCwds: {
+      getTrimmedLineCount: vi.fn(() => 0),
+      handleTrim: vi.fn(),
+      importSnapshotRanges: vi.fn(),
+      recordWrite: vi.fn(),
+      getCwdForLine: vi.fn(),
+      clear: vi.fn()
+    },
     lastHydratedSurfaceId: null,
     lastHydratedSurfaceSequence: null,
     attachmentCleanup: null,
@@ -386,6 +397,19 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("is a no-op for unknown paneId", () => {
     expect(() => markSurfaceHydrated("unknown", "surface-abc")).not.toThrow();
+  });
+
+  it("clears line cwd state when hydration is invalidated", () => {
+    const init = vi.fn(makeInstance);
+    const { instance } = acquire("pane-cwd", init);
+    markSurfaceHydrated("pane-cwd", "surface-abc", 12);
+
+    invalidateHydration("pane-cwd");
+
+    expect(getLastHydratedSurfaceId("pane-cwd")).toBeNull();
+    expect(getLastHydratedSurfaceSequence("pane-cwd")).toBeNull();
+    expect(instance.lineCwds.clear).toHaveBeenCalledOnce();
+    release("pane-cwd");
   });
 
   it("tracks the rendered sequence for the hydrated surface", () => {

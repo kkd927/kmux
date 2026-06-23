@@ -2,7 +2,9 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { Unicode11Addon } from "@xterm/addon-unicode11";
 import type { WebLinksAddon } from "@xterm/addon-web-links";
-import type { Terminal } from "@xterm/xterm";
+import type { IDisposable, Terminal } from "@xterm/xterm";
+
+import type { TerminalLineCwdTracker } from "./terminalLineCwdTracker";
 
 export interface TerminalInstance {
   host: HTMLDivElement;
@@ -11,6 +13,9 @@ export interface TerminalInstance {
   search: SearchAddon;
   unicode11: Unicode11Addon;
   webLinks: WebLinksAddon;
+  fileLinks: IDisposable;
+  lineCwdTrimListener: IDisposable;
+  lineCwds: TerminalLineCwdTracker;
   lastHydratedSurfaceId: string | null;
   lastHydratedSurfaceSequence: number | null;
   // Active stream attachment cleanup. The terminal widget is cached by surface,
@@ -218,6 +223,8 @@ export function release(key: string): void {
   if (instance.host.parentNode) {
     instance.host.parentNode.removeChild(instance.host);
   }
+  instance.fileLinks.dispose();
+  instance.lineCwdTrimListener.dispose();
   instance.terminal.dispose();
 }
 
@@ -250,6 +257,7 @@ export function invalidateHydration(key: string): void {
   if (instance) {
     instance.lastHydratedSurfaceId = null;
     instance.lastHydratedSurfaceSequence = null;
+    instance.lineCwds.clear();
   }
 }
 

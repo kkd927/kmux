@@ -13,7 +13,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal, type ILinkHandler } from "@xterm/xterm";
+import { Terminal, type IDisposable, type ILinkHandler } from "@xterm/xterm";
 
 import type {
   CreateImageAttachmentPayload,
@@ -49,6 +49,12 @@ import {
   hydrateAttachedTerminal,
   reattachPreservedTerminal
 } from "../terminalAttachHydration";
+import {
+  createTerminalLineCwdTracker,
+  type TerminalLineCwdRange,
+  type TerminalLineCwdTracker
+} from "../terminalLineCwdTracker";
+import { registerTerminalFileLinkProvider } from "../terminalFileLinks";
 import {
   installTerminalForegroundFit,
   type TerminalForegroundFitController
@@ -131,6 +137,29 @@ interface TerminalPaneProps {
   focusRequest?: TerminalFocusRequest | null;
 }
 
+type TerminalSnapshotWithCwdRanges = {
+  sequence: number | null;
+  cwdRanges?: TerminalLineCwdRange[];
+};
+
+type OpenTerminalFilePathWithBaseCwd = (
+  surfaceId: string,
+  rawPath: string,
+  baseCwd?: string
+) => Promise<void>;
+
+type TerminalWithPrivateTrimEvent = Terminal & {
+  _core?: {
+    _bufferService?: {
+      buffer?: {
+        lines?: {
+          onTrim?: (listener: (amount: number) => void) => IDisposable;
+        };
+      };
+    };
+  };
+};
+
 type SearchMatch = {
   row: number;
   col: number;
@@ -209,6 +238,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const lineCwdsRef = useRef<TerminalLineCwdTracker | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const surfaceWrapperRefs = useRef(new Map<string, HTMLDivElement>());
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -234,6 +264,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const showSearchRef = useRef(props.showSearch);
   const shortcutsRef = useRef(props.settings.shortcuts);
   const reservedSystemChordsRef = useRef(props.reservedSystemChords);
+  const keyboardPlatformRef = useRef(props.keyboardPlatform);
   const copyModeSelectAllShortcutRef = useRef(props.copyModeSelectAllShortcut);
   const onToggleSearchRef = useRef(props.onToggleSearch);
   const surfaceContextActionRef = useRef<
@@ -408,6 +439,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   showSearchRef.current = props.showSearch;
   shortcutsRef.current = props.settings.shortcuts;
   reservedSystemChordsRef.current = props.reservedSystemChords;
+  keyboardPlatformRef.current = props.keyboardPlatform;
   copyModeSelectAllShortcutRef.current = props.copyModeSelectAllShortcut;
   onToggleSearchRef.current = props.onToggleSearch;
   searchDecorationsRef.current = terminalSearchDecorations;
@@ -874,6 +906,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
   }
 
+  function registerTerminalBufferTrimHandler(
+    terminal: Terminal,
+    onTrim: (amount: number) => void
+  ): IDisposable {
+    const lines = (terminal as TerminalWithPrivateTrimEvent)._core
+      ?._bufferService?.buffer?.lines;
+    return lines?.onTrim?.(onTrim) ?? { dispose() {} };
+  }
+
   function toggleSearch(surfaceId: string | null): void {
     if (surfaceId) {
       setCopyMode(false);
@@ -1102,6 +1143,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fontWeight: 400,
           cursorBlink: true,
           macOptionIsMeta: false,
+          altClickMovesCursor: false,
           scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
           theme: terminalTheme,
@@ -1118,10 +1160,28 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         const webLinks = new WebLinksAddon((_event, uri) => {
           openExternalTerminalLink(uri);
         });
+        const lineCwds = createTerminalLineCwdTracker();
+        const lineCwdTrimListener = registerTerminalBufferTrimHandler(
+          terminal,
+          (amount) => {
+            lineCwds.handleTrim(amount);
+          }
+        );
         terminal.loadAddon(fit);
         terminal.loadAddon(search);
         terminal.loadAddon(unicode11);
         terminal.loadAddon(webLinks);
+        const openTerminalFilePath = window.kmux
+          .openTerminalFilePath as OpenTerminalFilePathWithBaseCwd;
+        const fileLinks = registerTerminalFileLinkProvider({
+          terminal,
+          getKeyboardPlatform: () => keyboardPlatformRef.current,
+          surfaceId: activeSurface.id,
+          openFilePath: (surfaceId, rawPath, baseCwd) =>
+            openTerminalFilePath(surfaceId, rawPath, baseCwd),
+          getCwdForBufferLine: (bufferLineNumber) =>
+            lineCwds.getCwdForLine(bufferLineNumber)
+        });
         terminal.unicode.activeVersion = "11";
         terminal.open(host);
         return {
@@ -1131,6 +1191,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           search,
           unicode11,
           webLinks,
+          fileLinks,
+          lineCwdTrimListener,
+          lineCwds,
           lastHydratedSurfaceId: null,
           lastHydratedSurfaceSequence: null,
           attachmentCleanup: null,
@@ -1146,6 +1209,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     terminalRef.current = instance.terminal;
     fitRef.current = instance.fit;
     searchRef.current = instance.search;
+    lineCwdsRef.current = instance.lineCwds;
     const moved = attachTerminalHostToCurrentWrapper(
       activeSurface.id,
       instance.terminal,
@@ -1166,6 +1230,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         terminalRef.current = null;
         fitRef.current = null;
         searchRef.current = null;
+        lineCwdsRef.current = null;
         containerRef.current = null;
       }
     };
@@ -1644,6 +1709,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
 
     let attached = true;
+    let terminalWriteQueue = Promise.resolve();
     let attachmentToken: terminalInstanceStore.TerminalAttachmentToken | null =
       null;
     const instanceKey = terminalInstanceKey;
@@ -1676,13 +1742,66 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         sessionId,
         attachmentToken
       );
+    type LiveChunkPayloadWithCwd = {
+      surfaceId: string;
+      sessionId: string;
+      sequence: number;
+      chunk: string;
+      cwd?: string;
+    };
+    const enqueueLiveChunkWrite = (payload: LiveChunkPayloadWithCwd): void => {
+      terminalWriteQueue = terminalWriteQueue
+        .catch(() => undefined)
+        .then(
+          () =>
+            new Promise<void>((resolve) => {
+              const trimCountBefore =
+                lineCwdsRef.current?.getTrimmedLineCount() ?? 0;
+              const startLine =
+                terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+              writeAttachedTerminal(
+                payload.chunk,
+                () => {
+                  const trimDuringWrite =
+                    (lineCwdsRef.current?.getTrimmedLineCount() ?? 0) -
+                    trimCountBefore;
+                  const endLine =
+                    terminal.buffer.active.baseY +
+                    terminal.buffer.active.cursorY;
+                  if (attached) {
+                    lineCwdsRef.current?.recordWrite({
+                      startLine: startLine - trimDuringWrite,
+                      endLine,
+                      cwd: payload.cwd
+                    });
+                    terminalInstanceStore.markSurfaceRendered(
+                      instanceKey,
+                      payload.surfaceId,
+                      payload.sequence
+                    );
+                    const renderedSequence =
+                      terminalInstanceStore.getLastHydratedSurfaceSequence(
+                        instanceKey
+                      );
+                    updateTerminalDiagnostics(payload.surfaceId, terminal, {
+                      renderedSequence
+                    });
+                  }
+                  resolve();
+                },
+                payload.surfaceId
+              );
+            })
+        );
+    };
     const markSnapshotRendered = (
       attachId: string,
-      snapshot: { sequence: number | null }
+      snapshot: TerminalSnapshotWithCwdRanges
     ) => {
       if (!isCurrentAttachedSession()) {
         return Promise.resolve({ status: "stale" as const });
       }
+      lineCwdsRef.current?.importSnapshotRanges(snapshot.cwdRanges);
       terminalInstanceStore.markSurfaceHydrated(
         instanceKey,
         surfaceId,
@@ -1735,27 +1854,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (event.type === "chunk" && isCurrentSessionEvent(event.payload)) {
-        const payload = event.payload;
-        writeAttachedTerminal(
-          payload.chunk,
-          () => {
-            if (attached) {
-              terminalInstanceStore.markSurfaceRendered(
-                instanceKey,
-                payload.surfaceId,
-                payload.sequence
-              );
-              const renderedSequence =
-                terminalInstanceStore.getLastHydratedSurfaceSequence(
-                  instanceKey
-                );
-              updateTerminalDiagnostics(payload.surfaceId, terminal, {
-                renderedSequence
-              });
-            }
-          },
-          payload.surfaceId
-        );
+        const payload = event.payload as typeof event.payload & {
+          cwd?: string;
+        };
+        enqueueLiveChunkWrite(payload);
       }
       if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;

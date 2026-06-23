@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
+import type { ILink, ILinkProvider } from "@xterm/xterm";
 
 import { buildPlatformKeyboardPolicy } from "../../../shared/platform/keyboardPolicy";
 
 let fitDimensions = { cols: 120, rows: 40 };
+let terminalBufferText = "";
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn(() => ({
@@ -35,6 +37,16 @@ vi.mock("@xterm/addon-web-links", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => {
+    const cell = {
+      chars: "",
+      width: 0,
+      getChars() {
+        return this.chars;
+      },
+      getWidth() {
+        return this.width;
+      }
+    };
     const terminal = {
       cols: 80,
       rows: 24,
@@ -43,7 +55,32 @@ vi.mock("@xterm/xterm", () => ({
       buffer: {
         active: {
           viewportY: 0,
-          baseY: 0
+          baseY: 0,
+          cursorY: 0,
+          getLine(index: number) {
+            if (index !== 0) {
+              return undefined;
+            }
+            return {
+              isWrapped: false,
+              get length() {
+                return terminalBufferText.length;
+              },
+              translateToString(trimRight?: boolean) {
+                return trimRight
+                  ? terminalBufferText.trimEnd()
+                  : terminalBufferText;
+              },
+              getCell(index: number, targetCell = cell) {
+                targetCell.chars = terminalBufferText[index] ?? "";
+                targetCell.width = index < terminalBufferText.length ? 1 : 0;
+                return targetCell;
+              }
+            };
+          },
+          getNullCell() {
+            return cell;
+          }
         }
       },
       modes: {
@@ -51,6 +88,7 @@ vi.mock("@xterm/xterm", () => ({
       },
       textarea: document.createElement("textarea"),
       loadAddon: vi.fn(),
+      registerLinkProvider: vi.fn(() => ({ dispose: vi.fn() })),
       open: vi.fn((host: HTMLElement) => {
         const xterm = document.createElement("div");
         xterm.className = "xterm";
@@ -65,7 +103,8 @@ vi.mock("@xterm/xterm", () => ({
       onData: vi.fn(() => ({ dispose: vi.fn() })),
       onWriteParsed: vi.fn(() => ({ dispose: vi.fn() })),
       onScroll: vi.fn(() => ({ dispose: vi.fn() })),
-      write: vi.fn((_data: string, callback?: () => void) => {
+      write: vi.fn((data: string, callback?: () => void) => {
+        terminalBufferText += data;
         callback?.();
       }),
       resize: vi.fn((cols: number, rows: number) => {
@@ -201,6 +240,23 @@ async function flushMicrotasks(iterations = 5): Promise<void> {
   }
 }
 
+function provideCurrentTerminalFileLinks(): ILink[] | undefined {
+  const terminalMock = vi.mocked(Terminal);
+  const terminal = terminalMock.mock.results.at(-1)?.value as
+    | {
+        registerLinkProvider: {
+          mock: { calls: Array<[ILinkProvider]> };
+        };
+      }
+    | undefined;
+  const provider = terminal?.registerLinkProvider.mock.calls[0]?.[0];
+  let links: ILink[] | undefined;
+  provider?.provideLinks(1, (providedLinks) => {
+    links = providedLinks;
+  });
+  return links;
+}
+
 describe("TerminalPane visibility cleanup", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
@@ -209,6 +265,7 @@ describe("TerminalPane visibility cleanup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fitDimensions = { cols: 120, rows: 40 };
+    terminalBufferText = "";
     windowFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
     (
       globalThis as typeof globalThis & { ResizeObserver: unknown }
@@ -246,6 +303,7 @@ describe("TerminalPane visibility cleanup", () => {
       readClipboardText: vi.fn(() => ""),
       writeClipboardText: vi.fn(),
       openExternalUrl: vi.fn(async () => {}),
+      openTerminalFilePath: vi.fn(async () => {}),
       showSurfaceContextMenu: vi.fn(async () => true),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
@@ -262,6 +320,104 @@ describe("TerminalPane visibility cleanup", () => {
     terminalInstanceStore.releaseAll();
     windowFocus.mockRestore();
     container.remove();
+  });
+
+  it("disables xterm alt-click cursor movement for modifier-gated file links", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    expect(Terminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        altClickMovesCursor: false,
+        macOptionIsMeta: false
+      })
+    );
+  });
+
+  it("passes snapshot cwd ranges into terminal file links", async () => {
+    const props = createProps("surface_1");
+    terminalBufferText = "src/App.tsx";
+    window.kmux.attachSurface = vi.fn(
+      async (surfaceId: string, sessionId: string) => ({
+        attachId: "attach_1",
+        snapshot: {
+          surfaceId,
+          sessionId,
+          sequence: 0,
+          vt: "",
+          cols: 120,
+          rows: 40,
+          title: surfaceId,
+          ports: [],
+          unreadCount: 0,
+          attention: false,
+          cwdRanges: [{ startLine: 0, endLine: 0, cwd: "/repo/snapshot" }]
+        }
+      })
+    );
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const links = provideCurrentTerminalFileLinks();
+    links?.[0]?.activate(
+      new MouseEvent("click", { ctrlKey: true }),
+      "src/App.tsx"
+    );
+    await Promise.resolve();
+
+    expect(window.kmux.openTerminalFilePath).toHaveBeenCalledWith(
+      "surface_1",
+      "src/App.tsx",
+      "/repo/snapshot"
+    );
+  });
+
+  it("records live chunk cwd for terminal file links", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "src/App.tsx",
+          cwd: "/repo/live"
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    const links = provideCurrentTerminalFileLinks();
+    links?.[0]?.activate(
+      new MouseEvent("click", { ctrlKey: true }),
+      "src/App.tsx"
+    );
+    await Promise.resolve();
+
+    expect(window.kmux.openTerminalFilePath).toHaveBeenCalledWith(
+      "surface_1",
+      "src/App.tsx",
+      "/repo/live"
+    );
   });
 
   it("keeps shell startup status hidden while the active surface waits for input", async () => {
