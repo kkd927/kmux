@@ -111,27 +111,63 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  package-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package:linux
+      - name: Verify Linux release assets
+        run: |
+          shopt -s nullglob
+          appimages=(apps/desktop/release/kmux-*-linux-x64.AppImage)
+          manifests=(apps/desktop/release/latest-linux.yml)
+          test "${#appimages[@]}" -eq 1
+          test "${#manifests[@]}" -eq 1
+          test -s "${appimages[0]}.blockmap"
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x64-release-assets
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.AppImage.blockmap
+            apps/desktop/release/latest-linux*.yml
+          if-no-files-found: error
+          compression-level: 0
+
   publish-release:
     if: github.event_name == 'push'
     needs:
       - verify
       - package-macos
+      - package-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
-          pattern: macos-*-release-assets
+          pattern: "*-release-assets"
           path: release-assets
           merge-multiple: true
       - name: Verify update manifest assets
         run: |
           shopt -s nullglob
-          manifests=(release-assets/latest*-mac.yml)
+          mac_manifests=(release-assets/latest*-mac.yml)
+          linux_manifests=(release-assets/latest-linux*.yml)
           zips=(release-assets/*.zip)
-          test "${#manifests[@]}" -eq 2
+          appimages=(release-assets/*.AppImage)
+          appimage_blockmaps=(release-assets/*.AppImage.blockmap)
+          test "${#mac_manifests[@]}" -eq 2
+          test "${#linux_manifests[@]}" -eq 1
           test "${#zips[@]}" -gt 0
-      - name: Create versionless DMG aliases
+          test "${#appimages[@]}" -eq 1
+          test "${#appimage_blockmaps[@]}" -eq 1
+      - name: Create versionless download aliases
         run: |
           shopt -s nullglob
           for arch in arm64 x64; do
@@ -142,8 +178,15 @@ jobs:
             fi
             cp "${matches[0]}" "release-assets/kmux-mac-${arch}.dmg"
           done
+          linux_matches=(release-assets/kmux-*-linux-x64.AppImage)
+          if [ "${#linux_matches[@]}" -ne 1 ]; then
+            echo "Expected exactly 1 source AppImage for linux x64, found ${#linux_matches[@]}: ${linux_matches[*]:-<none>}" >&2
+            exit 1
+          fi
+          cp "${linux_matches[0]}" "release-assets/kmux-linux-x64.AppImage"
           test -f release-assets/kmux-mac-arm64.dmg
           test -f release-assets/kmux-mac-x64.dmg
+          test -f release-assets/kmux-linux-x64.AppImage
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -152,8 +195,11 @@ jobs:
           shopt -s nullglob
           assets=(
             release-assets/*.dmg
+            release-assets/*.AppImage
+            release-assets/*.AppImage.blockmap
             release-assets/*.zip
             release-assets/latest*-mac.yml
+            release-assets/latest-linux*.yml
           )
           test "${#assets[@]}" -gt 0
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then

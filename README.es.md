@@ -2,13 +2,12 @@
 
 # kmux
 
-**Ejecuta Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en paralelo, sin perder el control de ninguno de ellos.**
+**El espacio de trabajo de terminal multi-sesión optimizado para ejecutar agentes de programación de IA en paralelo.**
 
-Un espacio de trabajo en macOS para agentes de programación de IA: sesiones paralelas, uso integrado, reanudación instantánea y ramas seguras con worktrees.
+Un emulador de terminal centrado en el teclado diseñado para Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en macOS y Linux.<br>Realiza un seguimiento de las sesiones paralelas de tus agentes, monitorea el uso de la API y trabaja de manera segura en diferentes ramas mediante git worktrees nativos.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
-[![macOS](https://img.shields.io/badge/platform-macOS-000?logo=apple&logoColor=fff)](https://github.com/kkd927/kmux/releases/latest)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-a78bfa)](./CONTRIBUTING.md)
 
 <br>
@@ -21,11 +20,13 @@ Un espacio de trabajo en macOS para agentes de programación de IA: sesiones par
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
 &nbsp;
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+&nbsp;
+<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
 
 <br>
 <br>
 
-<img src="./docs/assets/readme/hero.png" alt="kmux — Espacio de trabajo para agentes de IA" width="1000">
+<img src="./docs/assets/readme/hero.png" alt="kmux — Espacio de trabajo de terminal para agentes de IA" width="1000">
 
 </div>
 
@@ -33,17 +34,15 @@ Un espacio de trabajo en macOS para agentes de programación de IA: sesiones par
 
 ## ✨ ¿Por qué kmux?
 
-Si has comenzado a confiar en **Claude Code**, **Codex CLI**, **Gemini CLI** y **Antigravity CLI** para tu trabajo diario, ya te habrás topado con las dificultades habituales: múltiples terminales, múltiples superficies de agente, historiales de sesión separados y ninguna forma óptima de evitar que interfieran entre sí en el mismo repositorio.
+Ejecutar agentes de IA basados en CLI como **Claude Code** o **Gemini CLI** junto con tu servidor de desarrollo genera rápidamente desorden en la terminal, fragmenta el historial de sesiones y provoca conflictos de git cuando los agentes escriben en el mismo directorio de trabajo.
 
-**kmux** es un espacio de trabajo para macOS diseñado específicamente para optimizar este flujo de trabajo:
+**kmux** soluciona esto proporcionando un espacio de trabajo de terminal dedicado y diseñado específicamente para flujos de trabajo con agentes:
 
-- Aloja cada agente en su propio espacio de trabajo virtual e independiente, ejecutándolos en paralelo.
-- Recibe notificaciones nativas de macOS cuando cualquier agente requiera entrada de datos o finalice su tarea.
-- Realiza un seguimiento del uso consolidado y del presupuesto de sesión restante en una barra lateral única.
-- Regresa instantáneamente a cualquier sesión anterior de Claude, Codex, Gemini o Antigravity con un solo clic.
-- Crea un `git worktree` para que dos agentes puedan editar el mismo repositorio en ramas diferentes de manera totalmente segura.
-
-Su diseño prioriza el uso del teclado (Keyboard-first) para que puedas acceder a todas las funciones desde la fila central (Home row), integrándose en tu flujo sin interrumpir tu concentración.
+- **Sesiones Paralelas Aisladas**: Ejecuta múltiples agentes simultáneamente en paneles divididos o pestañas verticales sin conflictos de entorno.
+- **Notificaciones de Atención**: Recibe notificaciones nativas de escritorio y badges de espacio de trabajo de inmediato cuando un agente complete una tarea o requiera entrada humana.
+- **Panel de Uso Unificado**: Monitorea el consumo de tokens y el gasto de API de todos tus proveedores de agentes en una sola barra lateral.
+- **Reanudación Instantánea de Sesión**: Explora tu historial indexado y reanuda sesiones anteriores de tus agentes con un solo clic.
+- **Espacios de Trabajo con Worktree**: Crea entornos de `git worktree` aislados automáticamente, permitiendo que múltiples agentes modifiquen de forma segura diferentes ramas del mismo repositorio.
 
 <br>
 
@@ -55,9 +54,9 @@ Su diseño prioriza el uso del teclado (Keyboard-first) para que puedas acceder 
 
 ### 📊 Panel de Uso Unificado
 
-Monitorea Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en paralelo desde el panel derecho de la barra lateral. Cuando existen registros locales del proveedor, kmux consolida uso y estado desde ahí; los hooks de ciclo de vida se reservan para estado en vivo y notificaciones.
+Monitorea tu consumo de tokens y gasto de API en Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en un solo panel de la barra lateral derecha. kmux agrega los datos de uso directamente desde los logs locales de las sesiones, reemplazando el historial de comandos individual por un único panel visual en tiempo real.
 
-Ofrece un mapa de calor diario, el gasto de hoy, los modelos más utilizados y los puntos calientes por proyecto, reemplazando múltiples comandos de `usage` por un único panel interactivo en tiempo real.
+Ofrece un mapa de calor diario, el gasto de hoy, los modelos más costosos y los puntos de interés por proyecto.
 
 </td>
 <td width="50%" valign="top">
@@ -76,9 +75,9 @@ Ofrece un mapa de calor diario, el gasto de hoy, los modelos más utilizados y l
 
 ### 🕘 Historial de Sesiones entre Agentes
 
-kmux indexa los registros de sesiones locales de los cuatro agentes (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp`, Antigravity: `~/.gemini/antigravity-cli`) y los presenta en un panel único y filtrable.
+kmux indexa automáticamente las bases de datos de sesiones locales de los cuatro agentes (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp` y Antigravity: `~/.gemini/antigravity-cli`), presentándolas en una barra lateral de búsqueda.
 
-Haz clic en cualquier fila para reanudar esa sesión al instante. kmux enfocará una pantalla existente si está abierta en el mismo directorio (`cwd`), o abrirá un nuevo espacio de trabajo y ejecutará `claude --resume`, `codex resume`, `gemini --resume` o `agy --conversation` por ti.
+Haz clic en una sesión para reanudarla al instante. kmux enfocará la pestaña o el espacio de trabajo existente para ese directorio si ya está abierto, o abrirá automáticamente un nuevo panel y ejecutará los comandos de reanudación (`claude --resume`, `codex resume`, etc.) por ti.
 
 </td>
 </tr>
@@ -87,9 +86,9 @@ Haz clic en cualquier fila para reanudar esa sesión al instante. kmux enfocará
 
 ### 🌳 Espacios de Trabajo con Worktree
 
-Haz clic derecho en cualquier espacio de trabajo y selecciona **Convert to Worktree Workspace** para bloquearlo en un nuevo `git worktree`. Ahora, dos agentes pueden editar el mismo repositorio en ramas distintas sin interferir en el árbol de trabajo principal.
+Haz clic derecho en cualquier espacio de trabajo y selecciona **Convert to Worktree Workspace** para crear un `git worktree` aislado. Esto permite que múltiples agentes editen de forma segura diferentes ramas del mismo repositorio simultáneamente sin interferir en tu árbol de trabajo principal.
 
-kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de rama, estado de cambios sin confirmar y eliminación), solicitando confirmación antes de eliminar un worktree con cambios pendientes para evitar pérdidas accidentales.
+kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de ramas, modificaciones y comprobaciones de seguridad para su eliminación) para que tu trabajo nunca se pierda ni quede huérfano.
 
 </td>
 <td width="50%" valign="top">
@@ -102,13 +101,13 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
 
 <br>
 
-### Todas las funciones que esperas de una terminal profesional
+### 🛠️ Características de Terminal para Usuarios Avanzados
 
-- **Paneles divididos (Split panes) y pestañas (Surface tabs)** — Agrupa el servidor de desarrollo, los registros y las terminales de los agentes en una sola pantalla de manera flexible.
-- **Barra lateral inteligente** — Detección automática del `cwd` del espacio de trabajo, rama de git, puertos activos y notificaciones pendientes.
-- **Persistencia de sesión** — Restauración automática de la distribución y el estado al reiniciar la aplicación.
-- **Paleta de comandos** (`⌘ ⇧ P`), búsqueda en la terminal (`⌘ F`) y modo de copia al estilo Vim.
-- **Aspecto nativo de macOS** — Integración perfecta con la barra de título, paleta oscura y renderizado de terminal optimizado para pantallas Retina.
+- **Paneles Divididos y Pestañas** — Agrupa servidores de desarrollo, logs y terminales de agentes dentro de un solo espacio de trabajo.
+- **Barra Lateral Inteligente** — Detecta automáticamente tu directorio de trabajo activo (`cwd`), rama de git, puertos activos y notificaciones pendientes.
+- **Persistencia de Distribución** — Restaura instantáneamente la distribución exacta de tus espacios de trabajo, pestañas activas y directorios al reiniciar la aplicación.
+- **Búsqueda y Modo de Copia Vim** — Busca en el búfer de la terminal (`⌘ F`) y usa atajos al estilo Vim para seleccionar y copiar texto sin tocar el ratón.
+- **Paleta de Comandos** — Accede a todas las acciones y comandos de espacios de trabajo personalizados rápidamente con `⌘ ⇧ P`.
 
 <br>
 
@@ -118,27 +117,38 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
 </p>
+
+### macOS
 
 1. Haz clic en el botón correspondiente a la arquitectura de tu Mac (procesadores M1/M2/M3/M4 de Apple Silicon → Apple Silicon, Macs más antiguos con Intel → Intel).
 2. Abre el archivo `.dmg` descargado y arrastra **kmux** a tu carpeta de `Aplicaciones (Applications)`.
 3. En el primer inicio, si macOS solicita confirmación de seguridad, haz clic en **Abrir** para continuar.
 
+### Linux
+
+1. Descarga la AppImage de Linux x64.
+2. Dale permisos de ejecución: `chmod +x kmux-linux-x64.AppImage`
+3. Ejecútala: `./kmux-linux-x64.AppImage`
+
 <br>
 
 ## 🏁 Inicio Rápido
 
-1. Inicia kmux y presiona `⌘ N` para crear tu primer espacio de trabajo.
-2. Dentro de la terminal, ejecuta tu agente favorito (`claude`, `codex`, `gemini` o `agy`).
-3. Presiona `⌘ B` para abrir la barra lateral y ver el panel de **Usage** y la lista de **Sessions**.
-4. Presiona `⌘ N` nuevamente para ejecutar otro agente en un espacio de trabajo independiente, o haz clic derecho en un espacio de trabajo y selecciona **Convert to Worktree Workspace** si ambos van a interactuar con el mismo repositorio.
-5. Cuando un agente requiera tu atención o termine su tarea, recibirás una notificación del sistema macOS y se mostrará un indicador visual en el icono de su espacio de trabajo.
+1. Inicia kmux y crea tu primer espacio de trabajo (`⌘ N` en macOS).
+2. Dentro de la terminal, ejecuta el CLI de tu agente local (`claude`, `codex`, `gemini` o `agy`).
+   > 💡 **Nota**: kmux ejecuta los CLIs de los agentes que ya tienes instalados en tu sistema. No requiere que configures claves API ni wrappers adicionales en la aplicación.
+3. Abre la barra lateral (`⌘ B` en macOS) para ver el panel de **Usage** y la lista de **Sessions**.
+4. Crea otro espacio de trabajo para ejecutar otro agente de forma independiente, o haz clic derecho en un espacio de trabajo y selecciona **Convert to Worktree Workspace** si ambos van a interactuar con el mismo repositorio.
+5. Cuando un agente requiera tu atención o termine su tarea, recibirás una notificación nativa de escritorio y se mostrará un indicador visual en el icono de su espacio de trabajo.
 
 <br>
 
 ## ⌨️ Atajos de Teclado
 
-> Todos los atajos de teclado se pueden ejecutar directamente desde la paleta de comandos (`⌘ ⇧ P`).
+> Los atajos siguientes muestran los valores predeterminados de macOS. Linux usa atajos de texto específicos de la plataforma, y todas las acciones también están disponibles desde la paleta de comandos.
 
 ### Espacios de Trabajo (Workspaces)
 
@@ -207,6 +217,6 @@ kmux realiza un seguimiento completo del ciclo de vida del worktree (nombre de r
 
 **kmux** — tus agentes de programación IA, ejecutándose codo a codo en paralelo.
 
-<sub>Solo para macOS · Versión preliminar · En desarrollo activo</sub>
+<sub>macOS + Linux · Versión preliminar · En desarrollo activo</sub>
 
 </div>

@@ -2,13 +2,12 @@
 
 # kmux
 
-**Claude Code, Codex CLI, Gemini CLI, Antigravity CLI를 나란히 실행하고, 하나도 놓치지 마세요.**
+**AI 코딩 에이전트의 병렬 실행에 최적화된 멀티 세션 터미널 워크스페이스.**
 
-AI 코딩 에이전트를 위한 macOS 워크스페이스: 병렬 세션, 통합 사용량 대시보드, 즉각적인 세션 재개, 워크트리(worktree) 안전 브랜치.
+macOS와 Linux에서 Claude Code, Codex CLI, Gemini CLI, Antigravity CLI를 위해 설계된 키보드 중심의 터미널 에뮬레이터입니다.<br>여러 에이전트의 실시간 세션 복구, 통합 API 사용량 대시보드, 그리고 안전한 git worktree 격리 환경을 제공합니다.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
-[![macOS](https://img.shields.io/badge/platform-macOS-000?logo=apple&logoColor=fff)](https://github.com/kkd927/kmux/releases/latest)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-a78bfa)](./CONTRIBUTING.md)
 
 <br>
@@ -21,11 +20,13 @@ AI 코딩 에이전트를 위한 macOS 워크스페이스: 병렬 세션, 통합
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Apple Silicon용 다운로드" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
 &nbsp;
 <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Intel Mac용 다운로드" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+&nbsp;
+<a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Linux x64용 다운로드" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
 
 <br>
 <br>
 
-<img src="./docs/assets/readme/hero.png" alt="kmux — AI 코딩 에이전트 워크스페이스" width="1000">
+<img src="./docs/assets/readme/hero.png" alt="kmux — AI 코딩 에이전트 터미널 워크스페이스" width="1000">
 
 </div>
 
@@ -33,17 +34,15 @@ AI 코딩 에이전트를 위한 macOS 워크스페이스: 병렬 세션, 통합
 
 ## ✨ 왜 kmux인가요?
 
-실무에서 **Claude Code**, **Codex CLI**, **Gemini CLI**, **Antigravity CLI**를 활발히 사용하기 시작했다면 이미 다음과 같은 불편함을 겪으셨을 겁니다: 여러 터미널, 여러 에이전트 화면, 분리된 세션 기록, 그리고 같은 리포지토리 안에서 에이전트들이 서로의 작업을 방해하지 않도록 안전하게 분리할 수 있는 마땅한 방법이 없다는 점입니다.
+실무에서 **Claude Code**나 **Gemini CLI** 같은 CLI 기반 AI 에이전트를 실행해 보면 금방 터미널이 어지러워집니다. 여러 에이전트의 세션 기록은 파편화되며, 동일한 디렉토리에서 여러 에이전트가 코드를 수정하다가 Git 충돌이 발생하기 쉽습니다.
 
-**kmux**는 정확히 이러한 에이전트 워크플로우를 해결하기 위해 구축된 macOS 전용 워크스페이스입니다:
+**kmux**는 이러한 에이전트 중심의 개발 흐름을 해결하기 위해 최적화된 터미널 워크스페이스를 제공합니다:
 
-- 각 에이전트를 자체 독립된 워크스페이스에 배치하고 병렬로 동시 실행
-- 에이전트가 입력을 요청하거나 작업을 완료하면 macOS 시스템 알림 수신
-- 단일 사이드바에서 모든 제공자의 통합 사용량과 남은 세션 예산을 실시간 추적
-- 마우스 클릭 한 번으로 과거 Claude/Codex/Gemini/Antigravity 세션으로 즉시 복귀
-- `git worktree`를 생성하여 두 에이전트가 동일한 리포지토리의 서로 다른 브랜치를 동시에 안전하게 작업하도록 분리
-
-키보드 중심(Keyboard-first)의 키매핑 설계로 홈 로우(Home row)를 벗어나지 않고 모든 워크플로우를 제어할 수 있어, 개발 흐름을 방해하지 않고 도구 본연의 가치에 집중할 수 있도록 돕습니다.
+- **안전한 병렬 세션**: 개발 서버, 로그, 에이전트 쉘을 독립된 화면 분할(Split)과 탭으로 구성하여 충돌 없이 동시에 실행합니다.
+- **포커스 알림 및 배지**: 에이전트가 작업을 완료하거나 인간의 입력(Prompt)을 기다릴 때 데스크톱 알림과 상태 배지로 즉시 알려줍니다.
+- **통합 사용량 대시보드**: 여러 에이전트의 토큰 사용량과 API 누적 지출 비용을 사이드바에서 한눈에 실시간으로 모니터링합니다.
+- **원클릭 세션 복구**: 이전에 진행하던 작업 세션을 자동으로 검색하고 클릭 한 번으로 이전 흐름을 그대로 이어갑니다.
+- **워크트리(Worktree) 격리**: 동일한 저장소에서 작업하더라도 각각 독립된 `git worktree`를 생성하여 에이전트들이 서로의 소스 코드를 덮어쓰지 않도록 보호합니다.
 
 <br>
 
@@ -55,9 +54,9 @@ AI 코딩 에이전트를 위한 macOS 워크스페이스: 병렬 세션, 통합
 
 ### 📊 통합 사용량 대시보드
 
-우측 사이드바 패널에서 Claude Code, Codex CLI, Gemini CLI, Antigravity CLI를 나란히 모니터링하세요. 가능한 경우 각 제공자의 로컬 기록에서 사용량과 상태를 통합하고, lifecycle hook은 실시간 상태와 알림에 집중합니다.
+우측 사이드바 패널에서 Claude Code, Codex CLI, Gemini CLI, Antigravity CLI를 나란히 모니터링하세요. kmux는 로컬 세션 로그에서 직접 사용량 데이터를 수집하므로, 각 제공자별 터미널 사용량 조회를 번거롭게 실행할 필요 없이 실시간 그래픽 대시보드 하나로 통합 관리할 수 있습니다.
 
-일일 히트맵, 오늘의 지출, 가장 많이 지출한 모델, 프로젝트별 핫스팟 등 다양하고 유용한 인사이트를 제공하여, 번거로운 `usage` 명령어들 대신 단 하나의 라이브 대시보드로 모든 것을 시각화합니다.
+일일 히트맵, 오늘의 지출, 가장 많이 지출한 모델, 프로젝트별 핫스팟 인사이트를 제공합니다.
 
 </td>
 <td width="50%" valign="top">
@@ -76,9 +75,9 @@ AI 코딩 에이전트를 위한 macOS 워크스페이스: 병렬 세션, 통합
 
 ### 🕘 교차 에이전트 세션 기록
 
-kmux는 네 에이전트의 로컬 세션 기록(Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp`, Antigravity: `~/.gemini/antigravity-cli`)을 자동으로 인덱싱하여 하나의 필터링 가능한 패널에 통합 제공합니다.
+kmux는 네 에이전트의 로컬 세션 데이터베이스(Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp`, Antigravity: `~/.gemini/antigravity-cli`)를 자동으로 인덱싱하여 검색 가능한 하나의 사이드바 패널로 집중 제공합니다.
 
-특정 행을 클릭하기만 하면 해당 세션을 바로 복구합니다. kmux는 동일한 `cwd`(작업 디렉토리)의 기존 화면이 열려 있다면 해당 화면에 포커스하고, 그렇지 않으면 새 워크스페이스를 즉시 생성하여 `claude --resume`, `codex resume`, `gemini --resume`, 또는 `agy --conversation`을 실행합니다.
+특정 행을 클릭하기만 하면 해당 세션을 바로 복구합니다. 동일한 작업 디렉토리(`cwd`)의 기존 화면이 열려 있다면 해당 화면에 포커스하고, 그렇지 않으면 새 분할 창을 생성하여 `claude --resume`, `codex resume` 등의 복구 명령어를 자동으로 실행해 줍니다.
 
 </td>
 </tr>
@@ -87,9 +86,9 @@ kmux는 네 에이전트의 로컬 세션 기록(Claude: `~/.claude/projects`, C
 
 ### 🌳 워크트리(Worktree) 워크스페이스
 
-워크스페이스를 우클릭하고 **Convert to Worktree Workspace**를 선택하면 새 `git worktree`로 고정됩니다. 이제 두 에이전트가 작업 디렉토리를 복잡하게 어지럽히지 않고 동일한 리포지토리의 서로 다른 브랜치를 독립적으로 안전하게 편집할 수 있습니다.
+워크스페이스를 우클릭하고 **Convert to Worktree Workspace**를 선택하여 격리된 `git worktree`를 생성할 수 있습니다. 이제 여러 에이전트가 작업 디렉토리를 어지럽히지 않고 동일한 리포지토리의 서로 다른 브랜치를 동시에 안전하고 독립적으로 편집할 수 있습니다.
 
-kmux는 브랜치 이름, 변경 사항(dirty state), 워크트리 해제 상태 등 생명주기를 완벽하게 추적하며, 커밋되지 않은 변경 사항이 남아있는 워크트리를 삭제하기 전에 확인 대화 상자를 띄워 작업물의 누락이나 유실을 철저하게 방지합니다.
+kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 전체 생명주기를 철저히 추적하므로 작업물이 유실되거나 분실되지 않습니다.
 
 </td>
 <td width="50%" valign="top">
@@ -102,13 +101,13 @@ kmux는 브랜치 이름, 변경 사항(dirty state), 워크트리 해제 상태
 
 <br>
 
-### 전문 터미널 수준의 모든 기능 내장
+### 🛠️ 전문 터미널 편의 기능
 
-- **분할 창(Split panes) 및 화면 탭(Surface tabs)** — 개발 서버, 로그, 에이전트 쉘을 하나의 화면에 유연하게 그룹화
-- **스마트 사이드바** — 워크스페이스별 `cwd`, git 브랜치, 활성 포트, 읽지 않은 알림 배지 자동 감지
-- **워크스페이스 영속성** — 앱 재실행 시 레이아웃 및 화면 상태 자동 복원
-- **명령 팔레트** (`⌘ ⇧ P`), 터미널 검색 (`⌘ F`), Vim 스타일의 단축키 복사 모드 지원
-- **네이티브 macOS UI** — 일체감 있는 타이틀바, 다크 모드 맞춤 디자인, Retina 최적화 터미널 렌더링
+- **분할 창(Split panes) 및 화면 탭(Surface tabs)** — 개발 서버, 로그, 에이전트 쉘을 단일 워크스페이스 내에서 편리하게 그룹화합니다.
+- **스마트 사이드바** — 현재 작업 디렉토리(`cwd`), git 브랜치, 활성 포트, 읽지 않은 알림 배지를 자동으로 감지합니다.
+- **워크스페이스 영속성** — 앱을 다시 실행하더라도 이전의 화면 레이아웃, 활성 탭, 작업 디렉토리를 그대로 복원합니다.
+- **Vim 단축키 복사 및 검색** — 터미널 문자 검색(`⌘ F`) 및 마우스 없이 키보드만으로 텍스트를 선택하고 복사할 수 있는 Vim 스타일 복사 모드를 지원합니다.
+- **명령 팔레트** — `⌘ ⇧ P` 단축키로 모든 터미널 작업과 커스텀 워크스페이스 명령을 빠르게 실행할 수 있습니다.
 
 <br>
 
@@ -118,27 +117,38 @@ kmux는 브랜치 이름, 변경 사항(dirty state), 워크트리 해제 상태
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Apple Silicon용 다운로드" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Intel Mac용 다운로드" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Linux x64용 다운로드" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
 </p>
+
+### macOS
 
 1. 사용 중인 Mac 사양에 맞는 버튼을 클릭합니다 (M1/M2/M3/M4 등 Apple Silicon 기기 → Apple Silicon, 구형 Intel Mac 기기 → Intel)
 2. 다운로드한 `.dmg` 파일을 열고 **kmux**를 `응용 프로그램(Applications)` 폴더로 끌어다 놓습니다.
 3. 최초 실행 시 macOS 보안 확인 팝업창이 뜨면 **열기**를 클릭해 진행합니다.
 
+### Linux
+
+1. Linux x64 AppImage를 다운로드합니다.
+2. 실행 권한을 부여합니다: `chmod +x kmux-linux-x64.AppImage`
+3. 실행합니다: `./kmux-linux-x64.AppImage`
+
 <br>
 
 ## 🏁 빠른 시작
 
-1. kmux를 실행하고 `⌘ N`을 눌러 첫 워크스페이스를 생성합니다.
-2. 터미널 창에서 원하는 에이전트(`claude`, `codex`, `gemini`, `agy` 중 하나)를 실행합니다.
-3. `⌘ B`를 눌러 사이드바를 열고 **Usage** 대시보드와 **Sessions** 목록을 확인합니다.
-4. `⌘ N`을 다시 눌러 새 에이전트를 독립된 워크스페이스에서 실행하거나, 동일한 리포지토리를 여러 에이전트가 참조할 경우 워크스페이스를 우클릭한 후 **Convert to Worktree Workspace**를 선택합니다.
-5. 에이전트가 입력을 기다리거나 작업을 완료하면 macOS 시스템 알림이 발송되고, 해당 워크스페이스 아이콘에 알림 배지가 표시됩니다.
+1. kmux를 실행하고 첫 워크스페이스를 생성합니다(macOS에서는 `⌘ N`).
+2. 터미널 창에서 로컬에 설치된 에이전트 CLI(`claude`, `codex`, `gemini`, `agy` 중 하나)를 실행합니다.
+   > 💡 **참고**: kmux는 사용자의 시스템에 설치되어 있는 에이전트 CLI를 그대로 실행합니다. 앱 자체에 별도의 API 키나 래퍼 설정을 요구하지 않습니다.
+3. 사이드바를 열고(macOS에서는 `⌘ B`) **Usage** 대시보드와 **Sessions** 목록을 확인합니다.
+4. 새 워크스페이스를 만들어 다른 에이전트를 실행하거나, 동일한 리포지토리를 여러 에이전트가 참조할 경우 워크스페이스를 우클릭한 후 **Convert to Worktree Workspace**를 선택합니다.
+5. 에이전트가 입력을 기다리거나 작업을 완료하면 네이티브 데스크톱 알림이 발송되고, 해당 워크스페이스 아이콘에 알림 배지가 표시됩니다.
 
 <br>
 
 ## ⌨️ 키보드 단축키
 
-> 모든 단축키는 명령 팔레트(`⌘ ⇧ P`)를 통해서도 바로 접근하여 실행할 수 있습니다.
+> 아래 단축키는 macOS 기본값입니다. Linux는 플랫폼별 텍스트 단축키를 사용하며, 모든 동작은 명령 팔레트에서도 사용할 수 있습니다.
 
 ### 워크스페이스 (Workspaces)
 
@@ -207,6 +217,6 @@ kmux는 브랜치 이름, 변경 사항(dirty state), 워크트리 해제 상태
 
 **kmux** — AI 코딩 에이전트를 나란히 편리하게 활용해보세요.
 
-<sub>macOS 전용 · 시험 버전 · 활발히 개발 중</sub>
+<sub>macOS + Linux · 시험 버전 · 활발히 개발 중</sub>
 
 </div>

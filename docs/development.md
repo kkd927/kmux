@@ -69,7 +69,7 @@ This now rebuilds `node-pty` only. Persistence uses JSON file stores under the k
 
 ## Release Signing
 
-Tagged desktop releases are signed and notarized in GitHub Actions.
+Tagged desktop releases are built in GitHub Actions. macOS assets are signed and notarized; Linux assets are packaged as AppImage artifacts.
 
 Required repository secrets:
 
