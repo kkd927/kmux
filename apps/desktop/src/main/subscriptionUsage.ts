@@ -63,6 +63,17 @@ type GeminiQuotaBucket = {
   resetTime?: string;
 };
 
+type CodeAssistTier = {
+  id?: string;
+  name?: string;
+};
+
+type CodeAssistLoadPayload = {
+  currentTier?: CodeAssistTier;
+  allowedTiers?: CodeAssistTier[];
+  cloudaicompanionProject?: string | { id?: string; projectId?: string };
+};
+
 type AntigravityCredentials = {
   access_token?: string;
   refresh_token?: string;
@@ -522,7 +533,8 @@ export async function fetchAntigravitySubscriptionUsage(
       },
       fetchImpl,
       now,
-      includeZeroUseRows: true
+      includeZeroUseRows: true,
+      allowAllowedTiersPlanFallback: true
     });
     if (usage) {
       return usage;
@@ -553,7 +565,8 @@ export async function fetchAntigravitySubscriptionUsage(
         },
         fetchImpl,
         now,
-        includeZeroUseRows: true
+        includeZeroUseRows: true,
+        allowAllowedTiersPlanFallback: true
       });
       if (usage) {
         return usage;
@@ -575,6 +588,7 @@ async function fetchCodeAssistQuotaUsage(options: {
   fetchImpl: FetchLike;
   now: () => number;
   includeZeroUseRows?: boolean;
+  allowAllowedTiersPlanFallback?: boolean;
 }): Promise<SubscriptionProviderUsageVm | null> {
   const loadCodeAssistResponse = await options.fetchImpl(
     `${options.endpointBaseUrl}/v1internal:loadCodeAssist`,
@@ -592,13 +606,23 @@ async function fetchCodeAssistQuotaUsage(options: {
   if (!loadCodeAssistResponse.ok) {
     return null;
   }
-  const loadCodeAssistPayload = (await loadCodeAssistResponse.json()) as {
-    currentTier?: { id?: string };
-    cloudaicompanionProject?: string | { id?: string; projectId?: string };
-  };
-  const tierId = loadCodeAssistPayload.currentTier?.id?.trim().toLowerCase();
+  const loadCodeAssistPayload =
+    (await loadCodeAssistResponse.json()) as CodeAssistLoadPayload;
+  const tierId = asTrimmedString(
+    loadCodeAssistPayload.currentTier?.id
+  )?.toLowerCase();
   const idTokenClaims = decodeJwtPayload(options.idToken);
-  const planLabel = normalizeGeminiPlanLabel(tierId, idTokenClaims.hd);
+  const currentTierPlanLabel = normalizeGeminiPlanLabel(
+    tierId,
+    idTokenClaims.hd
+  );
+  const planLabel =
+    currentTierPlanLabel ??
+    (!tierId && options.allowAllowedTiersPlanFallback === true
+      ? normalizeCodeAssistAllowedTiersPlanLabel(
+          loadCodeAssistPayload.allowedTiers
+        )
+      : null);
   if (!planLabel) {
     return null;
   }
@@ -1269,6 +1293,31 @@ function normalizeGeminiPlanLabel(
   }
   if (tierId === "free-tier" && hostedDomain) {
     return "Workspace";
+  }
+  return null;
+}
+
+function normalizeCodeAssistAllowedTiersPlanLabel(
+  allowedTiers: CodeAssistTier[] | undefined
+): string | null {
+  if (!Array.isArray(allowedTiers)) {
+    return null;
+  }
+  for (const tier of allowedTiers) {
+    const name = asTrimmedString(tier?.name);
+    if (name) {
+      return name;
+    }
+  }
+  const tierIds = allowedTiers.flatMap((tier) => {
+    const tierId = asTrimmedString(tier?.id)?.toLowerCase();
+    return tierId ? [tierId] : [];
+  });
+  if (
+    tierIds.length > 0 &&
+    tierIds.every((tierId) => tierId === "standard-tier")
+  ) {
+    return "Paid";
   }
   return null;
 }

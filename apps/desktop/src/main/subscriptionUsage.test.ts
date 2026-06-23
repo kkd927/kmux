@@ -1160,6 +1160,109 @@ describe("subscription usage fetchers", () => {
     );
   });
 
+  it("uses Antigravity allowed tiers as the AGY plan label from macOS keychain auth", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "agy-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            allowedTiers: [
+              {
+                id: "standard-tier",
+                name: "Gemini Code Assist"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-2.5-pro",
+                remainingFraction: 1,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              },
+              {
+                modelId: "gemini-2.5-flash",
+                remainingFraction: 1,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              },
+              {
+                modelId: "gemini-2.0-flash-lite",
+                remainingFraction: 1,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "darwin",
+      execFileImpl,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Gemini Code Assist",
+        rows: [
+          expect.objectContaining({
+            key: "pro",
+            label: "Pro",
+            usedPercent: 0
+          }),
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 0
+          }),
+          expect.objectContaining({
+            key: "flash-lite",
+            label: "Flash Lite",
+            usedPercent: 0
+          })
+        ]
+      })
+    );
+    expect(execFileImpl).toHaveBeenCalledWith("security", [
+      "find-generic-password",
+      "-s",
+      "gemini",
+      "-a",
+      "antigravity",
+      "-w"
+    ]);
+    const quotaRequest = fetchImpl.mock.calls[1]?.[1] as
+      | RequestInit
+      | undefined;
+    expect(JSON.parse(String(quotaRequest?.body))).toEqual({});
+  });
+
   it("reads Antigravity Linux keyring credentials for AGY quota rows", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
@@ -1228,6 +1331,138 @@ describe("subscription usage fetchers", () => {
     );
     expect(execFileImpl).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses Antigravity allowed tiers from Linux keyring auth without spawning security", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            allowedTiers: [
+              {
+                id: "standard-tier",
+                name: "Gemini Code Assist"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-3.5-flash",
+                remainingFraction: 0.15,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl,
+      antigravityKeyringReader: () =>
+        JSON.stringify({
+          token: {
+            access_token: "agy-linux-access-token",
+            token_type: "Bearer",
+            expiry: "2026-04-19T00:00:00.000Z"
+          },
+          auth_method: "consumer"
+        }),
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "AGY",
+        planLabel: "Gemini Code Assist",
+        rows: [
+          expect.objectContaining({
+            key: "flash",
+            label: "Flash",
+            usedPercent: 85
+          })
+        ]
+      })
+    );
+    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not use Antigravity allowed tiers when current tier is explicit free tier", async () => {
+    const homeDir = createSandboxHome();
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "unexpected",
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "free-tier"
+            },
+            allowedTiers: [
+              {
+                id: "standard-tier",
+                name: "Gemini Code Assist"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "gemini-3.5-flash",
+                remainingFraction: 0.15,
+                resetTime: "2026-04-19T00:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl,
+      antigravityKeyringReader: () =>
+        JSON.stringify({
+          token: {
+            access_token: "agy-linux-access-token",
+            token_type: "Bearer",
+            expiry: "2026-04-19T00:00:00.000Z"
+          },
+          auth_method: "consumer"
+        }),
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toBeNull();
+    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("does not relabel Gemini quota as Antigravity when AGY auth is unavailable", async () => {
