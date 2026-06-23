@@ -540,8 +540,8 @@ describe("usage runtime", () => {
     expect(runtime.getSnapshot().models).toEqual([
       expect.objectContaining({
         vendor: "antigravity",
-        modelId: "Gemini 3.5 Flash (Medium)",
-        modelLabel: "Gemini 3.5 Flash (Medium)",
+        modelId: "gemini-3.5-flash",
+        modelLabel: "gemini-3.5-flash",
         totalTokens: 2300,
         todayCostUsd: 0.0057,
         costSource: "estimated"
@@ -553,6 +553,67 @@ describe("usage runtime", () => {
         hasMissingPricing: false
       })
     );
+  });
+
+  it("aggregates Antigravity Gemini 3.5 Flash Medium and High samples into one top model row", async () => {
+    const state = createInitialState();
+    const adapter = new FakeUsageAdapter({
+      vendor: "antigravity",
+      initialReads: [
+        {
+          sourceCount: 1,
+          samples: [
+            buildSample({
+              vendor: "antigravity",
+              sourcePath: "/tmp/agy/medium.jsonl",
+              sessionId: "agy-session-medium",
+              threadId: "agy-session-medium",
+              model: "Gemini 3.5 Flash (Medium)",
+              inputTokens: 2_000,
+              outputTokens: 300,
+              totalTokens: 2_300,
+              estimatedCostUsd: 0.0057,
+              costSource: "estimated"
+            }),
+            buildSample({
+              vendor: "antigravity",
+              sourcePath: "/tmp/agy/high.jsonl",
+              sessionId: "agy-session-high",
+              threadId: "agy-session-high",
+              model: "Gemini 3.5 Flash (High)",
+              inputTokens: 1_400,
+              outputTokens: 300,
+              totalTokens: 1_700,
+              estimatedCostUsd: 0.0042,
+              costSource: "estimated"
+            })
+          ]
+        }
+      ]
+    });
+
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [adapter],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-06-02T02:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().models).toEqual([
+      expect.objectContaining({
+        vendor: "antigravity",
+        modelId: "gemini-3.5-flash",
+        modelLabel: "gemini-3.5-flash",
+        inputTokens: 3_400,
+        outputTokens: 600,
+        totalTokens: 4_000,
+        todayCostUsd: expect.closeTo(0.0099, 8),
+        costSource: "estimated"
+      })
+    ]);
   });
 
   it("replaces replayed usage samples when Antigravity metadata fills in attribution", async () => {
@@ -970,6 +1031,7 @@ describe("usage runtime", () => {
     expect(snapshot.models).toEqual([
       expect.objectContaining({
         modelId: "gemini-unknown-preview",
+        modelLabel: "gemini-unknown-preview",
         totalTokens: 900,
         todayCostUsd: 0,
         costSource: "partial"

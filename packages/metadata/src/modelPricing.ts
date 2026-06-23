@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 type SupportedVendor = "claude" | "codex" | "gemini";
+export type SupportedPricingVendor = SupportedVendor;
 
 const DEFAULT_TIERED_PRICING_THRESHOLD_TOKENS = 200_000;
 const FORWARD_COMPAT_POLICY_REVISION = 1;
@@ -341,6 +342,33 @@ const PRICING_LOOKUP = Object.fromEntries(
   })
 ) as Record<SupportedVendor, Map<string, PricingEntry>>;
 
+const CANONICAL_MODEL_LOOKUP = Object.fromEntries(
+  Object.entries(MODEL_PRICING).map(([vendor, entries]) => {
+    const lookup = new Map<string, PricingEntry>();
+    for (const entry of entries) {
+      lookup.set(normalizeCanonicalModelLookupKey(entry.modelId), entry);
+      for (const alias of entry.aliases ?? []) {
+        lookup.set(normalizeCanonicalModelLookupKey(alias), entry);
+      }
+    }
+    return [vendor, lookup];
+  })
+) as Record<SupportedVendor, Map<string, PricingEntry>>;
+
+export function resolveCanonicalModelId(params: {
+  vendor: SupportedPricingVendor;
+  model?: string;
+}): string | null {
+  if (!params.model?.trim()) {
+    return null;
+  }
+
+  const entry = CANONICAL_MODEL_LOOKUP[params.vendor].get(
+    normalizeCanonicalModelLookupKey(params.model)
+  );
+  return entry?.modelId ?? null;
+}
+
 type CodexForwardCompatSpec = {
   kind: "codex";
   major: number;
@@ -563,6 +591,10 @@ export function normalizeModelLookupKey(model: string): string {
   value = value.replace(/-preview-(\d{2}-\d{2}|\d{2}-\d{4})$/u, "-preview");
 
   return value;
+}
+
+function normalizeCanonicalModelLookupKey(model: string): string {
+  return model.trim().toLowerCase();
 }
 
 function resolvePricingEntry(

@@ -25,6 +25,7 @@ import {
   type AiCliProcessProbe,
   createUsageAdapters,
   estimateUsageComponentCosts,
+  resolveCanonicalModelId,
   scanUsageHistoryDays,
   shouldReplaceUsageSample,
   usageSampleIdentity,
@@ -2267,6 +2268,19 @@ function resolveModelUsageIdentity(
 ): { modelId: string; modelLabel: string } | null {
   if (!sample.model) {
     return null;
+  }
+  const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
+  const canonicalModelId = pricingVendor
+    ? resolveCanonicalModelId({
+        vendor: pricingVendor,
+        model: sample.model
+      })
+    : null;
+  if (canonicalModelId) {
+    return {
+      modelId: canonicalModelId,
+      modelLabel: canonicalModelId
+    };
   }
   return {
     modelId: sample.model,

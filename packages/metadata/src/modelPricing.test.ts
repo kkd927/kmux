@@ -1,8 +1,47 @@
 import { describe, expect, it } from "vitest";
 
-import { estimateUsageComponentCosts } from "./modelPricing";
+import {
+  estimateUsageComponentCosts,
+  resolveCanonicalModelId
+} from "./modelPricing";
 
 describe("model pricing", () => {
+  it.each([
+    ["Gemini 3.5 Flash (Medium)", "gemini-3.5-flash"],
+    ["Gemini 3.5 Flash (High)", "gemini-3.5-flash"],
+    ["gemini-3.5-flash-medium", "gemini-3.5-flash"],
+    ["gemini-3.1-pro-preview-customtools", "gemini-3.1-pro-preview"]
+  ])("canonicalizes confirmed Gemini model aliases: %s", (model, modelId) => {
+    expect(resolveCanonicalModelId({ vendor: "gemini", model })).toBe(modelId);
+  });
+
+  it("canonicalizes confirmed Claude dotted aliases", () => {
+    expect(
+      resolveCanonicalModelId({
+        vendor: "claude",
+        model: "claude-opus-4.8"
+      })
+    ).toBe("claude-opus-4-8");
+  });
+
+  it.each([
+    ["gemini", "Gemini 4.0"],
+    ["claude", "claude-tapdancer-6"],
+    ["codex", "gpt-hyper-6"],
+    ["codex", "gpt-5.6"],
+    ["claude", "claude-sonnet-4-7"],
+    ["gemini", "gemini-3.2-pro-preview-06-15"],
+    ["codex", "gpt-5.5-2026-01-01"],
+    ["gemini", "gemini-2.5-pro-20250605"],
+    ["gemini", "models/gemini-2.5-pro"],
+    ["codex", "openai.gpt-5.5"]
+  ] as const)(
+    "does not canonicalize unknown or fallback-only model IDs: %s %s",
+    (vendor, model) => {
+      expect(resolveCanonicalModelId({ vendor, model })).toBeNull();
+    }
+  );
+
   it("uses exact pricing for the latest published Codex model entries", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "codex",
