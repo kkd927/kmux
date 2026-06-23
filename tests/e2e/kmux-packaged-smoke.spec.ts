@@ -262,21 +262,17 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     const relaunched = await waitForView(
       relaunch.page,
       (view) =>
-        view.workspaceRows.some(
+        !view.workspaceRows.some(
           (row) => row.name === "packaged smoke workspace"
         ) &&
-        view.activeWorkspace.name === "packaged smoke workspace" &&
-        Object.keys(view.activeWorkspace.panes).length === 2 &&
-        Boolean(view.activeWorkspace.surfaces[activeSurfaceId]) &&
-        Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.title === "packaged hidden continuity"
-        ) &&
+        Object.keys(view.activeWorkspace.panes).length === 1 &&
+        Object.keys(view.activeWorkspace.surfaces).length === 1 &&
         view.settings.socketMode === "allowAll" &&
         view.activeWorkspace.surfaces[
           view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
             .activeSurfaceId
         ]?.sessionState === "running",
-      "packaged relaunch should restore workspace continuity while preserving persisted settings",
+      "packaged relaunch should keep settings but start with a fresh workspace",
       15_000
     );
 
@@ -284,9 +280,10 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       relaunched.workspaceRows.some(
         (row) => row.name === "packaged smoke workspace"
       )
-    ).toBe(true);
-    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(2);
-    expect(relaunched.activeWorkspace.surfaces[activeSurfaceId]).toBeDefined();
+    ).toBe(false);
+    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(1);
+    expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(1);
+    expect(relaunched.activeWorkspace.surfaces[activeSurfaceId]).toBeUndefined();
     const relaunchedSurfaceId =
       relaunched.activeWorkspace.panes[relaunched.activeWorkspace.activePaneId]
         .activeSurfaceId;

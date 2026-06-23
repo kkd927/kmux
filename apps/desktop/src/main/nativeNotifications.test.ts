@@ -227,4 +227,79 @@ describe("native notification identity", () => {
       rmSync(sandboxDir, { recursive: true, force: true });
     }
   });
+
+  it("logs Electron notification failed events registered before show", () => {
+    const sandboxDir = mkdtempSync(join(tmpdir(), "kmux-notification-test-"));
+    const logPath = join(sandboxDir, "diagnostics.log");
+    const previousLogPath = process.env[DIAGNOSTICS_LOG_PATH_ENV];
+    const onError = vi.fn();
+
+    class EventFailingNotification {
+      private failedListener:
+        | ((event: unknown, error: string) => void)
+        | undefined;
+
+      static isSupported(): boolean {
+        return true;
+      }
+
+      constructor(_options: Electron.NotificationConstructorOptions) {}
+
+      once(
+        event: "failed",
+        listener: (event: unknown, error: string) => void
+      ): this {
+        if (event === "failed") {
+          this.failedListener = listener;
+        }
+        return this;
+      }
+
+      show(): void {
+        this.failedListener?.(
+          {},
+          "UNNotification requires a code-signed application"
+        );
+      }
+    }
+
+    process.env[DIAGNOSTICS_LOG_PATH_ENV] = logPath;
+    try {
+      expect(
+        showNativeNotification(
+          {
+            title: "Codex finished",
+            body: "Ready for review"
+          },
+          createNativeNotificationIdentity({
+            appId: "dev.kmux.desktop",
+            appName: "kmux"
+          }),
+          {
+            notificationApi: EventFailingNotification,
+            diagnosticsScope: "test.native-notification.failed-event",
+            onError
+          }
+        )
+      ).toBe(true);
+
+      expect(onError).toHaveBeenCalledWith(
+        "UNNotification requires a code-signed application"
+      );
+      const contents = readFileSync(logPath, "utf8");
+      expect(contents).toContain(
+        '"scope":"test.native-notification.failed-event"'
+      );
+      expect(contents).toContain(
+        "UNNotification requires a code-signed application"
+      );
+    } finally {
+      if (typeof previousLogPath === "string") {
+        process.env[DIAGNOSTICS_LOG_PATH_ENV] = previousLogPath;
+      } else {
+        delete process.env[DIAGNOSTICS_LOG_PATH_ENV];
+      }
+      rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  });
 });

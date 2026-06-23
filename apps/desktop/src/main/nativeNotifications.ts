@@ -16,9 +16,23 @@ export interface NativeNotificationPayload {
   body: string;
 }
 
+export interface NativeNotificationInstance {
+  show(): void;
+  on?: (
+    event: "failed",
+    listener: (event: unknown, error: string) => void
+  ) => unknown;
+  once?: (
+    event: "failed",
+    listener: (event: unknown, error: string) => void
+  ) => unknown;
+}
+
 export interface NativeNotificationApi {
   isSupported?: () => boolean;
-  new (options: Electron.NotificationConstructorOptions): { show(): void };
+  new (
+    options: Electron.NotificationConstructorOptions
+  ): NativeNotificationInstance;
 }
 
 export interface NativeNotificationShowOptions {
@@ -90,13 +104,37 @@ export function showNativeNotification(
       );
       return false;
     }
-    new notificationApi(createNativeNotificationOptions(payload, identity)).show();
+    const notification = new notificationApi(
+      createNativeNotificationOptions(payload, identity)
+    );
+    listenForNativeNotificationFailed(notification, payload, identity, options);
+    notification.show();
     return true;
   } catch (error) {
     reportNativeNotificationError(options, error);
     logNativeNotificationFailure(payload, identity, options, error);
     return false;
   }
+}
+
+function listenForNativeNotificationFailed(
+  notification: NativeNotificationInstance,
+  payload: NativeNotificationPayload,
+  identity: NativeNotificationIdentity,
+  options: NativeNotificationShowOptions
+): void {
+  const listener = (_event: unknown, error: string): void => {
+    const failure =
+      error.trim().length > 0 ? error : "native notification failed";
+    reportNativeNotificationError(options, failure);
+    logNativeNotificationFailure(payload, identity, options, failure);
+  };
+
+  if (typeof notification.once === "function") {
+    notification.once("failed", listener);
+    return;
+  }
+  notification.on?.("failed", listener);
 }
 
 function reportNativeNotificationError(
@@ -119,13 +157,16 @@ function logNativeNotificationFailure(
   options: NativeNotificationShowOptions,
   error: unknown
 ): void {
-  logDiagnostics(options.diagnosticsScope ?? "main.native-notification.failed", {
-    ...options.diagnosticsDetails,
-    title: payload.title,
-    bodyLength: payload.body.length,
-    ...formatNativeNotificationIdentityDiagnostics(identity),
-    error: formatNativeNotificationError(error)
-  });
+  logDiagnostics(
+    options.diagnosticsScope ?? "main.native-notification.failed",
+    {
+      ...options.diagnosticsDetails,
+      title: payload.title,
+      bodyLength: payload.body.length,
+      ...formatNativeNotificationIdentityDiagnostics(identity),
+      error: formatNativeNotificationError(error)
+    }
+  );
 }
 
 function formatNativeNotificationIdentityDiagnostics(

@@ -138,6 +138,23 @@ async function clickTerminalTextLink(
     { targetSurfaceId: surfaceId, targetText: text, terminalCols: cols }
   );
 
+  await page.mouse.move(point.x, point.y);
+  await page.waitForFunction(
+    ({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return Boolean(element?.closest(".xterm-screen, .xterm"));
+    },
+    point,
+    { timeout: 2000 }
+  );
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve());
+        });
+      })
+  );
   await page.mouse.click(point.x, point.y);
 }
 

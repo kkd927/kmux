@@ -30,7 +30,8 @@ The dev launcher uses a repo-local profile by default:
 ```
 
 This keeps local development from reading or writing the installed app's
-`~/.config/kmux` workspace snapshot. Override `KMUX_CONFIG_DIR` or
+workspace snapshot or runtime socket, even when `npm run dev` is launched from
+inside an installed kmux terminal. Override `KMUX_CONFIG_DIR` or
 `KMUX_RUNTIME_DIR` when you intentionally want a different profile. Blank or
 whitespace-only overrides are ignored, and nonblank values are trimmed before
 being passed to the desktop app.

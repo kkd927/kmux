@@ -414,6 +414,80 @@ describe("TerminalPane visibility cleanup", () => {
     );
   });
 
+  it("stops stale focus retries after the active surface changes", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    const animationFrames: FrameRequestCallback[] = [];
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback): number => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
+    const textareaFocusSpy = vi
+      .spyOn(HTMLTextAreaElement.prototype, "focus")
+      .mockImplementation(() => {});
+
+    try {
+      await act(async () => {
+        root.render(<TerminalPane {...props} />);
+        await flushMicrotasks();
+      });
+
+      const firstTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | {
+            focus: ReturnType<typeof vi.fn>;
+            textarea: HTMLTextAreaElement;
+          }
+        | undefined;
+      expect(firstTerminal).toBeDefined();
+      expect(firstTerminal?.focus).toHaveBeenCalled();
+      expect(animationFrames.length).toBeGreaterThan(0);
+
+      textareaFocusSpy.mockRestore();
+      await act(async () => {
+        root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+        await flushMicrotasks();
+      });
+
+      const secondTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | {
+            focus: ReturnType<typeof vi.fn>;
+            textarea: HTMLTextAreaElement;
+          }
+        | undefined;
+      expect(secondTerminal).toBeDefined();
+      expect(document.activeElement).toBe(secondTerminal?.textarea);
+      const firstFocusCallsBeforeRetry = firstTerminal!.focus.mock.calls.length;
+      const secondFocusCallsBeforeRetry =
+        secondTerminal!.focus.mock.calls.length;
+
+      await act(async () => {
+        for (const callback of animationFrames.splice(0)) {
+          callback(performance.now());
+        }
+        await flushMicrotasks();
+      });
+
+      expect(firstTerminal?.focus).toHaveBeenCalledTimes(
+        firstFocusCallsBeforeRetry
+      );
+      expect(secondTerminal?.focus).toHaveBeenCalledTimes(
+        secondFocusCallsBeforeRetry
+      );
+      expect(document.activeElement).toBe(secondTerminal?.textarea);
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+      cancelAnimationFrameSpy.mockRestore();
+      textareaFocusSpy.mockRestore();
+    }
+  });
+
   it("keeps a moved surface attached when another pane reuses it", async () => {
     const firstSurface = createSurface("surface_1");
     const secondSurface = createSurface("surface_2");

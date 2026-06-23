@@ -115,7 +115,7 @@ export async function showQuitConfirmationDialog(
     cancelId: 1,
     message: "Quit kmux?",
     detail:
-      "This will close all kmux windows and stop background services. Your workspaces will be restored on the next launch.",
+      "This will close all kmux windows and stop background services. The next launch starts fresh; crash recovery restores interrupted workspaces.",
     checkboxLabel: "Don't warn again for Cmd+Q",
     checkboxChecked: false,
     normalizeAccessKeys: true

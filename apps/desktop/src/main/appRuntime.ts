@@ -558,7 +558,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const settings = migrateRuntimeShortcutDefaults(
       options.settingsStore.load() ?? createRuntimeDefaultSettings()
     );
-    const shouldRestoreSnapshot = snapshot !== null;
+    const shouldRestoreSnapshot =
+      snapshot !== null && snapshotRecord?.cleanShutdown !== true;
     const initial = shouldRestoreSnapshot
       ? cloneState(snapshot)
       : createInitialState(options.defaultShellPath);
@@ -578,7 +579,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
 
     const activeWindow = initial.windows[initial.activeWindowId];
+    const persistedSidebarVisible = savedWindowState?.sidebarVisible;
     const persistedSidebarWidth = savedWindowState?.sidebarWidth;
+    if (activeWindow && typeof persistedSidebarVisible === "boolean") {
+      activeWindow.sidebarVisible = persistedSidebarVisible;
+    }
     if (
       activeWindow &&
       typeof persistedSidebarWidth === "number" &&
@@ -794,7 +799,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      const shutdownSnapshot = createShutdownSnapshot(store.getState());
+      const shutdownSnapshot = createCleanShutdownSnapshot(
+        store.getState(),
+        options.defaultShellPath
+      );
       options.snapshotStore.save(shutdownSnapshot, {
         cleanShutdown: true
       });
@@ -885,10 +893,16 @@ function clearSnapshotNotifications(state: AppState): void {
   }
 }
 
-function createShutdownSnapshot(currentState: AppState): AppState {
-  const snapshot = cloneState(currentState);
-  clearSnapshotNotifications(snapshot);
-  return snapshot;
+function createCleanShutdownSnapshot(
+  currentState: AppState,
+  defaultShellPath: string
+): AppState {
+  const cleanState = createInitialState(defaultShellPath);
+  cleanState.settings = mergeSettings(
+    cleanState.settings,
+    currentState.settings
+  );
+  return cleanState;
 }
 
 type ShellGroup =

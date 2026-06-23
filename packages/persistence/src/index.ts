@@ -95,6 +95,7 @@ export interface PersistedWindowState {
   x?: number;
   y?: number;
   maximized: boolean;
+  sidebarVisible?: boolean;
   sidebarWidth?: number;
 }
 

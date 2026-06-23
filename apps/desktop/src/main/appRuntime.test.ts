@@ -16,6 +16,7 @@ import type {
   KmuxSettings,
   ShellPatch
 } from "@kmux/proto";
+import type { PersistedWindowState } from "@kmux/persistence";
 
 const { beep, browserWindows, showNotification, showNotificationFailure } =
   vi.hoisted(() => ({
@@ -64,6 +65,7 @@ function createRuntime(
   options: {
     snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null;
     settings?: KmuxSettings | null;
+    windowState?: PersistedWindowState | null;
   } & Partial<AppRuntimeOptions> = {}
 ) {
   const initialState = createInitialState("/bin/zsh");
@@ -101,7 +103,7 @@ function createRuntime(
     },
     windowStateStore: {
       path: "/tmp/kmux-window.json",
-      load: () => null,
+      load: () => options.windowState ?? null,
       save: vi.fn()
     },
     settingsStore: {
@@ -582,7 +584,7 @@ describe("app runtime restore", () => {
     ).toBe(false);
   });
 
-  it("restores workspace continuity from clean-shutdown snapshots", () => {
+  it("starts fresh instead of restoring a clean-shutdown snapshot", () => {
     const snapshot = createInitialState("/bin/zsh");
 
     applyAction(snapshot, {
@@ -602,13 +604,49 @@ describe("app runtime restore", () => {
 
     const restored = runtime.restoreInitialState();
 
-    expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
-    expect(restored.windows[restored.activeWindowId]?.workspaceOrder).toContain(
-      restoredWorkspaceId
-    );
+    expect(Object.keys(restored.workspaces)).toHaveLength(1);
+    expect(Object.keys(restored.panes)).toHaveLength(1);
+    expect(Object.keys(restored.surfaces)).toHaveLength(1);
+    expect(restored.workspaces[restoredWorkspaceId]).toBeUndefined();
+    expect(
+      restored.windows[restored.activeWindowId]?.workspaceOrder
+    ).toHaveLength(1);
   });
 
-  it("sanitizes restored session runtime state from clean-shutdown snapshots", () => {
+  it("restores window chrome state separately from clean-shutdown workspace snapshots", () => {
+    const snapshot = createInitialState("/bin/zsh");
+
+    applyAction(snapshot, {
+      type: "workspace.create",
+      name: "project"
+    });
+
+    const restoredWorkspaceId =
+      snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
+
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true
+      },
+      windowState: {
+        width: 1200,
+        height: 900,
+        maximized: false,
+        sidebarVisible: false,
+        sidebarWidth: 360
+      }
+    });
+
+    const restored = runtime.restoreInitialState();
+    const restoredWindow = restored.windows[restored.activeWindowId];
+
+    expect(restored.workspaces[restoredWorkspaceId]).toBeUndefined();
+    expect(restoredWindow?.sidebarVisible).toBe(false);
+    expect(restoredWindow?.sidebarWidth).toBe(360);
+  });
+
+  it("sanitizes restored session runtime state from unclean snapshots", () => {
     const snapshot = createInitialState("/bin/zsh");
 
     applyAction(snapshot, {
@@ -641,7 +679,7 @@ describe("app runtime restore", () => {
     const runtime = createRuntime(false, {
       snapshotRecord: {
         snapshot,
-        cleanShutdown: true
+        cleanShutdown: false
       }
     });
 
@@ -694,7 +732,7 @@ describe("app runtime restore", () => {
     );
   });
 
-  it("preserves workspace continuity on clean shutdown", () => {
+  it("resets workspaces and tabs to a fresh session on clean shutdown", () => {
     const runtime = createRuntime(false);
     const state = runtime.getState();
     const initialWorkspaceId = Object.keys(state.workspaces)[0]!;
@@ -720,16 +758,14 @@ describe("app runtime restore", () => {
       runtime.__test__.snapshotSave.mock.lastCall ?? [];
 
     expect(saveOptions).toEqual({ cleanShutdown: true });
-    expect(Object.keys(savedSnapshot.workspaces)).toHaveLength(2);
-    expect(Object.keys(savedSnapshot.panes)).toHaveLength(2);
-    expect(Object.keys(savedSnapshot.surfaces)).toHaveLength(3);
-    expect(Object.keys(savedSnapshot.sessions)).toHaveLength(3);
+    expect(Object.keys(savedSnapshot.workspaces)).toHaveLength(1);
+    expect(Object.keys(savedSnapshot.panes)).toHaveLength(1);
+    expect(Object.keys(savedSnapshot.surfaces)).toHaveLength(1);
+    expect(Object.keys(savedSnapshot.sessions)).toHaveLength(1);
     expect(
       savedSnapshot.windows[savedSnapshot.activeWindowId]?.workspaceOrder
-    ).toContain(initialWorkspaceId);
-    expect(Object.values(savedSnapshot.workspaces)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: "project" })])
-    );
+    ).toHaveLength(1);
+    expect(savedSnapshot.workspaces[initialWorkspaceId]).toBeUndefined();
   });
 });
 

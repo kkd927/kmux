@@ -56,9 +56,25 @@ async function focusActiveTerminalInput(page: Page): Promise<void> {
   await terminalInputForSurface(page, activePane.activeSurfaceId).focus();
 }
 
-async function typeTerminalCommand(page: Page, command: string): Promise<void> {
-  await page.keyboard.type(command, { delay: 2 });
+async function typeTerminalCommand(
+  page: Page,
+  command: string,
+  options: { delay?: number } = {}
+): Promise<void> {
+  await page.keyboard.type(command, { delay: options.delay ?? 2 });
   await page.keyboard.press("Enter");
+}
+
+async function sendTerminalCommand(
+  page: Page,
+  surfaceId: string,
+  command: string
+): Promise<void> {
+  await page.evaluate(
+    ({ targetSurfaceId, text }) =>
+      window.kmux.sendText(targetSurfaceId, `${text}\r`),
+    { targetSurfaceId: surfaceId, text: command }
+  );
 }
 
 test("command palette supports a keyboard-only flow", async () => {
@@ -527,7 +543,7 @@ test("surface index shortcuts traverse workspace tabs across split panes without
         terminalInputForSurface(page, target.surfaceId)
       ).toBeFocused();
       const marker = `kmux_surface_index_forward_${index}`;
-      await typeTerminalCommand(page, `echo ${marker}`);
+      await sendTerminalCommand(page, target.surfaceId, `echo ${marker}`);
       await waitForSurfaceSnapshotContains(
         page,
         target.surfaceId,
@@ -552,7 +568,7 @@ test("surface index shortcuts traverse workspace tabs across split panes without
         terminalInputForSurface(page, target.surfaceId)
       ).toBeFocused();
       const marker = `kmux_surface_index_backward_${index}`;
-      await typeTerminalCommand(page, `echo ${marker}`);
+      await sendTerminalCommand(page, target.surfaceId, `echo ${marker}`);
       await waitForSurfaceSnapshotContains(
         page,
         target.surfaceId,
@@ -560,6 +576,55 @@ test("surface index shortcuts traverse workspace tabs across split panes without
         10_000
       );
     }
+
+    const realKeyboardForwardTarget = shortcutTargets[1];
+    await page.keyboard.press("Control+2");
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.activePaneId === realKeyboardForwardTarget.paneId &&
+        view.activeWorkspace.panes[realKeyboardForwardTarget.paneId]
+          .activeSurfaceId === realKeyboardForwardTarget.surfaceId,
+      "Control+2 should focus the forward real-keyboard target"
+    );
+    await expect(
+      terminalInputForSurface(page, realKeyboardForwardTarget.surfaceId)
+    ).toBeFocused();
+    const realKeyboardForwardMarker = "kmux_real_fwd";
+    await typeTerminalCommand(page, `echo ${realKeyboardForwardMarker}`, {
+      delay: 25
+    });
+    await waitForSurfaceSnapshotContains(
+      page,
+      realKeyboardForwardTarget.surfaceId,
+      realKeyboardForwardMarker,
+      10_000
+    );
+
+    const realKeyboardBackwardTarget = shortcutTargets[0];
+    await page.keyboard.press("Control+1");
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.activePaneId ===
+          realKeyboardBackwardTarget.paneId &&
+        view.activeWorkspace.panes[realKeyboardBackwardTarget.paneId]
+          .activeSurfaceId === realKeyboardBackwardTarget.surfaceId,
+      "Control+1 should focus the backward real-keyboard target"
+    );
+    await expect(
+      terminalInputForSurface(page, realKeyboardBackwardTarget.surfaceId)
+    ).toBeFocused();
+    const realKeyboardBackwardMarker = "kmux_real_bwd";
+    await typeTerminalCommand(page, `echo ${realKeyboardBackwardMarker}`, {
+      delay: 25
+    });
+    await waitForSurfaceSnapshotContains(
+      page,
+      realKeyboardBackwardTarget.surfaceId,
+      realKeyboardBackwardMarker,
+      10_000
+    );
 
     const afterShortcutTraversal = await getView(page);
     expect(

@@ -489,17 +489,28 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }
 
-  function focusTerminalInput(): void {
+  function focusTerminalInput(
+    surfaceId = activeSurfaceRef.current?.id ?? null
+  ): void {
     const focusActiveTerminal = (remainingAttempts: number): void => {
-      if (isEditingOutsideTerminal()) {
+      if (!surfaceId || !shouldFocusActiveTerminal(surfaceId)) {
         return;
       }
       const terminal = terminalRef.current;
       const textarea = terminal?.textarea ?? null;
+      if (!terminal || !textarea) {
+        if (remainingAttempts <= 0) {
+          return;
+        }
+        requestAnimationFrame(() => {
+          focusActiveTerminal(remainingAttempts - 1);
+        });
+        return;
+      }
       window.focus();
-      terminal?.focus();
-      textarea?.focus({ preventScroll: true });
-      if (remainingAttempts <= 0) {
+      terminal.focus();
+      textarea.focus({ preventScroll: true });
+      if (remainingAttempts <= 0 || document.activeElement === textarea) {
         return;
       }
       requestAnimationFrame(() => {

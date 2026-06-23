@@ -26,6 +26,7 @@ interface CreateMainWindowOptions {
 interface PersistWindowStateOptions {
   windowStateStore: WindowStateFileStore;
   window: BrowserWindow;
+  getSidebarVisible: () => boolean | undefined;
   getSidebarWidth: () => number | undefined;
 }
 
@@ -159,6 +160,7 @@ export function persistWindowState(options: PersistWindowStateOptions): void {
     x: bounds.x,
     y: bounds.y,
     maximized: options.window.isMaximized(),
+    sidebarVisible: options.getSidebarVisible(),
     sidebarWidth: options.getSidebarWidth() ?? DEFAULT_SIDEBAR_WIDTH
   });
 }

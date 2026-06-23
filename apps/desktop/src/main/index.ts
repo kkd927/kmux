@@ -101,8 +101,10 @@ import {
   createNativeNotificationIdentity,
   resolveNotificationIconPath
 } from "./nativeNotifications";
+import { configureElectronUserDataDir } from "./electronUserData";
 
 const paths = defaultAppPaths(homedir(), process.env);
+configureElectronUserDataDir({ app });
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
 let ptyHost: PtyHostManager | null = null;
@@ -281,6 +283,10 @@ async function bootstrap(): Promise<void> {
       persistWindowState({
         windowStateStore,
         window,
+        getSidebarVisible: () => {
+          const state = runtime.getState();
+          return state.windows[state.activeWindowId]?.sidebarVisible;
+        },
         getSidebarWidth: () => {
           const state = runtime.getState();
           return state.windows[state.activeWindowId]?.sidebarWidth;
@@ -520,6 +526,10 @@ async function bootstrap(): Promise<void> {
         persistWindowState({
           windowStateStore,
           window: closingWindow,
+          getSidebarVisible: () => {
+            const state = runtime.getState();
+            return state.windows[state.activeWindowId]?.sidebarVisible;
+          },
           getSidebarWidth: () => {
             const state = runtime.getState();
             return state.windows[state.activeWindowId]?.sidebarWidth;

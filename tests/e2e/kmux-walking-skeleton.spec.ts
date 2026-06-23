@@ -20,8 +20,7 @@ function shellQuote(value: string): string {
 
 function isUsableCellMetrics(metrics: TerminalCellMetrics): boolean {
   return (
-    (metrics.fontStatus === "loaded" ||
-      metrics.fontStatus === "unsupported") &&
+    (metrics.fontStatus === "loaded" || metrics.fontStatus === "unsupported") &&
     metrics.terminalCols !== null &&
     metrics.terminalRows !== null &&
     metrics.terminalCols > 20 &&
@@ -36,33 +35,53 @@ function isUsableCellMetrics(metrics: TerminalCellMetrics): boolean {
   );
 }
 
-async function waitForUsableCellMetrics(
+async function waitForCellMetricsSnapshotSync(
   page: Page,
   surfaceId: string,
   message: string,
   predicate: (metrics: TerminalCellMetrics) => boolean = () => true,
   timeoutMs = 5000
-): Promise<TerminalCellMetrics> {
+): Promise<{
+  metrics: TerminalCellMetrics;
+  snapshot: SurfaceSnapshotPayload;
+}> {
   const startTime = Date.now();
-  let lastMetrics: TerminalCellMetrics | string | null = null;
+  let lastState: {
+    metrics: TerminalCellMetrics | null;
+    snapshot: SurfaceSnapshotPayload | null;
+    error: string | null;
+  } | null = null;
 
   while (Date.now() - startTime < timeoutMs) {
     try {
       const metrics = await getTerminalCellMetrics(page, surfaceId);
-      lastMetrics = metrics;
-      if (isUsableCellMetrics(metrics) && predicate(metrics)) {
-        return metrics;
+      const snapshot = await getSurfaceSnapshot(page, surfaceId, {
+        settleForMs: 200,
+        timeoutMs: 3000
+      });
+      lastState = { metrics, snapshot, error: null };
+      if (
+        snapshot &&
+        isUsableCellMetrics(metrics) &&
+        predicate(metrics) &&
+        metrics.terminalCols === snapshot.cols &&
+        metrics.terminalRows === snapshot.rows &&
+        metrics.visibleRowCount === snapshot.rows
+      ) {
+        return { metrics, snapshot };
       }
     } catch (error) {
-      lastMetrics = error instanceof Error ? error.message : String(error);
+      lastState = {
+        metrics: null,
+        snapshot: null,
+        error: error instanceof Error ? error.message : String(error)
+      };
     }
     await page.waitForTimeout(100);
   }
 
   throw new Error(
-    `${message}; timeout=${timeoutMs}ms; lastMetrics=${JSON.stringify(
-      lastMetrics
-    )}`
+    `${message}; timeout=${timeoutMs}ms; lastState=${JSON.stringify(lastState)}`
   );
 }
 
@@ -77,7 +96,9 @@ function expectCellMetricsToMatchSnapshot(
     metrics.cellHeight === null ||
     metrics.averageRowHeight === null
   ) {
-    throw new Error(`terminal cell metrics incomplete: ${JSON.stringify(metrics)}`);
+    throw new Error(
+      `terminal cell metrics incomplete: ${JSON.stringify(metrics)}`
+    );
   }
 
   expect(snapshot).not.toBeNull();
@@ -86,9 +107,9 @@ function expectCellMetricsToMatchSnapshot(
   expect(metrics.visibleRowCount).toBe(snapshot?.rows);
   expect(metrics.cellWidth).toBeLessThan(40);
   expect(metrics.cellHeight).toBeLessThan(50);
-  expect(Math.abs(metrics.averageRowHeight - metrics.cellHeight)).toBeLessThanOrEqual(
-    2
-  );
+  expect(
+    Math.abs(metrics.averageRowHeight - metrics.cellHeight)
+  ).toBeLessThanOrEqual(2);
   expect(metrics.maxRowHeightDelta).toBeLessThanOrEqual(2);
 }
 
@@ -165,7 +186,9 @@ test("walking skeleton verifies platform descriptor, socket identity, and pty ho
       "__KMUX_WALKING_ENV_OK__",
       10_000
     );
-    expect(snapshotText).toContain(`__KMUX_SOCKET_PATH:${sandbox.socketPath}__`);
+    expect(snapshotText).toContain(
+      `__KMUX_SOCKET_PATH:${sandbox.socketPath}__`
+    );
     expect(snapshotText).toContain("__KMUX_AGENT_BIN_PRESENT__");
     expect(snapshotText).toContain("__KMUX_NODE_PRESENT__");
   } finally {
@@ -200,21 +223,23 @@ test("walking skeleton verifies terminal cell metrics through foreground resize"
         text: `printf ${shellQuote(`${initialMarker}\\n`)}\r`
       }
     );
-    await waitForSurfaceSnapshotContains(page, surfaceId, initialMarker, 10_000);
+    await waitForSurfaceSnapshotContains(
+      page,
+      surfaceId,
+      initialMarker,
+      10_000
+    );
 
-    const beforeMetrics = await waitForUsableCellMetrics(
+    const beforeState = await waitForCellMetricsSnapshotSync(
       page,
       surfaceId,
       "terminal cell metrics should settle before foreground resize"
     );
-    const beforeSnapshot = await getSurfaceSnapshot(page, surfaceId, {
-      settleForMs: 200,
-      timeoutMs: 3000
-    });
-    expectCellMetricsToMatchSnapshot(beforeMetrics, beforeSnapshot);
+    const beforeMetrics = beforeState.metrics;
+    expectCellMetricsToMatchSnapshot(beforeMetrics, beforeState.snapshot);
 
     await page.setViewportSize({ width: 1280, height: 860 });
-    const afterMetrics = await waitForUsableCellMetrics(
+    const afterState = await waitForCellMetricsSnapshotSync(
       page,
       surfaceId,
       "terminal cell metrics should settle after foreground resize",
@@ -223,6 +248,8 @@ test("walking skeleton verifies terminal cell metrics through foreground resize"
         (metrics.terminalCols !== beforeMetrics.terminalCols ||
           metrics.terminalRows !== beforeMetrics.terminalRows)
     );
+    const afterMetrics = afterState.metrics;
+    expectCellMetricsToMatchSnapshot(afterMetrics, afterState.snapshot);
     const resizedMarker = `KMUX_WALKING_METRICS_RESIZED_${Date.now()}`;
     await page.evaluate(
       ({ targetSurfaceId, text }) =>
@@ -232,13 +259,13 @@ test("walking skeleton verifies terminal cell metrics through foreground resize"
         text: `printf ${shellQuote(`${resizedMarker}\\n`)}\r`
       }
     );
-    await waitForSurfaceSnapshotContains(page, surfaceId, resizedMarker, 10_000);
+    await waitForSurfaceSnapshotContains(
+      page,
+      surfaceId,
+      resizedMarker,
+      10_000
+    );
 
-    const afterSnapshot = await getSurfaceSnapshot(page, surfaceId, {
-      settleForMs: 200,
-      timeoutMs: 3000
-    });
-    expectCellMetricsToMatchSnapshot(afterMetrics, afterSnapshot);
     await expect(
       page.locator(`[data-active-surface-id="${surfaceId}"] .xterm-rows`)
     ).toContainText(resizedMarker);

@@ -81,6 +81,7 @@ describe("file-store persistence", () => {
       x: 20,
       y: 30,
       maximized: false,
+      sidebarVisible: false,
       sidebarWidth: 280
     };
 
