@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { SurfaceChunkPayload } from "@kmux/proto";
 import { OutputBatcher } from "./outputBatcher";
 
 describe("OutputBatcher", () => {
@@ -125,6 +126,78 @@ describe("OutputBatcher", () => {
         }
       ],
       chunk: "pending"
+    });
+  });
+
+  it("preserves cwd for each coalesced segment with the same cwd", () => {
+    const flushed: SurfaceChunkPayload[] = [];
+    const batcher = new OutputBatcher({
+      flushMs: 1000,
+      maxBatchBytes: 1024,
+      onFlush: (payload) => flushed.push(payload)
+    });
+
+    batcher.push({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      sequence: 1,
+      chunk: "src/App",
+      cwd: "/repo/a"
+    });
+    batcher.push({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      sequence: 2,
+      chunk: ".tsx\n",
+      cwd: "/repo/a"
+    });
+    batcher.flush("session_1");
+
+    expect(flushed[0]).toMatchObject({
+      cwd: "/repo/a",
+      segments: [
+        { sequence: 1, length: "src/App".length, cwd: "/repo/a" },
+        { sequence: 2, length: ".tsx\n".length, cwd: "/repo/a" }
+      ]
+    });
+  });
+
+  it("flushes before coalescing output from a different cwd", () => {
+    vi.useFakeTimers();
+    const flushed: SurfaceChunkPayload[] = [];
+    const batcher = new OutputBatcher({
+      flushMs: 1000,
+      maxBatchBytes: 1024,
+      onFlush: (payload) => flushed.push(payload)
+    });
+
+    batcher.push({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      sequence: 1,
+      chunk: "src/a.ts\n",
+      cwd: "/repo/a"
+    });
+    batcher.push({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      sequence: 2,
+      chunk: "src/b.ts\n",
+      cwd: "/repo/b"
+    });
+
+    expect(flushed).toHaveLength(1);
+    expect(flushed[0]).toMatchObject({
+      cwd: "/repo/a",
+      segments: [{ sequence: 1, length: "src/a.ts\n".length, cwd: "/repo/a" }],
+      chunk: "src/a.ts\n"
+    });
+
+    batcher.flush("session_1");
+    expect(flushed[1]).toMatchObject({
+      cwd: "/repo/b",
+      segments: [{ sequence: 2, length: "src/b.ts\n".length, cwd: "/repo/b" }],
+      chunk: "src/b.ts\n"
     });
   });
 

@@ -970,6 +970,7 @@ export function createTerminalBridge(
       fromSequence: segments[0].sequence,
       sequence: segments[segments.length - 1].sequence,
       chunk: payload.chunk.slice(trimOffset),
+      cwd: segments[segments.length - 1].cwd ?? payload.cwd,
       segments
     };
   }

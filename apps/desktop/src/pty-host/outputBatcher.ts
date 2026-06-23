@@ -12,6 +12,7 @@ interface PendingOutputBatch {
   fromSequence: number;
   sequence: number;
   chunk: string;
+  cwd?: string;
   segments: SurfaceChunkSegment[];
   bytes: number;
   timer: ReturnType<typeof setTimeout> | null;
@@ -24,6 +25,10 @@ export class OutputBatcher {
 
   push(payload: SurfaceChunkPayload): void {
     let batch = this.pending.get(payload.sessionId);
+    if (batch && batch.chunk && batch.cwd !== payload.cwd) {
+      this.flush(payload.sessionId);
+      batch = undefined;
+    }
     if (!batch) {
       batch = {
         surfaceId: payload.surfaceId,
@@ -31,6 +36,7 @@ export class OutputBatcher {
         fromSequence: payload.fromSequence ?? payload.sequence,
         sequence: payload.sequence,
         chunk: "",
+        cwd: payload.cwd,
         segments: [],
         bytes: 0,
         timer: null
@@ -45,11 +51,13 @@ export class OutputBatcher {
     );
     batch.sequence = payload.sequence;
     batch.chunk += payload.chunk;
+    batch.cwd = payload.cwd ?? batch.cwd;
     batch.segments.push(
       ...(payload.segments ?? [
         {
           sequence: payload.sequence,
-          length: payload.chunk.length
+          length: payload.chunk.length,
+          cwd: payload.cwd
         }
       ])
     );
@@ -91,7 +99,8 @@ export class OutputBatcher {
       fromSequence: batch.fromSequence,
       sequence: batch.sequence,
       segments: batch.segments,
-      chunk: batch.chunk
+      chunk: batch.chunk,
+      cwd: batch.cwd
     });
   }
 

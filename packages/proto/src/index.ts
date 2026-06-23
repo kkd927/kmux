@@ -258,6 +258,7 @@ export interface SurfaceSnapshotPayload {
   rawOutputIndexPath?: string;
   rawOutputLogBytes?: number;
   rawOutputLogChunks?: number;
+  cwdRanges?: SurfaceSnapshotCwdRange[];
 }
 
 export interface SurfaceSnapshotOptions {
@@ -385,6 +386,13 @@ export type SurfaceAttachCompletionResult =
 export interface SurfaceChunkSegment {
   sequence: number;
   length: number;
+  cwd?: string;
+}
+
+export interface SurfaceSnapshotCwdRange {
+  startLine: number;
+  endLine: number;
+  cwd: string;
 }
 
 export interface SurfaceChunkPayload {
@@ -393,6 +401,7 @@ export interface SurfaceChunkPayload {
   fromSequence?: number;
   sequence: number;
   chunk: string;
+  cwd?: string;
   segments?: SurfaceChunkSegment[];
 }
 

@@ -943,6 +943,95 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("preserves cwd metadata when trimming queued hydration chunks", async () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const snapshot = {
+      surfaceId,
+      sessionId: surface.sessionId,
+      sequence: 2,
+      vt: "snapshot",
+      title: surface.title,
+      cwd: surface.cwd,
+      branch: undefined,
+      ports: [],
+      unreadCount: 0,
+      attention: false
+    };
+    let resolveSnapshot: ((value: typeof snapshot) => void) | undefined;
+    const ptyHost = {
+      snapshot: vi.fn(
+        () =>
+          new Promise<typeof snapshot>((resolve) => {
+            resolveSnapshot = resolve;
+          })
+      )
+    };
+    const send = vi.fn();
+    browserWindows.push({
+      webContents: {
+        id: 77,
+        send
+      }
+    });
+
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction: vi.fn<(action: AppAction) => void>(),
+      getPtyHost: () => ptyHost as never
+    });
+
+    const attachPromise = bridge.attachSurface(
+      77,
+      surfaceId,
+      state.surfaces[surfaceId].sessionId
+    );
+    bridge.handlePtyEvent({
+      type: "chunk",
+      payload: {
+        surfaceId,
+        sessionId: surface.sessionId,
+        fromSequence: 1,
+        sequence: 3,
+        chunk: "oldnew",
+        cwd: "/repo/new",
+        segments: [
+          { sequence: 1, length: 3, cwd: "/repo/old" },
+          { sequence: 3, length: 3, cwd: "/repo/new" }
+        ]
+      }
+    });
+
+    const resolve = resolveSnapshot;
+    expect(resolve).toBeTypeOf("function");
+    if (!resolve) {
+      throw new Error("expected snapshot resolver to be set");
+    }
+    resolve(snapshot);
+
+    const attachPayload = await attachPromise;
+    expect(attachPayload?.snapshot).toEqual(snapshot);
+    expect(send).not.toHaveBeenCalled();
+    await bridge.completeAttachSurface(
+      77,
+      surfaceId,
+      attachPayload?.attachId ?? "",
+      state.surfaces[surfaceId].sessionId
+    );
+
+    expect(send).toHaveBeenCalledWith("kmux:terminal-event", {
+      type: "chunk",
+      payload: expect.objectContaining({
+        fromSequence: 3,
+        sequence: 3,
+        chunk: "new",
+        cwd: "/repo/new",
+        segments: [{ sequence: 3, length: 3, cwd: "/repo/new" }]
+      })
+    });
+  });
+
   it("recovers queue overflow that happens after the snapshot is returned but before hydration completes", async () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
