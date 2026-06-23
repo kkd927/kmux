@@ -44,6 +44,15 @@ import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import { OutputBatcher } from "./outputBatcher";
 import { handleTerminalResizeRequest } from "./resizeRuntime";
 import { SnapshotCache } from "./snapshotCache";
+import {
+  createTerminalCwdRangeSnapshotWindow,
+  createTerminalCwdRangeTracker
+} from "./terminalCwdRanges";
+import {
+  flushTerminalOutputSegmenterState,
+  splitTerminalOutputByOsc7,
+  type TerminalOutputSegmenterState
+} from "./terminalOutputSegments";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -71,6 +80,10 @@ interface SessionRecord {
   terminal: HeadlessTerminal;
   serialize: SerializeAddon;
   snapshotCache: SnapshotCache;
+  cwdRanges: ReturnType<typeof createTerminalCwdRangeTracker>;
+  trimListener: DisposableLike;
+  writeQueue: Promise<void>;
+  outputSegmenterState: TerminalOutputSegmenterState;
   rawOutputTail: string;
   rawOutputTailTruncated: boolean;
   rawOutputLogPath?: string;
@@ -93,6 +106,10 @@ interface SessionRecord {
     includeRawOutputTail: boolean;
   }>;
   settledSnapshotTimer: NodeJS.Timeout | null;
+}
+
+interface DisposableLike {
+  dispose(): void;
 }
 
 const sessions = new Map<Id, SessionRecord>();
@@ -174,6 +191,26 @@ function send(message: PtyEvent): void {
   } catch (error) {
     handleIpcSendError(error);
   }
+}
+
+function registerTerminalBufferTrimHandler(
+  terminal: HeadlessTerminal,
+  onTrim: (amount: number) => void
+): DisposableLike {
+  const lines = (
+    terminal as unknown as {
+      _core?: {
+        _bufferService?: {
+          buffer?: {
+            lines?: {
+              onTrim?: (listener: (amount: number) => void) => DisposableLike;
+            };
+          };
+        };
+      };
+    }
+  )._core?._bufferService?.buffer?.lines;
+  return lines?.onTrim?.(onTrim) ?? { dispose() {} };
 }
 
 function handleIpcSendError(error: unknown): void {
@@ -313,6 +350,59 @@ function appendRawOutputHistory(
   }
 }
 
+function enqueueTerminalOutputSegment(
+  record: SessionRecord,
+  segment: { chunk: string; recordCwd: boolean }
+): void {
+  if (!segment.chunk) {
+    return;
+  }
+  record.writeQueue = record.writeQueue
+    .catch((error) => {
+      logDiagnostics("pty-host.write.queue.failed", {
+        surfaceId: record.surfaceId,
+        sessionId: record.sessionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    })
+    .then(() => writeTerminalOutputSegment(record, segment));
+}
+
+async function writeTerminalOutputSegment(
+  record: SessionRecord,
+  segment: { chunk: string; recordCwd: boolean }
+): Promise<void> {
+  record.sequence += 1;
+  const chunkSequence = record.sequence;
+  const chunkCwd = segment.recordCwd ? record.cwd : undefined;
+  const trimCountBefore = record.cwdRanges.getTrimmedLineCount();
+  const startLine =
+    record.terminal.buffer.active.baseY + record.terminal.buffer.active.cursorY;
+  appendRawOutputHistory(record, segment.chunk, chunkSequence);
+  await new Promise<void>((resolve) => {
+    record.terminal.write(segment.chunk, resolve);
+  });
+  record.parsedSequence = Math.max(record.parsedSequence, chunkSequence);
+  const trimDuringWrite =
+    record.cwdRanges.getTrimmedLineCount() - trimCountBefore;
+  const endLine =
+    record.terminal.buffer.active.baseY + record.terminal.buffer.active.cursorY;
+  if (segment.recordCwd) {
+    record.cwdRanges.recordWrite({
+      startLine: startLine - trimDuringWrite,
+      endLine,
+      cwd: chunkCwd
+    });
+  }
+  outputBatcher.push({
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    sequence: chunkSequence,
+    chunk: segment.chunk,
+    cwd: chunkCwd
+  });
+}
+
 function flushPtyProfileBucket(record: SessionRecord): void {
   if (smoothnessProfile.enabled) {
     ptyBucket.flush(`${record.surfaceId}\u0000${record.sessionId}`);
@@ -325,6 +415,11 @@ function snapshot(
 ): SurfaceSnapshotPayload {
   outputBatcher.flush(record.sessionId);
   const snapshotSequence = record.parsedSequence;
+  const cwdRangeWindow = createTerminalCwdRangeSnapshotWindow({
+    baseY: record.terminal.buffer.active.baseY,
+    bufferLength: record.terminal.buffer.active.length,
+    restoreScrollbackLines: TERMINAL_RESTORE_SCROLLBACK_LINES
+  });
   return {
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
@@ -346,6 +441,7 @@ function snapshot(
     ports: [],
     unreadCount: 0,
     attention: false,
+    cwdRanges: record.cwdRanges.snapshotRanges(cwdRangeWindow),
     ...(options.includeRawOutputTail
       ? {
           rawOutputTail: record.rawOutputTail,
@@ -357,6 +453,24 @@ function snapshot(
         }
       : {})
   };
+}
+
+function sendSnapshotAfterWriteQueue(
+  record: SessionRecord,
+  requestId: Id,
+  options: { includeRawOutputTail?: boolean } = {}
+): void {
+  const pendingWrites = record.writeQueue;
+  void pendingWrites.finally(() => {
+    if (sessions.get(record.sessionId) !== record) {
+      return;
+    }
+    send({
+      type: "snapshot",
+      requestId,
+      payload: snapshot(record, options)
+    });
+  });
 }
 
 function sendTerminalNotification(
@@ -433,6 +547,12 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     request.spec.sessionId,
     request.spec.surfaceId
   );
+  const cwdRanges = createTerminalCwdRangeTracker({
+    getBufferLength: () => terminal.buffer.active.length
+  });
+  const trimListener = registerTerminalBufferTrimHandler(terminal, (amount) => {
+    cwdRanges.handleTrim(amount);
+  });
 
   const record: SessionRecord = {
     sessionId: request.spec.sessionId,
@@ -443,6 +563,10 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     terminal,
     serialize,
     snapshotCache: new SnapshotCache(),
+    cwdRanges,
+    trimListener,
+    writeQueue: Promise.resolve(),
+    outputSegmenterState: { pendingOsc7: false, pendingOsc7Prefix: "" },
     rawOutputTail: "",
     rawOutputTailTruncated: false,
     rawOutputLogPath: rawOutputHistory?.rawOutputLogPath,
@@ -639,35 +763,41 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   ptyProcess.onData((chunk) => {
     recordPtyChunk(record, chunk);
     appendRawOutputTail(record, chunk);
-    record.sequence += 1;
-    const chunkSequence = record.sequence;
     record.lastActivityAt = Date.now();
-    appendRawOutputHistory(record, chunk, chunkSequence);
-    terminal.write(chunk, () => {
-      record.parsedSequence = Math.max(record.parsedSequence, chunkSequence);
+    const splitOutput = splitTerminalOutputByOsc7({
+      chunk,
+      state: record.outputSegmenterState
     });
+    record.outputSegmenterState = splitOutput.state;
+    for (const segment of splitOutput.segments) {
+      enqueueTerminalOutputSegment(record, segment);
+    }
     scheduleSettledSnapshotCheck(record);
-    outputBatcher.push({
-      surfaceId: record.surfaceId,
-      sessionId: record.sessionId,
-      sequence: chunkSequence,
-      chunk
-    });
   });
   ptyProcess.onExit(({ exitCode }) => {
-    flushPtyProfileBucket(record);
-    outputBatcher.flush(record.sessionId);
-    disposeSettledSnapshotState(record);
-    disposeShellReadyFallback(record);
-    send({
-      type: "exit",
-      payload: {
-        surfaceId: record.surfaceId,
-        sessionId: record.sessionId,
-        exitCode
-      }
+    const flushedOutput = flushTerminalOutputSegmenterState(
+      record.outputSegmenterState
+    );
+    record.outputSegmenterState = flushedOutput.state;
+    for (const segment of flushedOutput.segments) {
+      enqueueTerminalOutputSegment(record, segment);
+    }
+    void record.writeQueue.finally(() => {
+      flushPtyProfileBucket(record);
+      outputBatcher.flush(record.sessionId);
+      disposeSettledSnapshotState(record);
+      disposeShellReadyFallback(record);
+      record.trimListener.dispose();
+      send({
+        type: "exit",
+        payload: {
+          surfaceId: record.surfaceId,
+          sessionId: record.sessionId,
+          exitCode
+        }
+      });
+      sessions.delete(record.sessionId);
     });
-    sessions.delete(record.sessionId);
   });
 
   if (!preparedLaunch.requiresShellReady && request.spec.launch.initialInput) {
@@ -701,6 +831,7 @@ process.on("message", (request: PtyRequest) => {
         outputBatcher.flush(record.sessionId);
         disposeSettledSnapshotState(record);
         disposeShellReadyFallback(record);
+        record.trimListener.dispose();
         record.pty.kill();
         sessions.delete(request.sessionId);
       }
@@ -749,12 +880,8 @@ process.on("message", (request: PtyRequest) => {
           });
           scheduleSettledSnapshotCheck(record);
         } else {
-          send({
-            type: "snapshot",
-            requestId: request.requestId,
-            payload: snapshot(record, {
-              includeRawOutputTail: Boolean(request.includeRawOutputTail)
-            })
+          sendSnapshotAfterWriteQueue(record, request.requestId, {
+            includeRawOutputTail: Boolean(request.includeRawOutputTail)
           });
         }
       }
@@ -787,12 +914,8 @@ function scheduleSettledSnapshotCheck(record: SessionRecord): void {
   for (const pendingSnapshot of record.pendingSettledSnapshots) {
     const remainingQuietMs = pendingSnapshot.settleForMs - quietForMs;
     if (remainingQuietMs <= 0) {
-      send({
-        type: "snapshot",
-        requestId: pendingSnapshot.requestId,
-        payload: snapshot(record, {
-          includeRawOutputTail: pendingSnapshot.includeRawOutputTail
-        })
+      sendSnapshotAfterWriteQueue(record, pendingSnapshot.requestId, {
+        includeRawOutputTail: pendingSnapshot.includeRawOutputTail
       });
       continue;
     }
@@ -830,6 +953,7 @@ function disposeAllSessions(): void {
     outputBatcher.clear(record.sessionId);
     disposeSettledSnapshotState(record);
     disposeShellReadyFallback(record);
+    record.trimListener.dispose();
     try {
       record.pty.kill();
     } catch (error) {
