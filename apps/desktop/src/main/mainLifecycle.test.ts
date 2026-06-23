@@ -271,7 +271,7 @@ describe("main lifecycle controller", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("tells users that quit clears current workspaces for the next launch", async () => {
+  it("tells users that quit preserves workspaces for the next launch", async () => {
     showMessageBox.mockResolvedValueOnce({
       response: 0,
       checkboxChecked: false
@@ -282,7 +282,7 @@ describe("main lifecycle controller", () => {
     expect(showMessageBox).toHaveBeenCalledWith(
       expect.objectContaining({
         detail:
-          "This will close all windows and clear current workspaces for the next launch."
+          "This will close all kmux windows and stop background services. Your workspaces will be restored on the next launch."
       })
     );
   });

@@ -124,7 +124,10 @@ jobs:
       - name: Verify Linux release assets
         run: |
           shopt -s nullglob
-          appimages=(apps/desktop/release/kmux-*-linux-x64.AppImage)
+          appimages=(
+            apps/desktop/release/kmux-*-linux-x64.AppImage
+            apps/desktop/release/kmux-*-linux-x86_64.AppImage
+          )
           manifests=(apps/desktop/release/latest-linux.yml)
           test "${#appimages[@]}" -eq 1
           test "${#manifests[@]}" -eq 1
@@ -178,9 +181,12 @@ jobs:
             fi
             cp "${matches[0]}" "release-assets/kmux-mac-${arch}.dmg"
           done
-          linux_matches=(release-assets/kmux-*-linux-x64.AppImage)
+          linux_matches=(
+            release-assets/kmux-*-linux-x64.AppImage
+            release-assets/kmux-*-linux-x86_64.AppImage
+          )
           if [ "${#linux_matches[@]}" -ne 1 ]; then
-            echo "Expected exactly 1 source AppImage for linux x64, found ${#linux_matches[@]}: ${linux_matches[*]:-<none>}" >&2
+            echo "Expected exactly 1 source AppImage for Linux, found ${#linux_matches[@]}: ${linux_matches[*]:-<none>}" >&2
             exit 1
           fi
           cp "${linux_matches[0]}" "release-assets/kmux-linux-x64.AppImage"

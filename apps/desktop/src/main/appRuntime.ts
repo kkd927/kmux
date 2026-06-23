@@ -558,8 +558,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const settings = migrateRuntimeShortcutDefaults(
       options.settingsStore.load() ?? createRuntimeDefaultSettings()
     );
-    const shouldRestoreSnapshot =
-      snapshot !== null && snapshotRecord?.cleanShutdown !== true;
+    const shouldRestoreSnapshot = snapshot !== null;
     const initial = shouldRestoreSnapshot
       ? cloneState(snapshot)
       : createInitialState(options.defaultShellPath);
@@ -795,10 +794,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      const shutdownSnapshot = createCleanShutdownSnapshot(
-        store.getState(),
-        options.defaultShellPath
-      );
+      const shutdownSnapshot = createShutdownSnapshot(store.getState());
       options.snapshotStore.save(shutdownSnapshot, {
         cleanShutdown: true
       });
@@ -889,25 +885,10 @@ function clearSnapshotNotifications(state: AppState): void {
   }
 }
 
-function createCleanShutdownSnapshot(
-  currentState: AppState,
-  defaultShellPath: string
-): AppState {
-  const cleanState = createInitialState(defaultShellPath);
-  cleanState.settings = mergeSettings(
-    cleanState.settings,
-    currentState.settings
-  );
-
-  const currentWindow = currentState.windows[currentState.activeWindowId];
-  const cleanWindow = cleanState.windows[cleanState.activeWindowId];
-
-  if (currentWindow && cleanWindow) {
-    cleanWindow.sidebarVisible = currentWindow.sidebarVisible;
-    cleanWindow.sidebarWidth = currentWindow.sidebarWidth;
-  }
-
-  return cleanState;
+function createShutdownSnapshot(currentState: AppState): AppState {
+  const snapshot = cloneState(currentState);
+  clearSnapshotNotifications(snapshot);
+  return snapshot;
 }
 
 type ShellGroup =
