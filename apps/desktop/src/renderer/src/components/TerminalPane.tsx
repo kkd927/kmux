@@ -228,6 +228,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const previousPaneActiveRef = useRef(props.active);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
+  const previousActiveSurfaceIdRef = useRef(activeSurface.id);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
   const showSearchRef = useRef(props.showSearch);
@@ -252,8 +253,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const surfaceResizeDimensionsRef = useRef(
     new Map<string, { cols: number; rows: number }>()
   );
-  const streamReadySurfaceIdsRef = useRef(new Set<string>());
-  const readySurfaceAttachIdsRef = useRef(new Map<string, string>());
   const writeProfileBucketRef = useRef(
     createSmoothnessProfileBucket<{
       paneId: string;
@@ -441,6 +440,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     wrapper.dataset.terminalBracketedPasteMode = String(
       terminal.modes.bracketedPasteMode
     );
+  }
+
+  function sessionIdForSurface(surfaceId: string): string | null {
+    if (activeSurfaceRef.current?.id === surfaceId) {
+      return activeSurfaceRef.current.sessionId;
+    }
+    return surfaceSessionIdsRef.current.get(surfaceId) ?? null;
+  }
+
+  function readyAttachIdForSurface(surfaceId: string): string | null {
+    const sessionId = sessionIdForSurface(surfaceId);
+    if (!sessionId) {
+      return null;
+    }
+    return terminalInstanceStore.getReadyAttachId(surfaceId, sessionId);
   }
 
   function refreshVisibleSurfaceRenderer(
@@ -702,14 +716,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const generation = ++resizeGenerationRef.current;
-    const readyAttachId = surfaceId
-      ? (readySurfaceAttachIdsRef.current.get(surfaceId) ?? null)
-      : null;
-    const streamReady = Boolean(
-      surfaceId &&
-      readyAttachId &&
-      streamReadySurfaceIdsRef.current.has(surfaceId)
-    );
+    const readyAttachId = surfaceId ? readyAttachIdForSurface(surfaceId) : null;
+    const streamReady = Boolean(surfaceId && readyAttachId);
     const attachId = streamReady ? readyAttachId : null;
     if (!streamReady) {
       const resized = applyTerminalResize(terminal, {
@@ -1115,6 +1123,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           lastHydratedSurfaceId: null,
           lastHydratedSurfaceSequence: null,
           attachmentCleanup: null,
+          attachmentSessionId: null,
+          attachmentToken: null,
+          readyAttachId: null,
+          pendingDetachPromise: null,
           renderSink: null
         };
       }
@@ -1183,14 +1195,24 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
     terminal.reset();
     terminal.clearSelection();
+    terminalInstanceStore.detachAttachment(activeSurface.id);
     terminalInstanceStore.invalidateHydration(terminalInstanceKey);
-    streamReadySurfaceIdsRef.current.delete(activeSurface.id);
-    readySurfaceAttachIdsRef.current.delete(activeSurface.id);
     updateTerminalDiagnostics(activeSurface.id, terminal, {
       hydratedSequence: null,
       renderedSequence: null
     });
   }, [activeSurface.id, activeSurface.sessionId, terminalInstanceKey]);
+
+  useEffect(() => {
+    const previousSurfaceId = previousActiveSurfaceIdRef.current;
+    previousActiveSurfaceIdRef.current = activeSurface.id;
+    const previousSurfaceStillInPane = props.surfaces.some(
+      (surface) => surface.id === previousSurfaceId
+    );
+    if (previousSurfaceId !== activeSurface.id && previousSurfaceStillInPane) {
+      terminalInstanceStore.detachAttachment(previousSurfaceId);
+    }
+  }, [activeSurface.id, props.surfaces]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1596,13 +1618,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!terminal || !activeSurface) {
       return;
     }
-    if (terminalInstanceStore.hasAttachment(activeSurface.id)) {
+    const surfaceId = activeSurface.id;
+    const sessionId = activeSurface.sessionId;
+    const existingAttachmentSessionId =
+      terminalInstanceStore.getAttachmentSessionId(surfaceId);
+    if (
+      existingAttachmentSessionId &&
+      existingAttachmentSessionId !== sessionId
+    ) {
+      terminalInstanceStore.detachAttachment(surfaceId);
+    }
+    if (terminalInstanceStore.hasAttachment(surfaceId, sessionId)) {
       return;
     }
 
     let attached = true;
-    const surfaceId = activeSurface.id;
-    const sessionId = activeSurface.sessionId;
+    let attachmentToken: terminalInstanceStore.TerminalAttachmentToken | null =
+      null;
     const instanceKey = terminalInstanceKey;
     const replayVisibility = createTerminalReplayVisibility({
       host: containerRef.current,
@@ -1627,8 +1659,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
     const isCurrentAttachedSession = (): boolean =>
       attached &&
-      activeSurfaceRef.current?.id === surfaceId &&
-      activeSurfaceRef.current.sessionId === sessionId;
+      attachmentToken !== null &&
+      terminalInstanceStore.isCurrentAttachment(
+        surfaceId,
+        sessionId,
+        attachmentToken
+      );
     const markSnapshotRendered = (
       attachId: string,
       snapshot: { sequence: number | null }
@@ -1650,12 +1686,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return window.kmux
         .completeAttachSurface(surfaceId, attachId, sessionId)
         .then((completion) => {
+          const currentToken = attachmentToken;
+          if (!currentToken || !isCurrentAttachedSession()) {
+            return { status: "stale" as const };
+          }
           if (completion.status === "ready") {
-            streamReadySurfaceIdsRef.current.add(surfaceId);
-            readySurfaceAttachIdsRef.current.set(surfaceId, attachId);
+            terminalInstanceStore.markAttachmentReady(
+              surfaceId,
+              sessionId,
+              attachId,
+              currentToken
+            );
           } else {
-            streamReadySurfaceIdsRef.current.delete(surfaceId);
-            readySurfaceAttachIdsRef.current.delete(surfaceId);
+            terminalInstanceStore.clearAttachmentReady(
+              surfaceId,
+              sessionId,
+              currentToken
+            );
           }
           return completion;
         });
@@ -1667,8 +1714,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }): boolean =>
       payload.surfaceId === surfaceId &&
       payload.sessionId === sessionId &&
-      activeSurfaceRef.current?.id === surfaceId &&
-      activeSurfaceRef.current.sessionId === sessionId;
+      attached &&
+      attachmentToken !== null &&
+      terminalInstanceStore.isCurrentAttachment(
+        surfaceId,
+        sessionId,
+        attachmentToken
+      );
 
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (event.type === "chunk" && isCurrentSessionEvent(event.payload)) {
@@ -1698,8 +1750,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         const payload = event.payload;
         if (
           !payload.attachId ||
-          readySurfaceAttachIdsRef.current.get(payload.surfaceId) !==
-            payload.attachId
+          terminalInstanceStore.getReadyAttachId(
+            payload.surfaceId,
+            payload.sessionId
+          ) !== payload.attachId
         ) {
           return;
         }
@@ -1730,22 +1784,30 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return;
       }
       attached = false;
-      streamReadySurfaceIdsRef.current.delete(surfaceId);
-      readySurfaceAttachIdsRef.current.delete(surfaceId);
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
       replayVisibility.dispose();
       unsubscribe();
-      void window.kmux.detachSurface(surfaceId, sessionId);
+      return window.kmux.detachSurface(surfaceId, sessionId).catch((error) => {
+        console.warn("Failed to detach terminal surface", error);
+      });
     };
-    const registered = terminalInstanceStore.registerAttachment(
+    attachmentToken = terminalInstanceStore.registerAttachment(
       surfaceId,
+      sessionId,
       cleanupAttachment
     );
-    if (!registered) {
+    if (!attachmentToken) {
       attached = false;
       unsubscribe();
       return;
     }
+    const attachCurrentSurface = async () => {
+      await terminalInstanceStore.waitForPendingDetach(surfaceId);
+      if (!isCurrentAttachedSession()) {
+        return null;
+      }
+      return window.kmux.attachSurface(surfaceId, sessionId);
+    };
 
     void (async () => {
       if (!attached) {
@@ -1759,7 +1821,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           isMounted: isCurrentAttachedSession,
           isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
-          attachSurface: () => window.kmux.attachSurface(surfaceId, sessionId),
+          attachSurface: attachCurrentSurface,
           lastRenderedSequence:
             terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
           beforeFitAndSync: () => {
@@ -1783,7 +1845,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           isTerminalActive: (candidate) => candidate === terminal,
           waitForTerminalFonts,
           fitAndSyncTerminal: fitAttachedTerminal,
-          attachSurface: () => window.kmux.attachSurface(surfaceId, sessionId),
+          attachSurface: attachCurrentSurface,
           writeTerminal: (_terminal, data, afterWrite) =>
             writeAttachedTerminal(data, afterWrite, surfaceId),
           onReplayStart: replayVisibility.hide,
@@ -1798,9 +1860,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!attached) {
         return;
       }
-      cleanupAttachment();
+      terminalInstanceStore.detachAttachment(surfaceId);
     });
-    return cleanupAttachment;
+    return undefined;
   }, [activeSurface?.id, activeSurface?.sessionId, terminalInstanceKey]);
 
   useEffect(() => {

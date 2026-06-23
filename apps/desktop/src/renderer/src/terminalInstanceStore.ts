@@ -13,11 +13,19 @@ export interface TerminalInstance {
   webLinks: WebLinksAddon;
   lastHydratedSurfaceId: string | null;
   lastHydratedSurfaceSequence: number | null;
-  // Active stream attachment cleanup. The terminal widget may stay cached by
-  // surface, but the IPC attachment must only live while that surface is active.
-  attachmentCleanup: (() => void) | null;
+  // Active stream attachment cleanup. The terminal widget is cached by surface,
+  // and the IPC attachment is scoped to the live surface session rather than a
+  // particular TerminalPane render.
+  attachmentCleanup: AttachmentCleanup | null;
+  attachmentSessionId: string | null;
+  attachmentToken: TerminalAttachmentToken | null;
+  readyAttachId: string | null;
+  pendingDetachPromise: Promise<void> | null;
   renderSink: TerminalRenderSink | null;
 }
+
+export type TerminalAttachmentToken = object;
+type AttachmentCleanup = () => Promise<void> | void;
 
 export interface TerminalRenderSink {
   write(data: string, afterWrite?: () => void, surfaceId?: string): void;
@@ -40,17 +48,47 @@ export function acquire(
   return { instance, isNew: true };
 }
 
-export function hasAttachment(key: string): boolean {
-  return Boolean(store.get(key)?.attachmentCleanup);
-}
-
-export function registerAttachment(key: string, cleanup: () => void): boolean {
+export function hasAttachment(key: string, sessionId?: string): boolean {
   const instance = store.get(key);
-  if (!instance || instance.attachmentCleanup) {
+  if (!instance?.attachmentCleanup) {
     return false;
   }
+  return sessionId === undefined || instance.attachmentSessionId === sessionId;
+}
+
+export function isCurrentAttachment(
+  key: string,
+  sessionId: string,
+  token: TerminalAttachmentToken
+): boolean {
+  const instance = store.get(key);
+  return Boolean(
+    instance?.attachmentCleanup &&
+    instance.attachmentSessionId === sessionId &&
+    instance.attachmentToken === token
+  );
+}
+
+export function getAttachmentSessionId(key: string): string | null {
+  const instance = store.get(key);
+  return instance?.attachmentCleanup ? instance.attachmentSessionId : null;
+}
+
+export function registerAttachment(
+  key: string,
+  sessionId: string,
+  cleanup: AttachmentCleanup
+): TerminalAttachmentToken | null {
+  const instance = store.get(key);
+  if (!instance || instance.attachmentCleanup) {
+    return null;
+  }
+  const token: TerminalAttachmentToken = {};
   instance.attachmentCleanup = cleanup;
-  return true;
+  instance.attachmentSessionId = sessionId;
+  instance.attachmentToken = token;
+  instance.readyAttachId = null;
+  return token;
 }
 
 export function clearAttachment(key: string, cleanup: () => void): boolean {
@@ -59,17 +97,97 @@ export function clearAttachment(key: string, cleanup: () => void): boolean {
     return false;
   }
   instance.attachmentCleanup = null;
+  instance.attachmentSessionId = null;
+  instance.attachmentToken = null;
+  instance.readyAttachId = null;
   return true;
 }
 
-function detachAttachment(key: string): void {
+export function detachAttachment(key: string): void {
   const instance = store.get(key);
   const cleanup = instance?.attachmentCleanup;
   if (!instance || !cleanup) {
     return;
   }
   instance.attachmentCleanup = null;
-  cleanup();
+  instance.attachmentSessionId = null;
+  instance.attachmentToken = null;
+  instance.readyAttachId = null;
+  let cleanupResult: Promise<void> | void;
+  try {
+    cleanupResult = cleanup();
+  } catch (error) {
+    cleanupResult = Promise.reject(error);
+  }
+  trackPendingDetach(instance, cleanupResult);
+}
+
+export function waitForPendingDetach(key: string): Promise<void> {
+  return store.get(key)?.pendingDetachPromise ?? Promise.resolve();
+}
+
+function trackPendingDetach(
+  instance: TerminalInstance,
+  result: Promise<void> | void
+): void {
+  const previous = instance.pendingDetachPromise ?? Promise.resolve();
+  const pending = Promise.allSettled([previous, Promise.resolve(result)])
+    .then(() => undefined)
+    .finally(() => {
+      if (instance.pendingDetachPromise === pending) {
+        instance.pendingDetachPromise = null;
+      }
+    });
+  instance.pendingDetachPromise = pending;
+}
+
+export function markAttachmentReady(
+  key: string,
+  sessionId: string,
+  attachId: string,
+  token: TerminalAttachmentToken
+): boolean {
+  const instance = store.get(key);
+  if (
+    !instance?.attachmentCleanup ||
+    instance.attachmentSessionId !== sessionId ||
+    instance.attachmentToken !== token
+  ) {
+    return false;
+  }
+  instance.readyAttachId = attachId;
+  return true;
+}
+
+export function clearAttachmentReady(
+  key: string,
+  sessionId: string,
+  token: TerminalAttachmentToken
+): boolean {
+  const instance = store.get(key);
+  if (
+    !instance?.attachmentCleanup ||
+    instance.attachmentSessionId !== sessionId ||
+    instance.attachmentToken !== token
+  ) {
+    return false;
+  }
+  instance.readyAttachId = null;
+  return true;
+}
+
+export function getReadyAttachId(
+  key: string,
+  sessionId: string
+): string | null {
+  const instance = store.get(key);
+  if (
+    !instance?.attachmentCleanup ||
+    instance.attachmentSessionId !== sessionId
+  ) {
+    return null;
+  }
+  return instance.readyAttachId;
 }
 
 export function setRenderSink(key: string, sink: TerminalRenderSink): void {

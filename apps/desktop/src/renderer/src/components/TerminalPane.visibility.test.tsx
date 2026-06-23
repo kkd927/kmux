@@ -9,9 +9,11 @@ import type { ColorTheme } from "@kmux/ui";
 
 import { buildPlatformKeyboardPolicy } from "../../../shared/platform/keyboardPolicy";
 
+let fitDimensions = { cols: 120, rows: 40 };
+
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn(() => ({
-    proposeDimensions: () => ({ cols: 120, rows: 40 })
+    proposeDimensions: () => fitDimensions
   }))
 }));
 
@@ -193,6 +195,12 @@ function createProps(surfaceId: string): TerminalPaneProps {
   };
 }
 
+async function flushMicrotasks(iterations = 5): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("TerminalPane visibility cleanup", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
@@ -200,6 +208,7 @@ describe("TerminalPane visibility cleanup", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    fitDimensions = { cols: 120, rows: 40 };
     windowFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
     (
       globalThis as typeof globalThis & { ResizeObserver: unknown }
@@ -207,16 +216,16 @@ describe("TerminalPane visibility cleanup", () => {
     window.kmux = {
       ...window.kmux,
       subscribeTerminal: vi.fn(() => vi.fn()),
-      attachSurface: vi.fn(async () => ({
+      attachSurface: vi.fn(async (surfaceId: string, sessionId: string) => ({
         attachId: "attach_1",
         snapshot: {
-          surfaceId: "surface_1",
-          sessionId: "session_surface_1",
+          surfaceId,
+          sessionId,
           sequence: 0,
           vt: "",
           cols: 120,
           rows: 40,
-          title: "surface_1",
+          title: surfaceId,
           ports: [],
           unreadCount: 0,
           attention: false
@@ -279,7 +288,7 @@ describe("TerminalPane visibility cleanup", () => {
     ).not.toBeNull();
   });
 
-  it("passes the active session id through attach completion and detach", async () => {
+  it("passes the active session id through attach completion and release detach", async () => {
     const props = createProps("surface_1");
 
     await act(async () => {
@@ -296,14 +305,281 @@ describe("TerminalPane visibility cleanup", () => {
       "session_surface_1"
     );
 
+    terminalInstanceStore.release("surface_1");
+
+    expect(window.kmux.detachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "session_surface_1"
+    );
+  });
+
+  it("keeps the same surface session attached across TerminalPane remounts", async () => {
+    const props = createProps("surface_1");
+
     await act(async () => {
-      root.render(<div />);
+      root.render(<TerminalPane key="first" {...props} />);
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane key="second" {...props} />);
+    });
+
+    expect(window.kmux.detachSurface).not.toHaveBeenCalled();
+    expect(window.kmux.attachSurface).toHaveBeenCalledTimes(1);
+    expect(window.kmux.completeAttachSurface).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the ready attach id for the first resize after a same session remount", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane key="first" {...props} />);
+    });
+
+    vi.mocked(window.kmux.resizeSurface).mockClear();
+    fitDimensions = { cols: 100, rows: 40 };
+
+    await act(async () => {
+      root.render(<TerminalPane key="second" {...props} />);
+    });
+
+    expect(window.kmux.detachSurface).not.toHaveBeenCalled();
+    expect(window.kmux.resizeSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      100,
+      40
+    );
+    expect(window.kmux.resizeSurface).not.toHaveBeenCalledWith(
+      "surface_1",
+      null,
+      100,
+      40
+    );
+  });
+
+  it("detaches the old attachment when the same surface moves to a new session", async () => {
+    const props = createProps("surface_1");
+    const restartedProps = createProps("surface_1");
+    restartedProps.surfaces = [
+      {
+        ...restartedProps.surfaces[0],
+        sessionId: "session_restarted"
+      }
+    ];
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...restartedProps} />);
     });
 
     expect(window.kmux.detachSurface).toHaveBeenCalledWith(
       "surface_1",
       "session_surface_1"
     );
+    expect(window.kmux.attachSurface).toHaveBeenLastCalledWith(
+      "surface_1",
+      "session_restarted"
+    );
+  });
+
+  it("detaches the previous surface when switching active tabs in the same pane", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    const switchedProps = {
+      ...props,
+      activeSurfaceId: "surface_2"
+    };
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...switchedProps} />);
+    });
+
+    expect(window.kmux.detachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "session_surface_1"
+    );
+    expect(window.kmux.attachSurface).toHaveBeenLastCalledWith(
+      "surface_2",
+      "session_surface_2"
+    );
+  });
+
+  it("keeps a moved surface attached when another pane reuses it", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const sourceProps = createProps("surface_1");
+    sourceProps.paneId = "pane_source";
+    sourceProps.surfaces = [firstSurface, secondSurface];
+    const targetProps = createProps("surface_1");
+    targetProps.paneId = "pane_target";
+    targetProps.surfaces = [firstSurface];
+    const sourceAfterMoveProps = {
+      ...sourceProps,
+      surfaces: [secondSurface],
+      activeSurfaceId: "surface_2"
+    };
+    const targetContainer = document.createElement("div");
+    document.body.appendChild(targetContainer);
+    const targetRoot = ReactDOMClient.createRoot(targetContainer);
+
+    try {
+      await act(async () => {
+        root.render(<TerminalPane {...sourceProps} />);
+        await flushMicrotasks();
+      });
+      await act(async () => {
+        targetRoot.render(<TerminalPane {...targetProps} />);
+        await flushMicrotasks();
+      });
+      await act(async () => {
+        root.render(<TerminalPane {...sourceAfterMoveProps} />);
+        await flushMicrotasks();
+      });
+
+      expect(window.kmux.detachSurface).not.toHaveBeenCalledWith(
+        "surface_1",
+        "session_surface_1"
+      );
+      expect(window.kmux.attachSurface).toHaveBeenCalledTimes(2);
+      expect(window.kmux.attachSurface).toHaveBeenLastCalledWith(
+        "surface_2",
+        "session_surface_2"
+      );
+    } finally {
+      act(() => {
+        targetRoot.unmount();
+      });
+      targetContainer.remove();
+    }
+  });
+
+  it("ignores stale attach completion after the same surface reattaches", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    let attachSequence = 0;
+    let resolveFirstCompletion:
+      | ((completion: { status: "ready" }) => void)
+      | null = null;
+    window.kmux.attachSurface = vi.fn(
+      async (surfaceId: string, sessionId: string) => {
+        attachSequence += 1;
+        return {
+          attachId: `attach_${attachSequence}`,
+          snapshot: {
+            surfaceId,
+            sessionId,
+            sequence: 0,
+            vt: "",
+            cols: 120,
+            rows: 40,
+            title: surfaceId,
+            ports: [],
+            unreadCount: 0,
+            attention: false
+          }
+        };
+      }
+    );
+    window.kmux.completeAttachSurface = vi.fn(
+      async (_surfaceId: string, attachId: string) => {
+        if (attachId === "attach_1") {
+          return new Promise<{ status: "ready" }>((resolve) => {
+            resolveFirstCompletion = resolve;
+          });
+        }
+        return { status: "ready" as const };
+      }
+    );
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+    expect(window.kmux.completeAttachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      "session_surface_1"
+    );
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      root.render(<TerminalPane {...props} activeSurfaceId="surface_1" />);
+      await flushMicrotasks();
+    });
+
+    expect(
+      terminalInstanceStore.getReadyAttachId("surface_1", "session_surface_1")
+    ).toBe("attach_3");
+
+    await act(async () => {
+      resolveFirstCompletion?.({ status: "ready" });
+      await flushMicrotasks();
+    });
+
+    expect(
+      terminalInstanceStore.getReadyAttachId("surface_1", "session_surface_1")
+    ).toBe("attach_3");
+  });
+
+  it("waits for a previous same-surface detach before reattaching", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    let resolveFirstDetach: (() => void) | null = null;
+    window.kmux.detachSurface = vi.fn(async (surfaceId: string) => {
+      if (surfaceId !== "surface_1") {
+        return;
+      }
+      return new Promise<void>((resolve) => {
+        resolveFirstDetach = resolve;
+      });
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      root.render(<TerminalPane {...props} activeSurfaceId="surface_1" />);
+      await flushMicrotasks();
+    });
+
+    expect(
+      vi
+        .mocked(window.kmux.attachSurface)
+        .mock.calls.filter(([surfaceId]) => surfaceId === "surface_1")
+    ).toHaveLength(1);
+
+    await act(async () => {
+      resolveFirstDetach?.();
+      await flushMicrotasks();
+    });
+
+    expect(
+      vi
+        .mocked(window.kmux.attachSurface)
+        .mock.calls.filter(([surfaceId]) => surfaceId === "surface_1")
+    ).toHaveLength(2);
   });
 
   it("opens the fallback surface menu from the terminal viewport", async () => {

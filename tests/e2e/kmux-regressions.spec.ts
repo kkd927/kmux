@@ -113,7 +113,9 @@ async function clickTerminalTextLink(
         terminal?.querySelectorAll<HTMLElement>(".xterm-rows > div") ?? []
       );
       const row =
-        rows.find((candidate) => candidate.textContent?.trim() === targetText) ??
+        rows.find(
+          (candidate) => candidate.textContent?.trim() === targetText
+        ) ??
         rows.find((candidate) => candidate.textContent?.includes(targetText));
       if (!terminal || !screen || !row) {
         throw new Error(`terminal text link not visible: ${targetText}`);
@@ -171,21 +173,7 @@ function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
   if (!existsSync(profilePath)) {
     return false;
   }
-  const events = readFileSync(profilePath, "utf8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as {
-          source?: string;
-          name?: string;
-          details?: { generation?: unknown };
-        }];
-      } catch {
-        return [];
-      }
-    });
+  const events = readSmoothnessProfileEvents(profilePath);
   const byGeneration = new Map<
     number,
     { applyIndex: number; requestIndex: number }
@@ -198,8 +186,10 @@ function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
     if (typeof generation !== "number") {
       continue;
     }
-    const entry =
-      byGeneration.get(generation) ?? { applyIndex: -1, requestIndex: -1 };
+    const entry = byGeneration.get(generation) ?? {
+      applyIndex: -1,
+      requestIndex: -1
+    };
     if (event.name === "terminal.resize.apply" && entry.applyIndex < 0) {
       entry.applyIndex = index;
     }
@@ -211,6 +201,33 @@ function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
   return [...byGeneration.values()].some(
     (entry) => entry.requestIndex >= 0 && entry.applyIndex > entry.requestIndex
   );
+}
+
+function readSmoothnessProfileEvents(profilePath: string): Array<{
+  source?: string;
+  name?: string;
+  details?: Record<string, unknown>;
+}> {
+  if (!existsSync(profilePath)) {
+    return [];
+  }
+  return readFileSync(profilePath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [
+          JSON.parse(line) as {
+            source?: string;
+            name?: string;
+            details?: Record<string, unknown>;
+          }
+        ];
+      } catch {
+        return [];
+      }
+    });
 }
 
 async function expectTerminalContinuitySamples(
@@ -335,9 +352,7 @@ test("settings modal records shortcut bindings from pressed key combinations", a
       "recorded shortcut should save without triggering workspace creation"
     );
 
-    expect(updated.settings.shortcuts["workspace.create"]).toBe(
-      "Meta+Shift+N"
-    );
+    expect(updated.settings.shortcuts["workspace.create"]).toBe("Meta+Shift+N");
   } finally {
     await closeKmux(launched);
   }
@@ -475,8 +490,7 @@ test("terminal links open through the external URL bridge", async () => {
     const initial = await getView(page);
     const paneId = initial.activeWorkspace.activePaneId;
     const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
-    const osc8Url =
-      "https://oss.navercorp.com/ArticleBE/monorepo/pull/5463";
+    const osc8Url = "https://oss.navercorp.com/ArticleBE/monorepo/pull/5463";
     const plainUrl =
       "https://oss.navercorp.com/ArticleBE/monorepo/pull/5463?plain=1";
 
@@ -498,10 +512,7 @@ test("terminal links open through the external URL bridge", async () => {
 
     await page.evaluate(
       ({ targetSurfaceId, targetUrl }) =>
-        window.kmux.sendText(
-          targetSurfaceId,
-          `printf '${targetUrl}\\n'\r`
-        ),
+        window.kmux.sendText(targetSurfaceId, `printf '${targetUrl}\\n'\r`),
       { targetSurfaceId: surfaceId, targetUrl: plainUrl }
     );
     await waitForSurfaceSnapshotContains(page, surfaceId, plainUrl, 8000);
@@ -1143,6 +1154,117 @@ test("new tab created from pane controls syncs the pty size to the fitted termin
   }
 });
 
+test("split pane remount keeps the ready terminal attachment for resize sync", async () => {
+  const sandbox = createSandbox("kmux-e2e-split-ready-attach-");
+  const profilePath = join(sandbox.profileRoot, "smoothness.jsonl");
+  let launched: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | null = null;
+
+  try {
+    launched = await launchKmuxWithSandbox(sandbox, {
+      env: {
+        KMUX_PROFILE_LOG_PATH: profilePath
+      }
+    });
+    const page = launched.page;
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    const initial = await getView(page);
+    const paneId = initial.activeWorkspace.activePaneId;
+    const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
+    const marker = "KMUX_SPLIT_READY_ATTACH";
+    const mouseTrackingTui = [
+      "python3 - <<'PY'",
+      "import sys, time",
+      "sys.stdout.write('\\x1b[?1049h\\x1b[?1003h\\x1b[2J\\x1b[H')",
+      `sys.stdout.write('${marker}\\nmouse tracking active\\n')`,
+      "sys.stdout.flush()",
+      "time.sleep(8)",
+      "sys.stdout.write('\\x1b[?1003l\\x1b[?1049l')",
+      "sys.stdout.flush()",
+      "PY"
+    ].join("\r");
+
+    await page.evaluate(
+      ({ targetSurfaceId, text }) =>
+        window.kmux.sendText(targetSurfaceId, text),
+      {
+        targetSurfaceId: surfaceId,
+        text: `${mouseTrackingTui}\r`
+      }
+    );
+
+    await waitForSurfaceSnapshotContains(page, surfaceId, marker, 8000);
+    await expect
+      .poll(
+        () =>
+          readSmoothnessProfileEvents(profilePath).some(
+            (event) =>
+              event.source === "main" &&
+              event.name === "terminal.attach.queue" &&
+              event.details?.surfaceId === surfaceId
+          ),
+        {
+          message:
+            "initial surface attachment should be established before split"
+        }
+      )
+      .toBe(true);
+
+    const profileEventCountBeforeSplit =
+      readSmoothnessProfileEvents(profilePath).length;
+
+    await dispatch(page, {
+      type: "pane.split",
+      paneId,
+      direction: "right"
+    });
+
+    await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 2,
+      "split should create a second pane"
+    );
+
+    await expect
+      .poll(() => {
+        const splitEvents = readSmoothnessProfileEvents(profilePath).slice(
+          profileEventCountBeforeSplit
+        );
+        const attachIds = splitEvents
+          .filter(
+            (event) =>
+              event.source === "main" &&
+              event.name === "terminal.resize.request" &&
+              event.details?.surfaceId === surfaceId
+          )
+          .map((event) => event.details?.attachId ?? null);
+        return (
+          attachIds.length > 0 &&
+          attachIds.every((attachId) => typeof attachId === "string")
+        );
+      })
+      .toBe(true);
+
+    const splitEvents = readSmoothnessProfileEvents(profilePath).slice(
+      profileEventCountBeforeSplit
+    );
+    expect(
+      splitEvents.some(
+        (event) =>
+          event.source === "main" &&
+          event.name === "terminal.attach.queue" &&
+          event.details?.surfaceId === surfaceId
+      )
+    ).toBe(false);
+  } finally {
+    if (launched) {
+      await closeKmux(launched);
+    } else {
+      destroySandbox(sandbox);
+    }
+  }
+});
+
 test("narrow windows clamp the rendered sidebar width without mutating the saved sidebar size", async () => {
   const launched = await launchKmux("kmux-e2e-sidebar-width-clamp-");
 
@@ -1268,7 +1390,8 @@ test("right sidebar toggles keep streaming terminal output visible during resize
     ].join("\r");
 
     await page.evaluate(
-      ({ targetSurfaceId, text }) => window.kmux.sendText(targetSurfaceId, text),
+      ({ targetSurfaceId, text }) =>
+        window.kmux.sendText(targetSurfaceId, text),
       {
         targetSurfaceId: activeSurfaceId,
         text: `${streamCommand}\r`
@@ -1792,8 +1915,8 @@ test("workspace switches restore busy alternate-screen terminal content", async 
       const xterm = document.querySelector(".xterm");
       return Boolean(
         xterm &&
-          xterm.querySelectorAll("canvas").length === 0 &&
-          xterm.querySelectorAll(".xterm-rows > div").length > 0
+        xterm.querySelectorAll("canvas").length === 0 &&
+        xterm.querySelectorAll(".xterm-rows > div").length > 0
       );
     });
 
@@ -1822,8 +1945,7 @@ test("workspace switches restore busy alternate-screen terminal content", async 
       ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
       {
         surfaceId: targetSurfaceId,
-        text:
-          "python3 -c 'import sys,time;sys.stdout.write(\"\\x1b[?1049h\\x1b[2J\\x1b[H\");sys.stdout.write(\"KMUX ALT ROOT CAUSE\\nPersistent line A\\nPersistent line B\\n\");sys.stdout.flush();[(sys.stdout.write(f\"\\x1b[1;1Hspinner {i % 10}\"),sys.stdout.flush(),time.sleep(0.05)) for i in range(400)]'\r"
+        text: 'python3 -c \'import sys,time;sys.stdout.write("\\x1b[?1049h\\x1b[2J\\x1b[H");sys.stdout.write("KMUX ALT ROOT CAUSE\\nPersistent line A\\nPersistent line B\\n");sys.stdout.flush();[(sys.stdout.write(f"\\x1b[1;1Hspinner {i % 10}"),sys.stdout.flush(),time.sleep(0.05)) for i in range(400)]\'\r'
       }
     );
 
@@ -1903,8 +2025,8 @@ test("terminal resize applies after the remote PTY resize barrier", async () => 
       const xterm = document.querySelector(".xterm");
       return Boolean(
         xterm &&
-          xterm.querySelectorAll("canvas").length === 0 &&
-          xterm.querySelectorAll(".xterm-rows > div").length > 0
+        xterm.querySelectorAll("canvas").length === 0 &&
+        xterm.querySelectorAll(".xterm-rows > div").length > 0
       );
     });
 
@@ -1938,7 +2060,8 @@ test("terminal resize applies after the remote PTY resize barrier", async () => 
     ].join("\r");
 
     await page.evaluate(
-      ({ targetSurfaceId, text }) => window.kmux.sendText(targetSurfaceId, text),
+      ({ targetSurfaceId, text }) =>
+        window.kmux.sendText(targetSurfaceId, text),
       {
         targetSurfaceId: surfaceId,
         text: `${resizeShim}\r`

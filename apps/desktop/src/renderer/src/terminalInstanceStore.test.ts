@@ -23,16 +23,23 @@ vi.mock("@xterm/addon-web-links", () => ({
 import {
   acquire,
   clearAttachment,
+  clearAttachmentReady,
   clearRenderSink,
+  detachAttachment,
+  getAttachmentSessionId,
+  getReadyAttachId,
+  isCurrentAttachment,
   getRenderSink,
   release,
   releaseAll,
   getLastHydratedSurfaceId,
   getLastHydratedSurfaceSequence,
   markSurfaceHydrated,
+  markAttachmentReady,
   markSurfaceRendered,
   registerAttachment,
   setRenderSink,
+  waitForPendingDetach,
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
@@ -50,6 +57,10 @@ function makeInstance(): TerminalInstance {
     lastHydratedSurfaceId: null,
     lastHydratedSurfaceSequence: null,
     attachmentCleanup: null,
+    attachmentSessionId: null,
+    attachmentToken: null,
+    readyAttachId: null,
+    pendingDetachPromise: null,
     renderSink: null
   };
 }
@@ -117,7 +128,9 @@ describe("release", () => {
     acquire("pane-attachment", init);
     const cleanup = vi.fn();
 
-    expect(registerAttachment("pane-attachment", cleanup)).toBe(true);
+    expect(
+      registerAttachment("pane-attachment", "session-1", cleanup)
+    ).not.toBeNull();
 
     release("pane-attachment");
 
@@ -130,7 +143,9 @@ describe("release", () => {
     const cleanup = vi.fn();
     const disposeSpy = vi.spyOn(instance.terminal, "dispose");
 
-    expect(registerAttachment("pane-attachment", cleanup)).toBe(true);
+    expect(
+      registerAttachment("pane-attachment", "session-1", cleanup)
+    ).not.toBeNull();
     expect(clearAttachment("pane-attachment", cleanup)).toBe(true);
     expect(disposeSpy).not.toHaveBeenCalled();
 
@@ -138,6 +153,177 @@ describe("release", () => {
 
     expect(cleanup).not.toHaveBeenCalled();
     expect(disposeSpy).toHaveBeenCalledOnce();
+  });
+
+  it("tracks the active attachment session and ready attach id", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-attachment", init);
+    const cleanup = vi.fn();
+
+    const token = registerAttachment("pane-attachment", "session-1", cleanup);
+    expect(token).not.toBeNull();
+    expect(getAttachmentSessionId("pane-attachment")).toBe("session-1");
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBeNull();
+
+    expect(
+      markAttachmentReady("pane-attachment", "session-1", "attach-1", token!)
+    ).toBe(true);
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBe("attach-1");
+    expect(getReadyAttachId("pane-attachment", "session-2")).toBeNull();
+
+    expect(clearAttachmentReady("pane-attachment", "session-2", token!)).toBe(
+      false
+    );
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBe("attach-1");
+    expect(clearAttachmentReady("pane-attachment", "session-1", token!)).toBe(
+      true
+    );
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBeNull();
+
+    release("pane-attachment");
+  });
+
+  it("ignores ready changes from stale attachment tokens", () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-attachment", init);
+    const firstCleanup = vi.fn();
+    const secondCleanup = vi.fn();
+
+    const firstToken = registerAttachment(
+      "pane-attachment",
+      "session-1",
+      firstCleanup
+    );
+    expect(firstToken).not.toBeNull();
+    expect(
+      isCurrentAttachment("pane-attachment", "session-1", firstToken!)
+    ).toBe(true);
+    expect(clearAttachment("pane-attachment", firstCleanup)).toBe(true);
+
+    const secondToken = registerAttachment(
+      "pane-attachment",
+      "session-1",
+      secondCleanup
+    );
+    expect(secondToken).not.toBeNull();
+    expect(
+      markAttachmentReady(
+        "pane-attachment",
+        "session-1",
+        "attach-stale",
+        firstToken!
+      )
+    ).toBe(false);
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBeNull();
+
+    expect(
+      markAttachmentReady(
+        "pane-attachment",
+        "session-1",
+        "attach-current",
+        secondToken!
+      )
+    ).toBe(true);
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBe(
+      "attach-current"
+    );
+
+    release("pane-attachment");
+  });
+
+  it("detaches the registered attachment without disposing the terminal", () => {
+    const init = vi.fn(makeInstance);
+    const { instance } = acquire("pane-attachment", init);
+    const cleanup = vi.fn();
+    const disposeSpy = vi.spyOn(instance.terminal, "dispose");
+
+    const token = registerAttachment("pane-attachment", "session-1", cleanup);
+    expect(token).not.toBeNull();
+    markAttachmentReady("pane-attachment", "session-1", "attach-1", token!);
+
+    detachAttachment("pane-attachment");
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(disposeSpy).not.toHaveBeenCalled();
+    expect(getAttachmentSessionId("pane-attachment")).toBeNull();
+    expect(getReadyAttachId("pane-attachment", "session-1")).toBeNull();
+
+    release("pane-attachment");
+  });
+
+  it("keeps pending detach waiters blocked until async cleanup settles", async () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-attachment", init);
+    let resolveDetach!: () => void;
+    const cleanup = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDetach = resolve;
+        })
+    );
+
+    expect(
+      registerAttachment("pane-attachment", "session-1", cleanup)
+    ).not.toBeNull();
+    detachAttachment("pane-attachment");
+
+    let settled = false;
+    const pending = waitForPendingDetach("pane-attachment").then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveDetach();
+    await pending;
+    expect(settled).toBe(true);
+
+    release("pane-attachment");
+  });
+
+  it("waits for all in-flight detach cleanups before reattaching", async () => {
+    const init = vi.fn(makeInstance);
+    acquire("pane-attachment", init);
+    let resolveFirstDetach!: () => void;
+    let resolveSecondDetach!: () => void;
+    const firstCleanup = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirstDetach = resolve;
+        })
+    );
+    const secondCleanup = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSecondDetach = resolve;
+        })
+    );
+
+    expect(
+      registerAttachment("pane-attachment", "session-1", firstCleanup)
+    ).not.toBeNull();
+    detachAttachment("pane-attachment");
+    expect(
+      registerAttachment("pane-attachment", "session-1", secondCleanup)
+    ).not.toBeNull();
+    detachAttachment("pane-attachment");
+
+    let settled = false;
+    const pending = waitForPendingDetach("pane-attachment").then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveSecondDetach();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveFirstDetach();
+    await pending;
+    expect(settled).toBe(true);
+
+    release("pane-attachment");
   });
 });
 
