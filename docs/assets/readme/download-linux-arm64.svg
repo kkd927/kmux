@@ -1,11 +1,11 @@
 <svg
   xmlns="http://www.w3.org/2000/svg"
-  viewBox="0 0 500 176"
+  viewBox="0 0 560 176"
   role="img"
   aria-label="Download kmux for Linux ARM64"
 >
   <title>Download for Linux ARM64</title>
-  <rect width="500" height="176" rx="28" ry="28" fill="#000" />
+  <rect width="560" height="176" rx="28" ry="28" fill="#000" />
   <g
     transform="translate(30 38)"
     fill="none"
@@ -32,7 +32,7 @@
     x="160"
     y="136"
     font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
-    font-size="66"
+    font-size="62"
     font-weight="500"
     fill="#fff"
   >
