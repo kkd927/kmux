@@ -59,11 +59,11 @@ interface TerminalFileLinkProviderOptions {
 }
 
 export function isTerminalFileLinkModifierActive(
-  event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey">,
+  event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">,
   platform: KeyboardShortcutPlatform
 ): boolean {
   if (platform === "darwin") {
-    return event.altKey;
+    return event.metaKey;
   }
   return event.ctrlKey;
 }
@@ -218,7 +218,7 @@ export function registerTerminalFileLinkProvider({
   };
 
   const updateModifierFromEvent = (
-    event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey">
+    event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">
   ): void => {
     const nextModifierActive = isTerminalFileLinkModifierActive(
       event,
@@ -308,7 +308,7 @@ function createTerminalFileLink({
   getKeyboardPlatform: () => KeyboardShortcutPlatform;
   activeDecorations: Set<ILinkDecorations>;
   updateModifierFromEvent: (
-    event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey">
+    event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">
   ) => void;
 }): ILink | null {
   const [startLine, startColumn] = mapStringIndex(

@@ -10,28 +10,28 @@ import {
 } from "./terminalFileLinks";
 
 describe("terminal file link helpers", () => {
-  it("requires Option on macOS and Ctrl on Linux", () => {
+  it("requires Command on macOS and Ctrl on Linux", () => {
     expect(
       isTerminalFileLinkModifierActive(
-        { altKey: true, ctrlKey: false },
+        { altKey: false, ctrlKey: false, metaKey: true },
         "darwin"
       )
     ).toBe(true);
     expect(
       isTerminalFileLinkModifierActive(
-        { altKey: false, ctrlKey: true },
+        { altKey: true, ctrlKey: false, metaKey: false },
         "darwin"
       )
     ).toBe(false);
     expect(
       isTerminalFileLinkModifierActive(
-        { altKey: false, ctrlKey: true },
+        { altKey: false, ctrlKey: true, metaKey: false },
         "linux"
       )
     ).toBe(true);
     expect(
       isTerminalFileLinkModifierActive(
-        { altKey: true, ctrlKey: false },
+        { altKey: true, ctrlKey: false, metaKey: false },
         "linux"
       )
     ).toBe(false);
@@ -248,6 +248,56 @@ describe("terminal file link provider", () => {
 
     registration.dispose();
     expect(providerDisposable.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("uses Command, not Option, for macOS hover decorations and activation", async () => {
+    const providers: ILinkProvider[] = [];
+    const terminal = createFakeTerminal("src/App.tsx");
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+    const openFilePath = vi.fn(async () => {});
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "darwin",
+      surfaceId: "surface_1",
+      openFilePath
+    });
+
+    let links: ILink[] | undefined;
+    providers[0].provideLinks(1, (providedLinks) => {
+      links = providedLinks;
+    });
+
+    const link = links?.[0];
+    expect(link?.text).toBe("src/App.tsx");
+
+    link?.hover?.(new MouseEvent("mousemove", { altKey: true }), link.text);
+    expect(link?.decorations).toEqual({
+      pointerCursor: false,
+      underline: false
+    });
+
+    link?.activate(new MouseEvent("click", { altKey: true }), link.text);
+    expect(openFilePath).not.toHaveBeenCalled();
+
+    link?.hover?.(new MouseEvent("mousemove", { metaKey: true }), link.text);
+    expect(link?.decorations).toEqual({
+      pointerCursor: true,
+      underline: true
+    });
+
+    link?.activate(new MouseEvent("click", { metaKey: true }), link.text);
+    await Promise.resolve();
+    expect(openFilePath).toHaveBeenCalledWith(
+      "surface_1",
+      "src/App.tsx",
+      undefined
+    );
+
+    registration.dispose();
   });
 
   it("passes captured line cwd when activating a relative file link", async () => {
