@@ -324,6 +324,7 @@ describe("TerminalPane visibility cleanup", () => {
 
   it("disables xterm mouse behaviors that replace intentional selection", async () => {
     const props = createProps("surface_1");
+    props.keyboardPlatform = "darwin";
 
     await act(async () => {
       root.render(<TerminalPane {...props} />);
@@ -333,6 +334,7 @@ describe("TerminalPane visibility cleanup", () => {
     expect(Terminal).toHaveBeenCalledWith(
       expect.objectContaining({
         altClickMovesCursor: false,
+        macOptionClickForcesSelection: true,
         macOptionIsMeta: false,
         rightClickSelectsWord: false
       })
