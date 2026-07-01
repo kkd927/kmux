@@ -322,7 +322,7 @@ describe("TerminalPane visibility cleanup", () => {
     container.remove();
   });
 
-  it("disables xterm alt-click cursor movement for modifier-gated file links", async () => {
+  it("disables xterm mouse behaviors that replace intentional selection", async () => {
     const props = createProps("surface_1");
 
     await act(async () => {
@@ -333,7 +333,8 @@ describe("TerminalPane visibility cleanup", () => {
     expect(Terminal).toHaveBeenCalledWith(
       expect.objectContaining({
         altClickMovesCursor: false,
-        macOptionIsMeta: false
+        macOptionIsMeta: false,
+        rightClickSelectsWord: false
       })
     );
   });

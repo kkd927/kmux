@@ -1144,6 +1144,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           cursorBlink: true,
           macOptionIsMeta: false,
           altClickMovesCursor: false,
+          rightClickSelectsWord: false,
           scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
           theme: terminalTheme,
