@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 
-import type { ILink, ILinkProvider, Terminal } from "@xterm/xterm";
+import type {
+  ILink,
+  ILinkDecorations,
+  ILinkProvider,
+  Terminal
+} from "@xterm/xterm";
 
 import {
   isTerminalFileLinkModifierActive,
@@ -300,6 +305,66 @@ describe("terminal file link provider", () => {
     registration.dispose();
   });
 
+  it("updates xterm-proxied decorations for macOS Command hover state", async () => {
+    const providers: ILinkProvider[] = [];
+    const terminal = createFakeTerminal("src/App.tsx");
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "darwin",
+      surfaceId: "surface_1",
+      openFilePath: vi.fn(async () => {})
+    });
+
+    let links: ILink[] | undefined;
+    providers[0].provideLinks(1, (providedLinks) => {
+      links = providedLinks;
+    });
+
+    const link = links?.[0];
+    expect(link?.text).toBe("src/App.tsx");
+
+    const commandHoverDecorations = createTrackedDecorations();
+    link?.hover?.(new MouseEvent("mousemove", { metaKey: true }), link.text);
+    link!.decorations = commandHoverDecorations.decorations;
+    await Promise.resolve();
+
+    expect(commandHoverDecorations.state).toEqual({
+      pointerCursor: true,
+      underline: true
+    });
+
+    link?.leave?.(new MouseEvent("mouseout"), link.text);
+
+    const commandKeyDecorations = createTrackedDecorations();
+    link?.hover?.(new MouseEvent("mousemove"), link.text);
+    link!.decorations = commandKeyDecorations.decorations;
+    await Promise.resolve();
+
+    expect(commandKeyDecorations.state).toEqual({
+      pointerCursor: false,
+      underline: false
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { metaKey: true }));
+    expect(commandKeyDecorations.state).toEqual({
+      pointerCursor: true,
+      underline: true
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keyup"));
+    expect(commandKeyDecorations.state).toEqual({
+      pointerCursor: false,
+      underline: false
+    });
+
+    registration.dispose();
+  });
+
   it("passes captured line cwd when activating a relative file link", async () => {
     const providers: ILinkProvider[] = [];
     const terminal = createFakeTerminal("src/App.tsx");
@@ -406,6 +471,32 @@ function provideFileLinksForLines(
 
 function createFakeTerminal(text: string): Terminal {
   return createFakeTerminalFromLines([{ text, isWrapped: false }]);
+}
+
+function createTrackedDecorations(): {
+  decorations: ILinkDecorations;
+  state: ILinkDecorations;
+} {
+  const state: ILinkDecorations = {
+    pointerCursor: false,
+    underline: false
+  };
+  const decorations = {} as ILinkDecorations;
+  Object.defineProperties(decorations, {
+    pointerCursor: {
+      get: () => state.pointerCursor,
+      set: (value: boolean) => {
+        state.pointerCursor = value;
+      }
+    },
+    underline: {
+      get: () => state.underline,
+      set: (value: boolean) => {
+        state.underline = value;
+      }
+    }
+  });
+  return { decorations, state };
 }
 
 function createFakeTerminalFromLines(

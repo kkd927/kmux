@@ -332,25 +332,55 @@ function createTerminalFileLink({
     return null;
   }
 
-  const decorations: ILinkDecorations = {
+  const initialDecorations: ILinkDecorations = {
     pointerCursor: false,
     underline: false
   };
   const baseCwd = getCwdForBufferLine?.(startLine);
+  let trackedDecorations: ILinkDecorations | null = null;
+  let hovered = false;
 
-  const leave = (): void => {
-    activeDecorations.delete(decorations);
-    decorations.pointerCursor = false;
-    decorations.underline = false;
+  const trackDecorations = (nextDecorations: ILinkDecorations): void => {
+    if (trackedDecorations === nextDecorations) {
+      return;
+    }
+    if (trackedDecorations) {
+      activeDecorations.delete(trackedDecorations);
+    }
+    trackedDecorations = nextDecorations;
+    activeDecorations.add(nextDecorations);
   };
 
-  return {
+  const updateLinkDecorations = (active: boolean): void => {
+    const currentDecorations = link.decorations ?? initialDecorations;
+    trackDecorations(currentDecorations);
+    currentDecorations.pointerCursor = active;
+    currentDecorations.underline = active;
+  };
+
+  const leave = (): void => {
+    hovered = false;
+    if (trackedDecorations) {
+      activeDecorations.delete(trackedDecorations);
+      trackedDecorations.pointerCursor = false;
+      trackedDecorations.underline = false;
+      trackedDecorations = null;
+    }
+    if (link.decorations && link.decorations !== initialDecorations) {
+      link.decorations.pointerCursor = false;
+      link.decorations.underline = false;
+    }
+    initialDecorations.pointerCursor = false;
+    initialDecorations.underline = false;
+  };
+
+  const link: ILink = {
     range: {
       start: { x: startColumn + 1, y: startLine + 1 },
       end: { x: endColumn, y: endLine + 1 }
     },
     text: candidate.rawPath,
-    decorations,
+    decorations: initialDecorations,
     activate: (event) => {
       if (!isTerminalFileLinkModifierActive(event, getKeyboardPlatform())) {
         return;
@@ -362,17 +392,23 @@ function createTerminalFileLink({
       );
     },
     hover: (event) => {
-      activeDecorations.add(decorations);
+      hovered = true;
       updateModifierFromEvent(event);
-      decorations.pointerCursor = isTerminalFileLinkModifierActive(
-        event,
-        getKeyboardPlatform()
+      updateLinkDecorations(
+        isTerminalFileLinkModifierActive(event, getKeyboardPlatform())
       );
-      decorations.underline = decorations.pointerCursor;
+      queueMicrotask(() => {
+        if (hovered) {
+          updateLinkDecorations(
+            isTerminalFileLinkModifierActive(event, getKeyboardPlatform())
+          );
+        }
+      });
     },
     leave,
     dispose: leave
   };
+  return link;
 }
 
 function addCandidateFromPathToken({

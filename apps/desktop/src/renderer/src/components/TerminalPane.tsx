@@ -1143,6 +1143,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           fontWeight: 400,
           cursorBlink: true,
           macOptionIsMeta: false,
+          macOptionClickForcesSelection: props.keyboardPlatform === "darwin",
           altClickMovesCursor: false,
           rightClickSelectsWord: false,
           scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
