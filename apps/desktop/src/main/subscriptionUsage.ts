@@ -19,10 +19,7 @@ import {
 const execFileAsync = promisify(execFile);
 const requireForMeta = createRequire(import.meta.url);
 
-type KnownSubscriptionProvider = Exclude<
-  UsageVendor,
-  "unknown"
->;
+type KnownSubscriptionProvider = Exclude<UsageVendor, "unknown">;
 type FetchLike = typeof fetch;
 type ReadTextFile = (filePath: string) => Promise<string>;
 type ExecFileLike = (
@@ -63,6 +60,28 @@ type GeminiQuotaBucket = {
   resetTime?: string;
 };
 
+type AntigravityQuotaSummaryBucket = {
+  bucketId?: string;
+  displayName?: string;
+  description?: string;
+  window?: string;
+  remainingFraction?: number;
+  disabled?: boolean;
+  resetTime?: string;
+};
+
+type AntigravityQuotaSummaryGroup = {
+  displayName?: string;
+  description?: string;
+  buckets?: AntigravityQuotaSummaryBucket[];
+};
+
+type AntigravityQuotaSummaryPayload = {
+  buckets?: AntigravityQuotaSummaryBucket[];
+  groups?: AntigravityQuotaSummaryGroup[];
+  description?: string;
+};
+
 type CodeAssistTier = {
   id?: string;
   name?: string;
@@ -71,6 +90,7 @@ type CodeAssistTier = {
 type CodeAssistLoadPayload = {
   currentTier?: CodeAssistTier;
   allowedTiers?: CodeAssistTier[];
+  paidTier?: CodeAssistTier;
   cloudaicompanionProject?: string | { id?: string; projectId?: string };
 };
 
@@ -157,6 +177,8 @@ const SUBSCRIPTION_FETCH_TIMEOUT_MS = 5_000;
 const SUBSCRIPTION_EXEC_TIMEOUT_MS = 4_000;
 const SUBSCRIPTION_PROBE_TIMEOUT_MS = 4_000;
 const GOOGLE_OAUTH_CLIENT_SECRET_LENGTH = 35;
+const ANTIGRAVITY_USER_AGENT = "antigravity";
+const ANTIGRAVITY_CLIENT_METADATA_HEADER = "X-Goog-Ext-525006001-bin";
 
 class CodexSubscriptionProbeError extends Error {
   constructor() {
@@ -337,7 +359,8 @@ export async function fetchCodexSubscriptionUsage(
 
   const codexStatusProbe =
     options.codexStatusProbe ??
-    (() => probeCodexViaStatus(options.env, options.platform ?? process.platform));
+    (() =>
+      probeCodexViaStatus(options.env, options.platform ?? process.platform));
   try {
     const statusUsage = await codexStatusProbe();
     if (statusUsage) {
@@ -520,21 +543,13 @@ export async function fetchAntigravitySubscriptionUsage(
 
   const existingAccessToken = credentials?.access_token?.trim();
   if (existingAccessToken && !isCredentialsExpired(credentials, now())) {
-    const usage = await fetchCodeAssistQuotaUsage({
-      provider: "antigravity",
-      providerLabel: "AGY",
-      source: "quota_api",
+    const usage = await fetchAntigravityQuotaSummaryUsage({
       endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
       accessToken: existingAccessToken,
       idToken: credentials?.id_token,
-      metadata: {
-        ideType: "GEMINI_CLI",
-        pluginType: "GEMINI"
-      },
       fetchImpl,
       now,
-      includeZeroUseRows: true,
-      allowAllowedTiersPlanFallback: true
+      platform: options.platform ?? process.platform
     });
     if (usage) {
       return usage;
@@ -552,21 +567,13 @@ export async function fetchAntigravitySubscriptionUsage(
     });
     const accessToken = refreshed?.access_token?.trim();
     if (accessToken) {
-      const usage = await fetchCodeAssistQuotaUsage({
-        provider: "antigravity",
-        providerLabel: "AGY",
-        source: "quota_api",
+      const usage = await fetchAntigravityQuotaSummaryUsage({
         endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
         accessToken,
         idToken: refreshed?.id_token,
-        metadata: {
-          ideType: "GEMINI_CLI",
-          pluginType: "GEMINI"
-        },
         fetchImpl,
         now,
-        includeZeroUseRows: true,
-        allowAllowedTiersPlanFallback: true
+        platform: options.platform ?? process.platform
       });
       if (usage) {
         return usage;
@@ -575,6 +582,90 @@ export async function fetchAntigravitySubscriptionUsage(
   }
 
   return null;
+}
+
+async function fetchAntigravityQuotaSummaryUsage(options: {
+  endpointBaseUrl: string;
+  accessToken: string;
+  idToken?: string;
+  fetchImpl: FetchLike;
+  now: () => number;
+  platform: NodeJS.Platform;
+}): Promise<SubscriptionProviderUsageVm | null> {
+  const headers = {
+    Authorization: `Bearer ${options.accessToken}`,
+    "Content-Type": "application/json",
+    "User-Agent": ANTIGRAVITY_USER_AGENT,
+    [ANTIGRAVITY_CLIENT_METADATA_HEADER]: buildAntigravityClientMetadataHeader(
+      options.platform
+    )
+  };
+  const loadCodeAssistResponse = await options.fetchImpl(
+    `${options.endpointBaseUrl}/v1internal:loadCodeAssist`,
+    withFetchTimeout({
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        metadata: {
+          ideType: "GEMINI_CLI",
+          pluginType: "GEMINI"
+        }
+      })
+    })
+  );
+  if (!loadCodeAssistResponse.ok) {
+    return null;
+  }
+  const loadCodeAssistPayload =
+    (await loadCodeAssistResponse.json()) as CodeAssistLoadPayload;
+  const tierId = asTrimmedString(
+    loadCodeAssistPayload.currentTier?.id
+  )?.toLowerCase();
+  const idTokenClaims = decodeJwtPayload(options.idToken);
+  const planLabel =
+    asTrimmedString(loadCodeAssistPayload.paidTier?.name) ??
+    normalizeGeminiPlanLabel(tierId, idTokenClaims.hd) ??
+    (!tierId
+      ? normalizeCodeAssistAllowedTiersPlanLabel(
+          loadCodeAssistPayload.allowedTiers
+        )
+      : null);
+  if (!planLabel) {
+    return null;
+  }
+
+  const projectId = normalizeGeminiProjectId(
+    loadCodeAssistPayload.cloudaicompanionProject
+  );
+  const quotaResponse = await options.fetchImpl(
+    `${options.endpointBaseUrl}/v1internal:retrieveUserQuotaSummary`,
+    withFetchTimeout({
+      method: "POST",
+      headers,
+      body: JSON.stringify(projectId ? { project: projectId } : {})
+    })
+  );
+  if (!quotaResponse.ok) {
+    return null;
+  }
+  const quotaPayload =
+    (await quotaResponse.json()) as AntigravityQuotaSummaryPayload;
+  const rows = normalizeAntigravityQuotaSummaryRows(
+    quotaPayload,
+    options.now()
+  );
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return {
+    provider: "antigravity",
+    providerLabel: "AGY",
+    planLabel,
+    source: "quota_summary_api",
+    updatedAt: new Date(options.now()).toISOString(),
+    rows
+  };
 }
 
 async function fetchCodeAssistQuotaUsage(options: {
@@ -937,6 +1028,126 @@ function nextMonthFirstUtcMs(nowMs: number): number {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0);
 }
 
+function normalizeAntigravityQuotaSummaryRows(
+  payload: AntigravityQuotaSummaryPayload,
+  nowMs: number
+): SubscriptionUsageRowVm[] {
+  const groupedBuckets = (payload.groups ?? []).flatMap((group) =>
+    (group.buckets ?? []).map((bucket) => ({
+      groupLabel: asTrimmedString(group.displayName),
+      bucket
+    }))
+  );
+  const buckets = [
+    ...groupedBuckets,
+    ...(payload.buckets ?? []).map((bucket) => ({
+      groupLabel: undefined,
+      bucket
+    }))
+  ];
+  const usedKeys = new Set<string>();
+
+  return buckets.flatMap(({ groupLabel, bucket }, index) => {
+    if (isAntigravityThirdPartyQuota(groupLabel, bucket.bucketId)) {
+      return [];
+    }
+    const remainingFraction = bucket.remainingFraction;
+    if (
+      bucket.disabled === true ||
+      typeof remainingFraction !== "number" ||
+      !Number.isFinite(remainingFraction) ||
+      remainingFraction < 0 ||
+      remainingFraction > 1
+    ) {
+      return [];
+    }
+    const bucketLabel =
+      asTrimmedString(bucket.displayName) ??
+      humanizeQuotaWindow(bucket.window) ??
+      "Quota";
+    const label = groupLabel ? `${groupLabel} · ${bucketLabel}` : bucketLabel;
+    const baseKey =
+      asTrimmedString(bucket.bucketId) ??
+      slugifySubscriptionRowKey(`${groupLabel ?? "quota"}-${bucketLabel}`) ??
+      `quota-${index + 1}`;
+    let key = baseKey;
+    let duplicate = 2;
+    while (usedKeys.has(key)) {
+      key = `${baseKey}-${duplicate}`;
+      duplicate += 1;
+    }
+    usedKeys.add(key);
+
+    return [
+      buildRow({
+        key,
+        label,
+        usedPercent: (1 - remainingFraction) * 100,
+        resetsAtMs: parseDateToMs(bucket.resetTime),
+        windowKind: classifyQuotaSummaryWindow(bucket.window),
+        nowMs
+      })
+    ];
+  });
+}
+
+function isAntigravityThirdPartyQuota(
+  groupLabel: string | undefined,
+  bucketId: string | undefined
+): boolean {
+  const normalizedGroup = groupLabel?.trim().toLowerCase() ?? "";
+  const normalizedBucketId = bucketId?.trim().toLowerCase() ?? "";
+  return (
+    normalizedBucketId.startsWith("3p-") ||
+    normalizedGroup.includes("claude") ||
+    normalizedGroup.includes("gpt")
+  );
+}
+
+function classifyQuotaSummaryWindow(
+  window: string | undefined
+): Exclude<SubscriptionUsageRowVm["windowKind"], "credits"> {
+  const normalized = window?.trim().toLowerCase();
+  if (normalized === "weekly" || normalized === "week") {
+    return "weekly";
+  }
+  if (
+    normalized === "5h" ||
+    normalized === "five-hour" ||
+    normalized === "five_hour"
+  ) {
+    return "session";
+  }
+  return "model";
+}
+
+function humanizeQuotaWindow(window: string | undefined): string | null {
+  const normalized = window?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "weekly" || normalized === "week") {
+    return "Weekly Limit";
+  }
+  if (
+    normalized === "5h" ||
+    normalized === "five-hour" ||
+    normalized === "five_hour"
+  ) {
+    return "Five Hour Limit";
+  }
+  return humanizePlanLabel(normalized);
+}
+
+function slugifySubscriptionRowKey(value: string): string | null {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return slug || null;
+}
+
 function normalizeGeminiQuotaRows(
   buckets: GeminiQuotaBucket[],
   nowMs: number,
@@ -998,6 +1209,46 @@ function isReliableGeminiQuotaBucket(bucket: GeminiQuotaBucket): boolean {
   return typeof resetTimeMs === "number" && resetTimeMs > 0;
 }
 
+function buildAntigravityClientMetadataHeader(
+  platform: NodeJS.Platform
+): string {
+  const platformValue = resolveAntigravityClientPlatform(platform);
+  const fields = [
+    encodeProtoVarintField(1, 14),
+    ...(platformValue ? [encodeProtoVarintField(4, platformValue)] : []),
+    encodeProtoVarintField(7, 2),
+    encodeProtoStringField(8, "Antigravity CLI")
+  ];
+  return Buffer.concat(fields).toString("base64");
+}
+
+function resolveAntigravityClientPlatform(
+  platform: NodeJS.Platform
+): number | null {
+  if (platform === "darwin") {
+    return process.arch === "arm64" ? 2 : 1;
+  }
+  if (platform === "linux") {
+    return process.arch === "arm64" ? 4 : 3;
+  }
+  if (platform === "win32" && process.arch === "x64") {
+    return 5;
+  }
+  return null;
+}
+
+function encodeProtoVarintField(fieldNumber: number, value: number): Buffer {
+  return Buffer.from([(fieldNumber << 3) | 0, value]);
+}
+
+function encodeProtoStringField(fieldNumber: number, value: string): Buffer {
+  const bytes = Buffer.from(value, "utf8");
+  return Buffer.concat([
+    Buffer.from([(fieldNumber << 3) | 2, bytes.length]),
+    bytes
+  ]);
+}
+
 async function loadClaudeCredentials(options: {
   credentialsPath: string;
   readTextFile: ReadTextFile;
@@ -1032,10 +1283,7 @@ async function loadClaudeCredentials(options: {
       scopes?: string[];
       rateLimitTier?: string;
     };
-  }>(
-    options.credentialsPath,
-    options.readTextFile
-  );
+  }>(options.credentialsPath, options.readTextFile);
   const fromFile = parseClaudeCredentials(filePayload);
   if (!fromFile) {
     return null;
@@ -1148,8 +1396,9 @@ function parseAntigravityKeychainSecret(
     return null;
   }
   const decodedPayload = decodeAntigravityKeyringPayload(trimmed);
-  const parsedCredentials =
-    parseAntigravityCredentialsPayload(decodedPayload ?? trimmed);
+  const parsedCredentials = parseAntigravityCredentialsPayload(
+    decodedPayload ?? trimmed
+  );
   if (parsedCredentials) {
     return parsedCredentials;
   }
@@ -1907,9 +2156,7 @@ function extractAntigravityOAuthClientConfigs(
     const clientIds = Array.from(
       new Set(
         Array.from(
-          content.matchAll(
-            /(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/giu
-          )
+          content.matchAll(/(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/giu)
         ).map((match) => match[1])
       )
     );

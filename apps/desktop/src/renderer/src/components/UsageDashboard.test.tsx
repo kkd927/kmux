@@ -146,18 +146,18 @@ describe("UsageDashboard", () => {
         {
           provider: "antigravity",
           providerLabel: "AGY",
-          planLabel: "Paid",
-          source: "quota_api",
+          planLabel: "Google AI Pro",
+          source: "quota_summary_api",
           updatedAt: "2026-06-02T02:00:00.000Z",
           rows: [
             {
-              key: "flash",
-              label: "Flash",
+              key: "gemini-weekly",
+              label: "Gemini Models · Weekly Limit",
               valueKind: "percent",
-              usedPercent: 65,
+              usedPercent: 6,
               resetLabel: "Resets in 13h 0m",
               resetsAt: "2026-06-02T15:00:00.000Z",
-              windowKind: "model"
+              windowKind: "weekly"
             }
           ]
         }
@@ -174,11 +174,11 @@ describe("UsageDashboard", () => {
       "[data-testid='subscription-provider-antigravity']"
     );
     const row = container.querySelector<HTMLElement>(
-      "[data-testid='subscription-row-antigravity-flash']"
+      "[data-testid='subscription-row-antigravity-gemini-weekly']"
     );
-    expect(provider?.textContent).toContain("AGY Paid");
-    expect(row?.textContent).toContain("Flash");
-    expect(row?.textContent).toContain("65%");
+    expect(provider?.textContent).toContain("AGY Google AI Pro");
+    expect(row?.textContent).toContain("Gemini Models · Weekly Limit");
+    expect(row?.textContent).toContain("6%");
   });
 
   it("shows token mix costs as plain values when only some samples have unknown component pricing", () => {

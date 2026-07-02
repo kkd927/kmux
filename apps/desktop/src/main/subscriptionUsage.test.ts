@@ -1020,7 +1020,11 @@ describe("subscription usage fetchers", () => {
         new Response(
           JSON.stringify({
             currentTier: {
-              id: "standard-tier"
+              id: "free-tier"
+            },
+            paidTier: {
+              id: "g1-pro-tier",
+              name: "Google AI Pro"
             },
             cloudaicompanionProject: "projects/agy-project"
           }),
@@ -1030,11 +1034,39 @@ describe("subscription usage fetchers", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            buckets: [
+            groups: [
               {
-                modelId: "gemini-3.5-flash",
-                remainingFraction: 0.35,
-                resetTime: "2026-04-19T00:00:00.000Z"
+                displayName: "Gemini Models",
+                description:
+                  "Models within this group: Gemini Flash, Gemini Pro",
+                buckets: [
+                  {
+                    bucketId: "gemini-weekly",
+                    displayName: "Weekly Limit",
+                    window: "weekly",
+                    remainingFraction: 0.94,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  },
+                  {
+                    bucketId: "gemini-5h",
+                    displayName: "Five Hour Limit",
+                    window: "5h",
+                    remainingFraction: 0.92,
+                    resetTime: "2026-04-18T04:00:00.000Z"
+                  }
+                ]
+              },
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  {
+                    bucketId: "3p-weekly",
+                    displayName: "Weekly Limit",
+                    window: "weekly",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  }
+                ]
               }
             ]
           }),
@@ -1057,17 +1089,25 @@ describe("subscription usage fetchers", () => {
       expect.objectContaining({
         provider: "antigravity",
         providerLabel: "AGY",
-        planLabel: "Paid",
-        source: "quota_api",
+        planLabel: "Google AI Pro",
+        source: "quota_summary_api",
         rows: [
           expect.objectContaining({
-            key: "flash",
-            label: "Flash",
-            usedPercent: 65
+            key: "gemini-weekly",
+            label: "Gemini Models · Weekly Limit",
+            usedPercent: 6,
+            windowKind: "weekly"
+          }),
+          expect.objectContaining({
+            key: "gemini-5h",
+            label: "Gemini Models · Five Hour Limit",
+            usedPercent: 8,
+            windowKind: "session"
           })
         ]
       })
     );
+    expect(usage?.rows.some((row) => row.key.startsWith("3p-"))).toBe(false);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
       "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
@@ -1077,9 +1117,14 @@ describe("subscription usage fetchers", () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       expect.objectContaining({
-        method: "POST"
+        method: "POST",
+        headers: expect.objectContaining({
+          "User-Agent": "antigravity",
+          "X-Goog-Ext-525006001-bin": expect.any(String)
+        }),
+        body: JSON.stringify({ project: "projects/agy-project" })
       })
     );
   });
@@ -1117,11 +1162,18 @@ describe("subscription usage fetchers", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            buckets: [
+            groups: [
               {
-                modelId: "gemini-2.5-flash",
-                remainingFraction: 1,
-                resetTime: "2026-04-19T00:00:00.000Z"
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-5h",
+                    displayName: "Five Hour Limit",
+                    window: "5h",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  }
+                ]
               }
             ]
           }),
@@ -1151,9 +1203,10 @@ describe("subscription usage fetchers", () => {
         planLabel: "Paid",
         rows: [
           expect.objectContaining({
-            key: "flash",
-            label: "Flash",
-            usedPercent: 0
+            key: "gemini-5h",
+            label: "Gemini Models · Five Hour Limit",
+            usedPercent: 0,
+            windowKind: "session"
           })
         ]
       })
@@ -1195,21 +1248,25 @@ describe("subscription usage fetchers", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            buckets: [
+            groups: [
               {
-                modelId: "gemini-2.5-pro",
-                remainingFraction: 1,
-                resetTime: "2026-04-19T00:00:00.000Z"
-              },
-              {
-                modelId: "gemini-2.5-flash",
-                remainingFraction: 1,
-                resetTime: "2026-04-19T00:00:00.000Z"
-              },
-              {
-                modelId: "gemini-2.0-flash-lite",
-                remainingFraction: 1,
-                resetTime: "2026-04-19T00:00:00.000Z"
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-weekly",
+                    displayName: "Weekly Limit",
+                    window: "weekly",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  },
+                  {
+                    bucketId: "gemini-5h",
+                    displayName: "Five Hour Limit",
+                    window: "5h",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-18T04:00:00.000Z"
+                  }
+                ]
               }
             ]
           }),
@@ -1232,19 +1289,16 @@ describe("subscription usage fetchers", () => {
         planLabel: "Gemini Code Assist",
         rows: [
           expect.objectContaining({
-            key: "pro",
-            label: "Pro",
-            usedPercent: 0
+            key: "gemini-weekly",
+            label: "Gemini Models · Weekly Limit",
+            usedPercent: 0,
+            windowKind: "weekly"
           }),
           expect.objectContaining({
-            key: "flash",
-            label: "Flash",
-            usedPercent: 0
-          }),
-          expect.objectContaining({
-            key: "flash-lite",
-            label: "Flash Lite",
-            usedPercent: 0
+            key: "gemini-5h",
+            label: "Gemini Models · Five Hour Limit",
+            usedPercent: 0,
+            windowKind: "session"
           })
         ]
       })
@@ -1261,6 +1315,12 @@ describe("subscription usage fetchers", () => {
       | RequestInit
       | undefined;
     expect(JSON.parse(String(quotaRequest?.body))).toEqual({});
+    expect(quotaRequest?.headers).toEqual(
+      expect.objectContaining({
+        "User-Agent": "antigravity",
+        "X-Goog-Ext-525006001-bin": expect.any(String)
+      })
+    );
   });
 
   it("reads Antigravity Linux keyring credentials for AGY quota rows", async () => {
@@ -1285,11 +1345,18 @@ describe("subscription usage fetchers", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            buckets: [
+            groups: [
               {
-                modelId: "gemini-3.5-flash",
-                remainingFraction: 0.15,
-                resetTime: "2026-04-19T00:00:00.000Z"
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-weekly",
+                    displayName: "Weekly Limit",
+                    window: "weekly",
+                    remainingFraction: 0.15,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  }
+                ]
               }
             ]
           }),
@@ -1322,9 +1389,10 @@ describe("subscription usage fetchers", () => {
         planLabel: "Paid",
         rows: [
           expect.objectContaining({
-            key: "flash",
-            label: "Flash",
-            usedPercent: 85
+            key: "gemini-weekly",
+            label: "Gemini Models · Weekly Limit",
+            usedPercent: 85,
+            windowKind: "weekly"
           })
         ]
       })
@@ -1357,11 +1425,18 @@ describe("subscription usage fetchers", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            buckets: [
+            groups: [
               {
-                modelId: "gemini-3.5-flash",
-                remainingFraction: 0.15,
-                resetTime: "2026-04-19T00:00:00.000Z"
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-5h",
+                    displayName: "Five Hour Limit",
+                    window: "5h",
+                    remainingFraction: 0.15,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  }
+                ]
               }
             ]
           }),
@@ -1393,9 +1468,10 @@ describe("subscription usage fetchers", () => {
         planLabel: "Gemini Code Assist",
         rows: [
           expect.objectContaining({
-            key: "flash",
-            label: "Flash",
-            usedPercent: 85
+            key: "gemini-5h",
+            label: "Gemini Models · Five Hour Limit",
+            usedPercent: 85,
+            windowKind: "session"
           })
         ]
       })
