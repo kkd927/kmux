@@ -181,6 +181,43 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("maps Codex permission requests to needs_input events", () => {
+    expect(
+      normalizeAgentHookInvocation("codex", "PermissionRequest", {
+        hook_event_name: "PermissionRequest",
+        turn_id: "turn_123",
+        tool_name: "Bash",
+        tool_input: {
+          command: "npm test",
+          description: "Run tests outside the sandbox?"
+        }
+      })
+    ).toMatchObject({
+      agent: "codex",
+      event: "needs_input",
+      title: "Codex needs input",
+      message: "Run tests outside the sandbox?"
+    });
+  });
+
+  it("keeps a generic fallback for Codex permission requests without descriptions", () => {
+    expect(
+      normalizeAgentHookInvocation("codex", "PermissionRequest", {
+        hook_event_name: "PermissionRequest",
+        turn_id: "turn_456",
+        tool_name: "apply_patch",
+        tool_input: {
+          command: "*** Begin Patch"
+        }
+      })
+    ).toMatchObject({
+      agent: "codex",
+      event: "needs_input",
+      title: "Codex needs input",
+      message: "Needs input"
+    });
+  });
+
   it("normalizes Antigravity aliases and preserves conversation metadata", () => {
     expect(
       normalizeAgentHookInvocation("agy", "PreInvocation", {

@@ -236,7 +236,7 @@ describe("shell integration launch preparation", () => {
       readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
     ).not.toContain('export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"');
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "const managedEvents = ['SessionStart', 'Stop'];"
+      "const managedEvents = ['SessionStart', 'PermissionRequest', 'Stop'];"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "const deprecatedManagedEvents = ['UserPromptSubmit'];"
@@ -262,6 +262,113 @@ describe("shell integration launch preparation", () => {
     expect(existsSync(join(wrapperDir, "bin", "gemini"))).toBe(false);
     rmSync(fakeHome, { recursive: true, force: true });
   });
+
+  it(
+    "moves the Codex wrapper back to the front after zsh startup files reorder PATH",
+    async () => {
+      const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-path-home-"));
+      const helperBinDir = mkdtempSync(join(tmpdir(), "kmux-zsh-path-helper-"));
+      const wrapperBinDir = mkdtempSync(
+        join(tmpdir(), "kmux-zsh-path-wrapper-")
+      );
+      const realBinDir = mkdtempSync(join(tmpdir(), "kmux-zsh-path-real-"));
+      const realCodex = join(realBinDir, "codex");
+      const wrapperCodex = join(wrapperBinDir, "codex");
+
+      writeFileSync(realCodex, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(realCodex, 0o755);
+      writeFileSync(
+        join(fakeHome, ".zprofile"),
+        `export PATH="${realBinDir}:$PATH"\n`,
+        "utf8"
+      );
+      writeFileSync(
+        join(fakeHome, ".zshrc"),
+        `export PATH="${realBinDir}:$PATH"\n`,
+        "utf8"
+      );
+      writeAgentWrapperBinaries(wrapperBinDir);
+
+      const agentPath = {
+        helperBinDir,
+        wrapperBinDir,
+        prependWrapperToPath: true
+      };
+      const sessionEnv = buildSessionEnv({
+        baseEnv: {
+          HOME: fakeHome,
+          PATH: "/usr/bin:/bin",
+          SHELL: "/bin/zsh"
+        },
+        hookEnv: {
+          KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+          KMUX_AGENT_BIN_DIR: helperBinDir,
+          KMUX_NODE_PATH: process.execPath
+        },
+        sessionEnv: {
+          TERM_PROGRAM: "kmux"
+        },
+        options: {
+          agentPath
+        }
+      });
+      const prepared = prepareShellIntegrationLaunch(
+        "/bin/zsh",
+        ["-l"],
+        sessionEnv,
+        {
+          enabled: true,
+          agentPath
+        }
+      );
+
+      try {
+        const child = spawn(
+          prepared.shellPath,
+          [
+            "-lic",
+            [
+              'printf "RESOLVED=%s\\n" "$(whence -p codex)"',
+              'printf "PATH=%s\\n" "$PATH"'
+            ].join("; ")
+          ],
+          {
+            env: prepared.env,
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString("utf8");
+        });
+
+        const [exitCode] = (await once(child, "close")) as [number | null];
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe("");
+
+        const resolvedMatch = stdout.match(/RESOLVED=([^\r\n]+)/);
+        const pathMatch = stdout.match(/PATH=([^\r\n]+)/);
+        expect(resolvedMatch?.[1]).toBe(wrapperCodex);
+        expect(pathMatch?.[1]).toBeTruthy();
+        const pathEntries = pathMatch?.[1]?.split(":") ?? [];
+        expect(pathEntries[0]).toBe(wrapperBinDir);
+        expect(
+          pathEntries.filter((entry) => entry === wrapperBinDir)
+        ).toHaveLength(1);
+        expect(pathEntries).toContain(realBinDir);
+      } finally {
+        rmSync(fakeHome, { recursive: true, force: true });
+        rmSync(helperBinDir, { recursive: true, force: true });
+        rmSync(wrapperBinDir, { recursive: true, force: true });
+        rmSync(realBinDir, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_WRAPPER_TEST_TIMEOUT_MS
+  );
 
   it("recreates the cached zsh wrapper after temp cleanup removes it", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-home-"));
@@ -417,6 +524,117 @@ describe("shell integration launch preparation", () => {
     );
   });
 
+  it(
+    "moves the Codex wrapper back to the front after bash startup files reorder PATH",
+    async () => {
+      const fakeHome = mkdtempSync(join(tmpdir(), "kmux-bash-path-home-"));
+      const helperBinDir = mkdtempSync(
+        join(tmpdir(), "kmux-bash-path-helper-")
+      );
+      const wrapperBinDir = mkdtempSync(
+        join(tmpdir(), "kmux-bash-path-wrapper-")
+      );
+      const realBinDir = mkdtempSync(join(tmpdir(), "kmux-bash-path-real-"));
+      const realCodex = join(realBinDir, "codex");
+      const wrapperCodex = join(wrapperBinDir, "codex");
+
+      writeFileSync(realCodex, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(realCodex, 0o755);
+      writeFileSync(
+        join(fakeHome, ".bash_profile"),
+        `export PATH=":${realBinDir}:$PATH::"\n`,
+        "utf8"
+      );
+      writeFileSync(
+        join(fakeHome, ".bashrc"),
+        `export PATH="${realBinDir}:$PATH"\n`,
+        "utf8"
+      );
+      writeAgentWrapperBinaries(wrapperBinDir);
+
+      const agentPath = {
+        helperBinDir,
+        wrapperBinDir,
+        prependWrapperToPath: true
+      };
+      const sessionEnv = buildSessionEnv({
+        baseEnv: {
+          HOME: fakeHome,
+          PATH: "/usr/bin:/bin",
+          SHELL: "/bin/bash"
+        },
+        hookEnv: {
+          KMUX_SOCKET_PATH: "/tmp/kmux.sock",
+          KMUX_AGENT_BIN_DIR: helperBinDir,
+          KMUX_NODE_PATH: process.execPath
+        },
+        sessionEnv: {
+          TERM_PROGRAM: "kmux"
+        },
+        options: {
+          agentPath
+        }
+      });
+      const prepared = prepareShellIntegrationLaunch(
+        "/bin/bash",
+        ["--login"],
+        sessionEnv,
+        {
+          enabled: true,
+          agentPath
+        }
+      );
+
+      try {
+        const child = spawn(
+          prepared.shellPath,
+          [
+            "--login",
+            "-i",
+            "-c",
+            [
+              'printf "RESOLVED=%s\\n" "$(command -v codex)"',
+              'printf "PATH=%s\\n" "$PATH"'
+            ].join("; ")
+          ],
+          {
+            env: prepared.env,
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        let stdout = "";
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString("utf8");
+        });
+
+        const [exitCode] = (await once(child, "close")) as [number | null];
+        expect(exitCode).toBe(0);
+
+        const resolvedMatch = stdout.match(/RESOLVED=([^\r\n]+)/);
+        const pathMatch = stdout.match(/PATH=([^\r\n]+)/);
+        expect(resolvedMatch?.[1]).toBe(wrapperCodex);
+        expect(pathMatch?.[1]).toBeTruthy();
+        const pathEntries = pathMatch?.[1]?.split(":") ?? [];
+        expect(pathEntries[0]).toBe(wrapperBinDir);
+        expect(
+          pathEntries.filter((entry) => entry === wrapperBinDir)
+        ).toHaveLength(1);
+        expect(pathEntries.slice(0, 3)).toEqual([
+          wrapperBinDir,
+          "",
+          realBinDir
+        ]);
+        expect(pathEntries.slice(-2)).toEqual(["", ""]);
+      } finally {
+        rmSync(fakeHome, { recursive: true, force: true });
+        rmSync(helperBinDir, { recursive: true, force: true });
+        rmSync(wrapperBinDir, { recursive: true, force: true });
+        rmSync(realBinDir, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_WRAPPER_TEST_TIMEOUT_MS
+  );
+
   it("wraps fish launches with a temporary XDG config directory", () => {
     const prepared = prepareShellIntegrationLaunch(
       "/opt/homebrew/bin/fish",
@@ -457,6 +675,9 @@ describe("shell integration launch preparation", () => {
     expect(integrationScript).toBeTruthy();
     const integrationContents = readFileSync(integrationScript ?? "", "utf8");
     expect(integrationContents).toContain("KMUX_AGENT_WRAPPER_BIN_DIR");
+    expect(integrationContents).toContain(
+      "set -gx PATH $_kmux_next_path"
+    );
     expect(integrationContents).toContain(
       "function __kmux_emit_osc7 --on-event fish_prompt"
     );
@@ -889,19 +1110,32 @@ describe("shell integration launch preparation", () => {
             hooks: {
               UserPromptSubmit: [
                 {
+                  matcher: "user-submit",
                   hooks: [
                     {
                       type: "command",
                       command: "echo user-prompt-submit"
-                    }
-                  ]
-                },
-                {
-                  hooks: [
+                    },
                     {
                       type: "command",
                       command:
                         "KMUX_MANAGED_CODEX_HOOK=1; kmux-agent-hook codex UserPromptSubmit || true"
+                    }
+                  ]
+                }
+              ],
+              Stop: [
+                {
+                  matcher: "user-stop",
+                  hooks: [
+                    {
+                      type: "command",
+                      command: "echo user-stop"
+                    },
+                    {
+                      type: "command",
+                      command:
+                        "KMUX_MANAGED_CODEX_HOOK=1; kmux-agent-hook codex Stop || true"
                     }
                   ]
                 }
@@ -950,14 +1184,34 @@ describe("shell integration launch preparation", () => {
         await runWrapper();
         const firstContents = readFileSync(hooksPath, "utf8");
         const firstHooks = JSON.parse(firstContents) as {
-          hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+          hooks: Record<
+            string,
+            Array<{
+              matcher?: string;
+              hooks?: Array<{ command?: string }>;
+            }>
+          >;
         };
         expect(firstHooks.hooks.UserPromptSubmit).toHaveLength(1);
+        expect(firstHooks.hooks.UserPromptSubmit[0].matcher).toBe(
+          "user-submit"
+        );
         expect(firstHooks.hooks.UserPromptSubmit[0].hooks?.[0].command).toBe(
           "echo user-prompt-submit"
         );
+        expect(firstHooks.hooks.UserPromptSubmit[0].hooks).toHaveLength(1);
         expect(firstHooks.hooks.SessionStart).toHaveLength(1);
-        expect(firstHooks.hooks.Stop).toHaveLength(1);
+        expect(firstHooks.hooks.PermissionRequest).toHaveLength(1);
+        expect(firstHooks.hooks.Stop).toHaveLength(2);
+        expect(firstHooks.hooks.Stop[0].matcher).toBe("user-stop");
+        expect(firstHooks.hooks.Stop[0].hooks).toEqual([
+          expect.objectContaining({
+            command: "echo user-stop"
+          })
+        ]);
+        expect(firstHooks.hooks.Stop[1].hooks?.[0].command).toContain(
+          "KMUX_MANAGED_CODEX_HOOK=1"
+        );
         const firstMtimeMs = statSync(hooksPath).mtimeMs;
         await new Promise((resolve) => setTimeout(resolve, 25));
         await runWrapper();

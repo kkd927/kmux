@@ -72,8 +72,11 @@ function prependPathSegment(
   if (!normalizedSegment) {
     return pathValue;
   }
-  const parts = (pathValue ?? "")
+  if (pathValue === undefined) {
+    return normalizedSegment;
+  }
+  const parts = pathValue
     .split(delimiter)
-    .filter((part) => part && part !== normalizedSegment);
+    .filter((part) => part !== normalizedSegment);
   return [normalizedSegment, ...parts].join(delimiter);
 }

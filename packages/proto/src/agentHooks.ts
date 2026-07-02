@@ -177,6 +177,9 @@ function mapAgentHookEvent(
   }
 
   if (agent === "codex") {
+    if (hookEvent === "permission-request") {
+      return "needs_input";
+    }
     if (hookEvent === "stop" || hookEvent === "idle") {
       return "turn_complete";
     }
@@ -284,6 +287,14 @@ function extractHookMessage(
     const question = extractClaudeQuestion(payload);
     if (question) {
       return question;
+    }
+  }
+
+  if (agent === "codex") {
+    const toolInput = recordField(payload, "tool_input");
+    const description = stringField(toolInput, "description");
+    if (description) {
+      return description;
     }
   }
 

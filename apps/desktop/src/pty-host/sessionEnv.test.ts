@@ -112,6 +112,28 @@ describe("buildSessionEnv", () => {
     );
   });
 
+  it("preserves empty PATH entries while moving the wrapper to the front", () => {
+    const wrapperBinDir = "/home/test/.local/share/kmux/wrappers";
+    const env = buildSessionEnv({
+      baseEnv: {
+        PATH: `:/opt/bin:${wrapperBinDir}::`
+      },
+      hookEnv: defaultHookEnv,
+      sessionEnv: {
+        TERM_PROGRAM: "kmux"
+      },
+      options: {
+        agentPath: {
+          helperBinDir: "/home/test/.local/share/kmux/hooks",
+          wrapperBinDir,
+          prependWrapperToPath: true
+        }
+      }
+    });
+
+    expect(env.PATH).toBe(`${wrapperBinDir}::/opt/bin::`);
+  });
+
   it("keeps shell policy hook env authoritative over launch and session env", () => {
     const env = buildSessionEnv({
       baseEnv: {

@@ -170,19 +170,22 @@ Installed hooks:
 
 - [`apps/desktop/src/pty-host/shellIntegration.ts`](../apps/desktop/src/pty-host/shellIntegration.ts)
 - `SessionStart`
+- `PermissionRequest`
 - `Stop`
 
 Canonical notification signals:
 
 - hook `SessionStart` -> `agent.event(session_start)`
 - kmux no longer installs Codex `UserPromptSubmit` hooks. Older kmux-managed entries for that hook are removed when the wrapper updates while user-defined hooks are preserved.
+- hook `PermissionRequest` -> `agent.event(needs_input)`
 - hook `Stop` -> `agent.event(turn_complete)`
 - filtered terminal OSC attention -> synthetic `agent.event(needs_input)` with `details.uiOnly = true`
 - visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
 
 Important:
 
-- Codex does not currently provide a reliable hook-based `needs_input` signal in `kmux`
+- `PermissionRequest` is the primary structured signal for approval-bearing Codex tool handlers
+- Codex versions and prompt types without `PermissionRequest` coverage still require the OSC fallback
 - visible-input submit/dismiss is the only reliable immediate signal that the user handled an in-turn prompt before `Stop`
 - Codex terminal chatter must not be treated as a normal desktop notification by default
 
