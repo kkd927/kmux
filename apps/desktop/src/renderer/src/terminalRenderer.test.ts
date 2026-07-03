@@ -86,6 +86,43 @@ describe("terminal renderer helpers", () => {
     expect(terminal.paste).toHaveBeenCalledWith(text);
   });
 
+  it("awaits async clipboard text before pasting", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: async () => "async clipboard text",
+      readClipboardImages: async () => []
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledWith("async clipboard text");
+  });
+
+  it("falls back to clipboard text when native image read fails", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const onImageAttachmentError = vi.fn();
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: async () => "text survives image read failure",
+      readClipboardImages: async () => {
+        throw new Error("image read failed");
+      },
+      onImageAttachmentError
+    });
+
+    expect(didPaste).toBe(true);
+    expect(onImageAttachmentError).toHaveBeenCalledOnce();
+    expect(terminal.paste).toHaveBeenCalledWith(
+      "text survives image read failure"
+    );
+  });
+
   it("removes terminal control characters from clipboard text paste", async () => {
     const terminal = {
       paste: vi.fn()

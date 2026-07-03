@@ -120,3 +120,7 @@ function isFileLargerThanLimit(
 function imageMimeTypeForPath(path: string): ImageAttachmentMimeType | null {
   return IMAGE_MIME_BY_EXTENSION[extname(path).toLowerCase()] ?? null;
 }
+
+export function isSupportedClipboardImagePath(path: string): boolean {
+  return imageMimeTypeForPath(path) !== null;
+}

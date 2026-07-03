@@ -17,6 +17,18 @@ vi.mock("electron", () => ({
   BrowserWindow: {
     fromWebContents: vi.fn()
   },
+  clipboard: {
+    availableFormats: vi.fn(() => []),
+    read: vi.fn(() => ""),
+    readBookmark: vi.fn(() => ({ title: "", url: "" })),
+    readBuffer: vi.fn(() => Buffer.alloc(0)),
+    readImage: vi.fn(() => ({
+      isEmpty: () => true,
+      toPNG: () => Buffer.alloc(0)
+    })),
+    readText: vi.fn(() => ""),
+    writeText: vi.fn()
+  },
   ipcMain: {
     handle: vi.fn(
       (channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -58,6 +70,12 @@ function registerTestHandlers(options: {
   captureSurfaceDiagnostics?: (
     surfaceId: string
   ) => Promise<SurfaceCapturePayload>;
+  clipboard?: {
+    readText: () => string;
+    writeText: (text: string) => void;
+    readImages: () => CreateImageAttachmentPayload[];
+    hasPasteableContent: () => boolean;
+  };
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -115,6 +133,7 @@ function registerTestHandlers(options: {
     setUsageDashboardOpen: vi.fn(),
     downloadAvailableUpdate: vi.fn(),
     installDownloadedUpdate: vi.fn(),
+    clipboard: options.clipboard,
     getExternalAgentSessions: () => options.snapshot,
     resumeExternalAgentSession: () => options.resumeResult,
     createImageAttachments: async (
@@ -215,6 +234,52 @@ describe("ipc handlers", () => {
         ])
       )
     ).resolves.toBe(attachmentResult);
+  });
+
+  it("registers clipboard handlers through the main clipboard service", async () => {
+    const imagePayload: CreateImageAttachmentPayload = {
+      source: "clipboard",
+      originalName: "clipboard.png",
+      mimeType: "image/png",
+      bytes: new Uint8Array([1, 2, 3])
+    };
+    const clipboard = {
+      readText: vi.fn(() => "copied text"),
+      writeText: vi.fn(),
+      readImages: vi.fn(() => [imagePayload]),
+      hasPasteableContent: vi.fn(() => true)
+    };
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-07T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      clipboard
+    });
+
+    await expect(
+      Promise.resolve(handlers.get("kmux:clipboard:read-text")?.({}))
+    ).resolves.toBe("copied text");
+    await Promise.resolve(
+      handlers.get("kmux:clipboard:write-text")?.({}, "new text")
+    );
+    await expect(
+      Promise.resolve(handlers.get("kmux:clipboard:read-images")?.({}))
+    ).resolves.toEqual([imagePayload]);
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:clipboard:has-pasteable-content")?.({})
+      )
+    ).resolves.toBe(true);
+
+    expect(clipboard.readText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith("new text");
+    expect(clipboard.readImages).toHaveBeenCalledTimes(1);
+    expect(clipboard.hasPasteableContent).toHaveBeenCalledTimes(1);
   });
 
   it("captures surface diagnostics only when enabled", async () => {

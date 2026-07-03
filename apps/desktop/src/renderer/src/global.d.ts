@@ -76,7 +76,8 @@ declare global {
         surfaceId: string,
         payloads: CreateImageAttachmentPayload[]
       ): Promise<CreateImageAttachmentsResult>;
-      readClipboardImages(): CreateImageAttachmentPayload[];
+      readClipboardImages(): Promise<CreateImageAttachmentPayload[]>;
+      hasPasteableClipboardContent(): Promise<boolean>;
       resizeSurface(
         surfaceId: string,
         attachId: string | null,
@@ -96,8 +97,8 @@ declare global {
         palette: TerminalColorPalette
       ): Promise<boolean>;
       openSettingsJson(): Promise<void>;
-      readClipboardText(): string;
-      writeClipboardText(text: string): void;
+      readClipboardText(): Promise<string>;
+      writeClipboardText(text: string): Promise<void>;
       windowControl(
         action: "minimize" | "maximize" | "fullscreen" | "close"
       ): Promise<void>;

@@ -32,6 +32,10 @@ import {
   buildNativeSurfaceContextMenu,
   buildNativeWorkspaceContextMenu
 } from "./workspaceContextMenu";
+import {
+  createMainClipboardService,
+  type MainClipboardService
+} from "./clipboard";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
@@ -125,10 +129,13 @@ interface IpcHandlersOptions {
   setUsageDashboardOpen: (open: boolean) => void;
   downloadAvailableUpdate: () => Promise<void>;
   installDownloadedUpdate: () => void;
+  clipboard?: MainClipboardService;
   recordProfileEvent?: (event: SmoothnessProfileEvent) => void;
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
+  const clipboardService = options.clipboard ?? createMainClipboardService();
+
   ipcMain.handle("kmux:platform:get", () => options.getPlatformDescriptor());
   ipcMain.handle("kmux:shell:get", () => options.getShellState());
   ipcMain.handle("kmux:usage:get", () => options.getUsageView());
@@ -142,6 +149,18 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:image-attachments:create",
     (_event, surfaceId: Id, payloads: CreateImageAttachmentPayload[]) =>
       options.createImageAttachments(surfaceId, payloads)
+  );
+  ipcMain.handle("kmux:clipboard:read-text", () =>
+    clipboardService.readText()
+  );
+  ipcMain.handle("kmux:clipboard:write-text", (_event, text: string) => {
+    clipboardService.writeText(text);
+  });
+  ipcMain.handle("kmux:clipboard:read-images", () =>
+    clipboardService.readImages()
+  );
+  ipcMain.handle("kmux:clipboard:has-pasteable-content", () =>
+    clipboardService.hasPasteableContent()
   );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
   ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {

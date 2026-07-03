@@ -339,9 +339,10 @@ describe("TerminalPane visibility cleanup", () => {
         status: "attached" as const,
         message: ""
       })),
-      readClipboardImages: vi.fn(() => []),
-      readClipboardText: vi.fn(() => ""),
-      writeClipboardText: vi.fn(),
+      readClipboardImages: vi.fn(async () => []),
+      hasPasteableClipboardContent: vi.fn(async () => false),
+      readClipboardText: vi.fn(async () => ""),
+      writeClipboardText: vi.fn(async () => {}),
       openExternalUrl: vi.fn(async () => {}),
       openTerminalFilePath: vi.fn(async () => {}),
       showSurfaceContextMenu: vi.fn(async () => true),
@@ -1573,11 +1574,12 @@ describe("TerminalPane visibility cleanup", () => {
     const onSplitDown = vi.fn();
     props.onSplitDown = onSplitDown;
     window.kmux.showSurfaceContextMenu = vi.fn(async () => false);
-    window.kmux.readClipboardText = vi.fn(() => "echo hi");
+    window.kmux.hasPasteableClipboardContent = vi.fn(async () => true);
 
     await act(async () => {
       root.render(<TerminalPane {...props} />);
     });
+    vi.mocked(window.kmux.readClipboardImages).mockClear();
 
     const viewport = container.querySelector(
       "[data-testid='terminal-surface_1']"
@@ -1609,6 +1611,8 @@ describe("TerminalPane visibility cleanup", () => {
       menu!.querySelectorAll<HTMLButtonElement>("button")
     ).find((button) => button.textContent?.includes("Copy"));
     expect(copyButton?.disabled).toBe(true);
+    expect(window.kmux.hasPasteableClipboardContent).toHaveBeenCalledOnce();
+    expect(window.kmux.readClipboardImages).not.toHaveBeenCalled();
 
     const splitButton = Array.from(
       menu!.querySelectorAll<HTMLButtonElement>("button")
@@ -1851,6 +1855,37 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(terminal!.paste).toHaveBeenCalledWith("[201~hello");
+  });
+
+  it("falls back to bridge clipboard text when a paste event has no text", async () => {
+    const props = createProps("surface_1");
+    window.kmux.readClipboardText = vi.fn(async () => "fallback paste text");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    expect(terminalHost).not.toBeNull();
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { paste: ReturnType<typeof vi.fn> }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.paste.mockClear();
+
+    const pasteEvent = createTextPasteEvent("");
+    await act(async () => {
+      terminalHost!.dispatchEvent(pasteEvent);
+      await flushMicrotasks();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(window.kmux.readClipboardText).toHaveBeenCalledOnce();
+    expect(terminal!.paste).toHaveBeenCalledWith("fallback paste text");
   });
 
   it("defers terminal shortcuts to active IME composition", async () => {

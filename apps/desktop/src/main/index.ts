@@ -19,6 +19,7 @@ import {
 
 import { createAppRuntime } from "./appRuntime";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
+import { createMainClipboardService } from "./clipboard";
 import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 import { createExternalSessionIndexer } from "./externalSessions";
 import {
@@ -511,6 +512,7 @@ async function bootstrap(): Promise<void> {
     setUsageDashboardOpen: usageRuntime.setDashboardOpen,
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
     installDownloadedUpdate: () => updater.quitAndInstall(),
+    clipboard: createMainClipboardService(),
     recordProfileEvent: (event) => smoothnessProfile.record(event)
   });
 

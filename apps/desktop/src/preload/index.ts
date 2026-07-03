@@ -1,5 +1,4 @@
-import { clipboard, contextBridge, ipcRenderer } from "electron";
-import { readFileSync, statSync } from "node:fs";
+import { contextBridge, ipcRenderer } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
@@ -41,10 +40,6 @@ import type {
   WorktreeRemoveResult,
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
-import {
-  collectClipboardImagePayloads,
-  parseClipboardFileUrls
-} from "./clipboardImages";
 
 export type TerminalEvent =
   | { type: "chunk"; payload: SurfaceChunkPayload }
@@ -163,49 +158,11 @@ const api = {
       payloads
     );
   },
-  readClipboardImages(): CreateImageAttachmentPayload[] {
-    return collectClipboardImagePayloads({
-      readNativeImagePng: () => {
-        const image = clipboard.readImage();
-        if (!image.isEmpty()) {
-          const png = image.toPNG();
-          return new Uint8Array(
-            png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength)
-          );
-        }
-        return readClipboardBuffer("public/png");
-      },
-      readFileUrls: () => {
-        const bookmark = clipboard.readBookmark();
-        const knownFormats = [
-          readClipboardFormat("public/file-url"),
-          readClipboardFormat("public/url"),
-          readClipboardFormat("text/uri-list")
-        ];
-        const discoveredFormats = clipboard
-          .availableFormats()
-          .filter((format) => /file-url|uri-list|\burl\b/i.test(format))
-          .map(readClipboardFormat);
-        return parseClipboardFileUrls({
-          bookmarkUrl: bookmark.url,
-          rawValues: [...knownFormats, ...discoveredFormats]
-        });
-      },
-      readFileSize: (path) => {
-        try {
-          return statSync(path).size;
-        } catch {
-          return null;
-        }
-      },
-      readFileBytes: (path) => {
-        try {
-          return new Uint8Array(readFileSync(path));
-        } catch {
-          return null;
-        }
-      }
-    });
+  readClipboardImages(): Promise<CreateImageAttachmentPayload[]> {
+    return ipcRenderer.invoke("kmux:clipboard:read-images");
+  },
+  hasPasteableClipboardContent(): Promise<boolean> {
+    return ipcRenderer.invoke("kmux:clipboard:has-pasteable-content");
   },
   resizeSurface(
     surfaceId: string,
@@ -250,11 +207,11 @@ const api = {
   openSettingsJson(): Promise<void> {
     return ipcRenderer.invoke("kmux:settings-json:open");
   },
-  readClipboardText(): string {
-    return clipboard.readText();
+  readClipboardText(): Promise<string> {
+    return ipcRenderer.invoke("kmux:clipboard:read-text");
   },
-  writeClipboardText(text: string): void {
-    clipboard.writeText(text);
+  writeClipboardText(text: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:clipboard:write-text", text);
   },
   windowControl(
     action: "minimize" | "maximize" | "fullscreen" | "close"
@@ -393,31 +350,6 @@ const api = {
     return ipcRenderer.invoke("kmux:profile:event", event);
   }
 };
-
-function readClipboardFormat(format: string): string {
-  try {
-    return clipboard.read(format);
-  } catch {
-    return "";
-  }
-}
-
-function readClipboardBuffer(format: string): Uint8Array | null {
-  try {
-    const buffer = clipboard.readBuffer(format);
-    if (!buffer.byteLength) {
-      return null;
-    }
-    return new Uint8Array(
-      buffer.buffer.slice(
-        buffer.byteOffset,
-        buffer.byteOffset + buffer.byteLength
-      )
-    );
-  } catch {
-    return null;
-  }
-}
 
 const testApi = {
   getRuntimeEnv(): Record<string, string> {

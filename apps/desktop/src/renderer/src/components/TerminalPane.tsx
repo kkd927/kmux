@@ -1021,7 +1021,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!selection) {
       return;
     }
-    window.kmux.writeClipboardText(selection);
+    await window.kmux.writeClipboardText(selection);
   }
 
   async function pasteClipboard(
@@ -1044,26 +1044,24 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }
 
-  function canPasteIntoSurface(): boolean {
+  async function canPasteIntoSurface(): Promise<boolean> {
     if (copyModeRef.current || showSearchRef.current) {
       return false;
     }
     try {
-      return (
-        window.kmux.readClipboardText().length > 0 ||
-        window.kmux.readClipboardImages().length > 0
-      );
+      return await window.kmux.hasPasteableClipboardContent();
     } catch (error) {
       console.warn("Failed to inspect clipboard for surface menu", error);
       return false;
     }
   }
 
-  function surfaceMenuContextFor(surface: SurfaceVm) {
+  async function surfaceMenuContextFor(surface: SurfaceVm) {
     const surfaceIsActive = activeSurfaceRef.current?.id === surface.id;
+    const canPaste = surfaceIsActive ? await canPasteIntoSurface() : false;
     return {
       canCopy: surfaceIsActive && Boolean(terminalRef.current?.getSelection()),
-      canPaste: surfaceIsActive && canPasteIntoSurface(),
+      canPaste,
       canRestart: surface.sessionState !== "pending",
       sessionState: surface.sessionState,
       settings: {
@@ -1553,32 +1551,46 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       const imageCount = clipboardData
         ? countSupportedImageFiles(getImageFilesFromDataTransfer(clipboardData))
         : 0;
-      const nativeImages =
-        imageCount > 0 ? [] : window.kmux.readClipboardImages();
-      const text = clipboardData?.getData("text/plain") ?? "";
-      if (
-        !shouldUseImagePaste({
-          imageCount: imageCount + nativeImages.length,
-          text
-        })
-      ) {
-        const sanitizedText = sanitizeTerminalPasteText(text);
-        if (text && sanitizedText !== text) {
-          event.preventDefault();
-          event.stopPropagation();
-          if (sanitizedText) {
-            markTerminalPasteInProgress();
-            terminal.paste(sanitizedText);
-          }
-          return;
-        }
-        markTerminalPasteInProgress();
-        return;
-      }
-
+      const eventText = clipboardData?.getData("text/plain") ?? "";
       event.preventDefault();
       event.stopPropagation();
+
+      const pasteSanitizedText = async (): Promise<void> => {
+        let text = eventText;
+        if (!text) {
+          try {
+            text = await window.kmux.readClipboardText();
+          } catch (error) {
+            console.warn("Failed to read clipboard text for paste", error);
+          }
+        }
+        const sanitizedText = sanitizeTerminalPasteText(text);
+        if (sanitizedText) {
+          markTerminalPasteInProgress();
+          terminal.paste(sanitizedText);
+        }
+      };
+
       void (async () => {
+        let nativeImages: CreateImageAttachmentPayload[] = [];
+        if (imageCount === 0) {
+          try {
+            nativeImages = await window.kmux.readClipboardImages();
+          } catch (error) {
+            console.warn("Failed to inspect native clipboard images", error);
+          }
+        }
+
+        if (
+          !shouldUseImagePaste({
+            imageCount: imageCount + nativeImages.length,
+            text: eventText
+          })
+        ) {
+          await pasteSanitizedText();
+          return;
+        }
+
         const payloads =
           imageCount > 0 && clipboardData
             ? await createImageAttachmentPayloadsFromDataTransfer(
@@ -2344,46 +2356,49 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   ): void {
     event.preventDefault();
     event.stopPropagation();
-    openSurfaceContextMenu(surfaceId, event.clientX, event.clientY);
+    void openSurfaceContextMenu(surfaceId, event.clientX, event.clientY);
   }
 
   function handleTerminalContextMenu(event: MouseEvent<HTMLDivElement>): void {
     event.preventDefault();
     event.stopPropagation();
-    openSurfaceContextMenu(activeSurface.id, event.clientX, event.clientY);
+    void openSurfaceContextMenu(activeSurface.id, event.clientX, event.clientY);
   }
 
-  function openSurfaceContextMenu(
+  async function openSurfaceContextMenu(
     surfaceId: string,
     x: number,
     y: number
-  ): void {
+  ): Promise<void> {
     const surface = props.surfaces.find((entry) => entry.id === surfaceId);
     if (!surface) {
       return;
     }
     props.onFocusPane(props.paneId);
     props.onFocusSurface(surfaceId);
-    const context = surfaceMenuContextFor(surface);
-    const items = buildSurfaceContextMenuEntries(context);
-    void window.kmux
-      .showSurfaceContextMenu(surfaceId, x, y, context)
-      .then((usedNative) => {
-        if (usedNative) {
-          return;
-        }
-        const menuWidth = 248;
-        const menuHeight = 224;
-        setSurfaceContextMenu({
-          surfaceId,
-          items,
-          x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
-          y: Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8))
-        });
-      })
-      .catch((error) => {
-        console.warn("Failed to show surface context menu", error);
+    try {
+      const context = await surfaceMenuContextFor(surface);
+      const items = buildSurfaceContextMenuEntries(context);
+      const usedNative = await window.kmux.showSurfaceContextMenu(
+        surfaceId,
+        x,
+        y,
+        context
+      );
+      if (usedNative) {
+        return;
+      }
+      const menuWidth = 248;
+      const menuHeight = 224;
+      setSurfaceContextMenu({
+        surfaceId,
+        items,
+        x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
+        y: Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8))
       });
+    } catch (error) {
+      console.warn("Failed to show surface context menu", error);
+    }
   }
 
   const copyModeSelectAllLabel =

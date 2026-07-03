@@ -56,7 +56,7 @@ export function createTerminalPaneXtermTheme(
 
 interface PasteClipboardIntoTerminalOptions {
   terminal: TerminalPasteHost;
-  readClipboardText: () => string;
+  readClipboardText: () => string | Promise<string>;
   surfaceId?: string;
   readClipboardImages?: () =>
     | CreateImageAttachmentPayload[]
@@ -72,7 +72,12 @@ interface PasteClipboardIntoTerminalOptions {
 export async function pasteClipboardIntoTerminal(
   options: PasteClipboardIntoTerminalOptions
 ): Promise<boolean> {
-  const imagePayloads = (await options.readClipboardImages?.()) ?? [];
+  let imagePayloads: CreateImageAttachmentPayload[] = [];
+  try {
+    imagePayloads = (await options.readClipboardImages?.()) ?? [];
+  } catch (error) {
+    options.onImageAttachmentError?.(error);
+  }
   if (
     imagePayloads.length > 0 &&
     options.surfaceId &&
@@ -98,10 +103,10 @@ export async function pasteClipboardIntoTerminal(
   return pasteClipboardText(options);
 }
 
-function pasteClipboardText(
+async function pasteClipboardText(
   options: PasteClipboardIntoTerminalOptions
-): boolean {
-  const text = options.readClipboardText();
+): Promise<boolean> {
+  const text = await options.readClipboardText();
   if (!text) {
     return false;
   }
