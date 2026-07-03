@@ -3,10 +3,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  ".."
-);
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const ROOT_DIR = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const MODEL_PRICING_PATH = path.join(
   ROOT_DIR,
   "packages/metadata/src/modelPricing.ts"
@@ -96,6 +94,13 @@ async function main() {
 
 async function fetchClaudePricing() {
   const html = await fetchText(SOURCES.claude);
+  return parseClaudePricingHtml(html, resolveModelPricingDate());
+}
+
+export function parseClaudePricingHtml(
+  html,
+  activeDate = resolveModelPricingDate()
+) {
   const table = html.match(
     /The following table shows pricing for all Claude models:[\s\S]*?<table[\s\S]*?<\/table>/u
   )?.[0];
@@ -103,28 +108,21 @@ async function fetchClaudePricing() {
     throw new Error("Could not find Claude model pricing table.");
   }
 
-  return parseHtmlTable(table)
-    .filter((row) =>
-      /^Claude (Fable|Mythos|Opus|Sonnet|Haiku) /u.test(row[0] ?? "")
-    )
-    .map((row) => {
-      const modelName = row[0].replace(/\s*\(.+?\)\s*$/u, "");
-      const prices = row.slice(1).map(parseFirstDollar);
-      if (prices.length < 5 || prices.some((price) => price === null)) {
-        throw new Error(
-          `Could not parse Claude pricing row: ${row.join(" | ")}`
-        );
-      }
+  return parseClaudePricingTable(table, activeDate);
+}
 
-      return {
-        modelId: claudeModelId(modelName),
-        inputCostPerToken: dollarsPerMillion(prices[0]),
-        outputCostPerToken: dollarsPerMillion(prices[4]),
-        cacheReadCostPerToken: dollarsPerMillion(prices[3]),
-        cacheCreateCostPerToken: dollarsPerMillion(prices[1]),
-        aliases: [claudeDottedAlias(modelName)]
-      };
-    });
+export function parseClaudePricingTable(
+  tableHtml,
+  activeDate = resolveModelPricingDate()
+) {
+  assertPricingDayKey(activeDate, "Claude pricing active date");
+  const rows = parseHtmlTable(tableHtml)
+    .filter((row) => row[0]?.startsWith("Claude "))
+    .map(parseClaudePricingRow);
+
+  return selectActiveClaudePricingRows(rows, activeDate).map(
+    (row) => row.entry
+  );
 }
 
 async function fetchCodexPricing() {
@@ -495,8 +493,191 @@ function compareVersionLike(left, right) {
   return left.localeCompare(right);
 }
 
+function parseClaudePricingRow(row) {
+  const sourceLabel = row[0] ?? "";
+  const identity = parseClaudeModelIdentity(sourceLabel);
+  const prices = row.slice(1).map(parseFirstDollar);
+  if (prices.length < 5 || prices.some((price) => !Number.isFinite(price))) {
+    throw new Error(`Could not parse Claude pricing row: ${row.join(" | ")}`);
+  }
+
+  const modelId = claudeModelId(identity.modelName);
+  assertClaudeModelId(modelId, sourceLabel);
+
+  return {
+    modelId,
+    sourceLabel,
+    activeFrom: identity.activeFrom,
+    activeThrough: identity.activeThrough,
+    entry: {
+      modelId,
+      inputCostPerToken: dollarsPerMillion(prices[0]),
+      outputCostPerToken: dollarsPerMillion(prices[4]),
+      cacheReadCostPerToken: dollarsPerMillion(prices[3]),
+      cacheCreateCostPerToken: dollarsPerMillion(prices[1]),
+      aliases: [claudeDottedAlias(identity.modelName)]
+    }
+  };
+}
+
+function parseClaudeModelIdentity(value) {
+  const normalized = value.replace(/\s*\(.+?\)\s*$/u, "").trim();
+  const tokens = normalized.split(/\s+/u);
+  if (tokens[0] !== "Claude") {
+    throw new Error(`Could not parse Claude model identity: ${value}`);
+  }
+  const versionIndex = tokens.findIndex(
+    (token, index) => index > 0 && /^\d+(?:\.\d+)?$/u.test(token)
+  );
+  if (versionIndex < 2) {
+    throw new Error(`Could not parse Claude model identity: ${value}`);
+  }
+
+  const identity = {
+    modelName: tokens.slice(0, versionIndex + 1).join(" ")
+  };
+  const windowTokens = tokens.slice(versionIndex + 1);
+  if (windowTokens.length > 0) {
+    const windowKind = windowTokens[0].toLowerCase();
+    if (windowKind !== "through" && windowKind !== "starting") {
+      throw new Error(`Could not parse Claude model identity: ${value}`);
+    }
+    const dayKey = parseClaudePricingWindowDate(
+      windowTokens.slice(1).join(" ")
+    );
+    if (windowKind === "through") {
+      identity.activeThrough = dayKey;
+    } else {
+      identity.activeFrom = dayKey;
+    }
+  }
+  return identity;
+}
+
+function parseClaudePricingWindowDate(value) {
+  const match =
+    /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})$/iu.exec(
+      value.trim()
+    );
+  if (!match) {
+    throw new Error(`Could not parse Claude pricing window date: ${value}`);
+  }
+
+  const monthIndex = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december"
+  ].indexOf(match[1].toLowerCase());
+  const year = Number(match[3]);
+  const month = monthIndex + 1;
+  const day = Number(match[2]);
+  const parsed = new Date(Date.UTC(year, monthIndex, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== monthIndex ||
+    parsed.getUTCDate() !== day
+  ) {
+    throw new Error(`Invalid Claude pricing window date: ${value}`);
+  }
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(
+    2,
+    "0"
+  )}`;
+}
+
+function selectActiveClaudePricingRows(rows, activeDate) {
+  const rowsByModelId = new Map();
+  for (const row of rows) {
+    const group = rowsByModelId.get(row.modelId) ?? [];
+    group.push(row);
+    rowsByModelId.set(row.modelId, group);
+  }
+
+  const selected = [];
+  for (const [modelId, modelRows] of rowsByModelId) {
+    const activeRows = modelRows.filter((row) =>
+      isClaudePricingRowActive(row, activeDate)
+    );
+    if (activeRows.length !== 1) {
+      const prefix = activeRows.length === 0 ? "No active" : "Multiple active";
+      throw new Error(
+        `${prefix} Claude pricing rows for ${modelId} on ${activeDate}: ${modelRows
+          .map((row) => row.sourceLabel)
+          .join(" | ")}`
+      );
+    }
+    selected.push(activeRows[0]);
+  }
+  return selected;
+}
+
+function isClaudePricingRowActive(row, activeDate) {
+  if (row.activeFrom && activeDate < row.activeFrom) {
+    return false;
+  }
+  if (row.activeThrough && activeDate > row.activeThrough) {
+    return false;
+  }
+  return true;
+}
+
+export function resolveModelPricingDate() {
+  const configured = process.env.KMUX_MODEL_PRICING_DATE;
+  if (configured) {
+    assertPricingDayKey(configured, "KMUX_MODEL_PRICING_DATE");
+    return configured;
+  }
+  return new Date().toISOString().slice(0, 10);
+}
+
+function assertPricingDayKey(value, label) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    throw new Error(`${label} must use YYYY-MM-DD format.`);
+  }
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    throw new Error(`${label} is not a valid calendar date.`);
+  }
+}
+
+function assertClaudeModelId(modelId, sourceLabel) {
+  if (!/-\d+(?:-\d+)*$/u.test(modelId)) {
+    throw new Error(
+      `Generated Claude modelId must end with a numeric version: ${modelId}`
+    );
+  }
+  if (
+    /\b(?:through|starting)\b|,|(?:^|-)20\d{2}(?:-|$)|(?:^|-)(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:-|$)/iu.test(
+      modelId
+    )
+  ) {
+    throw new Error(
+      `Generated Claude modelId includes pricing window text from "${sourceLabel}": ${modelId}`
+    );
+  }
+}
+
 function claudeModelId(modelName) {
-  return modelName.toLowerCase().replace(/\./gu, "-").replace(/\s+/gu, "-");
+  return modelName
+    .toLowerCase()
+    .replace(/\./gu, "-")
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-|-$/gu, "");
 }
 
 function claudeDottedAlias(modelName) {
@@ -663,7 +844,9 @@ function decodeHtml(value) {
     .replace(/&amp;/gu, "&");
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

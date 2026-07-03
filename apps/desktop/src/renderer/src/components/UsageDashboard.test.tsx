@@ -100,6 +100,72 @@ describe("UsageDashboard", () => {
     expect(container.textContent).not.toContain("$0.0045");
   });
 
+  it("shows unknown cost for partial top model rows with zero known cost", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      totalTodayTokens: 31,
+      models: [
+        {
+          vendor: "claude",
+          modelId: "claude-unpriced-5",
+          modelLabel: "claude-unpriced-5",
+          todayCostUsd: 0,
+          inputTokens: 20,
+          outputTokens: 11,
+          cacheTokens: 0,
+          totalTokens: 31,
+          costSource: "partial"
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='usage-model-row-claude-unpriced-5']"
+    );
+    const cost = container.querySelector<HTMLElement>(
+      "[data-testid='usage-model-cost-claude-unpriced-5']"
+    );
+    expect(row?.textContent).toContain("31");
+    expect(cost?.textContent).toBe("—");
+  });
+
+  it("shows unknown cost for partial directory rows with zero known cost", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      totalTodayTokens: 31,
+      directoryHotspots: [
+        {
+          directoryPath: "/tmp/kmux-unpriced",
+          directoryLabel: "kmux-unpriced",
+          todayCostUsd: 0,
+          todayTokens: 31,
+          costSource: "partial"
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='directory-hotspot-row-0']"
+    );
+    const cost = container.querySelector<HTMLElement>(
+      "[data-testid='directory-hotspot-cost-0']"
+    );
+    expect(row?.textContent).toContain("31");
+    expect(cost?.textContent).toBe("—");
+  });
+
   it("renders unlimited Codex credits without a percentage meter", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-05-20", "2026-05-20T03:00:00.000Z"),

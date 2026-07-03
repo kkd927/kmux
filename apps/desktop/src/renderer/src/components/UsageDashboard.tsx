@@ -483,6 +483,7 @@ function TopModelsCard(props: {
     modelLabel: string;
     todayCostUsd: number;
     totalTokens: number;
+    costSource: string;
   }>;
 }): JSX.Element {
   const metric = resolveBreakdownMetric(
@@ -503,9 +504,14 @@ function TopModelsCard(props: {
         title: model.modelLabel,
         tokens: model.totalTokens,
         costUsd: model.todayCostUsd,
+        hasUnknownCost: hasPartialZeroCost(
+          model.todayCostUsd,
+          model.costSource
+        ),
         barValue: metric === "cost" ? model.todayCostUsd : model.totalTokens,
         rowTestId: `usage-model-row-${model.modelId}`,
-        tokenTestId: `usage-model-tokens-${model.modelId}`
+        tokenTestId: `usage-model-tokens-${model.modelId}`,
+        costTestId: `usage-model-cost-${model.modelId}`
       }))}
     />
   );
@@ -517,6 +523,7 @@ function DirectoryHotspotsCard(props: {
     directoryLabel: string;
     todayCostUsd: number;
     todayTokens: number;
+    costSource?: string;
   }>;
 }): JSX.Element {
   const metric = resolveBreakdownMetric(
@@ -536,10 +543,15 @@ function DirectoryHotspotsCard(props: {
         title: directory.directoryPath,
         tokens: directory.todayTokens,
         costUsd: directory.todayCostUsd,
+        hasUnknownCost: hasPartialZeroCost(
+          directory.todayCostUsd,
+          directory.costSource
+        ),
         barValue:
           metric === "cost" ? directory.todayCostUsd : directory.todayTokens
       }))}
       rowTestId={(row, index) => `directory-hotspot-row-${index}`}
+      costTestId={(row, index) => `directory-hotspot-cost-${index}`}
     />
   );
 }
@@ -603,6 +615,7 @@ function LinearBreakdownCard(props: {
   barTestId: string;
   headerTestId?: string;
   rowTestId?: (row: LinearBreakdownRow, index: number) => string | undefined;
+  costTestId?: (row: LinearBreakdownRow, index: number) => string | undefined;
 }): JSX.Element {
   const rows = sortBreakdownRows(props.rows);
   const total = rows.reduce((sum, row) => sum + row.barValue, 0);
@@ -659,7 +672,7 @@ function LinearBreakdownCard(props: {
             </div>
             <div
               className={styles.tokenMixRowCost}
-              data-testid={row.costTestId}
+              data-testid={props.costTestId?.(row, index) ?? row.costTestId}
             >
               {formatBreakdownCost(row.costUsd, row.hasUnknownCost)}
             </div>
@@ -1040,14 +1053,15 @@ function formatUsageUsd(value: number): string {
   return "$0.00";
 }
 
-function formatBreakdownCost(
-  value: number,
-  hasUnknownCost = false
-): string {
+function formatBreakdownCost(value: number, hasUnknownCost = false): string {
   if (!hasUnknownCost) {
     return formatUsageUsd(value);
   }
   return value > 0 ? formatUsageUsd(value) : "—";
+}
+
+function hasPartialZeroCost(value: number, costSource: string | undefined) {
+  return costSource === "partial" && value === 0;
 }
 
 function ceilToUsdCents(value: number): number {
