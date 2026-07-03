@@ -39,6 +39,18 @@ function readBuilderConfig(): Record<string, unknown> {
 }
 
 describe("electron builder config", () => {
+  it("pins the builder and static AppImage runtime toolset", () => {
+    const rootPackage = JSON.parse(
+      readFileSync("package.json", "utf8")
+    ) as Record<string, Record<string, string>>;
+    const config = readBuilderConfig();
+
+    expect(rootPackage.devDependencies["electron-builder"]).toBe("26.15.3");
+    expect(config.toolsets).toEqual({
+      appimage: "1.0.3"
+    });
+  });
+
   it("keeps mac signing under mac config and uses a guarded artifact hook", () => {
     const config = readBuilderConfig();
     const mac = config.mac as Record<string, unknown>;
@@ -91,6 +103,9 @@ describe("electron builder config", () => {
     const config = readBuilderConfig();
     const linux = config.linux as Record<string, unknown>;
     const helper = new LinuxTargetHelper({
+      info: {
+        metadata: {}
+      },
       appInfo: {
         productName: "kmux",
         description: config.description,
@@ -111,6 +126,7 @@ describe("electron builder config", () => {
       "\nCategories=Development;TerminalEmulator;Utility;\n"
     );
     expect(desktopEntry).toContain("\nStartupWMClass=kmux\n");
+    expect(desktopEntry).not.toContain("--no-sandbox");
   });
 
   it("passes electron-builder config validation", async () => {

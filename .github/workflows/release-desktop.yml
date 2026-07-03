@@ -148,6 +148,8 @@ jobs:
           test "${#appimages[@]}" -eq 1
           test "${#manifests[@]}" -eq 1
           test -s "${appimages[0]}.blockmap"
+      - name: Smoke packaged AppImage directly under Xvfb
+        run: xvfb-run --auto-servernum npm run smoke:packaged:linux -- --allow-any-linux-desktop
       - name: Upload Linux release assets
         uses: actions/upload-artifact@v7
         with:
@@ -236,7 +238,12 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
+            notes_args=(--generate-notes)
+            release_notes_path="docs/release-notes/${GITHUB_REF_NAME}.md"
+            if [ -f "$release_notes_path" ]; then
+              notes_args+=(--notes "$(cat "$release_notes_path")")
+            fi
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes
+              "${notes_args[@]}"
           fi

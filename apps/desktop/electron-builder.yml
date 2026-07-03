@@ -2,6 +2,9 @@ appId: dev.kmux.desktop
 productName: kmux
 electronUpdaterCompatibility: ">=2.16"
 
+toolsets:
+  appimage: "1.0.3"
+
 directories:
   output: release
   buildResources: build

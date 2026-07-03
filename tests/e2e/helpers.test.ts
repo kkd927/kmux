@@ -1,7 +1,4 @@
-import {
-  buildElectronLaunchOptions,
-  type KmuxSandbox
-} from "./helpers";
+import { buildElectronLaunchOptions, type KmuxSandbox } from "./helpers";
 
 const sandbox: KmuxSandbox = {
   profileRoot: "/tmp/kmux-e2e-profile",
@@ -66,8 +63,6 @@ describe("buildElectronLaunchOptions", () => {
       options: {
         executablePath: packagedPath,
         env: {
-          APPIMAGE: packagedPath,
-          APPIMAGE_EXTRACT_AND_RUN: "1",
           KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath
         }
       },
@@ -81,9 +76,9 @@ describe("buildElectronLaunchOptions", () => {
     expect(options.args).not.toContain("--no-sandbox");
     const launchEnv = options.env ?? {};
     expect(launchEnv).toMatchObject({
-      APPIMAGE: packagedPath,
-      APPIMAGE_EXTRACT_AND_RUN: "1",
       KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath
     });
+    expect(launchEnv.APPIMAGE).toBeUndefined();
+    expect(launchEnv.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();
   });
 });

@@ -9,6 +9,7 @@ import {
   getSurfaceSnapshot,
   getView,
   launchKmuxWithSandbox,
+  quitKmuxAppCleanly,
   runCliJson,
   waitForSurfaceSnapshotContains,
   waitForView
@@ -26,6 +27,7 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
   const launched = await launchKmuxWithSandbox(sandbox, {
     executablePath: packagedExecutablePath
   });
+  let launchedCleanlyQuit = false;
   let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
   const { page, cliPath, workspaceRoot } = launched;
 
@@ -37,15 +39,10 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     expect(runtimeEnv.KMUX_PACKAGED_EXECUTABLE_PATH).toBe(
       packagedExecutablePath
     );
-    if (process.env.APPIMAGE) {
-      expect(runtimeEnv.APPIMAGE).toBe(process.env.APPIMAGE);
-      expect(runtimeEnv.APPIMAGE).toBe(packagedExecutablePath);
-      if (process.env.APPIMAGE_EXTRACT_AND_RUN) {
-        expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe(
-          process.env.APPIMAGE_EXTRACT_AND_RUN
-        );
-      }
-    }
+    expect(process.env.APPIMAGE).toBeUndefined();
+    expect(process.env.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();
+    expect(runtimeEnv.APPIMAGE).toBe(packagedExecutablePath);
+    expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe("");
 
     const initial = await getView(page);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
@@ -68,14 +65,17 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       type: "settings.update",
       patch: {
         ...afterWorkspace.settings,
-        socketMode: "allowAll"
+        socketMode: "allowAll",
+        warnBeforeQuit: false
       }
     });
 
     const configured = await waitForView(
       page,
-      (view) => view.settings.socketMode === "allowAll",
-      "packaged smoke should enable allow-all socket mode"
+      (view) =>
+        view.settings.socketMode === "allowAll" &&
+        view.settings.warnBeforeQuit === false,
+      "packaged smoke should enable allow-all socket mode and clean quit"
     );
 
     const activePaneId = configured.activeWorkspace.activePaneId;
@@ -254,7 +254,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       )
     ).toBe(true);
 
-    await closeKmuxApp(launched);
+    await quitKmuxAppCleanly(launched);
+    launchedCleanlyQuit = true;
 
     relaunch = await launchKmuxWithSandbox(sandbox, {
       executablePath: packagedExecutablePath
@@ -268,11 +269,12 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
         Object.keys(view.activeWorkspace.panes).length === 1 &&
         Object.keys(view.activeWorkspace.surfaces).length === 1 &&
         view.settings.socketMode === "allowAll" &&
+        view.settings.warnBeforeQuit === false &&
         view.activeWorkspace.surfaces[
           view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
             .activeSurfaceId
         ]?.sessionState === "running",
-      "packaged relaunch should keep settings but start with a fresh workspace",
+      "packaged clean relaunch should keep settings and start fresh",
       15_000
     );
 
@@ -283,7 +285,15 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     ).toBe(false);
     expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(1);
     expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(1);
-    expect(relaunched.activeWorkspace.surfaces[activeSurfaceId]).toBeUndefined();
+    expect(
+      relaunched.activeWorkspace.surfaces[activeSurfaceId]
+    ).toBeUndefined();
+    expect(
+      Object.values(relaunched.activeWorkspace.surfaces).some(
+        (surface) => surface.title === "packaged hidden continuity"
+      )
+    ).toBe(false);
+
     const relaunchedSurfaceId =
       relaunched.activeWorkspace.panes[relaunched.activeWorkspace.activePaneId]
         .activeSurfaceId;
@@ -304,7 +314,9 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     );
     expect(relaunchedSnapshot).toContain(relaunchedMarker);
   } finally {
-    await closeKmuxApp(launched).catch(() => {});
+    if (!launchedCleanlyQuit) {
+      await closeKmuxApp(launched).catch(() => {});
+    }
     if (relaunch) {
       await closeKmuxApp(relaunch).catch(() => {});
     }

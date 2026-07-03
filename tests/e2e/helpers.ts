@@ -259,6 +259,32 @@ export async function closeKmuxApp(launched: LaunchedKmux): Promise<void> {
   }
 }
 
+export async function quitKmuxAppCleanly(
+  launched: LaunchedKmux,
+  timeoutMs = 5_000
+): Promise<void> {
+  const appProcess = launched.app.process();
+  if (!appProcess?.pid) {
+    throw new Error("kmux app process is unavailable for clean quit");
+  }
+
+  await launched.app.evaluate(({ app }) => {
+    setImmediate(() => app.quit());
+  });
+  await waitForProcessExit(appProcess, timeoutMs);
+
+  if (appProcess.signalCode !== null) {
+    throw new Error(
+      `kmux clean quit ended from signal ${appProcess.signalCode}`
+    );
+  }
+  if (appProcess.exitCode !== 0) {
+    throw new Error(
+      `kmux clean quit exited with code ${appProcess.exitCode ?? "unknown"}`
+    );
+  }
+}
+
 export async function forceKillKmuxApp(launched: LaunchedKmux): Promise<void> {
   const appProcess = launched.app.process();
   if (!appProcess?.pid || appProcess.exitCode !== null) {

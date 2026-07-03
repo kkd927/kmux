@@ -2,7 +2,6 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
-  statSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -13,7 +12,6 @@ import { describe, expect, it } from "vitest";
 import {
   assertAppImageBlockmapPresent,
   assertLinuxDesktopEnvironment,
-  buildAppImageRuntimeEnv,
   buildPackagedSmokeSummary,
   buildPackagedSmokeEnv,
   calculateFileSha512,
@@ -24,8 +22,8 @@ import {
   findExtractedNotificationIconPath,
   findAppImagePath,
   findLinuxUpdateMetadataPath,
-  findVersionedLibzPath,
   inferLinuxAppImageArch,
+  inspectStaticAppImageRuntime,
   isKmuxLinuxAppImagePath,
   isLinuxUpdateMetadataName,
   loadLinuxUpdateMetadata,
@@ -466,8 +464,18 @@ describe("linux packaged smoke wrapper", () => {
         updateMetadata,
         desktopIdentity,
         updateMetadataValidation,
+        runtimeInspection: {
+          fileDescription:
+            "ELF 64-bit LSB pie executable, ARM aarch64, static-pie linked",
+          elfType: "DYN",
+          hasInterpreter: false,
+          neededLibraries: []
+        },
         env: {
+          APPIMAGE: "/tmp/stale.AppImage",
           APPIMAGE_EXTRACT_AND_RUN: "1",
+          LD_LIBRARY_PATH: "/tmp/libz-compat",
+          NO_SANDBOX: "1",
           PATH: "/usr/bin"
         }
       });
@@ -477,6 +485,13 @@ describe("linux packaged smoke wrapper", () => {
         updateMetadata,
         desktopIdentity,
         updateMetadataValidation,
+        runtimeInspection: {
+          fileDescription:
+            "ELF 64-bit LSB pie executable, ARM aarch64, static-pie linked",
+          elfType: "DYN",
+          hasInterpreter: false,
+          neededLibraries: []
+        },
         allowAnyLinuxDesktop: true,
         env: {
           APPIMAGE_EXTRACT_AND_RUN: "1",
@@ -495,6 +510,12 @@ describe("linux packaged smoke wrapper", () => {
       expect(summary).toContain(`AppImage artifact: ${fixture.appImagePath}`);
       expect(summary).toContain("AppImage arch: x64");
       expect(summary).toContain(`AppImage blockmap: ${blockmapPath} (3 bytes)`);
+      expect(summary).toContain(
+        "AppImage outer runtime: ELF 64-bit LSB pie executable, ARM aarch64, static-pie linked"
+      );
+      expect(summary).toContain(
+        "AppImage runtime ELF: type=DYN | PT_INTERP=<none> | NEEDED=<none>"
+      );
       expect(summary).toContain(`Update metadata: ${fixture.metadataPath}`);
       expect(summary).toContain("Update metadata version: 0.3.12");
       expect(summary).toContain(
@@ -530,13 +551,18 @@ describe("linux packaged smoke wrapper", () => {
       expect(summary).toContain(
         "Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release."
       );
-      expect(summary).toContain(`APPIMAGE=${fixture.appImagePath}`);
-      expect(summary).toContain("| APPIMAGELAUNCHER_DISABLE=1 |");
-      expect(summary).toContain("| APPIMAGE_EXTRACT_AND_RUN=1 |");
+      expect(summary).toContain(
+        "AppImage smoke env: APPIMAGELAUNCHER_DISABLE=1"
+      );
       expect(summary).toContain(
         `KMUX_PACKAGED_EXECUTABLE_PATH=${fixture.appImagePath}`
       );
-      expect(summary).toContain("KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH=<missing>");
+      expect(summary).toContain(
+        "AppImage runtime APPIMAGE: not pre-injected; validated inside the launched app"
+      );
+      expect(summary).not.toContain("APPIMAGE_EXTRACT_AND_RUN=");
+      expect(summary).not.toContain("LD_LIBRARY_PATH=");
+      expect(summary).not.toContain("NO_SANDBOX=");
       expect(summary).toContain(
         "AppImage launch args: <none>; --no-sandbox not added by smoke wrapper"
       );
@@ -631,6 +657,11 @@ describe("linux packaged smoke wrapper", () => {
         runCommand: (command, args, options) => {
           expect(command).toBe(fixture.appImagePath);
           expect(args).toEqual(["--appimage-extract"]);
+          expect(options.env.APPIMAGE).toBeUndefined();
+          expect(options.env.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();
+          expect(options.env.LD_LIBRARY_PATH).toBeUndefined();
+          expect(options.env.NO_SANDBOX).toBeUndefined();
+          expect(options.env.APPIMAGELAUNCHER_DISABLE).toBe("1");
 
           const applicationsDir = path.join(
             options.cwd,
@@ -955,75 +986,76 @@ describe("linux packaged smoke wrapper", () => {
     ).toThrow(/desktop session/);
   });
 
-  it("passes AppImage runtime env to the packaged smoke app launch", () => {
+  it("passes only normal launch and test-isolation env to packaged smoke", () => {
     const env = buildPackagedSmokeEnv({
       appImagePath: "/tmp/kmux-0.3.12-linux-x64.AppImage",
       env: {
         PATH: "/usr/bin",
-        APPIMAGE: "/tmp/stale.AppImage"
+        APPIMAGE: "/tmp/stale.AppImage",
+        APPIMAGE_EXTRACT_AND_RUN: "1",
+        APPIMAGELAUNCHER_DISABLE: "0",
+        LD_LIBRARY_PATH: "/tmp/libz-compat",
+        KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH: "/tmp/libz-compat",
+        NO_SANDBOX: "1"
       }
     });
 
     expect(env).toMatchObject({
       PATH: "/usr/bin",
-      APPIMAGE: "/tmp/kmux-0.3.12-linux-x64.AppImage",
       APPIMAGELAUNCHER_DISABLE: "1",
-      APPIMAGE_EXTRACT_AND_RUN: "1",
       KMUX_PACKAGED_EXECUTABLE_PATH: "/tmp/kmux-0.3.12-linux-x64.AppImage"
+    });
+    expect(env).not.toHaveProperty("APPIMAGE");
+    expect(env).not.toHaveProperty("APPIMAGE_EXTRACT_AND_RUN");
+    expect(env).not.toHaveProperty("LD_LIBRARY_PATH");
+    expect(env).not.toHaveProperty("KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH");
+    expect(env).not.toHaveProperty("NO_SANDBOX");
+  });
+
+  it("accepts a static PIE AppImage runtime without external libraries", () => {
+    const outputs = new Map([
+      ["file --brief", "ELF 64-bit LSB pie executable, static-pie linked"],
+      [
+        "readelf --file-header",
+        "  Type:                              DYN (Position-Independent Executable file)"
+      ],
+      ["readelf --program-headers", "Elf file type is DYN\n  LOAD 0x000000"],
+      ["readelf --dynamic", "There is no dynamic section in this file."]
+    ]);
+    const inspection = inspectStaticAppImageRuntime({
+      appImagePath: "/tmp/kmux.AppImage",
+      runCommand: (command, args) => ({
+        status: 0,
+        stdout: outputs.get(`${command} ${args[0]}`) ?? "",
+        stderr: ""
+      })
+    });
+
+    expect(inspection).toMatchObject({
+      elfType: "DYN",
+      hasInterpreter: false,
+      neededLibraries: []
     });
   });
 
-  it("finds a versioned libz runtime candidate for AppImage compatibility", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-libz-"));
-    try {
-      const libzPath = path.join(root, "libz.so.1");
-      writeFileSync(libzPath, "");
-
-      expect(findVersionedLibzPath({ candidatePaths: [libzPath] })).toBe(
-        libzPath
-      );
-      expect(
-        findVersionedLibzPath({
-          candidatePaths: [path.join(root, "missing-libz.so.1")]
-        })
-      ).toBeUndefined();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("adds a temporary libz.so compatibility path for AppImage runtime probes", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-appimage-env-"));
-    try {
-      const libzPath = path.join(root, "libz.so.1");
-      const compatibilityDir = path.join(root, "compat");
-      writeFileSync(libzPath, "");
-
-      const env = buildAppImageRuntimeEnv({
-        env: { LD_LIBRARY_PATH: "/existing" },
-        compatibilityDir,
-        versionedLibzPath: libzPath
-      });
-
-      expect(env.LD_LIBRARY_PATH).toBe(`${compatibilityDir}:/existing`);
-      expect(env.KMUX_APPIMAGE_RUNTIME_LIBRARY_PATH).toBe(compatibilityDir);
-      expect(statSync(path.join(compatibilityDir, "libz.so")).isFile()).toBe(
-        true
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves an explicit AppImage extraction mode override", () => {
-    expect(
-      buildPackagedSmokeEnv({
+  it("rejects AppImage runtimes with external NEEDED libraries", () => {
+    expect(() =>
+      inspectStaticAppImageRuntime({
         appImagePath: "/tmp/kmux.AppImage",
-        env: {
-          APPIMAGE_EXTRACT_AND_RUN: "0"
+        runCommand: (command, args) => {
+          const key = `${command} ${args[0]}`;
+          const stdout =
+            key === "file --brief"
+              ? "ELF 64-bit LSB pie executable, static-pie linked"
+              : key === "readelf --file-header"
+                ? "  Type: DYN (Position-Independent Executable file)"
+                : key === "readelf --program-headers"
+                  ? "  LOAD 0x000000"
+                  : " 0x0000000000000001 (NEEDED) Shared library: [libz.so]";
+          return { status: 0, stdout, stderr: "" };
         }
-      }).APPIMAGE_EXTRACT_AND_RUN
-    ).toBe("0");
+      })
+    ).toThrow(/external NEEDED libraries: libz\.so/);
   });
 
   it("throws when no AppImage exists in the release roots", () => {
