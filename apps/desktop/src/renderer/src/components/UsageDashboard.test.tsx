@@ -139,13 +139,56 @@ describe("UsageDashboard", () => {
     expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
   });
 
+  it("renders unlimited Antigravity quota without a percentage meter", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
+      subscriptionUsage: [
+        {
+          provider: "antigravity",
+          providerLabel: "Antigravity",
+          planLabel: "Business",
+          source: "quota_summary_api",
+          updatedAt: "2026-06-02T02:00:00.000Z",
+          rows: [
+            {
+              key: "all-models",
+              label: "All Models",
+              valueKind: "unlimited",
+              resetLabel: "No quota limit reported",
+              windowKind: "credits"
+            }
+          ]
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const provider = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-provider-antigravity']"
+    );
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-row-antigravity-all-models']"
+    );
+    expect(provider?.textContent).toContain("Antigravity Business");
+    expect(row?.textContent).toContain("All Models");
+    expect(row?.textContent).toContain("Unlimited");
+    expect(row?.textContent).toContain("No quota limit reported");
+    expect(row?.textContent).not.toContain("NaN%");
+    expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
+  });
+
   it("renders Antigravity subscription quota rows", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
       subscriptionUsage: [
         {
           provider: "antigravity",
-          providerLabel: "AGY",
+          providerLabel: "Antigravity",
           planLabel: "Google AI Pro",
           source: "quota_summary_api",
           updatedAt: "2026-06-02T02:00:00.000Z",
@@ -176,7 +219,7 @@ describe("UsageDashboard", () => {
     const row = container.querySelector<HTMLElement>(
       "[data-testid='subscription-row-antigravity-gemini-weekly']"
     );
-    expect(provider?.textContent).toContain("AGY Google AI Pro");
+    expect(provider?.textContent).toContain("Antigravity Google AI Pro");
     expect(row?.textContent).toContain("Gemini Models · Weekly Limit");
     expect(row?.textContent).toContain("6%");
   });

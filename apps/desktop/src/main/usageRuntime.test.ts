@@ -1717,7 +1717,7 @@ describe("usage runtime", () => {
     const antigravityFetcher = vi.fn(
       async (): Promise<SubscriptionProviderUsageVm> => ({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-06-02T02:00:00.000Z").toISOString(),
@@ -1759,7 +1759,7 @@ describe("usage runtime", () => {
     expect(runtime.getSnapshot().subscriptionUsage).toEqual([
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         rows: [
           expect.objectContaining({

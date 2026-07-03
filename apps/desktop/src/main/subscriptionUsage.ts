@@ -85,6 +85,7 @@ type AntigravityQuotaSummaryPayload = {
 type CodeAssistTier = {
   id?: string;
   name?: string;
+  description?: string;
 };
 
 type CodeAssistLoadPayload = {
@@ -657,11 +658,17 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
   if (rows.length === 0) {
     return null;
   }
+  const resolvedPlanLabel = shouldUseAntigravityBusinessPlanLabel(
+    loadCodeAssistPayload.allowedTiers,
+    rows
+  )
+    ? "Business"
+    : planLabel;
 
   return {
     provider: "antigravity",
-    providerLabel: "AGY",
-    planLabel,
+    providerLabel: "Antigravity",
+    planLabel: resolvedPlanLabel,
     source: "quota_summary_api",
     updatedAt: new Date(options.now()).toISOString(),
     rows
@@ -827,12 +834,18 @@ function normalizeCodexUsageFromApi(
   };
 }
 
-function buildUnlimitedCreditsRow(): SubscriptionUsageRowVm {
+function buildUnlimitedCreditsRow(
+  options: {
+    key?: string;
+    label?: string;
+    resetLabel?: string;
+  } = {}
+): SubscriptionUsageRowVm {
   return {
-    key: "credits",
-    label: "Credits",
+    key: options.key ?? "credits",
+    label: options.label ?? "Credits",
     valueKind: "unlimited",
-    resetLabel: "No workspace spend limit",
+    resetLabel: options.resetLabel ?? "No workspace spend limit",
     windowKind: "credits"
   };
 }
@@ -1032,24 +1045,28 @@ function normalizeAntigravityQuotaSummaryRows(
   payload: AntigravityQuotaSummaryPayload,
   nowMs: number
 ): SubscriptionUsageRowVm[] {
-  const groupedBuckets = (payload.groups ?? []).flatMap((group) =>
-    (group.buckets ?? []).map((bucket) => ({
-      groupLabel: asTrimmedString(group.displayName),
-      bucket
-    }))
-  );
-  const buckets = [
-    ...groupedBuckets,
-    ...(payload.buckets ?? []).map((bucket) => ({
-      groupLabel: undefined,
-      bucket
-    }))
-  ];
   const usedKeys = new Set<string>();
+  const rows: SubscriptionUsageRowVm[] = [];
 
-  return buckets.flatMap(({ groupLabel, bucket }, index) => {
+  const addRow = (row: SubscriptionUsageRowVm) => {
+    const baseKey = row.key;
+    let key = baseKey;
+    let duplicate = 2;
+    while (usedKeys.has(key)) {
+      key = `${baseKey}-${duplicate}`;
+      duplicate += 1;
+    }
+    usedKeys.add(key);
+    rows.push(key === row.key ? row : { ...row, key });
+  };
+
+  const addBucketRow = (
+    groupLabel: string | null | undefined,
+    bucket: AntigravityQuotaSummaryBucket,
+    fallbackIndex: number
+  ) => {
     if (isAntigravityThirdPartyQuota(groupLabel, bucket.bucketId)) {
-      return [];
+      return;
     }
     const remainingFraction = bucket.remainingFraction;
     if (
@@ -1059,35 +1076,108 @@ function normalizeAntigravityQuotaSummaryRows(
       remainingFraction < 0 ||
       remainingFraction > 1
     ) {
-      return [];
+      return;
     }
     const bucketLabel =
       asTrimmedString(bucket.displayName) ??
       humanizeQuotaWindow(bucket.window) ??
       "Quota";
     const label = groupLabel ? `${groupLabel} · ${bucketLabel}` : bucketLabel;
-    const baseKey =
-      asTrimmedString(bucket.bucketId) ??
-      slugifySubscriptionRowKey(`${groupLabel ?? "quota"}-${bucketLabel}`) ??
-      `quota-${index + 1}`;
-    let key = baseKey;
-    let duplicate = 2;
-    while (usedKeys.has(key)) {
-      key = `${baseKey}-${duplicate}`;
-      duplicate += 1;
-    }
-    usedKeys.add(key);
-
-    return [
+    addRow(
       buildRow({
-        key,
+        key:
+          asTrimmedString(bucket.bucketId) ??
+          slugifySubscriptionRowKey(`${groupLabel ?? "quota"}-${bucketLabel}`) ??
+          `quota-${fallbackIndex}`,
         label,
         usedPercent: (1 - remainingFraction) * 100,
         resetsAtMs: parseDateToMs(bucket.resetTime),
         windowKind: classifyQuotaSummaryWindow(bucket.window),
         nowMs
       })
-    ];
+    );
+  };
+
+  for (const group of payload.groups ?? []) {
+    const groupLabel = asTrimmedString(group.displayName);
+    if (isAntigravityUnlimitedQuotaSummaryGroup(groupLabel, group.buckets)) {
+      addRow(buildAntigravityUnlimitedQuotaRow());
+      continue;
+    }
+    for (const bucket of group.buckets ?? []) {
+      addBucketRow(groupLabel, bucket, rows.length + 1);
+    }
+  }
+  for (const bucket of payload.buckets ?? []) {
+    addBucketRow(undefined, bucket, rows.length + 1);
+  }
+
+  return rows;
+}
+
+function buildAntigravityUnlimitedQuotaRow(): SubscriptionUsageRowVm {
+  return buildUnlimitedCreditsRow({
+    key: "all-models",
+    label: "All Models",
+    resetLabel: "No quota limit reported"
+  });
+}
+
+function isAntigravityUnlimitedQuotaSummaryGroup(
+  groupLabel: string | null | undefined,
+  buckets: AntigravityQuotaSummaryBucket[] | undefined
+): boolean {
+  if (isAntigravityThirdPartyQuota(groupLabel, undefined)) {
+    return false;
+  }
+  const enabledBuckets = (buckets ?? []).filter(
+    (bucket) => bucket.disabled !== true
+  );
+  if (enabledBuckets.length === 0) {
+    return false;
+  }
+  return enabledBuckets.every(
+    (bucket) =>
+      !isAntigravityThirdPartyQuota(groupLabel, bucket.bucketId) &&
+      bucket.remainingFraction === 1 &&
+      !asTrimmedString(bucket.window) &&
+      !asTrimmedString(bucket.resetTime)
+  );
+}
+
+function shouldUseAntigravityBusinessPlanLabel(
+  allowedTiers: CodeAssistTier[] | undefined,
+  rows: SubscriptionUsageRowVm[]
+): boolean {
+  return (
+    isAntigravityBusinessUnlimitedAllowedTier(allowedTiers) &&
+    rows.length === 1 &&
+    rows[0]?.key === "all-models" &&
+    rows[0]?.valueKind === "unlimited" &&
+    rows[0]?.resetLabel === "No quota limit reported"
+  );
+}
+
+function isAntigravityBusinessUnlimitedAllowedTier(
+  allowedTiers: CodeAssistTier[] | undefined
+): boolean {
+  if (!Array.isArray(allowedTiers)) {
+    return false;
+  }
+  return allowedTiers.some((tier) => {
+    const name = asTrimmedString(tier?.name)?.toLowerCase();
+    const description = asTrimmedString(tier?.description)?.toLowerCase();
+    if (name !== "antigravity") {
+      return false;
+    }
+    if (!description) {
+      return true;
+    }
+    return (
+      description.includes("unlimited") ||
+      description.includes("business") ||
+      description.includes("trial")
+    );
   });
 }
 

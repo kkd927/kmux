@@ -998,7 +998,7 @@ describe("subscription usage fetchers", () => {
     );
   });
 
-  it("maps Antigravity keychain auth to AGY quota rows", async () => {
+  it("maps Antigravity keychain auth to Antigravity quota rows", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
       stdout: "user@gmail.com:agy-refresh-token\n",
@@ -1088,7 +1088,7 @@ describe("subscription usage fetchers", () => {
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Google AI Pro",
         source: "quota_summary_api",
         rows: [
@@ -1199,7 +1199,7 @@ describe("subscription usage fetchers", () => {
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         rows: [
           expect.objectContaining({
@@ -1213,7 +1213,7 @@ describe("subscription usage fetchers", () => {
     );
   });
 
-  it("uses Antigravity allowed tiers as the AGY plan label from macOS keychain auth", async () => {
+  it("uses Antigravity allowed tiers as the Antigravity plan label from macOS keychain auth", async () => {
     const homeDir = createSandboxHome();
     const encodedCredentials = Buffer.from(
       JSON.stringify({
@@ -1285,7 +1285,7 @@ describe("subscription usage fetchers", () => {
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Gemini Code Assist",
         rows: [
           expect.objectContaining({
@@ -1323,7 +1323,92 @@ describe("subscription usage fetchers", () => {
     );
   });
 
-  it("reads Antigravity Linux keyring credentials for AGY quota rows", async () => {
+  it("collapses Antigravity unlimited business quota groups into one row", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "agy-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            allowedTiers: [
+              {
+                id: "antigravity-business-trial",
+                name: "Antigravity",
+                description: "Unlimited Antigravity Business trial"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "All Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-2-5-pro",
+                    displayName: "Gemini 2.5 Pro",
+                    remainingFraction: 1
+                  },
+                  {
+                    bucketId: "gemini-2-5-flash",
+                    displayName: "Gemini 2.5 Flash",
+                    remainingFraction: 1
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "darwin",
+      execFileImpl,
+      fetchImpl,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "Antigravity",
+        planLabel: "Business",
+        source: "quota_summary_api"
+      })
+    );
+    expect(usage?.rows).toEqual([
+      {
+        key: "all-models",
+        label: "All Models",
+        valueKind: "unlimited",
+        resetLabel: "No quota limit reported",
+        windowKind: "credits"
+      }
+    ]);
+  });
+
+  it("reads Antigravity Linux keyring credentials for Antigravity quota rows", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
       stdout: "unexpected",
@@ -1385,7 +1470,7 @@ describe("subscription usage fetchers", () => {
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         rows: [
           expect.objectContaining({
@@ -1464,7 +1549,7 @@ describe("subscription usage fetchers", () => {
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
-        providerLabel: "AGY",
+        providerLabel: "Antigravity",
         planLabel: "Gemini Code Assist",
         rows: [
           expect.objectContaining({
