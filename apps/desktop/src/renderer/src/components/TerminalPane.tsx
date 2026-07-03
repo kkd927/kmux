@@ -37,6 +37,7 @@ import {
   countSupportedImageFiles,
   createTerminalImeDuplicateCommitGuard,
   createTerminalPaneXtermTheme,
+  formatDroppedFilePathsForTerminal,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
@@ -2324,12 +2325,20 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!terminal || !currentSurface) {
         return;
       }
-      const payloads = await createImageAttachmentPayloadsFromDataTransfer(
-        event.dataTransfer,
+      const droppedFiles = getFilesFromDataTransfer(event.dataTransfer);
+      const droppedPathText = formatDroppedFilePathsForTerminal(
+        resolveFilePathsFromFiles(droppedFiles)
+      );
+      const payloads = await createImageAttachmentPayloadsFromFiles(
+        droppedFiles,
         "drop"
       );
       if (!payloads.length) {
-        showAttachmentStatus("Drop an image to attach it");
+        if (droppedPathText) {
+          terminal.paste(droppedPathText);
+        } else {
+          showAttachmentStatus("Could not read dropped file path");
+        }
         focusTerminalInput();
         return;
       }
@@ -2773,24 +2782,47 @@ function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
   return Array.from(dataTransfer.items).some((item) => item.kind === "file");
 }
 
-function getImageFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {
+function getFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {
   const filesFromItems = Array.from(dataTransfer.items)
     .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
-  const files = filesFromItems.length
-    ? filesFromItems
-    : Array.from(dataTransfer.files);
-  return files.filter(isPotentialImageFile);
+  return filesFromItems.length ? filesFromItems : Array.from(dataTransfer.files);
+}
+
+function getImageFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {
+  return getFilesFromDataTransfer(dataTransfer).filter(isPotentialImageFile);
+}
+
+function resolveFilePathsFromFiles(files: File[]): string[] {
+  const paths: string[] = [];
+  for (const file of files) {
+    try {
+      paths.push(window.kmux.getPathForFile(file));
+    } catch (error) {
+      console.warn("Failed to resolve dropped file path", error);
+    }
+  }
+  return paths;
 }
 
 async function createImageAttachmentPayloadsFromDataTransfer(
   dataTransfer: DataTransfer,
   source: ImageAttachmentSource
 ): Promise<CreateImageAttachmentPayload[]> {
-  const files = getImageFilesFromDataTransfer(dataTransfer);
+  return createImageAttachmentPayloadsFromFiles(
+    getImageFilesFromDataTransfer(dataTransfer),
+    source
+  );
+}
+
+async function createImageAttachmentPayloadsFromFiles(
+  files: File[],
+  source: ImageAttachmentSource
+): Promise<CreateImageAttachmentPayload[]> {
+  const imageFiles = files.filter(isPotentialImageFile);
   const payloads = await Promise.all(
-    files.map(async (file): Promise<CreateImageAttachmentPayload> => {
+    imageFiles.map(async (file): Promise<CreateImageAttachmentPayload> => {
       const bytes = new Uint8Array(await file.arrayBuffer());
       return {
         source,

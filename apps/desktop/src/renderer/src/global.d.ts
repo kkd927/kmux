@@ -37,6 +37,7 @@ declare global {
   interface Window {
     kmux: {
       getPlatform(): Promise<RendererPlatformDescriptor>;
+      getPathForFile(file: File): string;
       getShellState(): Promise<ShellStoreSnapshot>;
       getUsageView(): Promise<UsageViewSnapshot>;
       getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;

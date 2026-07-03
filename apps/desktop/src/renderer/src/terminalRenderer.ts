@@ -43,6 +43,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
 ]);
 const IME_DUPLICATE_COMMIT_WINDOW_MS = 1500;
 const ALLOWED_PASTE_CONTROL_CODES = new Set([0x09, 0x0a, 0x0d]);
+const TERMINAL_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function createTerminalPaneXtermTheme(
   palette: Parameters<typeof createXtermTheme>[0],
@@ -160,6 +161,17 @@ export function countSupportedImageFiles(
 ): number {
   return Array.from(files).filter((file) => isSupportedImageMimeType(file.type))
     .length;
+}
+
+export function formatDroppedFilePathsForTerminal(
+  paths: ArrayLike<string>
+): string {
+  return Array.from(paths)
+    .filter(
+      (path) => path.length > 0 && !TERMINAL_CONTROL_CHARACTER_PATTERN.test(path)
+    )
+    .map((path) => `'${path.replace(/'/g, "'\\''")}'`)
+    .join(" ");
 }
 
 export function applyPendingTerminalEnterRewrite(

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
@@ -49,6 +49,9 @@ export type TerminalEvent =
 const api = {
   getPlatform(): Promise<RendererPlatformDescriptor> {
     return ipcRenderer.invoke("kmux:platform:get");
+  },
+  getPathForFile(file: File): string {
+    return webUtils.getPathForFile(file);
   },
   getShellState(): Promise<ShellStoreSnapshot> {
     return ipcRenderer.invoke("kmux:shell:get");

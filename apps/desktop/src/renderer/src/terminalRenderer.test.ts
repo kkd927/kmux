@@ -10,6 +10,7 @@ import {
   countSupportedImageFiles,
   createTerminalImeDuplicateCommitGuard,
   createTerminalPaneXtermTheme,
+  formatDroppedFilePathsForTerminal,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
@@ -298,6 +299,46 @@ describe("terminal renderer helpers", () => {
         { type: "image/webp" }
       ])
     ).toBe(2);
+  });
+
+  it("formats a single dropped file path as a quoted shell token", () => {
+    expect(formatDroppedFilePathsForTerminal(["/Users/me/README.md"])).toBe(
+      "'/Users/me/README.md'"
+    );
+  });
+
+  it("quotes dropped file paths with spaces", () => {
+    expect(
+      formatDroppedFilePathsForTerminal(["/Users/me/My Project/README.md"])
+    ).toBe("'/Users/me/My Project/README.md'");
+  });
+
+  it("escapes single quotes in dropped file paths", () => {
+    expect(
+      formatDroppedFilePathsForTerminal(["/Users/me/it's ready.txt"])
+    ).toBe("'/Users/me/it'\\''s ready.txt'");
+  });
+
+  it("joins multiple dropped file paths with spaces", () => {
+    expect(
+      formatDroppedFilePathsForTerminal([
+        "/Users/me/one.txt",
+        "/Users/me/two.txt"
+      ])
+    ).toBe("'/Users/me/one.txt' '/Users/me/two.txt'");
+  });
+
+  it("skips empty and control-character dropped file paths", () => {
+    expect(
+      formatDroppedFilePathsForTerminal([
+        "",
+        "/Users/me/ok.txt",
+        "/Users/me/bad\nname.txt",
+        "/Users/me/bad\rname.txt",
+        "/Users/me/bad\u001bname.txt",
+        "/Users/me/also-ok.txt"
+      ])
+    ).toBe("'/Users/me/ok.txt' '/Users/me/also-ok.txt'");
   });
 
   it("rewrites Ctrl and Shift Enter to modified terminal sequences", () => {
