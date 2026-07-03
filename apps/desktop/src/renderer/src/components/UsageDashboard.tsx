@@ -228,40 +228,43 @@ function SubscriptionWindowsCard(props: {
             </div>
           </div>
           <div className={styles.subscriptionProviderRows}>
-            {providerUsage.rows.map((row) => (
-              <div
-                key={`${providerUsage.provider}-${row.key}`}
-                className={styles.subscriptionUsageRow}
-                data-testid={`subscription-row-${providerUsage.provider}-${row.key}`}
-              >
-                <div className={styles.subscriptionUsageCopy}>
-                  <div className={styles.subscriptionUsageLabel}>
-                    {row.label}
+            {providerUsage.rows.map((row) => {
+              const displayPercent = getSubscriptionDisplayPercent(row);
+              return (
+                <div
+                  key={`${providerUsage.provider}-${row.key}`}
+                  className={styles.subscriptionUsageRow}
+                  data-testid={`subscription-row-${providerUsage.provider}-${row.key}`}
+                >
+                  <div className={styles.subscriptionUsageCopy}>
+                    <div className={styles.subscriptionUsageLabel}>
+                      {row.label}
+                    </div>
+                    <div className={styles.subscriptionUsageMeta}>
+                      {formatSubscriptionRowMeta(row)}
+                    </div>
                   </div>
-                  <div className={styles.subscriptionUsageMeta}>
-                    {formatSubscriptionRowMeta(row)}
-                  </div>
+                  {displayPercent === null ? (
+                    <div className={styles.subscriptionUsageUnlimited}>
+                      Unlimited
+                    </div>
+                  ) : (
+                    <div className={styles.subscriptionUsageMeter}>
+                      <div className={styles.subscriptionUsageBar}>
+                        <InlineBar
+                          value={displayPercent}
+                          total={100}
+                          tone={colorForVendor(providerUsage.provider)}
+                        />
+                      </div>
+                      <div className={styles.subscriptionUsagePercent}>
+                        {formatSubscriptionPercent(displayPercent)}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {row.valueKind === "unlimited" ? (
-                  <div className={styles.subscriptionUsageUnlimited}>
-                    Unlimited
-                  </div>
-                ) : (
-                  <div className={styles.subscriptionUsageMeter}>
-                    <div className={styles.subscriptionUsageBar}>
-                      <InlineBar
-                        value={row.usedPercent}
-                        total={100}
-                        tone={colorForVendor(providerUsage.provider)}
-                      />
-                    </div>
-                    <div className={styles.subscriptionUsagePercent}>
-                      {formatSubscriptionUsedPercent(row.usedPercent)}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -441,11 +444,22 @@ function UsageHeatmap(props: {
   );
 }
 
-function formatSubscriptionUsedPercent(usedPercent: number): string {
-  if (usedPercent > 0 && usedPercent < 1) {
+function getSubscriptionDisplayPercent(
+  row: SubscriptionUsageRowVm
+): number | null {
+  if (row.valueKind === "unlimited") {
+    return null;
+  }
+  const displayPercent =
+    row.windowKind === "spend" ? row.usedPercent : 100 - row.usedPercent;
+  return Math.max(0, Math.min(100, displayPercent));
+}
+
+function formatSubscriptionPercent(percent: number): string {
+  if (percent > 0 && percent < 1) {
     return "< 1%";
   }
-  return `${Math.round(usedPercent)}%`;
+  return `${Math.round(percent)}%`;
 }
 
 function formatSubscriptionRowMeta(row: SubscriptionUsageRowVm): string {
@@ -688,11 +702,17 @@ function InlineBar(props: {
   total: number;
   tone: string;
 }): JSX.Element {
-  const width =
-    props.total > 0 ? Math.max(4, (props.value / props.total) * 100) : 0;
+  const percentage = props.total > 0 ? (props.value / props.total) * 100 : 0;
+  const width = percentage > 0 ? Math.max(4, percentage) : 0;
 
   return (
-    <div className={styles.usageInlineBarTrack}>
+    <div
+      className={styles.usageInlineBarTrack}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={props.total}
+      aria-valuenow={props.value}
+    >
       <div
         className={styles.usageInlineBarFill}
         style={{ width: `${width}%`, backgroundColor: props.tone }}

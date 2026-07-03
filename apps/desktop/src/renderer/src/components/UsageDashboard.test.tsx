@@ -261,7 +261,7 @@ describe("UsageDashboard", () => {
           rows: [
             {
               key: "gemini-weekly",
-              label: "Gemini Models · Weekly Limit",
+              label: "Weekly",
               valueKind: "percent",
               usedPercent: 6,
               resetLabel: "Resets in 13h 0m",
@@ -285,9 +285,13 @@ describe("UsageDashboard", () => {
     const row = container.querySelector<HTMLElement>(
       "[data-testid='subscription-row-antigravity-gemini-weekly']"
     );
+    const bar = row?.querySelector<HTMLElement>("[role='progressbar']");
     expect(provider?.textContent).toContain("Antigravity Google AI Pro");
-    expect(row?.textContent).toContain("Gemini Models · Weekly Limit");
-    expect(row?.textContent).toContain("6%");
+    expect(row?.textContent).toContain("94%");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("94");
+    expect((bar?.firstElementChild as HTMLElement | null)?.style.width).toBe(
+      "94%"
+    );
   });
 
   it("shows token mix costs as plain values when only some samples have unknown component pricing", () => {

@@ -1093,16 +1093,14 @@ describe("subscription usage fetchers", () => {
         source: "quota_summary_api",
         rows: [
           expect.objectContaining({
-            key: "gemini-weekly",
-            label: "Gemini Models · Weekly Limit",
-            usedPercent: 6,
-            windowKind: "weekly"
-          }),
-          expect.objectContaining({
             key: "gemini-5h",
-            label: "Gemini Models · Five Hour Limit",
             usedPercent: 8,
             windowKind: "session"
+          }),
+          expect.objectContaining({
+            key: "gemini-weekly",
+            usedPercent: 6,
+            windowKind: "weekly"
           })
         ]
       })
@@ -1204,7 +1202,6 @@ describe("subscription usage fetchers", () => {
         rows: [
           expect.objectContaining({
             key: "gemini-5h",
-            label: "Gemini Models · Five Hour Limit",
             usedPercent: 0,
             windowKind: "session"
           })
@@ -1289,16 +1286,14 @@ describe("subscription usage fetchers", () => {
         planLabel: "Gemini Code Assist",
         rows: [
           expect.objectContaining({
-            key: "gemini-weekly",
-            label: "Gemini Models · Weekly Limit",
-            usedPercent: 0,
-            windowKind: "weekly"
-          }),
-          expect.objectContaining({
             key: "gemini-5h",
-            label: "Gemini Models · Five Hour Limit",
             usedPercent: 0,
             windowKind: "session"
+          }),
+          expect.objectContaining({
+            key: "gemini-weekly",
+            usedPercent: 0,
+            windowKind: "weekly"
           })
         ]
       })
@@ -1475,7 +1470,6 @@ describe("subscription usage fetchers", () => {
         rows: [
           expect.objectContaining({
             key: "gemini-weekly",
-            label: "Gemini Models · Weekly Limit",
             usedPercent: 85,
             windowKind: "weekly"
           })
@@ -1554,7 +1548,6 @@ describe("subscription usage fetchers", () => {
         rows: [
           expect.objectContaining({
             key: "gemini-5h",
-            label: "Gemini Models · Five Hour Limit",
             usedPercent: 85,
             windowKind: "session"
           })

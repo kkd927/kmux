@@ -1078,21 +1078,34 @@ function normalizeAntigravityQuotaSummaryRows(
     ) {
       return;
     }
-    const bucketLabel =
+    const sourceBucketLabel =
       asTrimmedString(bucket.displayName) ??
       humanizeQuotaWindow(bucket.window) ??
       "Quota";
-    const label = groupLabel ? `${groupLabel} · ${bucketLabel}` : bucketLabel;
+    const displayGroupLabel =
+      groupLabel?.trim().toLowerCase() === "gemini models" ? null : groupLabel;
+    const windowKind = classifyQuotaSummaryWindow(bucket.window);
+    const bucketLabel =
+      windowKind === "weekly"
+        ? "Weekly"
+        : windowKind === "session"
+          ? "Session"
+          : sourceBucketLabel;
+    const label = displayGroupLabel
+      ? `${displayGroupLabel} · ${bucketLabel}`
+      : bucketLabel;
     addRow(
       buildRow({
         key:
           asTrimmedString(bucket.bucketId) ??
-          slugifySubscriptionRowKey(`${groupLabel ?? "quota"}-${bucketLabel}`) ??
+          slugifySubscriptionRowKey(
+            `${groupLabel ?? "quota"}-${sourceBucketLabel}`
+          ) ??
           `quota-${fallbackIndex}`,
         label,
         usedPercent: (1 - remainingFraction) * 100,
         resetsAtMs: parseDateToMs(bucket.resetTime),
-        windowKind: classifyQuotaSummaryWindow(bucket.window),
+        windowKind,
         nowMs
       })
     );
@@ -1104,15 +1117,32 @@ function normalizeAntigravityQuotaSummaryRows(
       addRow(buildAntigravityUnlimitedQuotaRow());
       continue;
     }
-    for (const bucket of group.buckets ?? []) {
+    const orderedBuckets = [...(group.buckets ?? [])].sort(
+      compareQuotaSummaryBuckets
+    );
+    for (const bucket of orderedBuckets) {
       addBucketRow(groupLabel, bucket, rows.length + 1);
     }
   }
-  for (const bucket of payload.buckets ?? []) {
+  const orderedBuckets = [...(payload.buckets ?? [])].sort(
+    compareQuotaSummaryBuckets
+  );
+  for (const bucket of orderedBuckets) {
     addBucketRow(undefined, bucket, rows.length + 1);
   }
 
   return rows;
+}
+
+function compareQuotaSummaryBuckets(
+  left: AntigravityQuotaSummaryBucket,
+  right: AntigravityQuotaSummaryBucket
+): number {
+  const priority = { session: 0, weekly: 1, model: 2, spend: 2 } as const;
+  return (
+    priority[classifyQuotaSummaryWindow(left.window)] -
+    priority[classifyQuotaSummaryWindow(right.window)]
+  );
 }
 
 function buildAntigravityUnlimitedQuotaRow(): SubscriptionUsageRowVm {
