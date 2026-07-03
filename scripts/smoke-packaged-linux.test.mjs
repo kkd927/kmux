@@ -39,7 +39,9 @@ function createReleaseFixture({ arch = "x64" } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-"));
   const appImageName = `kmux-0.3.12-linux-${arch}.AppImage`;
   const metadataName =
-    arch === "x64" ? "latest-linux.yml" : `latest-linux-${arch}.yml`;
+    arch === "x64" || arch === "x86_64"
+      ? "latest-linux.yml"
+      : `latest-linux-${arch}.yml`;
   const appImagePath = path.join(root, appImageName);
   const metadataPath = path.join(root, metadataName);
   const appImageContents = "app";
@@ -307,6 +309,39 @@ describe("linux packaged smoke wrapper", () => {
           searchRoots: [fixture.root]
         })
       ).toBe(fixture.metadataPath);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the x64 update channel for x86_64 AppImage names", () => {
+    const fixture = createReleaseFixture({ arch: "x86_64" });
+    try {
+      expect(inferLinuxAppImageArch(fixture.appImagePath)).toBe("x64");
+      expect(expectedLinuxUpdateMetadataNames(fixture.appImagePath)).toEqual([
+        "latest-linux.yml",
+        "latest-linux.yaml"
+      ]);
+      expect(linuxUpdateMetadataCandidates(fixture.appImagePath)).toEqual([
+        "latest-linux.yml",
+        "latest-linux.yaml"
+      ]);
+      expect(
+        findLinuxUpdateMetadataPath({
+          appImagePath: fixture.appImagePath,
+          searchRoots: [fixture.root]
+        })
+      ).toBe(fixture.metadataPath);
+      expect(() =>
+        validateLinuxUpdateMetadata(
+          loadLinuxUpdateMetadata(fixture.metadataPath),
+          {
+            appImagePath: fixture.appImagePath,
+            expectedVersion: "0.3.12",
+            metadataPath: fixture.metadataPath
+          }
+        )
+      ).not.toThrow();
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }

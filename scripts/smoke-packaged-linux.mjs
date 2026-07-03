@@ -135,7 +135,8 @@ export function isLinuxUpdateMetadataName(fileName) {
 
 export function inferLinuxAppImageArch(appImagePath) {
   const match = /-linux-([^.]+)\.AppImage$/i.exec(path.basename(appImagePath));
-  return match?.[1] ?? "";
+  const arch = match?.[1] ?? "";
+  return arch === "x86_64" ? "x64" : arch;
 }
 
 export function isKmuxLinuxAppImagePath(appImagePath) {

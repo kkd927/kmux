@@ -39,10 +39,12 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     expect(runtimeEnv.KMUX_PACKAGED_EXECUTABLE_PATH).toBe(
       packagedExecutablePath
     );
-    expect(process.env.APPIMAGE).toBeUndefined();
-    expect(process.env.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();
-    expect(runtimeEnv.APPIMAGE).toBe(packagedExecutablePath);
-    expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe("");
+    if (process.platform === "linux") {
+      expect(process.env.APPIMAGE).toBeUndefined();
+      expect(process.env.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();
+      expect(runtimeEnv.APPIMAGE).toBe(packagedExecutablePath);
+      expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe("");
+    }
 
     const initial = await getView(page);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
