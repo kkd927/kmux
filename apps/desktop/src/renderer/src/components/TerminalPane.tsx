@@ -228,6 +228,7 @@ const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
 const TERMINAL_WRITE_CALLBACK_TIMEOUT_MS = 10_000;
 const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
+const INACTIVE_WORKSPACE_RENDER_PAUSE_DELAY_MS = 2000;
 
 function openExternalTerminalLink(rawUrl: string): void {
   let url: URL;
@@ -307,6 +308,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const writeTerminalRef = useRef<TerminalWriter>(() => false);
   const fitAndSyncTerminalRef = useRef<TerminalFitAndSync>(async () => {});
   const renderSinkContextRef = useRef<TerminalRenderSinkContext | null>(null);
+  const pendingRendererRefreshFrameRef = useRef<number | null>(null);
+  const pendingRendererRefreshesRef = useRef(new Map<Terminal, string>());
+  const inactiveRendererPauseTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inactiveRendererPauseReadyRef = useRef(false);
   // The xterm instance is surface-scoped, but PTY size is still synced from
   // the pane that currently displays the surface.
   const surfaceResizeDimensionsRef = useRef(
@@ -517,21 +523,98 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     return terminalInstanceStore.getReadyAttachId(surfaceId, sessionId);
   }
 
+  function isVisibleSurfaceRenderer(surfaceId: string): boolean {
+    if (!paneActiveRef.current) {
+      return false;
+    }
+    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+    if (wrapper?.dataset.active !== "true") {
+      return false;
+    }
+    return true;
+  }
+
   function refreshVisibleSurfaceRenderer(
     surfaceId: string,
     terminal: Terminal,
     options: { force?: boolean } = {}
   ): void {
-    if (!paneActiveRef.current) {
-      pauseTerminalRenderer(terminal);
-      return;
-    }
-    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
-    if (wrapper?.dataset.active !== "true") {
+    if (!isVisibleSurfaceRenderer(surfaceId)) {
       return;
     }
     resumeAndRefreshTerminalRenderer(terminal, options);
   }
+
+  function scheduleVisibleSurfaceRendererRefresh(
+    surfaceId: string,
+    terminal: Terminal
+  ): void {
+    if (!isVisibleSurfaceRenderer(surfaceId)) {
+      reassertInactiveWorkspaceRendererPause(terminal);
+      return;
+    }
+    pendingRendererRefreshesRef.current.set(terminal, surfaceId);
+    if (pendingRendererRefreshFrameRef.current !== null) {
+      return;
+    }
+    pendingRendererRefreshFrameRef.current = requestAnimationFrame(() => {
+      pendingRendererRefreshFrameRef.current = null;
+      const pendingRefreshes = Array.from(
+        pendingRendererRefreshesRef.current.entries()
+      );
+      pendingRendererRefreshesRef.current.clear();
+      for (const [pendingTerminal, pendingSurfaceId] of pendingRefreshes) {
+        refreshVisibleSurfaceRenderer(pendingSurfaceId, pendingTerminal, {
+          force: true
+        });
+      }
+    });
+  }
+
+  function cancelInactiveRendererPause(): void {
+    if (inactiveRendererPauseTimerRef.current === null) {
+      inactiveRendererPauseReadyRef.current = false;
+      return;
+    }
+    clearTimeout(inactiveRendererPauseTimerRef.current);
+    inactiveRendererPauseTimerRef.current = null;
+    inactiveRendererPauseReadyRef.current = false;
+  }
+
+  function scheduleInactiveWorkspaceRendererPause(terminal: Terminal): void {
+    cancelInactiveRendererPause();
+    inactiveRendererPauseTimerRef.current = setTimeout(() => {
+      inactiveRendererPauseTimerRef.current = null;
+      if (paneActiveRef.current || terminalRef.current !== terminal) {
+        inactiveRendererPauseReadyRef.current = false;
+        return;
+      }
+      inactiveRendererPauseReadyRef.current = true;
+      pauseTerminalRenderer(terminal);
+    }, INACTIVE_WORKSPACE_RENDER_PAUSE_DELAY_MS);
+  }
+
+  function reassertInactiveWorkspaceRendererPause(terminal: Terminal): void {
+    if (
+      paneActiveRef.current ||
+      !inactiveRendererPauseReadyRef.current ||
+      terminalRef.current !== terminal
+    ) {
+      return;
+    }
+    pauseTerminalRenderer(terminal);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (pendingRendererRefreshFrameRef.current !== null) {
+        cancelAnimationFrame(pendingRendererRefreshFrameRef.current);
+        pendingRendererRefreshFrameRef.current = null;
+      }
+      pendingRendererRefreshesRef.current.clear();
+      cancelInactiveRendererPause();
+    };
+  }, []);
 
   function syncTerminalViewportBackground(): void {
     const container = containerRef.current;
@@ -905,7 +988,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       terminal.write(data, () => {
         if (profileSurfaceId) {
           syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-          refreshVisibleSurfaceRenderer(profileSurfaceId, terminal);
+          scheduleVisibleSurfaceRendererRefresh(profileSurfaceId, terminal);
         } else {
           syncTerminalMetrics(terminal);
         }
@@ -934,7 +1017,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       });
       syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-      refreshVisibleSurfaceRenderer(profileSurfaceId, terminal);
+      scheduleVisibleSurfaceRendererRefresh(profileSurfaceId, terminal);
       afterWrite?.();
     });
     return true;
@@ -1778,13 +1861,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     if (!props.active) {
-      pauseTerminalRenderer(terminal);
+      scheduleInactiveWorkspaceRendererPause(terminal);
       return;
     }
+    cancelInactiveRendererPause();
     if (!wasActive) {
       const surfaceId = activeSurfaceRef.current?.id;
       if (surfaceId) {
-        refreshVisibleSurfaceRenderer(surfaceId, terminal);
+        refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
       }
       foregroundFitRef.current?.scheduleFit();
     }

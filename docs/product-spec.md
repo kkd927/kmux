@@ -37,6 +37,7 @@ Hard rules:
 - Warm terminal widgets are renderer-only caches. The `pty-host` remains the owner of PTY and headless terminal state, and `electron-main` remains the source of truth for workspace, pane, surface, and session state.
 - Hidden surface tabs within a pane must still detach from the terminal stream; switching tabs must hydrate the selected surface widget from that surface's snapshot/stream.
 - Warm terminal widgets must be released when their surfaces leave product state.
+- Any terminal surface visible in the active workspace must continue rendering live output regardless of pane focus, app focus, or interaction with other panes.
 - All state mutation must flow through the main reducer.
 - Stable `windowId`, `workspaceId`, `paneId`, `surfaceId`, and `sessionId` values must be preserved.
 - Workspace switching must preserve the active pane tree's terminal continuity without making hidden workspace widgets authoritative for session state.

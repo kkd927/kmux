@@ -563,55 +563,111 @@ describe("TerminalPane visibility cleanup", () => {
     expect(terminalInstanceStore.getRenderSink("surface_1")).toBe(firstSink);
   });
 
-  it("does not force a full renderer refresh for ordinary live chunks", async () => {
-    const props = createProps("surface_1");
-    let terminalListener: ((event: unknown) => void) | null = null;
-    window.kmux.subscribeTerminal = vi.fn((listener) => {
-      terminalListener = listener as (event: unknown) => void;
-      return vi.fn();
-    });
-
-    await act(async () => {
-      root.render(<TerminalPane {...props} />);
-      await flushMicrotasks();
-    });
-
-    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
-      | {
-          write: ReturnType<typeof vi.fn>;
-          _core: {
-            _renderService: {
-              refreshRows: ReturnType<typeof vi.fn>;
-              _renderRows: ReturnType<typeof vi.fn>;
-            };
-          };
-        }
-      | undefined;
-    expect(terminal).toBeDefined();
-    terminal!.write.mockClear();
-    terminal!._core._renderService.refreshRows.mockClear();
-    terminal!._core._renderService._renderRows.mockClear();
-
-    await act(async () => {
-      terminalListener?.({
-        type: "chunk",
-        payload: {
-          surfaceId: "surface_1",
-          sessionId: "session_surface_1",
-          sequence: 1,
-          chunk: "live output"
-        }
+  it.each([true, false])(
+    "coalesces forced renderer refreshes for active live chunks when focused=%s",
+    async (focused) => {
+      const props = { ...createProps("surface_1"), focused };
+      let terminalListener: ((event: unknown) => void) | null = null;
+      window.kmux.subscribeTerminal = vi.fn((listener) => {
+        terminalListener = listener as (event: unknown) => void;
+        return vi.fn();
       });
-      await flushMicrotasks();
-    });
 
-    expect(terminal!.write).toHaveBeenCalledWith(
-      "live output",
-      expect.any(Function)
-    );
-    expect(terminal!._core._renderService.refreshRows).not.toHaveBeenCalled();
-    expect(terminal!._core._renderService._renderRows).not.toHaveBeenCalled();
-  });
+      await act(async () => {
+        root.render(<TerminalPane {...props} />);
+        await flushMicrotasks();
+      });
+
+      const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | {
+            rows: number;
+            write: ReturnType<typeof vi.fn>;
+            _core: {
+              _renderService: {
+                _isPaused: boolean;
+                _needsFullRefresh: boolean;
+                refreshRows: ReturnType<typeof vi.fn>;
+                _renderRows: ReturnType<typeof vi.fn>;
+              };
+            };
+          }
+        | undefined;
+      expect(terminal).toBeDefined();
+      terminal!._core._renderService._isPaused = false;
+      terminal!._core._renderService._needsFullRefresh = false;
+      terminal!.write.mockClear();
+      terminal!._core._renderService.refreshRows.mockClear();
+      terminal!._core._renderService._renderRows.mockClear();
+
+      const animationFrames: FrameRequestCallback[] = [];
+      const requestAnimationFrameSpy = vi
+        .spyOn(window, "requestAnimationFrame")
+        .mockImplementation((callback: FrameRequestCallback): number => {
+          animationFrames.push(callback);
+          return animationFrames.length;
+        });
+
+      try {
+        await act(async () => {
+          terminalListener?.({
+            type: "chunk",
+            payload: {
+              surfaceId: "surface_1",
+              sessionId: "session_surface_1",
+              sequence: 1,
+              chunk: "live output 1"
+            }
+          });
+          terminalListener?.({
+            type: "chunk",
+            payload: {
+              surfaceId: "surface_1",
+              sessionId: "session_surface_1",
+              sequence: 2,
+              chunk: "live output 2"
+            }
+          });
+          await flushMicrotasks();
+        });
+
+        expect(terminal!.write).toHaveBeenCalledWith(
+          "live output 1",
+          expect.any(Function)
+        );
+        expect(terminal!.write).toHaveBeenCalledWith(
+          "live output 2",
+          expect.any(Function)
+        );
+        expect(animationFrames.length).toBeGreaterThan(0);
+        expect(terminal!._core._renderService.refreshRows).not.toHaveBeenCalled();
+        expect(terminal!._core._renderService._renderRows).not.toHaveBeenCalled();
+
+        await act(async () => {
+          for (const callback of animationFrames.splice(0)) {
+            callback(performance.now());
+          }
+          await flushMicrotasks();
+        });
+
+        expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledTimes(
+          1
+        );
+        expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledWith(
+          0,
+          terminal!.rows - 1
+        );
+        expect(terminal!._core._renderService._renderRows).toHaveBeenCalledTimes(
+          1
+        );
+        expect(terminal!._core._renderService._renderRows).toHaveBeenCalledWith(
+          0,
+          terminal!.rows - 1
+        );
+      } finally {
+        requestAnimationFrameSpy.mockRestore();
+      }
+    }
+  );
 
   it("keeps the live chunk queue moving when an attached write is dropped", async () => {
     const props = createProps("surface_1");
@@ -739,7 +795,7 @@ describe("TerminalPane visibility cleanup", () => {
     );
   });
 
-  it("pauses renderer work while inactive and refreshes when active again", async () => {
+  it("delays renderer pause while inactive and refreshes when active again", async () => {
     const props = createProps("surface_1");
 
     await act(async () => {
@@ -765,29 +821,103 @@ describe("TerminalPane visibility cleanup", () => {
     renderService.refreshRows.mockClear();
     renderService._renderRows.mockClear();
 
-    await act(async () => {
-      root.render(<TerminalPane {...props} active={false} />);
-      await flushMicrotasks();
-    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        root.render(<TerminalPane {...props} active={false} />);
+        await flushMicrotasks();
+      });
 
-    expect(renderService._isPaused).toBe(true);
-    expect(renderService._needsFullRefresh).toBe(true);
-    expect(renderService.refreshRows).not.toHaveBeenCalled();
+      expect(renderService._isPaused).toBe(false);
+      expect(renderService._needsFullRefresh).toBe(false);
+      expect(renderService.refreshRows).not.toHaveBeenCalled();
 
-    await act(async () => {
-      root.render(<TerminalPane {...props} active />);
-      await flushMicrotasks();
-    });
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await flushMicrotasks();
+      });
 
-    expect(renderService._isPaused).toBe(false);
-    expect(renderService._needsFullRefresh).toBe(false);
-    expect(renderService.refreshRows).toHaveBeenCalledWith(
-      0,
-      terminal!.rows - 1
-    );
+      expect(renderService._isPaused).toBe(true);
+      expect(renderService._needsFullRefresh).toBe(true);
+      expect(renderService.refreshRows).not.toHaveBeenCalled();
+
+      await act(async () => {
+        root.render(<TerminalPane {...props} active />);
+        await flushMicrotasks();
+      });
+
+      expect(renderService._isPaused).toBe(false);
+      expect(renderService._needsFullRefresh).toBe(false);
+      expect(renderService.refreshRows).toHaveBeenCalledWith(
+        0,
+        terminal!.rows - 1
+      );
+      expect(renderService._renderRows).toHaveBeenCalledWith(
+        0,
+        terminal!.rows - 1
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("reasserts renderer pause when inactive writes observe an unpaused xterm service", async () => {
+  it("cancels delayed renderer pause when inactive workspace becomes active quickly", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          rows: number;
+          _core: {
+            _renderService: {
+              _isPaused: boolean;
+              _needsFullRefresh: boolean;
+              refreshRows: ReturnType<typeof vi.fn>;
+              _renderRows: ReturnType<typeof vi.fn>;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    const renderService = terminal!._core._renderService;
+    renderService.refreshRows.mockClear();
+    renderService._renderRows.mockClear();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        root.render(<TerminalPane {...props} active={false} />);
+        await flushMicrotasks();
+      });
+      await act(async () => {
+        root.render(<TerminalPane {...props} active />);
+        await flushMicrotasks();
+      });
+
+      renderService._isPaused = false;
+      renderService._needsFullRefresh = false;
+      renderService.refreshRows.mockClear();
+      renderService._renderRows.mockClear();
+
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await flushMicrotasks();
+      });
+
+      expect(renderService._isPaused).toBe(false);
+      expect(renderService._needsFullRefresh).toBe(false);
+      expect(renderService.refreshRows).not.toHaveBeenCalled();
+      expect(renderService._renderRows).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not pause inactive writes before the workspace pause delay", async () => {
     const props = createProps("surface_1");
     let terminalListener: ((event: unknown) => void) | null = null;
     window.kmux.subscribeTerminal = vi.fn((listener) => {
@@ -840,8 +970,79 @@ describe("TerminalPane visibility cleanup", () => {
       "inactive output",
       expect.any(Function)
     );
-    expect(renderService._isPaused).toBe(true);
-    expect(renderService._needsFullRefresh).toBe(true);
+    expect(renderService._isPaused).toBe(false);
+    expect(renderService._needsFullRefresh).toBe(false);
+  });
+
+  it("reasserts renderer pause when inactive writes arrive after the workspace pause delay", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          _core: {
+            _renderService: {
+              _isPaused: boolean;
+              _needsFullRefresh: boolean;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        root.render(<TerminalPane {...props} active={false} />);
+        await flushMicrotasks();
+      });
+
+      const renderService = terminal!._core._renderService;
+
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await flushMicrotasks();
+      });
+
+      expect(renderService._isPaused).toBe(true);
+      expect(renderService._needsFullRefresh).toBe(true);
+
+      renderService._isPaused = false;
+      renderService._needsFullRefresh = false;
+      terminal!.write.mockClear();
+
+      await act(async () => {
+        terminalListener?.({
+          type: "chunk",
+          payload: {
+            surfaceId: "surface_1",
+            sessionId: "session_surface_1",
+            sequence: 1,
+            chunk: "inactive output after delay"
+          }
+        });
+        await flushMicrotasks();
+      });
+
+      expect(terminal!.write).toHaveBeenCalledWith(
+        "inactive output after delay",
+        expect.any(Function)
+      );
+      expect(renderService._isPaused).toBe(true);
+      expect(renderService._needsFullRefresh).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("applies terminal resize events after pending chunk write callbacks", async () => {
