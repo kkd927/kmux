@@ -43,6 +43,8 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
 ]);
 const IME_DUPLICATE_COMMIT_WINDOW_MS = 1500;
 const ALLOWED_PASTE_CONTROL_CODES = new Set([0x09, 0x0a, 0x0d]);
+// Intentionally reject C0/C1 control characters from dropped file paths.
+// eslint-disable-next-line no-control-regex
 const TERMINAL_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function createTerminalPaneXtermTheme(
