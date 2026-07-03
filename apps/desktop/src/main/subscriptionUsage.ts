@@ -1092,7 +1092,7 @@ function normalizeAntigravityQuotaSummaryRows(
 }
 
 function isAntigravityThirdPartyQuota(
-  groupLabel: string | undefined,
+  groupLabel: string | null | undefined,
   bucketId: string | undefined
 ): boolean {
   const normalizedGroup = groupLabel?.trim().toLowerCase() ?? "";
