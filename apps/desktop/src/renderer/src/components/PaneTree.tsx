@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 
 import type {
   ActiveWorkspacePaneTreeVm,
@@ -15,6 +15,10 @@ import type {
 } from "../../../shared/platform/keyboardPolicy";
 import styles from "../styles/PaneTree.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
+import {
+  beginPaneDividerDrag,
+  endPaneDividerDrag
+} from "../paneDividerDrag";
 import { recordRendererSmoothnessProfileEvent } from "../smoothnessProfile";
 import type {
   SurfaceTabDragPayload,
@@ -177,6 +181,18 @@ function SplitDivider(props: {
   ratio: number;
   onChange: (ratio: number) => void;
 }): JSX.Element {
+  const activeCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // If this divider unmounts mid-drag (e.g. closing a pane collapses
+      // this split), the window pointerup/pointercancel/blur listeners may
+      // never fire. Run the same cleanup unconditionally so the global drag
+      // flag can't get stuck "active" and throttle every terminal's fits.
+      activeCleanupRef.current?.();
+    };
+  }, []);
+
   return (
     <div
       className={
@@ -200,6 +216,10 @@ function SplitDivider(props: {
           return;
         }
         event.currentTarget.setPointerCapture(event.pointerId);
+        beginPaneDividerDrag();
+        recordRendererSmoothnessProfileEvent("pane-divider.drag.start", {
+          axis: props.axis
+        });
         const rect = target.getBoundingClientRect();
         const move = (nextEvent: PointerEvent) => {
           const ratio =
@@ -212,10 +232,18 @@ function SplitDivider(props: {
           window.removeEventListener("pointermove", move);
           window.removeEventListener("pointerup", up);
           window.removeEventListener("pointercancel", up);
+          window.removeEventListener("blur", up);
+          activeCleanupRef.current = null;
+          endPaneDividerDrag();
+          recordRendererSmoothnessProfileEvent("pane-divider.drag.end", {
+            axis: props.axis
+          });
         };
+        activeCleanupRef.current = up;
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
         window.addEventListener("pointercancel", up);
+        window.addEventListener("blur", up);
       }}
       onKeyDown={(event) => {
         const decrementKey =

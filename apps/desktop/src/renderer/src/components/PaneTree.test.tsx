@@ -5,6 +5,10 @@ import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PaneTreeProps } from "./PaneTree";
+import {
+  isPaneDividerDragActive,
+  resetPaneDividerDragForTests
+} from "../paneDividerDrag";
 
 const terminalPaneRenderSpy = vi.fn();
 
@@ -126,12 +130,62 @@ function createPaneTreeProps(): PaneTreeProps {
   };
 }
 
+function createSplitPaneTreeProps(): PaneTreeProps {
+  const base = createPaneTreeProps();
+  return {
+    ...base,
+    workspace: {
+      ...base.workspace,
+      rootNodeId: "split_1",
+      nodes: {
+        split_1: {
+          id: "split_1",
+          kind: "split",
+          axis: "vertical",
+          ratio: 0.5,
+          first: "node_1",
+          second: "node_2"
+        },
+        node_1: {
+          id: "node_1",
+          kind: "leaf",
+          paneId: "pane_1"
+        },
+        node_2: {
+          id: "node_2",
+          kind: "leaf",
+          paneId: "pane_2"
+        }
+      },
+      panes: {
+        ...base.workspace.panes,
+        pane_2: {
+          id: "pane_2",
+          surfaceIds: ["surface_2"],
+          activeSurfaceId: "surface_2",
+          focused: false
+        }
+      },
+      surfaces: {
+        ...base.workspace.surfaces,
+        surface_2: {
+          ...base.workspace.surfaces.surface_1,
+          id: "surface_2",
+          sessionId: "session_2",
+          title: "repo / shell 2"
+        }
+      }
+    }
+  };
+}
+
 describe("PaneTree", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
 
   beforeEach(() => {
     terminalPaneRenderSpy.mockClear();
+    resetPaneDividerDragForTests();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = ReactDOMClient.createRoot(container);
@@ -141,6 +195,7 @@ describe("PaneTree", () => {
     act(() => {
       root.unmount();
     });
+    resetPaneDividerDragForTests();
     container.remove();
   });
 
@@ -219,5 +274,53 @@ describe("PaneTree", () => {
     });
 
     expect(terminalPaneRenderSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("ends a divider drag when the divider unmounts mid-drag", () => {
+    const originalSetPointerCapture = Element.prototype.setPointerCapture;
+    Element.prototype.setPointerCapture = vi.fn();
+    try {
+      const props = createSplitPaneTreeProps();
+
+      act(() => {
+        root.render(<PaneTree {...props} />);
+      });
+
+      const divider = container.querySelector<HTMLElement>(
+        '[data-split-axis="vertical"]'
+      );
+      expect(divider).toBeTruthy();
+
+      act(() => {
+        divider!.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            clientX: 100,
+            clientY: 100
+          })
+        );
+      });
+
+      expect(isPaneDividerDragActive()).toBe(true);
+
+      // Simulate the split collapsing (e.g. the sibling pane closing) while
+      // the pointer is still down: the divider disappears without a
+      // pointerup/pointercancel ever reaching the window listeners.
+      act(() => {
+        root.render(
+          <PaneTree
+            {...props}
+            workspace={{ ...props.workspace, rootNodeId: "node_1" }}
+          />
+        );
+      });
+
+      expect(container.querySelector('[data-split-axis]')).toBeNull();
+      expect(isPaneDividerDragActive()).toBe(false);
+    } finally {
+      Element.prototype.setPointerCapture = originalSetPointerCapture;
+    }
   });
 });

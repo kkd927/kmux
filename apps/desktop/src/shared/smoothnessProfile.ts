@@ -21,7 +21,9 @@ export type SmoothnessProfileEventName =
   | "terminal.resize.request"
   | "terminal.resize.ack"
   | "terminal.resize.apply"
-  | "terminal.reflow";
+  | "terminal.reflow"
+  | "pane-divider.drag.start"
+  | "pane-divider.drag.end";
 
 export interface SmoothnessProfileEvent {
   source: SmoothnessProfileSource;

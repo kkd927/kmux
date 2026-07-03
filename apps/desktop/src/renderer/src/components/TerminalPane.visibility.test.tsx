@@ -10,6 +10,11 @@ import type { ColorTheme } from "@kmux/ui";
 import type { ILink, ILinkProvider } from "@xterm/xterm";
 
 import { buildPlatformKeyboardPolicy } from "../../../shared/platform/keyboardPolicy";
+import {
+  beginPaneDividerDrag,
+  endPaneDividerDrag,
+  resetPaneDividerDragForTests
+} from "../paneDividerDrag";
 
 let fitDimensions = { cols: 120, rows: 40 };
 let terminalBufferText = "";
@@ -145,7 +150,15 @@ import * as terminalInstanceStore from "../terminalInstanceStore";
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+let resizeObserverCallbacks: Array<() => void> = [];
+
 class MockResizeObserver {
+  constructor(callback: ResizeObserverCallback) {
+    resizeObserverCallbacks.push(() =>
+      callback([], this as unknown as ResizeObserver)
+    );
+  }
+
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
@@ -306,6 +319,8 @@ describe("TerminalPane visibility cleanup", () => {
     vi.clearAllMocks();
     fitDimensions = { cols: 120, rows: 40 };
     terminalBufferText = "";
+    resizeObserverCallbacks = [];
+    resetPaneDividerDragForTests();
     windowFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
     (
       globalThis as typeof globalThis & { ResizeObserver: unknown }
@@ -359,6 +374,7 @@ describe("TerminalPane visibility cleanup", () => {
       root.unmount();
     });
     terminalInstanceStore.releaseAll();
+    resetPaneDividerDragForTests();
     windowFocus.mockRestore();
     container.remove();
   });
@@ -894,7 +910,7 @@ describe("TerminalPane visibility cleanup", () => {
     expect(terminal!.resize).toHaveBeenCalledWith(132, 41);
   });
 
-  it("drops queued resize echoes that are older than the latest local fit", async () => {
+  it("applies queued resize echoes in stream order and converges on the latest size", async () => {
     const props = createProps("surface_1");
     let terminalListener: ((event: unknown) => void) | null = null;
     window.kmux.subscribeTerminal = vi.fn((listener) => {
@@ -911,6 +927,8 @@ describe("TerminalPane visibility cleanup", () => {
       | {
           write: ReturnType<typeof vi.fn>;
           resize: ReturnType<typeof vi.fn>;
+          cols: number;
+          rows: number;
         }
       | undefined;
     expect(terminal).toBeDefined();
@@ -959,12 +977,43 @@ describe("TerminalPane visibility cleanup", () => {
       50
     );
 
+    // The (100, 30) echo predates the (140, 50) local fit but is still applied
+    // once its chunk write settles: pty-host resize events are in-stream
+    // barriers, and dropping them lets the visible xterm width diverge from
+    // the PTY width mid-drag.
     await act(async () => {
       resolveChunkWrite?.();
       await flushMicrotasks();
     });
 
-    expect(terminal!.resize).not.toHaveBeenCalledWith(100, 30);
+    expect(terminal!.resize).toHaveBeenCalledWith(100, 30);
+
+    // The pty-host later emits the barrier for the new size once the PTY
+    // itself has caught up; applying it converges the terminal on the latest
+    // dimensions.
+    await act(async () => {
+      terminalListener?.({
+        type: "resize",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          attachId: "attach_1",
+          cols: 140,
+          rows: 50
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.resize).toHaveBeenLastCalledWith(140, 50);
+    expect(terminal!.cols).toBe(140);
+    expect(terminal!.rows).toBe(50);
+    expect(
+      terminal!.resize.mock.calls.map((call) => call.slice(0, 2))
+    ).toEqual([
+      [100, 30],
+      [140, 50]
+    ]);
   });
 
   it("writes the exit banner after pending chunk write callbacks", async () => {
@@ -1240,6 +1289,66 @@ describe("TerminalPane visibility cleanup", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("defers container-size fits during a divider drag and flushes a final fit when it ends", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const observerCallback = resizeObserverCallbacks.at(-1);
+    expect(observerCallback).toBeDefined();
+
+    vi.mocked(window.kmux.resizeSurface).mockClear();
+
+    // No drag active: a container-size change still resizes promptly.
+    fitDimensions = { cols: 90, rows: 28 };
+    await act(async () => {
+      observerCallback?.();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await flushMicrotasks();
+    });
+
+    expect(window.kmux.resizeSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      90,
+      28
+    );
+
+    vi.mocked(window.kmux.resizeSurface).mockClear();
+    beginPaneDividerDrag();
+    fitDimensions = { cols: 100, rows: 30 };
+
+    await act(async () => {
+      observerCallback?.();
+      // The 30ms container-resize debounce elapses, but the divider-drag
+      // throttle (~200ms) should still be holding the fit back.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await flushMicrotasks();
+    });
+
+    expect(window.kmux.resizeSurface).not.toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      100,
+      30
+    );
+
+    await act(async () => {
+      endPaneDividerDrag();
+      await flushMicrotasks();
+    });
+
+    expect(window.kmux.resizeSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      100,
+      30
+    );
   });
 
   it("uses the ready attach id for the first resize after a same session remount", async () => {

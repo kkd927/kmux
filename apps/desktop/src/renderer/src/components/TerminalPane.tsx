@@ -68,6 +68,7 @@ import {
 } from "../terminalRenderRefresh";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { createTerminalResizeSync } from "../terminalResizeSync";
+import { createTerminalDividerFitThrottle } from "../terminalDividerFitThrottle";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import {
@@ -1670,13 +1671,22 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       syncTerminalViewportBackground();
     });
     void fitAndSyncTerminal(terminal);
+    const dividerFitThrottle = createTerminalDividerFitThrottle({
+      runFit: () => {
+        void fitAndSyncTerminal(terminal).catch(() => {
+          // ignore resize errors during unmount
+        });
+      }
+    });
     const foregroundFit = installTerminalForegroundFit({
       isActive: () =>
         paneActiveRef.current &&
         terminalRef.current === terminal &&
         Boolean(activeSurfaceRef.current),
       getFitElement: () => containerRef.current,
-      fitAndSync: () => fitAndSyncTerminal(terminal),
+      fitAndSync: () => {
+        dividerFitThrottle.requestFit();
+      },
       onError: () => {
         // Ignore foreground revalidation races during unmount/surface switches.
       }
@@ -1689,9 +1699,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         clearTimeout(resizeTimeout);
       }
       resizeTimeout = setTimeout(() => {
-        void fitAndSyncTerminal(terminal).catch(() => {
-          // ignore resize errors during unmount
-        });
+        dividerFitThrottle.requestFit();
       }, 30);
     });
     resizeObserver.observe(container);
@@ -1732,6 +1740,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         foregroundFitRef.current = null;
       }
       foregroundFit.dispose();
+      dividerFitThrottle.dispose();
       resizeObserver.disconnect();
       if (resizeTimeout) {
         clearTimeout(resizeTimeout);
@@ -2042,12 +2051,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
-        const resizeGenerationAtEvent = resizeGenerationRef.current;
         enqueueTerminalOperation(() => {
           if (!isCurrentSessionEvent(payload)) {
-            return;
-          }
-          if (resizeGenerationAtEvent !== resizeGenerationRef.current) {
             return;
           }
           if (
