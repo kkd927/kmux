@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import { flushSync } from "react-dom";
 import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -87,6 +88,15 @@ vi.mock("@xterm/xterm", () => ({
         bracketedPasteMode: false
       },
       textarea: document.createElement("textarea"),
+      _core: {
+        _renderService: {
+          _isPaused: false,
+          _needsFullRefresh: false,
+          _pausedResizeTask: { flush: vi.fn() },
+          refreshRows: vi.fn(),
+          _renderRows: vi.fn()
+        }
+      },
       loadAddon: vi.fn(),
       registerLinkProvider: vi.fn(() => ({ dispose: vi.fn() })),
       open: vi.fn((host: HTMLElement) => {
@@ -238,6 +248,36 @@ async function flushMicrotasks(iterations = 5): Promise<void> {
   for (let index = 0; index < iterations; index += 1) {
     await Promise.resolve();
   }
+}
+
+function createTextPasteEvent(text: string): ClipboardEvent {
+  const event = new Event("paste", {
+    bubbles: true,
+    cancelable: true
+  }) as ClipboardEvent;
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      files: [],
+      items: [],
+      getData: vi.fn((format: string) => (format === "text/plain" ? text : ""))
+    }
+  });
+  return event;
+}
+
+function captureTerminalListeners(): Array<(event: unknown) => void> {
+  const listeners: Array<(event: unknown) => void> = [];
+  window.kmux.subscribeTerminal = vi.fn((listener) => {
+    const captured = listener as (event: unknown) => void;
+    listeners.push(captured);
+    return () => {
+      const index = listeners.indexOf(captured);
+      if (index >= 0) {
+        listeners.splice(index, 1);
+      }
+    };
+  });
+  return listeners;
 }
 
 function provideCurrentTerminalFileLinks(): ILink[] | undefined {
@@ -486,6 +526,719 @@ describe("TerminalPane visibility cleanup", () => {
     expect(window.kmux.detachSurface).not.toHaveBeenCalled();
     expect(window.kmux.attachSurface).toHaveBeenCalledTimes(1);
     expect(window.kmux.completeAttachSurface).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same render sink object across same-surface rerenders", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+    const firstSink = terminalInstanceStore.getRenderSink("surface_1");
+    expect(firstSink).toBeTruthy();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} focused={false} />);
+      await flushMicrotasks();
+    });
+
+    expect(terminalInstanceStore.getRenderSink("surface_1")).toBe(firstSink);
+  });
+
+  it("does not force a full renderer refresh for ordinary live chunks", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          _core: {
+            _renderService: {
+              refreshRows: ReturnType<typeof vi.fn>;
+              _renderRows: ReturnType<typeof vi.fn>;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    terminal!._core._renderService.refreshRows.mockClear();
+    terminal!._core._renderService._renderRows.mockClear();
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "live output"
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.write).toHaveBeenCalledWith(
+      "live output",
+      expect.any(Function)
+    );
+    expect(terminal!._core._renderService.refreshRows).not.toHaveBeenCalled();
+    expect(terminal!._core._renderService._renderRows).not.toHaveBeenCalled();
+  });
+
+  it("keeps the live chunk queue moving when an attached write is dropped", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const dropSink: terminalInstanceStore.TerminalRenderSink = {
+      write: vi.fn(() => false),
+      fitAndSync: vi.fn(async () => {})
+    };
+    terminalInstanceStore.setRenderSink("surface_1", dropSink);
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "dropped one"
+        }
+      });
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 2,
+          chunk: "dropped two"
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(dropSink.write).toHaveBeenCalledTimes(2);
+    expect(
+      container
+        .querySelector("[data-testid='terminal-surface_1']")
+        ?.getAttribute("data-terminal-rendered-sequence")
+    ).not.toBe("2");
+  });
+
+  it("keeps pending hidden-surface chunk cwd on the original surface tracker", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    const terminalListeners = captureTerminalListeners();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const firstSurfaceListener = terminalListeners[0];
+    expect(firstSurfaceListener).toBeDefined();
+    const firstTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(firstTerminal).toBeDefined();
+    firstTerminal!.write.mockClear();
+    let resolveChunkWrite: (() => void) | null = null;
+    firstTerminal!.write.mockImplementationOnce(
+      (data: string, callback?: () => void) => {
+        terminalBufferText += data;
+        resolveChunkWrite = callback ?? null;
+      }
+    );
+    vi.mocked(window.kmux.openTerminalFilePath).mockClear();
+
+    await act(async () => {
+      firstSurfaceListener({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "src/App.tsx",
+          cwd: "/repo/hidden"
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(firstTerminal!.write).toHaveBeenCalledWith(
+      "src/App.tsx",
+      expect.any(Function)
+    );
+
+    await act(async () => {
+      flushSync(() => {
+        root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+      });
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    const links = provideCurrentTerminalFileLinks();
+    expect(links?.[0]).toBeDefined();
+    links?.[0]?.activate(
+      new MouseEvent("click", { ctrlKey: true }),
+      "src/App.tsx"
+    );
+    await Promise.resolve();
+
+    expect(window.kmux.openTerminalFilePath).toHaveBeenCalledWith(
+      "surface_2",
+      "src/App.tsx",
+      undefined
+    );
+    expect(window.kmux.openTerminalFilePath).not.toHaveBeenCalledWith(
+      "surface_2",
+      "src/App.tsx",
+      "/repo/hidden"
+    );
+  });
+
+  it("pauses renderer work while inactive and refreshes when active again", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          rows: number;
+          _core: {
+            _renderService: {
+              _isPaused: boolean;
+              _needsFullRefresh: boolean;
+              refreshRows: ReturnType<typeof vi.fn>;
+              _renderRows: ReturnType<typeof vi.fn>;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    const renderService = terminal!._core._renderService;
+    renderService.refreshRows.mockClear();
+    renderService._renderRows.mockClear();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} active={false} />);
+      await flushMicrotasks();
+    });
+
+    expect(renderService._isPaused).toBe(true);
+    expect(renderService._needsFullRefresh).toBe(true);
+    expect(renderService.refreshRows).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} active />);
+      await flushMicrotasks();
+    });
+
+    expect(renderService._isPaused).toBe(false);
+    expect(renderService._needsFullRefresh).toBe(false);
+    expect(renderService.refreshRows).toHaveBeenCalledWith(
+      0,
+      terminal!.rows - 1
+    );
+  });
+
+  it("reasserts renderer pause when inactive writes observe an unpaused xterm service", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          _core: {
+            _renderService: {
+              _isPaused: boolean;
+              _needsFullRefresh: boolean;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} active={false} />);
+      await flushMicrotasks();
+    });
+
+    const renderService = terminal!._core._renderService;
+    renderService._isPaused = false;
+    renderService._needsFullRefresh = false;
+    terminal!.write.mockClear();
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "inactive output"
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.write).toHaveBeenCalledWith(
+      "inactive output",
+      expect.any(Function)
+    );
+    expect(renderService._isPaused).toBe(true);
+    expect(renderService._needsFullRefresh).toBe(true);
+  });
+
+  it("applies terminal resize events after pending chunk write callbacks", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          resize: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    terminal!.resize.mockClear();
+    let resolveChunkWrite: (() => void) | null = null;
+    terminal!.write.mockImplementationOnce(
+      (_data: string, callback?: () => void) => {
+        resolveChunkWrite = callback ?? null;
+      }
+    );
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "pending"
+        }
+      });
+      terminalListener?.({
+        type: "resize",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          attachId: "attach_1",
+          cols: 132,
+          rows: 41
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.write).toHaveBeenCalledWith(
+      "pending",
+      expect.any(Function)
+    );
+    expect(terminal!.resize).not.toHaveBeenCalledWith(132, 41);
+
+    await act(async () => {
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.resize).toHaveBeenCalledWith(132, 41);
+  });
+
+  it("drops queued resize echoes that are older than the latest local fit", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          resize: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    terminal!.resize.mockClear();
+    let resolveChunkWrite: (() => void) | null = null;
+    terminal!.write.mockImplementationOnce(
+      (_data: string, callback?: () => void) => {
+        resolveChunkWrite = callback ?? null;
+      }
+    );
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "pending"
+        }
+      });
+      terminalListener?.({
+        type: "resize",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          attachId: "attach_1",
+          cols: 100,
+          rows: 30
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    fitDimensions = { cols: 140, rows: 50 };
+    await act(async () => {
+      await terminalInstanceStore.getRenderSink("surface_1")?.fitAndSync();
+      await flushMicrotasks();
+    });
+
+    expect(window.kmux.resizeSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_1",
+      140,
+      50
+    );
+
+    await act(async () => {
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    expect(terminal!.resize).not.toHaveBeenCalledWith(100, 30);
+  });
+
+  it("writes the exit banner after pending chunk write callbacks", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    const writes: string[] = [];
+    let resolveChunkWrite: (() => void) | null = null;
+    terminal!.write.mockImplementation(
+      (data: string, callback?: () => void) => {
+        writes.push(data);
+        if (data === "pending") {
+          resolveChunkWrite = callback ?? null;
+          return;
+        }
+        callback?.();
+      }
+    );
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "pending"
+        }
+      });
+      terminalListener?.({
+        type: "exit",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          exitCode: 7
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(writes).toEqual(["pending"]);
+
+    await act(async () => {
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain("Session exited (7)");
+  });
+
+  it("keeps a queued exit banner for a hidden surface when the session is unchanged", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+    const terminalListeners = captureTerminalListeners();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const firstSurfaceListener = terminalListeners[0];
+    expect(firstSurfaceListener).toBeDefined();
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    const writes: string[] = [];
+    let resolveChunkWrite: (() => void) | null = null;
+    terminal!.write.mockImplementation(
+      (data: string, callback?: () => void) => {
+        writes.push(data);
+        if (data === "pending") {
+          resolveChunkWrite = callback ?? null;
+          return;
+        }
+        callback?.();
+      }
+    );
+
+    await act(async () => {
+      firstSurfaceListener({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "pending"
+        }
+      });
+      firstSurfaceListener({
+        type: "exit",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          exitCode: 7
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    expect(writes).toEqual(["pending"]);
+
+    await act(async () => {
+      flushSync(() => {
+        root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+      });
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain("Session exited (7)");
+  });
+
+  it("drops a queued exit banner when the surface has moved to a new session", async () => {
+    const props = createProps("surface_1");
+    const terminalListeners = captureTerminalListeners();
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const firstSurfaceListener = terminalListeners[0];
+    expect(firstSurfaceListener).toBeDefined();
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    const writes: string[] = [];
+    let resolveChunkWrite: (() => void) | null = null;
+    terminal!.write.mockImplementation(
+      (data: string, callback?: () => void) => {
+        writes.push(data);
+        if (data === "pending") {
+          resolveChunkWrite = callback ?? null;
+          return;
+        }
+        callback?.();
+      }
+    );
+
+    await act(async () => {
+      firstSurfaceListener({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1,
+          chunk: "pending"
+        }
+      });
+      firstSurfaceListener({
+        type: "exit",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          exitCode: 7
+        }
+      });
+      await flushMicrotasks();
+    });
+
+    const restartedProps = createProps("surface_1");
+    restartedProps.surfaces = [
+      {
+        ...restartedProps.surfaces[0],
+        sessionId: "session_restarted"
+      }
+    ];
+
+    await act(async () => {
+      flushSync(() => {
+        root.render(<TerminalPane {...restartedProps} />);
+      });
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      resolveChunkWrite?.();
+      await flushMicrotasks();
+    });
+
+    expect(writes).toEqual(["pending"]);
+  });
+
+  it("continues the terminal operation queue when a write callback never fires", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          write: ReturnType<typeof vi.fn>;
+          resize: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.write.mockClear();
+    terminal!.resize.mockClear();
+    terminal!.write.mockImplementationOnce(() => {});
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        terminalListener?.({
+          type: "chunk",
+          payload: {
+            surfaceId: "surface_1",
+            sessionId: "session_surface_1",
+            sequence: 1,
+            chunk: "pending"
+          }
+        });
+        terminalListener?.({
+          type: "resize",
+          payload: {
+            surfaceId: "surface_1",
+            sessionId: "session_surface_1",
+            attachId: "attach_1",
+            cols: 132,
+            rows: 41
+          }
+        });
+        await flushMicrotasks();
+      });
+
+      expect(terminal!.resize).not.toHaveBeenCalledWith(132, 41);
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_001);
+        await flushMicrotasks();
+      });
+
+      expect(terminal!.resize).toHaveBeenCalledWith(132, 41);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses the ready attach id for the first resize after a same session remount", async () => {
@@ -1048,6 +1801,56 @@ describe("TerminalPane visibility cleanup", () => {
       | undefined;
     expect(ctrlA.defaultPrevented).toBe(true);
     expect(terminal?.selectAll).toHaveBeenCalledOnce();
+  });
+
+  it("sanitizes paste events that occur while copy mode is active", async () => {
+    const props = createProps("surface_1");
+    props.settings = {
+      ...props.settings,
+      shortcuts: {
+        ...props.settings.shortcuts,
+        "terminal.copyMode": "Ctrl+Shift+M"
+      }
+    };
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminalHost = container.querySelector(
+      "[data-testid='terminal-surface_1'] .xterm"
+    );
+    expect(terminalHost).not.toBeNull();
+
+    await act(async () => {
+      terminalHost!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "m",
+          code: "KeyM",
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { paste: ReturnType<typeof vi.fn> }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!.paste.mockClear();
+
+    const pasteEvent = createTextPasteEvent("\u001b[201~hello\u007f");
+    await act(async () => {
+      terminalHost!.dispatchEvent(pasteEvent);
+      await flushMicrotasks();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(terminal!.paste).toHaveBeenCalledWith("[201~hello");
   });
 
   it("defers terminal shortcuts to active IME composition", async () => {

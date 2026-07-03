@@ -69,6 +69,32 @@ describe("terminal line cwd tracker", () => {
     expect(tracker.getCwdForLine(2)).toBe("/repo/current");
   });
 
+  it("keeps live cwd entries reachable across the lazy trim-prune threshold", () => {
+    const tracker = createTerminalLineCwdTracker();
+
+    tracker.recordWrite({ startLine: 0, endLine: 0, cwd: "/repo/old" });
+    tracker.recordWrite({ startLine: 4096, endLine: 4096, cwd: "/repo/live" });
+    tracker.handleTrim(4096);
+
+    expect(tracker.getTrimmedLineCount()).toBe(4096);
+    expect(tracker.getCwdForLine(0)).toBe("/repo/live");
+  });
+
+  it("imports snapshot cwd ranges in buffer coordinates after previous trims", () => {
+    const tracker = createTerminalLineCwdTracker();
+
+    tracker.recordWrite({ startLine: 10, endLine: 10, cwd: "/repo/live" });
+    tracker.handleTrim(4);
+    tracker.importSnapshotRanges([
+      { startLine: 1, endLine: 2, cwd: "/repo/snapshot" }
+    ]);
+
+    expect(tracker.getTrimmedLineCount()).toBe(4);
+    expect(tracker.getCwdForLine(1)).toBe("/repo/snapshot");
+    expect(tracker.getCwdForLine(2)).toBe("/repo/snapshot");
+    expect(tracker.getCwdForLine(6)).toBeUndefined();
+  });
+
   it("resets trim accounting when cleared", () => {
     const tracker = createTerminalLineCwdTracker();
 

@@ -1,8 +1,4 @@
-import {
-  createXtermTheme,
-  THEMES,
-  type ColorTheme
-} from "@kmux/ui";
+import { createXtermTheme, THEMES, type ColorTheme } from "@kmux/ui";
 import type { ImageAttachmentMimeType } from "@kmux/proto";
 import type {
   CreateImageAttachmentPayload,
@@ -46,6 +42,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
   "image/webp"
 ]);
 const IME_DUPLICATE_COMMIT_WINDOW_MS = 1500;
+const ALLOWED_PASTE_CONTROL_CODES = new Set([0x09, 0x0a, 0x0d]);
 
 export function createTerminalPaneXtermTheme(
   palette: Parameters<typeof createXtermTheme>[0],
@@ -87,8 +84,7 @@ export async function pasteClipboardIntoTerminal(
         imagePayloads
       );
       if (result.promptText) {
-        options.terminal.paste(result.promptText);
-        return true;
+        return pasteSanitizedTerminalText(options.terminal, result.promptText);
       }
       if (result.message) {
         options.onImageAttachmentStatus?.(result.message);
@@ -102,14 +98,43 @@ export async function pasteClipboardIntoTerminal(
   return pasteClipboardText(options);
 }
 
-function pasteClipboardText(options: PasteClipboardIntoTerminalOptions): boolean {
+function pasteClipboardText(
+  options: PasteClipboardIntoTerminalOptions
+): boolean {
   const text = options.readClipboardText();
   if (!text) {
     return false;
   }
 
-  options.terminal.paste(text);
+  return pasteSanitizedTerminalText(options.terminal, text);
+}
+
+function pasteSanitizedTerminalText(
+  terminal: TerminalPasteHost,
+  text: string
+): boolean {
+  const sanitized = sanitizeTerminalPasteText(text);
+  if (!sanitized) {
+    return false;
+  }
+  terminal.paste(sanitized);
   return true;
+}
+
+export function sanitizeTerminalPasteText(text: string): string {
+  let sanitized = "";
+  for (const character of text) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      (codePoint < 0x20 && !ALLOWED_PASTE_CONTROL_CODES.has(codePoint)) ||
+      codePoint === 0x7f ||
+      (codePoint >= 0x80 && codePoint <= 0x9f)
+    ) {
+      continue;
+    }
+    sanitized += character;
+  }
+  return sanitized;
 }
 
 export function isSupportedImageMimeType(
@@ -128,9 +153,8 @@ export function shouldUseImagePaste(input: {
 export function countSupportedImageFiles(
   files: ArrayLike<{ type: string | null | undefined }>
 ): number {
-  return Array.from(files).filter((file) =>
-    isSupportedImageMimeType(file.type)
-  ).length;
+  return Array.from(files).filter((file) => isSupportedImageMimeType(file.type))
+    .length;
 }
 
 export function applyPendingTerminalEnterRewrite(
@@ -161,10 +185,12 @@ export function applyPendingTerminalEnterRewrite(
   };
 }
 
-export function createTerminalImeDuplicateCommitGuard(options: {
-  now?: () => number;
-  duplicateWindowMs?: number;
-} = {}): TerminalImeDuplicateCommitGuard {
+export function createTerminalImeDuplicateCommitGuard(
+  options: {
+    now?: () => number;
+    duplicateWindowMs?: number;
+  } = {}
+): TerminalImeDuplicateCommitGuard {
   const now = options.now ?? (() => performance.now());
   const duplicateWindowMs =
     options.duplicateWindowMs ?? IME_DUPLICATE_COMMIT_WINDOW_MS;

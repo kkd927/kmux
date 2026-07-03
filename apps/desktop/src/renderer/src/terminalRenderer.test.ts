@@ -13,6 +13,7 @@ import {
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  sanitizeTerminalPasteText,
   shouldDeferTerminalShortcutToIme,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme
@@ -85,6 +86,40 @@ describe("terminal renderer helpers", () => {
     expect(terminal.paste).toHaveBeenCalledWith(text);
   });
 
+  it("removes terminal control characters from clipboard text paste", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: () => "alpha\u001b[201~\u009b31m\u007fbeta"
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledWith("alpha[201~31mbeta");
+  });
+
+  it("preserves tabs and line endings when sanitizing terminal paste text", () => {
+    expect(sanitizeTerminalPasteText("alpha\tbeta\nnext\rline")).toBe(
+      "alpha\tbeta\nnext\rline"
+    );
+  });
+
+  it("does not paste when sanitization removes the whole clipboard text", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      readClipboardText: () => "\u0000\u001b\u007f\u009b"
+    });
+
+    expect(didPaste).toBe(false);
+    expect(terminal.paste).not.toHaveBeenCalled();
+  });
+
   it("attaches native clipboard images before falling back to clipboard text", async () => {
     const terminal = {
       paste: vi.fn()
@@ -118,6 +153,35 @@ describe("terminal renderer helpers", () => {
     expect(terminal.paste).toHaveBeenCalledWith(
       "Attached image: /tmp/kmux/screenshot.png"
     );
+  });
+
+  it("sanitizes image attachment prompt text before pasting", async () => {
+    const terminal = {
+      paste: vi.fn()
+    };
+    const imagePayload: CreateImageAttachmentPayload = {
+      source: "clipboard",
+      originalName: "screenshot.png",
+      mimeType: "image/png",
+      bytes: new Uint8Array([1, 2, 3])
+    };
+
+    const didPaste = await pasteClipboardIntoTerminal({
+      terminal,
+      surfaceId: "surface_1",
+      readClipboardText: () => "screenshot.png",
+      readClipboardImages: () => [imagePayload],
+      createImageAttachments: vi.fn(async () => ({
+        attachments: [],
+        promptText: "@\u001b/tmp/kmux/screenshot.png\u009b",
+        skippedCount: 0,
+        status: "attached" as const,
+        message: "Attached screenshot.png"
+      }))
+    });
+
+    expect(didPaste).toBe(true);
+    expect(terminal.paste).toHaveBeenCalledWith("@/tmp/kmux/screenshot.png");
   });
 
   it("falls back to clipboard text when image attachment returns no prompt text", async () => {
@@ -200,11 +264,11 @@ describe("terminal renderer helpers", () => {
   });
 
   it("rewrites Ctrl and Shift Enter to modified terminal sequences", () => {
-    expect(resolveTerminalEnterRewrite(keyboardEvent({ ctrlKey: true }))).toEqual(
-      {
-        sequence: TERMINAL_CTRL_ENTER_SEQUENCE
-      }
-    );
+    expect(
+      resolveTerminalEnterRewrite(keyboardEvent({ ctrlKey: true }))
+    ).toEqual({
+      sequence: TERMINAL_CTRL_ENTER_SEQUENCE
+    });
     expect(
       resolveTerminalEnterRewrite(keyboardEvent({ shiftKey: true }))
     ).toEqual({

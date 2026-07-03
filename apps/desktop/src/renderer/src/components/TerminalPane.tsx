@@ -40,6 +40,7 @@ import {
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  sanitizeTerminalPasteText,
   shouldDeferTerminalShortcutToIme,
   shouldUseImagePaste,
   shouldSuppressXtermDuringIme,
@@ -60,7 +61,10 @@ import {
   type TerminalForegroundFitController
 } from "../terminalForegroundFit";
 import { createTerminalReplayVisibility } from "../terminalReplayVisibility";
-import { resumeAndRefreshTerminalRenderer } from "../terminalRenderRefresh";
+import {
+  pauseTerminalRenderer,
+  resumeAndRefreshTerminalRenderer
+} from "../terminalRenderRefresh";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import styles from "../styles/TerminalPane.module.css";
@@ -193,6 +197,24 @@ type TerminalDiagnosticElement = HTMLDivElement & {
   __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
 };
 
+type TerminalWriter = (
+  terminal: Terminal,
+  data: string,
+  afterWrite?: () => void,
+  profileSurfaceId?: string
+) => boolean;
+
+type TerminalFitAndSync = (
+  terminal: Terminal,
+  options?: { fit?: FitAddon | null; surfaceId?: string | null }
+) => Promise<void>;
+
+type TerminalRenderSinkContext = {
+  terminal: Terminal;
+  fit: FitAddon;
+  surfaceId: string;
+};
+
 type SurfaceContextMenuState = {
   surfaceId: string;
   x: number;
@@ -202,6 +224,7 @@ type SurfaceContextMenuState = {
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
+const TERMINAL_WRITE_CALLBACK_TIMEOUT_MS = 10_000;
 const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
 
 function openExternalTerminalLink(rawUrl: string): void {
@@ -279,6 +302,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const resizeSyncRef = useRef<ReturnType<
     typeof createTerminalResizeSync
   > | null>(null);
+  const writeTerminalRef = useRef<TerminalWriter>(() => false);
+  const fitAndSyncTerminalRef = useRef<TerminalFitAndSync>(async () => {});
+  const renderSinkContextRef = useRef<TerminalRenderSinkContext | null>(null);
   // The xterm instance is surface-scoped, but PTY size is still synced from
   // the pane that currently displays the surface.
   const surfaceResizeDimensionsRef = useRef(
@@ -494,6 +520,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     terminal: Terminal,
     options: { force?: boolean } = {}
   ): void {
+    if (!paneActiveRef.current) {
+      pauseTerminalRenderer(terminal);
+      return;
+    }
     const wrapper = surfaceWrapperRefs.current.get(surfaceId);
     if (wrapper?.dataset.active !== "true") {
       return;
@@ -600,7 +630,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         payloads
       );
       if (result.promptText) {
-        terminal.paste(result.promptText);
+        const sanitizedPromptText = sanitizeTerminalPasteText(
+          result.promptText
+        );
+        if (sanitizedPromptText) {
+          terminal.paste(sanitizedPromptText);
+        }
       }
       showAttachmentStatus(result.message);
       focusTerminalInput();
@@ -863,20 +898,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     data: string,
     afterWrite?: () => void,
     profileSurfaceId = activeSurfaceRef.current?.id
-  ): void {
+  ): boolean {
     if (!isRendererSmoothnessProfileEnabled() || !profileSurfaceId) {
       terminal.write(data, () => {
         if (profileSurfaceId) {
           syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-          refreshVisibleSurfaceRenderer(profileSurfaceId, terminal, {
-            force: true
-          });
+          refreshVisibleSurfaceRenderer(profileSurfaceId, terminal);
         } else {
           syncTerminalMetrics(terminal);
         }
         afterWrite?.();
       });
-      return;
+      return true;
     }
     const bucketKey = `${props.paneId}\u0000${profileSurfaceId}`;
     const startedAt = performance.now();
@@ -899,12 +932,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
       });
       syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-      refreshVisibleSurfaceRenderer(profileSurfaceId, terminal, {
-        force: true
-      });
+      refreshVisibleSurfaceRenderer(profileSurfaceId, terminal);
       afterWrite?.();
     });
+    return true;
   }
+
+  writeTerminalRef.current = writeTerminal;
+  fitAndSyncTerminalRef.current = fitAndSyncTerminal;
 
   function registerTerminalBufferTrimHandler(
     terminal: Terminal,
@@ -1292,28 +1327,59 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }, [activeSurface.id, props.surfaces]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const terminal = terminalRef.current;
     const fit = fitRef.current;
-    if (!terminal || !fit) {
+    renderSinkContextRef.current =
+      terminal && fit
+        ? {
+            terminal,
+            fit,
+            surfaceId: activeSurface.id
+          }
+        : null;
+  });
+
+  useLayoutEffect(() => {
+    const context = renderSinkContextRef.current;
+    if (!context) {
       return;
     }
-    const surfaceId = activeSurface.id;
-    // The active stream attachment may outlive this render. The sink is the
-    // current mounted pane's bridge back into local refs/helpers.
+    const initialTerminal = context.terminal;
+    const initialFit = context.fit;
+    const initialSurfaceId = context.surfaceId;
     const sink: terminalInstanceStore.TerminalRenderSink = {
-      write: (data, afterWrite, profileSurfaceId = surfaceId) =>
-        writeTerminal(terminal, data, afterWrite, profileSurfaceId),
-      fitAndSync: () => fitAndSyncTerminal(terminal, { fit, surfaceId }),
+      write: (data, afterWrite, profileSurfaceId) => {
+        const current = renderSinkContextRef.current;
+        return writeTerminalRef.current(
+          current?.terminal ?? initialTerminal,
+          data,
+          afterWrite,
+          profileSurfaceId ?? current?.surfaceId ?? initialSurfaceId
+        );
+      },
+      fitAndSync: () => {
+        const current = renderSinkContextRef.current;
+        return fitAndSyncTerminalRef.current(
+          current?.terminal ?? initialTerminal,
+          {
+            fit: current?.fit ?? initialFit,
+            surfaceId: current?.surfaceId ?? initialSurfaceId
+          }
+        );
+      },
       beforeFitAndSync: () => {
-        surfaceResizeDimensionsRef.current.delete(surfaceId);
+        const current = renderSinkContextRef.current;
+        surfaceResizeDimensionsRef.current.delete(
+          current?.surfaceId ?? initialSurfaceId
+        );
       }
     };
     terminalInstanceStore.setRenderSink(terminalInstanceKey, sink);
     return () => {
       terminalInstanceStore.clearRenderSink(terminalInstanceKey, sink);
     };
-  });
+  }, [terminalInstanceKey]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -1452,8 +1518,31 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         }
       }
     };
+    const markTerminalPasteInProgress = (): void => {
+      isPastingRef.current = true;
+      setTimeout(() => {
+        isPastingRef.current = false;
+      }, 0);
+    };
     const handleTerminalPaste = (event: ClipboardEvent) => {
       if (copyModeRef.current || showSearchRef.current) {
+        const targetElement =
+          event.target instanceof Element
+            ? event.target
+            : event.target instanceof Node
+              ? event.target.parentElement
+              : null;
+        if (!targetElement?.closest(".xterm")) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        const sanitizedText = sanitizeTerminalPasteText(text);
+        if (sanitizedText) {
+          markTerminalPasteInProgress();
+          terminal.paste(sanitizedText);
+        }
         return;
       }
       const currentSurface = activeSurfaceRef.current;
@@ -1473,10 +1562,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           text
         })
       ) {
-        isPastingRef.current = true;
-        setTimeout(() => {
-          isPastingRef.current = false;
-        }, 0);
+        const sanitizedText = sanitizeTerminalPasteText(text);
+        if (text && sanitizedText !== text) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (sanitizedText) {
+            markTerminalPasteInProgress();
+            terminal.paste(sanitizedText);
+          }
+          return;
+        }
+        markTerminalPasteInProgress();
         return;
       }
 
@@ -1655,7 +1751,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   useEffect(() => {
     const wasActive = previousPaneActiveRef.current;
     previousPaneActiveRef.current = props.active;
-    if (!wasActive && props.active) {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    if (!props.active) {
+      pauseTerminalRenderer(terminal);
+      return;
+    }
+    if (!wasActive) {
+      const surfaceId = activeSurfaceRef.current?.id;
+      if (surfaceId) {
+        refreshVisibleSurfaceRenderer(surfaceId, terminal);
+      }
       foregroundFitRef.current?.scheduleFit();
     }
   }, [props.active, terminalInstanceKey]);
@@ -1711,10 +1819,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
 
     let attached = true;
-    let terminalWriteQueue = Promise.resolve();
+    let terminalOperationQueue = Promise.resolve();
     let attachmentToken: terminalInstanceStore.TerminalAttachmentToken | null =
       null;
     const instanceKey = terminalInstanceKey;
+    const attachedLineCwds = terminalInstanceStore.getLineCwdsForTerminal(
+      instanceKey,
+      terminal
+    );
     const replayVisibility = createTerminalReplayVisibility({
       host: containerRef.current,
       wrapper: surfaceWrapperRefs.current.get(surfaceId) ?? null
@@ -1723,16 +1835,62 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       data: string,
       afterWrite?: () => void,
       profileSurfaceId = surfaceId
-    ): void => {
+    ): boolean => {
       const sink = terminalInstanceStore.getRenderSink(instanceKey);
       if (sink) {
-        sink.write(data, afterWrite, profileSurfaceId);
-        return;
+        return sink.write(data, afterWrite, profileSurfaceId);
       }
-      terminal.write(data, () => {
-        afterWrite?.();
-      });
+      if (terminalInstanceStore.isCurrentTerminal(instanceKey, terminal)) {
+        terminal.write(data, () => {
+          afterWrite?.();
+        });
+        return true;
+      }
+      return false;
     };
+    const waitForAttachedTerminalWrite = (
+      data: string,
+      profileSurfaceId: string,
+      afterWrite?: () => void
+    ): Promise<boolean> =>
+      new Promise((resolve) => {
+        let settled = false;
+        const finish = (didWrite: boolean): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timeout);
+          resolve(didWrite);
+        };
+        const timeout = setTimeout(() => {
+          finish(false);
+        }, TERMINAL_WRITE_CALLBACK_TIMEOUT_MS);
+        let didScheduleWrite = false;
+        try {
+          didScheduleWrite = writeAttachedTerminal(
+            data,
+            () => {
+              if (settled) {
+                return;
+              }
+              try {
+                afterWrite?.();
+              } finally {
+                finish(true);
+              }
+            },
+            profileSurfaceId
+          );
+        } catch (error) {
+          console.warn("Failed to write terminal output", error);
+          finish(false);
+          return;
+        }
+        if (!didScheduleWrite) {
+          finish(false);
+        }
+      });
     const fitAttachedTerminal = async (): Promise<void> => {
       await terminalInstanceStore.getRenderSink(instanceKey)?.fitAndSync();
     };
@@ -1744,6 +1902,34 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         sessionId,
         attachmentToken
       );
+    const isCurrentSessionEvent = (payload: {
+      surfaceId: string;
+      sessionId: string;
+    }): boolean =>
+      payload.surfaceId === surfaceId &&
+      payload.sessionId === sessionId &&
+      attached &&
+      attachmentToken !== null &&
+      terminalInstanceStore.isCurrentAttachment(
+        surfaceId,
+        sessionId,
+        attachmentToken
+      );
+    const isSameSurfaceSession = (payload: {
+      surfaceId: string;
+      sessionId: string;
+    }): boolean =>
+      payload.surfaceId === surfaceId &&
+      payload.sessionId === sessionId &&
+      surfaceSessionIdsRef.current.get(payload.surfaceId) === payload.sessionId;
+    const enqueueTerminalOperation = (
+      operation: () => Promise<void> | void
+    ): void => {
+      terminalOperationQueue = terminalOperationQueue
+        .catch(() => undefined)
+        .then(() => operation())
+        .catch(() => undefined);
+    };
     type LiveChunkPayloadWithCwd = {
       surfaceId: string;
       sessionId: string;
@@ -1752,49 +1938,43 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       cwd?: string;
     };
     const enqueueLiveChunkWrite = (payload: LiveChunkPayloadWithCwd): void => {
-      terminalWriteQueue = terminalWriteQueue
-        .catch(() => undefined)
-        .then(
-          () =>
-            new Promise<void>((resolve) => {
-              const trimCountBefore =
-                lineCwdsRef.current?.getTrimmedLineCount() ?? 0;
-              const startLine =
-                terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
-              writeAttachedTerminal(
-                payload.chunk,
-                () => {
-                  const trimDuringWrite =
-                    (lineCwdsRef.current?.getTrimmedLineCount() ?? 0) -
-                    trimCountBefore;
-                  const endLine =
-                    terminal.buffer.active.baseY +
-                    terminal.buffer.active.cursorY;
-                  if (attached) {
-                    lineCwdsRef.current?.recordWrite({
-                      startLine: startLine - trimDuringWrite,
-                      endLine,
-                      cwd: payload.cwd
-                    });
-                    terminalInstanceStore.markSurfaceRendered(
-                      instanceKey,
-                      payload.surfaceId,
-                      payload.sequence
-                    );
-                    const renderedSequence =
-                      terminalInstanceStore.getLastHydratedSurfaceSequence(
-                        instanceKey
-                      );
-                    updateTerminalDiagnostics(payload.surfaceId, terminal, {
-                      renderedSequence
-                    });
-                  }
-                  resolve();
-                },
-                payload.surfaceId
+      enqueueTerminalOperation(async () => {
+        if (!isCurrentSessionEvent(payload)) {
+          return;
+        }
+        const trimCountBefore = attachedLineCwds?.getTrimmedLineCount() ?? 0;
+        const startLine =
+          terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+        await waitForAttachedTerminalWrite(
+          payload.chunk,
+          payload.surfaceId,
+          () => {
+            const trimDuringWrite =
+              (attachedLineCwds?.getTrimmedLineCount() ?? 0) - trimCountBefore;
+            const endLine =
+              terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+            if (isCurrentSessionEvent(payload)) {
+              attachedLineCwds?.recordWrite({
+                startLine: startLine - trimDuringWrite,
+                endLine,
+                cwd: payload.cwd
+              });
+              terminalInstanceStore.markSurfaceRendered(
+                instanceKey,
+                payload.surfaceId,
+                payload.sequence
               );
-            })
+              const renderedSequence =
+                terminalInstanceStore.getLastHydratedSurfaceSequence(
+                  instanceKey
+                );
+              updateTerminalDiagnostics(payload.surfaceId, terminal, {
+                renderedSequence
+              });
+            }
+          }
         );
+      });
     };
     const markSnapshotRendered = (
       attachId: string,
@@ -1803,7 +1983,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!isCurrentAttachedSession()) {
         return Promise.resolve({ status: "stale" as const });
       }
-      lineCwdsRef.current?.importSnapshotRanges(snapshot.cwdRanges);
+      attachedLineCwds?.importSnapshotRanges(snapshot.cwdRanges);
       terminalInstanceStore.markSurfaceHydrated(
         instanceKey,
         surfaceId,
@@ -1840,20 +2020,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         });
     };
 
-    const isCurrentSessionEvent = (payload: {
-      surfaceId: string;
-      sessionId: string;
-    }): boolean =>
-      payload.surfaceId === surfaceId &&
-      payload.sessionId === sessionId &&
-      attached &&
-      attachmentToken !== null &&
-      terminalInstanceStore.isCurrentAttachment(
-        surfaceId,
-        sessionId,
-        attachmentToken
-      );
-
     const unsubscribe = window.kmux.subscribeTerminal((event) => {
       if (event.type === "chunk" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload as typeof event.payload & {
@@ -1863,35 +2029,49 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
-        if (
-          !payload.attachId ||
-          terminalInstanceStore.getReadyAttachId(
-            payload.surfaceId,
-            payload.sessionId
-          ) !== payload.attachId
-        ) {
-          return;
-        }
-        applyTerminalResize(terminal, {
-          cols: payload.cols,
-          rows: payload.rows,
-          surfaceId: payload.surfaceId,
-          generation: resizeGenerationRef.current,
-          previousCols: terminal.cols,
-          previousRows: terminal.rows
+        const resizeGenerationAtEvent = resizeGenerationRef.current;
+        enqueueTerminalOperation(() => {
+          if (!isCurrentSessionEvent(payload)) {
+            return;
+          }
+          if (resizeGenerationAtEvent !== resizeGenerationRef.current) {
+            return;
+          }
+          if (
+            !payload.attachId ||
+            terminalInstanceStore.getReadyAttachId(
+              payload.surfaceId,
+              payload.sessionId
+            ) !== payload.attachId
+          ) {
+            return;
+          }
+          applyTerminalResize(terminal, {
+            cols: payload.cols,
+            rows: payload.rows,
+            surfaceId: payload.surfaceId,
+            generation: resizeGenerationRef.current,
+            previousCols: terminal.cols,
+            previousRows: terminal.rows
+          });
+          surfaceResizeDimensionsRef.current.set(payload.surfaceId, {
+            cols: payload.cols,
+            rows: payload.rows
+          });
+          syncSurfaceTerminalMetrics(payload.surfaceId, terminal);
         });
-        surfaceResizeDimensionsRef.current.set(payload.surfaceId, {
-          cols: payload.cols,
-          rows: payload.rows
-        });
-        syncSurfaceTerminalMetrics(payload.surfaceId, terminal);
       }
       if (event.type === "exit" && isCurrentSessionEvent(event.payload)) {
-        writeAttachedTerminal(
-          `\r\n\u001b[31mSession exited${typeof event.payload.exitCode === "number" ? ` (${event.payload.exitCode})` : ""}\u001b[0m\r\n`,
-          undefined,
-          event.payload.surfaceId
-        );
+        const payload = event.payload;
+        enqueueTerminalOperation(async () => {
+          if (!isSameSurfaceSession(payload)) {
+            return;
+          }
+          await waitForAttachedTerminalWrite(
+            `\r\n\u001b[31mSession exited${typeof payload.exitCode === "number" ? ` (${payload.exitCode})` : ""}\u001b[0m\r\n`,
+            payload.surfaceId
+          );
+        });
       }
     });
     const cleanupAttachment = () => {
@@ -1947,8 +2127,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               ?.beforeFitAndSync?.();
           },
           fitAndSyncTerminal: fitAttachedTerminal,
-          writeTerminal: (_terminal, data, afterWrite) =>
-            writeAttachedTerminal(data, afterWrite, surfaceId),
+          writeTerminal: (_terminal, data, afterWrite) => {
+            const didScheduleWrite = writeAttachedTerminal(
+              data,
+              afterWrite,
+              surfaceId
+            );
+            if (!didScheduleWrite) {
+              terminalInstanceStore.invalidateHydration(instanceKey);
+            }
+            return didScheduleWrite;
+          },
           onReplayStart: replayVisibility.hide,
           onReplayEnd: replayVisibility.revealAfterPaint,
           onSnapshotRendered: markSnapshotRendered
@@ -1961,8 +2150,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           waitForTerminalFonts,
           fitAndSyncTerminal: fitAttachedTerminal,
           attachSurface: attachCurrentSurface,
-          writeTerminal: (_terminal, data, afterWrite) =>
-            writeAttachedTerminal(data, afterWrite, surfaceId),
+          writeTerminal: (_terminal, data, afterWrite) => {
+            const didScheduleWrite = writeAttachedTerminal(
+              data,
+              afterWrite,
+              surfaceId
+            );
+            if (!didScheduleWrite) {
+              terminalInstanceStore.invalidateHydration(instanceKey);
+            }
+            return didScheduleWrite;
+          },
           onReplayStart: replayVisibility.hide,
           onReplayEnd: replayVisibility.revealAfterPaint,
           onSnapshotRendered: markSnapshotRendered

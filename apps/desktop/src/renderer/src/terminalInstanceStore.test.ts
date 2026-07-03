@@ -27,9 +27,11 @@ import {
   clearRenderSink,
   detachAttachment,
   getAttachmentSessionId,
+  getLineCwdsForTerminal,
   getReadyAttachId,
   invalidateHydration,
   isCurrentAttachment,
+  isCurrentTerminal,
   getRenderSink,
   release,
   releaseAll,
@@ -335,6 +337,26 @@ describe("release", () => {
     expect(settled).toBe(true);
 
     release("pane-attachment");
+  });
+});
+
+describe("terminal liveness", () => {
+  it("matches the stored terminal instance and line cwd tracker", () => {
+    const init = vi.fn(makeInstance);
+    const { instance } = acquire("pane-live", init);
+    const otherTerminal = new Terminal();
+
+    expect(isCurrentTerminal("pane-live", instance.terminal)).toBe(true);
+    expect(isCurrentTerminal("pane-live", otherTerminal)).toBe(false);
+    expect(getLineCwdsForTerminal("pane-live", instance.terminal)).toBe(
+      instance.lineCwds
+    );
+    expect(getLineCwdsForTerminal("pane-live", otherTerminal)).toBeNull();
+
+    release("pane-live");
+
+    expect(isCurrentTerminal("pane-live", instance.terminal)).toBe(false);
+    expect(getLineCwdsForTerminal("pane-live", instance.terminal)).toBeNull();
   });
 });
 

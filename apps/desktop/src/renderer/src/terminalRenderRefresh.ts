@@ -23,6 +23,18 @@ export interface TerminalRenderRefreshOptions {
   force?: boolean;
 }
 
+export function pauseTerminalRenderer(terminal: Terminal): boolean {
+  const terminalWithInternals = terminal as TerminalWithRenderService;
+  const renderService = terminalWithInternals._core?._renderService;
+  if (!renderService) {
+    return false;
+  }
+
+  renderService._isPaused = true;
+  renderService._needsFullRefresh = true;
+  return true;
+}
+
 export function resumeAndRefreshTerminalRenderer(
   terminal: Terminal,
   options: TerminalRenderRefreshOptions = {}

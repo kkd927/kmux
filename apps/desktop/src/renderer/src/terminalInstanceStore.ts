@@ -33,7 +33,7 @@ export type TerminalAttachmentToken = object;
 type AttachmentCleanup = () => Promise<void> | void;
 
 export interface TerminalRenderSink {
-  write(data: string, afterWrite?: () => void, surfaceId?: string): void;
+  write(data: string, afterWrite?: () => void, surfaceId?: string): boolean;
   fitAndSync(): Promise<void>;
   beforeFitAndSync?(): void;
 }
@@ -211,6 +211,18 @@ export function clearRenderSink(key: string, sink: TerminalRenderSink): void {
 
 export function getRenderSink(key: string): TerminalRenderSink | null {
   return store.get(key)?.renderSink ?? null;
+}
+
+export function isCurrentTerminal(key: string, terminal: Terminal): boolean {
+  return store.get(key)?.terminal === terminal;
+}
+
+export function getLineCwdsForTerminal(
+  key: string,
+  terminal: Terminal
+): TerminalLineCwdTracker | null {
+  const instance = store.get(key);
+  return instance?.terminal === terminal ? instance.lineCwds : null;
 }
 
 export function release(key: string): void {

@@ -36,7 +36,7 @@ interface HydrateAttachedTerminalOptions<
     terminal: TTerminal,
     data: string,
     afterWrite?: () => void
-  ) => void;
+  ) => boolean | void;
   onReplayStart?: () => void;
   onReplayEnd?: () => void;
   onSnapshotRendered?: (
@@ -60,7 +60,7 @@ interface ReattachPreservedTerminalOptions<
     terminal: TTerminal,
     data: string,
     afterWrite?: () => void
-  ) => void;
+  ) => boolean | void;
   onReplayStart?: () => void;
   onReplayEnd?: () => void;
   onSnapshotRendered?: (
@@ -279,7 +279,7 @@ async function replaySnapshot<TTerminal extends AttachedTerminalLike>({
     terminal: TTerminal,
     data: string,
     afterWrite?: () => void
-  ) => void;
+  ) => boolean | void;
   onSnapshotRendered?: (
     attachId: string,
     snapshot: TerminalSnapshotLike
@@ -295,9 +295,17 @@ async function replaySnapshot<TTerminal extends AttachedTerminalLike>({
   }
   terminal.reset();
   if (snapshot.vt.length > 0) {
-    await new Promise<void>((resolve) => {
-      writeTerminal(terminal, snapshot.vt, resolve);
+    const replayed = await new Promise<boolean>((resolve) => {
+      const didScheduleWrite = writeTerminal(terminal, snapshot.vt, () => {
+        resolve(true);
+      });
+      if (didScheduleWrite === false) {
+        resolve(false);
+      }
     });
+    if (!replayed) {
+      return { status: "stale" as const };
+    }
   }
 
   const completion = await onSnapshotRendered?.(attachId, snapshot);

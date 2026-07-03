@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Terminal } from "@xterm/xterm";
 
-import { resumeAndRefreshTerminalRenderer } from "./terminalRenderRefresh";
+import {
+  pauseTerminalRenderer,
+  resumeAndRefreshTerminalRenderer
+} from "./terminalRenderRefresh";
 
 function createTerminal(
   rows: number,
@@ -26,6 +29,19 @@ function createTerminal(
 }
 
 describe("resumeAndRefreshTerminalRenderer", () => {
+  it("pauses the xterm render service and records a needed full refresh", () => {
+    const renderService = {
+      _isPaused: false,
+      _needsFullRefresh: false
+    };
+    const terminal = createTerminal(24, renderService);
+
+    expect(pauseTerminalRenderer(terminal)).toBe(true);
+
+    expect(renderService._isPaused).toBe(true);
+    expect(renderService._needsFullRefresh).toBe(true);
+  });
+
   it("resumes a paused xterm render service before requesting a full refresh", () => {
     const flush = vi.fn();
     const refreshRows = vi.fn();
@@ -75,9 +91,9 @@ describe("resumeAndRefreshTerminalRenderer", () => {
     expect(resumeAndRefreshTerminalRenderer(terminal)).toBe(false);
     expect(refreshRows).not.toHaveBeenCalled();
 
-    expect(
-      resumeAndRefreshTerminalRenderer(terminal, { force: true })
-    ).toBe(true);
+    expect(resumeAndRefreshTerminalRenderer(terminal, { force: true })).toBe(
+      true
+    );
     expect(refreshRows).toHaveBeenCalledWith(0, 9);
   });
 
@@ -91,9 +107,9 @@ describe("resumeAndRefreshTerminalRenderer", () => {
       _renderRows: renderRows
     });
 
-    expect(
-      resumeAndRefreshTerminalRenderer(terminal, { force: true })
-    ).toBe(true);
+    expect(resumeAndRefreshTerminalRenderer(terminal, { force: true })).toBe(
+      true
+    );
 
     expect(refreshRows).toHaveBeenCalledWith(0, 7);
     expect(renderRows).toHaveBeenCalledWith(0, 7);
@@ -102,9 +118,9 @@ describe("resumeAndRefreshTerminalRenderer", () => {
   it("falls back to public refresh when xterm internals are unavailable", () => {
     const terminal = createTerminal(12);
 
-    expect(
-      resumeAndRefreshTerminalRenderer(terminal, { force: true })
-    ).toBe(true);
+    expect(resumeAndRefreshTerminalRenderer(terminal, { force: true })).toBe(
+      true
+    );
 
     expect(terminal.refresh).toHaveBeenCalledWith(0, 11);
   });

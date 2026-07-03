@@ -12,6 +12,12 @@ function attachPayload<TSnapshot>(snapshot: TSnapshot, attachId = "attach-1") {
   };
 }
 
+async function flushMicrotasks(iterations = 5): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("hydrateAttachedTerminal", () => {
   it("fits before requesting the attach snapshot", async () => {
     const order: string[] = [];
@@ -129,6 +135,45 @@ describe("hydrateAttachedTerminal", () => {
     expect(order).toEqual(["fonts", "fit", "reset", "rendered", "fit"]);
     expect(writeTerminal).not.toHaveBeenCalled();
     expect(renderedSequences).toEqual([0]);
+  });
+
+  it("does not mark a dropped snapshot write as rendered", async () => {
+    const terminal = {
+      cols: 120,
+      rows: 40,
+      resize: vi.fn(),
+      reset: vi.fn()
+    };
+    const onSnapshotRendered = vi.fn();
+    const fitAndSyncTerminal = vi.fn(async () => {});
+
+    const hydration = hydrateAttachedTerminal({
+      terminal,
+      isMounted: () => true,
+      isTerminalActive: () => true,
+      waitForTerminalFonts: async () => {},
+      fitAndSyncTerminal,
+      attachSurface: async () =>
+        attachPayload({
+          cols: 120,
+          rows: 40,
+          sequence: 1,
+          vt: "snapshot"
+        }),
+      writeTerminal: () => false,
+      onSnapshotRendered
+    });
+    let settled = false;
+    hydration.then(() => {
+      settled = true;
+    });
+
+    await flushMicrotasks();
+
+    expect(settled).toBe(true);
+    expect(terminal.reset).toHaveBeenCalledOnce();
+    expect(onSnapshotRendered).not.toHaveBeenCalled();
+    expect(fitAndSyncTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the snapshot size when the terminal still has no live dimensions", async () => {
