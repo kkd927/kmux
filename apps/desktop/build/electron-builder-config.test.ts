@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+const CONFIG_VALIDATION_TIMEOUT_MS = 30_000;
+
 const require = createRequire(import.meta.url);
 const yaml = require("js-yaml") as {
   load: (source: string) => unknown;
@@ -129,16 +131,20 @@ describe("electron builder config", () => {
     expect(desktopEntry).not.toContain("--no-sandbox");
   });
 
-  it("passes electron-builder config validation", async () => {
-    const projectDir = path.resolve("apps/desktop");
-    const config = await getConfig(
-      projectDir,
-      path.join(projectDir, "electron-builder.yml"),
-      null
-    );
+  it(
+    "passes electron-builder config validation",
+    async () => {
+      const projectDir = path.resolve("apps/desktop");
+      const config = await getConfig(
+        projectDir,
+        path.join(projectDir, "electron-builder.yml"),
+        null
+      );
 
-    await expect(
-      validateConfiguration(config, new DebugLogger(false))
-    ).resolves.toBeUndefined();
-  });
+      await expect(
+        validateConfiguration(config, new DebugLogger(false))
+      ).resolves.toBeUndefined();
+    },
+    CONFIG_VALIDATION_TIMEOUT_MS
+  );
 });

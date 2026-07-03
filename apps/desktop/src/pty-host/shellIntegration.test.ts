@@ -24,6 +24,9 @@ import {
 import { buildSessionEnv } from "./sessionEnv";
 
 const SPAWNED_WRAPPER_TEST_TIMEOUT_MS = 30_000;
+const ZSH_PATH = ["/bin/zsh", "/usr/bin/zsh"].find((path) =>
+  existsSync(path)
+);
 
 describe("shell integration launch preparation", () => {
   it("keeps launches unchanged when kmux shell integration is disabled", () => {
@@ -263,9 +266,12 @@ describe("shell integration launch preparation", () => {
     rmSync(fakeHome, { recursive: true, force: true });
   });
 
-  it(
+  it.skipIf(!ZSH_PATH)(
     "moves the Codex wrapper back to the front after zsh startup files reorder PATH",
     async () => {
+      if (!ZSH_PATH) {
+        throw new Error("expected zsh to be available");
+      }
       const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-path-home-"));
       const helperBinDir = mkdtempSync(join(tmpdir(), "kmux-zsh-path-helper-"));
       const wrapperBinDir = mkdtempSync(
@@ -298,7 +304,7 @@ describe("shell integration launch preparation", () => {
         baseEnv: {
           HOME: fakeHome,
           PATH: "/usr/bin:/bin",
-          SHELL: "/bin/zsh"
+          SHELL: ZSH_PATH
         },
         hookEnv: {
           KMUX_SOCKET_PATH: "/tmp/kmux.sock",
@@ -313,7 +319,7 @@ describe("shell integration launch preparation", () => {
         }
       });
       const prepared = prepareShellIntegrationLaunch(
-        "/bin/zsh",
+        ZSH_PATH,
         ["-l"],
         sessionEnv,
         {
