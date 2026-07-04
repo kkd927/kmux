@@ -272,11 +272,16 @@ export function createSubscriptionAuthDetectors(
     },
     antigravity: async () => {
       const now = options.now ?? (() => Date.now());
+      const readTextFile = defaultReadTextFile;
       const execFileImpl = options.execFileImpl ?? defaultExecFile;
+      const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
       const credentials = await loadAntigravityCredentials({
         execFileImpl,
         platform: options.platform ?? process.platform,
-        keyringReader: options.antigravityKeyringReader
+        keyringReader: options.antigravityKeyringReader,
+        fallbackTokenPath: agentStorageRoots.antigravity.oauthTokenPath,
+        readTextFile,
+        now
       });
       const accessToken = credentials?.access_token?.trim();
       const refreshToken = credentials?.refresh_token?.trim();
@@ -535,11 +540,15 @@ export async function fetchAntigravitySubscriptionUsage(
   const now = options.now ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const execFileImpl = options.execFileImpl ?? defaultExecFile;
+  const platform = options.platform ?? process.platform;
   const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
   const credentials = await loadAntigravityCredentials({
     execFileImpl,
-    platform: options.platform ?? process.platform,
-    keyringReader: options.antigravityKeyringReader
+    platform,
+    keyringReader: options.antigravityKeyringReader,
+    fallbackTokenPath: agentStorageRoots.antigravity.oauthTokenPath,
+    readTextFile: options.readTextFile ?? defaultReadTextFile,
+    now
   });
 
   const existingAccessToken = credentials?.access_token?.trim();
@@ -550,7 +559,7 @@ export async function fetchAntigravitySubscriptionUsage(
       idToken: credentials?.id_token,
       fetchImpl,
       now,
-      platform: options.platform ?? process.platform
+      platform
     });
     if (usage) {
       return usage;
@@ -574,7 +583,7 @@ export async function fetchAntigravitySubscriptionUsage(
         idToken: refreshed?.id_token,
         fetchImpl,
         now,
-        platform: options.platform ?? process.platform
+        platform
       });
       if (usage) {
         return usage;
@@ -1444,18 +1453,33 @@ async function loadAntigravityCredentials(options: {
   execFileImpl: ExecFileLike;
   platform: NodeJS.Platform;
   keyringReader?: AntigravityKeyringReader;
+  fallbackTokenPath?: string;
+  readTextFile?: ReadTextFile;
+  now: () => number;
 }): Promise<AntigravityCredentials | null> {
   if (options.platform === "linux") {
-    try {
-      const secret = options.keyringReader
-        ? options.keyringReader()
-        : readLinuxAntigravityKeyringSecret();
-      return typeof secret === "string"
-        ? parseAntigravityKeychainSecret(secret)
-        : null;
-    } catch {
-      return null;
+    if (await isLinuxDefaultKeyringUnlocked(options.execFileImpl)) {
+      try {
+        const secret = options.keyringReader
+          ? options.keyringReader()
+          : readLinuxAntigravityKeyringSecret();
+        const credentials =
+          typeof secret === "string"
+            ? parseAntigravityKeychainSecret(secret)
+            : null;
+        if (hasUsableAntigravityCredentials(credentials, options.now())) {
+          return credentials;
+        }
+      } catch {
+        // Fall back to the AGY-owned token file.
+      }
     }
+    return options.fallbackTokenPath && options.readTextFile
+      ? readAntigravityTokenFile(
+          options.fallbackTokenPath,
+          options.readTextFile
+        )
+      : null;
   }
   if (options.platform !== "darwin") {
     return null;
@@ -1472,6 +1496,47 @@ async function loadAntigravityCredentials(options: {
     return parseAntigravityKeychainSecret(stdout);
   } catch {
     return null;
+  }
+}
+
+function hasUsableAntigravityCredentials(
+  credentials: AntigravityCredentials | null,
+  nowMs: number
+): credentials is AntigravityCredentials {
+  const accessToken = credentials?.access_token?.trim();
+  const refreshToken = credentials?.refresh_token?.trim();
+  return Boolean(
+    refreshToken || (accessToken && !isCredentialsExpired(credentials, nowMs))
+  );
+}
+
+async function readAntigravityTokenFile(
+  tokenPath: string,
+  readTextFile: ReadTextFile
+): Promise<AntigravityCredentials | null> {
+  const raw = await defaultReadJsonText(tokenPath, readTextFile);
+  return raw ? parseAntigravityCredentialsPayload(raw) : null;
+}
+
+async function isLinuxDefaultKeyringUnlocked(
+  execFileImpl: ExecFileLike
+): Promise<boolean> {
+  try {
+    const { stdout } = await execFileImpl("gdbus", [
+      "call",
+      "--session",
+      "--dest",
+      "org.freedesktop.secrets",
+      "--object-path",
+      "/org/freedesktop/secrets/aliases/default",
+      "--method",
+      "org.freedesktop.DBus.Properties.Get",
+      "org.freedesktop.Secret.Collection",
+      "Locked"
+    ]);
+    return /<false>/u.test(stdout);
+  } catch {
+    return false;
   }
 }
 

@@ -285,6 +285,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       env: options.env,
       homeDir: options.homeDir,
       agentStorageRoots: options.agentStorageRoots,
+      platform: options.platform,
       now
     }),
     ...(options.subscriptionFetchers ?? {})
@@ -295,6 +296,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       env: options.env,
       homeDir: options.homeDir,
       agentStorageRoots: options.agentStorageRoots,
+      platform: options.platform,
       now
     });
 

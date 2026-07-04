@@ -165,7 +165,7 @@ describe("subscription usage fetchers", () => {
     expect(resolveCodexStatusScriptArgs("win32")).toBeNull();
   });
 
-  it("keeps Linux subscription auth unavailable without macOS security or network calls when credentials are missing", async () => {
+  it("keeps Linux subscription auth unavailable without network calls when credentials are missing", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async (command: string) => {
       throw new Error(`unexpected subscription subprocess: ${command}`);
@@ -225,7 +225,7 @@ describe("subscription usage fetchers", () => {
     await expect(detectors.claude?.()).resolves.toBe(false);
     await expect(detectors.gemini?.()).resolves.toBe(false);
     await expect(detectors.antigravity?.()).resolves.toBe(false);
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(codexRpcProbe).not.toHaveBeenCalled();
     expect(codexStatusProbe).not.toHaveBeenCalled();
@@ -1403,12 +1403,32 @@ describe("subscription usage fetchers", () => {
     ]);
   });
 
-  it("reads Antigravity Linux keyring credentials for Antigravity quota rows", async () => {
+  it("prefers unlocked Antigravity Linux keyring credentials over the fallback token file", async () => {
     const homeDir = createSandboxHome();
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        access_token: "agy-file-access-token",
+        refresh_token: "agy-file-refresh-token",
+        expiry: "2026-04-19T00:00:00.000Z"
+      }
+    );
     const execFileImpl = vi.fn(async () => ({
-      stdout: "unexpected",
+      stdout: "(<false>,)\n",
       stderr: ""
     }));
+    const keyringReader = vi.fn(() =>
+      JSON.stringify({
+        token: {
+          access_token: "agy-linux-access-token",
+          refresh_token: "agy-linux-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    );
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
@@ -1449,16 +1469,7 @@ describe("subscription usage fetchers", () => {
       platform: "linux",
       execFileImpl,
       fetchImpl,
-      antigravityKeyringReader: () =>
-        JSON.stringify({
-          token: {
-            access_token: "agy-linux-access-token",
-            refresh_token: "agy-linux-refresh-token",
-            token_type: "Bearer",
-            expiry: "2026-04-19T00:00:00.000Z"
-          },
-          auth_method: "consumer"
-        }),
+      antigravityKeyringReader: keyringReader,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
 
@@ -1476,14 +1487,326 @@ describe("subscription usage fetchers", () => {
         ]
       })
     );
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(keyringReader).toHaveBeenCalledOnce();
+    expect(execFileImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer agy-linux-access-token"
+        })
+      })
+    );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the AGY Linux fallback token file when unlocked keyring credentials are expired", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        refresh_token: "agy-file-refresh-token"
+      }
+    );
+    const keyringReader = vi.fn(() =>
+      JSON.stringify({
+        token: {
+          access_token: "expired-keyring-access-token",
+          expiry: "2026-04-17T00:00:00.000Z"
+        }
+      })
+    );
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl: vi.fn(async () => ({
+        stdout: "(<false>,)\n",
+        stderr: ""
+      })),
+      antigravityKeyringReader: keyringReader,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    expect(keyringReader).toHaveBeenCalledOnce();
+  });
+
+  it("uses the AGY Linux fallback token file while the keyring is locked", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        access_token: "agy-file-access-token",
+        refresh_token: "agy-file-refresh-token",
+        token_type: "Bearer",
+        expiry: "2026-04-19T00:00:00.000Z"
+      }
+    );
+    const keyringReader = vi.fn(() => {
+      throw new Error("keyring must not be accessed");
+    });
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "(<true>,)\n",
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            }
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-weekly",
+                    displayName: "Weekly Limit",
+                    window: "weekly",
+                    remainingFraction: 0.8,
+                    resetTime: "2026-04-19T00:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      fetchImpl,
+      antigravityKeyringReader: keyringReader,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      antigravityKeyringReader: keyringReader,
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        planLabel: "Paid",
+        rows: [
+          expect.objectContaining({
+            key: "gemini-weekly",
+            usedPercent: 20
+          })
+        ]
+      })
+    );
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    expect(keyringReader).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the AGY Linux fallback token file when keyring state lookup fails", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        refresh_token: "agy-file-refresh-token"
+      }
+    );
+    const execFileImpl = vi.fn(async () => {
+      throw new Error("Secret Service unavailable");
+    });
+    const keyringReader = vi.fn(() => {
+      throw new Error("keyring must not be accessed");
+    });
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      antigravityKeyringReader: keyringReader
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    expect(keyringReader).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the AGY Linux token file when keyring lookup fails", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        refresh_token: "agy-file-refresh-token"
+      }
+    );
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "(<false>,)\n",
+      stderr: ""
+    }));
+    const keyringReader = vi.fn(() => {
+      throw new Error("keyring lookup failed");
+    });
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      antigravityKeyringReader: keyringReader
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    expect(keyringReader).toHaveBeenCalledOnce();
+  });
+
+  it("does not overwrite the AGY Linux token file after refreshing credentials", async () => {
+    const homeDir = createSandboxHome();
+    const tokenPath = join(
+      homeDir,
+      ".gemini",
+      "antigravity-cli",
+      "antigravity-oauth-token"
+    );
+    writeJson(
+      homeDir,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      {
+        access_token: "expired-access-token",
+        refresh_token: "agy-file-refresh-token",
+        expiry: "2026-04-17T00:00:00.000Z"
+      }
+    );
+    const originalContents = readFileSync(tokenPath, "utf8");
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "refreshed-access-token",
+            expires_in: 3600
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: {
+              id: "standard-tier"
+            }
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-weekly",
+                    window: "weekly",
+                    remainingFraction: 0.6
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "linux",
+      execFileImpl: vi.fn(async () => ({
+        stdout: "(<true>,)\n",
+        stderr: ""
+      })),
+      fetchImpl,
+      googleOAuthClientConfig: {
+        clientId: "agy-client-id"
+      },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        rows: [
+          expect.objectContaining({
+            key: "gemini-weekly",
+            usedPercent: 40
+          })
+        ]
+      })
+    );
+    expect(readFileSync(tokenPath, "utf8")).toBe(originalContents);
+  });
+
+  it.each([
+    ["malformed JSON", "{not-json"],
+    ["JSON without token fields", JSON.stringify({ token_type: "Bearer" })],
+    ["an arbitrary string", "not-a-refresh-token"]
+  ])("rejects %s in the AGY Linux fallback token file", async (_, contents) => {
+    const homeDir = createSandboxHome();
+    const tokenPath = join(
+      homeDir,
+      ".gemini",
+      "antigravity-cli",
+      "antigravity-oauth-token"
+    );
+    mkdirSync(dirname(tokenPath), { recursive: true });
+    writeFileSync(tokenPath, contents, "utf8");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: "(<true>,)\n",
+      stderr: ""
+    }));
+    const keyringReader = vi.fn(() => {
+      throw new Error("keyring must not be accessed");
+    });
+    const detectors = createSubscriptionAuthDetectors({
+      homeDir,
+      platform: "linux",
+      execFileImpl,
+      antigravityKeyringReader: keyringReader
+    });
+
+    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    expect(keyringReader).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledWith("gdbus", [
+      "call",
+      "--session",
+      "--dest",
+      "org.freedesktop.secrets",
+      "--object-path",
+      "/org/freedesktop/secrets/aliases/default",
+      "--method",
+      "org.freedesktop.DBus.Properties.Get",
+      "org.freedesktop.Secret.Collection",
+      "Locked"
+    ]);
   });
 
   it("uses Antigravity allowed tiers from Linux keyring auth without spawning security", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
-      stdout: "unexpected",
+      stdout: "(<false>,)\n",
       stderr: ""
     }));
     const fetchImpl = vi
@@ -1554,14 +1877,14 @@ describe("subscription usage fetchers", () => {
         ]
       })
     );
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("does not use Antigravity allowed tiers when current tier is explicit free tier", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
-      stdout: "unexpected",
+      stdout: "(<false>,)\n",
       stderr: ""
     }));
     const fetchImpl = vi
@@ -1615,7 +1938,7 @@ describe("subscription usage fetchers", () => {
     });
 
     expect(usage).toBeNull();
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -1654,28 +1977,32 @@ describe("subscription usage fetchers", () => {
   it("keeps Antigravity subscription usage unavailable on Linux without spawning security", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
-      stdout: "unexpected",
+      stdout: "(<true>,)\n",
       stderr: ""
     }));
     const fetchImpl = vi.fn();
+    const keyringReader = vi.fn(() => {
+      throw new Error("keyring must not be accessed");
+    });
 
     const usage = await fetchAntigravitySubscriptionUsage({
       homeDir,
       platform: "linux",
       execFileImpl,
       fetchImpl,
-      antigravityKeyringReader: () => null
+      antigravityKeyringReader: keyringReader
     });
     const detectors = createSubscriptionAuthDetectors({
       homeDir,
       platform: "linux",
       execFileImpl,
-      antigravityKeyringReader: () => null
+      antigravityKeyringReader: keyringReader
     });
 
     expect(usage).toBeNull();
     await expect(detectors.antigravity?.()).resolves.toBe(false);
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(keyringReader).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -2167,7 +2494,7 @@ describe("subscription usage fetchers", () => {
   it("treats Antigravity Linux keyring auth as visible local auth", async () => {
     const homeDir = createSandboxHome();
     const execFileImpl = vi.fn(async () => ({
-      stdout: "unexpected",
+      stdout: "(<false>,)\n",
       stderr: ""
     }));
 
@@ -2188,7 +2515,7 @@ describe("subscription usage fetchers", () => {
     });
 
     await expect(detectors.antigravity?.()).resolves.toBe(true);
-    expect(execFileImpl).not.toHaveBeenCalled();
+    expect(execFileImpl).toHaveBeenCalledOnce();
   });
 });
 

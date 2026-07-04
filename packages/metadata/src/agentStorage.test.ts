@@ -32,6 +32,8 @@ describe("agent storage roots", () => {
       },
       antigravity: {
         root: "/home/test/.gemini/antigravity-cli",
+        oauthTokenPath:
+          "/home/test/.gemini/antigravity-cli/antigravity-oauth-token",
         brainDir: "/home/test/.gemini/antigravity-cli/brain",
         historyPath: "/home/test/.gemini/antigravity-cli/history.jsonl",
         cacheProjectsPath:

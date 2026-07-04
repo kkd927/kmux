@@ -23,6 +23,7 @@ export interface AgentStorageRoots {
   };
   antigravity: {
     root: string;
+    oauthTokenPath: string;
     brainDir: string;
     historyPath: string;
     cacheProjectsPath: string;
@@ -67,6 +68,7 @@ export function resolveAgentStorageRoots(
     },
     antigravity: {
       root: antigravityRoot,
+      oauthTokenPath: join(antigravityRoot, "antigravity-oauth-token"),
       brainDir: join(antigravityRoot, "brain"),
       historyPath: join(antigravityRoot, "history.jsonl"),
       cacheProjectsPath: join(antigravityRoot, "cache", "projects.json"),
