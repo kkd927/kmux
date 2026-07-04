@@ -166,7 +166,7 @@ describe("UsageDashboard", () => {
     expect(cost?.textContent).toBe("—");
   });
 
-  it("renders unlimited Codex credits without a percentage meter", () => {
+  it("renders unlimited Codex credits as a full percentage meter", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-05-20", "2026-05-20T03:00:00.000Z"),
       subscriptionUsage: [
@@ -181,7 +181,7 @@ describe("UsageDashboard", () => {
               key: "credits",
               label: "Credits",
               valueKind: "unlimited",
-              resetLabel: "No workspace spend limit",
+              resetLabel: "Unlimited",
               windowKind: "credits"
             }
           ]
@@ -198,14 +198,18 @@ describe("UsageDashboard", () => {
     const row = container.querySelector<HTMLElement>(
       "[data-testid='subscription-row-codex-credits']"
     );
+    const bar = row?.querySelector<HTMLElement>("[role='progressbar']");
     expect(row?.textContent).toContain("Credits");
     expect(row?.textContent).toContain("Unlimited");
-    expect(row?.textContent).toContain("No workspace spend limit");
+    expect(row?.textContent).toContain("100%");
     expect(row?.textContent).not.toContain("NaN%");
-    expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
+    expect(bar?.getAttribute("aria-valuenow")).toBe("100");
+    expect((bar?.firstElementChild as HTMLElement | null)?.style.width).toBe(
+      "100%"
+    );
   });
 
-  it("renders unlimited Antigravity quota without a percentage meter", () => {
+  it("renders unlimited Antigravity quota as a full percentage meter", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),
       subscriptionUsage: [
@@ -240,12 +244,16 @@ describe("UsageDashboard", () => {
     const row = container.querySelector<HTMLElement>(
       "[data-testid='subscription-row-antigravity-all-models']"
     );
+    const bar = row?.querySelector<HTMLElement>("[role='progressbar']");
     expect(provider?.textContent).toContain("Antigravity Business");
     expect(row?.textContent).toContain("All Models");
-    expect(row?.textContent).toContain("Unlimited");
     expect(row?.textContent).toContain("No quota limit reported");
+    expect(row?.textContent).toContain("100%");
     expect(row?.textContent).not.toContain("NaN%");
-    expect(row?.querySelector(".usageInlineBarTrack")).toBeNull();
+    expect(bar?.getAttribute("aria-valuenow")).toBe("100");
+    expect((bar?.firstElementChild as HTMLElement | null)?.style.width).toBe(
+      "100%"
+    );
   });
 
   it("renders Antigravity subscription quota rows", () => {

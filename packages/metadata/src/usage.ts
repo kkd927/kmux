@@ -1372,6 +1372,10 @@ function extractCodexUsageSamples(
     0,
     absoluteThinkingTokens - previous.thinkingTokens
   );
+  const deltaVisibleOutputTokens = Math.max(
+    0,
+    deltaOutputTokens - deltaThinkingTokens
+  );
   const deltaTotalTokens = Math.max(
     0,
     absoluteTotalTokens - previous.totalTokens
@@ -1404,7 +1408,7 @@ function extractCodexUsageSamples(
       vendor: "codex",
       model: context?.model,
       inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
-      outputTokens: deltaOutputTokens,
+      outputTokens: deltaVisibleOutputTokens,
       cacheTokens: deltaCacheReadTokens,
       thinkingTokens: deltaThinkingTokens,
       cacheCreateTokens: 0,
@@ -1435,7 +1439,7 @@ function extractCodexUsageSamples(
       cwd: context?.cwd,
       projectPath: context?.projectPath ?? context?.cwd,
       inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
-      outputTokens: Math.max(0, deltaOutputTokens - deltaThinkingTokens),
+      outputTokens: deltaVisibleOutputTokens,
       thinkingTokens: deltaThinkingTokens,
       cacheReadTokens: deltaCacheReadTokens,
       cacheWriteTokens: 0,

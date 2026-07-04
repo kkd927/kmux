@@ -3892,16 +3892,6 @@
   white-space: nowrap;
 }
 
-.subscriptionUsageUnlimited {
-  align-self: start;
-  justify-self: end;
-  min-height: 1.25rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--usage-title);
-  white-space: nowrap;
-}
-
 .usagePillStatus {
   display: inline-flex;
   align-items: center;

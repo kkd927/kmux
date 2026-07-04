@@ -564,7 +564,7 @@ describe("subscription usage fetchers", () => {
             key: "credits",
             label: "Credits",
             valueKind: "unlimited",
-            resetLabel: "No workspace spend limit",
+            resetLabel: "Unlimited",
             windowKind: "credits"
           })
         ]

@@ -724,7 +724,8 @@ describe("usage adapters", () => {
           type: "session_meta",
           payload: {
             id: "codex-thinking-session",
-            cwd: "/tmp/kmux-codex-thinking"
+            cwd: "/tmp/kmux-codex-thinking",
+            model: "gpt-5.4"
           }
         }),
         JSON.stringify({
@@ -761,12 +762,15 @@ describe("usage adapters", () => {
       expect.objectContaining({
         vendor: "codex",
         sessionId: "codex-thinking-session",
+        model: "gpt-5.4",
         inputTokens: 900,
         cacheReadTokens: 300,
         cacheWriteTokensKnown: false,
         outputTokens: 110,
         thinkingTokens: 70,
-        totalTokens: 1380
+        totalTokens: 1380,
+        estimatedCostUsd: expect.closeTo(0.005025, 8),
+        costSource: "estimated"
       })
     ]);
   });

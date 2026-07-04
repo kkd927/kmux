@@ -845,7 +845,7 @@ function buildUnlimitedCreditsRow(
     key: options.key ?? "credits",
     label: options.label ?? "Credits",
     valueKind: "unlimited",
-    resetLabel: options.resetLabel ?? "No workspace spend limit",
+    resetLabel: options.resetLabel ?? "Unlimited",
     windowKind: "credits"
   };
 }

@@ -244,24 +244,18 @@ function SubscriptionWindowsCard(props: {
                       {formatSubscriptionRowMeta(row)}
                     </div>
                   </div>
-                  {displayPercent === null ? (
-                    <div className={styles.subscriptionUsageUnlimited}>
-                      Unlimited
+                  <div className={styles.subscriptionUsageMeter}>
+                    <div className={styles.subscriptionUsageBar}>
+                      <InlineBar
+                        value={displayPercent}
+                        total={100}
+                        tone={colorForVendor(providerUsage.provider)}
+                      />
                     </div>
-                  ) : (
-                    <div className={styles.subscriptionUsageMeter}>
-                      <div className={styles.subscriptionUsageBar}>
-                        <InlineBar
-                          value={displayPercent}
-                          total={100}
-                          tone={colorForVendor(providerUsage.provider)}
-                        />
-                      </div>
-                      <div className={styles.subscriptionUsagePercent}>
-                        {formatSubscriptionPercent(displayPercent)}
-                      </div>
+                    <div className={styles.subscriptionUsagePercent}>
+                      {formatSubscriptionPercent(displayPercent)}
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })}
@@ -446,9 +440,9 @@ function UsageHeatmap(props: {
 
 function getSubscriptionDisplayPercent(
   row: SubscriptionUsageRowVm
-): number | null {
+): number {
   if (row.valueKind === "unlimited") {
-    return null;
+    return 100;
   }
   const displayPercent =
     row.windowKind === "spend" ? row.usedPercent : 100 - row.usedPercent;
