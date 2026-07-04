@@ -22,6 +22,8 @@ import type {
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
+  TerminalFileLinkResolveCandidate,
+  TerminalFileLinkResolveResult,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   TerminalKeyInput,
@@ -73,6 +75,10 @@ declare global {
         rawPath: string,
         baseCwd?: string
       ): Promise<void>;
+      resolveTerminalFileLinks(
+        surfaceId: string,
+        candidates: TerminalFileLinkResolveCandidate[]
+      ): Promise<TerminalFileLinkResolveResult>;
       createImageAttachments(
         surfaceId: string,
         payloads: CreateImageAttachmentPayload[]

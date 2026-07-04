@@ -5,7 +5,11 @@ import { flushSync } from "react-dom";
 import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { KmuxSettings, SurfaceVm } from "@kmux/proto";
+import type {
+  KmuxSettings,
+  SurfaceVm,
+  TerminalFileLinkResolveCandidate
+} from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 import type { ILink, ILinkProvider } from "@xterm/xterm";
 
@@ -293,7 +297,7 @@ function captureTerminalListeners(): Array<(event: unknown) => void> {
   return listeners;
 }
 
-function provideCurrentTerminalFileLinks(): ILink[] | undefined {
+function provideCurrentTerminalFileLinks(): Promise<ILink[] | undefined> {
   const terminalMock = vi.mocked(Terminal);
   const terminal = terminalMock.mock.results.at(-1)?.value as
     | {
@@ -303,11 +307,15 @@ function provideCurrentTerminalFileLinks(): ILink[] | undefined {
       }
     | undefined;
   const provider = terminal?.registerLinkProvider.mock.calls[0]?.[0];
-  let links: ILink[] | undefined;
-  provider?.provideLinks(1, (providedLinks) => {
-    links = providedLinks;
+  return new Promise((resolve) => {
+    if (!provider) {
+      resolve(undefined);
+      return;
+    }
+    provider.provideLinks(1, (providedLinks) => {
+      resolve(providedLinks);
+    });
   });
-  return links;
 }
 
 describe("TerminalPane visibility cleanup", () => {
@@ -360,6 +368,23 @@ describe("TerminalPane visibility cleanup", () => {
       writeClipboardText: vi.fn(async () => {}),
       openExternalUrl: vi.fn(async () => {}),
       openTerminalFilePath: vi.fn(async () => {}),
+      resolveTerminalFileLinks: vi.fn(
+        async (
+          _surfaceId: string,
+          candidates: TerminalFileLinkResolveCandidate[]
+        ) => ({
+          links: candidates.map((candidate) => ({
+            id: candidate.id,
+            openRawPath: candidate.rawPath,
+            resolvedPath: candidate.baseCwd
+              ? `${candidate.baseCwd}/${candidate.rawPath}`
+              : candidate.rawPath,
+            linkText: candidate.linkText,
+            startIndex: candidate.startIndex,
+            endIndex: candidate.endIndex
+          }))
+        })
+      ),
       showSurfaceContextMenu: vi.fn(async () => true),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
@@ -425,7 +450,7 @@ describe("TerminalPane visibility cleanup", () => {
       await flushMicrotasks();
     });
 
-    const links = provideCurrentTerminalFileLinks();
+    const links = await provideCurrentTerminalFileLinks();
     links?.[0]?.activate(
       new MouseEvent("click", { ctrlKey: true }),
       "src/App.tsx"
@@ -434,8 +459,8 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(window.kmux.openTerminalFilePath).toHaveBeenCalledWith(
       "surface_1",
-      "src/App.tsx",
-      "/repo/snapshot"
+      "/repo/snapshot/src/App.tsx",
+      undefined
     );
   });
 
@@ -466,7 +491,7 @@ describe("TerminalPane visibility cleanup", () => {
       await flushMicrotasks();
     });
 
-    const links = provideCurrentTerminalFileLinks();
+    const links = await provideCurrentTerminalFileLinks();
     links?.[0]?.activate(
       new MouseEvent("click", { ctrlKey: true }),
       "src/App.tsx"
@@ -475,8 +500,8 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(window.kmux.openTerminalFilePath).toHaveBeenCalledWith(
       "surface_1",
-      "src/App.tsx",
-      "/repo/live"
+      "/repo/live/src/App.tsx",
+      undefined
     );
   });
 
@@ -639,8 +664,12 @@ describe("TerminalPane visibility cleanup", () => {
           expect.any(Function)
         );
         expect(animationFrames.length).toBeGreaterThan(0);
-        expect(terminal!._core._renderService.refreshRows).not.toHaveBeenCalled();
-        expect(terminal!._core._renderService._renderRows).not.toHaveBeenCalled();
+        expect(
+          terminal!._core._renderService.refreshRows
+        ).not.toHaveBeenCalled();
+        expect(
+          terminal!._core._renderService._renderRows
+        ).not.toHaveBeenCalled();
 
         await act(async () => {
           for (const callback of animationFrames.splice(0)) {
@@ -649,16 +678,16 @@ describe("TerminalPane visibility cleanup", () => {
           await flushMicrotasks();
         });
 
-        expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledTimes(
-          1
-        );
+        expect(
+          terminal!._core._renderService.refreshRows
+        ).toHaveBeenCalledTimes(1);
         expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledWith(
           0,
           terminal!.rows - 1
         );
-        expect(terminal!._core._renderService._renderRows).toHaveBeenCalledTimes(
-          1
-        );
+        expect(
+          terminal!._core._renderService._renderRows
+        ).toHaveBeenCalledTimes(1);
         expect(terminal!._core._renderService._renderRows).toHaveBeenCalledWith(
           0,
           terminal!.rows - 1
@@ -775,7 +804,7 @@ describe("TerminalPane visibility cleanup", () => {
       await flushMicrotasks();
     });
 
-    const links = provideCurrentTerminalFileLinks();
+    const links = await provideCurrentTerminalFileLinks();
     expect(links?.[0]).toBeDefined();
     links?.[0]?.activate(
       new MouseEvent("click", { ctrlKey: true }),
@@ -790,8 +819,7 @@ describe("TerminalPane visibility cleanup", () => {
     );
     expect(window.kmux.openTerminalFilePath).not.toHaveBeenCalledWith(
       "surface_2",
-      "src/App.tsx",
-      "/repo/hidden"
+      "/repo/hidden/src/App.tsx"
     );
   });
 
@@ -1209,12 +1237,12 @@ describe("TerminalPane visibility cleanup", () => {
     expect(terminal!.resize).toHaveBeenLastCalledWith(140, 50);
     expect(terminal!.cols).toBe(140);
     expect(terminal!.rows).toBe(50);
-    expect(
-      terminal!.resize.mock.calls.map((call) => call.slice(0, 2))
-    ).toEqual([
-      [100, 30],
-      [140, 50]
-    ]);
+    expect(terminal!.resize.mock.calls.map((call) => call.slice(0, 2))).toEqual(
+      [
+        [100, 30],
+        [140, 50]
+      ]
+    );
   });
 
   it("writes the exit banner after pending chunk write callbacks", async () => {

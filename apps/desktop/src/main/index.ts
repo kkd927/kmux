@@ -39,7 +39,10 @@ import { KmuxSocketServer } from "./socketServer";
 import { createSurfaceCaptureService } from "./surfaceCapture";
 import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
-import { openTerminalFilePath as openTerminalFilePathFromTerminal } from "./terminalFileOpen";
+import {
+  openTerminalFilePath as openTerminalFilePathFromTerminal,
+  resolveTerminalFileLinks as resolveTerminalFileLinksFromTerminal
+} from "./terminalFileOpen";
 import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
@@ -475,6 +478,12 @@ async function bootstrap(): Promise<void> {
         surfaceId,
         rawPath,
         baseCwd,
+        getState: runtime.getState
+      }),
+    resolveTerminalFileLinks: (surfaceId, candidates) =>
+      resolveTerminalFileLinksFromTerminal({
+        surfaceId,
+        candidates,
         getState: runtime.getState
       }),
     resizeSurface: terminalBridge.resizeSurface,

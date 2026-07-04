@@ -5,45 +5,69 @@ import type {
   ILinkDecorations,
   Terminal
 } from "@xterm/xterm";
+import type {
+  TerminalFileLinkResolveCandidate,
+  TerminalFileLinkResolved,
+  TerminalFileLinkResolveResult
+} from "@kmux/proto";
 
 import type { KeyboardShortcutPlatform } from "../../shared/platform/keyboardPolicy";
 
 const WRAPPED_LINE_SCAN_LIMIT = 2048;
+const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const LINK_WITH_SUFFIX_PATH_CHARACTERS =
+  /(?<path>(?:file:\/\/\/)?[^\s\|<>\[\({][^\s\|<>]*)$/;
+
+enum RegexPathConstants {
+  PathPrefix = "(?:\\.\\.?|\\~|file:\\/\\/)",
+  PathSeparatorClause = "\\/",
+  // Ported from VS Code Code - OSS terminalLinkParsing.ts. Quotes, colons,
+  // semicolons, and brackets are treated as terminal separators.
+  ExcludedPathCharactersClause = "[^\\0<>\\?\\s!`&*()'\":;\\\\]",
+  ExcludedStartPathCharactersClause = "[^\\0<>\\?\\s!`&*()\\[\\]'\":;\\\\]"
+}
+
+const UNIX_LOCAL_LINK_CLAUSE =
+  "(?:(?:" +
+  RegexPathConstants.PathPrefix +
+  "|(?:" +
+  RegexPathConstants.ExcludedStartPathCharactersClause +
+  RegexPathConstants.ExcludedPathCharactersClause +
+  "*))?(?:" +
+  RegexPathConstants.PathSeparatorClause +
+  "(?:" +
+  RegexPathConstants.ExcludedPathCharactersClause +
+  ")+)+)";
 const MARKDOWN_ANGLE_LINK_TARGET_RE = /\[[^\]\n]*\]\(<([^>\n]+)>\)/g;
-const MARKDOWN_LINK_TARGET_RE = /\[[^\]\n]*\]\(([^()\s]+)\)/g;
-const QUOTED_PATH_RE = /(["'])([^"'\n]*[/~.][^"'\n]*)\1/g;
+const QUOTED_SPACE_PATH_RE = /(["'])([^"'\n]*\s[^"'\n]*[/~.][^"'\n]*)\1/g;
 const ESCAPED_SPACE_PATH_RE =
   /(?:^|\s)((?:\/|~\/|\.{1,2}\/|[A-Za-z0-9_.@-]+\/)(?:\\ |[^\s])*(?:\\ [^\s]*)+)/g;
-const TOKEN_RE = /\S+/g;
-const LEADING_PATH_PUNCTUATION = new Set(["(", "[", "{", "<", '"', "'", "`"]);
-const TRAILING_PATH_PUNCTUATION = new Set([
-  ",",
-  ".",
-  ";",
-  "!",
-  "?",
-  ")",
-  "]",
-  "}",
-  ">",
-  '"',
-  "'",
-  "`"
-]);
-const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
-const DOMAIN_LIKE_FIRST_SEGMENT_RE = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
-const RELATIVE_FIRST_SEGMENT_RE = /^[A-Za-z0-9_.@-]+$/;
 
 export interface TerminalFilePathCandidate {
   rawPath: string;
+  linkText: string;
   startIndex: number;
   endIndex: number;
+  hasSuffix: boolean;
 }
 
-interface StrippedPathToken {
+interface ParsedTerminalLink {
+  path: LinkPartialRange;
+  prefix?: LinkPartialRange;
+  suffix?: LinkSuffix;
+}
+
+interface LinkSuffix {
+  row: number | undefined;
+  col: number | undefined;
+  rowEnd: number | undefined;
+  colEnd: number | undefined;
+  suffix: LinkPartialRange;
+}
+
+interface LinkPartialRange {
+  index: number;
   text: string;
-  leading: number;
-  trailing: number;
 }
 
 interface TerminalFileLinkProviderOptions {
@@ -55,6 +79,10 @@ interface TerminalFileLinkProviderOptions {
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  resolveFileLinks?: (
+    surfaceId: string,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ) => Promise<TerminalFileLinkResolveResult>;
   getCwdForBufferLine?: (bufferLineNumber: number) => string | undefined;
 }
 
@@ -71,6 +99,19 @@ export function isTerminalFileLinkModifierActive(
 export function parseTerminalFilePathCandidates(
   text: string
 ): TerminalFilePathCandidate[] {
+  const parsedLinks = detectLinks(text);
+  return parsedLinks
+    .filter((parsedLink) => !hasInnerBracketVariant(parsedLink, parsedLinks))
+    .filter((parsedLink) => !isUnsupportedLocalPathMatch(text, parsedLink))
+    .filter((parsedLink) =>
+      isPathLikeTerminalFileCandidate(parsedLink.path.text)
+    )
+    .map((parsedLink) => toTerminalFilePathCandidate(text, parsedLink));
+}
+
+export function parseTerminalFilePathFallbackCandidates(
+  text: string
+): TerminalFilePathCandidate[] {
   const candidates: TerminalFilePathCandidate[] = [];
   const consumedRanges: Array<{ startIndex: number; endIndex: number }> = [];
 
@@ -81,6 +122,7 @@ export function parseTerminalFilePathCandidates(
     const targetStartInMatch = fullMatch.indexOf("<") + 1;
     if (
       targetStartInMatch <= 0 ||
+      !/\s/.test(target) ||
       hasConsumedRangeOverlap(consumedRanges, {
         startIndex: fullStartIndex,
         endIndex: fullStartIndex + fullMatch.length
@@ -93,44 +135,16 @@ export function parseTerminalFilePathCandidates(
       startIndex: fullStartIndex,
       endIndex: fullStartIndex + fullMatch.length
     });
-    addCandidateFromPathToken({
+    addFallbackCandidateFromPathToken({
       candidates,
       sourceText: target,
-      sourceStartIndex: fullStartIndex + targetStartInMatch,
-      rawText: unescapePathText(target)
+      sourceStartIndex: fullStartIndex + targetStartInMatch
     });
   }
 
-  for (const match of text.matchAll(MARKDOWN_LINK_TARGET_RE)) {
+  for (const match of text.matchAll(QUOTED_SPACE_PATH_RE)) {
     const fullMatch = match[0];
-    const target = match[1];
-    const fullStartIndex = match.index;
-    const targetStartInMatch = fullMatch.indexOf(`(${target}`) + 1;
-    if (
-      targetStartInMatch <= 0 ||
-      hasConsumedRangeOverlap(consumedRanges, {
-        startIndex: fullStartIndex,
-        endIndex: fullStartIndex + fullMatch.length
-      })
-    ) {
-      continue;
-    }
-
-    const targetStartIndex = fullStartIndex + targetStartInMatch;
-    consumedRanges.push({
-      startIndex: fullStartIndex,
-      endIndex: fullStartIndex + fullMatch.length
-    });
-    addCandidateFromPathToken({
-      candidates,
-      sourceText: target,
-      sourceStartIndex: targetStartIndex
-    });
-  }
-
-  for (const match of text.matchAll(QUOTED_PATH_RE)) {
-    const fullMatch = match[0];
-    const rawTarget = match[2];
+    const target = match[2];
     const fullStartIndex = match.index;
     const targetStartIndex = fullStartIndex + match[1].length;
     if (
@@ -146,11 +160,10 @@ export function parseTerminalFilePathCandidates(
       startIndex: fullStartIndex,
       endIndex: fullStartIndex + fullMatch.length
     });
-    addCandidateFromPathToken({
+    addFallbackCandidateFromPathToken({
       candidates,
-      sourceText: rawTarget,
-      sourceStartIndex: targetStartIndex,
-      rawText: unescapePathText(rawTarget)
+      sourceText: target,
+      sourceStartIndex: targetStartIndex
     });
   }
 
@@ -170,7 +183,7 @@ export function parseTerminalFilePathCandidates(
       startIndex: targetStartIndex,
       endIndex: targetStartIndex + escapedTarget.length
     });
-    addCandidateFromPathToken({
+    addFallbackCandidateFromPathToken({
       candidates,
       sourceText: escapedTarget,
       sourceStartIndex: targetStartIndex,
@@ -178,25 +191,6 @@ export function parseTerminalFilePathCandidates(
     });
   }
 
-  for (const match of text.matchAll(TOKEN_RE)) {
-    const token = match[0];
-    const tokenStart = match.index;
-    const tokenEnd = tokenStart + token.length;
-    if (
-      hasConsumedRangeOverlap(consumedRanges, {
-        startIndex: tokenStart,
-        endIndex: tokenEnd
-      })
-    ) {
-      continue;
-    }
-
-    addCandidateFromPathToken({
-      candidates,
-      sourceText: token,
-      sourceStartIndex: tokenStart
-    });
-  }
   return candidates.sort((a, b) => a.startIndex - b.startIndex);
 }
 
@@ -205,6 +199,8 @@ export function registerTerminalFileLinkProvider({
   getKeyboardPlatform,
   surfaceId,
   openFilePath,
+  resolveFileLinks = (id, candidates) =>
+    window.kmux.resolveTerminalFileLinks(id, candidates),
   getCwdForBufferLine
 }: TerminalFileLinkProviderOptions): IDisposable {
   const activeDecorations = new Set<ILinkDecorations>();
@@ -249,23 +245,25 @@ export function registerTerminalFileLinkProvider({
       }
 
       const text = lines.join("");
-      const links = parseTerminalFilePathCandidates(text)
-        .map((candidate) =>
-          createTerminalFileLink({
-            candidate,
-            startLineIndex,
-            terminal,
-            surfaceId,
-            openFilePath,
-            getCwdForBufferLine,
-            getKeyboardPlatform,
-            activeDecorations,
-            updateModifierFromEvent
-          })
-        )
-        .filter((link): link is ILink => link !== null);
-
-      callback(links.length > 0 ? links : undefined);
+      void provideValidatedTerminalFileLinks({
+        text,
+        startLineIndex,
+        terminal,
+        surfaceId,
+        openFilePath,
+        resolveFileLinks,
+        getCwdForBufferLine,
+        getKeyboardPlatform,
+        activeDecorations,
+        updateModifierFromEvent
+      })
+        .then((links) => {
+          callback(links.length > 0 ? links : undefined);
+        })
+        .catch((error) => {
+          console.warn("Failed to resolve terminal file links", error);
+          callback(undefined);
+        });
     }
   });
 
@@ -284,18 +282,19 @@ export function registerTerminalFileLinkProvider({
   };
 }
 
-function createTerminalFileLink({
-  candidate,
+async function provideValidatedTerminalFileLinks({
+  text,
   startLineIndex,
   terminal,
   surfaceId,
   openFilePath,
+  resolveFileLinks,
   getCwdForBufferLine,
   getKeyboardPlatform,
   activeDecorations,
   updateModifierFromEvent
 }: {
-  candidate: TerminalFilePathCandidate;
+  text: string;
   startLineIndex: number;
   terminal: Terminal;
   surfaceId: string;
@@ -304,7 +303,134 @@ function createTerminalFileLink({
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  resolveFileLinks: (
+    surfaceId: string,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ) => Promise<TerminalFileLinkResolveResult>;
   getCwdForBufferLine?: (bufferLineNumber: number) => string | undefined;
+  getKeyboardPlatform: () => KeyboardShortcutPlatform;
+  activeDecorations: Set<ILinkDecorations>;
+  updateModifierFromEvent: (
+    event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">
+  ) => void;
+}): Promise<ILink[]> {
+  const primaryCandidates = toResolveCandidates({
+    candidates: parseTerminalFilePathCandidates(text),
+    idPrefix: "primary",
+    startLineIndex,
+    terminal,
+    getCwdForBufferLine
+  });
+  let resolved = await resolveTerminalFileLinksSafely(
+    resolveFileLinks,
+    surfaceId,
+    primaryCandidates
+  );
+
+  if (resolved.links.length === 0) {
+    const fallbackCandidates = toResolveCandidates({
+      candidates: parseTerminalFilePathFallbackCandidates(text),
+      idPrefix: "fallback",
+      startLineIndex,
+      terminal,
+      getCwdForBufferLine
+    });
+    if (fallbackCandidates.length > 0) {
+      resolved = await resolveTerminalFileLinksSafely(
+        resolveFileLinks,
+        surfaceId,
+        fallbackCandidates
+      );
+    }
+  }
+
+  return resolved.links
+    .map((candidate) =>
+      createTerminalFileLink({
+        candidate,
+        startLineIndex,
+        terminal,
+        surfaceId,
+        openFilePath,
+        getKeyboardPlatform,
+        activeDecorations,
+        updateModifierFromEvent
+      })
+    )
+    .filter((link): link is ILink => link !== null);
+}
+
+function toResolveCandidates({
+  candidates,
+  idPrefix,
+  startLineIndex,
+  terminal,
+  getCwdForBufferLine
+}: {
+  candidates: TerminalFilePathCandidate[];
+  idPrefix: string;
+  startLineIndex: number;
+  terminal: Terminal;
+  getCwdForBufferLine?: (bufferLineNumber: number) => string | undefined;
+}): TerminalFileLinkResolveCandidate[] {
+  return candidates.map((candidate, index) => {
+    const [startLine] = mapStringIndex(
+      terminal,
+      startLineIndex,
+      0,
+      candidate.startIndex
+    );
+    const baseCwd =
+      startLine >= 0 ? getCwdForBufferLine?.(startLine) : undefined;
+    return {
+      id: `${idPrefix}-${index}`,
+      rawPath: candidate.rawPath,
+      linkText: candidate.linkText,
+      startIndex: candidate.startIndex,
+      endIndex: candidate.endIndex,
+      hasSuffix: candidate.hasSuffix,
+      ...(baseCwd !== undefined ? { baseCwd } : {})
+    };
+  });
+}
+
+async function resolveTerminalFileLinksSafely(
+  resolveFileLinks: (
+    surfaceId: string,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ) => Promise<TerminalFileLinkResolveResult>,
+  surfaceId: string,
+  candidates: TerminalFileLinkResolveCandidate[]
+): Promise<TerminalFileLinkResolveResult> {
+  if (candidates.length === 0) {
+    return { links: [] };
+  }
+  try {
+    return await resolveFileLinks(surfaceId, candidates);
+  } catch {
+    return { links: [] };
+  }
+}
+
+function createTerminalFileLink({
+  candidate,
+  startLineIndex,
+  terminal,
+  surfaceId,
+  openFilePath,
+  getKeyboardPlatform,
+  activeDecorations,
+  updateModifierFromEvent
+}: {
+  candidate: TerminalFileLinkResolved;
+  startLineIndex: number;
+  terminal: Terminal;
+  surfaceId: string;
+  openFilePath: (
+    surfaceId: string,
+    rawPath: string,
+    baseCwd?: string
+  ) => Promise<void>;
   getKeyboardPlatform: () => KeyboardShortcutPlatform;
   activeDecorations: Set<ILinkDecorations>;
   updateModifierFromEvent: (
@@ -336,7 +462,6 @@ function createTerminalFileLink({
     pointerCursor: false,
     underline: false
   };
-  const baseCwd = getCwdForBufferLine?.(startLine);
   let trackedDecorations: ILinkDecorations | null = null;
   let hovered = false;
 
@@ -379,17 +504,15 @@ function createTerminalFileLink({
       start: { x: startColumn + 1, y: startLine + 1 },
       end: { x: endColumn, y: endLine + 1 }
     },
-    text: candidate.rawPath,
+    text: candidate.linkText,
     decorations: initialDecorations,
     activate: (event) => {
       if (!isTerminalFileLinkModifierActive(event, getKeyboardPlatform())) {
         return;
       }
-      void openFilePath(surfaceId, candidate.rawPath, baseCwd).catch(
-        (error) => {
-          console.warn("Failed to open terminal file path", error);
-        }
-      );
+      void openFilePath(surfaceId, candidate.resolvedPath).catch((error) => {
+        console.warn("Failed to open terminal file path", error);
+      });
     },
     hover: (event) => {
       hovered = true;
@@ -411,7 +534,25 @@ function createTerminalFileLink({
   return link;
 }
 
-function addCandidateFromPathToken({
+function toTerminalFilePathCandidate(
+  text: string,
+  parsedLink: ParsedTerminalLink
+): TerminalFilePathCandidate {
+  const startIndex = parsedLink.prefix?.index ?? parsedLink.path.index;
+  const endIndex = parsedLink.suffix
+    ? parsedLink.suffix.suffix.index + parsedLink.suffix.suffix.text.length
+    : parsedLink.path.index + parsedLink.path.text.length;
+
+  return {
+    rawPath: parsedLink.path.text,
+    linkText: text.slice(startIndex, endIndex),
+    startIndex,
+    endIndex,
+    hasSuffix: parsedLink.suffix !== undefined
+  };
+}
+
+function addFallbackCandidateFromPathToken({
   candidates,
   sourceText,
   sourceStartIndex,
@@ -422,16 +563,33 @@ function addCandidateFromPathToken({
   sourceStartIndex: number;
   rawText?: string;
 }): void {
-  const stripped = stripPathToken(rawText);
-  if (!stripped.text || !isTerminalFilePathCandidate(stripped.text)) {
+  const { rawPath, hasSuffix } = splitTerminalFilePathSuffix(rawText);
+  if (!rawPath || !isPathLikeTerminalFileCandidate(rawPath)) {
     return;
   }
 
   candidates.push({
-    rawPath: stripped.text,
-    startIndex: sourceStartIndex + stripped.leading,
-    endIndex: sourceStartIndex + sourceText.length - stripped.trailing
+    rawPath,
+    linkText: sourceText,
+    startIndex: sourceStartIndex,
+    endIndex: sourceStartIndex + sourceText.length,
+    hasSuffix
   });
+}
+
+function splitTerminalFilePathSuffix(text: string): {
+  rawPath: string;
+  hasSuffix: boolean;
+} {
+  const suffixMatch = generateLinkSuffixRegex(true).exec(text);
+  if (!suffixMatch || suffixMatch.index <= 0) {
+    return { rawPath: text, hasSuffix: false };
+  }
+
+  return {
+    rawPath: text.slice(0, suffixMatch.index),
+    hasSuffix: true
+  };
 }
 
 function hasConsumedRangeOverlap(
@@ -449,57 +607,278 @@ function unescapePathText(text: string): string {
   return text.replace(/\\ /g, " ");
 }
 
-function stripPathToken(token: string): StrippedPathToken {
-  let start = 0;
-  let end = token.length;
+function isPathLikeTerminalFileCandidate(text: string): boolean {
+  return (
+    text.startsWith("/") ||
+    text.startsWith("~/") ||
+    text.startsWith("./") ||
+    text.startsWith("../") ||
+    text.includes("/")
+  );
+}
 
-  while (start < end && LEADING_PATH_PUNCTUATION.has(token[start])) {
-    start += 1;
-  }
-  while (end > start && shouldStripTrailingCharacter(token.slice(start, end))) {
-    end -= 1;
+function hasInnerBracketVariant(
+  parsedLink: ParsedTerminalLink,
+  parsedLinks: ParsedTerminalLink[]
+): boolean {
+  if (!parsedLink.suffix || !/[\[\(]/.test(parsedLink.path.text)) {
+    return false;
   }
 
+  return parsedLinks.some(
+    (otherLink) =>
+      otherLink !== parsedLink &&
+      otherLink.suffix === parsedLink.suffix &&
+      otherLink.path.index > parsedLink.path.index &&
+      otherLink.path.index < parsedLink.path.index + parsedLink.path.text.length
+  );
+}
+
+function isUnsupportedLocalPathMatch(
+  line: string,
+  parsedLink: ParsedTerminalLink
+): boolean {
+  const pathText = parsedLink.path.text;
+  if (
+    !pathText ||
+    pathText.includes("\0") ||
+    pathText.startsWith("//") ||
+    URL_LIKE_PROTOCOL_RE.test(pathText)
+  ) {
+    return true;
+  }
+
+  const tokenPrefix = line.slice(0, parsedLink.path.index).split(/\s/).at(-1);
+  return tokenPrefix?.includes("://") ?? false;
+}
+
+function detectLinks(line: string): ParsedTerminalLink[] {
+  const results = detectLinksViaSuffix(line);
+  const noSuffixPaths = detectPathsNoSuffix(line);
+  binaryInsertList(results, noSuffixPaths);
+  return results;
+}
+
+function binaryInsertList(
+  list: ParsedTerminalLink[],
+  newItems: ParsedTerminalLink[]
+): void {
+  if (list.length === 0) {
+    list.push(...newItems);
+  }
+  for (const item of newItems) {
+    binaryInsert(list, item, 0, list.length);
+  }
+}
+
+function binaryInsert(
+  list: ParsedTerminalLink[],
+  newItem: ParsedTerminalLink,
+  low: number,
+  high: number
+): void {
+  if (list.length === 0) {
+    list.push(newItem);
+    return;
+  }
+  if (low > high) {
+    return;
+  }
+
+  const mid = Math.floor((low + high) / 2);
+  if (
+    mid >= list.length ||
+    (newItem.path.index < list[mid].path.index &&
+      (mid === 0 || newItem.path.index > list[mid - 1].path.index))
+  ) {
+    if (
+      mid >= list.length ||
+      (newItem.path.index + newItem.path.text.length < list[mid].path.index &&
+        (mid === 0 ||
+          newItem.path.index >
+            list[mid - 1].path.index + list[mid - 1].path.text.length))
+    ) {
+      list.splice(mid, 0, newItem);
+    }
+    return;
+  }
+  if (newItem.path.index > list[mid].path.index) {
+    binaryInsert(list, newItem, mid + 1, high);
+  } else {
+    binaryInsert(list, newItem, low, mid - 1);
+  }
+}
+
+function detectLinksViaSuffix(line: string): ParsedTerminalLink[] {
+  const results: ParsedTerminalLink[] = [];
+  const suffixes = detectLinkSuffixes(line);
+
+  for (const suffix of suffixes) {
+    const beforeSuffix = line.substring(0, suffix.suffix.index);
+    const possiblePathMatch = beforeSuffix.match(
+      LINK_WITH_SUFFIX_PATH_CHARACTERS
+    );
+    if (
+      !possiblePathMatch ||
+      possiblePathMatch.index === undefined ||
+      !possiblePathMatch.groups?.path
+    ) {
+      continue;
+    }
+
+    let linkStartIndex = possiblePathMatch.index;
+    let path = possiblePathMatch.groups.path;
+    let prefix: LinkPartialRange | undefined;
+    const prefixMatch = path.match(/^(?<prefix>['"]+)/);
+    if (prefixMatch?.groups?.prefix) {
+      prefix = {
+        index: linkStartIndex,
+        text: prefixMatch.groups.prefix
+      };
+      path = path.substring(prefix.text.length);
+
+      if (path.trim().length === 0) {
+        continue;
+      }
+
+      if (
+        prefixMatch.groups.prefix.length > 1 &&
+        suffix.suffix.text[0].match(/['"]/) &&
+        prefixMatch.groups.prefix[prefixMatch.groups.prefix.length - 1] ===
+          suffix.suffix.text[0]
+      ) {
+        const trimPrefixAmount = prefixMatch.groups.prefix.length - 1;
+        prefix.index += trimPrefixAmount;
+        prefix.text =
+          prefixMatch.groups.prefix[prefixMatch.groups.prefix.length - 1];
+        linkStartIndex += trimPrefixAmount;
+      }
+    }
+
+    results.push({
+      path: {
+        index: linkStartIndex + (prefix?.text.length || 0),
+        text: path
+      },
+      prefix,
+      suffix
+    });
+
+    const openingBracketMatch = path.matchAll(/(?<bracket>[\[\(])(?![\]\)])/g);
+    for (const match of openingBracketMatch) {
+      const bracket = match.groups?.bracket;
+      if (!bracket) {
+        continue;
+      }
+      results.push({
+        path: {
+          index: linkStartIndex + (prefix?.text.length || 0) + match.index + 1,
+          text: path.substring(match.index + bracket.length)
+        },
+        prefix,
+        suffix
+      });
+    }
+  }
+
+  return results;
+}
+
+function detectLinkSuffixes(line: string): LinkSuffix[] {
+  let match: RegExpExecArray | null;
+  const results: LinkSuffix[] = [];
+  const linkSuffixRegex = generateLinkSuffixRegex(false);
+  while ((match = linkSuffixRegex.exec(line)) !== null) {
+    const suffix = toLinkSuffix(match);
+    if (suffix === null) {
+      break;
+    }
+    results.push(suffix);
+  }
+  return results;
+}
+
+function toLinkSuffix(match: RegExpExecArray | null): LinkSuffix | null {
+  const groups = match?.groups;
+  if (!groups || match.length < 1) {
+    return null;
+  }
   return {
-    text: token.slice(start, end),
-    leading: start,
-    trailing: token.length - end
+    row: parseIntOptional(groups.row0 || groups.row1 || groups.row2),
+    col: parseIntOptional(groups.col0 || groups.col1 || groups.col2),
+    rowEnd: parseIntOptional(
+      groups.rowEnd0 || groups.rowEnd1 || groups.rowEnd2
+    ),
+    colEnd: parseIntOptional(
+      groups.colEnd0 || groups.colEnd1 || groups.colEnd2
+    ),
+    suffix: { index: match.index, text: match[0] }
   };
 }
 
-function shouldStripTrailingCharacter(text: string): boolean {
-  const trailing = text[text.length - 1];
-  if (trailing === ":") {
-    return !/:\d+(?::\d+)?$/.test(text);
+function parseIntOptional(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return value;
   }
-  return TRAILING_PATH_PUNCTUATION.has(trailing);
+  return parseInt(value);
 }
 
-function isTerminalFilePathCandidate(text: string): boolean {
-  if (!text || text.includes("\0") || URL_LIKE_PROTOCOL_RE.test(text)) {
-    return false;
-  }
-  if (/^\/(?!\/).+/.test(text)) {
-    return true;
-  }
-  if (/^~\/.+/.test(text)) {
-    return true;
-  }
-  if (/^(?:\.\/|\.\.\/).+/.test(text)) {
-    return true;
-  }
-  if (!text.includes("/") || text.startsWith("//")) {
-    return false;
+function generateLinkSuffixRegex(eolOnly: boolean): RegExp {
+  let rowIndex = 0;
+  let colIndex = 0;
+  let rowEndIndex = 0;
+  let colEndIndex = 0;
+  const row = (): string => `(?<row${rowIndex++}>\\d+)`;
+  const col = (): string => `(?<col${colIndex++}>\\d+)`;
+  const rowEnd = (): string => `(?<rowEnd${rowEndIndex++}>\\d+)`;
+  const colEnd = (): string => `(?<colEnd${colEndIndex++}>\\d+)`;
+  const eolSuffix = eolOnly ? "$" : "";
+  const lineAndColumnRegexClauses = [
+    `(?::|#| |['"],|, )${row()}([:.]${col()}(?:-(?:${rowEnd()}\\.)?${colEnd()})?)?` +
+      eolSuffix,
+    `['"]?(?:,? |: ?| on )lines? ${row()}(?:-${rowEnd()})?(?:,? (?:col(?:umn)?|characters?) ${col()}(?:-${colEnd()})?)?` +
+      eolSuffix,
+    `:? ?[\\[\\(]${row()}(?:(?:, ?|:)${col()})?[\\]\\)]` + eolSuffix
+  ];
+  const suffixClause = lineAndColumnRegexClauses
+    .join("|")
+    .replace(/ /g, `[${"\u00A0"} ]`);
+  return new RegExp(`(${suffixClause})`, eolOnly ? undefined : "g");
+}
+
+function detectPathsNoSuffix(line: string): ParsedTerminalLink[] {
+  const results: ParsedTerminalLink[] = [];
+  const regex = new RegExp(UNIX_LOCAL_LINK_CLAUSE, "g");
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(line)) !== null) {
+    let linkText = match[0];
+    let index = match.index;
+    if (!linkText) {
+      break;
+    }
+
+    if (
+      ((line.startsWith("--- a/") || line.startsWith("+++ b/")) &&
+        index === 4) ||
+      (line.startsWith("diff --git") &&
+        (linkText.startsWith("a/") || linkText.startsWith("b/")))
+    ) {
+      linkText = linkText.substring(2);
+      index += 2;
+    }
+
+    results.push({
+      path: {
+        index,
+        text: linkText
+      },
+      prefix: undefined,
+      suffix: undefined
+    });
   }
 
-  const firstSegment = text.slice(0, text.indexOf("/"));
-  if (
-    !RELATIVE_FIRST_SEGMENT_RE.test(firstSegment) ||
-    DOMAIN_LIKE_FIRST_SEGMENT_RE.test(firstSegment)
-  ) {
-    return false;
-  }
-  return true;
+  return results;
 }
 
 function getWindowedLineStrings(

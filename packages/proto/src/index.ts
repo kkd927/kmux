@@ -236,6 +236,29 @@ export interface TerminalKeyInput {
   shiftKey?: boolean;
 }
 
+export interface TerminalFileLinkResolveCandidate {
+  id: string;
+  rawPath: string;
+  linkText: string;
+  startIndex: number;
+  endIndex: number;
+  hasSuffix: boolean;
+  baseCwd?: string;
+}
+
+export interface TerminalFileLinkResolved {
+  id: string;
+  openRawPath: string;
+  resolvedPath: string;
+  linkText: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface TerminalFileLinkResolveResult {
+  links: TerminalFileLinkResolved[];
+}
+
 export const TERMINAL_CTRL_ENTER_SEQUENCE = "\u001b[13;5u";
 export const TERMINAL_SHIFT_ENTER_SEQUENCE = "\u001b[13;2u";
 

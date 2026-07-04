@@ -31,6 +31,8 @@ import type {
   SurfaceResizePayload,
   SurfaceExitPayload,
   SurfaceSnapshotPayload,
+  TerminalFileLinkResolveCandidate,
+  TerminalFileLinkResolveResult,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   TerminalKeyInput,
@@ -149,6 +151,16 @@ const api = {
       surfaceId,
       rawPath,
       baseCwd
+    );
+  },
+  resolveTerminalFileLinks(
+    surfaceId: string,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ): Promise<TerminalFileLinkResolveResult> {
+    return ipcRenderer.invoke(
+      "kmux:terminal-file-links:resolve",
+      surfaceId,
+      candidates
     );
   },
   createImageAttachments(

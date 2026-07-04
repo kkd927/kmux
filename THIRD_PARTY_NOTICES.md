@@ -1,5 +1,16 @@
 # Third-Party Notices
 
+## Visual Studio Code Code - OSS
+
+- Copyright: Microsoft Corporation
+- Source: https://github.com/microsoft/vscode
+- Parser source: https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/terminalContrib/links/browser/terminalLinkParsing.ts
+- License: MIT
+- License text: https://github.com/microsoft/vscode/blob/main/LICENSE.txt
+
+`kmux` adapts portions of the terminal local path parsing logic for renderer
+terminal file-link detection.
+
 ## @vscode/codicons
 
 - Copyright: Microsoft Corporation

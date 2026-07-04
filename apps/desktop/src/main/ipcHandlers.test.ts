@@ -5,7 +5,9 @@ import type {
   CreateImageAttachmentPayload,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
-  SurfaceCapturePayload
+  SurfaceCapturePayload,
+  TerminalFileLinkResolveCandidate,
+  TerminalFileLinkResolveResult
 } from "@kmux/proto";
 import { createRendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 
@@ -66,6 +68,10 @@ function registerTestHandlers(options: {
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  resolveTerminalFileLinks?: (
+    surfaceId: string,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
   surfaceDiagnosticsEnabled?: boolean;
   captureSurfaceDiagnostics?: (
     surfaceId: string
@@ -99,6 +105,8 @@ function registerTestHandlers(options: {
     sendKeyInput: vi.fn(),
     openExternalUrl: options.openExternalUrl ?? vi.fn(),
     openTerminalFilePath: options.openTerminalFilePath ?? vi.fn(),
+    resolveTerminalFileLinks:
+      options.resolveTerminalFileLinks ?? vi.fn(() => ({ links: [] })),
     resizeSurface: options.resizeSurface ?? vi.fn(),
     identify: vi.fn(),
     listTerminalFontFamilies: vi.fn(),
@@ -450,6 +458,55 @@ describe("ipc handlers", () => {
       "surface-1",
       "src/App.tsx:12:3",
       "/repo/old"
+    );
+  });
+
+  it("registers terminal file link resolve handler", async () => {
+    const resolveResult: TerminalFileLinkResolveResult = {
+      links: [
+        {
+          id: "candidate-1",
+          openRawPath: "src/App.tsx",
+          resolvedPath: "/repo/old/src/App.tsx",
+          linkText: "src/App.tsx:12",
+          startIndex: 0,
+          endIndex: "src/App.tsx:12".length
+        }
+      ]
+    };
+    const resolveTerminalFileLinks = vi.fn(() => resolveResult);
+    const candidates: TerminalFileLinkResolveCandidate[] = [
+      {
+        id: "candidate-1",
+        rawPath: "src/App.tsx",
+        linkText: "src/App.tsx:12",
+        startIndex: 0,
+        endIndex: "src/App.tsx:12".length,
+        hasSuffix: true,
+        baseCwd: "/repo/old"
+      }
+    ];
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-13T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      resolveTerminalFileLinks
+    });
+
+    const handler = handlers.get("kmux:terminal-file-links:resolve");
+
+    expect(handler).toBeTypeOf("function");
+    await expect(
+      Promise.resolve(handler?.({}, "surface-1", candidates))
+    ).resolves.toBe(resolveResult);
+    expect(resolveTerminalFileLinks).toHaveBeenCalledWith(
+      "surface-1",
+      candidates
     );
   });
 });

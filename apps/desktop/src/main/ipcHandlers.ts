@@ -17,6 +17,8 @@ import type {
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalColorPalette,
+  TerminalFileLinkResolveCandidate,
+  TerminalFileLinkResolveResult,
   TerminalKeyInput,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
@@ -82,6 +84,10 @@ interface IpcHandlersOptions {
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  resolveTerminalFileLinks: (
+    surfaceId: Id,
+    candidates: TerminalFileLinkResolveCandidate[]
+  ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
   resizeSurface: (
     contentsId: number,
     surfaceId: Id,
@@ -150,9 +156,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     (_event, surfaceId: Id, payloads: CreateImageAttachmentPayload[]) =>
       options.createImageAttachments(surfaceId, payloads)
   );
-  ipcMain.handle("kmux:clipboard:read-text", () =>
-    clipboardService.readText()
-  );
+  ipcMain.handle("kmux:clipboard:read-text", () => clipboardService.readText());
   ipcMain.handle("kmux:clipboard:write-text", (_event, text: string) => {
     clipboardService.writeText(text);
   });
@@ -237,6 +241,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:terminal-file:open",
     (_event, surfaceId: Id, rawPath: string, baseCwd?: string) =>
       options.openTerminalFilePath(surfaceId, rawPath, baseCwd)
+  );
+  ipcMain.handle(
+    "kmux:terminal-file-links:resolve",
+    (_event, surfaceId: Id, candidates: TerminalFileLinkResolveCandidate[]) =>
+      options.resolveTerminalFileLinks(surfaceId, candidates)
   );
   ipcMain.handle(
     "kmux:terminal:resize",
