@@ -26,6 +26,7 @@ const { DebugLogger } = require("builder-util") as {
 const { LinuxTargetHelper } =
   require("app-builder-lib/out/targets/LinuxTargetHelper") as {
     LinuxTargetHelper: new (packager: unknown) => {
+      getDesktopFileName: () => string;
       computeDesktopEntry: (
         targetSpecificOptions: Record<string, unknown>,
         exec?: string | null,
@@ -78,8 +79,8 @@ describe("electron builder config", () => {
       to: "notificationIcon.png"
     });
     expect(linux).toMatchObject({
+      syncDesktopName: true,
       category: "Development;TerminalEmulator;Utility;",
-      icon: "build/icon.png",
       synopsis: "Keyboard-first terminal workspace manager for coding agents",
       description:
         "Run coding agents side by side without losing terminal output continuity.",
@@ -93,20 +94,23 @@ describe("electron builder config", () => {
       Comment:
         "Run coding agents side by side without losing terminal output continuity.",
       Icon: "kmux",
-      StartupWMClass: "kmux",
       StartupNotify: "true",
       Terminal: "false",
       Keywords: "AI;agent;terminal;developer;coding;"
     });
     expect(desktopEntry).not.toHaveProperty("Categories");
+    expect(desktopEntry).not.toHaveProperty("StartupWMClass");
   });
 
-  it("generates Linux desktop entry categories from linux.category", async () => {
+  it("generates Linux desktop identity and categories from their source fields", async () => {
     const config = readBuilderConfig();
     const linux = config.linux as Record<string, unknown>;
+    const desktopPackage = JSON.parse(
+      readFileSync("apps/desktop/package.json", "utf8")
+    ) as Record<string, unknown>;
     const helper = new LinuxTargetHelper({
       info: {
-        metadata: {}
+        metadata: desktopPackage
       },
       appInfo: {
         productName: "kmux",
@@ -119,11 +123,12 @@ describe("electron builder config", () => {
         mac: config.mac,
         protocols: []
       },
-      platformSpecificBuildOptions: {}
+      platformSpecificBuildOptions: linux
     });
 
     const desktopEntry = await helper.computeDesktopEntry(linux, null, {});
 
+    expect(helper.getDesktopFileName()).toBe("kmux");
     expect(desktopEntry).toContain(
       "\nCategories=Development;TerminalEmulator;Utility;\n"
     );

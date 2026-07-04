@@ -40,8 +40,8 @@ mac:
     - zip
 
 linux:
+  syncDesktopName: true
   category: Development;TerminalEmulator;Utility;
-  icon: build/icon.png
   synopsis: Keyboard-first terminal workspace manager for coding agents
   description: Run coding agents side by side without losing terminal output continuity.
   executableName: kmux
@@ -51,7 +51,6 @@ linux:
       GenericName: AI Coding Agent Terminal
       Comment: Run coding agents side by side without losing terminal output continuity.
       Icon: kmux
-      StartupWMClass: kmux
       StartupNotify: "true"
       Terminal: "false"
       Keywords: AI;agent;terminal;developer;coding;

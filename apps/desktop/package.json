@@ -1,5 +1,6 @@
 {
   "name": "@kmux/desktop",
+  "desktopName": "kmux",
   "version": "0.4.3",
   "private": true,
   "description": "Keyboard-first terminal workspace manager for macOS",

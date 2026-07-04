@@ -36,6 +36,9 @@ const DEFAULT_RELEASE_SEARCH_ROOTS = [
 const DEFAULT_BUILDER_CONFIG_PATH = path.resolve(
   "apps/desktop/electron-builder.yml"
 );
+const DEFAULT_DESKTOP_PACKAGE_PATH = path.resolve(
+  "apps/desktop/package.json"
+);
 const KMUX_LINUX_APPIMAGE_NAME_PATTERN =
   /^kmux-\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?-linux-[A-Za-z0-9_-]+\.AppImage$/i;
 
@@ -338,7 +341,8 @@ export function normalizeLinuxDesktopEntry(desktopEntry) {
 }
 
 export function loadExpectedLinuxDesktopEntry(
-  builderConfigPath = DEFAULT_BUILDER_CONFIG_PATH
+  builderConfigPath = DEFAULT_BUILDER_CONFIG_PATH,
+  desktopPackagePath = DEFAULT_DESKTOP_PACKAGE_PATH
 ) {
   const config = yaml.load(readFileSync(builderConfigPath, "utf8"));
   if (!isRecord(config)) {
@@ -356,7 +360,27 @@ export function loadExpectedLinuxDesktopEntry(
   if (!isRecord(entry)) {
     throw new Error(`${builderConfigPath} must include linux.desktop.entry`);
   }
-  return entry;
+
+  const expectedEntry = { ...entry };
+  if (linux.syncDesktopName === true) {
+    const desktopPackage = JSON.parse(
+      readFileSync(desktopPackagePath, "utf8")
+    );
+    if (!isRecord(desktopPackage)) {
+      throw new Error(`${desktopPackagePath} must contain an object`);
+    }
+    const desktopName = desktopPackage.desktopName;
+    if (typeof desktopName !== "string" || desktopName.trim().length === 0) {
+      throw new Error(
+        `${desktopPackagePath} must include desktopName when linux.syncDesktopName is true`
+      );
+    }
+    expectedEntry.StartupWMClass = desktopName
+      .trim()
+      .replace(/\.desktop$/, "");
+  }
+
+  return expectedEntry;
 }
 
 function walkFiles(root) {
@@ -410,6 +434,59 @@ export function findExtractedNotificationIconPath(extractedRoot) {
     );
   }
   return iconPath;
+}
+
+export function findExtractedLauncherIconSizes(
+  extractedRoot,
+  iconName = "kmux"
+) {
+  const iconRoot = path.join(
+    extractedRoot,
+    "usr",
+    "share",
+    "icons",
+    "hicolor"
+  );
+  if (!existsSync(iconRoot)) {
+    return [];
+  }
+
+  const escapedIconName = iconName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const iconPattern = new RegExp(
+    `(?:^|/)hicolor/(\\d+)x\\1/apps/${escapedIconName}\\.png$`
+  );
+
+  return [
+    ...new Set(
+      walkFiles(iconRoot)
+        .map((filePath) =>
+          iconPattern.exec(filePath.split(path.sep).join("/"))
+        )
+        .filter((match) => match !== null)
+        .map((match) => Number.parseInt(match[1], 10))
+    )
+  ].sort((left, right) => left - right);
+}
+
+export function validateLinuxLauncherIconSizes(iconSizes) {
+  if (!Array.isArray(iconSizes) || iconSizes.length === 0) {
+    throw new Error(
+      "AppImage must include a kmux launcher icon in usr/share/icons/hicolor"
+    );
+  }
+
+  const maximumSize = Math.max(...iconSizes);
+  if (maximumSize > 512) {
+    throw new Error(
+      `AppImage launcher icon must not exceed 512x512; AppImageLauncher installs the largest icon and GNOME hicolor does not index ${maximumSize}x${maximumSize}`
+    );
+  }
+
+  if (!iconSizes.includes(48)) {
+    throw new Error(
+      "AppImage launcher icon set must include a standard 48x48 icon"
+    );
+  }
 }
 
 export function validateLinuxDesktopEntry(
@@ -704,8 +781,16 @@ export function extractAppImageDesktopIdentity({
     const desktopEntryPath = findExtractedDesktopEntryPath(extractedRoot);
     const notificationIconPath =
       findExtractedNotificationIconPath(extractedRoot);
+    const desktopEntry = parseDesktopEntry(
+      readFileSync(desktopEntryPath, "utf8")
+    );
+    const iconName = normalizeLinuxDesktopEntry(desktopEntry).Icon;
     return {
-      desktopEntry: parseDesktopEntry(readFileSync(desktopEntryPath, "utf8")),
+      desktopEntry,
+      launcherIconSizes: findExtractedLauncherIconSizes(
+        extractedRoot,
+        typeof iconName === "string" ? iconName : "kmux"
+      ),
       notificationIconResourcePath: path.relative(
         extractedRoot,
         notificationIconPath
@@ -963,6 +1048,7 @@ export function buildPackagedSmokeSummary({
       `StartupNotify=${summaryValue(desktopEntry.StartupNotify)}`,
       `Terminal=${summaryValue(desktopEntry.Terminal)}`
     ].join(" | ")}`,
+    `- Launcher icon sizes: ${summaryValue(desktopIdentity.launcherIconSizes?.join(", "))}`,
     `- Notification icon resource: ${summaryValue(desktopIdentity.notificationIconResourcePath)}`,
     "- Notification delivery/window grouping: not validated by packaged smoke; validate Ubuntu notification-center attribution and window grouping separately before a Linux release.",
     `- AppImage smoke env: ${[
@@ -1002,6 +1088,7 @@ export function main(argv = process.argv.slice(2)) {
     env: process.env
   });
   validateLinuxDesktopEntry(desktopIdentity.desktopEntry);
+  validateLinuxLauncherIconSizes(desktopIdentity.launcherIconSizes);
   process.stdout.write(
     `${buildPackagedSmokeSummary({
       appImagePath,

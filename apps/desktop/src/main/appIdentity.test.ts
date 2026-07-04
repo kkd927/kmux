@@ -3,8 +3,7 @@ import { createRequire } from "node:module";
 
 import {
   KMUX_APP_ID,
-  KMUX_APP_NAME,
-  LINUX_STARTUP_WM_CLASS
+  KMUX_APP_NAME
 } from "./appIdentity";
 
 const require = createRequire(import.meta.url);
@@ -18,17 +17,26 @@ function readBuilderConfig(): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
+function readDesktopPackage(): Record<string, unknown> {
+  return JSON.parse(
+    readFileSync("apps/desktop/package.json", "utf8")
+  ) as Record<string, unknown>;
+}
+
 describe("desktop app identity", () => {
   it("keeps runtime identity aligned with packaged Linux desktop identity", () => {
     const config = readBuilderConfig();
+    const desktopPackage = readDesktopPackage();
     const linux = config.linux as Record<string, unknown>;
     const desktop = linux.desktop as Record<string, unknown>;
     const desktopEntry = desktop.entry as Record<string, unknown>;
 
     expect(config.appId).toBe(KMUX_APP_ID);
     expect(config.productName).toBe(KMUX_APP_NAME);
+    expect(desktopPackage.desktopName).toBe(KMUX_APP_NAME);
+    expect(linux.syncDesktopName).toBe(true);
     expect(linux.executableName).toBe(KMUX_APP_NAME);
     expect(desktopEntry.Name).toBe(KMUX_APP_NAME);
-    expect(desktopEntry.StartupWMClass).toBe(LINUX_STARTUP_WM_CLASS);
+    expect(desktopEntry).not.toHaveProperty("StartupWMClass");
   });
 });
