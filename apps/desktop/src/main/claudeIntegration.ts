@@ -58,12 +58,12 @@ const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "PermissionRequest" },
   { eventName: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
   { eventName: "SessionStart" },
-  { eventName: "SessionEnd" },
   { eventName: "Stop" }
 ];
 const DEPRECATED_MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
   { eventName: "Notification" },
   { eventName: "PostToolUse" },
+  { eventName: "SessionEnd" },
   { eventName: "UserPromptSubmit" }
 ];
 

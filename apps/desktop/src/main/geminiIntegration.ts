@@ -55,13 +55,13 @@ export interface GeminiHookRuntimePaths {
 const MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
   { eventName: "AfterAgent" },
   { eventName: "SessionStart" },
-  { eventName: "SessionEnd" },
   { eventName: "Notification", matcher: "ToolPermission" }
 ];
 const DEPRECATED_MANAGED_GEMINI_HOOKS: ManagedGeminiHookDefinition[] = [
   { eventName: "BeforeAgent" },
   { eventName: "BeforeTool" },
-  { eventName: "AfterTool" }
+  { eventName: "AfterTool" },
+  { eventName: "SessionEnd" }
 ];
 
 function isPlainObject(value: unknown): value is JsonObject {

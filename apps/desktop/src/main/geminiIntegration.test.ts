@@ -69,7 +69,7 @@ describe("ensureGeminiHooksInstalled", () => {
     expect(settings.hooks.BeforeTool).toBeUndefined();
     expect(settings.hooks.AfterTool).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
-    expect(settings.hooks.SessionEnd).toHaveLength(1);
+    expect(settings.hooks.SessionEnd).toBeUndefined();
     expect(settings.hooks.Notification).toHaveLength(1);
     expect(settings.hooks.Notification[0].matcher).toBe("ToolPermission");
     expect(JSON.stringify(settings)).toContain("KMUX_MANAGED_GEMINI_HOOK=1");
@@ -92,14 +92,6 @@ describe("ensureGeminiHooksInstalled", () => {
         type: "command",
         command: expect.stringContaining(
           'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini AfterAgent || true'
-        )
-      })
-    ]);
-    expect(settings.hooks.SessionEnd[0].hooks).toEqual([
-      expect.objectContaining({
-        type: "command",
-        command: expect.stringContaining(
-          'KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" gemini SessionEnd || true'
         )
       })
     ]);
@@ -159,7 +151,7 @@ describe("ensureGeminiHooksInstalled", () => {
     );
     expect(settings.hooks.AfterTool).toBeUndefined();
     expect(settings.hooks.SessionStart).toHaveLength(1);
-    expect(settings.hooks.SessionEnd).toHaveLength(1);
+    expect(settings.hooks.SessionEnd).toBeUndefined();
     expect(settings.hooks.AfterAgent[0].hooks[0]?.command).toBe(
       "echo user-after-agent"
     );

@@ -30,7 +30,8 @@ describe("raw terminal stdout logging", () => {
       {
         [PTY_STDOUT_LOGS_ENV]: "1"
       },
-      (line) => writes.push(line)
+      (line) => writes.push(line),
+      () => new Date("2026-07-06T07:56:49.148Z")
     );
 
     logger({
@@ -46,6 +47,7 @@ describe("raw terminal stdout logging", () => {
     expect(writes).toHaveLength(1);
     expect(JSON.parse(writes[0])).toEqual({
       scope: "pty-host.raw-terminal-event",
+      timestamp: "2026-07-06T07:56:49.148Z",
       kind: "osc.777",
       surfaceId: "surface_1",
       sessionId: "session_1",

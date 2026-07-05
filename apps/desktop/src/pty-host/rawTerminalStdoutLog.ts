@@ -21,10 +21,12 @@ export type RawTerminalStdoutEvent = {
 };
 
 type WriteLine = (line: string) => void;
+type Now = () => Date;
 
 export function createRawTerminalEventStdoutLogger(
   env: Partial<Record<string, string | undefined>> = process.env,
-  writeLine: WriteLine = (line) => process.stdout.write(`${line}\n`)
+  writeLine: WriteLine = (line) => process.stdout.write(`${line}\n`),
+  now: Now = () => new Date()
 ): (event: RawTerminalStdoutEvent) => void {
   const enabled = env[PTY_STDOUT_LOGS_ENV] === "1";
   return (event) => {
@@ -34,6 +36,7 @@ export function createRawTerminalEventStdoutLogger(
     writeLine(
       JSON.stringify({
         scope: "pty-host.raw-terminal-event",
+        timestamp: now().toISOString(),
         ...event
       })
     );

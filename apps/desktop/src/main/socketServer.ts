@@ -846,7 +846,7 @@ function logAgentEvent(
   if (params.message) {
     fields.push(`message=${JSON.stringify(params.message.slice(0, 160))}`);
   }
-  console.log(`[Agent Hook] ${fields.join(" ")}`);
+  console.log(`${new Date().toISOString()} [Agent Hook] ${fields.join(" ")}`);
 }
 
 function stringDetail(
