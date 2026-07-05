@@ -2353,7 +2353,13 @@ describe("terminal bridge", () => {
 
     await bridge.resizeSurface(77, surfaceId, null, 132, 43);
 
-    expect(resize).toHaveBeenCalledWith(surface.sessionId, 132, 43);
+    expect(resize).toHaveBeenCalledWith(
+      surface.sessionId,
+      132,
+      43,
+      undefined,
+      undefined
+    );
     expect(record).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "main",
@@ -2409,9 +2415,30 @@ describe("terminal bridge", () => {
     const thirdResize = bridge.resizeSurface(77, surfaceId, null, 120, 40);
 
     expect(resize).toHaveBeenCalledTimes(3);
-    expect(resize).toHaveBeenNthCalledWith(1, surface.sessionId, 100, 30);
-    expect(resize).toHaveBeenNthCalledWith(2, surface.sessionId, 110, 35);
-    expect(resize).toHaveBeenNthCalledWith(3, surface.sessionId, 120, 40);
+    expect(resize).toHaveBeenNthCalledWith(
+      1,
+      surface.sessionId,
+      100,
+      30,
+      undefined,
+      undefined
+    );
+    expect(resize).toHaveBeenNthCalledWith(
+      2,
+      surface.sessionId,
+      110,
+      35,
+      undefined,
+      undefined
+    );
+    expect(resize).toHaveBeenNthCalledWith(
+      3,
+      surface.sessionId,
+      120,
+      40,
+      undefined,
+      undefined
+    );
 
     const resolve = resolveFirstResize;
     expect(resolve).toBeTypeOf("function");

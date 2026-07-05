@@ -18,9 +18,9 @@ describe("pty-host resize runtime", () => {
           events.push("terminal.resize");
         })
       },
-      pty: {
-        resize: vi.fn(() => {
-          events.push("pty.resize");
+      ptyResize: {
+        request: vi.fn(() => {
+          events.push("ptyResize.request");
         })
       }
     };
@@ -38,7 +38,38 @@ describe("pty-host resize runtime", () => {
     events.push("ack");
 
     expect(resized).toBe(true);
-    expect(events).toEqual(["flush", "terminal.resize", "pty.resize", "ack"]);
+    expect(events).toEqual([
+      "flush",
+      "ptyResize.request",
+      "terminal.resize",
+      "ack"
+    ]);
+    expect(record.ptyResize.request).toHaveBeenCalledWith(120, 40, {
+      hold: false
+    });
+  });
+
+  it("marks gesture resizes as held pty commits", () => {
+    const record = {
+      sessionId: "session_1",
+      surfaceId: "surface_1",
+      cols: 80,
+      rows: 24,
+      terminal: { resize: vi.fn() },
+      ptyResize: { request: vi.fn() }
+    };
+
+    prepareTerminalResize({
+      record,
+      cols: 100,
+      rows: 24,
+      gestureActive: true,
+      flushOutput: vi.fn()
+    });
+
+    expect(record.ptyResize.request).toHaveBeenCalledWith(100, 24, {
+      hold: true
+    });
   });
 
   it("emits a resize barrier after a valid no-op PTY resize", () => {
@@ -53,9 +84,9 @@ describe("pty-host resize runtime", () => {
           events.push("terminal.resize");
         })
       },
-      pty: {
-        resize: vi.fn(() => {
-          events.push("pty.resize");
+      ptyResize: {
+        request: vi.fn(() => {
+          events.push("ptyResize.request");
         })
       }
     };
@@ -81,9 +112,13 @@ describe("pty-host resize runtime", () => {
       emitAck
     });
 
-    expect(events).toEqual(["flush", "resize", "ack"]);
+    expect(events).toEqual(["flush", "ptyResize.request", "resize", "ack"]);
     expect(record.terminal.resize).not.toHaveBeenCalled();
-    expect(record.pty.resize).not.toHaveBeenCalled();
+    // Grid no-ops still reach the pty sink: a held PTY commit converges to
+    // the grid size through them (e.g. the gesture-end release request).
+    expect(record.ptyResize.request).toHaveBeenCalledWith(120, 40, {
+      hold: false
+    });
     expect(emitResize).toHaveBeenCalledWith({
       surfaceId: "surface_1",
       sessionId: "session_1",

@@ -72,6 +72,10 @@ export type PtyRequest =
       rows: number;
       attachId?: Id;
       requestId?: Id;
+      // True while the renderer knows a resize gesture (divider/sidebar
+      // drag) is still active: the PTY commit is held until the gesture
+      // ends so mid-drag pauses can't leak SIGWINCHes to the app.
+      gestureActive?: boolean;
     }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }

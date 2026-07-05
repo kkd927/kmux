@@ -176,6 +176,15 @@ function PaneNode(
   );
 }
 
+// Mirrors the reducer clamp in packages/core setSplitRatio so the local drag
+// preview can never show a layout the store would reject.
+const SPLIT_RATIO_MIN = 0.1;
+const SPLIT_RATIO_MAX = 0.9;
+
+function clampSplitRatio(ratio: number): number {
+  return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, ratio));
+}
+
 function SplitDivider(props: {
   axis: "horizontal" | "vertical";
   ratio: number;
@@ -211,22 +220,38 @@ function SplitDivider(props: {
       aria-orientation={props.axis === "vertical" ? "vertical" : "horizontal"}
       onPointerDown={(event) => {
         event.preventDefault();
-        const target = event.currentTarget.parentElement;
-        if (!target) {
+        const divider = event.currentTarget;
+        const target = divider.parentElement;
+        const first = divider.previousElementSibling as HTMLElement | null;
+        const second = divider.nextElementSibling as HTMLElement | null;
+        if (!target || !first || !second) {
           return;
         }
-        event.currentTarget.setPointerCapture(event.pointerId);
+        divider.setPointerCapture(event.pointerId);
         beginPaneDividerDrag();
         recordRendererSmoothnessProfileEvent("pane-divider.drag.start", {
           axis: props.axis
         });
         const rect = target.getBoundingClientRect();
+        // Drag applies the ratio straight to the DOM so panes track the
+        // pointer without a main-process round trip per move. The store is
+        // only mutated through the reducer on commit (pointerup); when the
+        // authoritative ratio comes back it re-renders to the same layout,
+        // and any concurrent authoritative change wins over this preview.
+        let draggedRatio: number | null = null;
+        const applyPreviewRatio = (element: HTMLElement, ratio: number) => {
+          element.style.flexGrow = String(ratio);
+          element.style.flexShrink = "1";
+          element.style.flexBasis = "0";
+        };
         const move = (nextEvent: PointerEvent) => {
           const ratio =
             props.axis === "vertical"
               ? (nextEvent.clientX - rect.left) / rect.width
               : (nextEvent.clientY - rect.top) / rect.height;
-          props.onChange(ratio);
+          draggedRatio = clampSplitRatio(ratio);
+          applyPreviewRatio(first, draggedRatio);
+          applyPreviewRatio(second, 1 - draggedRatio);
         };
         const up = () => {
           window.removeEventListener("pointermove", move);
@@ -234,9 +259,13 @@ function SplitDivider(props: {
           window.removeEventListener("pointercancel", up);
           window.removeEventListener("blur", up);
           activeCleanupRef.current = null;
+          if (draggedRatio !== null) {
+            props.onChange(draggedRatio);
+          }
           endPaneDividerDrag();
           recordRendererSmoothnessProfileEvent("pane-divider.drag.end", {
-            axis: props.axis
+            axis: props.axis,
+            ratio: draggedRatio ?? props.ratio
           });
         };
         activeCleanupRef.current = up;

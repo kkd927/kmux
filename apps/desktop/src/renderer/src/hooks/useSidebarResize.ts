@@ -11,6 +11,11 @@ import {
 import type {AppAction} from "@kmux/core";
 import type {ShellStoreSnapshot} from "@kmux/proto";
 
+import {
+  beginPaneDividerDrag,
+  endPaneDividerDrag
+} from "../paneDividerDrag";
+
 export const MIN_SIDEBAR_WIDTH = 110;
 export const MAX_SIDEBAR_WIDTH = 320;
 const NARROW_WINDOW_SIDEBAR_BREAKPOINT = 1180;
@@ -19,11 +24,13 @@ const NARROW_WINDOW_MAX_SIDEBAR_WIDTH = 272;
 type SidebarResizeState = {
   startX: number;
   startWidth: number;
+  draggedWidth: number | null;
 };
 
 interface UseSidebarResizeOptions {
   viewRef: MutableRefObject<ShellStoreSnapshot | null>;
   renderedSidebarWidth: number;
+  getSidebarElement: () => HTMLElement | null;
   setSidebarResizeActive: Dispatch<SetStateAction<boolean>>;
   dispatch: (action: AppAction) => Promise<void>;
 }
@@ -57,13 +64,24 @@ export function useSidebarResize(options: UseSidebarResizeOptions): {
 
   useEffect(() => {
     const stopSidebarResize = () => {
-      if (!sidebarResizeStateRef.current) {
+      const dragState = sidebarResizeStateRef.current;
+      if (!dragState) {
         return;
       }
       sidebarResizeStateRef.current = null;
       optionsRef.current.setSidebarResizeActive(false);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      endPaneDividerDrag();
+      if (
+        dragState.draggedWidth !== null &&
+        dragState.draggedWidth !== dragState.startWidth
+      ) {
+        void optionsRef.current.dispatch({
+          type: "workspace.sidebar.setWidth",
+          width: dragState.draggedWidth
+        });
+      }
     };
     const onPointerMove = (event: PointerEvent) => {
       const dragState = sidebarResizeStateRef.current;
@@ -74,17 +92,19 @@ export function useSidebarResize(options: UseSidebarResizeOptions): {
         dragState.startWidth + event.clientX - dragState.startX,
         window.innerWidth
       );
-      const currentRenderedWidth = clampSidebarWidthForWindow(
-        optionsRef.current.viewRef.current?.sidebarWidth ?? nextWidth,
-        window.innerWidth
-      );
-      if (nextWidth === currentRenderedWidth) {
+      if (nextWidth === dragState.draggedWidth) {
         return;
       }
-      void optionsRef.current.dispatch({
-        type: "workspace.sidebar.setWidth",
-        width: nextWidth
-      });
+      dragState.draggedWidth = nextWidth;
+      // Drag writes the width straight to the DOM so the sidebar tracks the
+      // pointer without a main-process round trip per move; the store is
+      // only mutated through the reducer on commit in stopSidebarResize.
+      const element = optionsRef.current.getSidebarElement();
+      if (element) {
+        element.style.width = `${nextWidth}px`;
+        element.style.minWidth = `${nextWidth}px`;
+        element.style.maxWidth = `${nextWidth}px`;
+      }
     };
 
     window.addEventListener("pointermove", onPointerMove);
@@ -117,9 +137,13 @@ export function useSidebarResize(options: UseSidebarResizeOptions): {
     }
     sidebarResizeStateRef.current = {
       startX: event.clientX,
-      startWidth: optionsRef.current.renderedSidebarWidth
+      startWidth: optionsRef.current.renderedSidebarWidth,
+      draggedWidth: null
     };
     optionsRef.current.setSidebarResizeActive(true);
+    // Sidebar drags resize every pane in the main area, so they use the same
+    // global drag flag that throttles terminal fits during divider drags.
+    beginPaneDividerDrag();
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     event.preventDefault();

@@ -589,7 +589,7 @@ describe("TerminalPane visibility cleanup", () => {
   });
 
   it.each([true, false])(
-    "coalesces forced renderer refreshes for active live chunks when focused=%s",
+    "skips renderer refresh work for live chunks while the renderer is running when focused=%s",
     async (focused) => {
       const props = { ...createProps("surface_1"), focused };
       let terminalListener: ((event: unknown) => void) | null = null;
@@ -678,25 +678,173 @@ describe("TerminalPane visibility cleanup", () => {
           await flushMicrotasks();
         });
 
+        // A running renderer repaints dirty rows on its own; streaming output
+        // must not force full-viewport re-renders every animation frame.
         expect(
           terminal!._core._renderService.refreshRows
-        ).toHaveBeenCalledTimes(1);
-        expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledWith(
-          0,
-          terminal!.rows - 1
-        );
+        ).not.toHaveBeenCalled();
         expect(
           terminal!._core._renderService._renderRows
-        ).toHaveBeenCalledTimes(1);
-        expect(terminal!._core._renderService._renderRows).toHaveBeenCalledWith(
-          0,
-          terminal!.rows - 1
-        );
+        ).not.toHaveBeenCalled();
       } finally {
         requestAnimationFrameSpy.mockRestore();
       }
     }
   );
+
+  it("resumes a paused renderer for live chunks on the next animation frame", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          rows: number;
+          _core: {
+            _renderService: {
+              _isPaused: boolean;
+              _needsFullRefresh: boolean;
+              refreshRows: ReturnType<typeof vi.fn>;
+              _renderRows: ReturnType<typeof vi.fn>;
+            };
+          };
+        }
+      | undefined;
+    expect(terminal).toBeDefined();
+    terminal!._core._renderService._isPaused = true;
+    terminal!._core._renderService._needsFullRefresh = true;
+    terminal!._core._renderService.refreshRows.mockClear();
+    terminal!._core._renderService._renderRows.mockClear();
+
+    const animationFrames: FrameRequestCallback[] = [];
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback): number => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      });
+
+    try {
+      await act(async () => {
+        terminalListener?.({
+          type: "chunk",
+          payload: {
+            surfaceId: "surface_1",
+            sessionId: "session_surface_1",
+            sequence: 1,
+            chunk: "live output after pause"
+          }
+        });
+        await flushMicrotasks();
+      });
+
+      await act(async () => {
+        for (const callback of animationFrames.splice(0)) {
+          callback(performance.now());
+        }
+        await flushMicrotasks();
+      });
+
+      expect(terminal!._core._renderService._isPaused).toBe(false);
+      expect(terminal!._core._renderService.refreshRows).toHaveBeenCalledWith(
+        0,
+        terminal!.rows - 1
+      );
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+    }
+  });
+
+  it("skips ahead to a fresh snapshot when the chunk backlog exceeds the limit", async () => {
+    const props = createProps("surface_1");
+    let terminalListener: ((event: unknown) => void) | null = null;
+    window.kmux.subscribeTerminal = vi.fn((listener) => {
+      terminalListener = listener as (event: unknown) => void;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks();
+    });
+    expect(window.kmux.attachSurface).toHaveBeenCalledTimes(1);
+
+    vi.mocked(window.kmux.attachSurface).mockImplementation(
+      async (surfaceId: string, sessionId: string) => ({
+        attachId: "attach_2",
+        snapshot: {
+          surfaceId,
+          sessionId,
+          sequence: 1000,
+          vt: "SKIP_AHEAD_STATE",
+          cols: 120,
+          rows: 40,
+          title: surfaceId,
+          ports: [],
+          unreadCount: 0,
+          attention: false
+        }
+      })
+    );
+
+    const flood = "F".repeat(8_000_001);
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 500,
+          chunk: flood
+        }
+      });
+      await flushMicrotasks(20);
+    });
+
+    // The flood backlog is dropped, replaced by the fresh snapshot replay.
+    expect(window.kmux.attachSurface).toHaveBeenCalledTimes(2);
+    expect(window.kmux.completeAttachSurface).toHaveBeenCalledWith(
+      "surface_1",
+      "attach_2",
+      "session_surface_1"
+    );
+    expect(terminalBufferText).toContain("SKIP_AHEAD_STATE");
+    expect(terminalBufferText).not.toContain(flood);
+
+    await act(async () => {
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 999,
+          chunk: "stale straggler"
+        }
+      });
+      terminalListener?.({
+        type: "chunk",
+        payload: {
+          surfaceId: "surface_1",
+          sessionId: "session_surface_1",
+          sequence: 1001,
+          chunk: "fresh output"
+        }
+      });
+      await flushMicrotasks(10);
+    });
+
+    // Chunks the snapshot already contains are gated; newer ones flow.
+    expect(terminalBufferText).not.toContain("stale straggler");
+    expect(terminalBufferText).toContain("fresh output");
+  });
 
   it("keeps the live chunk queue moving when an attached write is dropped", async () => {
     const props = createProps("surface_1");
@@ -1203,7 +1351,8 @@ describe("TerminalPane visibility cleanup", () => {
       "surface_1",
       "attach_1",
       140,
-      50
+      50,
+      false
     );
 
     // The (100, 30) echo predates the (140, 50) local fit but is still applied
@@ -1545,7 +1694,8 @@ describe("TerminalPane visibility cleanup", () => {
       "surface_1",
       "attach_1",
       90,
-      28
+      28,
+      false
     );
 
     vi.mocked(window.kmux.resizeSurface).mockClear();
@@ -1576,7 +1726,8 @@ describe("TerminalPane visibility cleanup", () => {
       "surface_1",
       "attach_1",
       100,
-      30
+      30,
+      false
     );
   });
 
@@ -1599,13 +1750,15 @@ describe("TerminalPane visibility cleanup", () => {
       "surface_1",
       "attach_1",
       100,
-      40
+      40,
+      false
     );
     expect(window.kmux.resizeSurface).not.toHaveBeenCalledWith(
       "surface_1",
       null,
       100,
-      40
+      40,
+      false
     );
   });
 

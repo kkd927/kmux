@@ -404,7 +404,8 @@ describe("ipc handlers", () => {
       "surface-1",
       "attach-1",
       132,
-      43
+      43,
+      undefined
     );
   });
 

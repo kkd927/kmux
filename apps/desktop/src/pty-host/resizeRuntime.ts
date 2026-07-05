@@ -4,8 +4,8 @@ interface ResizableTerminal {
   resize(cols: number, rows: number): void;
 }
 
-interface ResizablePty {
-  resize(cols: number, rows: number): void;
+interface PtyResizeSink {
+  request(cols: number, rows: number, options?: { hold?: boolean }): void;
 }
 
 interface ResizeSessionRecord {
@@ -14,7 +14,7 @@ interface ResizeSessionRecord {
   cols: number;
   rows: number;
   terminal: ResizableTerminal;
-  pty: ResizablePty;
+  ptyResize: PtyResizeSink;
 }
 
 interface TerminalResizeAckPayload {
@@ -28,17 +28,24 @@ export function prepareTerminalResize(options: {
   record: ResizeSessionRecord;
   cols: number;
   rows: number;
+  gestureActive?: boolean;
   flushOutput: (sessionId: string) => void;
 }): boolean {
-  const { record, cols, rows, flushOutput } = options;
+  const { record, cols, rows, gestureActive, flushOutput } = options;
   flushOutput(record.sessionId);
+  // The PTY sink is told about every request — including grid no-ops —
+  // because the actual PTY size may lag behind the grid while the sink
+  // coalesces SIGWINCH commits: a gesture-end request that repeats the grid
+  // size is what releases a held commit.
+  record.ptyResize.request(cols, rows, { hold: gestureActive === true });
   if (record.cols === cols && record.rows === rows) {
     return false;
   }
   record.cols = cols;
   record.rows = rows;
+  // record.cols/rows track the headless grid; snapshots and the resize
+  // barrier read them.
   record.terminal.resize(cols, rows);
-  record.pty.resize(cols, rows);
   return true;
 }
 
@@ -49,6 +56,7 @@ export function handleTerminalResizeRequest(options: {
   requestId?: Id;
   cols: number;
   rows: number;
+  gestureActive?: boolean;
   flushOutput: (sessionId: Id) => void;
   emitResize: (payload: SurfaceResizePayload) => void;
   emitAck: (payload: TerminalResizeAckPayload) => void;
@@ -60,6 +68,7 @@ export function handleTerminalResizeRequest(options: {
     requestId,
     cols,
     rows,
+    gestureActive,
     flushOutput,
     emitResize,
     emitAck
@@ -81,6 +90,7 @@ export function handleTerminalResizeRequest(options: {
     record,
     cols,
     rows,
+    gestureActive,
     flushOutput
   });
 

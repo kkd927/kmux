@@ -259,7 +259,8 @@ export class PtyHostManager extends EventEmitter {
     sessionId: Id,
     cols: number,
     rows: number,
-    attachId?: Id
+    attachId?: Id,
+    gestureActive?: boolean
   ): Promise<void> {
     const requestId = makeId("resize");
     const request: PtyRequest = {
@@ -268,6 +269,7 @@ export class PtyHostManager extends EventEmitter {
       cols,
       rows,
       ...(attachId ? { attachId } : {}),
+      ...(gestureActive ? { gestureActive } : {}),
       requestId
     };
     return new Promise((resolve) => {

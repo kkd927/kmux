@@ -26,7 +26,8 @@ describe("terminal resize sync", () => {
           surfaceId: string,
           attachId: string | null,
           cols: number,
-          rows: number
+          rows: number,
+          gestureActive: boolean
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -38,21 +39,24 @@ describe("terminal resize sync", () => {
       attachId: "attach_1",
       generation: 1,
       cols: 100,
-      rows: 30
+      rows: 30,
+      gestureActive: false
     });
     const supersededResult = sync.request({
       surfaceId: "surface_1",
       attachId: "attach_1",
       generation: 2,
       cols: 110,
-      rows: 35
+      rows: 35,
+      gestureActive: false
     });
     const latestResult = sync.request({
       surfaceId: "surface_1",
       attachId: "attach_1",
       generation: 3,
       cols: 120,
-      rows: 40
+      rows: 40,
+      gestureActive: false
     });
 
     expect(sendResize).toHaveBeenCalledTimes(1);
@@ -61,7 +65,8 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_1",
       100,
-      30
+      30,
+      false
     );
     await expect(supersededResult).resolves.toEqual(
       expect.objectContaining({
@@ -88,7 +93,8 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_1",
       120,
-      40
+      40,
+      false
     );
 
     latest.resolve();
@@ -111,7 +117,8 @@ describe("terminal resize sync", () => {
           surfaceId: string,
           attachId: string | null,
           cols: number,
-          rows: number
+          rows: number,
+          gestureActive: boolean
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -123,14 +130,16 @@ describe("terminal resize sync", () => {
       attachId: "attach_1",
       generation: 1,
       cols: 100,
-      rows: 30
+      rows: 30,
+      gestureActive: false
     });
     const latestResult = sync.request({
       surfaceId: "surface_1",
       attachId: "attach_1",
       generation: 2,
       cols: 120,
-      rows: 40
+      rows: 40,
+      gestureActive: false
     });
 
     first.reject(new Error("remote resize failed"));
@@ -148,7 +157,8 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_1",
       120,
-      40
+      40,
+      false
     );
 
     latest.resolve();
@@ -172,7 +182,8 @@ describe("terminal resize sync", () => {
           surfaceId: string,
           attachId: string | null,
           cols: number,
-          rows: number
+          rows: number,
+          gestureActive: boolean
         ) => Promise<void>
       >()
       .mockImplementation((surfaceId) => {
@@ -191,21 +202,24 @@ describe("terminal resize sync", () => {
       attachId: "attach_1",
       generation: 1,
       cols: 100,
-      rows: 30
+      rows: 30,
+      gestureActive: false
     });
     const secondResult = sync.request({
       surfaceId: "surface_2",
       attachId: "attach_2",
       generation: 1,
       cols: 80,
-      rows: 24
+      rows: 24,
+      gestureActive: false
     });
     const latestFirstResult = sync.request({
       surfaceId: "surface_1",
       attachId: "attach_1",
       generation: 2,
       cols: 120,
-      rows: 40
+      rows: 40,
+      gestureActive: false
     });
 
     expect(sendResize).toHaveBeenCalledTimes(2);
@@ -214,14 +228,16 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_1",
       100,
-      30
+      30,
+      false
     );
     expect(sendResize).toHaveBeenNthCalledWith(
       2,
       "surface_2",
       "attach_2",
       80,
-      24
+      24,
+      false
     );
 
     secondSurface.resolve();
@@ -250,7 +266,8 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_1",
       120,
-      40
+      40,
+      false
     );
 
     latestFirstSurface.resolve();
@@ -273,7 +290,8 @@ describe("terminal resize sync", () => {
           surfaceId: string,
           attachId: string | null,
           cols: number,
-          rows: number
+          rows: number,
+          gestureActive: boolean
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -285,14 +303,16 @@ describe("terminal resize sync", () => {
       attachId: "attach_1",
       generation: 1,
       cols: 120,
-      rows: 40
+      rows: 40,
+      gestureActive: false
     });
     const secondResult = sync.request({
       surfaceId: "surface_1",
       attachId: "attach_2",
       generation: 2,
       cols: 120,
-      rows: 40
+      rows: 40,
+      gestureActive: false
     });
 
     first.resolve();
@@ -308,7 +328,8 @@ describe("terminal resize sync", () => {
       "surface_1",
       "attach_2",
       120,
-      40
+      40,
+      false
     );
 
     second.resolve();
@@ -317,6 +338,61 @@ describe("terminal resize sync", () => {
         status: "synced",
         attachId: "attach_2"
       })
+    );
+  });
+
+  it("does not collapse a gesture-end release onto an identical held resize", async () => {
+    const first = deferred();
+    const second = deferred();
+    const sendResize = vi
+      .fn<
+        (
+          surfaceId: string,
+          attachId: string | null,
+          cols: number,
+          rows: number,
+          gestureActive: boolean
+        ) => Promise<void>
+      >()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const sync = createTerminalResizeSync({ sendResize });
+
+    const heldResult = sync.request({
+      surfaceId: "surface_1",
+      attachId: "attach_1",
+      generation: 1,
+      cols: 120,
+      rows: 40,
+      gestureActive: true
+    });
+    const releaseResult = sync.request({
+      surfaceId: "surface_1",
+      attachId: "attach_1",
+      generation: 2,
+      cols: 120,
+      rows: 40,
+      gestureActive: false
+    });
+
+    first.resolve();
+    await expect(heldResult).resolves.toEqual(
+      expect.objectContaining({ status: "synced", gestureActive: true })
+    );
+    // The release must actually be sent: it is what commits the held PTY size.
+    expect(sendResize).toHaveBeenCalledTimes(2);
+    expect(sendResize).toHaveBeenNthCalledWith(
+      2,
+      "surface_1",
+      "attach_1",
+      120,
+      40,
+      false
+    );
+
+    second.resolve();
+    await expect(releaseResult).resolves.toEqual(
+      expect.objectContaining({ status: "synced", gestureActive: false })
     );
   });
 });

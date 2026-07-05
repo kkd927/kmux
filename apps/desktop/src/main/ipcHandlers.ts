@@ -93,7 +93,8 @@ interface IpcHandlersOptions {
     surfaceId: Id,
     attachId: Id | null,
     cols: number,
-    rows: number
+    rows: number,
+    gestureActive?: boolean
   ) => Promise<void>;
   identify: () => ShellIdentity;
   listTerminalFontFamilies: () => Promise<string[]>;
@@ -254,14 +255,16 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       surfaceId: Id,
       attachId: Id | null,
       cols: number,
-      rows: number
+      rows: number,
+      gestureActive?: boolean
     ) => {
       await options.resizeSurface(
         event.sender.id,
         surfaceId,
         attachId,
         cols,
-        rows
+        rows,
+        gestureActive
       );
     }
   );

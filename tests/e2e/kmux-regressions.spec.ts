@@ -2138,6 +2138,85 @@ test("terminal resize applies after the remote PTY resize barrier", async () => 
   }
 });
 
+test("streaming output keeps rendering while the pane divider is dragged", async () => {
+  const launched = await launchKmux("kmux-e2e-divider-drag-live-output-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const initialPaneId = initial.activeWorkspace.activePaneId;
+    const surfaceId =
+      initial.activeWorkspace.panes[initialPaneId].activeSurfaceId;
+
+    await dispatch(page, {
+      type: "pane.split",
+      paneId: initialPaneId,
+      direction: "right"
+    });
+    await waitForView(
+      page,
+      (view) => Object.keys(view.activeWorkspace.panes).length === 2,
+      "split should create a second pane"
+    );
+
+    const streamCommand =
+      'i=0; while true; do i=$((i+1)); printf "KMUX_LIVE_%04d\\n" "$i"; sleep 0.05; done';
+    await page.evaluate(
+      ({ targetSurfaceId, text }) =>
+        window.kmux.sendText(targetSurfaceId, text),
+      {
+        targetSurfaceId: surfaceId,
+        text: `${streamCommand}\r`
+      }
+    );
+
+    const terminalRows = page.locator(
+      `[data-active-surface-id="${surfaceId}"] .xterm-rows`
+    );
+    const latestMarker = async (): Promise<number> => {
+      const text = (await terminalRows.textContent()) ?? "";
+      let latest = -1;
+      for (const match of text.matchAll(/KMUX_LIVE_(\d{4})/g)) {
+        latest = Math.max(latest, Number(match[1]));
+      }
+      return latest;
+    };
+
+    await expect.poll(latestMarker).toBeGreaterThan(0);
+
+    const divider = page.locator('[data-split-axis="vertical"]').first();
+    const dividerBox = await divider.boundingBox();
+    expect(dividerBox).not.toBeNull();
+    const dividerX = dividerBox!.x + dividerBox!.width / 2;
+    const dividerY = dividerBox!.y + dividerBox!.height / 2;
+
+    await page.mouse.move(dividerX, dividerY);
+    await page.mouse.down();
+    try {
+      // Visible surfaces must keep rendering live output while another pane
+      // interaction (the divider drag) is in progress.
+      let anchor = await latestMarker();
+      for (const offset of [-40, -80, -120, -80, -40]) {
+        await page.mouse.move(dividerX + offset, dividerY, { steps: 5 });
+        const before = anchor;
+        await expect
+          .poll(latestMarker, {
+            message: `live output should advance while dragging (offset ${offset})`
+          })
+          .toBeGreaterThan(before);
+        anchor = await latestMarker();
+      }
+    } finally {
+      await page.mouse.up();
+    }
+
+    const afterDrag = await latestMarker();
+    await expect.poll(latestMarker).toBeGreaterThan(afterDrag);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("closing the active workspace by shortcut keeps the app responsive and selects a remaining workspace", async () => {
   const launched = await launchKmux("kmux-e2e-workspace-close-active-");
 
@@ -2234,6 +2313,74 @@ test("closing the app's last workspace replaces it with a fresh workspace withou
     expect(replaced.activeWorkspace.name).not.toBe("");
     expect(Object.keys(replaced.activeWorkspace.panes)).toHaveLength(1);
     expect(pageErrors).toEqual([]);
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("renderer stays near-live under a sustained output burst", async () => {
+  const launched = await launchKmux("kmux-e2e-burst-lag-");
+
+  try {
+    const page = launched.page;
+    const initial = await getView(page);
+    const initialPaneId = initial.activeWorkspace.activePaneId;
+    const surfaceId =
+      initial.activeWorkspace.panes[initialPaneId].activeSurfaceId;
+
+    // Agent-CLI-like stream: one PTY read per line, ~100 chunks/s. Before
+    // chunk write batching this arrival rate outran the renderer's
+    // one-awaited-write-per-chunk drain and the display backlog grew without
+    // bound (a field capture showed the renderer 5,073 sequences behind).
+    const streamCommand =
+      'i=0; while true; do i=$((i+1)); printf "KMUX_BURST_%05d\\n" "$i"; sleep 0.01; done';
+    await page.evaluate(
+      ({ targetSurfaceId, text }) =>
+        window.kmux.sendText(targetSurfaceId, text),
+      {
+        targetSurfaceId: surfaceId,
+        text: `${streamCommand}\r`
+      }
+    );
+
+    const terminalRows = page.locator(
+      `[data-active-surface-id="${surfaceId}"] .xterm-rows`
+    );
+    const latestMarkerIn = (text: string): number => {
+      let latest = -1;
+      for (const match of text.matchAll(/KMUX_BURST_(\d{5})/g)) {
+        latest = Math.max(latest, Number(match[1]));
+      }
+      return latest;
+    };
+    const latestRenderedMarker = async (): Promise<number> =>
+      latestMarkerIn((await terminalRows.textContent()) ?? "");
+    await expect.poll(latestRenderedMarker).toBeGreaterThan(0);
+
+    // Let the stream run long enough for a backlog to build if drain were
+    // slower than arrival.
+    await expect
+      .poll(latestRenderedMarker, { timeout: 15_000 })
+      .toBeGreaterThan(200);
+
+    // Compare content across the layers instead of the rendered-sequence
+    // diagnostics: those are not initialized when the bridge readies an
+    // attachment from the null-snapshot path at app boot. The pty snapshot
+    // is taken first and the renderer is read afterwards, so a near-live
+    // renderer shows at least the snapshot's newest marker; a backlogged
+    // renderer trails it by hundreds of lines.
+    const capture = await page.evaluate(
+      (targetSurfaceId) =>
+        window.kmux.captureSurfaceDiagnostics(targetSurfaceId),
+      surfaceId
+    );
+    expect(capture.renderer.ok).toBe(true);
+    const snapshotMarker = latestMarkerIn(capture.snapshot?.vt ?? "");
+    const bufferMarker = latestMarkerIn(
+      capture.renderer.dom?.bufferText ?? ""
+    );
+    expect(snapshotMarker).toBeGreaterThan(200);
+    expect(bufferMarker).toBeGreaterThanOrEqual(snapshotMarker - 50);
   } finally {
     await closeKmux(launched);
   }

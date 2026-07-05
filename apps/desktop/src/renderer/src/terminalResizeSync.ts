@@ -6,6 +6,7 @@ export interface TerminalResizeSyncRequest {
   generation: number;
   cols: number;
   rows: number;
+  gestureActive: boolean;
 }
 
 export type TerminalResizeSyncResult = TerminalResizeSyncRequest & {
@@ -18,7 +19,8 @@ interface TerminalResizeSyncOptions {
     surfaceId: string,
     attachId: string | null,
     cols: number,
-    rows: number
+    rows: number,
+    gestureActive: boolean
   ) => Promise<void>;
 }
 
@@ -47,6 +49,7 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
       generation: request.generation,
       cols: request.cols,
       rows: request.rows,
+      gestureActive: request.gestureActive,
       status,
       ...(error === undefined ? {} : { error })
     });
@@ -81,7 +84,8 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
           request.surfaceId,
           request.attachId,
           request.cols,
-          request.rows
+          request.rows,
+          request.gestureActive
         );
       } catch (caughtError) {
         failed = true;
@@ -104,7 +108,10 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
         !failed &&
         pending.attachId === request.attachId &&
         pending.cols === request.cols &&
-        pending.rows === request.rows
+        pending.rows === request.rows &&
+        // A gesture-end request must reach the pty-host even when the size
+        // matches the in-flight one: it releases the held PTY commit.
+        pending.gestureActive === request.gestureActive
       ) {
         resolveResize(pending, "synced");
         cleanup(request.surfaceId, state);

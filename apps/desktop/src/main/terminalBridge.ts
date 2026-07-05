@@ -425,7 +425,8 @@ export function createTerminalBridge(
     surfaceId: Id,
     attachId: Id | null,
     cols: number,
-    rows: number
+    rows: number,
+    gestureActive?: boolean
   ): Promise<void> {
     const sessionId = surfaceSessionId(surfaceId);
     if (!sessionId) {
@@ -463,9 +464,9 @@ export function createTerminalBridge(
     }
     try {
       if (attachId) {
-        await ptyHost?.resize(sessionId, cols, rows, attachId);
+        await ptyHost?.resize(sessionId, cols, rows, attachId, gestureActive);
       } else {
-        await ptyHost?.resize(sessionId, cols, rows);
+        await ptyHost?.resize(sessionId, cols, rows, undefined, gestureActive);
       }
     } finally {
       if (options.profileRecorder?.enabled) {

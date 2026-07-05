@@ -66,9 +66,15 @@ import {
   pauseTerminalRenderer,
   resumeAndRefreshTerminalRenderer
 } from "../terminalRenderRefresh";
+import { createTerminalChunkBatcher } from "../terminalChunkBatcher";
 import * as terminalInstanceStore from "../terminalInstanceStore";
+import { resizeTerminalKeepingBottomAnchor } from "../terminalResizeAnchor";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import { createTerminalDividerFitThrottle } from "../terminalDividerFitThrottle";
+import {
+  isPaneDividerDragActive,
+  subscribePaneDividerDrag
+} from "../paneDividerDrag";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
 import {
@@ -227,6 +233,12 @@ type SurfaceContextMenuState = {
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
 const TERMINAL_WRITE_CALLBACK_TIMEOUT_MS = 10_000;
+// Skip-ahead safety valve: agent CLI output tops out around 100-250KB/s, so
+// this backlog is only reachable when a pathological flood (yes, cat of a
+// huge file) outruns xterm parsing. Recovery re-hydrates from a fresh
+// snapshot instead of replaying the backlog, trading flood scrollback
+// (snapshots restore TERMINAL_RESTORE_SCROLLBACK_LINES) for a live screen.
+const TERMINAL_LIVE_CHUNK_BACKLOG_LIMIT_CHARS = 8_000_000;
 const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
 const INACTIVE_WORKSPACE_RENDER_PAUSE_DELAY_MS = 2000;
 
@@ -479,8 +491,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   searchDecorationsRef.current = terminalSearchDecorations;
   if (!resizeSyncRef.current) {
     resizeSyncRef.current = createTerminalResizeSync({
-      sendResize: (surfaceId, attachId, cols, rows) =>
-        window.kmux.resizeSurface(surfaceId, attachId, cols, rows)
+      sendResize: (surfaceId, attachId, cols, rows, gestureActive) =>
+        window.kmux.resizeSurface(
+          surfaceId,
+          attachId,
+          cols,
+          rows,
+          gestureActive
+        )
     });
   }
 
@@ -564,9 +582,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       );
       pendingRendererRefreshesRef.current.clear();
       for (const [pendingTerminal, pendingSurfaceId] of pendingRefreshes) {
-        refreshVisibleSurfaceRenderer(pendingSurfaceId, pendingTerminal, {
-          force: true
-        });
+        // Non-forced: a running renderer already repaints dirty rows on its
+        // own; this only resumes a paused renderer so streaming output does
+        // not force a full-viewport re-render every animation frame.
+        refreshVisibleSurfaceRenderer(pendingSurfaceId, pendingTerminal);
       }
     });
   }
@@ -763,7 +782,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
     const applyStartedAt = performance.now();
     try {
-      terminal.resize(cols, rows);
+      resizeTerminalKeepingBottomAnchor(terminal, cols, rows);
       const applyEndedAt = performance.now();
       recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
         paneId: props.paneId,
@@ -919,7 +938,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       attachId,
       generation,
       cols: dims.cols,
-      rows: dims.rows
+      rows: dims.rows,
+      gestureActive: isPaneDividerDragActive()
     });
     recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
       paneId: props.paneId,
@@ -1787,6 +1807,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     });
     resizeObserver.observe(container);
 
+    // Requests sent during a drag carry gestureActive=true, which makes the
+    // pty-host hold the SIGWINCH commit. The hold is released by a final
+    // request after the gesture ends — force one even when the grid size
+    // did not change since the last request.
+    const unsubscribeDragRelease = subscribePaneDividerDrag((dragActive) => {
+      if (dragActive) {
+        return;
+      }
+      const surfaceId = activeSurfaceRef.current?.id;
+      if (surfaceId) {
+        surfaceResizeDimensionsRef.current.delete(surfaceId);
+      }
+      dividerFitThrottle.requestFit();
+    });
+
     const disposeData = terminal.onData((data) => {
       const currentSurface = activeSurfaceRef.current;
       if (!currentSurface) {
@@ -1823,6 +1858,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         foregroundFitRef.current = null;
       }
       foregroundFit.dispose();
+      unsubscribeDragRelease();
       dividerFitThrottle.dispose();
       resizeObserver.disconnect();
       if (resizeTimeout) {
@@ -2043,51 +2079,65 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       chunk: string;
       cwd?: string;
     };
-    const enqueueLiveChunkWrite = (payload: LiveChunkPayloadWithCwd): void => {
-      enqueueTerminalOperation(async () => {
-        if (!isCurrentSessionEvent(payload)) {
-          return;
+    // Chunks at or below the last replayed snapshot sequence are already in
+    // the terminal; stragglers delivered around a re-hydration must not be
+    // written again.
+    let minLiveChunkSequence = 0;
+    let recoveringFromChunkBacklog = false;
+    const liveChunkBatcher =
+      createTerminalChunkBatcher<LiveChunkPayloadWithCwd>({
+        enqueueOperation: enqueueTerminalOperation,
+        isCurrentEvent: (payload) =>
+          payload.sequence > minLiveChunkSequence &&
+          isCurrentSessionEvent(payload),
+        writeChunk: (payload, afterParsed) =>
+          writeAttachedTerminal(payload.chunk, afterParsed, payload.surfaceId),
+        waitForFinalChunkWrite: (payload, afterParsed) =>
+          waitForAttachedTerminalWrite(
+            payload.chunk,
+            payload.surfaceId,
+            afterParsed
+          ),
+        readCursorLine: () =>
+          terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+        readTrimmedLineCount: () =>
+          attachedLineCwds?.getTrimmedLineCount() ?? 0,
+        recordWrite: (range) => {
+          attachedLineCwds?.recordWrite({
+            startLine: range.startLine,
+            endLine: range.endLine,
+            cwd: range.cwd
+          });
+        },
+        onBatchRendered: (payload) => {
+          terminalInstanceStore.markSurfaceRendered(
+            instanceKey,
+            payload.surfaceId,
+            payload.sequence
+          );
+          const renderedSequence =
+            terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey);
+          updateTerminalDiagnostics(payload.surfaceId, terminal, {
+            renderedSequence
+          });
+        },
+        backlogLimitChars: TERMINAL_LIVE_CHUNK_BACKLOG_LIMIT_CHARS,
+        onBacklogExceeded: () => {
+          recoverFromChunkBacklog();
         }
-        const trimCountBefore = attachedLineCwds?.getTrimmedLineCount() ?? 0;
-        const startLine =
-          terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
-        await waitForAttachedTerminalWrite(
-          payload.chunk,
-          payload.surfaceId,
-          () => {
-            const trimDuringWrite =
-              (attachedLineCwds?.getTrimmedLineCount() ?? 0) - trimCountBefore;
-            const endLine =
-              terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
-            if (isCurrentSessionEvent(payload)) {
-              attachedLineCwds?.recordWrite({
-                startLine: startLine - trimDuringWrite,
-                endLine,
-                cwd: payload.cwd
-              });
-              terminalInstanceStore.markSurfaceRendered(
-                instanceKey,
-                payload.surfaceId,
-                payload.sequence
-              );
-              const renderedSequence =
-                terminalInstanceStore.getLastHydratedSurfaceSequence(
-                  instanceKey
-                );
-              updateTerminalDiagnostics(payload.surfaceId, terminal, {
-                renderedSequence
-              });
-            }
-          }
-        );
       });
-    };
     const markSnapshotRendered = (
       attachId: string,
       snapshot: TerminalSnapshotWithCwdRanges
     ) => {
       if (!isCurrentAttachedSession()) {
         return Promise.resolve({ status: "stale" as const });
+      }
+      if (typeof snapshot.sequence === "number") {
+        minLiveChunkSequence = Math.max(
+          minLiveChunkSequence,
+          snapshot.sequence
+        );
       }
       attachedLineCwds?.importSnapshotRanges(snapshot.cwdRanges);
       terminalInstanceStore.markSurfaceHydrated(
@@ -2131,10 +2181,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         const payload = event.payload as typeof event.payload & {
           cwd?: string;
         };
-        enqueueLiveChunkWrite(payload);
+        liveChunkBatcher.enqueue(payload);
       }
       if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
+        liveChunkBatcher.seal();
         enqueueTerminalOperation(() => {
           if (!isCurrentSessionEvent(payload)) {
             return;
@@ -2165,6 +2216,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       if (event.type === "exit" && isCurrentSessionEvent(event.payload)) {
         const payload = event.payload;
+        liveChunkBatcher.seal();
         enqueueTerminalOperation(async () => {
           if (!isSameSurfaceSession(payload)) {
             return;
@@ -2204,6 +2256,64 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         return null;
       }
       return window.kmux.attachSurface(surfaceId, sessionId);
+    };
+    // Backlog skip-ahead: drop the unparsed chunk backlog and re-run the
+    // preserved-terminal attach flow. The bridge resets the attachment to
+    // hydrating (queueing further chunks), takes a fresh snapshot, and the
+    // replay replaces the terminal content at the current sequence; the
+    // minLiveChunkSequence gate rejects in-flight chunks the snapshot
+    // already contains.
+    const recoverFromChunkBacklog = (): void => {
+      if (recoveringFromChunkBacklog || !isCurrentAttachedSession()) {
+        return;
+      }
+      recoveringFromChunkBacklog = true;
+      liveChunkBatcher.discardPending();
+      void (async () => {
+        try {
+          await reattachPreservedTerminal({
+            terminal,
+            isMounted: isCurrentAttachedSession,
+            isTerminalActive: (candidate) => candidate === terminal,
+            waitForTerminalFonts,
+            attachSurface: attachCurrentSurface,
+            lastRenderedSequence:
+              terminalInstanceStore.getLastHydratedSurfaceSequence(
+                instanceKey
+              ),
+            beforeFitAndSync: () => {
+              terminalInstanceStore
+                .getRenderSink(instanceKey)
+                ?.beforeFitAndSync?.();
+            },
+            fitAndSyncTerminal: fitAttachedTerminal,
+            writeTerminal: (_terminal, data, afterWrite) => {
+              const didScheduleWrite = writeAttachedTerminal(
+                data,
+                afterWrite,
+                surfaceId
+              );
+              if (!didScheduleWrite) {
+                terminalInstanceStore.invalidateHydration(instanceKey);
+              }
+              return didScheduleWrite;
+            },
+            onReplayStart: replayVisibility.hide,
+            onReplayEnd: replayVisibility.revealAfterPaint,
+            onSnapshotRendered: markSnapshotRendered
+          });
+        } finally {
+          recoveringFromChunkBacklog = false;
+        }
+      })().catch(() => {
+        // Mirror the mount flow: a failed re-attach leaves the bridge
+        // without an attachment, so release the store side too and let the
+        // next attach re-establish it.
+        if (!attached) {
+          return;
+        }
+        terminalInstanceStore.detachAttachment(surfaceId);
+      });
     };
 
     void (async () => {

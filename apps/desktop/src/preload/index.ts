@@ -183,14 +183,16 @@ const api = {
     surfaceId: string,
     attachId: string | null,
     cols: number,
-    rows: number
+    rows: number,
+    gestureActive?: boolean
   ): Promise<void> {
     return ipcRenderer.invoke(
       "kmux:terminal:resize",
       surfaceId,
       attachId,
       cols,
-      rows
+      rows,
+      gestureActive
     );
   },
   listTerminalFontFamilies(): Promise<string[]> {

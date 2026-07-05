@@ -1,6 +1,7 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   memo,
+  type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef
@@ -21,6 +22,7 @@ interface WorkspaceSidebarProps {
   activeWorkspace: ActiveWorkspaceActivityVm;
   sidebarWidth: number;
   renderedSidebarWidth: number;
+  sidebarElementRef: MutableRefObject<HTMLElement | null>;
   showWorkspaceShortcutHints: boolean;
   editingWorkspaceId: string | null;
   workspaceContextMenuWorkspaceId: string | null;
@@ -87,6 +89,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar(
   return (
     <>
       <aside
+        ref={props.sidebarElementRef}
         className={styles.sidebar}
         data-testid="workspace-tool-window"
         style={{
@@ -237,6 +240,7 @@ function areWorkspaceSidebarPropsEqual(
     left.activeWorkspace === right.activeWorkspace &&
     left.sidebarWidth === right.sidebarWidth &&
     left.renderedSidebarWidth === right.renderedSidebarWidth &&
+    left.sidebarElementRef === right.sidebarElementRef &&
     left.showWorkspaceShortcutHints === right.showWorkspaceShortcutHints &&
     left.editingWorkspaceId === right.editingWorkspaceId &&
     left.workspaceContextMenuWorkspaceId === right.workspaceContextMenuWorkspaceId &&

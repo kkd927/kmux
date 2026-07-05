@@ -193,6 +193,7 @@ export function App(): JSX.Element {
     token: number;
   } | null>(null);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
+  const sidebarElementRef = useRef<HTMLElement | null>(null);
   const [windowWidth, setWindowWidth] = useState(
     () => document.documentElement.clientWidth || window.innerWidth
   );
@@ -508,6 +509,7 @@ export function App(): JSX.Element {
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
     viewRef,
     renderedSidebarWidth,
+    getSidebarElement: () => sidebarElementRef.current,
     setSidebarResizeActive,
     dispatch
   });
@@ -928,6 +930,7 @@ export function App(): JSX.Element {
             activeWorkspace={activeWorkspace}
             sidebarWidth={sidebarWidth}
             renderedSidebarWidth={renderedSidebarWidth}
+            sidebarElementRef={sidebarElementRef}
             showWorkspaceShortcutHints={showWorkspaceShortcutHints}
             editingWorkspaceId={editingWorkspaceId}
             workspaceContextMenuWorkspaceId={

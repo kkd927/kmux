@@ -42,6 +42,10 @@ import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import { OutputBatcher } from "./outputBatcher";
+import {
+  createPtyResizeCoalescer,
+  type PtyResizeCoalescer
+} from "./ptyResizeCoalescer";
 import { handleTerminalResizeRequest } from "./resizeRuntime";
 import { SnapshotCache } from "./snapshotCache";
 import {
@@ -77,6 +81,7 @@ interface SessionRecord {
   cwd?: string;
   title: string;
   pty: PtyModule.IPty;
+  ptyResize: PtyResizeCoalescer;
   terminal: HeadlessTerminal;
   serialize: SerializeAddon;
   snapshotCache: SnapshotCache;
@@ -560,6 +565,23 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cwd: preparedLaunch.cwd,
     title: request.spec.launch.title || request.spec.surfaceId,
     pty: ptyProcess,
+    ptyResize: createPtyResizeCoalescer({
+      initialCols: request.spec.cols,
+      initialRows: request.spec.rows,
+      commit: (cols, rows) => {
+        try {
+          ptyProcess.resize(cols, rows);
+        } catch (error) {
+          logDiagnostics("pty-host.resize.commit.failed", {
+            surfaceId: request.spec.surfaceId,
+            sessionId: request.spec.sessionId,
+            cols,
+            rows,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }),
     terminal,
     serialize,
     snapshotCache: new SnapshotCache(),
@@ -788,6 +810,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       disposeSettledSnapshotState(record);
       disposeShellReadyFallback(record);
       record.trimListener.dispose();
+      record.ptyResize.dispose();
       send({
         type: "exit",
         payload: {
@@ -832,6 +855,7 @@ process.on("message", (request: PtyRequest) => {
         disposeSettledSnapshotState(record);
         disposeShellReadyFallback(record);
         record.trimListener.dispose();
+        record.ptyResize.dispose();
         record.pty.kill();
         sessions.delete(request.sessionId);
       }
@@ -845,6 +869,7 @@ process.on("message", (request: PtyRequest) => {
           requestId: request.requestId,
           cols: request.cols,
           rows: request.rows,
+          gestureActive: request.gestureActive,
           flushOutput: (sessionId) => outputBatcher.flush(sessionId),
           emitResize: (payload) => {
             send({
@@ -954,6 +979,7 @@ function disposeAllSessions(): void {
     disposeSettledSnapshotState(record);
     disposeShellReadyFallback(record);
     record.trimListener.dispose();
+    record.ptyResize.dispose();
     try {
       record.pty.kill();
     } catch (error) {

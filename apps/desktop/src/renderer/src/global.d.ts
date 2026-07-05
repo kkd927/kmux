@@ -89,7 +89,8 @@ declare global {
         surfaceId: string,
         attachId: string | null,
         cols: number,
-        rows: number
+        rows: number,
+        gestureActive?: boolean
       ): Promise<void>;
       listTerminalFontFamilies(): Promise<string[]>;
       previewTerminalTypography(

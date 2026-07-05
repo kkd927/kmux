@@ -276,6 +276,115 @@ describe("PaneTree", () => {
     expect(terminalPaneRenderSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("applies divider drag locally and commits the ratio once on pointerup", () => {
+    const originalSetPointerCapture = Element.prototype.setPointerCapture;
+    Element.prototype.setPointerCapture = vi.fn();
+    try {
+      const props = createSplitPaneTreeProps();
+
+      act(() => {
+        root.render(<PaneTree {...props} />);
+      });
+
+      const divider = container.querySelector<HTMLElement>(
+        '[data-split-axis="vertical"]'
+      );
+      expect(divider).toBeTruthy();
+      const split = divider!.parentElement!;
+      const first = divider!.previousElementSibling as HTMLElement;
+      const second = divider!.nextElementSibling as HTMLElement;
+      split.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          right: 1000,
+          bottom: 500,
+          width: 1000,
+          height: 500,
+          x: 0,
+          y: 0,
+          toJSON: () => ({})
+        }) as DOMRect;
+
+      act(() => {
+        divider!.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            clientX: 500,
+            clientY: 250
+          })
+        );
+      });
+      expect(isPaneDividerDragActive()).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(
+          new PointerEvent("pointermove", { clientX: 300, clientY: 250 })
+        );
+      });
+      expect(first.style.flexGrow).toBe("0.3");
+      expect(second.style.flexGrow).toBe("0.7");
+      expect(props.onSetSplitRatio).not.toHaveBeenCalled();
+
+      // Dragging past the edge clamps the preview to the reducer bounds.
+      act(() => {
+        window.dispatchEvent(
+          new PointerEvent("pointermove", { clientX: 20, clientY: 250 })
+        );
+      });
+      expect(first.style.flexGrow).toBe("0.1");
+      expect(second.style.flexGrow).toBe("0.9");
+      expect(props.onSetSplitRatio).not.toHaveBeenCalled();
+
+      act(() => {
+        window.dispatchEvent(new PointerEvent("pointerup", {}));
+      });
+      expect(props.onSetSplitRatio).toHaveBeenCalledTimes(1);
+      expect(props.onSetSplitRatio).toHaveBeenCalledWith("split_1", 0.1);
+      expect(isPaneDividerDragActive()).toBe(false);
+    } finally {
+      Element.prototype.setPointerCapture = originalSetPointerCapture;
+    }
+  });
+
+  it("does not commit a ratio when the pointer never moved", () => {
+    const originalSetPointerCapture = Element.prototype.setPointerCapture;
+    Element.prototype.setPointerCapture = vi.fn();
+    try {
+      const props = createSplitPaneTreeProps();
+
+      act(() => {
+        root.render(<PaneTree {...props} />);
+      });
+
+      const divider = container.querySelector<HTMLElement>(
+        '[data-split-axis="vertical"]'
+      );
+
+      act(() => {
+        divider!.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            clientX: 100,
+            clientY: 100
+          })
+        );
+      });
+      act(() => {
+        window.dispatchEvent(new PointerEvent("pointerup", {}));
+      });
+
+      expect(props.onSetSplitRatio).not.toHaveBeenCalled();
+      expect(isPaneDividerDragActive()).toBe(false);
+    } finally {
+      Element.prototype.setPointerCapture = originalSetPointerCapture;
+    }
+  });
+
   it("ends a divider drag when the divider unmounts mid-drag", () => {
     const originalSetPointerCapture = Element.prototype.setPointerCapture;
     Element.prototype.setPointerCapture = vi.fn();
