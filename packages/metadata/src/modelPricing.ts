@@ -38,6 +38,14 @@ export type UsageComponentCostEstimate = {
 const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   claude: [
     {
+      modelId: "claude-sonnet-5",
+      inputCostPerToken: 0.000002,
+      outputCostPerToken: 0.00001,
+      cacheReadCostPerToken: 0.0000002,
+      cacheCreateCostPerToken: 0.0000025,
+      aliases: ["claude-sonnet-5"]
+    },
+    {
       modelId: "claude-mythos-5",
       inputCostPerToken: 0.00001,
       outputCostPerToken: 0.00005,
