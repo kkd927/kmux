@@ -40,6 +40,39 @@ export interface TerminalRenderSink {
 
 const store = new Map<string, TerminalInstance>();
 
+export interface TerminalStoreDiagnostics {
+  lastHydratedSurfaceId: string | null;
+  lastHydratedSurfaceSequence: number | null;
+}
+
+export function getStoreDiagnostics(
+  key: string
+): TerminalStoreDiagnostics | null {
+  const instance = store.get(key);
+  if (!instance) {
+    return null;
+  }
+  return {
+    lastHydratedSurfaceId: instance.lastHydratedSurfaceId,
+    lastHydratedSurfaceSequence: instance.lastHydratedSurfaceSequence
+  };
+}
+
+// Element-level diagnostics (props/dataset) can go stale when updates stop
+// reaching an element; surface captures read this hook to record the store's
+// authoritative sequences alongside them.
+declare global {
+  interface Window {
+    __kmuxTerminalStoreDiagnostics?: (
+      key: string
+    ) => TerminalStoreDiagnostics | null;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__kmuxTerminalStoreDiagnostics = getStoreDiagnostics;
+}
+
 export function acquire(
   key: string,
   init: () => TerminalInstance

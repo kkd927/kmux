@@ -312,6 +312,27 @@ export interface SurfaceCaptureBufferRow {
   isWrapped: boolean;
 }
 
+export interface SurfaceCaptureDiagnosticSequences {
+  hydratedSequence: number | null;
+  renderedSequence: number | null;
+}
+
+// The rendered/hydrated sequences live in several places (element props,
+// dataset attributes, the renderer's instance store) that can disagree when
+// diagnostics updates stop reaching an element - e.g. a stale prop copied
+// onto a wrapper during a reparent. Captures record every source so the
+// divergence itself is visible, plus the resolved (max) value the capture
+// wait loop used.
+export interface SurfaceCaptureDiagnosticSources {
+  wrapperProp: SurfaceCaptureDiagnosticSequences | null;
+  hostProp: SurfaceCaptureDiagnosticSequences | null;
+  wrapperDataset: SurfaceCaptureDiagnosticSequences | null;
+  store: {
+    lastHydratedSurfaceId: string | null;
+    lastHydratedSurfaceSequence: number | null;
+  } | null;
+}
+
 export interface SurfaceCaptureRendererDom {
   surfaceId: Id;
   documentHasFocus: boolean;
@@ -326,7 +347,13 @@ export interface SurfaceCaptureRendererDom {
     renderedSequence: number | null;
     targetSequence: number | null;
     waitTimedOut: boolean;
+    waitDurationMs: number;
+    sources: SurfaceCaptureDiagnosticSources;
   };
+  scroll: {
+    isAtBottom: boolean;
+    scrollOffsetRows: number;
+  } | null;
   rootRect: SurfaceCaptureRect;
   xtermRect: SurfaceCaptureRect | null;
   screenRect: SurfaceCaptureRect | null;
@@ -334,6 +361,13 @@ export interface SurfaceCaptureRendererDom {
   text: string;
   bufferRows: SurfaceCaptureBufferRow[];
   bufferText: string;
+  // Bottom-anchored buffer window, captured without touching the user's
+  // scroll position; empty when the viewport is already at the bottom.
+  bottomRows: SurfaceCaptureBufferRow[];
+  bottomText: string;
+  // Plain text of the last few screens of the buffer, used to check the
+  // renderer's recent content against the pty snapshot.
+  recentText: string;
   bufferState: {
     type: string;
     cols: number;
@@ -382,6 +416,31 @@ export interface SurfaceCaptureSnapshotDiagnostics {
   attempts: SurfaceCaptureSnapshotAttempt[];
 }
 
+// Each capture layer sees a different moment while a session streams; the
+// per-layer completion timestamps let diffs be attributed to timing skew
+// instead of being misread as corruption.
+export interface SurfaceCaptureTimings {
+  snapshotCompletedAt: string;
+  rendererCompletedAt: string;
+  screenshotCompletedAt?: string;
+}
+
+export type SurfaceCaptureContentConsistencyVerdict =
+  | "consistent"
+  | "behind"
+  | "indeterminate";
+
+// Content-based cross-check between the pty snapshot and the renderer's
+// recent buffer content. Classifies a sequence-wait timeout as stale
+// instrumentation (content consistent) versus a genuinely lagging renderer
+// (content behind); rendered-sequence diagnostics alone cannot tell the two
+// apart when their updates stop reaching the DOM.
+export interface SurfaceCaptureContentConsistency {
+  verdict: SurfaceCaptureContentConsistencyVerdict;
+  sampledLines: number;
+  matchedLines: number;
+}
+
 export interface SurfaceCapturePayload {
   surfaceId: Id;
   sessionId?: Id;
@@ -394,6 +453,12 @@ export interface SurfaceCapturePayload {
   snapshotDiagnostics: SurfaceCaptureSnapshotDiagnostics;
   rawOutputCopyErrors?: string[];
   renderer: SurfaceCaptureRendererPayload;
+  timings: SurfaceCaptureTimings;
+  contentConsistency: SurfaceCaptureContentConsistency;
+  // True when the renderer capture can be trusted: the sequence wait
+  // completed, or it timed out but the content cross-check says the
+  // renderer is current. Null when no renderer DOM was captured.
+  rendererTrusted: boolean | null;
 }
 
 export interface SurfaceAttachPayload {

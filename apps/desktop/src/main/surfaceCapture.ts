@@ -21,6 +21,8 @@ import type {
 } from "@kmux/proto";
 import { isoNow } from "@kmux/proto";
 
+import { assessContentConsistency } from "./surfaceCaptureConsistency";
+
 const DEFAULT_CAPTURE_TIMEOUT_MS = 3000;
 const IMMEDIATE_SNAPSHOT_TIMEOUT_MS = 1000;
 const RAW_OUTPUT_TAIL_PREVIEW_CHARS = 4000;
@@ -70,6 +72,7 @@ export function createSurfaceCaptureService(
         surfaceId,
         captureOptions
       );
+    const snapshotCompletedAt = isoNow();
     const window = options.getWindow();
     const rendererTimeoutMs = normalizeDuration(
       captureOptions.timeoutMs,
@@ -81,10 +84,22 @@ export function createSurfaceCaptureService(
       snapshot?.sequence ?? null,
       rendererTimeoutMs
     );
+    const rendererCompletedAt = isoNow();
 
     const screenshotPath = renderer.dom
       ? await captureScreenshot(window, renderer.dom.rootRect, outDir)
       : undefined;
+    const screenshotCompletedAt =
+      screenshotPath === undefined ? undefined : isoNow();
+    const contentConsistency = assessContentConsistency({
+      snapshotVt: snapshot?.vt,
+      snapshotScreenRows: snapshot?.rows,
+      rendererRecentText: renderer.dom?.recentText
+    });
+    const rendererTrusted = renderer.dom
+      ? !renderer.dom.terminalDiagnostics.waitTimedOut ||
+        contentConsistency.verdict === "consistent"
+      : null;
     const textPath = join(outDir, "terminal.txt");
     const jsonPath = join(outDir, "capture.json");
     const rawOutputTailPath =
@@ -111,7 +126,16 @@ export function createSurfaceCaptureService(
       snapshot,
       snapshotDiagnostics,
       rawOutputCopyErrors: rawOutputHistory.errors,
-      renderer
+      renderer,
+      timings: {
+        snapshotCompletedAt,
+        rendererCompletedAt,
+        ...(screenshotCompletedAt !== undefined
+          ? { screenshotCompletedAt }
+          : {})
+      },
+      contentConsistency,
+      rendererTrusted
     };
 
     if (rawOutputTailPath !== undefined) {
@@ -373,31 +397,94 @@ function createRendererCaptureScript(
       width: rect.width,
       height: rect.height
     });
-    const readSequence = (value, attr) => {
-      if (typeof value === 'number') {
-        return value;
+    const readSequenceValue = (value) =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const readAttrSequence = (attr) => {
+      // Missing attributes must stay null: Number(null) is 0 and would turn
+      // "diagnostics never initialized" into a plausible-looking sequence.
+      if (attr === null || attr === undefined || attr === '') {
+        return null;
       }
       const parsed = Number(attr);
       return Number.isFinite(parsed) ? parsed : null;
     };
     const findTerminalHost = (root) =>
       Array.from(root.children).find((child) => child.__kmuxTerminal);
-    const readDiagnostics = (root) => {
-      const terminalHost = findTerminalHost(root);
-      const diagnostics =
-        root.__kmuxTerminalDiagnostics ||
-        (terminalHost ? terminalHost.__kmuxTerminalDiagnostics : undefined) ||
-        {};
+    const readPropSequences = (element) => {
+      const diagnostics = element ? element.__kmuxTerminalDiagnostics : null;
+      if (!diagnostics) {
+        return null;
+      }
       return {
-        hydratedSequence: readSequence(
-          diagnostics.hydratedSequence,
-          root.getAttribute('data-terminal-hydrated-sequence')
-        ),
-        renderedSequence: readSequence(
-          diagnostics.renderedSequence,
-          root.getAttribute('data-terminal-rendered-sequence')
-        )
+        hydratedSequence: readSequenceValue(diagnostics.hydratedSequence),
+        renderedSequence: readSequenceValue(diagnostics.renderedSequence)
       };
+    };
+    const readDatasetSequences = (element) => {
+      if (!element) {
+        return null;
+      }
+      const hydratedSequence = readAttrSequence(
+        element.getAttribute('data-terminal-hydrated-sequence')
+      );
+      const renderedSequence = readAttrSequence(
+        element.getAttribute('data-terminal-rendered-sequence')
+      );
+      if (hydratedSequence === null && renderedSequence === null) {
+        return null;
+      }
+      return { hydratedSequence, renderedSequence };
+    };
+    const readStoreSequences = () => {
+      try {
+        const read = window.__kmuxTerminalStoreDiagnostics;
+        return read ? (read(surfaceId) ?? null) : null;
+      } catch {
+        return null;
+      }
+    };
+    const readDiagnosticSources = (root) => ({
+      wrapperProp: readPropSequences(root),
+      hostProp: readPropSequences(findTerminalHost(root)),
+      wrapperDataset: readDatasetSequences(root),
+      store: readStoreSequences()
+    });
+    const maxSequence = (current, next) => {
+      if (next === null) {
+        return current;
+      }
+      return current === null ? next : Math.max(current, next);
+    };
+    // Sequences are monotonic per session, so the freshest source wins; a
+    // stale element copy must not mask progress the store has recorded.
+    const readDiagnostics = (root) => {
+      const sources = readDiagnosticSources(root);
+      let hydratedSequence = null;
+      let renderedSequence = null;
+      for (const candidate of [
+        sources.wrapperProp,
+        sources.hostProp,
+        sources.wrapperDataset
+      ]) {
+        if (!candidate) {
+          continue;
+        }
+        hydratedSequence = maxSequence(
+          hydratedSequence,
+          candidate.hydratedSequence
+        );
+        renderedSequence = maxSequence(
+          renderedSequence,
+          candidate.renderedSequence
+        );
+      }
+      if (sources.store && sources.store.lastHydratedSurfaceId === surfaceId) {
+        renderedSequence = maxSequence(
+          renderedSequence,
+          readSequenceValue(sources.store.lastHydratedSurfaceSequence)
+        );
+      }
+      return { hydratedSequence, renderedSequence, sources };
     };
     if (!root) {
       return {
@@ -405,7 +492,8 @@ function createRendererCaptureScript(
         error: 'Terminal root not found for surface ' + surfaceId
       };
     }
-    const deadline = performance.now() + Math.max(0, timeoutMs);
+    const waitStartedAt = performance.now();
+    const deadline = waitStartedAt + Math.max(0, timeoutMs);
     let waitTimedOut = false;
     if (typeof targetSequence === 'number') {
       while (performance.now() < deadline) {
@@ -423,6 +511,7 @@ function createRendererCaptureScript(
         diagnostics.renderedSequence === null ||
         diagnostics.renderedSequence < targetSequence;
     }
+    const waitDurationMs = Math.round(performance.now() - waitStartedAt);
     await nextPaint();
     const attrs = {};
     for (const attr of Array.from(root.attributes)) {
@@ -440,22 +529,45 @@ function createRendererCaptureScript(
     const terminalDiagnostics = {
       ...readDiagnostics(root),
       targetSequence,
-      waitTimedOut
+      waitTimedOut,
+      waitDurationMs
     };
     let bufferRows = [];
+    let bottomRows = [];
     let bufferState = null;
+    let scroll = null;
+    let recentText = '';
     if (terminal && terminal.buffer && terminal.buffer.active) {
       const buffer = terminal.buffer.active;
-      bufferRows = Array.from({ length: terminal.rows }, (_, index) => {
-        const absoluteY = buffer.viewportY + index;
-        const line = buffer.getLine(absoluteY);
-        return {
-          index,
-          absoluteY,
-          text: line ? line.translateToString(true) : '',
-          isWrapped: Boolean(line && line.isWrapped)
-        };
-      });
+      const readBufferWindow = (startY) =>
+        Array.from({ length: terminal.rows }, (_, index) => {
+          const absoluteY = startY + index;
+          const line = buffer.getLine(absoluteY);
+          return {
+            index,
+            absoluteY,
+            text: line ? line.translateToString(true) : '',
+            isWrapped: Boolean(line && line.isWrapped)
+          };
+        });
+      bufferRows = readBufferWindow(buffer.viewportY);
+      const recentStart = Math.max(0, buffer.length - terminal.rows * 3);
+      recentText = Array.from(
+        { length: buffer.length - recentStart },
+        (_, index) => {
+          const line = buffer.getLine(recentStart + index);
+          return line ? line.translateToString(true) : '';
+        }
+      ).join('\\n');
+      scroll = {
+        isAtBottom: buffer.viewportY === buffer.baseY,
+        scrollOffsetRows: buffer.baseY - buffer.viewportY
+      };
+      if (!scroll.isAtBottom) {
+        // Bottom-anchored window read straight from the buffer; the user's
+        // scroll position is never touched by a diagnostic capture.
+        bottomRows = readBufferWindow(buffer.baseY);
+      }
       bufferState = {
         type: buffer.type,
         cols: terminal.cols,
@@ -481,6 +593,7 @@ function createRendererCaptureScript(
           height: window.innerHeight
         },
         terminalDiagnostics,
+        scroll,
         rootRect: rectToJson(root.getBoundingClientRect()),
         xtermRect: xterm ? rectToJson(xterm.getBoundingClientRect()) : null,
         screenRect: screen ? rectToJson(screen.getBoundingClientRect()) : null,
@@ -488,6 +601,9 @@ function createRendererCaptureScript(
         text: rows.map((row) => row.text).join('\\n'),
         bufferRows,
         bufferText: bufferRows.map((row) => row.text).join('\\n'),
+        bottomRows,
+        bottomText: bottomRows.map((row) => row.text).join('\\n'),
+        recentText,
         bufferState,
         terminalAttrs: attrs
       }
@@ -501,26 +617,33 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     rawOutputTail === undefined
       ? "<unavailable>"
       : escapeForDiagnostics(tail(rawOutputTail, RAW_OUTPUT_TAIL_PREVIEW_CHARS));
-  const domBufferMismatchCount = countDomBufferMismatches(payload);
+  const domBufferComparison = compareDomBufferRows(payload);
+  const diagnostics = payload.renderer.dom?.terminalDiagnostics;
   const lines = [
     `capturedAt=${payload.capturedAt}`,
     `surfaceId=${payload.surfaceId}`,
     `sessionId=${payload.sessionId ?? ""}`,
     `workspaceId=${payload.workspaceId ?? ""}`,
     `paneId=${payload.paneId ?? ""}`,
+    `timings.snapshotCompletedAt=${payload.timings.snapshotCompletedAt}`,
+    `timings.rendererCompletedAt=${payload.timings.rendererCompletedAt}`,
+    `timings.screenshotCompletedAt=${
+      payload.timings.screenshotCompletedAt ?? ""
+    }`,
     `renderer.ok=${payload.renderer.ok}`,
     `renderer.error=${payload.renderer.error ?? ""}`,
-    `renderer.targetSequence=${
-      payload.renderer.dom?.terminalDiagnostics.targetSequence ?? ""
+    `renderer.targetSequence=${diagnostics?.targetSequence ?? ""}`,
+    `renderer.hydratedSequence=${diagnostics?.hydratedSequence ?? "null"}`,
+    `renderer.renderedSequence=${diagnostics?.renderedSequence ?? "null"}`,
+    `renderer.waitTimedOut=${diagnostics?.waitTimedOut ?? ""}`,
+    `renderer.waitTimedOutReason=${formatWaitTimedOutReason(payload)}`,
+    `renderer.waitDurationMs=${diagnostics?.waitDurationMs ?? ""}`,
+    `renderer.diagnosticsSources=${
+      diagnostics ? JSON.stringify(diagnostics.sources) : ""
     }`,
-    `renderer.hydratedSequence=${
-      payload.renderer.dom?.terminalDiagnostics.hydratedSequence ?? ""
-    }`,
-    `renderer.renderedSequence=${
-      payload.renderer.dom?.terminalDiagnostics.renderedSequence ?? ""
-    }`,
-    `renderer.waitTimedOut=${
-      payload.renderer.dom?.terminalDiagnostics.waitTimedOut ?? ""
+    `renderer.isAtBottom=${payload.renderer.dom?.scroll?.isAtBottom ?? ""}`,
+    `renderer.scrollOffsetRows=${
+      payload.renderer.dom?.scroll?.scrollOffsetRows ?? ""
     }`,
     `snapshot.selected=${payload.snapshotDiagnostics.selected}`,
     `snapshot.attempts=${formatSnapshotAttempts(
@@ -541,10 +664,21 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     `rawOutputLog.bytes=${payload.snapshot?.rawOutputLogBytes ?? ""}`,
     `rawOutputLog.chunks=${payload.snapshot?.rawOutputLogChunks ?? ""}`,
     `rawOutputCopyErrors=${payload.rawOutputCopyErrors?.join(" | ") ?? ""}`,
-    `renderer.domBufferMismatchRows=${domBufferMismatchCount ?? ""}`,
-    `renderer.domMatchesXtermBuffer=${
-      domBufferMismatchCount === null ? "" : domBufferMismatchCount === 0
+    `renderer.domBufferMismatchRows=${
+      domBufferComparison?.trimmedMismatches.length ?? ""
     }`,
+    `renderer.domBufferMismatchRowsRaw=${
+      domBufferComparison?.rawMismatchCount ?? ""
+    }`,
+    `renderer.domMatchesXtermBuffer=${
+      domBufferComparison === null
+        ? ""
+        : domBufferComparison.trimmedMismatches.length === 0
+    }`,
+    `verdict.contentConsistency=${payload.contentConsistency.verdict}`,
+    `verdict.contentSampledLines=${payload.contentConsistency.sampledLines}`,
+    `verdict.contentMatchedLines=${payload.contentConsistency.matchedLines}`,
+    `verdict.rendererTrusted=${payload.rendererTrusted ?? ""}`,
     "",
     "[analysis]",
     "Compare the same missing text across these layers:",
@@ -554,6 +688,19 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     "4. [renderer.xterm.buffer.rows]",
     "5. [renderer.dom.rows] and terminal.png",
     "If raw PTY stream does not contain the missing text or contains later erase/overwrite sequences before the snapshot sequence, inspect the agent CLI terminal output. If raw PTY stream contains stable text but pty.snapshot does not, inspect pty-host headless ingestion/serialization. If pty.snapshot has it but renderer buffer does not, inspect bridge attach/replay/live delivery. If renderer buffer has it but DOM/screenshot do not, inspect xterm render/paint.",
+    "",
+    "[renderer.dom-buffer.mismatches.trimmed]",
+    ...(domBufferComparison === null
+      ? ["<unavailable>"]
+      : domBufferComparison.trimmedMismatches.length === 0
+        ? ["<none>"]
+        : domBufferComparison.trimmedMismatches
+            .slice(0, 20)
+            .flatMap((mismatch) => [
+              `row ${mismatch.index}`,
+              `  dom=${escapeForDiagnostics(mismatch.domText ?? "<missing>")}`,
+              `  buf=${escapeForDiagnostics(mismatch.bufferText ?? "<missing>")}`
+            ])),
     "",
     "[renderer.dom.rows]",
     ...(payload.renderer.dom?.rows.map(
@@ -566,6 +713,16 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
         `${row.index.toString().padStart(3, "0")} @${row.absoluteY}${row.isWrapped ? " wrapped" : ""}: ${row.text}`
     ) ?? ["<unavailable>"]),
     "",
+    "[renderer.xterm.buffer.bottomRows]",
+    ...(payload.renderer.dom === undefined
+      ? ["<unavailable>"]
+      : payload.renderer.dom.scroll?.isAtBottom !== false
+        ? ["<viewport is at the bottom; see buffer.rows>"]
+        : payload.renderer.dom.bottomRows.map(
+            (row) =>
+              `${row.index.toString().padStart(3, "0")} @${row.absoluteY}${row.isWrapped ? " wrapped" : ""}: ${row.text}`
+          )),
+    "",
     "[pty.rawOutputTail.preview.escaped]",
     rawOutputTailPreview,
     "",
@@ -576,22 +733,57 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
   return `${lines.join("\n")}\n`;
 }
 
-function countDomBufferMismatches(
+function formatWaitTimedOutReason(payload: SurfaceCapturePayload): string {
+  const diagnostics = payload.renderer.dom?.terminalDiagnostics;
+  if (!diagnostics?.waitTimedOut) {
+    return "";
+  }
+  switch (payload.contentConsistency.verdict) {
+    case "consistent":
+      return "instrumentation-stale";
+    case "behind":
+      return "content-behind";
+    default:
+      return "indeterminate";
+  }
+}
+
+interface DomBufferMismatch {
+  index: number;
+  domText: string | undefined;
+  bufferText: string | undefined;
+}
+
+interface DomBufferComparison {
+  // DOM rows pad to the full grid width while buffer rows trim trailing
+  // whitespace, so the trimmed comparison is the meaningful one; the raw
+  // count is kept for reference only.
+  trimmedMismatches: DomBufferMismatch[];
+  rawMismatchCount: number;
+}
+
+function compareDomBufferRows(
   payload: SurfaceCapturePayload
-): number | null {
+): DomBufferComparison | null {
   const dom = payload.renderer.dom;
   if (!dom) {
     return null;
   }
 
   const maxRows = Math.max(dom.rows.length, dom.bufferRows.length);
-  let mismatchCount = 0;
+  const trimmedMismatches: DomBufferMismatch[] = [];
+  let rawMismatchCount = 0;
   for (let index = 0; index < maxRows; index += 1) {
-    if (dom.rows[index]?.text !== dom.bufferRows[index]?.text) {
-      mismatchCount += 1;
+    const domText = dom.rows[index]?.text;
+    const bufferText = dom.bufferRows[index]?.text;
+    if (domText !== bufferText) {
+      rawMismatchCount += 1;
+    }
+    if ((domText ?? "").trimEnd() !== (bufferText ?? "").trimEnd()) {
+      trimmedMismatches.push({ index, domText, bufferText });
     }
   }
-  return mismatchCount;
+  return { trimmedMismatches, rawMismatchCount };
 }
 
 function formatSnapshotAttempts(

@@ -2006,6 +2006,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           resolve(didWrite);
         };
         const timeout = setTimeout(() => {
+          // Distinguishes "xterm never confirmed the write" from a dropped
+          // write in captures and logs; the parse may still complete later,
+          // but its bookkeeping callback is skipped once this fires.
+          console.warn("kmux: terminal write callback timed out", {
+            surfaceId: profileSurfaceId,
+            bytes: data.length,
+            timeoutMs: TERMINAL_WRITE_CALLBACK_TIMEOUT_MS
+          });
           finish(false);
         }, TERMINAL_WRITE_CALLBACK_TIMEOUT_MS);
         let didScheduleWrite = false;

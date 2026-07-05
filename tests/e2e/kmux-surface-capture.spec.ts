@@ -52,6 +52,11 @@ test("surface capture writes PTY snapshot, renderer rows, and screenshot diagnos
     expect(capture.snapshotDiagnostics.attempts.length).toBeGreaterThan(0);
     expect(capture.renderer.ok).toBe(true);
     expect(capture.renderer.dom?.terminalDiagnostics.waitTimedOut).toBe(false);
+    expect(capture.rendererTrusted).toBe(true);
+    expect(capture.contentConsistency.verdict).not.toBe("behind");
+    expect(capture.timings.snapshotCompletedAt).toBeTruthy();
+    expect(capture.timings.rendererCompletedAt).toBeTruthy();
+    expect(capture.renderer.dom?.scroll?.isAtBottom).toBe(true);
     expect(
       capture.renderer.dom?.terminalDiagnostics.renderedSequence ?? -1
     ).toBeGreaterThanOrEqual(
