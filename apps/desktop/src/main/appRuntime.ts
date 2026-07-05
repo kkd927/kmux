@@ -24,6 +24,7 @@ import {
 } from "@kmux/core";
 import type {
   ActiveWorkspacePaneTreeVm,
+  ExternalAgentSessionRef,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   Id,
@@ -559,7 +560,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.settingsStore.load() ?? createRuntimeDefaultSettings()
     );
     const shouldRestoreSnapshot =
-      snapshot !== null && snapshotRecord?.cleanShutdown !== true;
+      snapshot !== null &&
+      (snapshotRecord?.cleanShutdown !== true ||
+        snapshotRecord.restoreOnLaunch === true);
     const initial = shouldRestoreSnapshot
       ? cloneState(snapshot)
       : createInitialState(options.defaultShellPath);
@@ -567,14 +570,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     initial.settings = mergeSettings(initial.settings, settings ?? {});
 
     if (shouldRestoreSnapshot) {
-      for (const session of Object.values(initial.sessions)) {
-        if (session.runtimeState !== "exited") {
-          session.runtimeState = "pending";
-          session.shellInputReady = false;
-          delete session.pid;
-          delete session.exitCode;
-        }
-      }
+      resetRestoredSessions(initial);
       clearSnapshotNotifications(initial);
     }
 
@@ -673,7 +669,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     if (!spec) {
       throw new Error("External session not found");
     }
-    const existing = findOpenExternalAgentSession(spec.launch);
+    const existing = findOpenExternalAgentSession(spec);
     if (existing) {
       dispatchAppAction({
         type: "surface.focus",
@@ -685,7 +681,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       type: "workspace.create",
       name: spec.title,
       cwd: spec.cwd,
-      launch: spec.launch
+      launch: spec.launch,
+      agentSessionRef: spec.agentSessionRef
     });
     const state = getState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
@@ -696,14 +693,21 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function findOpenExternalAgentSession(
-    launch: SessionLaunchConfig
+    spec: ExternalSessionResumeSpec
   ): ExternalAgentSessionResumeResult | null {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
       if (session.runtimeState === "exited") {
         continue;
       }
-      if (!launchCommandsMatch(session.launch, launch)) {
+      const agentSessionRefMatches = externalAgentSessionRefsMatch(
+        session.agentSessionRef,
+        spec.agentSessionRef
+      );
+      if (
+        !agentSessionRefMatches &&
+        !launchCommandsMatch(session.launch, spec.launch)
+      ) {
         continue;
       }
       const surface = state.surfaces[session.surfaceId];
@@ -754,10 +758,35 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     );
   }
 
+  function resolveRestoredAgentSession(
+    agentSessionRef: ExternalAgentSessionRef | undefined
+  ): ExternalSessionResumeSpec | null {
+    if (!agentSessionRef) {
+      return null;
+    }
+    const spec = options.externalSessionIndexer?.resolveExternalAgentSession(
+      agentSessionRef.externalKey
+    );
+    if (
+      !spec ||
+      !externalAgentSessionRefsMatch(spec.agentSessionRef, agentSessionRef)
+    ) {
+      return null;
+    }
+    return spec;
+  }
+
   function respawnRestoredSessions(): void {
     const state = getState();
+    let replacedLaunch = false;
     for (const session of Object.values(state.sessions)) {
       if (session.runtimeState !== "exited") {
+        const resumeSpec = resolveRestoredAgentSession(session.agentSessionRef);
+        if (resumeSpec) {
+          session.launch = resumeSpec.launch;
+          session.agentSessionRef = resumeSpec.agentSessionRef;
+          replacedLaunch = true;
+        }
         const surface = state.surfaces[session.surfaceId];
         const pane = surface ? state.panes[surface.paneId] : undefined;
         const workspaceId = pane?.workspaceId;
@@ -788,6 +817,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         ]);
       }
     }
+    if (replacedLaunch) {
+      options.snapshotStore.save(state, {
+        cleanShutdown: false
+      });
+    }
   }
 
   function shutdown(): void {
@@ -799,14 +833,16 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       options.persistWindowState(mainWindow);
     }
     if (store) {
-      const shutdownSnapshot = createCleanShutdownSnapshot(
-        store.getState(),
-        options.defaultShellPath
-      );
+      const currentState = store.getState();
+      const restoreOnLaunch = currentState.settings.restoreWorkspacesAfterQuit;
+      const shutdownSnapshot = restoreOnLaunch
+        ? currentState
+        : createCleanShutdownSnapshot(currentState, options.defaultShellPath);
       options.snapshotStore.save(shutdownSnapshot, {
-        cleanShutdown: true
+        cleanShutdown: true,
+        restoreOnLaunch
       });
-      options.settingsStore.save(store.getState().settings);
+      options.settingsStore.save(currentState.settings);
     }
   }
 
@@ -883,14 +919,35 @@ function buildPtySessionSpec(effect: SessionSpawnEffect): PtySessionSpec {
 }
 
 function clearSnapshotNotifications(state: AppState): void {
-  if (state.notifications.length === 0) {
-    return;
-  }
   state.notifications = [];
   for (const surface of Object.values(state.surfaces)) {
     surface.unreadCount = 0;
     surface.attention = false;
   }
+}
+
+function resetRestoredSessions(state: AppState): void {
+  for (const session of Object.values(state.sessions)) {
+    if (session.runtimeState !== "exited") {
+      session.runtimeState = "pending";
+      session.shellInputReady = false;
+      delete session.pid;
+      delete session.exitCode;
+    }
+  }
+}
+
+function externalAgentSessionRefsMatch(
+  left: ExternalAgentSessionRef | undefined,
+  right: ExternalAgentSessionRef | undefined
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.vendor === right.vendor &&
+    left.externalKey === right.externalKey &&
+    left.sessionId === right.sessionId
+  );
 }
 
 function createCleanShutdownSnapshot(

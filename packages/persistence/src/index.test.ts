@@ -44,11 +44,13 @@ describe("file-store persistence", () => {
     expect(store.load()).toEqual(state);
     expect(store.loadRecord()).toEqual({
       snapshot: state,
-      cleanShutdown: false
+      cleanShutdown: false,
+      restoreOnLaunch: false
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
       version: 1,
       cleanShutdown: false,
+      restoreOnLaunch: false,
       snapshot: state
     });
   });
@@ -63,11 +65,33 @@ describe("file-store persistence", () => {
     expect(store.load()).toEqual(state);
     expect(store.loadRecord()).toEqual({
       snapshot: state,
-      cleanShutdown: true
+      cleanShutdown: true,
+      restoreOnLaunch: false
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
       version: 1,
       cleanShutdown: true,
+      restoreOnLaunch: false,
+      snapshot: state
+    });
+  });
+
+  it("persists normal quit restore metadata on the final snapshot save", () => {
+    const statePath = join(sandboxDir, "state-restore-on-launch.json");
+    const store = createSnapshotStore(statePath);
+    const state = createInitialState("/bin/zsh");
+
+    store.save(state, { cleanShutdown: true, restoreOnLaunch: true });
+
+    expect(store.loadRecord()).toEqual({
+      snapshot: state,
+      cleanShutdown: true,
+      restoreOnLaunch: true
+    });
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
+      version: 1,
+      cleanShutdown: true,
+      restoreOnLaunch: true,
       snapshot: state
     });
   });
@@ -224,6 +248,7 @@ describe("file-store persistence", () => {
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
       version: 1,
       cleanShutdown: false,
+      restoreOnLaunch: false,
       snapshot: secondState
     });
   });
@@ -333,7 +358,13 @@ describe("file-store persistence", () => {
 
     expect(paths.usageHistoryPath).toBe(
       process.platform === "linux"
-        ? join("/Users/example", ".local", "state", "kmux", "usage-history.json")
+        ? join(
+            "/Users/example",
+            ".local",
+            "state",
+            "kmux",
+            "usage-history.json"
+          )
         : join(configDir, "usage-history.json")
     );
   });

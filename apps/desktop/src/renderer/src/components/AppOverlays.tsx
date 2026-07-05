@@ -943,6 +943,30 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           }}
                         />
                       </div>
+                      <div className={styles.settingsRow}>
+                        <span className={styles.settingsRowCopy}>
+                          <span className={styles.settingsRowTitle}>
+                            Restore workspaces after quitting
+                          </span>
+                          <span className={styles.settingsRowDescription}>
+                            Reopen the last workspace, pane, and tab layout on
+                            the next launch.
+                          </span>
+                        </span>
+                        <input
+                          aria-label="Restore workspaces after quitting"
+                          type="checkbox"
+                          checked={
+                            props.settingsDraft.restoreWorkspacesAfterQuit
+                          }
+                          onChange={(event) => {
+                            updateSettingsDraft(props.setSettingsDraft, {
+                              restoreWorkspacesAfterQuit:
+                                event.currentTarget.checked
+                            });
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : null}

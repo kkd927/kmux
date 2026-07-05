@@ -662,7 +662,21 @@ async function bootstrap(): Promise<void> {
         }
       });
     },
-    confirmQuit: showQuitConfirmationDialog,
+    getRestoreWorkspacesAfterQuit: () =>
+      runtime.getState().settings.restoreWorkspacesAfterQuit,
+    setRestoreWorkspacesAfterQuit: (value) => {
+      runtime.dispatchAppAction({
+        type: "settings.update",
+        patch: {
+          restoreWorkspacesAfterQuit: value
+        }
+      });
+    },
+    confirmQuit: (window, options) =>
+      showQuitConfirmationDialog(window, {
+        ...options,
+        ...(notificationIconPath ? { iconPath: notificationIconPath } : {})
+      }),
     shutdown
   });
   openMainWindow("initial");

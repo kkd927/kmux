@@ -64,6 +64,12 @@ export type ExternalAgentSessionVendor =
   | "claude"
   | "antigravity";
 
+export interface ExternalAgentSessionRef {
+  vendor: ExternalAgentSessionVendor;
+  externalKey: string;
+  sessionId: string;
+}
+
 export interface ExternalAgentSessionVm {
   key: string;
   vendor: ExternalAgentSessionVendor;
@@ -614,6 +620,7 @@ export interface KmuxSettings {
   settingsVersion?: number;
   socketMode: SocketMode;
   warnBeforeQuit: boolean;
+  restoreWorkspacesAfterQuit: boolean;
   notificationDesktop: boolean;
   notificationSound: boolean;
   themeMode: ThemeMode;

@@ -187,6 +187,7 @@ function createSettings(): KmuxSettings {
   return {
     socketMode: "kmuxOnly",
     warnBeforeQuit: true,
+    restoreWorkspacesAfterQuit: true,
     notificationDesktop: false,
     notificationSound: false,
     themeMode: "dark",

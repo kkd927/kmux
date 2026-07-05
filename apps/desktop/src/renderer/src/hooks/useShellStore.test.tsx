@@ -130,6 +130,7 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
     settings: {
       socketMode: "kmuxOnly",
       warnBeforeQuit: true,
+      restoreWorkspacesAfterQuit: true,
       notificationDesktop: true,
       notificationSound: false,
       themeMode: "dark",

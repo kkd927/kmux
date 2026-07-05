@@ -102,16 +102,19 @@ export interface PersistedWindowState {
 interface SnapshotEnvelope {
   version: number;
   cleanShutdown?: boolean;
+  restoreOnLaunch?: boolean;
   snapshot: AppState;
 }
 
 export interface SnapshotRecord {
   snapshot: AppState;
   cleanShutdown: boolean;
+  restoreOnLaunch: boolean;
 }
 
 export interface SnapshotSaveOptions {
   cleanShutdown?: boolean;
+  restoreOnLaunch?: boolean;
 }
 
 interface WindowStateEnvelope {
@@ -264,7 +267,8 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
     }
     return {
       snapshot: envelope.snapshot,
-      cleanShutdown: envelope.cleanShutdown === true
+      cleanShutdown: envelope.cleanShutdown === true,
+      restoreOnLaunch: envelope.restoreOnLaunch === true
     };
   };
 
@@ -280,6 +284,7 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
         JSON.stringify({
           version: SNAPSHOT_STORE_VERSION,
           cleanShutdown: options.cleanShutdown === true,
+          restoreOnLaunch: options.restoreOnLaunch === true,
           snapshot
         } satisfies SnapshotEnvelope)
       );
@@ -434,10 +439,7 @@ function pathSourceFromEnv(
   return envPath(env, key) ? "env" : undefined;
 }
 
-function envPath(
-  env: NodeJS.ProcessEnv,
-  key: string
-): string | undefined {
+function envPath(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const value = env[key]?.trim();
   return value || undefined;
 }
@@ -574,11 +576,7 @@ function resolveStateDir(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform
 ): { path: string; source: AppPathSource } {
-  const explicitStateDir = explicitRootEnvPath(
-    env,
-    "KMUX_STATE_DIR",
-    platform
-  );
+  const explicitStateDir = explicitRootEnvPath(env, "KMUX_STATE_DIR", platform);
   if (explicitStateDir) {
     return { path: explicitStateDir, source: "env" };
   }
@@ -624,11 +622,7 @@ function resolveCacheDir(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform
 ): { path: string; source: AppPathSource } {
-  const explicitCacheDir = explicitRootEnvPath(
-    env,
-    "KMUX_CACHE_DIR",
-    platform
-  );
+  const explicitCacheDir = explicitRootEnvPath(env, "KMUX_CACHE_DIR", platform);
   if (explicitCacheDir) {
     return { path: explicitCacheDir, source: "env" };
   }

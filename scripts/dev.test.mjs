@@ -7,6 +7,7 @@ import {
   ensureElectronBinaryDownloaded,
   exitCodeForSignal,
   isConfiguredChromeSandbox,
+  readDevStateRestoreMetadata,
   resolveElectronOverrideExecutablePath,
   resolveDevAppEnv,
   resolveInstallElectronCommand,
@@ -70,10 +71,7 @@ describe("dev launcher", () => {
       nativeCacheRoot: path.join("/tmp/kmux-runtime", "native"),
       agentHookBinDir: path.join("profiles/config", "bin"),
       agentWrapperBinDir: path.join("profiles/config", "wrappers"),
-      electronUserDataDir: path.join(
-        "/tmp/kmux-runtime",
-        "electron-user-data"
-      )
+      electronUserDataDir: path.join("/tmp/kmux-runtime", "electron-user-data")
     });
   });
 
@@ -211,6 +209,9 @@ describe("dev launcher", () => {
     const result = resetDevState({
       stateDir: path.join(path.sep, "repo", ".kmux", "dev", "config"),
       env: {},
+      readFile: () => {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
       rmFile: (statePath, options) => {
         calls.push({ statePath, options });
       }
@@ -238,7 +239,9 @@ describe("dev launcher", () => {
   it("can preserve dev workspace state for restore debugging", () => {
     const calls = [];
 
-    expect(shouldResetDevState({ KMUX_DEV_RESTORE_STATE: "1" })).toBe(false);
+    expect(shouldResetDevState({ env: { KMUX_DEV_RESTORE_STATE: "1" } })).toBe(
+      false
+    );
     expect(
       resetDevState({
         stateDir: path.join(path.sep, "repo", ".kmux", "dev", "config"),
@@ -249,6 +252,122 @@ describe("dev launcher", () => {
       })
     ).toEqual({ reset: false, statePath: null });
     expect(calls).toHaveLength(0);
+  });
+
+  it("preserves dev workspace state when the previous clean shutdown opted into restore", () => {
+    const calls = [];
+    const stateDir = path.join(path.sep, "repo", ".kmux", "dev", "config");
+    const statePath = path.join(stateDir, "state.json");
+    const readFile = () =>
+      JSON.stringify({
+        version: 1,
+        cleanShutdown: true,
+        restoreOnLaunch: true,
+        snapshot: {}
+      });
+
+    expect(
+      readDevStateRestoreMetadata({
+        statePath,
+        readFile
+      })
+    ).toEqual({
+      found: true,
+      cleanShutdown: true,
+      restoreOnLaunch: true,
+      shouldRestore: true
+    });
+    expect(
+      resetDevState({
+        stateDir,
+        env: {},
+        readFile,
+        rmFile: (nextStatePath, options) => {
+          calls.push({ statePath: nextStatePath, options });
+        }
+      })
+    ).toEqual({ reset: false, statePath: null });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("preserves unclean dev workspace state for crash recovery", () => {
+    const calls = [];
+    const stateDir = path.join(path.sep, "repo", ".kmux", "dev", "config");
+
+    expect(
+      resetDevState({
+        stateDir,
+        env: {},
+        readFile: () =>
+          JSON.stringify({
+            version: 1,
+            cleanShutdown: false,
+            restoreOnLaunch: false,
+            snapshot: {}
+          }),
+        rmFile: (statePath, options) => {
+          calls.push({ statePath, options });
+        }
+      })
+    ).toEqual({ reset: false, statePath: null });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("resets clean dev workspace state when restore was disabled", () => {
+    const calls = [];
+    const stateDir = path.join(path.sep, "repo", ".kmux", "dev", "config");
+    const statePath = path.join(stateDir, "state.json");
+
+    expect(
+      resetDevState({
+        stateDir,
+        env: {},
+        readFile: () =>
+          JSON.stringify({
+            version: 1,
+            cleanShutdown: true,
+            restoreOnLaunch: false,
+            snapshot: {}
+          }),
+        rmFile: (nextStatePath, options) => {
+          calls.push({ statePath: nextStatePath, options });
+        }
+      })
+    ).toEqual({ reset: true, statePath });
+    expect(calls).toEqual([
+      {
+        statePath,
+        options: { force: true }
+      }
+    ]);
+  });
+
+  it("treats invalid dev workspace state metadata as resettable", () => {
+    const statePath = path.join(
+      path.sep,
+      "repo",
+      ".kmux",
+      "dev",
+      "config",
+      "state.json"
+    );
+
+    expect(
+      readDevStateRestoreMetadata({
+        statePath,
+        readFile: () => JSON.stringify({ cleanShutdown: false })
+      })
+    ).toEqual({
+      found: false,
+      shouldRestore: false
+    });
+    expect(
+      shouldResetDevState({
+        env: {},
+        statePath,
+        readFile: () => JSON.stringify({ cleanShutdown: false })
+      })
+    ).toBe(true);
   });
 
   it("resolves the Electron 42 lazy-download helper from local node_modules", () => {

@@ -22,6 +22,7 @@ const ELECTRON_PATH_TXT_RELATIVE_PATH = path.join(
   "electron",
   "path.txt"
 );
+const SNAPSHOT_STORE_VERSION = 1;
 const KMUX_INHERITED_RUNTIME_ENV_KEYS = [
   "KMUX_SOCKET_PATH",
   "KMUX_SOCKET_MODE",
@@ -223,20 +224,91 @@ export function resolveDevAppEnv({
   };
 }
 
-export function shouldResetDevState(env = process.env) {
-  return nonBlankEnvPath(env.KMUX_DEV_RESTORE_STATE) !== "1";
+export function readDevStateRestoreMetadata({
+  statePath,
+  readFile = readFileSync
+} = {}) {
+  if (!statePath) {
+    return {
+      found: false,
+      shouldRestore: false
+    };
+  }
+  let content;
+  try {
+    content = readFile(statePath, "utf8");
+  } catch {
+    return {
+      found: false,
+      shouldRestore: false
+    };
+  }
+
+  let envelope;
+  try {
+    envelope = JSON.parse(content);
+  } catch {
+    return {
+      found: false,
+      shouldRestore: false
+    };
+  }
+
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    envelope.version !== SNAPSHOT_STORE_VERSION ||
+    !envelope.snapshot
+  ) {
+    return {
+      found: false,
+      shouldRestore: false
+    };
+  }
+
+  const cleanShutdown = envelope.cleanShutdown === true;
+  const restoreOnLaunch = envelope.restoreOnLaunch === true;
+  return {
+    found: true,
+    cleanShutdown,
+    restoreOnLaunch,
+    shouldRestore: cleanShutdown !== true || restoreOnLaunch
+  };
+}
+
+export function shouldResetDevState({
+  env = process.env,
+  statePath,
+  readFile = readFileSync
+} = {}) {
+  const explicitRestore = nonBlankEnvPath(env.KMUX_DEV_RESTORE_STATE);
+  if (explicitRestore === "1") {
+    return false;
+  }
+  if (explicitRestore) {
+    return true;
+  }
+  return !readDevStateRestoreMetadata({ statePath, readFile }).shouldRestore;
 }
 
 export function resetDevState({
   stateDir,
   env = process.env,
+  readFile = readFileSync,
   rmFile = rmSync
 } = {}) {
-  if (!stateDir || !shouldResetDevState(env)) {
+  const statePath = stateDir ? path.join(stateDir, "state.json") : null;
+  if (
+    !stateDir ||
+    !shouldResetDevState({
+      env,
+      statePath,
+      readFile
+    })
+  ) {
     return { reset: false, statePath: null };
   }
-  // Dev launches start from a fresh workspace without clearing settings/window state.
-  const statePath = path.join(stateDir, "state.json");
+  // Dev launches reset only snapshots that the app would not restore anyway.
   rmFile(statePath, { force: true });
   return { reset: true, statePath };
 }

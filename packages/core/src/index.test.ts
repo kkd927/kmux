@@ -1208,6 +1208,113 @@ describe("core reducer", () => {
     expect(state.workspaces[workspaceId].statusEntries).toEqual({});
   });
 
+  it("backfills trusted agent session refs from explicit vendor session events", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const kmuxSessionId = state.surfaces[surfaceId].sessionId;
+
+    const effects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      sessionId: "codex-vendor-session",
+      agent: "codex",
+      event: "session_start"
+    });
+
+    expect(effects).toEqual([{ type: "persist" }]);
+    expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
+      vendor: "codex",
+      externalKey: "codex:codex-vendor-session",
+      sessionId: "codex-vendor-session"
+    });
+    expect(state.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
+  it("does not backfill agent session refs from surface-id hook fallbacks", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const kmuxSessionId = state.surfaces[surfaceId].sessionId;
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      sessionId: surfaceId,
+      agent: "codex",
+      event: "session_start"
+    });
+
+    expect(state.sessions[kmuxSessionId].agentSessionRef).toBeUndefined();
+  });
+
+  it("does not overwrite agent session refs from completion or session-end events", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const kmuxSessionId = state.surfaces[surfaceId].sessionId;
+    state.sessions[kmuxSessionId].agentSessionRef = {
+      vendor: "codex",
+      externalKey: "codex:trusted-session",
+      sessionId: "trusted-session"
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      sessionId: "completion-session",
+      agent: "codex",
+      event: "turn_complete"
+    });
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      sessionId: "ended-session",
+      agent: "codex",
+      event: "session_end"
+    });
+
+    expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
+      vendor: "codex",
+      externalKey: "codex:trusted-session",
+      sessionId: "trusted-session"
+    });
+  });
+
+  it("does not overwrite agent session refs from ui-only needs-input events", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const kmuxSessionId = state.surfaces[surfaceId].sessionId;
+    state.sessions[kmuxSessionId].agentSessionRef = {
+      vendor: "codex",
+      externalKey: "codex:trusted-session",
+      sessionId: "trusted-session"
+    };
+
+    applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      surfaceId,
+      sessionId: "synthetic-session",
+      agent: "codex",
+      event: "needs_input",
+      details: {
+        uiOnly: true
+      }
+    });
+
+    expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
+      vendor: "codex",
+      externalKey: "codex:trusted-session",
+      sessionId: "trusted-session"
+    });
+  });
+
   it("uses the resolved surface id for agent status keys", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -1525,28 +1632,33 @@ describe("core reducer", () => {
     ).toBe(false);
   });
 
-  it("defaults warn-before-quit to enabled and preserves explicit updates", () => {
+  it("defaults quit preferences to enabled and preserves explicit updates", () => {
     const state = createInitialState();
 
     expect(state.settings.warnBeforeQuit).toBe(true);
+    expect(state.settings.restoreWorkspacesAfterQuit).toBe(true);
 
     applyAction(state, {
       type: "settings.update",
       patch: {
-        warnBeforeQuit: false
+        warnBeforeQuit: false,
+        restoreWorkspacesAfterQuit: false
       }
     });
 
     expect(state.settings.warnBeforeQuit).toBe(false);
+    expect(state.settings.restoreWorkspacesAfterQuit).toBe(false);
 
     applyAction(state, {
       type: "settings.update",
       patch: {
-        warnBeforeQuit: undefined
+        warnBeforeQuit: undefined,
+        restoreWorkspacesAfterQuit: undefined
       }
     });
 
     expect(state.settings.warnBeforeQuit).toBe(false);
+    expect(state.settings.restoreWorkspacesAfterQuit).toBe(false);
   });
 
   it("defaults bell sounds to enabled for new settings", () => {
@@ -1780,7 +1892,7 @@ describe("core reducer", () => {
     ).toBe(false);
   });
 
-  it("migrates missing warn-before-quit settings to the default", () => {
+  it("migrates missing quit preference settings to the defaults", () => {
     const state = createInitialState();
     const legacyState = structuredClone(state) as typeof state & {
       settings: Record<string, unknown>;
@@ -1788,10 +1900,13 @@ describe("core reducer", () => {
 
     delete (legacyState.settings as { warnBeforeQuit?: boolean })
       .warnBeforeQuit;
+    delete (legacyState.settings as { restoreWorkspacesAfterQuit?: boolean })
+      .restoreWorkspacesAfterQuit;
 
     const restored = cloneState(legacyState as typeof state);
 
     expect(restored.settings.warnBeforeQuit).toBe(true);
+    expect(restored.settings.restoreWorkspacesAfterQuit).toBe(true);
   });
 
   it("drops legacy startup restore settings during state restore", () => {

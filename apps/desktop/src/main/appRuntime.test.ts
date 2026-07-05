@@ -63,7 +63,11 @@ import { DIAGNOSTICS_LOG_PATH_ENV } from "../shared/diagnostics";
 function createRuntime(
   notificationSound: boolean,
   options: {
-    snapshotRecord?: { snapshot: AppState; cleanShutdown: boolean } | null;
+    snapshotRecord?: {
+      snapshot: AppState;
+      cleanShutdown: boolean;
+      restoreOnLaunch?: boolean;
+    } | null;
     settings?: KmuxSettings | null;
     windowState?: PersistedWindowState | null;
   } & Partial<AppRuntimeOptions> = {}
@@ -98,7 +102,13 @@ function createRuntime(
     snapshotStore: {
       path: "/tmp/kmux-snapshot.json",
       load: () => options.snapshotRecord?.snapshot ?? null,
-      loadRecord: () => options.snapshotRecord ?? null,
+      loadRecord: () =>
+        options.snapshotRecord
+          ? {
+              ...options.snapshotRecord,
+              restoreOnLaunch: options.snapshotRecord.restoreOnLaunch === true
+            }
+          : null,
       save: snapshotSave
     },
     windowStateStore: {
@@ -370,6 +380,11 @@ describe("app runtime external sessions", () => {
             ? {
                 key,
                 vendor: "codex",
+                agentSessionRef: {
+                  vendor: "codex",
+                  externalKey: key,
+                  sessionId: "codex-session"
+                },
                 title: "Fix terminal focus",
                 cwd: "/tmp/project",
                 launch: {
@@ -399,6 +414,11 @@ describe("app runtime external sessions", () => {
       title: "Fix terminal focus"
     });
     expect(session.launch.args).toBeUndefined();
+    expect(session.agentSessionRef).toEqual({
+      vendor: "codex",
+      externalKey: "codex:codex-session",
+      sessionId: "codex-session"
+    });
   });
 
   it("focuses an already open external session instead of opening it again", () => {
@@ -413,6 +433,11 @@ describe("app runtime external sessions", () => {
             ? {
                 key,
                 vendor: "gemini",
+                agentSessionRef: {
+                  vendor: "gemini",
+                  externalKey: key,
+                  sessionId: "gemini-session"
+                },
                 title: "Read image plan",
                 cwd: "/tmp/project",
                 launch: {
@@ -472,6 +497,11 @@ describe("app runtime external sessions", () => {
             ? {
                 key,
                 vendor: "claude",
+                agentSessionRef: {
+                  vendor: "claude",
+                  externalKey: key,
+                  sessionId: "claude-session"
+                },
                 title: "Investigate exit",
                 cwd: "/tmp/project",
                 launch: {
@@ -584,7 +614,7 @@ describe("app runtime restore", () => {
     ).toBe(false);
   });
 
-  it("starts fresh instead of restoring a clean-shutdown snapshot", () => {
+  it("starts fresh instead of restoring a clean-shutdown snapshot without restore-on-launch", () => {
     const snapshot = createInitialState("/bin/zsh");
 
     applyAction(snapshot, {
@@ -611,6 +641,38 @@ describe("app runtime restore", () => {
     expect(
       restored.windows[restored.activeWindowId]?.workspaceOrder
     ).toHaveLength(1);
+  });
+
+  it("restores a clean-shutdown snapshot when restore-on-launch is set", () => {
+    const snapshot = createInitialState("/bin/zsh");
+
+    applyAction(snapshot, {
+      type: "workspace.create",
+      name: "project"
+    });
+
+    const restoredWorkspaceId =
+      snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
+
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      }
+    });
+
+    const restored = runtime.restoreInitialState();
+
+    expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
+    for (const session of Object.values(restored.sessions)) {
+      if (snapshot.sessions[session.id]?.runtimeState !== "exited") {
+        expect(session.runtimeState).toBe("pending");
+        expect(session.shellInputReady).toBe(false);
+        expect("pid" in session).toBe(false);
+        expect("exitCode" in session).toBe(false);
+      }
+    }
   });
 
   it("restores window chrome state separately from clean-shutdown workspace snapshots", () => {
@@ -695,9 +757,122 @@ describe("app runtime restore", () => {
     }
   });
 
-  it("clears notifications from the persisted snapshot on clean shutdown", () => {
+  it("replaces restored agent session launches with resume launches before respawn", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(snapshot.sessions)[0]!;
+    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].agentSessionRef = {
+      vendor: "codex",
+      externalKey: "codex:codex-session",
+      sessionId: "codex-session"
+    };
+    const resolveExternalAgentSession = vi.fn((key: string) =>
+      key === "codex:codex-session"
+        ? {
+            key,
+            vendor: "codex" as const,
+            agentSessionRef: {
+              vendor: "codex" as const,
+              externalKey: key,
+              sessionId: "codex-session"
+            },
+            title: "Resume Codex",
+            cwd: "/tmp/project",
+            launch: {
+              cwd: "/tmp/project",
+              initialInput: "codex resume codex-session\r",
+              title: "Resume Codex"
+            }
+          }
+        : null
+    );
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      },
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => ({
+          updatedAt: "2026-04-26T12:00:00.000Z",
+          sessions: []
+        }),
+        resolveExternalAgentSession
+      }
+    });
+    const restored = runtime.restoreInitialState();
+    const ptyHost = { send: vi.fn() };
+    runtime.setStore(new AppStore(restored));
+    runtime.setPtyHost(ptyHost as never);
+    runtime.__test__.snapshotSave.mockClear();
+
+    runtime.respawnRestoredSessions();
+
+    const spawnMessage = ptyHost.send.mock.calls[0]?.[0];
+    expect(resolveExternalAgentSession).toHaveBeenCalledWith(
+      "codex:codex-session"
+    );
+    expect(spawnMessage.spec.launch).toMatchObject({
+      cwd: "/tmp/project",
+      initialInput: "codex resume codex-session\r",
+      title: "Resume Codex"
+    });
+    expect(runtime.getState().sessions[sessionId].launch).toMatchObject({
+      initialInput: "codex resume codex-session\r"
+    });
+    expect(runtime.__test__.snapshotSave).toHaveBeenCalledWith(
+      runtime.getState(),
+      { cleanShutdown: false }
+    );
+  });
+
+  it("keeps restored agent session launches when resume resolution fails", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(snapshot.sessions)[0]!;
+    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].launch = {
+      cwd: "/tmp/original",
+      shell: "/bin/zsh"
+    };
+    snapshot.sessions[sessionId].agentSessionRef = {
+      vendor: "gemini",
+      externalKey: "gemini:missing",
+      sessionId: "missing"
+    };
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      },
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => ({
+          updatedAt: "2026-04-26T12:00:00.000Z",
+          sessions: []
+        }),
+        resolveExternalAgentSession: () => null
+      }
+    });
+    const restored = runtime.restoreInitialState();
+    const ptyHost = { send: vi.fn() };
+    runtime.setStore(new AppStore(restored));
+    runtime.setPtyHost(ptyHost as never);
+    runtime.__test__.snapshotSave.mockClear();
+
+    runtime.respawnRestoredSessions();
+
+    const spawnMessage = ptyHost.send.mock.calls[0]?.[0];
+    expect(spawnMessage.spec.launch).toMatchObject({
+      cwd: "/tmp/original",
+      shell: "/bin/zsh"
+    });
+    expect(runtime.__test__.snapshotSave).not.toHaveBeenCalled();
+  });
+
+  it("clears notifications from the persisted snapshot when clean shutdown restore is disabled", () => {
     const runtime = createRuntime(false);
     const state = runtime.getState();
+    state.settings.restoreWorkspacesAfterQuit = false;
     const workspaceId = Object.keys(state.workspaces)[0];
     const paneId = Object.keys(state.panes)[0];
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -721,7 +896,8 @@ describe("app runtime restore", () => {
     const savedSurface = Object.values(savedSnapshot.surfaces)[0];
 
     expect(saveOptions).toEqual({
-      cleanShutdown: true
+      cleanShutdown: true,
+      restoreOnLaunch: false
     });
     expect(savedSnapshot.notifications).toEqual([]);
     expect(savedSurface).toEqual(
@@ -732,9 +908,10 @@ describe("app runtime restore", () => {
     );
   });
 
-  it("resets workspaces and tabs to a fresh session on clean shutdown", () => {
+  it("resets workspaces and tabs to a fresh session when clean shutdown restore is disabled", () => {
     const runtime = createRuntime(false);
     const state = runtime.getState();
+    state.settings.restoreWorkspacesAfterQuit = false;
     const initialWorkspaceId = Object.keys(state.workspaces)[0]!;
 
     applyAction(state, {
@@ -757,7 +934,10 @@ describe("app runtime restore", () => {
     const [savedSnapshot, saveOptions] =
       runtime.__test__.snapshotSave.mock.lastCall ?? [];
 
-    expect(saveOptions).toEqual({ cleanShutdown: true });
+    expect(saveOptions).toEqual({
+      cleanShutdown: true,
+      restoreOnLaunch: false
+    });
     expect(Object.keys(savedSnapshot.workspaces)).toHaveLength(1);
     expect(Object.keys(savedSnapshot.panes)).toHaveLength(1);
     expect(Object.keys(savedSnapshot.surfaces)).toHaveLength(1);
@@ -766,6 +946,30 @@ describe("app runtime restore", () => {
       savedSnapshot.windows[savedSnapshot.activeWindowId]?.workspaceOrder
     ).toHaveLength(1);
     expect(savedSnapshot.workspaces[initialWorkspaceId]).toBeUndefined();
+  });
+
+  it("saves the current workspace snapshot on clean shutdown when restore is enabled", () => {
+    const runtime = createRuntime(false);
+    const state = runtime.getState();
+
+    applyAction(state, {
+      type: "workspace.create",
+      name: "project"
+    });
+
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+
+    runtime.shutdown();
+
+    const [savedSnapshot, saveOptions] =
+      runtime.__test__.snapshotSave.mock.lastCall ?? [];
+
+    expect(saveOptions).toEqual({
+      cleanShutdown: true,
+      restoreOnLaunch: true
+    });
+    expect(savedSnapshot.workspaces[activeWorkspaceId]?.name).toBe("project");
   });
 });
 

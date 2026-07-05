@@ -11,6 +11,8 @@ import {
   type ActiveWorkspaceActivityVm,
   type ActiveWorkspacePaneTreeVm,
   type ActiveWorkspaceVm,
+  type ExternalAgentSessionRef,
+  type ExternalAgentSessionVendor,
   type Id,
   isoNow,
   type KmuxSettings,
@@ -90,6 +92,7 @@ export interface SessionState {
   id: Id;
   surfaceId: Id;
   launch: SessionLaunchConfig;
+  agentSessionRef?: ExternalAgentSessionRef;
   authToken: string;
   runtimeState: SessionRuntimeState;
   shellInputReady: boolean;
@@ -197,6 +200,7 @@ export type AppAction =
       name?: string;
       cwd?: string;
       launch?: SessionLaunchConfig;
+      agentSessionRef?: ExternalAgentSessionRef;
     }
   | { type: "workspace.select"; workspaceId: Id }
   | { type: "workspace.selectRelative"; delta: number }
@@ -337,6 +341,7 @@ export function createDefaultSettings(
     settingsVersion: CURRENT_SETTINGS_VERSION,
     socketMode: mode,
     warnBeforeQuit: true,
+    restoreWorkspacesAfterQuit: true,
     notificationDesktop: true,
     notificationSound: true,
     themeMode: "dark",
@@ -418,6 +423,10 @@ export function mergeSettings(
       typeof nextPatch.warnBeforeQuit === "boolean"
         ? nextPatch.warnBeforeQuit
         : current.warnBeforeQuit,
+    restoreWorkspacesAfterQuit:
+      typeof nextPatch.restoreWorkspacesAfterQuit === "boolean"
+        ? nextPatch.restoreWorkspacesAfterQuit
+        : current.restoreWorkspacesAfterQuit,
     notificationDesktop:
       typeof nextPatch.notificationDesktop === "boolean"
         ? nextPatch.notificationDesktop
@@ -679,7 +688,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
         action.name ?? "new workspace",
         action.cwd,
         !!action.name,
-        action.launch
+        action.launch,
+        action.agentSessionRef
       );
     case "workspace.select":
       return selectWorkspace(state, action.workspaceId);
@@ -1067,7 +1077,8 @@ function createWorkspace(
   name: string,
   cwd?: string,
   nameLocked = false,
-  launch?: SessionLaunchConfig
+  launch?: SessionLaunchConfig,
+  agentSessionRef?: ExternalAgentSessionRef
 ): AppEffect[] {
   const window = state.windows[state.activeWindowId];
   const workspaceCwd = cwd ?? launch?.cwd ?? defaultHomeDirectory();
@@ -1089,6 +1100,8 @@ function createWorkspace(
     state.settings.shell || process.env.SHELL
   );
   const surfaceTitle = explicitLaunchTitle || workspaceName;
+  const sanitizedAgentSessionRef =
+    sanitizeExternalAgentSessionRef(agentSessionRef);
 
   state.workspaces[workspaceId] = {
     id: workspaceId,
@@ -1131,6 +1144,9 @@ function createWorkspace(
     id: sessionId,
     surfaceId,
     launch: sessionLaunch,
+    ...(sanitizedAgentSessionRef
+      ? { agentSessionRef: sanitizedAgentSessionRef }
+      : {}),
     authToken: makeId("auth"),
     runtimeState: "pending",
     shellInputReady: false
@@ -1999,6 +2015,7 @@ function applyAgentEvent(
   const statusScopeId = agentStatusScopeId(target, action);
   const statusKey = agentStatusKey(agentName, statusScopeId);
   const visibleToUser = action.details?.visibleToUser === true;
+  const agentSessionRefChanged = backfillAgentSessionRef(state, target, action);
 
   if (action.event === "needs_input") {
     const statusText = "needs input";
@@ -2038,12 +2055,15 @@ function applyAgentEvent(
         kind: "needs_input",
         agent: agentName
       });
-      return statusEffects.length > 0 ||
-        clearedNotifications ||
-        clearedCompletionNotification ||
-        clearedGenericReminders
-        ? [{ type: "persist" }]
-        : [];
+      return withPersistIfChanged(
+        statusEffects.length > 0 ||
+          clearedNotifications ||
+          clearedCompletionNotification ||
+          clearedGenericReminders
+          ? [{ type: "persist" }]
+          : [],
+        agentSessionRefChanged
+      );
     }
     const notificationEffects = createNotification(state, {
       type: "notification.create",
@@ -2062,18 +2082,24 @@ function applyAgentEvent(
     // TERM_PROGRAM=kmux. We now promote those prompts through structured agent
     // notifications, so preserve the audible cue here for all hidden
     // needs-input events when Bell sounds are enabled.
-    return state.settings.notificationSound
-      ? [{ type: "bell.sound" }, ...notificationEffects]
-      : notificationEffects;
+    return withPersistIfChanged(
+      state.settings.notificationSound
+        ? [{ type: "bell.sound" }, ...notificationEffects]
+        : notificationEffects,
+      agentSessionRefChanged
+    );
   }
 
   if (action.event === "idle") {
-    return clearAgentAttentionUi(
-      state,
-      target.workspace,
-      agentName,
-      statusScopeId,
-      target.surface?.id
+    return withPersistIfChanged(
+      clearAgentAttentionUi(
+        state,
+        target.workspace,
+        agentName,
+        statusScopeId,
+        target.surface?.id
+      ),
+      agentSessionRefChanged
     );
   }
 
@@ -2086,32 +2112,89 @@ function applyAgentEvent(
       target.surface?.id
     );
     if (visibleToUser) {
-      return clearEffects;
+      return withPersistIfChanged(clearEffects, agentSessionRefChanged);
     }
-    return createNotification(state, {
-      type: "notification.create",
-      workspaceId: target.workspace.id,
-      paneId: target.pane?.id,
-      surfaceId: target.surface?.id,
-      title: `${displayName} finished`,
-      message: normalizeStatusText(action.message) || "Finished",
-      source: "agent",
-      kind: "turn_complete",
-      agent: agentName
-    });
-  }
-
-  if (action.event === "session_end") {
-    return clearAgentAttentionUi(
-      state,
-      target.workspace,
-      agentName,
-      statusScopeId,
-      target.surface?.id
+    return withPersistIfChanged(
+      createNotification(state, {
+        type: "notification.create",
+        workspaceId: target.workspace.id,
+        paneId: target.pane?.id,
+        surfaceId: target.surface?.id,
+        title: `${displayName} finished`,
+        message: normalizeStatusText(action.message) || "Finished",
+        source: "agent",
+        kind: "turn_complete",
+        agent: agentName
+      }),
+      agentSessionRefChanged
     );
   }
 
-  return [];
+  if (action.event === "session_end") {
+    return withPersistIfChanged(
+      clearAgentAttentionUi(
+        state,
+        target.workspace,
+        agentName,
+        statusScopeId,
+        target.surface?.id
+      ),
+      agentSessionRefChanged
+    );
+  }
+
+  return withPersistIfChanged([], agentSessionRefChanged);
+}
+
+function withPersistIfChanged(
+  effects: AppEffect[],
+  changed: boolean
+): AppEffect[] {
+  if (!changed || effects.some((effect) => effect.type === "persist")) {
+    return effects;
+  }
+  return [...effects, { type: "persist" }];
+}
+
+function backfillAgentSessionRef(
+  state: AppState,
+  target: AgentTarget,
+  action: Extract<AppAction, { type: "agent.event" }>
+): boolean {
+  if (
+    action.details?.uiOnly === true ||
+    (action.event !== "session_start" && action.event !== "needs_input")
+  ) {
+    return false;
+  }
+  const surface = target.surface;
+  const session = surface ? state.sessions[surface.sessionId] : undefined;
+  const vendor = normalizeExternalAgentSessionVendor(action.agent);
+  const vendorSessionId = normalizeOptionalText(action.sessionId, 512);
+  if (
+    !session ||
+    !vendor ||
+    !vendorSessionId ||
+    vendorSessionId === session.id ||
+    vendorSessionId === surface?.id
+  ) {
+    return false;
+  }
+
+  const agentSessionRef = {
+    vendor,
+    externalKey: externalAgentSessionKey(vendor, vendorSessionId),
+    sessionId: vendorSessionId
+  } satisfies ExternalAgentSessionRef;
+  if (
+    session.agentSessionRef?.vendor === agentSessionRef.vendor &&
+    session.agentSessionRef.externalKey === agentSessionRef.externalKey &&
+    session.agentSessionRef.sessionId === agentSessionRef.sessionId
+  ) {
+    return false;
+  }
+  session.agentSessionRef = agentSessionRef;
+  return true;
 }
 
 function createNotification(
@@ -3314,6 +3397,12 @@ function sanitizeState(state: AppState): AppState {
       session.launch,
       state.settings.shell
     );
+    session.agentSessionRef = sanitizeExternalAgentSessionRef(
+      (session as SessionState & { agentSessionRef?: unknown }).agentSessionRef
+    );
+    if (!session.agentSessionRef) {
+      delete session.agentSessionRef;
+    }
     session.shellInputReady =
       session.runtimeState === "running" && session.shellInputReady === true;
   }
@@ -3469,6 +3558,73 @@ function sanitizeSessionLaunchConfig(
   }
 
   return nextLaunch;
+}
+
+function sanitizeExternalAgentSessionRef(
+  value: unknown
+): ExternalAgentSessionRef | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as {
+    vendor?: unknown;
+    externalKey?: unknown;
+    sessionId?: unknown;
+  };
+  const vendor =
+    typeof record.vendor === "string"
+      ? normalizeExternalAgentSessionVendor(record.vendor)
+      : null;
+  const sessionId =
+    typeof record.sessionId === "string"
+      ? normalizeOptionalText(record.sessionId, 512)
+      : undefined;
+  const externalKey =
+    typeof record.externalKey === "string"
+      ? normalizeOptionalText(record.externalKey, 512)
+      : undefined;
+
+  if (!vendor || !sessionId) {
+    return undefined;
+  }
+  return {
+    vendor,
+    externalKey: externalKey ?? externalAgentSessionKey(vendor, sessionId),
+    sessionId
+  };
+}
+
+function normalizeExternalAgentSessionVendor(
+  value: string
+): ExternalAgentSessionVendor | null {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]/g, "_");
+  if (normalized === "codex") {
+    return "codex";
+  }
+  if (normalized === "gemini") {
+    return "gemini";
+  }
+  if (normalized === "claude") {
+    return "claude";
+  }
+  if (
+    normalized === "agy" ||
+    normalized === "antigravity" ||
+    normalized === "antigravity-cli"
+  ) {
+    return "antigravity";
+  }
+  return null;
+}
+
+function externalAgentSessionKey(
+  vendor: ExternalAgentSessionVendor,
+  sessionId: string
+): string {
+  return `${vendor}:${sessionId}`;
 }
 
 function sanitizeShortcuts(

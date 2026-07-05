@@ -1792,6 +1792,11 @@ describe("external session indexer", () => {
     expect(resolved).toMatchObject({
       key: "codex:codex-session",
       vendor: "codex",
+      agentSessionRef: {
+        vendor: "codex",
+        externalKey: "codex:codex-session",
+        sessionId: "codex-session"
+      },
       title: "Fix terminal focus",
       cwd: "/Users/test/codex-project",
       launch: {

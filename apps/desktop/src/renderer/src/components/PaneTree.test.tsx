@@ -64,6 +64,7 @@ function createPaneTreeProps(): PaneTreeProps {
     settings: {
       socketMode: "kmuxOnly",
       warnBeforeQuit: true,
+      restoreWorkspacesAfterQuit: true,
       notificationDesktop: true,
       notificationSound: false,
       themeMode: "dark",
@@ -426,7 +427,7 @@ describe("PaneTree", () => {
         );
       });
 
-      expect(container.querySelector('[data-split-axis]')).toBeNull();
+      expect(container.querySelector("[data-split-axis]")).toBeNull();
       expect(isPaneDividerDragActive()).toBe(false);
     } finally {
       Element.prototype.setPointerCapture = originalSetPointerCapture;

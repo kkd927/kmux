@@ -12,6 +12,7 @@ import {
 import { basename, delimiter, dirname, join } from "node:path";
 
 import type {
+  ExternalAgentSessionRef,
   ExternalAgentSessionVendor,
   ExternalAgentSessionVm,
   ExternalAgentSessionsSnapshot,
@@ -40,6 +41,7 @@ export interface ExternalSessionIndexerOptions {
 export interface ExternalSessionResumeSpec {
   key: string;
   vendor: ExternalAgentSessionVendor;
+  agentSessionRef: ExternalAgentSessionRef;
   title: string;
   cwd?: string;
   launch: SessionLaunchConfig;
@@ -704,6 +706,11 @@ function toResumeSpec(
   return {
     key: record.key,
     vendor: record.vendor,
+    agentSessionRef: {
+      vendor: record.vendor,
+      externalKey: record.key,
+      sessionId: record.sessionId
+    },
     title: record.title,
     cwd: record.cwd,
     launch
