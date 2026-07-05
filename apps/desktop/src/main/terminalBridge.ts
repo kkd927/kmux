@@ -71,28 +71,19 @@ const ATTACH_MAX_REPLAY_CYCLES = 3;
 const TITLE_METADATA_COALESCE_MS = 1000;
 const PROFILE_TERMINAL_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS = 1000;
-const CODEX_INPUT_PATTERNS = [
-  /\bplan mode prompt:/i,
-  /\benter to submit answer\b/i,
-  /\btab to add notes\b/i,
-  /\besc to interrupt\b/i,
-  /\bapproval\b/i,
-  /\bapprove\b/i,
-  /\bpermission\b/i,
-  /\bquestion \d+\/\d+\b/i,
-  /\bunanswered\b/i,
-  /\bneeds input\b/i,
-  /\bwaiting for input\b/i
-] as const;
+type CodexInputAttentionMatch = {
+  reason:
+    | "plan-mode-prompt"
+    | "enter-to-submit-answer"
+    | "needs-input"
+    | "waiting-for-input"
+    | "question-unanswered"
+    | "question-submit";
+};
 
-const CODEX_STRICT_INPUT_PATTERNS = [
-  /\bplan mode prompt:/i,
-  /\benter to submit answer\b/i,
-  /\btab to add notes\b/i,
-  /\besc to interrupt\b/i,
-  /\bquestion \d+\/\d+\b/i,
-  /\bunanswered\b/i
-] as const;
+type CodexInputAttentionMatchOptions = {
+  allowGenericInputPhrases: boolean;
+};
 
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
@@ -1195,11 +1186,12 @@ export function createTerminalBridge(
         }
         const title = event.title ?? surface.title;
         const message = event.message ?? surface.cwd ?? "Terminal notification";
-        const inferredCodexAttention =
-          vendor === "codex"
-            ? isCodexInputAttention(title, message)
-            : isStrictCodexInputAttention(title, message);
-        if (inferredCodexAttention) {
+        const codexAttentionMatch = matchCodexInputAttentionForVendor(
+          vendor,
+          title,
+          message
+        );
+        if (codexAttentionMatch) {
           logDiagnostics("main.terminal.notification.codex-promoted", {
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
@@ -1207,7 +1199,8 @@ export function createTerminalBridge(
             vendor,
             visibleToUser,
             title,
-            message
+            message,
+            matchReason: codexAttentionMatch.reason
           });
           options.dispatchAppAction({
             type: "agent.event",
@@ -1310,22 +1303,59 @@ export function createTerminalBridge(
   };
 }
 
-function isCodexInputAttention(title: string, message: string): boolean {
-  const normalized = `${title}\n${message}`.trim();
-  if (!normalized) {
-    return false;
+function matchCodexInputAttentionForVendor(
+  vendor: UsageVendor,
+  title: string,
+  message: string
+): CodexInputAttentionMatch | null {
+  if (vendor === "codex") {
+    return matchCodexInputAttention(title, message, {
+      allowGenericInputPhrases: true
+    });
   }
-  return CODEX_INPUT_PATTERNS.some((pattern) => pattern.test(normalized));
+  if (vendor === "unknown") {
+    return matchCodexInputAttention(title, message, {
+      allowGenericInputPhrases: false
+    });
+  }
+  return null;
 }
 
-function isStrictCodexInputAttention(title: string, message: string): boolean {
+function matchCodexInputAttention(
+  title: string,
+  message: string,
+  options: CodexInputAttentionMatchOptions
+): CodexInputAttentionMatch | null {
   const normalized = `${title}\n${message}`.trim();
   if (!normalized) {
-    return false;
+    return null;
   }
-  return CODEX_STRICT_INPUT_PATTERNS.some((pattern) =>
-    pattern.test(normalized)
-  );
+
+  const hasQuestion = /\bquestion \d+\/\d+\b/i.test(normalized);
+  const hasEnterToSubmit = /\benter to submit answer\b/i.test(normalized);
+  if (hasQuestion) {
+    if (/\bunanswered\b/i.test(normalized)) {
+      return { reason: "question-unanswered" };
+    }
+    if (hasEnterToSubmit) {
+      return { reason: "question-submit" };
+    }
+  }
+  if (/\bplan mode prompt:/i.test(normalized)) {
+    return { reason: "plan-mode-prompt" };
+  }
+  if (hasEnterToSubmit) {
+    return { reason: "enter-to-submit-answer" };
+  }
+  if (options.allowGenericInputPhrases) {
+    if (/\bneeds input\b/i.test(normalized)) {
+      return { reason: "needs-input" };
+    }
+    if (/\bwaiting for input\b/i.test(normalized)) {
+      return { reason: "waiting-for-input" };
+    }
+  }
+  return null;
 }
 
 function dismissKeyFromText(

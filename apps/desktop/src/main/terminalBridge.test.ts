@@ -496,6 +496,123 @@ describe("terminal bridge", () => {
     });
   });
 
+  it("does not promote Codex terminal notifications that only mention approvals or permissions", () => {
+    const messages = [
+      "GitHub Actions is not permitted to create or approve pull requests",
+      "Workflow permissions"
+    ];
+
+    for (const message of messages) {
+      const state = createInitialState();
+      const surfaceId = Object.keys(state.surfaces)[0];
+      const surface = state.surfaces[surfaceId];
+      const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+      const bridge = createTerminalBridge({
+        getState: () => state,
+        dispatchAppAction,
+        getPtyHost: () => null,
+        getSurfaceVendor: () => "codex"
+      } as never);
+
+      bridge.handlePtyEvent({
+        type: "terminal.notification",
+        surfaceId,
+        sessionId: surface.sessionId,
+        protocol: 9,
+        title: "CodexBar",
+        message
+      });
+
+      expect(dispatchAppAction).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps promoting explicit Codex input prompt notifications", () => {
+    const messages = [
+      "Plan mode prompt: Depth",
+      "Needs input",
+      "Waiting for input",
+      "Enter to submit answer",
+      "Question 1/2: Depth unanswered",
+      "Question 1/2: Depth. Enter to submit answer"
+    ];
+
+    for (const message of messages) {
+      const state = createInitialState();
+      const surfaceId = Object.keys(state.surfaces)[0];
+      const surface = state.surfaces[surfaceId];
+      const pane = state.panes[surface.paneId];
+      const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+      const bridge = createTerminalBridge({
+        getState: () => state,
+        dispatchAppAction,
+        getPtyHost: () => null,
+        getSurfaceVendor: () => "codex"
+      } as never);
+
+      bridge.handlePtyEvent({
+        type: "terminal.notification",
+        surfaceId,
+        sessionId: surface.sessionId,
+        protocol: 9,
+        title: "CodexBar",
+        message
+      });
+
+      expect(dispatchAppAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "agent.event",
+          workspaceId: pane.workspaceId,
+          paneId: surface.paneId,
+          surfaceId,
+          sessionId: surface.sessionId,
+          agent: "codex",
+          event: "needs_input",
+          message
+        })
+      );
+    }
+  });
+
+  it("does not promote known non-Codex input phrases as Codex attention", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const surface = state.surfaces[surfaceId];
+    const pane = state.panes[surface.paneId];
+    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null,
+      getSurfaceVendor: () => "gemini"
+    } as never);
+
+    bridge.handlePtyEvent({
+      type: "terminal.notification",
+      surfaceId,
+      sessionId: surface.sessionId,
+      protocol: 9,
+      title: "Gemini",
+      message: "Needs input"
+    });
+
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "notification.create",
+      workspaceId: pane.workspaceId,
+      paneId: surface.paneId,
+      surfaceId,
+      title: "Gemini",
+      message: "Needs input",
+      source: "terminal"
+    });
+    expect(dispatchAppAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.event",
+        agent: "codex"
+      })
+    );
+  });
+
   it("promotes restored Codex input prompts even before vendor binding is known", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -537,37 +654,47 @@ describe("terminal bridge", () => {
     });
   });
 
-  it("keeps unknown non-Codex terminal prompts on the generic notification path", () => {
-    const state = createInitialState();
-    const surfaceId = Object.keys(state.surfaces)[0];
-    const surface = state.surfaces[surfaceId];
-    const pane = state.panes[surface.paneId];
-    const dispatchAppAction = vi.fn<(action: AppAction) => void>();
-    const bridge = createTerminalBridge({
-      getState: () => state,
-      dispatchAppAction,
-      getPtyHost: () => null,
-      getSurfaceVendor: () => "unknown"
-    } as never);
+  it("keeps unknown generic terminal prompts on the generic notification path", () => {
+    const messages = ["Permission required", "Needs input", "Waiting for input"];
 
-    bridge.handlePtyEvent({
-      type: "terminal.notification",
-      surfaceId,
-      sessionId: surface.sessionId,
-      protocol: 9,
-      title: "tool",
-      message: "Permission required"
-    });
+    for (const message of messages) {
+      const state = createInitialState();
+      const surfaceId = Object.keys(state.surfaces)[0];
+      const surface = state.surfaces[surfaceId];
+      const pane = state.panes[surface.paneId];
+      const dispatchAppAction = vi.fn<(action: AppAction) => void>();
+      const bridge = createTerminalBridge({
+        getState: () => state,
+        dispatchAppAction,
+        getPtyHost: () => null,
+        getSurfaceVendor: () => "unknown"
+      } as never);
 
-    expect(dispatchAppAction).toHaveBeenCalledWith({
-      type: "notification.create",
-      workspaceId: pane.workspaceId,
-      paneId: surface.paneId,
-      surfaceId,
-      title: "tool",
-      message: "Permission required",
-      source: "terminal"
-    });
+      bridge.handlePtyEvent({
+        type: "terminal.notification",
+        surfaceId,
+        sessionId: surface.sessionId,
+        protocol: 9,
+        title: "tool",
+        message
+      });
+
+      expect(dispatchAppAction).toHaveBeenCalledWith({
+        type: "notification.create",
+        workspaceId: pane.workspaceId,
+        paneId: surface.paneId,
+        surfaceId,
+        title: "tool",
+        message,
+        source: "terminal"
+      });
+      expect(dispatchAppAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "agent.event",
+          agent: "codex"
+        })
+      );
+    }
   });
 
   it("marks visible Codex input-required terminal notifications as already visible", () => {
