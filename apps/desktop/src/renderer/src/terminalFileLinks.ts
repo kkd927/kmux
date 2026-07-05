@@ -16,7 +16,7 @@ import type { KeyboardShortcutPlatform } from "../../shared/platform/keyboardPol
 const WRAPPED_LINE_SCAN_LIMIT = 2048;
 const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const LINK_WITH_SUFFIX_PATH_CHARACTERS =
-  /(?<path>(?:file:\/\/\/)?[^\s\|<>\[\({][^\s\|<>]*)$/;
+  /(?<path>(?:file:\/\/\/)?[^\s|<>[({][^\s|<>]*)$/;
 
 enum RegexPathConstants {
   PathPrefix = "(?:\\.\\.?|\\~|file:\\/\\/)",
@@ -621,7 +621,7 @@ function hasInnerBracketVariant(
   parsedLink: ParsedTerminalLink,
   parsedLinks: ParsedTerminalLink[]
 ): boolean {
-  if (!parsedLink.suffix || !/[\[\(]/.test(parsedLink.path.text)) {
+  if (!parsedLink.suffix || !/[[(]/.test(parsedLink.path.text)) {
     return false;
   }
 
@@ -764,7 +764,7 @@ function detectLinksViaSuffix(line: string): ParsedTerminalLink[] {
       suffix
     });
 
-    const openingBracketMatch = path.matchAll(/(?<bracket>[\[\(])(?![\]\)])/g);
+    const openingBracketMatch = path.matchAll(/(?<bracket>[[(])(?![\])])/g);
     for (const match of openingBracketMatch) {
       const bracket = match.groups?.bracket;
       if (!bracket) {

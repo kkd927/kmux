@@ -16,6 +16,17 @@ import type { SurfaceCaptureContentConsistency } from "@kmux/proto";
 const SAMPLE_MAX_LINES = 8;
 const SAMPLE_MIN_LINES = 3;
 const SAMPLE_MIN_CHARS = 8;
+const ESC_SEQUENCE = String.raw`\u001b`;
+const BEL_SEQUENCE = String.raw`\u0007`;
+const ANSI_OSC_RE = new RegExp(
+  `${ESC_SEQUENCE}\\][^${BEL_SEQUENCE}${ESC_SEQUENCE}]*(?:${BEL_SEQUENCE}|${ESC_SEQUENCE}\\\\)`,
+  "g"
+);
+const ANSI_CSI_RE = new RegExp(`${ESC_SEQUENCE}\\[[0-9;?]*[A-Za-z@]`, "g");
+const ANSI_CHARSET_RE = new RegExp(
+  `${ESC_SEQUENCE}[=>()#][0-9A-Za-z]?`,
+  "g"
+);
 
 export function assessContentConsistency({
   snapshotVt,
@@ -73,8 +84,8 @@ function normalizeContent(value: string): string {
 
 function stripAnsi(value: string): string {
   return value
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    .replace(/\u001b\[[0-9;?]*[A-Za-z@]/g, "")
-    .replace(/\u001b[=>()#][0-9A-Za-z]?/g, "")
+    .replace(ANSI_OSC_RE, "")
+    .replace(ANSI_CSI_RE, "")
+    .replace(ANSI_CHARSET_RE, "")
     .replace(/\r/g, "");
 }
