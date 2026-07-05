@@ -297,7 +297,10 @@ function run(command, commandArgs, options = {}) {
 async function main() {
   const { requireLinuxDesktop, skipE2e, skipBuild } = parseArgs();
   const gateEnv = requireLinuxDesktop
-    ? { KMUX_DISABLE_SHELL_ENV_PROBE: "0" }
+    ? {
+        KMUX_DISABLE_SHELL_ENV_PROBE: "0",
+        KMUX_E2E_WINDOW_MODE: "visible"
+      }
     : { KMUX_DISABLE_SHELL_ENV_PROBE: "1" };
 
   assertWalkingSkeletonTarget({ requireLinuxDesktop });

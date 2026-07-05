@@ -120,13 +120,14 @@ test("walking skeleton verifies platform descriptor, socket identity, and pty ho
     const { page, sandbox, cliPath, workspaceRoot } = launched;
     const platform = await page.evaluate(() => window.kmux.getPlatform());
 
-    expect(platform.windowChrome).toBe("native");
     expect(platform.keyboard.shortcuts).toBeTruthy();
     if (process.platform === "darwin") {
+      expect(platform.windowChrome).toBe("native");
       expect(platform.shortcutStyle).toBe("mac-symbols");
       expect(platform.desktop.supportsDock).toBe(true);
       expect(platform.desktop.keepProcessAliveWhenLastWindowCloses).toBe(true);
     } else if (process.platform === "linux") {
+      expect(platform.windowChrome).toBe("custom");
       expect(platform.shortcutStyle).toBe("text");
       expect(platform.desktop.supportsDock).toBe(false);
       expect(platform.desktop.keepProcessAliveWhenLastWindowCloses).toBe(false);
