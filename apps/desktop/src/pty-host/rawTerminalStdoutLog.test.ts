@@ -26,12 +26,13 @@ describe("raw terminal stdout logging", () => {
 
   it("writes only redacted terminal event metadata when enabled", () => {
     const writes: string[] = [];
+    const now = new Date(2026, 6, 6, 20, 29, 3, 938);
     const logger = createRawTerminalEventStdoutLogger(
       {
         [PTY_STDOUT_LOGS_ENV]: "1"
       },
       (line) => writes.push(line),
-      () => new Date("2026-07-06T07:56:49.148Z")
+      () => now
     );
 
     logger({
@@ -45,9 +46,12 @@ describe("raw terminal stdout logging", () => {
     });
 
     expect(writes).toHaveLength(1);
-    expect(JSON.parse(writes[0])).toEqual({
+    expect(writes[0].startsWith("2026-07-06 20:29:03.938 ")).toBe(true);
+    const jsonStart = writes[0].indexOf("{");
+    expect(jsonStart).toBeGreaterThan(0);
+    expect(JSON.parse(writes[0].slice(jsonStart))).toEqual({
       scope: "pty-host.raw-terminal-event",
-      timestamp: "2026-07-06T07:56:49.148Z",
+      timestamp: now.toISOString(),
       kind: "osc.777",
       surfaceId: "surface_1",
       sessionId: "session_1",

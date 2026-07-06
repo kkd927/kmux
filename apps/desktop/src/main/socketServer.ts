@@ -19,6 +19,7 @@ import {
 } from "@kmux/proto";
 import { ZodError } from "zod";
 
+import { formatLocalLogTimestamp } from "../shared/diagnostics";
 import {
   type ParsedSocketRequest,
   parseSocketEnvelope,
@@ -846,7 +847,7 @@ function logAgentEvent(
   if (params.message) {
     fields.push(`message=${JSON.stringify(params.message.slice(0, 160))}`);
   }
-  console.log(`${new Date().toISOString()} [Agent Hook] ${fields.join(" ")}`);
+  console.log(`${formatLocalLogTimestamp()} [Agent Hook] ${fields.join(" ")}`);
 }
 
 function stringDetail(

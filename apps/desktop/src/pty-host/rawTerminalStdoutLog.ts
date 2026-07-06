@@ -1,4 +1,7 @@
-import { PTY_STDOUT_LOGS_ENV } from "../shared/diagnostics";
+import {
+  formatLocalLogTimestamp,
+  PTY_STDOUT_LOGS_ENV
+} from "../shared/diagnostics";
 
 export type RawTerminalStdoutEvent = {
   kind:
@@ -33,12 +36,13 @@ export function createRawTerminalEventStdoutLogger(
     if (!enabled) {
       return;
     }
+    const timestamp = now();
     writeLine(
-      JSON.stringify({
+      `${formatLocalLogTimestamp(timestamp)} ${JSON.stringify({
         scope: "pty-host.raw-terminal-event",
-        timestamp: now().toISOString(),
+        timestamp: timestamp.toISOString(),
         ...event
-      })
+      })}`
     );
   };
 }

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DIAGNOSTICS_LOG_PATH_ENV,
   formatDiagnosticsRecord,
+  formatLocalLogTimestamp,
   logDiagnostics
 } from "./diagnostics";
 
@@ -36,6 +37,12 @@ describe("diagnostics logging", () => {
       )
     ).toBe(
       '2026-04-20T01:23:45.000Z pid=42 {"scope":"terminal.notification","protocol":9,"surfaceId":"surface_123"}\n'
+    );
+  });
+
+  it("formats local log timestamps like Electron stdout", () => {
+    expect(formatLocalLogTimestamp(new Date(2026, 6, 6, 20, 29, 3, 938))).toBe(
+      "2026-07-06 20:29:03.938"
     );
   });
 
