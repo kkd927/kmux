@@ -1,7 +1,6 @@
 import {
   type DragEvent,
   type MouseEvent,
-  type RefObject,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -102,11 +101,7 @@ import {
   type SurfaceTabDragPayload,
   type SurfaceTabDropDirection
 } from "../surfaceTabDrag";
-import {
-  buildSurfaceContextMenuEntries,
-  type SurfaceContextAction,
-  type SurfaceContextMenuEntry
-} from "../../../shared/surfaceContextMenu";
+import { type SurfaceContextAction } from "../../../shared/surfaceContextMenu";
 
 export interface TerminalFocusRequest {
   surfaceId: string;
@@ -223,13 +218,6 @@ type TerminalRenderSinkContext = {
   surfaceId: string;
 };
 
-type SurfaceContextMenuState = {
-  surfaceId: string;
-  x: number;
-  y: number;
-  items: SurfaceContextMenuEntry[];
-};
-
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
 const TERMINAL_WRITE_CALLBACK_TIMEOUT_MS = 10_000;
@@ -287,9 +275,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     useState<SurfaceTabDropDirection | null>(null);
   const [imageDropActive, setImageDropActive] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
-  const [surfaceContextMenu, setSurfaceContextMenu] =
-    useState<SurfaceContextMenuState | null>(null);
-  const surfaceContextMenuRef = useRef<HTMLDivElement>(null!);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const paneActiveRef = useRef(props.active);
   const paneFocusedRef = useRef(props.focused);
@@ -322,8 +307,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const renderSinkContextRef = useRef<TerminalRenderSinkContext | null>(null);
   const pendingRendererRefreshFrameRef = useRef<number | null>(null);
   const pendingRendererRefreshesRef = useRef(new Map<Terminal, string>());
-  const inactiveRendererPauseTimerRef =
-    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inactiveRendererPauseTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const inactiveRendererPauseReadyRef = useRef(false);
   // The xterm instance is surface-scoped, but PTY size is still synced from
   // the pane that currently displays the surface.
@@ -1175,10 +1161,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
   }
 
-  function closeSurfaceContextMenu(): void {
-    setSurfaceContextMenu(null);
-  }
-
   function runSurfaceContextAction(
     surfaceId: string,
     action: SurfaceContextAction
@@ -1189,7 +1171,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!targetSurface) {
       return;
     }
-    closeSurfaceContextMenu();
     props.onFocusPane(props.paneId);
     props.onFocusSurface(surfaceId);
 
@@ -1244,20 +1225,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       surfaceContextActionRef.current(event.surfaceId, event.action);
     });
   }, [props.surfaces]);
-
-  useEffect(() => {
-    if (!surfaceContextMenu) {
-      return;
-    }
-    const frame = requestAnimationFrame(() => {
-      surfaceContextMenuRef.current
-        ?.querySelector<HTMLButtonElement>(
-          'button[role="menuitem"]:not(:disabled)'
-        )
-        ?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [surfaceContextMenu]);
 
   useLayoutEffect(() => {
     const wrapper = surfaceWrapperRefs.current.get(activeSurface.id);
@@ -2286,9 +2253,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             waitForTerminalFonts,
             attachSurface: attachCurrentSurface,
             lastRenderedSequence:
-              terminalInstanceStore.getLastHydratedSurfaceSequence(
-                instanceKey
-              ),
+              terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
             beforeFitAndSync: () => {
               terminalInstanceStore
                 .getRenderSink(instanceKey)
@@ -2594,24 +2559,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.onFocusSurface(surfaceId);
     try {
       const context = await surfaceMenuContextFor(surface);
-      const items = buildSurfaceContextMenuEntries(context);
-      const usedNative = await window.kmux.showSurfaceContextMenu(
-        surfaceId,
-        x,
-        y,
-        context
-      );
-      if (usedNative) {
-        return;
-      }
-      const menuWidth = 248;
-      const menuHeight = 224;
-      setSurfaceContextMenu({
-        surfaceId,
-        items,
-        x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
-        y: Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8))
-      });
+      await window.kmux.showSurfaceContextMenu(surfaceId, x, y, context);
     } catch (error) {
       console.warn("Failed to show surface context menu", error);
     }
@@ -2871,113 +2819,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           );
         })}
       </div>
-      {surfaceContextMenu ? (
-        <SurfaceContextMenu
-          position={surfaceContextMenu}
-          items={surfaceContextMenu.items}
-          shortcutLabelStyle={props.shortcutLabelStyle}
-          menuRef={surfaceContextMenuRef}
-          onClose={closeSurfaceContextMenu}
-          onAction={(action) =>
-            runSurfaceContextAction(surfaceContextMenu.surfaceId, action)
-          }
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function SurfaceContextMenu(props: {
-  position: { x: number; y: number };
-  items: SurfaceContextMenuEntry[];
-  shortcutLabelStyle: ShortcutLabelStyle;
-  menuRef: RefObject<HTMLDivElement>;
-  onClose: () => void;
-  onAction: (action: SurfaceContextAction) => void;
-}): JSX.Element {
-  return (
-    <div
-      className={styles.surfaceMenuOverlay}
-      onClick={props.onClose}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        props.onClose();
-      }}
-    >
-      <div
-        className={styles.surfaceMenu}
-        ref={props.menuRef}
-        role="menu"
-        aria-label="Surface menu"
-        style={{
-          left: props.position.x,
-          top: props.position.y
-        }}
-        onClick={(event) => event.stopPropagation()}
-        onContextMenu={(event) => event.preventDefault()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            props.onClose();
-            return;
-          }
-          const enabledItems = Array.from(
-            event.currentTarget.querySelectorAll<HTMLButtonElement>(
-              'button[role="menuitem"]:not(:disabled)'
-            )
-          );
-          if (!enabledItems.length) {
-            return;
-          }
-          const currentIndex = enabledItems.findIndex(
-            (item) => item === document.activeElement
-          );
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            const step = event.key === "ArrowDown" ? 1 : -1;
-            const nextIndex =
-              currentIndex === -1
-                ? step > 0
-                  ? 0
-                  : enabledItems.length - 1
-                : (currentIndex + step + enabledItems.length) %
-                  enabledItems.length;
-            enabledItems[nextIndex]?.focus();
-            return;
-          }
-          if (event.key === "Home" || event.key === "End") {
-            event.preventDefault();
-            enabledItems[
-              event.key === "Home" ? 0 : enabledItems.length - 1
-            ]?.focus();
-          }
-        }}
-      >
-        {props.items.map((item) =>
-          item.kind === "separator" ? (
-            <div
-              key={item.id}
-              className={styles.surfaceMenuSeparator}
-              role="separator"
-            />
-          ) : (
-            <button
-              key={item.id}
-              role="menuitem"
-              className={styles.surfaceMenuItem}
-              disabled={item.disabled}
-              onClick={() => props.onAction(item.action)}
-            >
-              <span className={styles.surfaceMenuLabel}>{item.label}</span>
-              {item.shortcut ? (
-                <span className={styles.surfaceMenuShortcut} aria-hidden="true">
-                  {formatShortcutLabel(item.shortcut, props.shortcutLabelStyle)}
-                </span>
-              ) : null}
-            </button>
-          )
-        )}
-      </div>
     </div>
   );
 }
@@ -2994,7 +2835,9 @@ function getFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {
     .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
-  return filesFromItems.length ? filesFromItems : Array.from(dataTransfer.files);
+  return filesFromItems.length
+    ? filesFromItems
+    : Array.from(dataTransfer.files);
 }
 
 function getImageFilesFromDataTransfer(dataTransfer: DataTransfer): File[] {

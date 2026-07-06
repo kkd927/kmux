@@ -11,7 +11,8 @@ export function createDarwinPlatformRuntime(options: {
     shortcutStyle: "mac-symbols",
     keyboardPlatform: "darwin",
     supportsDock: true,
-    keepProcessAliveWhenLastWindowCloses: true
+    keepProcessAliveWhenLastWindowCloses: true,
+    surfaceDiagnosticCaptureDefaultEnabled: options.isPackaged === false
   });
   return {
     supported: true,

@@ -886,6 +886,39 @@ test("settings modal keeps checkbox rows passive and saves bell sound preference
   }
 });
 
+test("settings modal saves diagnostic capture preference from the checkbox only", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-diagnostic-capture-");
+
+  try {
+    const page = launched.page;
+
+    await openSettingsCategory(page, "General");
+
+    const dialog = page.getByTestId("settings-dialog");
+    const diagnosticCaptureCheckbox = dialog.getByLabel(
+      "Enable diagnostic capture"
+    );
+    await expect(diagnosticCaptureCheckbox).toBeChecked();
+
+    await dialog.getByText("Enable diagnostic capture").click();
+    await expect(diagnosticCaptureCheckbox).toBeChecked();
+
+    await diagnosticCaptureCheckbox.click();
+    await expect(diagnosticCaptureCheckbox).not.toBeChecked();
+
+    await page.getByRole("button", { name: "Save" }).click();
+    const updated = await waitForView(
+      page,
+      (view) => view.settings.surfaceDiagnosticCaptureMode === "disabled",
+      "diagnostic capture preference should save after clicking the checkbox itself"
+    );
+
+    expect(updated.settings.surfaceDiagnosticCaptureMode).toBe("disabled");
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
 test("pre-versioned settings migrate bell sounds to enabled once", async () => {
   const sandbox = createSandbox("kmux-e2e-settings-bell-migration-");
   const legacySettings = createDefaultSettings() as ReturnType<
@@ -2376,9 +2409,7 @@ test("renderer stays near-live under a sustained output burst", async () => {
     );
     expect(capture.renderer.ok).toBe(true);
     const snapshotMarker = latestMarkerIn(capture.snapshot?.vt ?? "");
-    const bufferMarker = latestMarkerIn(
-      capture.renderer.dom?.bufferText ?? ""
-    );
+    const bufferMarker = latestMarkerIn(capture.renderer.dom?.bufferText ?? "");
     expect(snapshotMarker).toBeGreaterThan(200);
     expect(bufferMarker).toBeGreaterThanOrEqual(snapshotMarker - 50);
   } finally {

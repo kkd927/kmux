@@ -7,6 +7,7 @@ import {
   type SetStateAction
 } from "react";
 
+import { resolveSurfaceDiagnosticCaptureEnabled } from "@kmux/core";
 import type {
   KmuxSettings,
   NotificationItem,
@@ -46,6 +47,7 @@ import { WorkspaceContextMenu } from "./WorkspaceContextMenu";
 interface AppOverlaysProps {
   shortcutLabelStyle: ShortcutLabelStyle;
   reservedSystemChords: KeyChord[];
+  surfaceDiagnosticCaptureDefaultEnabled: boolean;
   paletteOpen: boolean;
   paletteQuery: string;
   paletteSelectedIndex: number;
@@ -392,6 +394,12 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           profile.id === props.settingsDraft?.terminalThemes.activeProfileId
       ) ?? null)
     : null;
+  const surfaceDiagnosticCaptureEnabled = props.settingsDraft
+    ? resolveSurfaceDiagnosticCaptureEnabled(
+        props.settingsDraft.surfaceDiagnosticCaptureMode,
+        props.surfaceDiagnosticCaptureDefaultEnabled
+      )
+    : false;
   const pendingCloseWorktrees = listPendingCloseWorktrees(
     props.workspaceCloseConfirm
   );
@@ -963,6 +971,36 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                             updateSettingsDraft(props.setSettingsDraft, {
                               restoreWorkspacesAfterQuit:
                                 event.currentTarget.checked
+                            });
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className={styles.settingsCategoryHeader}>
+                      <h3>Debugging</h3>
+                    </div>
+                    <div className={styles.settingsRowGroup}>
+                      <div className={styles.settingsRow}>
+                        <span className={styles.settingsRowCopy}>
+                          <span className={styles.settingsRowTitle}>
+                            Enable diagnostic capture
+                          </span>
+                          <span className={styles.settingsRowDescription}>
+                            Adds Capture Diagnostics to terminal context menus.
+                            Captures may include terminal text, screenshots, and
+                            rendering state.
+                          </span>
+                        </span>
+                        <input
+                          aria-label="Enable diagnostic capture"
+                          type="checkbox"
+                          checked={surfaceDiagnosticCaptureEnabled}
+                          onChange={(event) => {
+                            updateSettingsDraft(props.setSettingsDraft, {
+                              surfaceDiagnosticCaptureMode: event.currentTarget
+                                .checked
+                                ? "enabled"
+                                : "disabled"
                             });
                           }}
                         />

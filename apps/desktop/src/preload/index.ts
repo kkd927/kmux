@@ -254,7 +254,7 @@ const api = {
     x: number,
     y: number,
     context: SurfaceContextMenuContext
-  ): Promise<boolean> {
+  ): Promise<void> {
     return ipcRenderer.invoke("kmux:surface-context-menu", {
       surfaceId,
       x,

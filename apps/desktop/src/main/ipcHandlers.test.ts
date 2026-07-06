@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { BrowserWindow, Menu, type MenuItemConstructorOptions } from "electron";
+import { buildDefaultShortcuts } from "@kmux/ui";
+
 import type {
   CreateImageAttachmentsResult,
   CreateImageAttachmentPayload,
@@ -72,7 +75,7 @@ function registerTestHandlers(options: {
     surfaceId: string,
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
-  surfaceDiagnosticsEnabled?: boolean;
+  isSurfaceDiagnosticsEnabled?: () => boolean;
   captureSurfaceDiagnostics?: (
     surfaceId: string
   ) => Promise<SurfaceCapturePayload>;
@@ -115,7 +118,8 @@ function registerTestHandlers(options: {
     importTerminalThemePalette: vi.fn(),
     exportTerminalThemePalette: vi.fn(),
     openSettingsJson: vi.fn(),
-    surfaceDiagnosticsEnabled: options.surfaceDiagnosticsEnabled ?? false,
+    isSurfaceDiagnosticsEnabled:
+      options.isSurfaceDiagnosticsEnabled ?? vi.fn(() => false),
     captureSurfaceDiagnostics:
       options.captureSurfaceDiagnostics ??
       vi.fn(async () => ({
@@ -337,7 +341,7 @@ describe("ipc handlers", () => {
     registerTestHandlers({
       snapshot,
       resumeResult,
-      surfaceDiagnosticsEnabled: true,
+      isSurfaceDiagnosticsEnabled: vi.fn(() => true),
       captureSurfaceDiagnostics
     });
 
@@ -356,7 +360,7 @@ describe("ipc handlers", () => {
     registerTestHandlers({
       snapshot,
       resumeResult,
-      surfaceDiagnosticsEnabled: false,
+      isSurfaceDiagnosticsEnabled: vi.fn(() => false),
       captureSurfaceDiagnostics
     });
 
@@ -364,7 +368,73 @@ describe("ipc handlers", () => {
       Promise.resolve(
         handlers.get("kmux:surface-diagnostics:capture")?.({}, "surface_debug")
       )
-    ).rejects.toThrow("development builds");
+    ).rejects.toThrow("Surface diagnostic capture is disabled");
+  });
+
+  it("uses the current diagnostics getter value when building surface context menus", async () => {
+    const popup = vi.fn();
+    const sender = {};
+    const isSurfaceDiagnosticsEnabled = vi.fn((): boolean => false);
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(
+      {} as ReturnType<typeof BrowserWindow.fromWebContents>
+    );
+    vi.mocked(Menu.buildFromTemplate).mockReturnValue({
+      popup
+    } as unknown as Menu);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-27T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      isSurfaceDiagnosticsEnabled
+    });
+    const handler = handlers.get("kmux:surface-context-menu");
+    const payload = {
+      surfaceId: "surface_debug",
+      x: 4,
+      y: 8,
+      context: {
+        canCopy: true,
+        canPaste: true,
+        canRestart: true,
+        sessionState: "running",
+        settings: {
+          shortcuts: buildDefaultShortcuts("darwin")
+        }
+      }
+    };
+
+    try {
+      await expect(
+        Promise.resolve(handler?.({ sender }, payload))
+      ).resolves.toBeUndefined();
+      expect(
+        (
+          vi.mocked(Menu.buildFromTemplate).mock
+            .calls[0]?.[0] as MenuItemConstructorOptions[]
+        ).map((item) => item.label)
+      ).not.toContain("Capture Diagnostics");
+
+      isSurfaceDiagnosticsEnabled.mockReturnValue(true);
+      vi.mocked(Menu.buildFromTemplate).mockClear();
+
+      await expect(
+        Promise.resolve(handler?.({ sender }, payload))
+      ).resolves.toBeUndefined();
+      expect(
+        (
+          vi.mocked(Menu.buildFromTemplate).mock
+            .calls[0]?.[0] as MenuItemConstructorOptions[]
+        ).map((item) => item.label)
+      ).toContain("Capture Diagnostics");
+    } finally {
+      vi.mocked(BrowserWindow.fromWebContents).mockReset();
+      vi.mocked(Menu.buildFromTemplate).mockReset();
+    }
   });
 
   it("registers attach completion handler", async () => {

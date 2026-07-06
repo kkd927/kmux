@@ -15,7 +15,8 @@ export function createLinuxPlatformRuntime(options: {
     keyboardPlatform: "linux",
     supportsDock: false,
     supportsTray: true,
-    keepProcessAliveWhenLastWindowCloses: false
+    keepProcessAliveWhenLastWindowCloses: false,
+    surfaceDiagnosticCaptureDefaultEnabled: options.isPackaged === false
   });
   return {
     supported: true,

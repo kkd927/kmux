@@ -13,6 +13,9 @@ export interface RendererPlatformDescriptor {
     supportsTray: boolean;
     keepProcessAliveWhenLastWindowCloses: boolean;
   };
+  debugging: {
+    surfaceDiagnosticCaptureDefaultEnabled: boolean;
+  };
 }
 
 export function createRendererPlatformDescriptor(options: {
@@ -23,6 +26,7 @@ export function createRendererPlatformDescriptor(options: {
   keepProcessAliveWhenLastWindowCloses: boolean;
   keyboardPlatform?: KeyboardShortcutPlatform;
   keyboard?: PlatformKeyboardPolicy;
+  surfaceDiagnosticCaptureDefaultEnabled?: boolean;
 }): RendererPlatformDescriptor {
   const keyboardPlatform =
     options.keyboardPlatform ??
@@ -41,6 +45,10 @@ export function createRendererPlatformDescriptor(options: {
       supportsTray: options.supportsTray ?? false,
       keepProcessAliveWhenLastWindowCloses:
         options.keepProcessAliveWhenLastWindowCloses
+    },
+    debugging: {
+      surfaceDiagnosticCaptureDefaultEnabled:
+        options.surfaceDiagnosticCaptureDefaultEnabled ?? false
     }
   };
 }

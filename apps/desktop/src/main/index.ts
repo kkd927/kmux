@@ -9,6 +9,8 @@ import {
   USAGE_PRICING_REVISION
 } from "@kmux/metadata";
 
+import { resolveSurfaceDiagnosticCaptureEnabled } from "@kmux/core";
+
 import {
   createSettingsStore,
   createSnapshotStore,
@@ -502,7 +504,12 @@ async function bootstrap(): Promise<void> {
         });
       }
     },
-    surfaceDiagnosticsEnabled: !app.isPackaged,
+    isSurfaceDiagnosticsEnabled: () =>
+      resolveSurfaceDiagnosticCaptureEnabled(
+        runtime.getState().settings.surfaceDiagnosticCaptureMode,
+        platformRuntime.rendererDescriptor.debugging
+          .surfaceDiagnosticCaptureDefaultEnabled
+      ),
     captureSurfaceDiagnostics,
     prepareWorktreeConversion: worktreeRuntime.prepareConversion,
     createWorktreeWorkspace: worktreeRuntime.createWorkspace,

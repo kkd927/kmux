@@ -191,6 +191,7 @@ function createSettings(): KmuxSettings {
     notificationDesktop: false,
     notificationSound: false,
     themeMode: "dark",
+    surfaceDiagnosticCaptureMode: "default",
     terminalTypography: {
       preferredTextFontFamily: "JetBrains Mono",
       preferredSymbolFallbackFamilies: [],
@@ -386,7 +387,7 @@ describe("TerminalPane visibility cleanup", () => {
           }))
         })
       ),
-      showSurfaceContextMenu: vi.fn(async () => true),
+      showSurfaceContextMenu: vi.fn(async () => {}),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
     };
@@ -2061,11 +2062,9 @@ describe("TerminalPane visibility cleanup", () => {
     ).toHaveLength(2);
   });
 
-  it("opens the fallback surface menu from the terminal viewport", async () => {
+  it("requests the native surface menu from the terminal viewport", async () => {
     const props = createProps("surface_1");
-    const onSplitDown = vi.fn();
-    props.onSplitDown = onSplitDown;
-    window.kmux.showSurfaceContextMenu = vi.fn(async () => false);
+    window.kmux.showSurfaceContextMenu = vi.fn(async () => {});
     window.kmux.hasPasteableClipboardContent = vi.fn(async () => true);
 
     await act(async () => {
@@ -2089,68 +2088,42 @@ describe("TerminalPane visibility cleanup", () => {
       );
     });
 
-    const menu = container.querySelector(
-      '[role="menu"][aria-label="Surface menu"]'
+    expect(window.kmux.showSurfaceContextMenu).toHaveBeenCalledWith(
+      "surface_1",
+      24,
+      32,
+      expect.objectContaining({
+        canCopy: false,
+        canPaste: true,
+        canRestart: true,
+        sessionState: "running"
+      })
     );
-    expect(menu).not.toBeNull();
-    expect(menu?.textContent).toContain("Copy");
-    expect(menu?.textContent).toContain("Paste");
-    expect(menu?.textContent).toContain("Split Horizontally");
-    expect(menu?.textContent).toContain("Split Vertically");
-    expect(menu?.textContent).toContain("Restart Session…");
-
-    const copyButton = Array.from(
-      menu!.querySelectorAll<HTMLButtonElement>("button")
-    ).find((button) => button.textContent?.includes("Copy"));
-    expect(copyButton?.disabled).toBe(true);
     expect(window.kmux.hasPasteableClipboardContent).toHaveBeenCalledOnce();
     expect(window.kmux.readClipboardImages).not.toHaveBeenCalled();
-
-    const splitButton = Array.from(
-      menu!.querySelectorAll<HTMLButtonElement>("button")
-    ).find((button) => button.textContent?.includes("Split Horizontally"));
-    expect(splitButton).toBeTruthy();
-
-    act(() => {
-      splitButton!.click();
-    });
-
-    expect(onSplitDown).toHaveBeenCalledWith("pane_1");
   });
 
-  it("routes fallback restart through the surface restart callback", async () => {
+  it("routes native surface menu restart events through the surface restart callback", async () => {
     const props = createProps("surface_1");
     const onRestartSurface = vi.fn();
+    let nativeMenuListener:
+      | Parameters<typeof window.kmux.subscribeSurfaceContextMenuAction>[0]
+      | null = null;
     props.onRestartSurface = onRestartSurface;
-    window.kmux.showSurfaceContextMenu = vi.fn(async () => false);
+    window.kmux.subscribeSurfaceContextMenuAction = vi.fn((listener) => {
+      nativeMenuListener = listener;
+      return vi.fn();
+    });
 
     await act(async () => {
       root.render(<TerminalPane {...props} />);
     });
 
-    const viewport = container.querySelector(
-      "[data-testid='terminal-surface_1']"
-    );
     await act(async () => {
-      viewport!.dispatchEvent(
-        new MouseEvent("contextmenu", {
-          clientX: 24,
-          clientY: 32,
-          bubbles: true,
-          cancelable: true
-        })
-      );
-    });
-
-    const restartButton = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(
-        '[role="menu"] button[role="menuitem"]'
-      )
-    ).find((button) => button.textContent?.includes("Restart Session"));
-    expect(restartButton).toBeTruthy();
-
-    act(() => {
-      restartButton!.click();
+      nativeMenuListener?.({
+        surfaceId: "surface_1",
+        action: "restart-session"
+      });
     });
 
     expect(onRestartSurface).toHaveBeenCalledWith("surface_1");

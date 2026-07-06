@@ -123,7 +123,7 @@ declare global {
         x: number,
         y: number,
         context: SurfaceContextMenuContext
-      ): Promise<boolean>;
+      ): Promise<void>;
       subscribeSurfaceContextMenuAction(
         listener: (event: {
           surfaceId: string;

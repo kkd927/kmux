@@ -1136,6 +1136,9 @@ export function App(): JSX.Element {
       <AppOverlays
         shortcutLabelStyle={platformDescriptor.keyboard.labelStyle}
         reservedSystemChords={platformDescriptor.keyboard.reservedSystemChords}
+        surfaceDiagnosticCaptureDefaultEnabled={
+          platformDescriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled
+        }
         paletteOpen={paletteOpen}
         paletteQuery={paletteQuery}
         paletteSelectedIndex={paletteSelectedIndex}

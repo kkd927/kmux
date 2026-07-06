@@ -30,6 +30,7 @@ import {
   type SocketMode,
   type SplitAxis,
   type SplitDirection,
+  type SurfaceDiagnosticCaptureMode,
   type SurfaceVm,
   type WorkspaceDetectedWorktreeMetadata,
   type WorkspaceGitRepositoryMetadata,
@@ -347,10 +348,24 @@ export function createDefaultSettings(
     themeMode: "dark",
     shell: shellPath,
     shortcutDefaultsPlatform,
+    surfaceDiagnosticCaptureMode: "default",
     shortcuts: buildDefaultShortcuts(shortcutDefaultsPlatform),
     terminalTypography: createDefaultTerminalTypographySettings(),
     terminalThemes: createDefaultTerminalThemeSettings()
   };
+}
+
+export function resolveSurfaceDiagnosticCaptureEnabled(
+  mode: SurfaceDiagnosticCaptureMode,
+  defaultEnabled: boolean
+): boolean {
+  if (mode === "enabled") {
+    return true;
+  }
+  if (mode === "disabled") {
+    return false;
+  }
+  return defaultEnabled;
 }
 
 export function createDefaultTerminalTypographySettings(): TerminalTypographySettings {
@@ -440,6 +455,10 @@ export function mergeSettings(
     shortcutDefaultsPlatform:
       sanitizeShortcutDefaultsPlatform(nextPatch.shortcutDefaultsPlatform) ??
       current.shortcutDefaultsPlatform,
+    surfaceDiagnosticCaptureMode: sanitizeSurfaceDiagnosticCaptureMode(
+      nextPatch.surfaceDiagnosticCaptureMode ??
+        current.surfaceDiagnosticCaptureMode
+    ),
     terminalTypography: sanitizeTerminalTypographySettings(
       nextPatch.terminalTypography,
       patch,
@@ -3659,6 +3678,15 @@ function sanitizeShortcutDefaultsPlatform(
     return platform;
   }
   return undefined;
+}
+
+function sanitizeSurfaceDiagnosticCaptureMode(
+  mode: KmuxSettings["surfaceDiagnosticCaptureMode"] | undefined
+): SurfaceDiagnosticCaptureMode {
+  if (mode === "enabled" || mode === "disabled") {
+    return mode;
+  }
+  return "default";
 }
 
 function sanitizeSettingsVersion(settingsVersion: unknown): number {

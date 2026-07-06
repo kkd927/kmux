@@ -27,6 +27,9 @@ describe("renderer platform descriptor", () => {
       supportsTray: true,
       keepProcessAliveWhenLastWindowCloses: false
     });
+    expect(descriptor.debugging).toEqual({
+      surfaceDiagnosticCaptureDefaultEnabled: false
+    });
   });
 
   it("keeps macOS fallback descriptors on the compatibility shortcut catalog", () => {
@@ -37,6 +40,9 @@ describe("renderer platform descriptor", () => {
     expect(descriptor.keyboard.platform).toBe("darwin");
     expect(descriptor.keyboard.labelStyle).toBe("mac-symbols");
     expect(descriptor.keyboard.shortcuts).toEqual(DEFAULT_SHORTCUTS);
+    expect(descriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled).toBe(
+      false
+    );
   });
 
   it("uses native chrome and Linux keyboard policy for non-macOS fallback descriptors", () => {
@@ -47,5 +53,8 @@ describe("renderer platform descriptor", () => {
     expect(descriptor.keyboard.platform).toBe("linux");
     expect(descriptor.keyboard.labelStyle).toBe("text");
     expect(descriptor.keyboard.shortcuts).toEqual(LINUX_DEFAULT_SHORTCUTS);
+    expect(descriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled).toBe(
+      false
+    );
   });
 });

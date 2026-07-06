@@ -113,7 +113,7 @@ interface IpcHandlersOptions {
     palette: TerminalColorPalette
   ) => Promise<boolean>;
   openSettingsJson: () => Promise<void>;
-  surfaceDiagnosticsEnabled: boolean;
+  isSurfaceDiagnosticsEnabled: () => boolean;
   captureSurfaceDiagnostics: (surfaceId: Id) => Promise<SurfaceCapturePayload>;
   prepareWorktreeConversion: (
     workspaceId: Id
@@ -297,10 +297,8 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   ipcMain.handle(
     "kmux:surface-diagnostics:capture",
     async (_event, surfaceId: Id): Promise<SurfaceCapturePayload> => {
-      if (!options.surfaceDiagnosticsEnabled) {
-        throw new Error(
-          "Surface diagnostics are only available in development builds"
-        );
+      if (!options.isSurfaceDiagnosticsEnabled()) {
+        throw new Error("Surface diagnostic capture is disabled");
       }
       return options.captureSurfaceDiagnostics(surfaceId);
     }
@@ -365,14 +363,10 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         y: number;
         context: SurfaceContextMenuContext;
       }
-    ): Promise<boolean> => {
-      if (process.env.NODE_ENV === "test") {
-        return false;
-      }
-
+    ): Promise<void> => {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (!window) {
-        return false;
+        return;
       }
 
       const keyboardPolicy = options.getPlatformDescriptor().keyboard;
@@ -380,7 +374,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         surfaceId: payload.surfaceId,
         context: {
           ...payload.context,
-          diagnosticsEnabled: options.surfaceDiagnosticsEnabled
+          diagnosticsEnabled: options.isSurfaceDiagnosticsEnabled()
         },
         reservedSystemChords: keyboardPolicy.reservedSystemChords,
         onAction: (surfaceId, action) => {
@@ -391,7 +385,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         }
       });
       if (!menu) {
-        return false;
+        return;
       }
 
       menu.popup({
@@ -399,7 +393,6 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         x: Math.round(payload.x),
         y: Math.round(payload.y)
       });
-      return true;
     }
   );
   ipcMain.handle(

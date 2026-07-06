@@ -47,6 +47,9 @@ describe("platform runtime", () => {
         desktop: {
           supportsDock: true,
           keepProcessAliveWhenLastWindowCloses: true
+        },
+        debugging: {
+          surfaceDiagnosticCaptureDefaultEnabled: false
         }
       }
     });
@@ -95,9 +98,36 @@ describe("platform runtime", () => {
           supportsDock: false,
           supportsTray: true,
           keepProcessAliveWhenLastWindowCloses: false
+        },
+        debugging: {
+          surfaceDiagnosticCaptureDefaultEnabled: false
         }
       }
     });
+  });
+
+  it("enables diagnostic capture by default only for unpackaged desktop runtimes", () => {
+    expect(
+      requirePlatformRuntime({
+        platform: "darwin",
+        isPackaged: false,
+        env: {}
+      }).rendererDescriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled
+    ).toBe(true);
+    expect(
+      requirePlatformRuntime({
+        platform: "linux",
+        isPackaged: false,
+        env: {}
+      }).rendererDescriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled
+    ).toBe(true);
+    expect(
+      requirePlatformRuntime({
+        platform: "darwin",
+        isPackaged: true,
+        env: {}
+      }).rendererDescriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled
+    ).toBe(false);
   });
 
   it("disables packaged macOS updater checks under test", () => {

@@ -19,8 +19,10 @@ import {
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
   listPaneIds,
   MAX_SIDEBAR_WIDTH,
+  mergeSettings,
   MIN_SIDEBAR_WIDTH,
   migrateShortcutDefaultsForPlatform,
+  resolveSurfaceDiagnosticCaptureEnabled,
   sanitizeSettings
 } from "./index";
 import type { SettingsPatch } from "./index";
@@ -1693,6 +1695,51 @@ describe("core reducer", () => {
     expect(settings.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
     expect(settings.notificationSound).toBe(true);
     expect(settings.shortcutDefaultsPlatform).toBe("darwin");
+    expect(settings.surfaceDiagnosticCaptureMode).toBe("default");
+  });
+
+  it("stores explicit surface diagnostic capture preferences", () => {
+    const current = createDefaultSettings();
+
+    expect(
+      mergeSettings(current, {
+        surfaceDiagnosticCaptureMode: "enabled"
+      }).surfaceDiagnosticCaptureMode
+    ).toBe("enabled");
+    expect(
+      mergeSettings(current, {
+        surfaceDiagnosticCaptureMode: "disabled"
+      }).surfaceDiagnosticCaptureMode
+    ).toBe("disabled");
+  });
+
+  it("sanitizes missing or invalid surface diagnostic capture preferences to default", () => {
+    const missing = {
+      ...createDefaultSettings()
+    } as Partial<ReturnType<typeof createDefaultSettings>>;
+    delete missing.surfaceDiagnosticCaptureMode;
+
+    expect(sanitizeSettings(missing).surfaceDiagnosticCaptureMode).toBe(
+      "default"
+    );
+    expect(
+      sanitizeSettings({
+        ...createDefaultSettings(),
+        surfaceDiagnosticCaptureMode: "sometimes"
+      } as unknown as ReturnType<typeof createDefaultSettings>)
+        .surfaceDiagnosticCaptureMode
+    ).toBe("default");
+  });
+
+  it("resolves surface diagnostic capture using defaults unless explicitly overridden", () => {
+    expect(resolveSurfaceDiagnosticCaptureEnabled("default", true)).toBe(true);
+    expect(resolveSurfaceDiagnosticCaptureEnabled("default", false)).toBe(
+      false
+    );
+    expect(resolveSurfaceDiagnosticCaptureEnabled("enabled", false)).toBe(true);
+    expect(resolveSurfaceDiagnosticCaptureEnabled("disabled", true)).toBe(
+      false
+    );
   });
 
   it("creates Linux default settings with Linux shortcut defaults", () => {

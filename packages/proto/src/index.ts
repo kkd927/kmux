@@ -606,6 +606,7 @@ export interface TerminalTypographyProbeReport {
 }
 
 export type ShortcutDefaultsPlatform = "darwin" | "linux";
+export type SurfaceDiagnosticCaptureMode = "default" | "enabled" | "disabled";
 
 export interface KmuxSettings {
   settingsVersion?: number;
@@ -617,6 +618,7 @@ export interface KmuxSettings {
   themeMode: ThemeMode;
   shell?: string;
   shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
+  surfaceDiagnosticCaptureMode: SurfaceDiagnosticCaptureMode;
   shortcuts: Record<string, string>;
   terminalTypography: TerminalTypographySettings;
   terminalThemes: TerminalThemeSettings;

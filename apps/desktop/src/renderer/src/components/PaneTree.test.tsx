@@ -69,6 +69,7 @@ function createPaneTreeProps(): PaneTreeProps {
       notificationSound: false,
       themeMode: "dark",
       shell: "/bin/zsh",
+      surfaceDiagnosticCaptureMode: "default",
       shortcuts: {},
       terminalTypography: {
         preferredTextFontFamily: "SF Mono",
