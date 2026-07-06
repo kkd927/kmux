@@ -132,7 +132,7 @@ test("closing the last window keeps kmux alive and live-reopens the same session
   }
 });
 
-test("explicit quit tears down background services and starts fresh when warn-before-quit is disabled", async () => {
+test("explicit quit tears down background services and restores workspaces when warn-before-quit is disabled", async () => {
   const sandbox = createSandbox("kmux-e2e-explicit-quit-");
   let launched = await launchKmuxWithSandbox(sandbox);
   let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
@@ -238,28 +238,37 @@ test("explicit quit tears down background services and starts fresh when warn-be
       (view) =>
         view.settings.socketMode === "allowAll" &&
         view.settings.warnBeforeQuit === false &&
-        !view.workspaceRows.some((row) => row.name === quitWorkspaceName) &&
-        Object.keys(view.activeWorkspace.panes).length === 1 &&
-        Object.keys(view.activeWorkspace.surfaces).length === 1 &&
-        view.activeWorkspace.surfaces[
-          view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
-            .activeSurfaceId
-        ]?.sessionState === "running",
-      "clean relaunch should keep settings but start with a fresh workspace"
+        view.settings.restoreWorkspacesAfterQuit === true &&
+        view.workspaceRows.some((row) => row.name === quitWorkspaceName) &&
+        view.activeWorkspace.name === quitWorkspaceName &&
+        Object.keys(view.activeWorkspace.panes).length === 2 &&
+        Object.keys(view.activeWorkspace.surfaces).length === 3 &&
+        view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
+          activeSurfaceId &&
+        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
+          "running" &&
+        Object.values(view.activeWorkspace.surfaces).some(
+          (surface) => surface.title === "quit hidden continuity"
+        ),
+      "clean relaunch should keep settings and restore workspaces"
     );
 
     expect(
       relaunched.workspaceRows.some((row) => row.name === quitWorkspaceName)
-    ).toBe(false);
-    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(1);
-    expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(1);
-    expect(relaunched.activeWorkspace.surfaces[activeSurfaceId]).toBeUndefined();
+    ).toBe(true);
+    expect(relaunched.activeWorkspace.name).toBe(quitWorkspaceName);
+    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(2);
+    expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(3);
+    expect(
+      relaunched.activeWorkspace.panes[activePaneId]?.activeSurfaceId
+    ).toBe(activeSurfaceId);
     expect(
       Object.values(relaunched.activeWorkspace.surfaces).some(
         (surface) => surface.title === "quit hidden continuity"
       )
-    ).toBe(false);
+    ).toBe(true);
     expect(relaunched.settings.warnBeforeQuit).toBe(false);
+    expect(relaunched.settings.restoreWorkspacesAfterQuit).toBe(true);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
   } finally {
     if (relaunch) {

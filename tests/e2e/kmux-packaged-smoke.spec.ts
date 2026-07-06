@@ -265,18 +265,23 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     const relaunched = await waitForView(
       relaunch.page,
       (view) =>
-        !view.workspaceRows.some(
+        view.workspaceRows.some(
           (row) => row.name === "packaged smoke workspace"
         ) &&
-        Object.keys(view.activeWorkspace.panes).length === 1 &&
-        Object.keys(view.activeWorkspace.surfaces).length === 1 &&
+        view.activeWorkspace.id === targetWorkspaceId &&
+        Object.keys(view.activeWorkspace.panes).length === 2 &&
+        Object.keys(view.activeWorkspace.surfaces).length === 3 &&
         view.settings.socketMode === "allowAll" &&
         view.settings.warnBeforeQuit === false &&
-        view.activeWorkspace.surfaces[
-          view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
-            .activeSurfaceId
-        ]?.sessionState === "running",
-      "packaged clean relaunch should keep settings and start fresh",
+        view.settings.restoreWorkspacesAfterQuit === true &&
+        view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
+          activeSurfaceId &&
+        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
+          "running" &&
+        Object.values(view.activeWorkspace.surfaces).some(
+          (surface) => surface.title === "packaged hidden continuity"
+        ),
+      "packaged clean relaunch should keep settings and restore workspaces",
       15_000
     );
 
@@ -284,21 +289,20 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       relaunched.workspaceRows.some(
         (row) => row.name === "packaged smoke workspace"
       )
-    ).toBe(false);
-    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(1);
-    expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(1);
+    ).toBe(true);
+    expect(relaunched.activeWorkspace.id).toBe(targetWorkspaceId);
+    expect(Object.keys(relaunched.activeWorkspace.panes)).toHaveLength(2);
+    expect(Object.keys(relaunched.activeWorkspace.surfaces)).toHaveLength(3);
     expect(
-      relaunched.activeWorkspace.surfaces[activeSurfaceId]
-    ).toBeUndefined();
+      relaunched.activeWorkspace.panes[activePaneId]?.activeSurfaceId
+    ).toBe(activeSurfaceId);
     expect(
       Object.values(relaunched.activeWorkspace.surfaces).some(
         (surface) => surface.title === "packaged hidden continuity"
       )
-    ).toBe(false);
+    ).toBe(true);
 
-    const relaunchedSurfaceId =
-      relaunched.activeWorkspace.panes[relaunched.activeWorkspace.activePaneId]
-        .activeSurfaceId;
+    const relaunchedSurfaceId = activeSurfaceId;
     const relaunchedMarker = "packaged-smoke-relaunched-ok";
     runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
       "surface",
