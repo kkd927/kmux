@@ -874,8 +874,8 @@ function shouldCollectJsonlSource(
 }
 
 function shouldCollectJsonSource(
-  vendor: UsageVendor,
-  filePath: string
+  _vendor: UsageVendor,
+  _filePath: string
 ): boolean {
   return true;
 }
@@ -1059,7 +1059,7 @@ function extractUsageSamplesFromJsonDocument(
   record: Record<string, unknown>,
   sourcePath: string,
   range: UsageTimeRange,
-  state: {
+  _state: {
     antigravityWorkspaceByConversation: Map<string, string>;
   }
 ): UsageEventSample[] {

@@ -799,25 +799,6 @@ function pickFirstString(
   return undefined;
 }
 
-function extractText(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(extractText).filter(Boolean).join(" ");
-  }
-  const object = asObject(value);
-  if (!object) {
-    return undefined;
-  }
-  return (
-    pickFirstString(object, ["text", "message", "content"]) ??
-    extractText(object.content) ??
-    extractText(object.parts) ??
-    extractText(object.message)
-  );
-}
-
 function sanitizeTitle(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
