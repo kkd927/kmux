@@ -168,13 +168,25 @@ describe("agent hook normalization", () => {
 
   it("normalizes Antigravity aliases and preserves conversation metadata", () => {
     expect(
-      normalizeAgentHookInvocation("agy", "PreInvocation", {
-        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
-        transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
-        artifactDirectoryPath: "/Users/test/project/.gemini/jetski/artifacts",
-        workspacePaths: ["/Users/test/project"]
-      })
+      normalizeAgentHookInvocation(
+        "agy",
+        "PreInvocation",
+        {
+          conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+          transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
+          artifactDirectoryPath: "/Users/test/project/.gemini/jetski/artifacts",
+          workspacePaths: ["/Users/test/project"]
+        },
+        {
+          KMUX_WORKSPACE_ID: "workspace_1",
+          KMUX_SURFACE_ID: "surface_1",
+          KMUX_SESSION_ID: "kmux-session_1"
+        }
+      )
     ).toMatchObject({
+      workspaceId: "workspace_1",
+      surfaceId: "surface_1",
+      sessionId: "kmux-session_1",
       agent: "antigravity",
       event: "session_start",
       details: {
@@ -189,6 +201,32 @@ describe("agent hook normalization", () => {
     expect(
       normalizeAgentHookInvocation("antigravity-cli", "PostInvocation")
     ).toBeNull();
+  });
+
+  it("keeps Antigravity routing session ids separate from conversation ids", () => {
+    const event = normalizeAgentHookInvocation(
+      "agy",
+      "PreInvocation",
+      {
+        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+        workspacePaths: ["/Users/test/project"]
+      },
+      {
+        KMUX_WORKSPACE_ID: "workspace_1",
+        KMUX_SESSION_ID: "kmux-session_1"
+      }
+    );
+
+    expect(event).toMatchObject({
+      workspaceId: "workspace_1",
+      sessionId: "kmux-session_1",
+      agent: "antigravity",
+      event: "session_start",
+      details: {
+        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+      }
+    });
+    expect(event?.surfaceId).toBeUndefined();
   });
 
   it("maps Antigravity permission and question tools to needs_input", () => {

@@ -2170,7 +2170,15 @@ function backfillAgentSessionRef(
   const surface = target.surface;
   const session = surface ? state.sessions[surface.sessionId] : undefined;
   const vendor = normalizeExternalAgentSessionVendor(action.agent);
-  const vendorSessionId = normalizeOptionalText(action.sessionId, 512);
+  const vendorSessionId =
+    vendor === "antigravity"
+      ? normalizeOptionalText(
+          typeof action.details?.conversationId === "string"
+            ? action.details.conversationId
+            : undefined,
+          512
+        )
+      : normalizeOptionalText(action.sessionId, 512);
   if (
     !session ||
     !vendor ||

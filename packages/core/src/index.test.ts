@@ -1232,6 +1232,32 @@ describe("core reducer", () => {
     expect(state.workspaces[workspaceId].statusEntries).toEqual({});
   });
 
+  it("backfills Antigravity session refs from conversation metadata while preserving routing session ids", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const kmuxSessionId = state.surfaces[surfaceId].sessionId;
+    const conversationId = "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890";
+
+    const effects = applyAction(state, {
+      type: "agent.event",
+      workspaceId,
+      sessionId: kmuxSessionId,
+      agent: "antigravity",
+      event: "session_start",
+      details: {
+        conversationId
+      }
+    });
+
+    expect(effects).toEqual([{ type: "persist" }]);
+    expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
+      vendor: "antigravity",
+      externalKey: `antigravity:${conversationId}`,
+      sessionId: conversationId
+    });
+  });
+
   it("does not backfill agent session refs from surface-id hook fallbacks", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
