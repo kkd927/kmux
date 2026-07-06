@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 
@@ -52,12 +52,6 @@ type ClaudeCredentials = {
 type ClaudeCredentialsRecord = {
   source: "keychain" | "file";
   credentials: ClaudeCredentials;
-};
-
-type GeminiQuotaBucket = {
-  modelId: string;
-  remainingFraction: number;
-  resetTime?: string;
 };
 
 type AntigravityQuotaSummaryBucket = {
@@ -132,7 +126,7 @@ export interface ClaudeSubscriptionUsageOptions {
   execFileImpl?: ExecFileLike;
 }
 
-export interface GeminiSubscriptionUsageOptions {
+export interface AntigravitySubscriptionUsageOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
@@ -158,14 +152,6 @@ type FetcherFactoryOptions = {
   antigravityKeyringReader?: AntigravityKeyringReader;
 };
 
-const GEMINI_OAUTH_CLIENT_ID_ENV_KEYS = [
-  "OPENCLAW_GEMINI_OAUTH_CLIENT_ID",
-  "GEMINI_CLI_OAUTH_CLIENT_ID"
-] as const;
-const GEMINI_OAUTH_CLIENT_SECRET_ENV_KEYS = [
-  "OPENCLAW_GEMINI_OAUTH_CLIENT_SECRET",
-  "GEMINI_CLI_OAUTH_CLIENT_SECRET"
-] as const;
 const ANTIGRAVITY_OAUTH_CLIENT_ID_ENV_KEYS = [
   "ANTIGRAVITY_OAUTH_CLIENT_ID",
   "AGY_OAUTH_CLIENT_ID"
@@ -194,7 +180,6 @@ export function createSubscriptionUsageFetchers(
   return {
     codex: () => fetchCodexSubscriptionUsage(options),
     claude: () => fetchClaudeSubscriptionUsage(options),
-    gemini: () => fetchGeminiSubscriptionUsage(options),
     antigravity: () => fetchAntigravitySubscriptionUsage(options)
   };
 }
@@ -234,41 +219,6 @@ export function createSubscriptionAuthDetectors(
         return false;
       }
       return !expiresAtMs || now() < expiresAtMs;
-    },
-    gemini: async () => {
-      const now = options.now ?? (() => Date.now());
-      const readTextFile = defaultReadTextFile;
-      const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
-      const settings = await readGeminiSettings(
-        agentStorageRoots.gemini.settingsPath,
-        readTextFile
-      );
-      if (settings.selectedType && settings.selectedType !== "oauth-personal") {
-        return false;
-      }
-      const credentials = await readJsonFile<{
-        access_token?: string;
-        refresh_token?: string;
-        expiry_date?: number;
-      }>(agentStorageRoots.gemini.oauthCredentialsPath, readTextFile);
-      const accessToken = credentials?.access_token?.trim();
-      const refreshToken = credentials?.refresh_token?.trim();
-      if (!accessToken && !refreshToken) {
-        return false;
-      }
-      if (!accessToken && refreshToken) {
-        return true;
-      }
-      if (!accessToken) {
-        return false;
-      }
-      if (
-        typeof credentials?.expiry_date === "number" &&
-        now() >= credentials.expiry_date
-      ) {
-        return Boolean(refreshToken);
-      }
-      return true;
     },
     antigravity: async () => {
       const now = options.now ?? (() => Date.now());
@@ -476,66 +426,8 @@ function isTransientUsageFetchStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-export async function fetchGeminiSubscriptionUsage(
-  options: GeminiSubscriptionUsageOptions = {}
-): Promise<SubscriptionProviderUsageVm | null> {
-  const now = options.now ?? (() => Date.now());
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
-  const readTextFile = options.readTextFile ?? defaultReadTextFile;
-  const agentStorageRoots = resolveSubscriptionAgentStorageRoots(options);
-  const settings = await readGeminiSettings(
-    agentStorageRoots.gemini.settingsPath,
-    readTextFile
-  );
-  if (settings.selectedType && settings.selectedType !== "oauth-personal") {
-    return null;
-  }
-
-  const credentials = await readJsonFile<{
-    access_token?: string;
-    refresh_token?: string;
-    id_token?: string;
-    expiry_date?: number;
-  }>(agentStorageRoots.gemini.oauthCredentialsPath, readTextFile);
-  let nextCredentials = credentials;
-  const accessToken = credentials?.access_token?.trim();
-  const refreshToken = credentials?.refresh_token?.trim();
-  const isExpired =
-    typeof credentials?.expiry_date === "number" &&
-    now() >= credentials.expiry_date;
-  if ((!accessToken || isExpired) && refreshToken) {
-    nextCredentials = await refreshGeminiAccessToken({
-      oauthCredentialsPath: agentStorageRoots.gemini.oauthCredentialsPath,
-      fetchImpl,
-      now,
-      credentials,
-      env: options.env,
-      googleOAuthClientConfig: options.googleOAuthClientConfig
-    });
-  }
-  const resolvedAccessToken = nextCredentials?.access_token?.trim();
-  if (!resolvedAccessToken) {
-    return null;
-  }
-
-  return fetchCodeAssistQuotaUsage({
-    provider: "gemini",
-    providerLabel: "Gemini",
-    source: "quota_api",
-    endpointBaseUrl: "https://cloudcode-pa.googleapis.com",
-    accessToken: resolvedAccessToken,
-    idToken: nextCredentials?.id_token,
-    metadata: {
-      ideType: "GEMINI_CLI",
-      pluginType: "GEMINI"
-    },
-    fetchImpl,
-    now
-  });
-}
-
 export async function fetchAntigravitySubscriptionUsage(
-  options: GeminiSubscriptionUsageOptions = {}
+  options: AntigravitySubscriptionUsageOptions = {}
 ): Promise<SubscriptionProviderUsageVm | null> {
   const now = options.now ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -568,7 +460,6 @@ export async function fetchAntigravitySubscriptionUsage(
 
   if (credentials?.refresh_token) {
     const refreshed = await refreshAntigravityAccessToken({
-      oauthCredentialsPath: agentStorageRoots.gemini.oauthCredentialsPath,
       fetchImpl,
       now,
       credentials,
@@ -634,7 +525,7 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
   const idTokenClaims = decodeJwtPayload(options.idToken);
   const planLabel =
     asTrimmedString(loadCodeAssistPayload.paidTier?.name) ??
-    normalizeGeminiPlanLabel(tierId, idTokenClaims.hd) ??
+    normalizeCodeAssistPlanLabel(tierId, idTokenClaims.hd) ??
     (!tierId
       ? normalizeCodeAssistAllowedTiersPlanLabel(
           loadCodeAssistPayload.allowedTiers
@@ -644,7 +535,7 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
     return null;
   }
 
-  const projectId = normalizeGeminiProjectId(
+  const projectId = normalizeCodeAssistProjectId(
     loadCodeAssistPayload.cloudaicompanionProject
   );
   const quotaResponse = await options.fetchImpl(
@@ -679,111 +570,6 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
     providerLabel: "Antigravity",
     planLabel: resolvedPlanLabel,
     source: "quota_summary_api",
-    updatedAt: new Date(options.now()).toISOString(),
-    rows
-  };
-}
-
-async function fetchCodeAssistQuotaUsage(options: {
-  provider: KnownSubscriptionProvider;
-  providerLabel: string;
-  source: string;
-  endpointBaseUrl: string;
-  accessToken: string;
-  idToken?: string;
-  metadata: Record<string, string>;
-  fetchImpl: FetchLike;
-  now: () => number;
-  includeZeroUseRows?: boolean;
-  allowAllowedTiersPlanFallback?: boolean;
-}): Promise<SubscriptionProviderUsageVm | null> {
-  const loadCodeAssistResponse = await options.fetchImpl(
-    `${options.endpointBaseUrl}/v1internal:loadCodeAssist`,
-    withFetchTimeout({
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${options.accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        metadata: options.metadata
-      })
-    })
-  );
-  if (!loadCodeAssistResponse.ok) {
-    return null;
-  }
-  const loadCodeAssistPayload =
-    (await loadCodeAssistResponse.json()) as CodeAssistLoadPayload;
-  const tierId = asTrimmedString(
-    loadCodeAssistPayload.currentTier?.id
-  )?.toLowerCase();
-  const idTokenClaims = decodeJwtPayload(options.idToken);
-  const currentTierPlanLabel = normalizeGeminiPlanLabel(
-    tierId,
-    idTokenClaims.hd
-  );
-  const planLabel =
-    currentTierPlanLabel ??
-    (!tierId && options.allowAllowedTiersPlanFallback === true
-      ? normalizeCodeAssistAllowedTiersPlanLabel(
-          loadCodeAssistPayload.allowedTiers
-        )
-      : null);
-  if (!planLabel) {
-    return null;
-  }
-  const projectId = normalizeGeminiProjectId(
-    loadCodeAssistPayload.cloudaicompanionProject
-  );
-
-  const quotaResponse = await options.fetchImpl(
-    `${options.endpointBaseUrl}/v1internal:retrieveUserQuota`,
-    withFetchTimeout({
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${options.accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(projectId ? { project: projectId } : {})
-    })
-  );
-  if (!quotaResponse.ok) {
-    return null;
-  }
-  const quotaPayload = (await quotaResponse.json()) as {
-    buckets?: Array<{
-      modelId?: string;
-      remainingFraction?: number;
-      resetTime?: string;
-    }>;
-  };
-  const buckets = (quotaPayload.buckets ?? []).flatMap((bucket) => {
-    const modelId = bucket.modelId?.trim();
-    const remainingFraction = bucket.remainingFraction;
-    if (!modelId || typeof remainingFraction !== "number") {
-      return [];
-    }
-    return [
-      {
-        modelId,
-        remainingFraction,
-        resetTime: bucket.resetTime
-      }
-    ] satisfies GeminiQuotaBucket[];
-  });
-  const rows = normalizeGeminiQuotaRows(buckets, options.now(), {
-    includeZeroUseRows: options.includeZeroUseRows
-  });
-  if (rows.length === 0) {
-    return null;
-  }
-
-  return {
-    provider: options.provider,
-    providerLabel: options.providerLabel,
-    planLabel,
-    source: options.source,
     updatedAt: new Date(options.now()).toISOString(),
     rows
   };
@@ -1277,67 +1063,6 @@ function slugifySubscriptionRowKey(value: string): string | null {
   return slug || null;
 }
 
-function normalizeGeminiQuotaRows(
-  buckets: GeminiQuotaBucket[],
-  nowMs: number,
-  options: { includeZeroUseRows?: boolean } = {}
-): SubscriptionUsageRowVm[] {
-  const groups = new Map<"pro" | "flash" | "flash-lite", GeminiQuotaBucket>();
-  for (const bucket of buckets) {
-    if (!isReliableGeminiQuotaBucket(bucket)) {
-      continue;
-    }
-    const key = classifyGeminiQuotaKey(bucket.modelId);
-    if (!key) {
-      continue;
-    }
-    const existing = groups.get(key);
-    if (!existing || bucket.remainingFraction < existing.remainingFraction) {
-      groups.set(key, bucket);
-    }
-  }
-
-  const order: Array<["pro" | "flash" | "flash-lite", string]> = [
-    ["pro", "Pro"],
-    ["flash", "Flash"],
-    ["flash-lite", "Flash Lite"]
-  ];
-  return order.flatMap(([key, label]) => {
-    const bucket = groups.get(key);
-    if (!bucket) {
-      return [];
-    }
-    const usedPercent = clampPercent((1 - bucket.remainingFraction) * 100);
-    if (usedPercent <= 0 && options.includeZeroUseRows !== true) {
-      return [];
-    }
-    return [
-      buildRow({
-        key,
-        label,
-        usedPercent,
-        resetsAtMs: parseDateToMs(bucket.resetTime),
-        windowKind: "model",
-        nowMs
-      })
-    ];
-  });
-}
-
-function isReliableGeminiQuotaBucket(bucket: GeminiQuotaBucket): boolean {
-  if (!Number.isFinite(bucket.remainingFraction)) {
-    return false;
-  }
-  if (bucket.remainingFraction < 0 || bucket.remainingFraction > 1) {
-    return false;
-  }
-  if (bucket.remainingFraction !== 0) {
-    return true;
-  }
-  const resetTimeMs = parseDateToMs(bucket.resetTime);
-  return typeof resetTimeMs === "number" && resetTimeMs > 0;
-}
-
 function buildAntigravityClientMetadataHeader(
   platform: NodeJS.Platform
 ): string {
@@ -1660,28 +1385,6 @@ function isCredentialsExpired(
   );
 }
 
-async function readGeminiSettings(
-  settingsPath: string,
-  readTextFile: ReadTextFile
-): Promise<{ selectedType?: string }> {
-  const raw = await defaultReadJsonText(settingsPath, readTextFile);
-  if (!raw) {
-    return {};
-  }
-  const parsed = safeJsonParse(stripJsonComments(raw));
-  if (
-    !isRecord(parsed) ||
-    !isRecord(parsed.security) ||
-    !isRecord(parsed.security.auth)
-  ) {
-    return {};
-  }
-  return {
-    selectedType:
-      asTrimmedString(parsed.security.auth.selectedType) ?? undefined
-  };
-}
-
 function normalizeCodexPlanLabel(
   planType: string | null | undefined
 ): string | null {
@@ -1718,7 +1421,7 @@ function normalizeClaudePlanLabel(
   return "Subscription";
 }
 
-function normalizeGeminiPlanLabel(
+function normalizeCodeAssistPlanLabel(
   tierId: string | undefined,
   hostedDomain: string | undefined
 ): string | null {
@@ -1762,22 +1465,6 @@ function humanizePlanLabel(value: string): string {
     .filter(Boolean)
     .map((segment) => `${segment[0]?.toUpperCase() ?? ""}${segment.slice(1)}`)
     .join(" ");
-}
-
-function classifyGeminiQuotaKey(
-  modelId: string
-): "pro" | "flash" | "flash-lite" | null {
-  const normalized = modelId.trim().toLowerCase();
-  if (normalized.includes("flash-lite")) {
-    return "flash-lite";
-  }
-  if (normalized.includes("flash")) {
-    return "flash";
-  }
-  if (normalized.includes("pro")) {
-    return "pro";
-  }
-  return null;
 }
 
 function buildRow(options: {
@@ -2143,7 +1830,7 @@ function decodeJwtPayload(token: unknown): Record<string, string> {
   }
 }
 
-function normalizeGeminiProjectId(
+function normalizeCodeAssistProjectId(
   value: string | { id?: string; projectId?: string } | undefined
 ): string | undefined {
   if (typeof value === "string") {
@@ -2157,8 +1844,8 @@ function normalizeGeminiProjectId(
   return undefined;
 }
 
-async function refreshGeminiAccessToken(options: {
-  oauthCredentialsPath: string;
+async function refreshGoogleCodeAssistAccessToken(options: {
+  oauthCredentialsPath?: string;
   fetchImpl: FetchLike;
   now: () => number;
   credentials: {
@@ -2189,7 +1876,7 @@ async function refreshGeminiAccessToken(options: {
   }
   const clientConfig =
     options.googleOAuthClientConfig ??
-    resolveGeminiOAuthClientConfig(options.env);
+    resolveFirstGoogleOAuthClientConfig(options.env);
   if (!clientConfig) {
     return null;
   }
@@ -2241,7 +1928,7 @@ async function refreshGeminiAccessToken(options: {
     ...(payload.token_type ? { token_type: payload.token_type } : {}),
     ...(payload.scope ? { scope: payload.scope } : {})
   };
-  if (options.persist !== false) {
+  if (options.persist !== false && options.oauthCredentialsPath) {
     try {
       await writeFile(
         options.oauthCredentialsPath,
@@ -2256,7 +1943,6 @@ async function refreshGeminiAccessToken(options: {
 }
 
 async function refreshAntigravityAccessToken(options: {
-  oauthCredentialsPath: string;
   fetchImpl: FetchLike;
   now: () => number;
   credentials: AntigravityCredentials | null;
@@ -2270,8 +1956,7 @@ async function refreshAntigravityAccessToken(options: {
     ? [options.googleOAuthClientConfig]
     : resolveAntigravityOAuthClientConfigs(options.env);
   for (const clientConfig of clientConfigs) {
-    const refreshed = await refreshGeminiAccessToken({
-      oauthCredentialsPath: options.oauthCredentialsPath,
+    const refreshed = await refreshGoogleCodeAssistAccessToken({
       fetchImpl: options.fetchImpl,
       now: options.now,
       credentials: options.credentials,
@@ -2284,26 +1969,6 @@ async function refreshAntigravityAccessToken(options: {
     }
   }
   return null;
-}
-
-function resolveGeminiOAuthClientConfig(
-  env?: NodeJS.ProcessEnv
-): { clientId: string; clientSecret?: string } | null {
-  const envClientId = resolveFirstEnvValue(
-    GEMINI_OAUTH_CLIENT_ID_ENV_KEYS,
-    env
-  );
-  const envClientSecret = resolveFirstEnvValue(
-    GEMINI_OAUTH_CLIENT_SECRET_ENV_KEYS,
-    env
-  );
-  if (envClientId) {
-    return {
-      clientId: envClientId,
-      clientSecret: envClientSecret
-    };
-  }
-  return extractGeminiCliOAuthClientConfig(env);
 }
 
 function resolveAntigravityOAuthClientConfigs(
@@ -2326,6 +1991,12 @@ function resolveAntigravityOAuthClientConfigs(
     ];
   }
   return extractAntigravityOAuthClientConfigs(env);
+}
+
+function resolveFirstGoogleOAuthClientConfig(
+  env?: NodeJS.ProcessEnv
+): { clientId: string; clientSecret?: string } | null {
+  return resolveAntigravityOAuthClientConfigs(env)[0] ?? null;
 }
 
 function extractAntigravityOAuthClientConfigs(
@@ -2379,128 +2050,6 @@ function extractGoogleOAuthClientSecrets(content: string): string[] {
     }
   }
   return Array.from(secrets);
-}
-
-function extractGeminiCliOAuthClientConfig(
-  env?: NodeJS.ProcessEnv
-): { clientId: string; clientSecret?: string } | null {
-  const geminiPath = findBinaryInPath("gemini", env);
-  if (!geminiPath) {
-    return null;
-  }
-  const resolvedPath = safeRealpathSync(geminiPath) ?? geminiPath;
-  const searchDirs = Array.from(
-    new Set([
-      dirname(dirname(resolvedPath)),
-      join(dirname(resolvedPath), "node_modules", "@google", "gemini-cli"),
-      join(
-        dirname(dirname(resolvedPath)),
-        "node_modules",
-        "@google",
-        "gemini-cli"
-      ),
-      join(
-        dirname(dirname(dirname(resolvedPath))),
-        "lib",
-        "node_modules",
-        "@google",
-        "gemini-cli"
-      )
-    ])
-  );
-  for (const searchDir of searchDirs) {
-    const fromKnownPaths =
-      readGeminiCliOAuthClientConfigFromKnownPaths(searchDir);
-    if (fromKnownPaths) {
-      return fromKnownPaths;
-    }
-    const fromBundle = readGeminiCliOAuthClientConfigFromBundle(searchDir);
-    if (fromBundle) {
-      return fromBundle;
-    }
-  }
-  return null;
-}
-
-function readGeminiCliOAuthClientConfigFromKnownPaths(
-  geminiCliDir: string
-): { clientId: string; clientSecret?: string } | null {
-  const searchPaths = [
-    join(
-      geminiCliDir,
-      "node_modules",
-      "@google",
-      "gemini-cli-core",
-      "dist",
-      "src",
-      "code_assist",
-      "oauth2.js"
-    ),
-    join(
-      geminiCliDir,
-      "node_modules",
-      "@google",
-      "gemini-cli-core",
-      "dist",
-      "code_assist",
-      "oauth2.js"
-    )
-  ];
-  for (const filePath of searchPaths) {
-    const credentials = readGeminiCliOAuthClientConfigFile(filePath);
-    if (credentials) {
-      return credentials;
-    }
-  }
-  return null;
-}
-
-function readGeminiCliOAuthClientConfigFromBundle(
-  geminiCliDir: string
-): { clientId: string; clientSecret?: string } | null {
-  const bundleDir = join(geminiCliDir, "bundle");
-  if (!existsSync(bundleDir)) {
-    return null;
-  }
-  try {
-    for (const entry of readdirSync(bundleDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".js")) {
-        continue;
-      }
-      const credentials = readGeminiCliOAuthClientConfigFile(
-        join(bundleDir, entry.name)
-      );
-      if (credentials) {
-        return credentials;
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function readGeminiCliOAuthClientConfigFile(
-  filePath: string
-): { clientId: string; clientSecret?: string } | null {
-  try {
-    const content = readFileSync(filePath, "utf8");
-    const clientId =
-      content.match(/OAUTH_CLIENT_ID\s*=\s*["']([^"']+)["']/u)?.[1] ??
-      content.match(/(\d+-[a-z0-9]+\.apps\.googleusercontent\.com)/iu)?.[1];
-    const clientSecret =
-      content.match(/OAUTH_CLIENT_SECRET\s*=\s*["']([^"']+)["']/u)?.[1] ??
-      content.match(/(GOCSPX-[A-Za-z0-9_-]+)/u)?.[1];
-    if (!clientId || !clientSecret) {
-      return null;
-    }
-    return {
-      clientId,
-      clientSecret
-    };
-  } catch {
-    return null;
-  }
 }
 
 function findBinaryInPath(
@@ -2626,63 +2175,6 @@ async function withTimeout<T>(
       }
     );
   });
-}
-
-function stripJsonComments(input: string): string {
-  let result = "";
-  let inString = false;
-  let escaped = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-
-  for (let index = 0; index < input.length; index += 1) {
-    const char = input[index];
-    const next = input[index + 1];
-
-    if (inLineComment) {
-      if (char === "\n") {
-        inLineComment = false;
-        result += char;
-      }
-      continue;
-    }
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      result += char;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      inLineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inBlockComment = true;
-      index += 1;
-      continue;
-    }
-    result += char;
-  }
-
-  return result;
 }
 
 function parseDateToMs(value: string | undefined): number | undefined {

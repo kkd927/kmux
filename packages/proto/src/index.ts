@@ -11,12 +11,7 @@ export type NotificationSource =
   | "status"
   | "system";
 export type NotificationKind = "generic" | "needs_input" | "turn_complete";
-export type UsageVendor =
-  | "claude"
-  | "codex"
-  | "gemini"
-  | "antigravity"
-  | "unknown";
+export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
 export type SubscriptionUsageProvider = Exclude<UsageVendor, "unknown">;
 export type ImageAttachmentMimeType =
   | "image/png"
@@ -58,11 +53,7 @@ export interface SessionLaunchConfig {
   title?: string;
 }
 
-export type ExternalAgentSessionVendor =
-  | "codex"
-  | "gemini"
-  | "claude"
-  | "antigravity";
+export type ExternalAgentSessionVendor = "codex" | "claude" | "antigravity";
 
 export interface ExternalAgentSessionRef {
   vendor: ExternalAgentSessionVendor;
@@ -73,7 +64,7 @@ export interface ExternalAgentSessionRef {
 export interface ExternalAgentSessionVm {
   key: string;
   vendor: ExternalAgentSessionVendor;
-  vendorLabel: "CODEX" | "GEMINI" | "CLAUDE" | "AGY";
+  vendorLabel: "CODEX" | "CLAUDE" | "AGY";
   title: string;
   cwd?: string;
   createdAt?: string;

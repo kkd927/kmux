@@ -442,8 +442,7 @@ describe("usage runtime", () => {
     });
     const subscriptionFetchers = {
       codex: vi.fn(async () => null),
-      claude: vi.fn(async () => null),
-      gemini: vi.fn(async () => null)
+      claude: vi.fn(async () => null)
     };
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -477,7 +476,6 @@ describe("usage runtime", () => {
     expect(runtime.getSnapshot().subscriptionUsage).toEqual([]);
     expect(subscriptionFetchers.codex).not.toHaveBeenCalled();
     expect(subscriptionFetchers.claude).not.toHaveBeenCalled();
-    expect(subscriptionFetchers.gemini).not.toHaveBeenCalled();
   });
 
   it("includes Antigravity usage samples in dashboard aggregates", async () => {
@@ -811,6 +809,91 @@ describe("usage runtime", () => {
     );
   });
 
+  it("drops legacy Gemini usage history days during load normalization", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime(),
+      historyStore: createFakeUsageHistoryStore([
+        {
+          dayKey: "2026-04-16",
+          totalCostUsd: 9,
+          reportedCostUsd: 0,
+          estimatedCostUsd: 9,
+          unknownCostTokens: 0,
+          totalTokens: 9000,
+          vendors: [
+            {
+              vendor: "gemini",
+              totalCostUsd: 9,
+              totalTokens: 9000
+            }
+          ]
+        }
+      ])
+    } as never);
+
+    await runtime.refreshNow();
+
+    const legacyDay = runtime
+      .getSnapshot()
+      .dailyActivity?.find((entry) => entry.dayKey === "2026-04-16");
+    expect(legacyDay).toEqual(
+      expect.objectContaining({
+        totalCostUsd: 0,
+        totalTokens: 0
+      })
+    );
+  });
+
+  it("preserves supported usage rows on legacy Gemini mixed history days", async () => {
+    const state = createInitialState();
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [],
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime(),
+      historyStore: createFakeUsageHistoryStore([
+        {
+          dayKey: "2026-04-16",
+          totalCostUsd: 11.25,
+          reportedCostUsd: 2.25,
+          estimatedCostUsd: 9,
+          unknownCostTokens: 0,
+          totalTokens: 11250,
+          vendors: [
+            {
+              vendor: "gemini",
+              totalCostUsd: 9,
+              totalTokens: 9000
+            },
+            {
+              vendor: "codex",
+              totalCostUsd: 2.25,
+              totalTokens: 2250
+            }
+          ]
+        }
+      ])
+    } as never);
+
+    await runtime.refreshNow();
+
+    const mixedDay = runtime
+      .getSnapshot()
+      .dailyActivity?.find((entry) => entry.dayKey === "2026-04-16");
+    expect(mixedDay).toEqual(
+      expect.objectContaining({
+        totalCostUsd: 2.25,
+        totalTokens: 2250
+      })
+    );
+  });
+
   it("aggregates thinking tokens into the token breakdown without double-counting output", async () => {
     const state = createInitialState();
     const runtime = createUsageRuntime({
@@ -996,8 +1079,8 @@ describe("usage runtime", () => {
               samples: [
                 {
                   ...buildSample({
-                    vendor: "gemini",
-                    sessionId: "gemini-unpriced-session",
+                    vendor: "antigravity",
+                    sessionId: "agy-unpriced-session",
                     model: "gemini-unknown-preview",
                     estimatedCostUsd: 0,
                     totalTokens: 900,
@@ -1457,10 +1540,10 @@ describe("usage runtime", () => {
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
     const subscriptionFetchers = {
-      gemini: vi.fn(
+      antigravity: vi.fn(
         async (): Promise<SubscriptionProviderUsageVm> => ({
-          provider: "gemini",
-          providerLabel: "Gemini",
+          provider: "antigravity",
+          providerLabel: "Antigravity",
           planLabel: "Paid",
           source: "quota_api",
           updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
@@ -1487,7 +1570,7 @@ describe("usage runtime", () => {
               sourceCount: 1,
               samples: [
                 buildSample({
-                  vendor: "gemini",
+                  vendor: "antigravity",
                   estimatedCostUsd: 0.75
                 })
               ]
@@ -1505,15 +1588,15 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
 
-    expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(1);
+    expect(subscriptionFetchers.antigravity).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
-    expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
+    expect(subscriptionFetchers.antigravity).toHaveBeenCalledTimes(2);
 
     runtime.setDashboardOpen(false);
     await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
 
-    expect(subscriptionFetchers.gemini).toHaveBeenCalledTimes(2);
+    expect(subscriptionFetchers.antigravity).toHaveBeenCalledTimes(2);
 
     runtime.shutdown();
   });
@@ -1522,10 +1605,10 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(
+    const antigravityFetcher = vi.fn(
       async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date().toISOString(),
@@ -1551,10 +1634,10 @@ describe("usage runtime", () => {
       ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
-        gemini: geminiFetcher
+        antigravity: antigravityFetcher
       },
       subscriptionAuthDetectors: {
-        gemini: vi.fn(async () => true)
+        antigravity: vi.fn(async () => true)
       }
     } as never);
 
@@ -1562,21 +1645,21 @@ describe("usage runtime", () => {
     runtime.setDashboardOpen(true);
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     runtime.setDashboardOpen(false);
     await vi.advanceTimersByTimeAsync(30_000);
     runtime.setDashboardOpen(true);
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     runtime.setDashboardOpen(false);
     await vi.advanceTimersByTimeAsync(31_000);
     runtime.setDashboardOpen(true);
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
-    expect(geminiFetcher).toHaveBeenCalledTimes(2);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(2);
 
     runtime.shutdown();
   });
@@ -1585,11 +1668,11 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi
+    const antigravityFetcher = vi
       .fn<() => Promise<SubscriptionProviderUsageVm>>()
       .mockResolvedValueOnce({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
@@ -1605,8 +1688,8 @@ describe("usage runtime", () => {
         ]
       })
       .mockResolvedValue({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-04-17T11:02:30.000Z").toISOString(),
@@ -1631,10 +1714,10 @@ describe("usage runtime", () => {
       ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
-        gemini: geminiFetcher
+        antigravity: antigravityFetcher
       },
       subscriptionAuthDetectors: {
-        gemini: vi.fn(async () => true)
+        antigravity: vi.fn(async () => true)
       }
     } as never);
 
@@ -1642,13 +1725,13 @@ describe("usage runtime", () => {
     runtime.setDashboardOpen(true);
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2 * 60 * 1_000 + 29_000);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(geminiFetcher).toHaveBeenCalledTimes(2);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(2);
 
     runtime.shutdown();
   });
@@ -1657,10 +1740,10 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(
+    const antigravityFetcher = vi.fn(
       async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
@@ -1686,10 +1769,10 @@ describe("usage runtime", () => {
       ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
-        gemini: geminiFetcher
+        antigravity: antigravityFetcher
       },
       subscriptionAuthDetectors: {
-        gemini: vi.fn(async () => true)
+        antigravity: vi.fn(async () => true)
       }
     } as never);
 
@@ -1698,10 +1781,10 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
 
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
     expect(runtime.getSnapshot().subscriptionUsage).toEqual([
       expect.objectContaining({
-        provider: "gemini",
+        provider: "antigravity",
         planLabel: "Paid",
         rows: [expect.objectContaining({ key: "pro", usedPercent: 42 })]
       })
@@ -1778,10 +1861,10 @@ describe("usage runtime", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T11:00:00.000Z"));
     const state = createInitialState();
-    const geminiFetcher = vi.fn(
+    const antigravityFetcher = vi.fn(
       async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
@@ -1797,7 +1880,7 @@ describe("usage runtime", () => {
         ]
       })
     );
-    const geminiDetector = vi.fn(async () => true);
+    const antigravityDetector = vi.fn(async () => true);
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
@@ -1808,10 +1891,10 @@ describe("usage runtime", () => {
       ],
       emitSnapshot: vi.fn(),
       subscriptionFetchers: {
-        gemini: geminiFetcher
+        antigravity: antigravityFetcher
       },
       subscriptionAuthDetectors: {
-        gemini: geminiDetector
+        antigravity: antigravityDetector
       }
     } as never);
 
@@ -1820,13 +1903,13 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
 
-    expect(geminiDetector).toHaveBeenCalledTimes(1);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityDetector).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(geminiDetector).toHaveBeenCalledTimes(1);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityDetector).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     runtime.shutdown();
   });
@@ -1914,10 +1997,10 @@ describe("usage runtime", () => {
     const codexFetcher = vi.fn(async () => {
       throw new Error("script: command not found");
     });
-    const geminiFetcher = vi.fn(
+    const antigravityFetcher = vi.fn(
       async (): Promise<SubscriptionProviderUsageVm> => ({
-        provider: "gemini",
-        providerLabel: "Gemini",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
         planLabel: "Paid",
         source: "quota_api",
         updatedAt: new Date("2026-04-17T11:00:00.000Z").toISOString(),
@@ -1942,11 +2025,11 @@ describe("usage runtime", () => {
       now: () => Date.now(),
       subscriptionFetchers: {
         codex: codexFetcher,
-        gemini: geminiFetcher
+        antigravity: antigravityFetcher
       },
       subscriptionAuthDetectors: {
         codex: vi.fn(async () => true),
-        gemini: vi.fn(async () => true)
+        antigravity: vi.fn(async () => true)
       }
     });
 
@@ -1955,21 +2038,21 @@ describe("usage runtime", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(codexFetcher).toHaveBeenCalledTimes(1);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
     expect(runtime.getSnapshot().subscriptionUsage).toEqual([
       expect.objectContaining({
-        provider: "gemini",
+        provider: "antigravity",
         rows: [expect.objectContaining({ key: "pro", usedPercent: 31 })]
       })
     ]);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(codexFetcher).toHaveBeenCalledTimes(1);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(codexFetcher).toHaveBeenCalledTimes(2);
-    expect(geminiFetcher).toHaveBeenCalledTimes(1);
+    expect(antigravityFetcher).toHaveBeenCalledTimes(1);
 
     runtime.shutdown();
   });

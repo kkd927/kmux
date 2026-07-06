@@ -438,9 +438,7 @@ function UsageHeatmap(props: {
   );
 }
 
-function getSubscriptionDisplayPercent(
-  row: SubscriptionUsageRowVm
-): number {
+function getSubscriptionDisplayPercent(row: SubscriptionUsageRowVm): number {
   if (row.valueKind === "unlimited") {
     return 100;
   }
@@ -1018,9 +1016,6 @@ function colorForVendor(vendor: string): string {
   if (vendor === "codex") {
     return "#465fff";
   }
-  if (vendor === "gemini") {
-    return "#8b5cf6";
-  }
   return "#94a3b8";
 }
 
@@ -1052,7 +1047,7 @@ function colorForBreakdownSeries(index: number): string {
   const palette = [
     colorForVendor("codex"),
     "#34D399",
-    colorForVendor("gemini"),
+    "#8B5CF6",
     "#F59E0B",
     "#F87171",
     "#94A3B8"

@@ -4,7 +4,7 @@
 
 **The multi-session terminal workspace for running AI coding agents side-by-side.**
 
-A keyboard-centric terminal emulator designed for Claude Code, Codex CLI, Gemini CLI, and Antigravity CLI on macOS and Linux.<br>Keep track of parallel agent sessions, monitor API usage, and work safely on separate branches via native git worktrees.
+A keyboard-centric terminal emulator designed for Claude Code, Codex CLI, and Antigravity CLI on macOS and Linux.<br>Keep track of parallel agent sessions, monitor API usage, and work safely on separate branches via native git worktrees.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -41,7 +41,7 @@ English | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简�
 
 ## ✨ Why kmux?
 
-Running CLI-based AI agents like **Claude Code** or **Gemini CLI** alongside your development server quickly leads to terminal clutter, fragmented session history, and git conflicts when agents write to the same working directory.
+Running CLI-based AI agents like **Claude Code**, **Codex CLI**, or **Antigravity CLI** alongside your development server quickly leads to terminal clutter, fragmented session history, and git conflicts when agents write to the same working directory.
 
 **kmux** solves this by providing a dedicated terminal workspace built for agent workflows:
 
@@ -61,7 +61,7 @@ Running CLI-based AI agents like **Claude Code** or **Gemini CLI** alongside you
 
 ### 📊 Unified Usage Dashboard
 
-Monitor your token consumption and API spend across Claude Code, Codex CLI, Gemini CLI, and Antigravity CLI in one right-sidebar panel. kmux aggregates usage data directly from local session logs, replacing provider-specific command line history with a single live visual dashboard.
+Monitor your token consumption and API spend across Claude Code, Codex CLI, and Antigravity CLI in one right-sidebar panel. kmux aggregates usage data directly from local session logs, replacing provider-specific command line history with a single live visual dashboard.
 
 Features a daily heatmap, today's spend, top-spending models, and per-project hotspots.
 
@@ -82,7 +82,7 @@ Features a daily heatmap, today's spend, top-spending models, and per-project ho
 
 ### 🕘 Cross-Agent Session History
 
-kmux automatically indexes the local session databases for all four agents — Claude (`~/.claude/projects`), Codex (`~/.codex/sessions`), Gemini (`~/.gemini/tmp`), and Antigravity (`~/.gemini/antigravity-cli`) — presenting them in one searchable sidebar.
+kmux automatically indexes the local session databases for supported agents — Claude (`~/.claude/projects`), Codex (`~/.codex/sessions`), and Antigravity (`~/.gemini/antigravity-cli`) — presenting them in one searchable sidebar.
 
 Clicking a session resumes it instantly. kmux will focus the existing workspace/tab for that directory if open, or automatically spin up a fresh pane and run the resume commands (`claude --resume`, `codex resume`, etc.) for you.
 
@@ -150,7 +150,7 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 ## 🏁 Quick Start
 
 1. Launch kmux and create a workspace (`⌘ N` on macOS).
-2. Inside the terminal, run your local agent CLI — `claude`, `codex`, `gemini`, or `agy`.
+2. Inside the terminal, run your local agent CLI — `claude`, `codex`, or `agy`.
    > 💡 **Note**: kmux runs the agent CLIs already installed on your system. It does not require you to configure any API keys or wrappers.
 3. Toggle the sidebar (`⌘ B` on macOS) to see the **Usage** and **Sessions** panels.
 4. Create another workspace to run another agent — or right-click a workspace → **Convert to Worktree Workspace** if both need to touch the same repo.

@@ -2279,9 +2279,6 @@ function agentDisplayName(agent: string): string {
   if (agent === "codex") {
     return "Codex";
   }
-  if (agent === "gemini") {
-    return "Gemini";
-  }
   if (agent === "antigravity") {
     return "Antigravity";
   }
@@ -3385,7 +3382,7 @@ function sanitizeState(state: AppState): AppState {
         const { read, ...sanitized } = notification as NotificationItem & {
           read?: boolean;
         };
-        if (read === true) {
+        if (read === true || sanitized.agent === "gemini") {
           return [];
         }
         return [sanitized as NotificationItem];
@@ -3603,9 +3600,6 @@ function normalizeExternalAgentSessionVendor(
     .replace(/[^a-z0-9_.:-]/g, "_");
   if (normalized === "codex") {
     return "codex";
-  }
-  if (normalized === "gemini") {
-    return "gemini";
   }
   if (normalized === "claude") {
     return "claude";

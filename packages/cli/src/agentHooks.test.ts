@@ -115,63 +115,11 @@ describe("agent hook normalization", () => {
     });
   });
 
-  it("only treats Gemini tool-permission notifications as needs_input", () => {
-    expect(
-      normalizeAgentHookInvocation("gemini", "Notification", {
-        notification_type: "ToolPermission",
-        tool_name: "WriteFile"
-      })
-    ).toMatchObject({
-      agent: "gemini",
-      event: "needs_input",
-      title: "Gemini needs input",
-      message: "Tool permission requested: WriteFile"
-    });
-
-    expect(
-      normalizeAgentHookInvocation("gemini", "Notification", {
-        notification_type: "Info"
-      })
-    ).toBeNull();
-  });
-
-  it("extracts Gemini tool permission names from notification details", () => {
-    expect(
-      normalizeAgentHookInvocation("gemini", "Notification", {
-        notification_type: "ToolPermission",
-        details: {
-          tool_name: "run_shell_command"
-        }
-      })
-    ).toMatchObject({
-      agent: "gemini",
-      event: "needs_input",
-      title: "Gemini needs input",
-      message: "Tool permission requested: run_shell_command"
-    });
-  });
-
   it("treats Claude stop hooks as turn completion events", () => {
     expect(normalizeAgentHookInvocation("claude", "stop")).toMatchObject({
       agent: "claude",
       event: "turn_complete"
     });
-  });
-
-  it("treats Gemini after-agent hooks as turn completion events", () => {
-    expect(normalizeAgentHookInvocation("gemini", "AfterAgent")).toMatchObject({
-      agent: "gemini",
-      event: "turn_complete"
-    });
-  });
-
-  it("ignores deprecated Gemini before-agent hooks", () => {
-    expect(normalizeAgentHookInvocation("gemini", "BeforeAgent")).toBeNull();
-  });
-
-  it("ignores deprecated Gemini BeforeTool / AfterTool hooks", () => {
-    expect(normalizeAgentHookInvocation("gemini", "BeforeTool")).toBeNull();
-    expect(normalizeAgentHookInvocation("gemini", "AfterTool")).toBeNull();
   });
 
   it("treats Codex stop hooks as turn completion events", () => {

@@ -4,7 +4,7 @@
 
 **专为并排运行 AI 编码助手而优化的多会话终端工作区。**
 
-一款专为 macOS 和 Linux 上的 Claude Code、Codex CLI、Gemini CLI 和 Antigravity CLI 设计的以键盘为中心的终端模拟器。<br>用于管理并行助手会话、监控 API 用量，并通过原生 git worktrees 在不同分支上安全地进行并行开发。
+一款专为 macOS 和 Linux 上的 Claude Code、Codex CLI 和 Antigravity CLI 设计的以键盘为中心的终端模拟器。<br>用于管理并行助手会话、监控 API 用量，并通过原生 git worktrees 在不同分支上安全地进行并行开发。
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -41,7 +41,7 @@
 
 ## ✨ 为什么选择 kmux？
 
-在运行诸如 **Claude Code** 或 **Gemini CLI** 等基于 CLI 的 AI 编码助手的同时还要运行开发服务器，很容易导致终端混乱、会话历史碎片化，并且当多个助手同时写入同一个工作目录时，极易引发 Git 冲突。
+在运行诸如 **Claude Code**、**Codex CLI** 或 **Antigravity CLI** 等基于 CLI 的 AI 编码助手的同时还要运行开发服务器，很容易导致终端混乱、会话历史碎片化，并且当多个助手同时写入同一个工作目录时，极易引发 Git 冲突。
 
 **kmux** 通过提供专为助手工作流设计的专用终端工作区来解决这些问题：
 
@@ -61,7 +61,7 @@
 
 ### 📊 统一用量仪表盘
 
-在侧边栏面板中并排实时监控 Claude Code、Codex CLI、Gemini CLI 和 Antigravity CLI。kmux 直接从本地会话日志中聚合用量数据，无需在各个终端中输入繁琐的命令，即可通过单个实时可视化仪表盘掌控全局。
+在侧边栏面板中并排实时监控 Claude Code、Codex CLI 和 Antigravity CLI。kmux 直接从本地会话日志中聚合用量数据，无需在各个终端中输入繁琐的命令，即可通过单个实时可视化仪表盘掌控全局。
 
 提供每日热力图、今日支出、最高支出模型以及按项目划分的热点等洞察。
 
@@ -82,7 +82,7 @@
 
 ### 🕘 跨助手会话历史
 
-kmux 会自动索引这四个助手的本地会话数据库（Claude: `~/.claude/projects`，Codex: `~/.codex/sessions`，Gemini: `~/.gemini/tmp`，Antigravity: `~/.gemini/antigravity-cli`），并在一个可搜索的侧边栏中呈现。
+kmux 会自动索引受支持助手的本地会话数据库（Claude: `~/.claude/projects`，Codex: `~/.codex/sessions`，Antigravity: `~/.gemini/antigravity-cli`），并在一个可搜索的侧边栏中呈现。
 
 只需点击会话即可瞬间恢复。如果已打开相同工作目录（`cwd`）的现有标签页，kmux 会自动聚焦；否则，它会启动一个全新分屏并自动运行恢复命令（例如 `claude --resume`、`codex resume` 等）。
 
@@ -150,7 +150,7 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 ## 🏁 快速开始
 
 1. 启动 kmux 并创建您的第一个工作区（macOS 上为 `⌘ N`）。
-2. 在终端窗口中运行您本地安装的编码助手 CLI（`claude`、`codex`、`gemini` 或 `agy`）。
+2. 在终端窗口中运行您本地安装的编码助手 CLI（`claude`、`codex` 或 `agy`）。
    > 💡 **提示**：kmux 直接运行您系统上已安装的助手 CLI。它不需要您在应用内配置任何 API 密钥或自定义包装。
 3. 打开侧边栏（macOS 上为 `⌘ B`），查看 **Usage** 用量仪表盘和 **Sessions** 列表。
 4. 创建新工作区来独立运行另一个助手；或者，如果两个助手需要对同一个仓库进行编辑，请右键点击该工作区并选择 **Convert to Worktree Workspace**。

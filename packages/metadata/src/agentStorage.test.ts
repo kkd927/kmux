@@ -23,13 +23,6 @@ describe("agent storage roots", () => {
         credentialsPath: "/home/test/.claude/.credentials.json",
         settingsPath: "/home/test/.claude/settings.json"
       },
-      gemini: {
-        root: "/home/test/.gemini",
-        tmpDir: "/home/test/.gemini/tmp",
-        historyDir: "/home/test/.gemini/history",
-        oauthCredentialsPath: "/home/test/.gemini/oauth_creds.json",
-        settingsPath: "/home/test/.gemini/settings.json"
-      },
       antigravity: {
         root: "/home/test/.gemini/antigravity-cli",
         oauthTokenPath:

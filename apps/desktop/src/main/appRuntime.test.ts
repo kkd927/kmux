@@ -429,20 +429,20 @@ describe("app runtime external sessions", () => {
           sessions: []
         }),
         resolveExternalAgentSession: (key: string) =>
-          key === "gemini:gemini-session"
+          key === "antigravity:agy-session"
             ? {
                 key,
-                vendor: "gemini",
+                vendor: "antigravity",
                 agentSessionRef: {
-                  vendor: "gemini",
+                  vendor: "antigravity",
                   externalKey: key,
-                  sessionId: "gemini-session"
+                  sessionId: "agy-session"
                 },
                 title: "Read image plan",
                 cwd: "/tmp/project",
                 launch: {
                   cwd: "/tmp/project",
-                  initialInput: "gemini --resume gemini-session\r",
+                  initialInput: "agy --conversation agy-session\r",
                   title: "Read image plan"
                 }
               }
@@ -451,7 +451,7 @@ describe("app runtime external sessions", () => {
     });
 
     const firstResult = runtime.resumeExternalAgentSession(
-      "gemini:gemini-session"
+      "antigravity:agy-session"
     );
     const workspaceCountAfterOpen = Object.keys(
       runtime.getState().workspaces
@@ -468,7 +468,7 @@ describe("app runtime external sessions", () => {
     ).not.toBe(firstResult.workspaceId);
 
     const secondResult = runtime.resumeExternalAgentSession(
-      "gemini:gemini-session"
+      "antigravity:agy-session"
     );
     const state = runtime.getState();
     const activeWorkspaceId =
@@ -835,8 +835,8 @@ describe("app runtime restore", () => {
       shell: "/bin/zsh"
     };
     snapshot.sessions[sessionId].agentSessionRef = {
-      vendor: "gemini",
-      externalKey: "gemini:missing",
+      vendor: "codex",
+      externalKey: "codex:missing",
       sessionId: "missing"
     };
     const runtime = createRuntime(false, {

@@ -57,15 +57,15 @@ describe("resolveAiCliProcessMatches", () => {
       stdout: [
         " 400 1 /usr/bin/bash",
         " 401 400 /usr/bin/node /usr/local/bin/codex -s read-only",
-        " 402 400 /usr/bin/zsh -lc gemini",
-        " 403 402 /home/test/.local/bin/gemini-cli --model pro"
+        " 402 400 /usr/bin/zsh -lc helper-tool",
+        " 403 402 /home/test/.local/bin/helper-tool --watch"
       ].join("\n"),
       stderr: ""
     });
 
     const matches = await resolveAiCliProcessMatches([
       { parentPid: 400, vendor: "codex" },
-      { parentPid: 402, vendor: "gemini" }
+      { parentPid: 402, vendor: "antigravity" }
     ]);
 
     expect(execFileAsyncMock).toHaveBeenCalledWith(
@@ -78,11 +78,7 @@ describe("resolveAiCliProcessMatches", () => {
       pid: 401,
       vendor: "codex"
     });
-    expect(matches.get(402)).toMatchObject({
-      parentPid: 402,
-      pid: 403,
-      vendor: "gemini"
-    });
+    expect(matches.has(402)).toBe(false);
   });
 
   it("detects CLIs launched through env, node_modules package paths, and script files", async () => {
@@ -91,17 +87,14 @@ describe("resolveAiCliProcessMatches", () => {
         " 500 1 /usr/bin/zsh",
         " 501 500 /usr/bin/env KMUX=1 node /home/test/.npm/_npx/abc/node_modules/@openai/codex/bin/codex.js --model gpt-5",
         " 510 1 /usr/bin/zsh",
-        " 511 510 /usr/bin/node /home/test/.local/share/pnpm/global/5/node_modules/@anthropic-ai/claude-code/cli.js --continue",
-        " 520 1 /usr/bin/zsh",
-        " 521 520 pnpm dlx @google/gemini-cli --model pro"
+        " 511 510 /usr/bin/node /home/test/.local/share/pnpm/global/5/node_modules/@anthropic-ai/claude-code/cli.js --continue"
       ].join("\n"),
       stderr: ""
     });
 
     const matches = await resolveAiCliProcessMatches([
       { parentPid: 500, vendor: "codex" },
-      { parentPid: 510, vendor: "claude" },
-      { parentPid: 520, vendor: "gemini" }
+      { parentPid: 510, vendor: "claude" }
     ]);
 
     expect(matches.get(500)).toMatchObject({
@@ -113,11 +106,6 @@ describe("resolveAiCliProcessMatches", () => {
       parentPid: 510,
       pid: 511,
       vendor: "claude"
-    });
-    expect(matches.get(520)).toMatchObject({
-      parentPid: 520,
-      pid: 521,
-      vendor: "gemini"
     });
   });
 });

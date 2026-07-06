@@ -15,8 +15,8 @@ import { ExternalSessionsPanel } from "./ExternalSessionsPanel";
 function createSnapshot(count = 31): ExternalAgentSessionsSnapshot {
   const vendors = [
     { vendor: "codex", vendorLabel: "CODEX" },
-    { vendor: "gemini", vendorLabel: "GEMINI" },
-    { vendor: "claude", vendorLabel: "CLAUDE" }
+    { vendor: "claude", vendorLabel: "CLAUDE" },
+    { vendor: "antigravity", vendorLabel: "AGY" }
   ] as const;
 
   return {
@@ -81,8 +81,8 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).not.toContain("Products");
     expect(container.textContent).not.toContain("Resume");
     expect(container.textContent).toContain("CODEX");
-    expect(container.textContent).toContain("GEMINI");
     expect(container.textContent).toContain("CLAUDE");
+    expect(container.textContent).toContain("AGY");
     expect(container.textContent).toContain("project-1");
     expect(container.textContent).toContain("Fix terminal focus");
     expect(container.textContent).toContain("1m");
@@ -101,8 +101,8 @@ describe("ExternalSessionsPanel", () => {
     expect(filterOptionKeys(container)).toEqual([
       "all",
       "codex",
-      "gemini",
-      "claude"
+      "claude",
+      "antigravity"
     ]);
     expect(filterOptionText(container, "all")).toBe("All31");
     expect(filterOptionText(container, "codex")).toBe("Codex11");
@@ -145,8 +145,8 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).not.toContain("31 sessions");
     expect(container.textContent).toContain("Fix terminal focus");
     expect(container.textContent).toContain("CODEX Session 31");
-    expect(container.textContent).not.toContain("GEMINI Session 02");
-    expect(container.textContent).not.toContain("CLAUDE Session 03");
+    expect(container.textContent).not.toContain("CLAUDE Session 02");
+    expect(container.textContent).not.toContain("AGY Session 03");
     expect(container.textContent).not.toContain("CODEX Session 91");
 
     const moreButton = Array.from(container.querySelectorAll("button")).find(
@@ -164,7 +164,7 @@ describe("ExternalSessionsPanel", () => {
 
     selectAgentFilter(container, "claude");
 
-    expect(container.textContent).toContain("CLAUDE Session 03");
+    expect(container.textContent).toContain("CLAUDE Session 02");
     expect(container.textContent).not.toContain("CLAUDE Session 92");
   });
 
@@ -186,18 +186,18 @@ describe("ExternalSessionsPanel", () => {
 
     openAgentFilterMenu(container);
 
-    expect(filterOptionKeys(container)).toEqual(["all", "codex", "gemini"]);
-    expect(filterOptionText(container, "gemini")).toBe("Gemini1");
+    expect(filterOptionKeys(container)).toEqual(["all", "codex", "claude"]);
+    expect(filterOptionText(container, "claude")).toBe("Claude1");
 
-    selectAgentFilter(container, "gemini");
+    selectAgentFilter(container, "claude");
 
     expect(agentFilterTrigger(container)?.getAttribute("aria-label")).toBe(
-      "Agent filter: Gemini"
+      "Agent filter: Claude"
     );
     expect(sessionCountText(container)).toBe("(1)");
-    expect(container.textContent).toContain("GEMINI Session 02");
+    expect(container.textContent).toContain("CLAUDE Session 02");
     expect(container.textContent).not.toContain("Fix terminal focus");
-    expect(container.textContent).not.toContain("Claude");
+    expect(container.textContent).not.toContain("AGY");
   });
 
   it("filters Antigravity sessions with the AGY compact label", () => {
@@ -300,10 +300,10 @@ describe("ExternalSessionsPanel", () => {
       );
     });
 
-    selectAgentFilter(container, "gemini");
+    selectAgentFilter(container, "claude");
 
     expect(sessionCountText(container)).toBe("(1)");
-    expect(container.textContent).toContain("GEMINI Session 02");
+    expect(container.textContent).toContain("CLAUDE Session 02");
 
     const codexSessions = createSnapshot(4).sessions.filter(
       (session) => session.vendor === "codex"
@@ -327,7 +327,7 @@ describe("ExternalSessionsPanel", () => {
     expect(sessionCountText(container)).toBe("(2)");
     expect(container.textContent).toContain("Fix terminal focus");
     expect(container.textContent).toContain("CODEX Session 04");
-    expect(container.textContent).not.toContain("No Gemini sessions found.");
+    expect(container.textContent).not.toContain("No Claude sessions found.");
   });
 
   it("routes refresh and resumable row activation through the provided callbacks", () => {

@@ -123,7 +123,6 @@ describe("walking skeleton gate target preflight", () => {
         "apps/desktop/src/main/appRuntime.test.ts",
         "apps/desktop/src/main/cliRuntime.test.ts",
         "apps/desktop/src/main/claudeIntegration.test.ts",
-        "apps/desktop/src/main/geminiIntegration.test.ts",
         "apps/desktop/src/main/antigravityIntegration.test.ts",
         "apps/desktop/src/main/ipcHandlers.test.ts",
         "apps/desktop/src/main/metadataRuntime.test.ts",

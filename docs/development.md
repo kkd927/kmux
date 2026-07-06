@@ -84,7 +84,7 @@ The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes t
 
 ## Smoothness Profiling
 
-Use smoothness profiling when investigating terminal output jank, React rerender churn, or sidebar/metadata patch flooding during Claude Code, Codex, Gemini, or similar agent workloads.
+Use smoothness profiling when investigating terminal output jank, React rerender churn, or sidebar/metadata patch flooding during Claude Code, Codex, Antigravity, or similar agent workloads.
 
 Profiling is disabled by default. Set `KMUX_PROFILE_LOG_PATH` to enable it:
 

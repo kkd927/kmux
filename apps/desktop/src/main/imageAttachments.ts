@@ -130,12 +130,6 @@ export function formatImageAttachmentReference(
   vendor: UsageVendor,
   attachments: ImageAttachmentVm[]
 ): string {
-  if (vendor === "gemini") {
-    return attachments
-      .map((attachment) => `@${attachment.absolutePath}`)
-      .join("\n");
-  }
-
   return attachments
     .map((attachment) => `Attached image: ${attachment.absolutePath}`)
     .join("\n");
@@ -149,8 +143,7 @@ export function createImageAttachmentService(
       return cleanupImageAttachmentFiles({
         attachmentRoot: options.attachmentRoot,
         now: options.now?.() ?? new Date(),
-        maxAgeMs:
-          cleanupOptions.maxAgeMs ?? IMAGE_ATTACHMENT_RETENTION_MS,
+        maxAgeMs: cleanupOptions.maxAgeMs ?? IMAGE_ATTACHMENT_RETENTION_MS,
         maxTotalBytes:
           cleanupOptions.maxTotalBytes ?? IMAGE_ATTACHMENT_MAX_TOTAL_BYTES
       });
@@ -304,7 +297,9 @@ interface AttachmentFileEntry {
   mtimeMs: number;
 }
 
-async function listAttachmentFiles(root: string): Promise<AttachmentFileEntry[]> {
+async function listAttachmentFiles(
+  root: string
+): Promise<AttachmentFileEntry[]> {
   try {
     const entries = await readdir(root, { withFileTypes: true });
     const files = await Promise.all(

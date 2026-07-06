@@ -4,7 +4,6 @@ import {
   constants,
   existsSync,
   openSync,
-  readFileSync,
   readSync,
   readdirSync,
   statSync
@@ -90,11 +89,6 @@ export function createExternalSessionIndexer(
     const records = [
       ...listCodexSessions(
         agentStorageRoots.codex.sessionsDir,
-        maxFilesPerVendor
-      ),
-      ...listGeminiSessions(
-        agentStorageRoots.gemini.tmpDir,
-        agentStorageRoots.gemini.historyDir,
         maxFilesPerVendor
       ),
       ...listClaudeSessions(
@@ -300,48 +294,6 @@ function listCodexSessions(
     });
 }
 
-function listGeminiSessions(
-  root: string,
-  historyRoot: string,
-  maxFiles: number
-): ExternalSessionRecord[] {
-  const projectRoots = readGeminiProjectRoots(historyRoot);
-  return collectCandidateFiles(root, (path) => {
-    const name = basename(path);
-    return (
-      name.startsWith("session-") &&
-      (name.endsWith(".json") || name.endsWith(".jsonl"))
-    );
-  })
-    .slice(0, maxFiles)
-    .flatMap((candidate) => {
-      const projectDir = dirname(dirname(candidate.path));
-      const projectKey = basename(projectDir);
-      const cwd =
-        readTrimmedFile(join(projectDir, ".project_root")) ??
-        projectRoots.get(projectKey);
-      const parsed = candidate.path.endsWith(".jsonl")
-        ? parseGeminiJsonl(candidate.path)
-        : parseGeminiJson(candidate.path);
-      if (!parsed?.sessionId || !parsed.hasConversation) {
-        return [];
-      }
-      return [
-        buildRecord({
-          vendor: "gemini",
-          sessionId: parsed.sessionId,
-          cwd,
-          createdAt: parsed.createdAt,
-          updatedAt: candidate.path.endsWith(".jsonl")
-            ? recentJsonlActivityTimestamp(parsed.updatedAt, candidate.mtimeMs)
-            : parsed.updatedAt,
-          title: parsed.title,
-          mtimeMs: candidate.mtimeMs
-        })
-      ];
-    });
-}
-
 function listClaudeSessions(
   root: string,
   maxFiles: number
@@ -402,106 +354,6 @@ function listClaudeSessions(
         })
       ];
     });
-}
-
-function parseGeminiJson(path: string): {
-  sessionId?: string;
-  title?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  hasConversation: boolean;
-} | null {
-  let contents: string;
-  try {
-    contents = readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
-  const parsed = parseJson(contents);
-  const object = asObject(parsed);
-  if (!object) {
-    return null;
-  }
-  const messages = Array.isArray(object.messages) ? object.messages : [];
-  return {
-    sessionId: pickFirstString(object, ["sessionId", "session_id", "id"]),
-    title:
-      sanitizeTitle(pickFirstString(object, ["summary", "title"])) ??
-      firstUserMessageTitle(messages),
-    createdAt: pickFirstString(object, ["startTime", "createdAt", "timestamp"]),
-    updatedAt: pickFirstString(object, ["lastUpdated", "updatedAt"]),
-    hasConversation: hasGeminiConversationMessage(messages)
-  };
-}
-
-function parseGeminiJsonl(path: string): {
-  sessionId?: string;
-  title?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  hasConversation: boolean;
-} | null {
-  const records = parseJsonlPrefix(path);
-  let sessionId: string | undefined;
-  let title: string | undefined;
-  let createdAt: string | undefined;
-  let updatedAt: string | undefined;
-  let hasConversation = false;
-
-  for (const record of records) {
-    const object = asObject(record);
-    if (!object) {
-      continue;
-    }
-    sessionId ??= pickFirstString(object, ["sessionId", "session_id", "id"]);
-    createdAt ??= pickFirstString(object, [
-      "startTime",
-      "createdAt",
-      "timestamp"
-    ]);
-    updatedAt =
-      pickFirstString(object, ["lastUpdated", "updatedAt", "timestamp"]) ??
-      updatedAt;
-    const type = pickFirstString(object, ["type", "role"]);
-    if (isGeminiConversationMessage(object)) {
-      hasConversation = true;
-    }
-    if (type === "user") {
-      title ??= sanitizeTitle(extractText(object.content ?? object.message));
-    }
-  }
-
-  return { sessionId, title, createdAt, updatedAt, hasConversation };
-}
-
-function firstUserMessageTitle(messages: unknown[]): string | undefined {
-  for (const message of messages) {
-    const object = asObject(message);
-    const type = pickFirstString(object, ["type", "role"]);
-    if (type === "user") {
-      return sanitizeTitle(
-        extractText(object?.content ?? object?.displayContent)
-      );
-    }
-  }
-  return undefined;
-}
-
-function hasGeminiConversationMessage(messages: unknown[]): boolean {
-  return messages.some((message) => isGeminiConversationMessage(message));
-}
-
-function isGeminiConversationMessage(value: unknown): boolean {
-  const object = asObject(value);
-  const type = pickFirstString(object, ["type", "role"]);
-  if (type !== "user" && type !== "gemini") {
-    return false;
-  }
-  return Boolean(
-    extractText(
-      object?.content ?? object?.displayContent ?? object?.message
-    )?.trim()
-  );
 }
 
 function codexUserPromptTitle(value: unknown): string | undefined {
@@ -734,8 +586,6 @@ function resumeCommandParts(record: ExternalSessionRecord): string[] {
   switch (record.vendor) {
     case "codex":
       return ["codex", "resume", record.sessionId];
-    case "gemini":
-      return ["gemini", "--resume", record.sessionId];
     case "claude":
       return ["claude", "--resume", record.sessionId];
     case "antigravity":
@@ -812,8 +662,6 @@ function vendorLabelFor(
   switch (vendor) {
     case "codex":
       return "CODEX";
-    case "gemini":
-      return "GEMINI";
     case "claude":
       return "CLAUDE";
     case "antigravity":
@@ -918,35 +766,6 @@ function readFileSuffix(path: string): string {
     if (fd !== null) {
       closeSync(fd);
     }
-  }
-}
-
-function readGeminiProjectRoots(root: string): Map<string, string> {
-  const projectRoots = new Map<string, string>();
-  if (!existsSync(root)) {
-    return projectRoots;
-  }
-  let entries: string[];
-  try {
-    entries = readdirSync(root);
-  } catch {
-    return projectRoots;
-  }
-  for (const entry of entries) {
-    const projectRoot = readTrimmedFile(join(root, entry, ".project_root"));
-    if (projectRoot) {
-      projectRoots.set(entry, projectRoot);
-    }
-  }
-  return projectRoots;
-}
-
-function readTrimmedFile(path: string): string | undefined {
-  try {
-    const value = readFileSync(path, "utf8").trim();
-    return value || undefined;
-  } catch {
-    return undefined;
   }
 }
 

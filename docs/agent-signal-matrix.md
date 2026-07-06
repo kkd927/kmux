@@ -4,7 +4,7 @@ Date: 2026-04-20
 
 ## Purpose
 
-This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, Gemini, and Antigravity, and how those signals are consumed by:
+This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, and Antigravity, and how those signals are consumed by:
 
 - notifications and sidebar attention
 - usage binding and attribution
@@ -135,34 +135,6 @@ OSC policy:
 
 - raw terminal notifications may still exist
 - if a Claude input request also arrives as a structured `agent.event`, reducer dedupe prefers the structured signal over terminal chatter
-
-### Gemini
-
-Installed hooks:
-
-- [`apps/desktop/src/main/geminiIntegration.ts`](../apps/desktop/src/main/geminiIntegration.ts)
-- `AfterAgent`
-- `SessionStart`
-- `SessionEnd`
-- `Notification` with matcher `ToolPermission`
-
-Canonical notification signals:
-
-- hook `Notification matcher=ToolPermission` -> `agent.event(needs_input)`
-- kmux no longer installs Gemini `BeforeAgent`, `BeforeTool`, or `AfterTool` hooks. Older kmux-managed entries for those hooks are removed on startup while user-defined hooks are preserved.
-- hook `AfterAgent` -> `agent.event(turn_complete)`
-- hook `SessionStart` -> `agent.event(session_start)`
-- hook `SessionEnd` -> `agent.event(session_end)`
-- visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
-
-Usage consumption:
-
-- real `agent.event` values are consumed by `usageRuntime`
-- `agent.attention.clear` is UI-only and is ignored by `usageRuntime`
-
-OSC policy:
-
-- generic terminal notifications stay on the terminal-notification path
 
 ### Codex
 

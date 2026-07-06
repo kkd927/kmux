@@ -58,12 +58,13 @@ describe("image attachment helpers", () => {
     expect(
       detectImageMimeType(
         new Uint8Array([
-          0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42,
-          0x50
+          0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50
         ])
       )
     ).toBe("image/webp");
-    expect(detectImageMimeType(new TextEncoder().encode("not an image"))).toBeNull();
+    expect(
+      detectImageMimeType(new TextEncoder().encode("not an image"))
+    ).toBeNull();
   });
 
   it("creates safe display names with detected extensions", () => {
@@ -87,13 +88,13 @@ describe("image attachment helpers", () => {
   });
 
   it("formats vendor-aware image attachment references", () => {
-    expect(formatImageAttachmentReference("gemini", [attachment])).toBe(
-      "@/tmp/kmux/image.png"
-    );
     expect(formatImageAttachmentReference("claude", [attachment])).toBe(
       "Attached image: /tmp/kmux/image.png"
     );
     expect(formatImageAttachmentReference("codex", [attachment])).toBe(
+      "Attached image: /tmp/kmux/image.png"
+    );
+    expect(formatImageAttachmentReference("antigravity", [attachment])).toBe(
       "Attached image: /tmp/kmux/image.png"
     );
     expect(formatImageAttachmentReference("unknown", [attachment])).toBe(
@@ -110,7 +111,7 @@ describe("image attachment service", () => {
       attachmentRoot: join(root, "attachments"),
       getSurfaceSessionId: (surfaceId) =>
         surfaceId === "surface_1" ? "session_1" : null,
-      getSurfaceVendor: () => "gemini",
+      getSurfaceVendor: () => "antigravity",
       now: () => new Date("2026-05-07T12:34:56.789Z"),
       randomId: () => "abc123"
     });
@@ -132,7 +133,7 @@ describe("image attachment service", () => {
       `${sep}attachments${sep}surface_1${sep}`
     );
     expect(readFileSync(saved!.absolutePath)).toEqual(Buffer.from(pngBytes));
-    expect(result.promptText).toBe(`@${saved!.absolutePath}`);
+    expect(result.promptText).toBe(`Attached image: ${saved!.absolutePath}`);
     expect(result.message).toBe("Attached diagram-abc123.png");
   });
 
@@ -176,8 +177,16 @@ describe("image attachment service", () => {
     writeFileSync(oldFile, pngBytes);
     writeFileSync(freshFile, pngBytes);
     const now = new Date("2026-05-08T12:00:00.000Z");
-    utimesSync(oldFile, new Date("2026-05-04T11:59:59.000Z"), new Date("2026-05-04T11:59:59.000Z"));
-    utimesSync(freshFile, new Date("2026-05-07T12:00:00.000Z"), new Date("2026-05-07T12:00:00.000Z"));
+    utimesSync(
+      oldFile,
+      new Date("2026-05-04T11:59:59.000Z"),
+      new Date("2026-05-04T11:59:59.000Z")
+    );
+    utimesSync(
+      freshFile,
+      new Date("2026-05-07T12:00:00.000Z"),
+      new Date("2026-05-07T12:00:00.000Z")
+    );
     const service = createImageAttachmentService({
       attachmentRoot,
       getSurfaceSessionId: () => "session_1",
@@ -207,9 +216,21 @@ describe("image attachment service", () => {
     writeFileSync(oldestFile, Buffer.alloc(600));
     writeFileSync(middleFile, Buffer.alloc(600));
     writeFileSync(newestFile, Buffer.alloc(600));
-    utimesSync(oldestFile, new Date("2026-05-08T09:00:00.000Z"), new Date("2026-05-08T09:00:00.000Z"));
-    utimesSync(middleFile, new Date("2026-05-08T10:00:00.000Z"), new Date("2026-05-08T10:00:00.000Z"));
-    utimesSync(newestFile, new Date("2026-05-08T11:00:00.000Z"), new Date("2026-05-08T11:00:00.000Z"));
+    utimesSync(
+      oldestFile,
+      new Date("2026-05-08T09:00:00.000Z"),
+      new Date("2026-05-08T09:00:00.000Z")
+    );
+    utimesSync(
+      middleFile,
+      new Date("2026-05-08T10:00:00.000Z"),
+      new Date("2026-05-08T10:00:00.000Z")
+    );
+    utimesSync(
+      newestFile,
+      new Date("2026-05-08T11:00:00.000Z"),
+      new Date("2026-05-08T11:00:00.000Z")
+    );
     const service = createImageAttachmentService({
       attachmentRoot,
       getSurfaceSessionId: () => "session_1",

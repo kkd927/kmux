@@ -20,7 +20,6 @@ import {
 import { createAppRuntime } from "./appRuntime";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { createMainClipboardService } from "./clipboard";
-import { ensureGeminiHooksInstalled } from "./geminiIntegration";
 import { createExternalSessionIndexer } from "./externalSessions";
 import {
   createImageAttachmentService,
@@ -220,14 +219,6 @@ async function bootstrap(): Promise<void> {
   });
   if (claudeIntegrationResult.warning) {
     console.warn(claudeIntegrationResult.warning);
-  }
-  const geminiIntegrationResult = ensureGeminiHooksInstalled(userHomeDir, {
-    socketPath: paths.socketPath,
-    agentBinDir: paths.agentHookBinDir,
-    agentStorageRoots
-  });
-  if (geminiIntegrationResult.warning) {
-    console.warn(geminiIntegrationResult.warning);
   }
   const antigravityIntegrationResult = ensureAntigravityHooksInstalled(
     userHomeDir,

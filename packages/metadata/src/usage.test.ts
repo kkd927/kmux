@@ -1,4 +1,10 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -16,6 +22,14 @@ afterEach(() => {
 });
 
 describe("usage adapters", () => {
+  it("creates usage adapters for supported providers only", () => {
+    expect(
+      createUsageAdapters({
+        homeDir: "/tmp/kmux-usage-home"
+      }).map((adapter) => adapter.vendor)
+    ).toEqual(["claude", "codex", "antigravity"]);
+  });
+
   it("uses AgentStorageRoots for default vendor usage locations", async () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-home-"));
     const storageHomeDir = mkdtempSync(
@@ -419,7 +433,9 @@ describe("usage adapters", () => {
       homeDir: root
     });
 
-    const startOfDayMs = startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime());
+    const startOfDayMs = startOfLocalDay(
+      new Date("2026-04-17T09:00:00.000Z").getTime()
+    );
     const initial = await adapter.initialScan(startOfDayMs);
     expect(initial.sourceCount).toBe(0);
     expect(initial.samples).toEqual([]);
@@ -511,8 +527,12 @@ describe("usage adapters", () => {
     });
 
     const [claudeRead, codexRead] = await Promise.all([
-      claude.initialScan(startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime())),
-      codex.initialScan(startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime()))
+      claude.initialScan(
+        startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime())
+      ),
+      codex.initialScan(
+        startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime())
+      )
     ]);
 
     expect(claudeRead.samples).toHaveLength(1);
@@ -904,125 +924,6 @@ describe("usage adapters", () => {
     ]);
   });
 
-  it("parses gemini session json files from tmp chats and resolves the project root", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-gemini-session-"));
-    cleanupPaths.push(root);
-    const homeDir = path.join(root, "home");
-    const geminiTmpDir = path.join(homeDir, ".gemini", "tmp", "kmux");
-    const geminiHistoryDir = path.join(homeDir, ".gemini", "history", "kmux");
-    mkdirSync(path.join(geminiTmpDir, "chats"), { recursive: true });
-    mkdirSync(geminiHistoryDir, { recursive: true });
-    writeFileSync(
-      path.join(geminiHistoryDir, ".project_root"),
-      "/tmp/kmux-gemini-real\n",
-      "utf8"
-    );
-    writeFileSync(
-      path.join(geminiTmpDir, "chats", "session-2026-04-17T09-00-abc123.json"),
-      JSON.stringify({
-        sessionId: "gemini-session-9",
-        messages: [
-          {
-            id: "gemini-message-1",
-            timestamp: "2026-04-17T09:00:00.000Z",
-            type: "gemini",
-            tokens: {
-              input: 640,
-              output: 120,
-              cached: 40,
-              total: 800
-            },
-            model: "gemini-3.1-pro-preview"
-          }
-        ]
-      }),
-      "utf8"
-    );
-
-    const [, , geminiAdapter] = createUsageAdapters({
-      env: {
-        KMUX_GEMINI_USAGE_DIR: path.join(homeDir, ".gemini", "tmp")
-      },
-      homeDir
-    });
-
-    const initial = await geminiAdapter.initialScan(
-      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
-    );
-    expect(initial.samples).toEqual([
-      expect.objectContaining({
-        vendor: "gemini",
-        sessionId: "gemini-session-9",
-        model: "gemini-3.1-pro-preview",
-        cwd: "/tmp/kmux-gemini-real",
-        projectPath: "/tmp/kmux-gemini-real",
-        inputTokens: 640,
-        outputTokens: 120,
-        cacheTokens: 40,
-        totalTokens: 800
-      })
-    ]);
-  });
-
-  it("resolves gemini history next to an overridden tmp root even when HOME points elsewhere", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-gemini-override-"));
-    cleanupPaths.push(root);
-    const homeDir = path.join(root, "sandbox-home");
-    const externalGeminiRoot = path.join(root, "external-gemini");
-    const geminiTmpDir = path.join(externalGeminiRoot, "tmp", "kmux");
-    const geminiHistoryDir = path.join(externalGeminiRoot, "history", "kmux");
-    mkdirSync(path.join(geminiTmpDir, "chats"), { recursive: true });
-    mkdirSync(geminiHistoryDir, { recursive: true });
-
-    writeFileSync(
-      path.join(geminiHistoryDir, ".project_root"),
-      "/tmp/kmux-gemini-override\n",
-      "utf8"
-    );
-    writeFileSync(
-      path.join(geminiTmpDir, "chats", "session-2026-04-17T10-00-override.json"),
-      JSON.stringify({
-        sessionId: "gemini-session-override",
-        messages: [
-          {
-            id: "gemini-message-override",
-            timestamp: "2026-04-17T10:00:00.000Z",
-            type: "gemini",
-            tokens: {
-              input: 900,
-              output: 100,
-              cached: 0,
-              total: 1000
-            },
-            model: "gemini-2.5-flash"
-          }
-        ]
-      }),
-      "utf8"
-    );
-
-    const [, , geminiAdapter] = createUsageAdapters({
-      env: {
-        KMUX_GEMINI_USAGE_DIR: path.join(externalGeminiRoot, "tmp")
-      },
-      homeDir
-    });
-
-    const initial = await geminiAdapter.initialScan(
-      startOfLocalDay(new Date("2026-04-17T10:00:00.000Z").getTime())
-    );
-    expect(initial.samples).toEqual([
-      expect.objectContaining({
-        vendor: "gemini",
-        sessionId: "gemini-session-override",
-        cwd: "/tmp/kmux-gemini-override",
-        projectPath: "/tmp/kmux-gemini-override",
-        totalTokens: 1000,
-        model: "gemini-2.5-flash"
-      })
-    ]);
-  });
-
   it("parses Antigravity transcript usage from local conversation storage", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-"));
     cleanupPaths.push(root);
@@ -1094,7 +995,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , , antigravityAdapter] = createUsageAdapters({
+    const [, , antigravityAdapter] = createUsageAdapters({
       homeDir,
       agentStorageRoots: roots
     });
@@ -1165,7 +1066,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , , antigravityAdapter] = createUsageAdapters({
+    const [, , antigravityAdapter] = createUsageAdapters({
       homeDir
     });
     const startOfDayMs = startOfLocalDay(

@@ -1,5 +1,5 @@
 // Deterministic generator that mimics the terminal output of an interactive
-// coding agent (Claude Code / Codex / Gemini): an in-place "live region" that
+// coding agent (Claude Code / Codex / Antigravity): an in-place "live region" that
 // repaints every frame (spinner, progress bar, status), periodically committed
 // prose / diff / code blocks that scroll the buffer, and occasional full-screen
 // redraws. Used by the smoothness profiling e2e (and handy to eyeball manually)
@@ -194,14 +194,17 @@ function finishSteady(timer) {
 function runSteady() {
   let i = 0;
   process.stdout.write(`${fullClear()}${commit(bannerLines())}`);
-  const timer = setInterval(() => {
-    if (i >= frames) {
-      finishSteady(timer);
-      return;
-    }
-    process.stdout.write(steadyFrame(i));
-    i += 1;
-  }, Math.max(0, intervalMs));
+  const timer = setInterval(
+    () => {
+      if (i >= frames) {
+        finishSteady(timer);
+        return;
+      }
+      process.stdout.write(steadyFrame(i));
+      i += 1;
+    },
+    Math.max(0, intervalMs)
+  );
 }
 
 function runBurst() {

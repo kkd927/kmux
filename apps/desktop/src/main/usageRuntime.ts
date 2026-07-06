@@ -29,6 +29,7 @@ import {
   scanUsageHistoryDays,
   shouldReplaceUsageSample,
   usageSampleIdentity,
+  type SupportedPricingVendor,
   type UsageAdapter,
   type UsageCostSource as SampleCostSource,
   type UsageEventSample
@@ -167,12 +168,11 @@ type ResolveAiCliProcesses = (
 ) => Promise<Map<number, AiCliProcessMatch>>;
 
 type SubscriptionProvider = Exclude<UsageVendor, "unknown">;
-type PricingVendor = Exclude<SubscriptionProvider, "antigravity">;
+type PricingVendor = SupportedPricingVendor;
 type SubscriptionVisibility = "live" | "recent";
 const SUBSCRIPTION_PROVIDER_ORDER: SubscriptionProvider[] = [
   "codex",
   "claude",
-  "gemini",
   "antigravity"
 ];
 const DISCOVER_ONLY_DIRTY_OPTIONS = {
@@ -1929,7 +1929,6 @@ function normalizeVendor(agent: string): UsageVendor {
   switch (normalized) {
     case "claude":
     case "codex":
-    case "gemini":
     case "antigravity":
       return normalized;
     case "agy":
@@ -1943,12 +1942,7 @@ function normalizeVendor(agent: string): UsageVendor {
 function isSubscriptionProvider(
   vendor: UsageVendor
 ): vendor is SubscriptionProvider {
-  return (
-    vendor === "claude" ||
-    vendor === "codex" ||
-    vendor === "gemini" ||
-    vendor === "antigravity"
-  );
+  return vendor === "claude" || vendor === "codex" || vendor === "antigravity";
 }
 
 function pricingVendorForUsageVendor(
@@ -1957,7 +1951,7 @@ function pricingVendorForUsageVendor(
   if (vendor === "antigravity") {
     return "gemini";
   }
-  if (vendor === "claude" || vendor === "codex" || vendor === "gemini") {
+  if (vendor === "claude" || vendor === "codex") {
     return vendor;
   }
   return null;
@@ -1968,12 +1962,6 @@ function normalizeAiCliExecutableVendor(
 ): Exclude<UsageVendor, "unknown"> | null {
   if (normalizedExecutable === "codex") {
     return "codex";
-  }
-  if (
-    normalizedExecutable === "gemini" ||
-    normalizedExecutable === "gemini-cli"
-  ) {
-    return "gemini";
   }
   if (
     normalizedExecutable === "agy" ||
@@ -2345,9 +2333,50 @@ function buildTodayHistoryRecord(
 function normalizeHistoryDays(
   days: UsageHistoryDayRecord[]
 ): UsageHistoryDayRecord[] {
-  return [...days]
+  return days
+    .flatMap(normalizeHistoryDay)
     .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
     .slice(-USAGE_HISTORY_DAY_COUNT);
+}
+
+function normalizeHistoryDay(
+  day: UsageHistoryDayRecord
+): UsageHistoryDayRecord[] {
+  if (!Array.isArray(day.vendors)) {
+    return [];
+  }
+  const vendors = day.vendors
+    .filter((vendorRecord) => isSubscriptionProvider(vendorRecord.vendor))
+    .map((vendorRecord) => ({
+      vendor: vendorRecord.vendor,
+      totalCostUsd: roundUsd(vendorRecord.totalCostUsd),
+      totalTokens: Math.round(vendorRecord.totalTokens)
+    }))
+    .filter(
+      (vendorRecord) =>
+        vendorRecord.totalCostUsd > 0 || vendorRecord.totalTokens > 0
+    )
+    .sort((left, right) => right.totalCostUsd - left.totalCostUsd);
+  if (vendors.length === 0) {
+    return [];
+  }
+  const totalCostUsd = roundUsd(
+    vendors.reduce((total, vendor) => total + vendor.totalCostUsd, 0)
+  );
+  const totalTokens = Math.round(
+    vendors.reduce((total, vendor) => total + vendor.totalTokens, 0)
+  );
+  return [
+    {
+      ...day,
+      totalCostUsd,
+      reportedCostUsd: 0,
+      estimatedCostUsd: totalCostUsd,
+      unknownCostTokens: 0,
+      totalTokens,
+      vendors
+    }
+  ];
 }
 
 function buildRollingDayKeys(nowMs: number, count: number): string[] {

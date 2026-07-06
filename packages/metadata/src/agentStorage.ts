@@ -14,13 +14,6 @@ export interface AgentStorageRoots {
     credentialsPath: string;
     settingsPath: string;
   };
-  gemini: {
-    root: string;
-    tmpDir: string;
-    historyDir: string;
-    oauthCredentialsPath: string;
-    settingsPath: string;
-  };
   antigravity: {
     root: string;
     oauthTokenPath: string;
@@ -58,13 +51,6 @@ export function resolveAgentStorageRoots(
       projectsDir: join(claudeRoot, "projects"),
       credentialsPath: join(claudeRoot, ".credentials.json"),
       settingsPath: join(claudeRoot, "settings.json")
-    },
-    gemini: {
-      root: geminiRoot,
-      tmpDir: join(geminiRoot, "tmp"),
-      historyDir: join(geminiRoot, "history"),
-      oauthCredentialsPath: join(geminiRoot, "oauth_creds.json"),
-      settingsPath: join(geminiRoot, "settings.json")
     },
     antigravity: {
       root: antigravityRoot,

@@ -11,7 +11,6 @@ import styles from "../styles/App.module.css";
 const SESSION_PAGE_SIZE = 20;
 const SESSION_VENDOR_FILTERS = [
   { key: "codex", label: "Codex" },
-  { key: "gemini", label: "Gemini" },
   { key: "claude", label: "Claude" },
   { key: "antigravity", label: "Antigravity" }
 ] as const;
@@ -390,8 +389,6 @@ function labelForFilter(filter: SessionFilter): string {
       return "Claude";
     case "codex":
       return "Codex";
-    case "gemini":
-      return "Gemini";
     case "antigravity":
       return "Antigravity";
   }
@@ -405,8 +402,6 @@ function displayLabelForFilter(filter: SessionFilter): string {
       return "Claude";
     case "codex":
       return "Codex";
-    case "gemini":
-      return "Gemini";
     case "antigravity":
       return "Antigravity";
   }

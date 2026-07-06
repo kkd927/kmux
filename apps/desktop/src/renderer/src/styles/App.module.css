@@ -2876,11 +2876,6 @@
   --session-accent-bg: rgba(156, 185, 255, 0.055);
 }
 
-.externalSessionRow[data-vendor="gemini"] {
-  --session-accent: #56d364;
-  --session-accent-bg: rgba(86, 211, 100, 0.055);
-}
-
 .externalSessionRow[data-vendor="antigravity"] {
   --session-accent: #56d364;
   --session-accent-bg: rgba(86, 211, 100, 0.055);
@@ -2966,10 +2961,6 @@
 
 .externalSessionRow[data-vendor="codex"] .externalSessionVendor {
   color: #90a9e6;
-}
-
-.externalSessionRow[data-vendor="gemini"] .externalSessionVendor {
-  color: #67bd71;
 }
 
 .externalSessionRow[data-vendor="antigravity"] .externalSessionVendor {
@@ -4051,16 +4042,6 @@
 :global(html[data-color-theme="dark"]) .vendorBadge[data-vendor="codex"] {
   color: #9cb9ff;
   background: rgba(70, 95, 255, 0.15);
-}
-
-.vendorBadge[data-vendor="gemini"] {
-  color: #6927da;
-  background: rgba(124, 58, 237, 0.1);
-}
-
-:global(html[data-color-theme="dark"]) .vendorBadge[data-vendor="gemini"] {
-  color: #b692f6;
-  background: rgba(124, 58, 237, 0.15);
 }
 
 .usageSourceBadge[data-source="estimated"] {

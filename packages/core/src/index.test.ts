@@ -769,10 +769,10 @@ describe("core reducer", () => {
       workspaceId,
       paneId,
       surfaceId,
-      title: "Gemini",
-      message: "Gemini needs your attention",
+      title: "Antigravity",
+      message: "Antigravity needs your attention",
       source: "agent",
-      agent: "gemini"
+      agent: "antigravity"
     });
     expect(state.notifications).toHaveLength(1);
 
@@ -785,7 +785,7 @@ describe("core reducer", () => {
     });
 
     expect(state.notifications).toHaveLength(1);
-    expect(state.notifications[0].agent).toBe("gemini");
+    expect(state.notifications[0].agent).toBe("antigravity");
   });
 
   it("clears only the matching agent needs-input entry when the agent becomes idle", () => {
@@ -1000,7 +1000,7 @@ describe("core reducer", () => {
     expect(state.surfaces[surfaceId].unreadCount).toBe(1);
   });
 
-  it("clears stale Gemini needs-input notifications when attention is handled", () => {
+  it("clears stale Antigravity needs-input notifications when attention is handled", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const workspaceId = Object.keys(state.workspaces)[0];
@@ -1009,7 +1009,7 @@ describe("core reducer", () => {
       type: "agent.event",
       workspaceId,
       surfaceId,
-      agent: "gemini",
+      agent: "antigravity",
       event: "needs_input",
       message: "Tool permission requested: WriteFile"
     });
@@ -1936,6 +1936,50 @@ describe("core reducer", () => {
     expect(restored.sessions[sessionId].launch.shell).toBe("/bin/zsh");
   });
 
+  it("drops legacy Gemini session refs and agent attention during restore", () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    const legacyState = structuredClone(state);
+
+    (
+      legacyState.sessions[sessionId] as { agentSessionRef?: unknown }
+    ).agentSessionRef = {
+      vendor: "gemini",
+      externalKey: "gemini:legacy-session",
+      sessionId: "legacy-session"
+    };
+    legacyState.notifications = [
+      {
+        id: "notification_legacy_gemini",
+        workspaceId,
+        surfaceId,
+        title: "Gemini needs input",
+        message: "Legacy notification",
+        source: "agent",
+        kind: "needs_input",
+        agent: "gemini",
+        createdAt: "2026-05-01T00:00:00.000Z"
+      }
+    ];
+    legacyState.workspaces[workspaceId].statusEntries = {
+      [`agent:gemini:${surfaceId}`]: {
+        key: `agent:gemini:${surfaceId}`,
+        text: "needs input",
+        variant: "attention",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        surfaceId
+      }
+    };
+
+    const restored = cloneState(legacyState);
+
+    expect(restored.sessions[sessionId].agentSessionRef).toBeUndefined();
+    expect(restored.notifications).toEqual([]);
+    expect(restored.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
   it("sanitizes theme mode settings updates", () => {
     const state = createInitialState();
 
@@ -2279,7 +2323,7 @@ describe("core reducer", () => {
       workspaceId,
       paneId: closingPaneId,
       surfaceId: closingSurfaceId,
-      agent: "gemini",
+      agent: "codex",
       event: "needs_input",
       message: "Closed pane"
     });

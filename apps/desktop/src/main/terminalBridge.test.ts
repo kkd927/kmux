@@ -584,7 +584,7 @@ describe("terminal bridge", () => {
       getState: () => state,
       dispatchAppAction,
       getPtyHost: () => null,
-      getSurfaceVendor: () => "gemini"
+      getSurfaceVendor: () => "claude"
     } as never);
 
     bridge.handlePtyEvent({
@@ -592,7 +592,7 @@ describe("terminal bridge", () => {
       surfaceId,
       sessionId: surface.sessionId,
       protocol: 9,
-      title: "Gemini",
+      title: "Claude",
       message: "Needs input"
     });
 
@@ -601,7 +601,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      title: "Gemini",
+      title: "Claude",
       message: "Needs input",
       source: "terminal"
     });
@@ -655,7 +655,11 @@ describe("terminal bridge", () => {
   });
 
   it("keeps unknown generic terminal prompts on the generic notification path", () => {
-    const messages = ["Permission required", "Needs input", "Waiting for input"];
+    const messages = [
+      "Permission required",
+      "Needs input",
+      "Waiting for input"
+    ];
 
     for (const message of messages) {
       const state = createInitialState();
@@ -3016,7 +3020,7 @@ describe("terminal bridge", () => {
     });
   });
 
-  it("clears visible Gemini needs-input attention when Enter submits the prompt", () => {
+  it("clears visible Antigravity needs-input attention when Enter submits the prompt", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
@@ -3032,7 +3036,7 @@ describe("terminal bridge", () => {
       paneId: surface.paneId,
       surfaceId,
       sessionId: surface.sessionId,
-      agent: "gemini",
+      agent: "antigravity",
       event: "needs_input",
       message: "Tool permission requested: WriteFile"
     });

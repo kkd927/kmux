@@ -31,12 +31,7 @@ const WATCH_DEBOUNCE_MS = 180;
 const SOURCE_INDEX_RESYNC_MS = 60_000;
 const WATCH_ROOT_RETRY_MS = 60_000;
 
-export type UsageVendor =
-  | "claude"
-  | "codex"
-  | "gemini"
-  | "antigravity"
-  | "unknown";
+export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
 export type UsageCostSource = "reported" | "estimated" | "unavailable";
 
 export interface UsageEventSample {
@@ -169,7 +164,6 @@ type TokenUsageTotals = {
 };
 
 interface FileUsageAdapterOptions {
-  geminiProjectRootsDir?: string;
   includeJson?: boolean;
   includeHiddenDirs?: boolean;
   watchRecursive?: boolean;
@@ -186,9 +180,6 @@ class FileUsageAdapter implements UsageAdapter {
     string,
     AntigravitySessionContext
   >();
-  private readonly geminiProjectRoots = new Map<string, string | undefined>();
-  private readonly geminiSeenMessageIds = new Map<string, Set<string>>();
-  private readonly geminiProjectRootsDir?: string;
   private readonly antigravityWorkspaceByConversation: Map<string, string>;
   private readonly antigravityWorkspaceByConversationLoader?: () => Map<
     string,
@@ -215,7 +206,6 @@ class FileUsageAdapter implements UsageAdapter {
   ) {
     this.vendor = vendor;
     this.roots = roots.filter(Boolean);
-    this.geminiProjectRootsDir = options.geminiProjectRootsDir;
     this.antigravityWorkspaceByConversationLoader =
       options.antigravityWorkspaceByConversationLoader;
     this.antigravityWorkspaceByConversation =
@@ -233,8 +223,6 @@ class FileUsageAdapter implements UsageAdapter {
     this.codexTotals.clear();
     this.antigravityContexts.clear();
     this.cursors.clear();
-    this.geminiProjectRoots.clear();
-    this.geminiSeenMessageIds.clear();
     this.sourceIndexDirty = true;
     this.dirtySourceIndex = true;
     this.dirtyPaths.clear();
@@ -253,8 +241,6 @@ class FileUsageAdapter implements UsageAdapter {
     this.codexContexts.clear();
     this.codexTotals.clear();
     this.antigravityContexts.clear();
-    this.geminiProjectRoots.clear();
-    this.geminiSeenMessageIds.clear();
     return this.readAllSources(range, false);
   }
 
@@ -352,10 +338,7 @@ class FileUsageAdapter implements UsageAdapter {
     }
     const nextWorkspaces = this.antigravityWorkspaceByConversationLoader();
     if (
-      stringMapEquals(
-        this.antigravityWorkspaceByConversation,
-        nextWorkspaces
-      )
+      stringMapEquals(this.antigravityWorkspaceByConversation, nextWorkspaces)
     ) {
       return;
     }
@@ -472,8 +455,6 @@ class FileUsageAdapter implements UsageAdapter {
     this.codexContexts.delete(sourcePath);
     this.codexTotals.delete(sourcePath);
     this.antigravityContexts.delete(sourcePath);
-    this.geminiSeenMessageIds.delete(sourcePath);
-    this.geminiProjectRoots.delete(sourcePath);
     this.dirtyPaths.delete(sourcePath);
   }
 
@@ -626,9 +607,6 @@ class FileUsageAdapter implements UsageAdapter {
         source.path,
         range,
         {
-          geminiProjectRoots: this.geminiProjectRoots,
-          geminiProjectRootsDir: this.geminiProjectRootsDir,
-          geminiSeenMessageIds: this.geminiSeenMessageIds,
           antigravityWorkspaceByConversation:
             this.antigravityWorkspaceByConversation
         }
@@ -661,10 +639,6 @@ export function createUsageAdapters(
       homeDir: options.homeDir,
       env
     });
-  const geminiRoots = resolveRoots(
-    env.KMUX_GEMINI_USAGE_DIR,
-    agentStorageRoots.gemini.tmpDir
-  );
   const antigravityRoots = resolveRoots(
     env.KMUX_ANTIGRAVITY_USAGE_DIR,
     agentStorageRoots.antigravity.brainDir
@@ -687,14 +661,6 @@ export function createUsageAdapters(
       ),
       { watchRecursive }
     ),
-    new FileUsageAdapter("gemini", geminiRoots, {
-      geminiProjectRootsDir: resolveGeminiProjectRootsDir(
-        geminiRoots,
-        agentStorageRoots.gemini.historyDir
-      ),
-      includeJson: true,
-      watchRecursive
-    }),
     new FileUsageAdapter("antigravity", antigravityRoots, {
       antigravityWorkspaceByConversationLoader: () =>
         readAntigravityWorkspaceByConversationFromRoot(
@@ -801,10 +767,7 @@ export async function scanUsageHistoryDays(options: {
       totalCostUsd: 0,
       totalTokens: 0
     };
-    vendorBucket.totalCostUsd += pricedCostForSample(
-      sample,
-      sampleCostSource
-    );
+    vendorBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
     vendorBucket.totalTokens += sample.totalTokens;
     dayBucket.vendors.set(sample.vendor, vendorBucket);
     bucketMap.set(dayKey, dayBucket);
@@ -845,18 +808,6 @@ function resolveRoots(
     : [];
   const roots = overrideRoots.length > 0 ? overrideRoots : [fallbackRoot];
   return roots.map((entry) => resolve(entry));
-}
-
-function resolveGeminiProjectRootsDir(
-  geminiRoots: string[],
-  defaultHistoryDir: string
-): string {
-  for (const root of geminiRoots) {
-    if (root.endsWith("/tmp") || root.endsWith("\\tmp")) {
-      return resolve(root, "..", "history");
-    }
-  }
-  return defaultHistoryDir;
 }
 
 function collectUsageSources(
@@ -926,9 +877,6 @@ function shouldCollectJsonSource(
   vendor: UsageVendor,
   filePath: string
 ): boolean {
-  if (vendor === "gemini") {
-    return /\/chats\/session-[^/]+\.json$/u.test(filePath);
-  }
   return true;
 }
 
@@ -1112,28 +1060,9 @@ function extractUsageSamplesFromJsonDocument(
   sourcePath: string,
   range: UsageTimeRange,
   state: {
-    geminiProjectRoots: Map<string, string | undefined>;
-    geminiProjectRootsDir?: string;
-    geminiSeenMessageIds: Map<string, Set<string>>;
     antigravityWorkspaceByConversation: Map<string, string>;
   }
 ): UsageEventSample[] {
-  if (vendor === "gemini") {
-    const samples = extractGeminiUsageSamples(
-      record,
-      sourcePath,
-      range,
-      state.geminiSeenMessageIds,
-      resolveGeminiProjectRoot(
-        sourcePath,
-        state.geminiProjectRoots,
-        state.geminiProjectRootsDir
-      )
-    );
-    if (samples.length > 0) {
-      return samples;
-    }
-  }
   if (vendor === "claude") {
     const sample = extractClaudeUsageSample(record, sourcePath);
     return sample && isTimestampInRange(sample.timestampMs, range)
@@ -1452,99 +1381,6 @@ function extractCodexUsageSamples(
   ];
 }
 
-function extractGeminiUsageSamples(
-  record: Record<string, unknown>,
-  sourcePath: string,
-  range: UsageTimeRange,
-  seenMessageIdsByPath: Map<string, Set<string>>,
-  projectPath: string | undefined
-): UsageEventSample[] {
-  const messages = Array.isArray(record.messages) ? record.messages : [];
-  const sessionId =
-    typeof record.sessionId === "string" ? record.sessionId : undefined;
-  const seenMessageIds =
-    seenMessageIdsByPath.get(sourcePath) ?? new Set<string>();
-  const samples: UsageEventSample[] = [];
-
-  for (const message of messages) {
-    if (!isRecord(message)) {
-      continue;
-    }
-    const messageId =
-      typeof message.id === "string" && message.id.trim()
-        ? message.id
-        : undefined;
-    if (messageId && seenMessageIds.has(messageId)) {
-      continue;
-    }
-    if (messageId) {
-      seenMessageIds.add(messageId);
-    }
-    if (message.type !== "gemini") {
-      continue;
-    }
-    const tokens = isRecord(message.tokens) ? message.tokens : null;
-    if (!tokens) {
-      continue;
-    }
-    const timestampMs = normalizeTimestamp(message.timestamp, Date.now());
-    if (!isTimestampInRange(timestampMs, range)) {
-      continue;
-    }
-
-    const inputTokens = toFiniteNumber(tokens.input) ?? 0;
-    const cacheReadTokens = toFiniteNumber(tokens.cached) ?? 0;
-    const cacheWriteTokens = 0;
-    const cacheTokens = cacheReadTokens + cacheWriteTokens;
-    const outputTokens = toFiniteNumber(tokens.output) ?? 0;
-    const totalTokens =
-      toFiniteNumber(tokens.total) ?? inputTokens + outputTokens + cacheTokens;
-    if (totalTokens <= 0) {
-      continue;
-    }
-
-    const model =
-      typeof message.model === "string" && message.model.trim()
-        ? message.model
-        : undefined;
-    const estimatedCostUsd =
-      estimateModelCost({
-        vendor: "gemini",
-        model,
-        inputTokens,
-        outputTokens,
-        cacheTokens,
-        cacheCreateTokens: cacheWriteTokens,
-        cacheCreateTokensKnown: true
-      })?.estimatedCostUsd ?? 0;
-
-    samples.push({
-      vendor: "gemini",
-      timestampMs,
-      sourcePath,
-      sourceType: "json",
-      sessionId,
-      threadId: messageId,
-      model,
-      cwd: projectPath,
-      projectPath,
-      inputTokens,
-      outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens,
-      cacheWriteTokens,
-      cacheWriteTokensKnown: true,
-      cacheTokens,
-      totalTokens,
-      estimatedCostUsd,
-      costSource: estimatedCostUsd > 0 ? "estimated" : "unavailable"
-    });
-  }
-
-  seenMessageIdsByPath.set(sourcePath, seenMessageIds);
-  return samples;
-}
-
 function extractAntigravityUsageSamples(
   record: Record<string, unknown>,
   sourcePath: string,
@@ -1590,7 +1426,11 @@ function extractAntigravityUsageSamples(
         sessionId: reportedSample.sessionId ?? conversationId,
         threadId:
           reportedSample.threadId ??
-          antigravityThreadId(conversationId, record, reportedSample.timestampMs),
+          antigravityThreadId(
+            conversationId,
+            record,
+            reportedSample.timestampMs
+          ),
         model: reportedSample.model ?? model,
         cwd: reportedSample.cwd ?? cwd,
         projectPath: reportedSample.projectPath ?? cwd,
@@ -1663,8 +1503,7 @@ function extractAntigravityTranscriptText(record: Record<string, unknown>): {
   inputText: string;
   outputText: string;
 } {
-  const type =
-    typeof record.type === "string" ? record.type.toUpperCase() : "";
+  const type = typeof record.type === "string" ? record.type.toUpperCase() : "";
   const source =
     typeof record.source === "string" ? record.source.toUpperCase() : "";
   const content = stringifyAntigravityTranscriptValue(record.content);
@@ -1763,36 +1602,6 @@ function inferAntigravityModelFromRecord(
     return humanLabelMatch[0].trim().replace(/[.。]+$/u, "");
   }
   return undefined;
-}
-
-function resolveGeminiProjectRoot(
-  sourcePath: string,
-  cache: Map<string, string | undefined>,
-  projectRootsDir: string | undefined
-): string | undefined {
-  if (cache.has(sourcePath)) {
-    return cache.get(sourcePath);
-  }
-
-  const projectKey = sourcePath.match(
-    /\/tmp\/([^/]+)\/chats\/session-[^/]+\.json$/u
-  )?.[1];
-  if (!projectKey || !projectRootsDir) {
-    cache.set(sourcePath, undefined);
-    return undefined;
-  }
-
-  const projectRootPath = join(projectRootsDir, projectKey, ".project_root");
-  try {
-    const projectRoot = normalizePathValue(
-      readFileSync(projectRootPath, "utf8")
-    );
-    cache.set(sourcePath, projectRoot);
-    return projectRoot;
-  } catch {
-    cache.set(sourcePath, undefined);
-    return undefined;
-  }
 }
 
 function pickBestUsageMetrics(
@@ -2070,7 +1879,9 @@ export function shouldReplaceUsageSample(
 }
 
 function usageHistorySampleIdentity(sample: UsageEventSample): string {
-  return [dayKeyFor(sample.timestampMs), usageSampleIdentity(sample)].join("\t");
+  return [dayKeyFor(sample.timestampMs), usageSampleIdentity(sample)].join(
+    "\t"
+  );
 }
 
 function claudeCanonicalUsageIdentity(sample: UsageEventSample): string | null {

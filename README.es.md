@@ -4,7 +4,7 @@
 
 **El espacio de trabajo de terminal multi-sesión optimizado para ejecutar agentes de programación de IA en paralelo.**
 
-Un emulador de terminal centrado en el teclado diseñado para Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en macOS y Linux.<br>Realiza un seguimiento de las sesiones paralelas de tus agentes, monitorea el uso de la API y trabaja de manera segura en diferentes ramas mediante git worktrees nativos.
+Un emulador de terminal centrado en el teclado diseñado para Claude Code, Codex CLI y Antigravity CLI en macOS y Linux.<br>Realiza un seguimiento de las sesiones paralelas de tus agentes, monitorea el uso de la API y trabaja de manera segura en diferentes ramas mediante git worktrees nativos.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -41,7 +41,7 @@ Un emulador de terminal centrado en el teclado diseñado para Claude Code, Codex
 
 ## ✨ ¿Por qué kmux?
 
-Ejecutar agentes de IA basados en CLI como **Claude Code** o **Gemini CLI** junto con tu servidor de desarrollo genera rápidamente desorden en la terminal, fragmenta el historial de sesiones y provoca conflictos de git cuando los agentes escriben en el mismo directorio de trabajo.
+Ejecutar agentes de IA basados en CLI como **Claude Code**, **Codex CLI** o **Antigravity CLI** junto con tu servidor de desarrollo genera rápidamente desorden en la terminal, fragmenta el historial de sesiones y provoca conflictos de git cuando los agentes escriben en el mismo directorio de trabajo.
 
 **kmux** soluciona esto proporcionando un espacio de trabajo de terminal dedicado y diseñado específicamente para flujos de trabajo con agentes:
 
@@ -61,7 +61,7 @@ Ejecutar agentes de IA basados en CLI como **Claude Code** o **Gemini CLI** junt
 
 ### 📊 Panel de Uso Unificado
 
-Monitorea tu consumo de tokens y gasto de API en Claude Code, Codex CLI, Gemini CLI y Antigravity CLI en un solo panel de la barra lateral derecha. kmux agrega los datos de uso directamente desde los logs locales de las sesiones, reemplazando el historial de comandos individual por un único panel visual en tiempo real.
+Monitorea tu consumo de tokens y gasto de API en Claude Code, Codex CLI y Antigravity CLI en un solo panel de la barra lateral derecha. kmux agrega los datos de uso directamente desde los logs locales de las sesiones, reemplazando el historial de comandos individual por un único panel visual en tiempo real.
 
 Ofrece un mapa de calor diario, el gasto de hoy, los modelos más costosos y los puntos de interés por proyecto.
 
@@ -82,7 +82,7 @@ Ofrece un mapa de calor diario, el gasto de hoy, los modelos más costosos y los
 
 ### 🕘 Historial de Sesiones entre Agentes
 
-kmux indexa automáticamente las bases de datos de sesiones locales de los cuatro agentes (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Gemini: `~/.gemini/tmp` y Antigravity: `~/.gemini/antigravity-cli`), presentándolas en una barra lateral de búsqueda.
+kmux indexa automáticamente las bases de datos de sesiones locales de los agentes compatibles (Claude: `~/.claude/projects`, Codex: `~/.codex/sessions` y Antigravity: `~/.gemini/antigravity-cli`), presentándolas en una barra lateral de búsqueda.
 
 Haz clic en una sesión para reanudarla al instante. kmux enfocará la pestaña o el espacio de trabajo existente para ese directorio si ya está abierto, o abrirá automáticamente un nuevo panel y ejecutará los comandos de reanudación (`claude --resume`, `codex resume`, etc.) por ti.
 
@@ -150,7 +150,7 @@ kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de
 ## 🏁 Inicio Rápido
 
 1. Inicia kmux y crea tu primer espacio de trabajo (`⌘ N` en macOS).
-2. Dentro de la terminal, ejecuta el CLI de tu agente local (`claude`, `codex`, `gemini` o `agy`).
+2. Dentro de la terminal, ejecuta el CLI de tu agente local (`claude`, `codex` o `agy`).
    > 💡 **Nota**: kmux ejecuta los CLIs de los agentes que ya tienes instalados en tu sistema. No requiere que configures claves API ni wrappers adicionales en la aplicación.
 3. Abre la barra lateral (`⌘ B` en macOS) para ver el panel de **Usage** y la lista de **Sessions**.
 4. Crea otro espacio de trabajo para ejecutar otro agente de forma independiente, o haz clic derecho en un espacio de trabajo y selecciona **Convert to Worktree Workspace** si ambos van a interactuar con el mismo repositorio.

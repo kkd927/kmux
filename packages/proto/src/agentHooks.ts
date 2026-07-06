@@ -158,24 +158,6 @@ function mapAgentHookEvent(
     }
   }
 
-  if (agent === "gemini") {
-    if (
-      hookEvent === "notification" &&
-      stringField(payload, "notification_type") === "ToolPermission"
-    ) {
-      return "needs_input";
-    }
-    if (hookEvent === "after-agent" || hookEvent === "idle") {
-      return "turn_complete";
-    }
-    if (hookEvent === "session-end") {
-      return "session_end";
-    }
-    if (hookEvent === "session-start") {
-      return "session_start";
-    }
-  }
-
   if (agent === "codex") {
     if (hookEvent === "permission-request") {
       return "needs_input";
@@ -298,22 +280,6 @@ function extractHookMessage(
     }
   }
 
-  if (agent === "gemini") {
-    const details = recordField(payload, "details");
-    const toolName = firstString(
-      stringField(payload, "tool_name"),
-      stringField(details, "tool_name"),
-      stringField(details, "toolName")
-    );
-    if (toolName) {
-      return `Tool permission requested: ${toolName}`;
-    }
-    return firstString(
-      stringField(payload, "message"),
-      "Tool permission requested"
-    );
-  }
-
   if (agent === "antigravity") {
     const toolName = antigravityToolName(payload);
     if (toolName === "ask_question") {
@@ -421,8 +387,6 @@ function agentDisplayName(agent: string): string {
   switch (agent) {
     case "claude":
       return "Claude";
-    case "gemini":
-      return "Gemini";
     case "codex":
       return "Codex";
     case "antigravity":

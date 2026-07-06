@@ -147,9 +147,6 @@ function detectVendorFromCommandLine(commandLine: string): UsageVendor {
   if (commandNames.includes("codex")) {
     return "codex";
   }
-  if (commandNames.includes("gemini") || commandNames.includes("gemini-cli")) {
-    return "gemini";
-  }
   if (
     commandNames.includes("agy") ||
     commandNames.includes("antigravity") ||
@@ -225,11 +222,7 @@ function isEnvironmentAssignment(value: string): boolean {
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(
-    new Set(
-      values
-        .map((value) => value.trim())
-        .filter(Boolean)
-    )
+    new Set(values.map((value) => value.trim()).filter(Boolean))
   );
 }
 
