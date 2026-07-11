@@ -1,11 +1,10 @@
 import type {
   Id,
   SessionLaunchConfig,
-  SurfaceChunkPayload,
   SurfaceExitPayload,
   SurfaceMetadataPayload,
-  SurfaceResizePayload,
   SurfaceSnapshotPayload,
+  TerminalSessionRef,
   TerminalKeyInput,
   TerminalNotificationProtocol
 } from "@kmux/proto";
@@ -55,6 +54,7 @@ export interface DesktopPtySpawnRequest {
 export interface PtySessionSpec {
   sessionId: Id;
   surfaceId: Id;
+  runtimeEpoch: Id;
   workspaceId: Id;
   launch: SessionLaunchConfig;
   cols: number;
@@ -64,19 +64,13 @@ export interface PtySessionSpec {
 
 export type PtyRequest =
   | DesktopPtySpawnRequest
-  | { type: "close"; sessionId: Id }
+  | { type: "shutdown"; requestId: Id }
   | {
-      type: "resize";
-      sessionId: Id;
-      cols: number;
-      rows: number;
-      attachId?: Id;
-      requestId?: Id;
-      // True while the renderer knows a resize gesture (divider/sidebar
-      // drag) is still active: the PTY commit is held until the gesture
-      // ends so mid-drag pauses can't leak SIGWINCHes to the app.
-      gestureActive?: boolean;
+      type: "stream.bind";
+      attachId: Id;
+      session: TerminalSessionRef;
     }
+  | { type: "close"; sessionId: Id }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
   | {
@@ -90,6 +84,7 @@ export type PtyRequest =
 
 export type PtyEvent =
   | { type: "ready" }
+  | { type: "shutdown:ack"; requestId: Id }
   | {
       type: "spawned";
       sessionId: Id;
@@ -101,9 +96,20 @@ export type PtyEvent =
       sessionId: Id;
       surfaceId: Id;
     }
-  | { type: "snapshot"; requestId: Id; payload: SurfaceSnapshotPayload }
-  | { type: "chunk"; payload: SurfaceChunkPayload }
-  | { type: "resize"; payload: SurfaceResizePayload }
+  | {
+      type: "snapshot";
+      requestId: Id;
+      payload: SurfaceSnapshotPayload | null;
+    }
+  | {
+      type: "input.observed";
+      session: TerminalSessionRef;
+      input:
+        | { type: "text"; text: string }
+        | { type: "binary"; data: string }
+        | { type: "key"; input: TerminalKeyInput };
+    }
+  | { type: "runtime.lost"; sessions: TerminalSessionRef[] }
   | { type: "metadata"; payload: SurfaceMetadataPayload }
   | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }
   | {
@@ -113,13 +119,6 @@ export type PtyEvent =
       protocol: TerminalNotificationProtocol;
       title?: string;
       message?: string;
-    }
-  | {
-      type: "resize:ack";
-      sessionId: Id;
-      requestId: Id;
-      cols: number;
-      rows: number;
     }
   | { type: "exit"; payload: SurfaceExitPayload }
   | { type: "error"; sessionId?: Id; message: string };
@@ -199,6 +198,9 @@ function isSupportedIntegrationShell(shellPath: string): boolean {
 }
 
 function shellBasename(shellPath: string): string {
-  const parts = shellPath.trim().split(/[\\/]+/).filter(Boolean);
+  const parts = shellPath
+    .trim()
+    .split(/[\\/]+/)
+    .filter(Boolean);
   return parts.at(-1) ?? "";
 }

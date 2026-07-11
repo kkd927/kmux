@@ -20,19 +20,28 @@ export function createNodeSmoothnessProfileRecorder(
       ? resolveNodeSmoothnessProfileLogPath(configuredPath)
       : null;
 
+  const recordMany = (events: SmoothnessProfileEvent[]): void => {
+    if (!logPath || events.length === 0) {
+      return;
+    }
+    try {
+      mkdirSync(dirname(logPath), { recursive: true });
+      appendFileSync(
+        logPath,
+        `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+        "utf8"
+      );
+    } catch {
+      // Profiling must never affect terminal/runtime behavior.
+    }
+  };
+
   return {
     enabled: Boolean(logPath),
     record(event: SmoothnessProfileEvent): void {
-      if (!logPath) {
-        return;
-      }
-      try {
-        mkdirSync(dirname(logPath), { recursive: true });
-        appendFileSync(logPath, `${JSON.stringify(event)}\n`, "utf8");
-      } catch {
-        // Profiling must never affect terminal/runtime behavior.
-      }
-    }
+      recordMany([event]);
+    },
+    recordMany
   };
 }
 

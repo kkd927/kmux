@@ -80,7 +80,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind,
         closePalette: vi.fn(),
@@ -112,6 +112,75 @@ describe("useGlobalShortcuts", () => {
     });
 
     expect(setRightPanelKind).not.toHaveBeenCalled();
+  });
+
+  it("uses the settings discard close path for Escape and the settings toggle shortcut", () => {
+    const closeSettingsModal = vi.fn();
+
+    function Harness(): null {
+      const view = createViewSnapshot();
+      view.settings.shortcuts = { "settings.toggle": "Meta+," };
+      const viewRef = useRef(view);
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: true,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
+        worktreeDialogOpen: false
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: linuxKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        setSearchSurfaceId: vi.fn(),
+        closeSettingsModal,
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch: vi.fn(async () => undefined),
+        requestWorkspaceClose: vi.fn(async () => undefined),
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: ",",
+          code: "Comma",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(closeSettingsModal).toHaveBeenCalledTimes(2);
   });
 
   it("routes the pane close shortcut through the pane close request flow", () => {
@@ -161,7 +230,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),
@@ -236,7 +305,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),
@@ -308,7 +377,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),
@@ -386,7 +455,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),
@@ -465,7 +534,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),
@@ -576,7 +645,7 @@ describe("useGlobalShortcuts", () => {
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
         setSearchSurfaceId: vi.fn(),
-        setSettingsOpen: vi.fn(),
+        closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
         setRightPanelKind: vi.fn(),
         closePalette: vi.fn(),

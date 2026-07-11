@@ -9,6 +9,7 @@ import type {
 } from "@kmux/metadata";
 import type { SubscriptionProviderUsageVm } from "@kmux/proto";
 import { createUsageRuntime } from "./usageRuntime";
+import type { UsageScanService } from "./usageScanWorkerClient";
 
 class FakeUsageAdapter implements UsageAdapter {
   readonly vendor;
@@ -48,6 +49,58 @@ describe("usage runtime", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("starts without awaiting the scan worker and recovers from a worker error", async () => {
+    const state = createInitialState();
+    let rejectInitialScan!: (error: Error) => void;
+    const initialScan = new Promise<never>((_resolve, reject) => {
+      rejectInitialScan = reject;
+    });
+    const scan = vi
+      .fn<UsageScanService["scan"]>()
+      .mockReturnValueOnce(initialScan)
+      .mockResolvedValueOnce({
+        reads: [
+          {
+            sourceCount: 1,
+            samples: [buildSample({ totalTokens: 321 })]
+          }
+        ]
+      });
+    const scanService: UsageScanService = {
+      watch: vi.fn(() => () => undefined),
+      scan,
+      markDirty: vi.fn(),
+      close: vi.fn()
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      scanService,
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
+    });
+
+    expect(runtime.start()).toBeUndefined();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledTimes(1));
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(0);
+
+    rejectInitialScan(new Error("worker crashed"));
+    await vi.waitFor(() =>
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[usage] scan worker failed; keeping the last usage snapshot:",
+        "worker crashed"
+      )
+    );
+
+    await runtime.refreshNow();
+
+    expect(scan).toHaveBeenCalledTimes(2);
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(321);
+    runtime.shutdown();
+    expect(scanService.close).toHaveBeenCalledTimes(1);
   });
 
   it("does not emit another usage snapshot when incremental reads are unchanged", async () => {

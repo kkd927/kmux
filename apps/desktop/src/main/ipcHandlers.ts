@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type {
@@ -12,8 +13,6 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   SurfaceCapturePayload,
-  SurfaceAttachCompletionResult,
-  SurfaceAttachPayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalColorPalette,
@@ -42,6 +41,7 @@ import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlat
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 import type { SurfaceContextMenuContext } from "../shared/surfaceContextMenu";
+import type { TerminalStreamAttachResult } from "../shared/terminalPort";
 
 interface IpcHandlersOptions {
   getPlatformDescriptor: () => RendererPlatformDescriptor;
@@ -56,26 +56,15 @@ interface IpcHandlersOptions {
   ) => Promise<CreateImageAttachmentsResult>;
   getUpdaterState: () => UpdaterState;
   dispatchAppAction: (action: AppAction) => void;
-  attachSurface: (
-    contentsId: number,
+  attachTerminalStream: (
+    event: IpcMainInvokeEvent,
     surfaceId: Id,
     expectedSessionId: Id
-  ) => Promise<SurfaceAttachPayload | null>;
-  completeAttachSurface: (
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id,
-    expectedSessionId: Id
-  ) => Promise<SurfaceAttachCompletionResult>;
+  ) => TerminalStreamAttachResult;
   snapshotSurface: (
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
   ) => Promise<SurfaceSnapshotPayload | null>;
-  detachSurface: (
-    contentsId: number,
-    surfaceId: Id,
-    expectedSessionId: Id
-  ) => void;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
   openExternalUrl: (url: string) => Promise<void>;
@@ -88,16 +77,7 @@ interface IpcHandlersOptions {
     surfaceId: Id,
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
-  resizeSurface: (
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id | null,
-    cols: number,
-    rows: number,
-    gestureActive?: boolean
-  ) => Promise<void>;
   identify: () => ShellIdentity;
-  listTerminalFontFamilies: () => Promise<string[]>;
   previewTerminalTypography: (
     settings: TerminalTypographySettings
   ) => Promise<ResolvedTerminalTypographyVm>;
@@ -138,6 +118,7 @@ interface IpcHandlersOptions {
   installDownloadedUpdate: () => void;
   clipboard?: MainClipboardService;
   recordProfileEvent?: (event: SmoothnessProfileEvent) => void;
+  recordProfileEvents?: (events: SmoothnessProfileEvent[]) => void;
 }
 
 export function registerIpcHandlers(options: IpcHandlersOptions): void {
@@ -187,28 +168,17 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     }
   );
   ipcMain.handle(
-    "kmux:attach-surface",
-    async (
-      event,
-      surfaceId: Id,
-      expectedSessionId: Id
-    ): Promise<SurfaceAttachPayload | null> =>
-      options.attachSurface(event.sender.id, surfaceId, expectedSessionId)
+    "kmux:profile:events",
+    (_event, events: SmoothnessProfileEvent[]) => {
+      if (Array.isArray(events)) {
+        options.recordProfileEvents?.(events.slice(0, 256));
+      }
+    }
   );
   ipcMain.handle(
-    "kmux:attach-surface-complete",
-    (
-      event,
-      surfaceId: Id,
-      attachId: Id,
-      expectedSessionId: Id
-    ): Promise<SurfaceAttachCompletionResult> =>
-      options.completeAttachSurface(
-        event.sender.id,
-        surfaceId,
-        attachId,
-        expectedSessionId
-      )
+    "kmux:terminal-stream:attach",
+    (event, surfaceId: Id, expectedSessionId: Id) =>
+      options.attachTerminalStream(event, surfaceId, expectedSessionId)
   );
   ipcMain.handle(
     "kmux:snapshot-surface",
@@ -218,12 +188,6 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       snapshotOptions?: SurfaceSnapshotOptions
     ): Promise<SurfaceSnapshotPayload | null> =>
       options.snapshotSurface(surfaceId, snapshotOptions)
-  );
-  ipcMain.handle(
-    "kmux:detach-surface",
-    (event, surfaceId: Id, expectedSessionId: Id) => {
-      options.detachSurface(event.sender.id, surfaceId, expectedSessionId);
-    }
   );
   ipcMain.handle("kmux:terminal:text", (_event, surfaceId: Id, text: string) =>
     options.sendText(surfaceId, text)
@@ -247,29 +211,6 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:terminal-file-links:resolve",
     (_event, surfaceId: Id, candidates: TerminalFileLinkResolveCandidate[]) =>
       options.resolveTerminalFileLinks(surfaceId, candidates)
-  );
-  ipcMain.handle(
-    "kmux:terminal:resize",
-    async (
-      event,
-      surfaceId: Id,
-      attachId: Id | null,
-      cols: number,
-      rows: number,
-      gestureActive?: boolean
-    ) => {
-      await options.resizeSurface(
-        event.sender.id,
-        surfaceId,
-        attachId,
-        cols,
-        rows,
-        gestureActive
-      );
-    }
-  );
-  ipcMain.handle("kmux:terminal-typography:fonts:list", () =>
-    options.listTerminalFontFamilies()
   );
   ipcMain.handle(
     "kmux:terminal-typography:preview",

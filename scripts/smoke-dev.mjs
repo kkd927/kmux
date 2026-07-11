@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 const DEFAULT_SMOKE_TIMEOUT_MS = 180_000;
 const SUCCESS_SETTLE_MS = 1_500;
 const MAX_LOG_CHARS = 20_000;
+const PROCESS_EXIT_GRACE_MS = 5_000;
 
 const FAILURE_PATTERNS = [
   /Unable to find Electron app at/i,
@@ -75,7 +76,84 @@ export function resolveDevSmokeTimeoutMs(env = process.env) {
   return DEFAULT_SMOKE_TIMEOUT_MS;
 }
 
-function killProcessTree(child) {
+export function parsePosixProcessTable(output) {
+  return output.split("\n").flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/u);
+    if (!match) {
+      return [];
+    }
+    return [
+      {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        pgid: Number(match[3]),
+        command: match[4]
+      }
+    ];
+  });
+}
+
+export function resolveOwnedPosixProcessIds(
+  rows,
+  { rootPid, ownerMarkers, selfPid = process.pid }
+) {
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const owned = new Set(rootPid ? [rootPid] : []);
+
+  for (const row of rows) {
+    if (ownerMarkers.some((marker) => row.command.includes(marker))) {
+      let current = row;
+      while (current && current.pid > 1 && current.pid !== selfPid) {
+        owned.add(current.pid);
+        current = byPid.get(current.ppid);
+      }
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (!owned.has(row.ppid) || owned.has(row.pid)) {
+        continue;
+      }
+      owned.add(row.pid);
+      changed = true;
+    }
+  }
+
+  owned.delete(selfPid);
+  return Array.from(owned);
+}
+
+function readPosixProcessTable() {
+  const result = spawnSync("ps", ["-axo", "pid=,ppid=,pgid=,command="], {
+    encoding: "utf8"
+  });
+  return result.status === 0 ? parsePosixProcessTable(result.stdout ?? "") : [];
+}
+
+function signalProcess(pid, signal) {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) {
+    return;
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Ignore processes that exited between discovery and signaling.
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function terminateSmokeProcesses(child, sandbox) {
   if (!child.pid) {
     return;
   }
@@ -84,9 +162,15 @@ function killProcessTree(child) {
     const killer = spawn("taskkill", ["/pid", `${child.pid}`, "/t", "/f"], {
       stdio: "ignore"
     });
-    killer.unref();
+    await new Promise((resolve) => killer.once("exit", resolve));
     return;
   }
+
+  const rows = readPosixProcessTable();
+  const ownedPids = resolveOwnedPosixProcessIds(rows, {
+    rootPid: child.pid,
+    ownerMarkers: [sandbox.profileRoot]
+  });
 
   try {
     process.kill(-child.pid, "SIGTERM");
@@ -96,6 +180,20 @@ function killProcessTree(child) {
     } catch {
       // ignore cleanup races
     }
+  }
+
+  for (const pid of ownedPids) {
+    signalProcess(pid, "SIGTERM");
+  }
+
+  const deadline = Date.now() + PROCESS_EXIT_GRACE_MS;
+  let remaining = ownedPids.filter(isProcessAlive);
+  while (remaining.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    remaining = remaining.filter(isProcessAlive);
+  }
+  for (const pid of remaining) {
+    signalProcess(pid, "SIGKILL");
   }
 }
 
@@ -122,8 +220,8 @@ async function main() {
     detached: process.platform !== "win32"
   });
 
-  const cleanup = () => {
-    killProcessTree(child);
+  const cleanup = async () => {
+    await terminateSmokeProcesses(child, sandbox);
     cleanupSandbox(sandbox);
   };
 

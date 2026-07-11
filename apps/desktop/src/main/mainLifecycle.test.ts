@@ -68,6 +68,22 @@ function createDeferredResult() {
   return { promise, resolve };
 }
 
+function createDeferredShutdown() {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("main lifecycle controller", () => {
   beforeEach(() => {
     browserWindowInstances.length = 0;
@@ -193,17 +209,18 @@ describe("main lifecycle controller", () => {
       suppressFutureWarnings: true,
       restoreWorkspacesAfterQuit: false
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(setWarnBeforeQuit).toHaveBeenCalledWith(false);
     expect(setRestoreWorkspacesAfterQuit).toHaveBeenCalledWith(false);
     expect(app.quit).toHaveBeenCalledTimes(1);
-    expect(shutdown).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledTimes(1);
 
-    controller.handleBeforeQuit(createEvent());
+    const completedEvent = createEvent();
+    controller.handleBeforeQuit(completedEvent);
 
     expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(completedEvent.preventDefault).not.toHaveBeenCalled();
   });
 
   it("cancels quit when the confirmation dialog is dismissed", async () => {
@@ -261,12 +278,13 @@ describe("main lifecycle controller", () => {
     expect(confirmQuit).toHaveBeenCalledTimes(1);
   });
 
-  it("quits immediately without a dialog when warn-before-quit is disabled", () => {
+  it("waits for shutdown without a dialog when warn-before-quit is disabled", async () => {
     const shutdown = vi.fn(async () => undefined);
     const confirmQuit = vi.fn();
+    const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
       isMac: true,
-      app: { quit: vi.fn() },
+      app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
       getCurrentWindow: () => null,
@@ -281,18 +299,107 @@ describe("main lifecycle controller", () => {
     const event = createEvent();
     controller.handleBeforeQuit(event);
 
-    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(confirmQuit).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(app.quit).not.toHaveBeenCalled();
+
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedupes quit requests while graceful shutdown is in flight", async () => {
+    const deferred = createDeferredShutdown();
+    const shutdown = vi.fn(() => deferred.promise);
+    const app = { quit: vi.fn() };
+    const controller = createMainLifecycleController({
+      isMac: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => false,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit: vi.fn(),
+      shutdown
+    });
+
+    const firstEvent = createEvent();
+    const overlappingEvent = createEvent();
+    controller.handleBeforeQuit(firstEvent);
+    controller.handleBeforeQuit(overlappingEvent);
+
+    expect(firstEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(overlappingEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(app.quit).not.toHaveBeenCalled();
+
+    deferred.resolve();
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledTimes(1);
+    const completedEvent = createEvent();
+    controller.handleBeforeQuit(completedEvent);
+    expect(completedEvent.preventDefault).not.toHaveBeenCalled();
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("can disable quit confirmation entirely for automated sessions", () => {
+  it("allows the final quit after a rejected shutdown without retrying forever", async () => {
+    const deferred = createDeferredShutdown();
+    const shutdownError = new Error("shutdown failed");
+    const shutdown = vi.fn(() => deferred.promise);
+    const app = { quit: vi.fn() };
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const controller = createMainLifecycleController({
+      isMac: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => false,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit: vi.fn(),
+      shutdown
+    });
+
+    try {
+      const initialEvent = createEvent();
+      controller.handleBeforeQuit(initialEvent);
+      deferred.reject(shutdownError);
+      await flushMicrotasks();
+
+      expect(initialEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        "[main:shutdown]",
+        shutdownError
+      );
+      expect(shutdown).toHaveBeenCalledTimes(1);
+      expect(app.quit).toHaveBeenCalledTimes(1);
+
+      const completedEvent = createEvent();
+      controller.handleBeforeQuit(completedEvent);
+      expect(completedEvent.preventDefault).not.toHaveBeenCalled();
+      expect(shutdown).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("can disable quit confirmation while preserving graceful shutdown", async () => {
     const shutdown = vi.fn(async () => undefined);
     const confirmQuit = vi.fn();
+    const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
       isMac: true,
       shouldConfirmQuit: false,
-      app: { quit: vi.fn() },
+      app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
       getCurrentWindow: () => null,
@@ -307,17 +414,22 @@ describe("main lifecycle controller", () => {
     const event = createEvent();
     controller.handleBeforeQuit(event);
 
-    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(confirmQuit).not.toHaveBeenCalled();
     expect(shutdown).toHaveBeenCalledTimes(1);
+
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledTimes(1);
   });
 
-  it("can bypass the quit dialog for trusted quit paths", () => {
+  it("can bypass only the quit dialog for trusted quit paths", async () => {
     const shutdown = vi.fn(async () => undefined);
     const confirmQuit = vi.fn();
+    const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
       isMac: true,
-      app: { quit: vi.fn() },
+      app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
       getCurrentWindow: () => null,
@@ -330,10 +442,16 @@ describe("main lifecycle controller", () => {
     });
 
     controller.allowQuit();
-    controller.handleBeforeQuit(createEvent());
+    const event = createEvent();
+    controller.handleBeforeQuit(event);
 
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(confirmQuit).not.toHaveBeenCalled();
     expect(shutdown).toHaveBeenCalledTimes(1);
+
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledTimes(1);
   });
 
   it("opens a custom quit dialog with restore and warning checkboxes", async () => {

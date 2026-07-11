@@ -1,8 +1,9 @@
 import process from "node:process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { applyAction, createInitialState } from "@kmux/core";
 
 import {
   closeKmuxApp,
@@ -12,8 +13,79 @@ import {
   forceKillKmuxApp,
   getView,
   launchKmuxWithSandbox,
+  terminalInputForSurface,
   waitForView
 } from "./helpers";
+
+import type { KmuxSandbox } from "./helpers";
+
+function seedPriorReleaseSnapshot(sandbox: KmuxSandbox) {
+  const shell = process.env.SHELL || "/bin/sh";
+  const snapshot = createInitialState(shell);
+  const firstWorkspaceId =
+    snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
+  applyAction(snapshot, {
+    type: "workspace.rename",
+    workspaceId: firstWorkspaceId,
+    name: "restored alpha"
+  });
+  applyAction(snapshot, {
+    type: "workspace.create",
+    name: "restored beta"
+  });
+  const secondWorkspaceId =
+    snapshot.windows[snapshot.activeWindowId].activeWorkspaceId;
+
+  snapshot.settings.restoreWorkspacesAfterQuit = true;
+  snapshot.settings.warnBeforeQuit = false;
+  for (const surface of Object.values(snapshot.surfaces)) {
+    surface.cwd = sandbox.shellHomeDir;
+  }
+  for (const session of Object.values(snapshot.sessions)) {
+    session.launch = { cwd: sandbox.shellHomeDir, shell };
+    session.runtimeState = "running";
+    session.shellInputReady = true;
+    session.pid = 42_000;
+  }
+  const exitedSession = Object.values(snapshot.sessions)[0];
+  exitedSession.runtimeState = "exited";
+  exitedSession.shellInputReady = false;
+  delete exitedSession.pid;
+  exitedSession.exitCode = 137;
+
+  const workspaces = [firstWorkspaceId, secondWorkspaceId].map(
+    (workspaceId) => ({
+      id: workspaceId,
+      name: snapshot.workspaces[workspaceId].name,
+      surfaceIds: Object.values(snapshot.panes)
+        .filter((pane) => pane.workspaceId === workspaceId)
+        .flatMap((pane) => pane.surfaceIds)
+    })
+  );
+  const envelope = {
+    version: 1,
+    cleanShutdown: true,
+    restoreOnLaunch: true,
+    snapshot
+  };
+  const persisted = JSON.stringify(envelope);
+  expect(persisted).not.toMatch(/"(?:runtimeEpoch|epoch|sequence)"\s*:/);
+  writeFileSync(join(sandbox.stateDir, "state.json"), persisted, "utf8");
+  writeFileSync(
+    join(sandbox.configDir, "settings.json"),
+    JSON.stringify(snapshot.settings, null, 2),
+    "utf8"
+  );
+  return { exitedSurfaceId: exitedSession.surfaceId, workspaces };
+}
+
+function terminalProbeCommand(marker: string): string {
+  const octal = Array.from(
+    marker,
+    (character) => `\\${character.charCodeAt(0).toString(8).padStart(3, "0")}`
+  ).join("");
+  return `printf '${octal}\\012'`;
+}
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -32,6 +104,82 @@ function isProcessAlive(pid: number): boolean {
     throw error;
   }
 }
+
+async function probeVisibleRestoredShell(
+  page: Page,
+  workspaceId: string,
+  surfaceId: string,
+  marker: string
+): Promise<void> {
+  await dispatch(page, { type: "workspace.select", workspaceId });
+  await dispatch(page, { type: "surface.focus", surfaceId });
+  await waitForView(
+    page,
+    (view) =>
+      view.activeWorkspace.id === workspaceId &&
+      view.activeWorkspace.surfaces[surfaceId]?.sessionState === "running" &&
+      view.activeWorkspace.surfaces[surfaceId]?.shellInputReady === true &&
+      Object.values(view.activeWorkspace.panes).some(
+        (pane) => pane.activeSurfaceId === surfaceId
+      ),
+    `restored shell should become ready: ${surfaceId}`,
+    10_000
+  );
+
+  const terminal = page.getByTestId(`terminal-${surfaceId}`);
+  await expect(terminal).toHaveAttribute(
+    "data-terminal-stream-ready",
+    /^attach_/,
+    { timeout: 10_000 }
+  );
+  const input = terminalInputForSurface(page, surfaceId);
+  await expect(input).toBeVisible();
+  await input.pressSequentially(terminalProbeCommand(marker));
+  await input.press("Enter");
+  await expect(terminal.locator(".xterm-rows")).toContainText(marker, {
+    timeout: 10_000
+  });
+}
+
+test("clean update restore respawns prior-release shells on the direct terminal stream", async () => {
+  const sandbox = createSandbox("kmux-update-restore-");
+  const fixture = seedPriorReleaseSnapshot(sandbox);
+  const launched = await launchKmuxWithSandbox(sandbox);
+
+  try {
+    const restored = await waitForView(
+      launched.page,
+      (view) =>
+        view.settings.restoreWorkspacesAfterQuit === true &&
+        fixture.workspaces.every((workspace) =>
+          view.workspaceRows.some(
+            (row) =>
+              row.workspaceId === workspace.id && row.name === workspace.name
+          )
+        ),
+      "prior-release workspace snapshot should restore after update",
+      10_000
+    );
+    expect(restored.workspaceRows).toHaveLength(fixture.workspaces.length);
+
+    let probeIndex = 0;
+    for (const workspace of fixture.workspaces) {
+      for (const surfaceId of workspace.surfaceIds) {
+        await probeVisibleRestoredShell(
+          launched.page,
+          workspace.id,
+          surfaceId,
+          surfaceId === fixture.exitedSurfaceId
+            ? "kmuxrestoreexited"
+            : `kmuxrestore${probeIndex++}`
+        );
+      }
+    }
+  } finally {
+    await closeKmuxApp(launched).catch(() => {});
+    destroySandbox(sandbox);
+  }
+});
 
 test("unclean shutdown reuses the saved workspace snapshot on relaunch", async () => {
   const sandbox = createSandbox("kmux-restore-");
@@ -74,9 +222,7 @@ test("unclean shutdown reuses the saved workspace snapshot on relaunch", async (
         if (!existsSync(statePath)) {
           return false;
         }
-        const stateJson = JSON.parse(
-          readFileSync(statePath, "utf8")
-        ) as {
+        const stateJson = JSON.parse(readFileSync(statePath, "utf8")) as {
           snapshot?: {
             workspaces?: Record<string, { name?: string }>;
             panes?: Record<string, { workspaceId?: string }>;
@@ -95,9 +241,7 @@ test("unclean shutdown reuses the saved workspace snapshot on relaunch", async (
         const paneCount = Object.values(stateJson.snapshot?.panes ?? {}).filter(
           (pane) => pane.workspaceId === activeWorkspaceId
         ).length;
-        return (
-          workspaceNames.includes("restore workspace") && paneCount === 2
-        );
+        return workspaceNames.includes("restore workspace") && paneCount === 2;
       })
       .toBe(true);
 

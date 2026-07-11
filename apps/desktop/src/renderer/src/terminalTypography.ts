@@ -127,8 +127,6 @@ export function describeTerminalTypographyIssue(
   issue: TerminalTypographyIssue
 ): string {
   switch (issue.code) {
-    case "text_font_missing":
-      return "The selected text font is not installed on this Mac.";
     case "symbol_font_missing":
       return "kmux could not load its built-in terminal glyph font.";
     case "non_monospaced_text_font":
@@ -165,11 +163,7 @@ export function describeTerminalTypographyHeadline(
   if (terminalTypography.status === "pending") {
     return "Checking glyph support";
   }
-  return terminalTypography.issues.some(
-    (issue) => issue.code === "text_font_missing"
-  )
-    ? "Text font needs attention"
-    : "Glyph support needs attention";
+  return "Glyph support needs attention";
 }
 
 export function describeTerminalTypographySupportLines(
@@ -186,11 +180,6 @@ export function describeTerminalTypographySupportLines(
 
   if (usesBuiltInGlyphFont(terminalTypography) && !hasGlyphRenderingIssue) {
     lines.push("Using built-in kmux glyph font.");
-  }
-
-  const installedGlyphFont = findDetectedInstalledGlyphFont(terminalTypography);
-  if (installedGlyphFont) {
-    lines.push(`Compatible installed font detected: ${installedGlyphFont}`);
   }
 
   if (terminalTypography.issues.length > 0) {
@@ -326,19 +315,6 @@ function usesBuiltInGlyphFont(
     (fontFamily) =>
       normalizeFontFamilyName(fontFamily) ===
       normalizeFontFamilyName(KMUX_BUILTIN_SYMBOL_FONT_FAMILY)
-  );
-}
-
-function findDetectedInstalledGlyphFont(
-  terminalTypography: ResolvedTerminalTypographyVm
-): string | null {
-  return (
-    terminalTypography.symbolFallbackFamilies.find(
-      (fontFamily) =>
-        /Nerd Font|Powerline/i.test(fontFamily) &&
-        normalizeFontFamilyName(fontFamily) !==
-          normalizeFontFamilyName(KMUX_BUILTIN_SYMBOL_FONT_FAMILY)
-    ) ?? null
   );
 }
 

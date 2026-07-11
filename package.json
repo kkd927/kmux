@@ -43,6 +43,7 @@
     "test:e2e": "npm run smoke:dev && npm run build && playwright test",
     "test:e2e:visible": "npm run smoke:dev && KMUX_E2E_WINDOW_MODE=visible npm run build && playwright test",
     "profile:smoothness": "npm run smoke:dev && npm run build && KMUX_RUN_SMOOTHNESS_PROFILE=1 playwright test tests/e2e/kmux-smoothness-profile.spec.ts",
+    "profile:terminal-data-plane": "npm run smoke:dev && npm run build && KMUX_RUN_TERMINAL_DATA_PLANE_GATE=1 playwright test tests/e2e/kmux-terminal-data-plane-performance.spec.ts",
     "smoke:packaged:mac": "node scripts/smoke-packaged-mac.mjs",
     "smoke:packaged:linux": "node scripts/smoke-packaged-linux.mjs",
     "release:check:mac": "npm run package:mac && npm run smoke:packaged:mac",

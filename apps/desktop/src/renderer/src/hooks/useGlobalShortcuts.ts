@@ -49,7 +49,7 @@ interface UseGlobalShortcutsOptions {
   closeSurfaceRestartConfirm: () => void;
   closeWorktreeDialog: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
-  setSettingsOpen: Dispatch<SetStateAction<boolean>>;
+  closeSettingsModal: () => void;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
   setRightPanelKind: Dispatch<SetStateAction<RightPanelKind>>;
   closePalette: () => void;
@@ -147,7 +147,7 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         }
         if (currentSettingsOpen) {
           event.preventDefault();
-          currentOptions.setSettingsOpen(false);
+          currentOptions.closeSettingsModal();
           return;
         }
         if (currentNotificationsOpen) {
@@ -262,7 +262,7 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
       if (matchShortcut(currentView, event, "settings.toggle")) {
         event.preventDefault();
         if (currentSettingsOpen) {
-          currentOptions.setSettingsOpen(false);
+          currentOptions.closeSettingsModal();
         } else {
           currentOptions.openSettingsModal();
         }

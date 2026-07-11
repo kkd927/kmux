@@ -3,13 +3,21 @@ import type {
   ITerminalOptions as HeadlessTerminalOptions,
   Terminal as HeadlessTerminal
 } from "@xterm/headless";
-import Headless from "@xterm/headless";
+import * as Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
-import type { Id, SurfaceSnapshotPayload } from "@kmux/proto";
+import type {
+  Id,
+  SurfaceSnapshotPayload,
+  TerminalCheckpoint,
+  TerminalDelta,
+  TerminalSessionRef
+} from "@kmux/proto";
+import { TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES } from "@kmux/proto";
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
@@ -20,7 +28,7 @@ import {
   parseOsc99Notification,
   type Osc99NotificationState
 } from "./terminalNotifications";
-import { resolveOsc7Cwd } from "./osc7";
+import { isTerminalMetadataWithinProtocolLimit, resolveOsc7Cwd } from "./osc7";
 import { SHELL_READY_OSC } from "./shellIntegration";
 import {
   armShellReadyFallback,
@@ -39,15 +47,23 @@ import {
   profileNowMs
 } from "../shared/nodeSmoothnessProfile";
 import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
+import { terminalDataPlaneNowMs } from "../shared/terminalDataPlaneMetrics";
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
-import { OutputBatcher } from "./outputBatcher";
 import {
   createPtyResizeCoalescer,
   type PtyResizeCoalescer
 } from "./ptyResizeCoalescer";
-import { handleTerminalResizeRequest } from "./resizeRuntime";
+import { prepareTerminalResize } from "./resizeRuntime";
+import { FairSessionScheduler } from "./fairSessionScheduler";
+import { SessionMutationQueue } from "./sessionMutationQueue";
 import { SnapshotCache } from "./snapshotCache";
+import { TerminalDeltaStore } from "./terminalDeltaStore";
+import { createTerminalDataPlaneSupervisorMetrics } from "./terminalDataPlaneSupervisorMetrics";
+import {
+  TerminalSessionStream,
+  type TerminalDataPortLike
+} from "./terminalSessionStream";
 import {
   createTerminalCwdRangeSnapshotWindow,
   createTerminalCwdRangeTracker
@@ -57,6 +73,14 @@ import {
   splitTerminalOutputByOsc7,
   type TerminalOutputSegmenterState
 } from "./terminalOutputSegments";
+import { createUtilityProcessControlTransport } from "./utilityProcessTransport";
+import {
+  coalesceTerminalOutputForWire,
+  splitTerminalOutputText,
+  terminalDeltaRetainedBytes,
+  TERMINAL_OUTPUT_SEGMENT_MAX_BYTES
+} from "./terminalWireCoalescing";
+import { createTerminalQueryReplyHandler } from "./terminalQueryReply";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -75,19 +99,29 @@ const HeadlessTerminalCtor = (
   }
 ).Terminal;
 
-interface SessionRecord {
+interface SessionRuntime {
   sessionId: Id;
   surfaceId: Id;
+  runtimeEpoch: Id;
   cwd?: string;
   title: string;
   pty: PtyModule.IPty;
   ptyResize: PtyResizeCoalescer;
   terminal: HeadlessTerminal;
+  queryReplyListener: DisposableLike;
   serialize: SerializeAddon;
   snapshotCache: SnapshotCache;
   cwdRanges: ReturnType<typeof createTerminalCwdRangeTracker>;
   trimListener: DisposableLike;
-  writeQueue: Promise<void>;
+  mutationQueue: SessionMutationQueue<QueuedOutputSegment>;
+  stream: TerminalSessionStream;
+  pendingDirectInputs: Array<string | Buffer>;
+  pendingDirectInputBytes: number;
+  inputTelemetrySequence: number;
+  pendingInputTelemetry?: {
+    inputAcceptedAt: number;
+    inputSequence: number;
+  };
   outputSegmenterState: TerminalOutputSegmenterState;
   rawOutputTail: string;
   rawOutputTailTruncated: boolean;
@@ -96,6 +130,8 @@ interface SessionRecord {
   rawOutputLogBytes: number;
   rawOutputLogChars: number;
   rawOutputLogChunks: number;
+  inFlightOutputRuns: number;
+  disposeTerminalWhenIdle: boolean;
   sequence: number;
   parsedSequence: number;
   cols: number;
@@ -111,30 +147,89 @@ interface SessionRecord {
     includeRawOutputTail: boolean;
   }>;
   settledSnapshotTimer: NodeJS.Timeout | null;
+  closing: boolean;
+  exited: boolean;
+  exitCode?: number;
+}
+
+interface QueuedOutputSegment {
+  chunk: string;
+  recordCwd: boolean;
+  telemetry?: {
+    ptyReadAt: number;
+    visibleAtPtyRead: boolean;
+    inputAcceptedAt?: number;
+    inputSequence?: number;
+  };
 }
 
 interface DisposableLike {
   dispose(): void;
 }
 
-const sessions = new Map<Id, SessionRecord>();
+const sessions = new Map<Id, SessionRuntime>();
 const logRawTerminalEvent = createRawTerminalEventStdoutLogger();
 const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
+const controlTransport = createUtilityProcessControlTransport();
 let ipcChannelClosed = false;
+let shutdownRequested = false;
 const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
-const OUTPUT_BATCH_FLUSH_MS = 8;
-const OUTPUT_BATCH_MAX_BYTES = 64 * 1024;
+const SESSION_OUTPUT_SLICE_BYTES = TERMINAL_OUTPUT_SEGMENT_MAX_BYTES;
+const SESSION_OUTPUT_HIGH_WATERMARK_BYTES = 4 * 1024 * 1024;
+const SESSION_OUTPUT_LOW_WATERMARK_BYTES = 1 * 1024 * 1024;
+const SESSION_DELTA_RING_BYTES = 2 * 1024 * 1024;
+const SESSION_DELTA_RING_EVENTS = 2_048;
+const SUPERVISOR_DELTA_RING_BYTES = 64 * 1024 * 1024;
+const SUPERVISOR_DELTA_RING_EVENTS = 65_536;
+const PENDING_DIRECT_INPUT_MAX_BYTES = 1 * 1024 * 1024;
 const RAW_OUTPUT_TAIL_MAX_CHARS = 128 * 1024;
 const RAW_OUTPUT_HISTORY_ENABLED = process.env[PTY_STDOUT_LOGS_ENV] === "1";
-const outputBatcher = new OutputBatcher({
-  flushMs: OUTPUT_BATCH_FLUSH_MS,
-  maxBatchBytes: OUTPUT_BATCH_MAX_BYTES,
-  onFlush: (payload) => {
-    send({
-      type: "chunk",
-      payload
+const deltaStore = new TerminalDeltaStore<TerminalDelta>({
+  maxSessionBytes: SESSION_DELTA_RING_BYTES,
+  maxSessionEvents: SESSION_DELTA_RING_EVENTS,
+  maxTotalBytes: SUPERVISOR_DELTA_RING_BYTES,
+  maxTotalEvents: SUPERVISOR_DELTA_RING_EVENTS,
+  rangeOf: (delta) => ({
+    fromSequence:
+      delta.type === "output" ? delta.fromSequence : delta.sequence - 1,
+    sequence: delta.sequence
+  }),
+  sizeOf: terminalDeltaRetainedBytes,
+  replaySizeOf: (delta) => (delta.type === "output" ? delta.byteLength : 0)
+});
+const dataPlaneSupervisorMetrics = createTerminalDataPlaneSupervisorMetrics({
+  recorder: smoothnessProfile,
+  now: profileNowMs,
+  readSessions: () =>
+    [...sessions.values()].map((record) => ({
+      queue: record.mutationQueue.stats(),
+      ring: deltaStore.sessionStats(record.sessionId),
+      stream: record.stream.stats()
+    })),
+  readRing: () => deltaStore.stats()
+});
+const sessionScheduler = new FairSessionScheduler({
+  schedule: (callback) => setImmediate(callback),
+  onDrainError: (sessionId, error) => {
+    const record = sessions.get(sessionId);
+    logDiagnostics("pty-host.session.mutation.failed", {
+      sessionId,
+      surfaceId: record?.surfaceId,
+      error: error instanceof Error ? error.message : String(error)
     });
+    send({
+      type: "error",
+      sessionId,
+      message: `terminal mutation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    });
+    try {
+      record?.pty.kill();
+    } catch {
+      // The PTY may already have exited after the failed mutation.
+    }
   }
 });
 const ptyBucket = createSmoothnessProfileBucket<{
@@ -174,25 +269,17 @@ const ptyBucket = createSmoothnessProfileBucket<{
 
 logDiagnostics("pty-host.bootstrap", {
   pid: process.pid,
-  cwd: process.cwd()
+  cwd: process.cwd(),
+  controlTransportAvailable: controlTransport.available
 });
 
 function send(message: PtyEvent): void {
-  if (!process.send || ipcChannelClosed) {
-    return;
-  }
-  if (process.connected === false) {
-    handleIpcChannelClosed();
+  if (!controlTransport.available || ipcChannelClosed) {
     return;
   }
 
   try {
-    process.send(message, (error: Error | null) => {
-      if (!error) {
-        return;
-      }
-      handleIpcSendError(error);
-    });
+    controlTransport.postMessage(message);
   } catch (error) {
     handleIpcSendError(error);
   }
@@ -247,16 +334,16 @@ function handleIpcChannelClosed(error?: unknown): void {
   }
 
   ipcChannelClosed = true;
+  dataPlaneSupervisorMetrics.stop();
   if (error) {
     logDiagnostics("pty-host.ipc.closed", {
       error: error instanceof Error ? error.message : String(error)
     });
   }
-  outputBatcher.clearAll();
   disposeAllSessions();
 }
 
-function recordPtyChunk(record: SessionRecord, chunk: string): void {
+function recordPtyChunk(record: SessionRuntime, chunk: string): void {
   if (!smoothnessProfile.enabled) {
     return;
   }
@@ -271,7 +358,7 @@ function recordPtyChunk(record: SessionRecord, chunk: string): void {
   );
 }
 
-function appendRawOutputTail(record: SessionRecord, chunk: string): void {
+function appendRawOutputTail(record: SessionRuntime, chunk: string): void {
   record.rawOutputTail += chunk;
   if (record.rawOutputTail.length <= RAW_OUTPUT_TAIL_MAX_CHARS) {
     return;
@@ -313,7 +400,7 @@ function createRawOutputHistory(
 }
 
 function appendRawOutputHistory(
-  record: SessionRecord,
+  record: SessionRuntime,
   chunk: string,
   chunkSequence: number
 ): void {
@@ -356,88 +443,183 @@ function appendRawOutputHistory(
 }
 
 function enqueueTerminalOutputSegment(
-  record: SessionRecord,
-  segment: { chunk: string; recordCwd: boolean }
+  record: SessionRuntime,
+  segment: QueuedOutputSegment
 ): void {
   if (!segment.chunk) {
     return;
   }
-  record.writeQueue = record.writeQueue
-    .catch((error) => {
-      logDiagnostics("pty-host.write.queue.failed", {
-        surfaceId: record.surfaceId,
-        sessionId: record.sessionId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    })
-    .then(() => writeTerminalOutputSegment(record, segment));
-}
-
-async function writeTerminalOutputSegment(
-  record: SessionRecord,
-  segment: { chunk: string; recordCwd: boolean }
-): Promise<void> {
-  record.sequence += 1;
-  const chunkSequence = record.sequence;
-  const chunkCwd = segment.recordCwd ? record.cwd : undefined;
-  const trimCountBefore = record.cwdRanges.getTrimmedLineCount();
-  const startLine =
-    record.terminal.buffer.active.baseY + record.terminal.buffer.active.cursorY;
-  appendRawOutputHistory(record, segment.chunk, chunkSequence);
-  await new Promise<void>((resolve) => {
-    record.terminal.write(segment.chunk, resolve);
-  });
-  record.parsedSequence = Math.max(record.parsedSequence, chunkSequence);
-  const trimDuringWrite =
-    record.cwdRanges.getTrimmedLineCount() - trimCountBefore;
-  const endLine =
-    record.terminal.buffer.active.baseY + record.terminal.buffer.active.cursorY;
-  if (segment.recordCwd) {
-    record.cwdRanges.recordWrite({
-      startLine: startLine - trimDuringWrite,
-      endLine,
-      cwd: chunkCwd
+  for (const chunk of splitTerminalOutputText(segment.chunk)) {
+    record.mutationQueue.enqueueOutput({
+      value: { ...segment, chunk },
+      bytes: Buffer.byteLength(chunk, "utf8")
     });
   }
-  outputBatcher.push({
-    surfaceId: record.surfaceId,
-    sessionId: record.sessionId,
-    sequence: chunkSequence,
-    chunk: segment.chunk,
-    cwd: chunkCwd
-  });
+  sessionScheduler.wake(record.sessionId);
 }
 
-function flushPtyProfileBucket(record: SessionRecord): void {
+async function writeTerminalOutputRun(
+  record: SessionRuntime,
+  segments: QueuedOutputSegment[]
+): Promise<void> {
+  if (segments.length === 0 || sessions.get(record.sessionId) !== record) {
+    return;
+  }
+  record.inFlightOutputRuns += 1;
+  // A parser failure can occur after xterm committed an earlier segment in the
+  // run, so release the stale materialization before the first write.
+  record.snapshotCache.invalidate();
+  try {
+    let trimCountBefore = record.cwdRanges.getTrimmedLineCount();
+    let startLine =
+      record.terminal.buffer.active.baseY +
+      record.terminal.buffer.active.cursorY;
+    const committedSegments: Extract<
+      TerminalDelta,
+      { type: "output" }
+    >["segments"] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      let remaining = segments.length;
+      let settled = false;
+      const finishOne = (): void => {
+        remaining -= 1;
+        if (remaining === 0 && !settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      for (const segment of segments) {
+        record.sequence += 1;
+        const chunkSequence = record.sequence;
+        const byteLength = Buffer.byteLength(segment.chunk, "utf8");
+        appendRawOutputHistory(record, segment.chunk, chunkSequence);
+        try {
+          record.terminal.write(segment.chunk, () => {
+            try {
+              if (sessions.get(record.sessionId) !== record) {
+                finishOne();
+                return;
+              }
+              const trimDuringWrite =
+                record.cwdRanges.getTrimmedLineCount() - trimCountBefore;
+              const endLine =
+                record.terminal.buffer.active.baseY +
+                record.terminal.buffer.active.cursorY;
+              const chunkCwd = segment.recordCwd ? record.cwd : undefined;
+              if (segment.recordCwd) {
+                record.cwdRanges.recordWrite({
+                  startLine: startLine - trimDuringWrite,
+                  endLine,
+                  cwd: chunkCwd
+                });
+              }
+              record.parsedSequence = Math.max(
+                record.parsedSequence,
+                chunkSequence
+              );
+              committedSegments.push({
+                sequence: chunkSequence,
+                data: segment.chunk,
+                byteLength,
+                cwd: chunkCwd,
+                ...(segment.telemetry
+                  ? {
+                      telemetry: {
+                        ptyReadAt: segment.telemetry.ptyReadAt,
+                        headlessCommitAt: terminalDataPlaneNowMs(performance),
+                        visibleAtPtyRead: segment.telemetry.visibleAtPtyRead,
+                        ...(segment.telemetry.inputAcceptedAt === undefined
+                          ? {}
+                          : {
+                              inputAcceptedAt:
+                                segment.telemetry.inputAcceptedAt,
+                              inputSequence: segment.telemetry.inputSequence
+                            })
+                      }
+                    }
+                  : {})
+              });
+              startLine = endLine;
+              trimCountBefore = record.cwdRanges.getTrimmedLineCount();
+              finishOne();
+            } catch (error) {
+              if (!settled) {
+                settled = true;
+                reject(error);
+              }
+            }
+          });
+        } catch (error) {
+          if (!settled) {
+            settled = true;
+            reject(error);
+          }
+        }
+      }
+    });
+    if (
+      committedSegments.length > 0 &&
+      sessions.get(record.sessionId) === record
+    ) {
+      for (const delta of coalesceTerminalOutputForWire(committedSegments)) {
+        record.stream.publish(delta);
+      }
+    }
+  } finally {
+    record.inFlightOutputRuns = Math.max(0, record.inFlightOutputRuns - 1);
+    disposeHeadlessTerminalIfIdle(record);
+  }
+}
+
+function enqueueTerminalBarrier<T>(
+  record: SessionRuntime,
+  operation: () => Promise<T> | T
+): Promise<T> {
+  const result = new Promise<T>((resolve, reject) => {
+    record.mutationQueue.enqueueBarrier(async () => {
+      try {
+        resolve(await operation());
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+  sessionScheduler.wake(record.sessionId);
+  return result;
+}
+
+function flushPtyProfileBucket(record: SessionRuntime): void {
   if (smoothnessProfile.enabled) {
     ptyBucket.flush(`${record.surfaceId}\u0000${record.sessionId}`);
   }
 }
 
 function snapshot(
-  record: SessionRecord,
+  record: SessionRuntime,
   options: { includeRawOutputTail?: boolean } = {}
 ): SurfaceSnapshotPayload {
-  outputBatcher.flush(record.sessionId);
   const snapshotSequence = record.parsedSequence;
+  const materialization = record.snapshotCache.get({
+    sequence: snapshotSequence,
+    cols: record.cols,
+    rows: record.rows,
+    requestedScrollbackLines: TERMINAL_RESTORE_SCROLLBACK_LINES,
+    maxBytes: TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES,
+    serialize: (scrollbackLines) =>
+      record.serialize.serialize({ scrollback: scrollbackLines })
+  });
   const cwdRangeWindow = createTerminalCwdRangeSnapshotWindow({
     baseY: record.terminal.buffer.active.baseY,
     bufferLength: record.terminal.buffer.active.length,
-    restoreScrollbackLines: TERMINAL_RESTORE_SCROLLBACK_LINES
+    restoreScrollbackLines: materialization.scrollbackLines
   });
   return {
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
     sequence: snapshotSequence,
-    vt: record.snapshotCache.get({
-      sequence: snapshotSequence,
-      cols: record.cols,
-      rows: record.rows,
-      serialize: () =>
-        record.serialize.serialize({
-          scrollback: TERMINAL_RESTORE_SCROLLBACK_LINES
-        })
-    }),
+    vt: materialization.vt,
     cols: record.cols,
     rows: record.rows,
     title: record.title,
@@ -460,26 +642,139 @@ function snapshot(
   };
 }
 
-function sendSnapshotAfterWriteQueue(
-  record: SessionRecord,
+function terminalCheckpoint(record: SessionRuntime): TerminalCheckpoint {
+  const payload = snapshot(record);
+  return {
+    format: "xterm-vt/1",
+    session: sessionRef(record),
+    sequence: payload.sequence,
+    data: payload.vt,
+    cols: payload.cols,
+    rows: payload.rows,
+    cwd: payload.cwd,
+    title: payload.title,
+    cwdRanges: payload.cwdRanges
+  };
+}
+
+function requestTerminalCheckpoint(
+  record: SessionRuntime
+): Promise<TerminalCheckpoint> {
+  return enqueueTerminalBarrier(record, () => terminalCheckpoint(record));
+}
+
+function sendSnapshotAfterMutationQueue(
+  record: SessionRuntime,
   requestId: Id,
   options: { includeRawOutputTail?: boolean } = {}
 ): void {
-  const pendingWrites = record.writeQueue;
-  void pendingWrites.finally(() => {
-    if (sessions.get(record.sessionId) !== record) {
-      return;
+  void enqueueTerminalBarrier(record, () => {
+    if (sessions.get(record.sessionId) === record) {
+      send({
+        type: "snapshot",
+        requestId,
+        payload: snapshot(record, options)
+      });
     }
-    send({
-      type: "snapshot",
-      requestId,
-      payload: snapshot(record, options)
+  }).catch((error) => {
+    logDiagnostics("pty-host.snapshot.failed", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      error: error instanceof Error ? error.message : String(error)
     });
+    send({ type: "snapshot", requestId, payload: null });
   });
 }
 
+function sessionRef(record: SessionRuntime): TerminalSessionRef {
+  return {
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    epoch: record.runtimeEpoch
+  };
+}
+
+function writeOrQueueDirectInput(
+  record: SessionRuntime,
+  input: string | Buffer
+): void {
+  if (record.shellInputReady) {
+    record.pty.write(input);
+    return;
+  }
+  const bytes =
+    typeof input === "string" ? Buffer.byteLength(input, "utf8") : input.length;
+  if (record.pendingDirectInputBytes + bytes > PENDING_DIRECT_INPUT_MAX_BYTES) {
+    throw new Error("pending terminal input exceeds the session limit");
+  }
+  record.pendingDirectInputs.push(input);
+  record.pendingDirectInputBytes += bytes;
+}
+
+function flushPendingDirectInput(record: SessionRuntime): void {
+  if (!record.shellInputReady || record.pendingDirectInputs.length === 0) {
+    return;
+  }
+  const pending = record.pendingDirectInputs.splice(0);
+  record.pendingDirectInputBytes = 0;
+  for (const input of pending) {
+    record.pty.write(input);
+  }
+}
+
+function requestDirectResize(
+  record: SessionRuntime,
+  request: {
+    cols: number;
+    rows: number;
+    gestureActive?: boolean;
+  }
+): Promise<{ sequence: number; cols: number; rows: number }> {
+  return enqueueTerminalBarrier(record, () =>
+    applyTerminalResizeMutation(record, request)
+  );
+}
+
+function applyTerminalResizeMutation(
+  record: SessionRuntime,
+  request: {
+    cols: number;
+    rows: number;
+    gestureActive?: boolean;
+  }
+): { sequence: number; cols: number; rows: number } {
+  if (request.cols <= 0 || request.rows <= 0) {
+    return {
+      sequence: record.parsedSequence,
+      cols: record.cols,
+      rows: record.rows
+    };
+  }
+  prepareTerminalResize({
+    record,
+    cols: request.cols,
+    rows: request.rows,
+    gestureActive: request.gestureActive
+  });
+  record.snapshotCache.invalidate();
+  record.sequence += 1;
+  record.parsedSequence = record.sequence;
+  const delta: TerminalDelta = {
+    type: "resize",
+    sequence: record.sequence,
+    cols: record.cols,
+    rows: record.rows
+  };
+  record.stream.publish(delta);
+  return {
+    sequence: record.sequence,
+    cols: record.cols,
+    rows: record.rows
+  };
+}
+
 function sendTerminalNotification(
-  record: SessionRecord,
+  record: SessionRuntime,
   protocol: 9 | 99 | 777,
   title?: string,
   message?: string
@@ -510,6 +805,11 @@ function sendTerminalNotification(
 }
 
 function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
+  const previous = sessions.get(request.spec.sessionId);
+  if (previous) {
+    previous.closing = true;
+    disposeSession(previous, true);
+  }
   const pty = resolvePtyModule();
   const preparedLaunch = resolvePtySpawnLaunch(request, process.env);
   let ptyProcess: PtyModule.IPty;
@@ -541,6 +841,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cols: request.spec.cols,
     rows: request.spec.rows,
     allowProposedApi: true,
+    cursorBlink: true,
+    windowOptions: { getWinSizeChars: true },
     scrollback: TERMINAL_LIVE_SCROLLBACK_LINES
   });
   const unicode11 = new Unicode11Addon();
@@ -559,11 +861,123 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     cwdRanges.handleTrim(amount);
   });
 
-  const record: SessionRecord = {
+  let record!: SessionRuntime;
+  const queryReplyListener = terminal.onData(
+    createTerminalQueryReplyHandler({
+      isCurrent: () =>
+        sessions.get(record.sessionId) === record &&
+        !record.closing &&
+        !record.exited,
+      // Parser-generated replies are protocol traffic, not user input. They
+      // bypass shell-ready gating because a child can wait for DA/DSR/CPR
+      // during startup, and they never feed usage/input observation.
+      write: (reply) => record.pty.write(reply),
+      onWriteError: (error, bytes) => {
+        logDiagnostics("pty-host.terminal-query-reply.failed", {
+          surfaceId: record.surfaceId,
+          sessionId: record.sessionId,
+          bytes,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    })
+  );
+  const mutationQueue = new SessionMutationQueue<QueuedOutputSegment>({
+    maxOutputRunBytes: SESSION_OUTPUT_SLICE_BYTES,
+    highWatermarkBytes: SESSION_OUTPUT_HIGH_WATERMARK_BYTES,
+    lowWatermarkBytes: SESSION_OUTPUT_LOW_WATERMARK_BYTES,
+    applyOutputRun: (segments) => writeTerminalOutputRun(record, segments),
+    onHighWatermark: () => {
+      try {
+        ptyProcess.pause();
+      } catch {
+        // The PTY may exit while its parser backlog crosses the watermark.
+      }
+    },
+    onLowWatermark: () => {
+      try {
+        ptyProcess.resume();
+      } catch {
+        // The PTY may already be disposed while the queue is being released.
+      }
+    }
+  });
+  const stream = new TerminalSessionStream({
+    session: {
+      surfaceId: request.spec.surfaceId,
+      sessionId: request.spec.sessionId,
+      epoch: request.spec.runtimeEpoch
+    },
+    deltaStore,
+    createCheckpoint: () => requestTerminalCheckpoint(record),
+    getDimensions: () => ({ cols: record.cols, rows: record.rows }),
+    writeText: (text) => writeOrQueueDirectInput(record, text),
+    writeBinary: (data) =>
+      writeOrQueueDirectInput(record, Buffer.from(data, "binary")),
+    writeKey: (input) =>
+      writeOrQueueDirectInput(record, encodeTerminalKeyInput(input)),
+    resize: (resizeRequest) => requestDirectResize(record, resizeRequest),
+    onInputObserved: (message) => {
+      const inputAcceptedAt = smoothnessProfile.enabled
+        ? terminalDataPlaneNowMs(performance)
+        : undefined;
+      if (inputAcceptedAt !== undefined) {
+        record.inputTelemetrySequence += 1;
+        record.pendingInputTelemetry = {
+          inputAcceptedAt,
+          inputSequence: record.inputTelemetrySequence
+        };
+      }
+      const inputBytes =
+        message.type === "input:text"
+          ? Buffer.byteLength(message.text, "utf8")
+          : message.type === "input:binary"
+            ? message.data.length
+            : Buffer.byteLength(encodeTerminalKeyInput(message.input), "utf8");
+      smoothnessProfile.record({
+        source: "pty-host",
+        name: "terminal.data-plane.input",
+        at: profileNowMs(),
+        details: {
+          surfaceId: record.surfaceId,
+          sessionId: record.sessionId,
+          kind: message.type,
+          bytes: inputBytes,
+          inputAcceptedAt,
+          inputSequence: record.inputTelemetrySequence,
+          shellInputReady: record.shellInputReady,
+          pendingDirectInputBytes: record.pendingDirectInputBytes
+        }
+      });
+      send({
+        type: "input.observed",
+        session: sessionRef(record),
+        input:
+          message.type === "input:text"
+            ? { type: "text", text: message.text }
+            : message.type === "input:binary"
+              ? { type: "binary", data: message.data }
+              : { type: "key", input: message.input }
+      });
+    },
+    ...(smoothnessProfile.enabled
+      ? { telemetryNow: () => terminalDataPlaneNowMs(performance) }
+      : {})
+  });
+  record = {
     sessionId: request.spec.sessionId,
     surfaceId: request.spec.surfaceId,
-    cwd: preparedLaunch.cwd,
-    title: request.spec.launch.title || request.spec.surfaceId,
+    runtimeEpoch: request.spec.runtimeEpoch,
+    cwd:
+      preparedLaunch.cwd &&
+      isTerminalMetadataWithinProtocolLimit(preparedLaunch.cwd)
+        ? preparedLaunch.cwd
+        : undefined,
+    title: isTerminalMetadataWithinProtocolLimit(
+      request.spec.launch.title || request.spec.surfaceId
+    )
+      ? request.spec.launch.title || request.spec.surfaceId
+      : request.spec.surfaceId,
     pty: ptyProcess,
     ptyResize: createPtyResizeCoalescer({
       initialCols: request.spec.cols,
@@ -583,11 +997,16 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       }
     }),
     terminal,
+    queryReplyListener,
     serialize,
     snapshotCache: new SnapshotCache(),
     cwdRanges,
     trimListener,
-    writeQueue: Promise.resolve(),
+    mutationQueue,
+    stream,
+    pendingDirectInputs: [],
+    pendingDirectInputBytes: 0,
+    inputTelemetrySequence: 0,
     outputSegmenterState: { pendingOsc7: false, pendingOsc7Prefix: "" },
     rawOutputTail: "",
     rawOutputTailTruncated: false,
@@ -596,6 +1015,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     rawOutputLogBytes: 0,
     rawOutputLogChars: 0,
     rawOutputLogChunks: 0,
+    inFlightOutputRuns: 0,
+    disposeTerminalWhenIdle: false,
     sequence: 0,
     parsedSequence: 0,
     cols: request.spec.cols,
@@ -608,9 +1029,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     shellReadyFallbackTimer: null,
     lastActivityAt: Date.now(),
     pendingSettledSnapshots: [],
-    settledSnapshotTimer: null
+    settledSnapshotTimer: null,
+    closing: false,
+    exited: false
   };
   sessions.set(record.sessionId, record);
+  sessionScheduler.register(record.sessionId, () =>
+    record.mutationQueue.drainSlice()
+  );
 
   terminal.parser.registerOscHandler(7, (data: string) => {
     const cwd = resolveOsc7Cwd(record.cwd, data);
@@ -658,13 +1084,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       if (sessions.get(record.sessionId) !== record) {
         return;
       }
-      markShellInputReady(record, send, () =>
-        outputBatcher.flush(record.sessionId)
-      );
+      markShellInputReady(record, send, () => flushPendingDirectInput(record));
     }, 0);
     return true;
   });
   terminal.onTitleChange((title: string) => {
+    if (!isTerminalMetadataWithinProtocolLimit(title)) {
+      return;
+    }
     record.title = title;
     send({
       type: "metadata",
@@ -783,6 +1210,12 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   ptyProcess.onData((chunk) => {
+    const ptyReadAt = smoothnessProfile.enabled
+      ? terminalDataPlaneNowMs(performance)
+      : undefined;
+    const visibleAtPtyRead = record.stream.attachmentCount > 0;
+    const pendingInputTelemetry = record.pendingInputTelemetry;
+    record.pendingInputTelemetry = undefined;
     recordPtyChunk(record, chunk);
     appendRawOutputTail(record, chunk);
     record.lastActivityAt = Date.now();
@@ -792,11 +1225,26 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     });
     record.outputSegmenterState = splitOutput.state;
     for (const segment of splitOutput.segments) {
-      enqueueTerminalOutputSegment(record, segment);
+      enqueueTerminalOutputSegment(
+        record,
+        ptyReadAt === undefined
+          ? segment
+          : {
+              ...segment,
+              telemetry: {
+                ptyReadAt,
+                visibleAtPtyRead,
+                ...pendingInputTelemetry
+              }
+            }
+      );
     }
     scheduleSettledSnapshotCheck(record);
   });
   ptyProcess.onExit(({ exitCode }) => {
+    if (sessions.get(record.sessionId) !== record) {
+      return;
+    }
     const flushedOutput = flushTerminalOutputSegmenterState(
       record.outputSegmenterState
     );
@@ -804,30 +1252,16 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     for (const segment of flushedOutput.segments) {
       enqueueTerminalOutputSegment(record, segment);
     }
-    void record.writeQueue.finally(() => {
-      flushPtyProfileBucket(record);
-      outputBatcher.flush(record.sessionId);
-      disposeSettledSnapshotState(record);
-      disposeShellReadyFallback(record);
-      record.trimListener.dispose();
-      record.ptyResize.dispose();
-      send({
-        type: "exit",
-        payload: {
-          surfaceId: record.surfaceId,
-          sessionId: record.sessionId,
-          exitCode
-        }
-      });
-      sessions.delete(record.sessionId);
-    });
+    void enqueueTerminalBarrier(record, () =>
+      finalizeSessionExit(record, exitCode)
+    );
   });
 
   if (!preparedLaunch.requiresShellReady && request.spec.launch.initialInput) {
     ptyProcess.write(request.spec.launch.initialInput);
   } else if (preparedLaunch.requiresShellReady) {
-    armShellReadyFallback(record, send, () =>
-      outputBatcher.flush(record.sessionId)
+    armShellReadyFallback(record, send, undefined, () =>
+      flushPendingDirectInput(record)
     );
   }
 
@@ -839,51 +1273,56 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 }
 
-process.on("message", (request: PtyRequest) => {
+function handlePtyRequest(
+  request: PtyRequest,
+  ports: TerminalDataPortLike[] = []
+): void {
+  if (request.type === "shutdown") {
+    shutdownRequested = true;
+    dataPlaneSupervisorMetrics.stop();
+    disposeAllSessions();
+    send({ type: "shutdown:ack", requestId: request.requestId });
+    return;
+  }
+  if (shutdownRequested) {
+    return;
+  }
+
   switch (request.type) {
     case "spawn":
       spawnSession(request);
       break;
+    case "stream.bind": {
+      const record = sessions.get(request.session.sessionId);
+      const port = ports[0];
+      if (
+        !record ||
+        !port ||
+        record.surfaceId !== request.session.surfaceId ||
+        record.runtimeEpoch !== request.session.epoch
+      ) {
+        try {
+          port?.close();
+        } catch {
+          // Invalid transferred capabilities are closed without side effects.
+        }
+        break;
+      }
+      record.stream.bind(request.attachId, port);
+      break;
+    }
     case "close":
       {
         const record = sessions.get(request.sessionId);
-        if (!record) {
+        if (!record || record.closing) {
           break;
         }
-        flushPtyProfileBucket(record);
-        outputBatcher.flush(record.sessionId);
-        disposeSettledSnapshotState(record);
-        disposeShellReadyFallback(record);
-        record.trimListener.dispose();
-        record.ptyResize.dispose();
-        record.pty.kill();
-        sessions.delete(request.sessionId);
-      }
-      break;
-    case "resize":
-      {
-        handleTerminalResizeRequest({
-          record: sessions.get(request.sessionId),
-          sessionId: request.sessionId,
-          attachId: request.attachId,
-          requestId: request.requestId,
-          cols: request.cols,
-          rows: request.rows,
-          gestureActive: request.gestureActive,
-          flushOutput: (sessionId) => outputBatcher.flush(sessionId),
-          emitResize: (payload) => {
-            send({
-              type: "resize",
-              payload
-            });
-          },
-          emitAck: (payload) => {
-            send({
-              type: "resize:ack",
-              ...payload
-            });
-          }
-        });
+        record.closing = true;
+        if (record.exited) {
+          disposeSession(record, false);
+        } else {
+          record.pty.kill();
+        }
       }
       break;
     case "input:text":
@@ -905,7 +1344,7 @@ process.on("message", (request: PtyRequest) => {
           });
           scheduleSettledSnapshotCheck(record);
         } else {
-          sendSnapshotAfterWriteQueue(record, request.requestId, {
+          sendSnapshotAfterMutationQueue(record, request.requestId, {
             includeRawOutputTail: Boolean(request.includeRawOutputTail)
           });
         }
@@ -915,15 +1354,15 @@ process.on("message", (request: PtyRequest) => {
     default:
       break;
   }
-});
+}
 
-process.on("disconnect", () => {
-  handleIpcChannelClosed();
+controlTransport.onMessage((message, ports) => {
+  handlePtyRequest(message as PtyRequest, ports);
 });
 
 send({ type: "ready" });
 
-function scheduleSettledSnapshotCheck(record: SessionRecord): void {
+function scheduleSettledSnapshotCheck(record: SessionRuntime): void {
   if (record.settledSnapshotTimer) {
     clearTimeout(record.settledSnapshotTimer);
     record.settledSnapshotTimer = null;
@@ -934,12 +1373,12 @@ function scheduleSettledSnapshotCheck(record: SessionRecord): void {
 
   const quietForMs = Date.now() - record.lastActivityAt;
   let nextDelay = Number.POSITIVE_INFINITY;
-  const remainingSnapshots: SessionRecord["pendingSettledSnapshots"] = [];
+  const remainingSnapshots: SessionRuntime["pendingSettledSnapshots"] = [];
 
   for (const pendingSnapshot of record.pendingSettledSnapshots) {
     const remainingQuietMs = pendingSnapshot.settleForMs - quietForMs;
     if (remainingQuietMs <= 0) {
-      sendSnapshotAfterWriteQueue(record, pendingSnapshot.requestId, {
+      sendSnapshotAfterMutationQueue(record, pendingSnapshot.requestId, {
         includeRawOutputTail: pendingSnapshot.includeRawOutputTail
       });
       continue;
@@ -964,7 +1403,7 @@ function scheduleSettledSnapshotCheck(record: SessionRecord): void {
   }, nextDelay);
 }
 
-function disposeSettledSnapshotState(record: SessionRecord): void {
+function disposeSettledSnapshotState(record: SessionRuntime): void {
   if (record.settledSnapshotTimer) {
     clearTimeout(record.settledSnapshotTimer);
     record.settledSnapshotTimer = null;
@@ -972,14 +1411,52 @@ function disposeSettledSnapshotState(record: SessionRecord): void {
   record.pendingSettledSnapshots = [];
 }
 
-function disposeAllSessions(): void {
-  for (const record of [...sessions.values()]) {
-    flushPtyProfileBucket(record);
-    outputBatcher.clear(record.sessionId);
-    disposeSettledSnapshotState(record);
-    disposeShellReadyFallback(record);
-    record.trimListener.dispose();
-    record.ptyResize.dispose();
+function finalizeSessionExit(record: SessionRuntime, exitCode?: number): void {
+  if (sessions.get(record.sessionId) !== record || record.exited) {
+    return;
+  }
+  flushPtyProfileBucket(record);
+  disposeSettledSnapshotState(record);
+  disposeShellReadyFallback(record);
+  record.trimListener.dispose();
+  record.ptyResize.dispose();
+  record.pendingDirectInputs = [];
+  record.pendingDirectInputBytes = 0;
+  record.exited = true;
+  record.exitCode = exitCode;
+  record.stream.exit(exitCode);
+  send({
+    type: "exit",
+    payload: {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      exitCode
+    }
+  });
+  if (record.closing) {
+    disposeSession(record, false);
+  }
+}
+
+function disposeSession(record: SessionRuntime, killPty: boolean): void {
+  if (sessions.get(record.sessionId) !== record) {
+    return;
+  }
+  // Fence asynchronous headless-write callbacks before releasing the ring or
+  // allowing the same logical session id to spawn with a new runtime epoch.
+  sessions.delete(record.sessionId);
+  disposeSettledSnapshotState(record);
+  disposeShellReadyFallback(record);
+  record.stream.dispose();
+  record.mutationQueue.dispose();
+  sessionScheduler.unregister(record.sessionId);
+  deltaStore.removeSession(record.sessionId);
+  record.trimListener.dispose();
+  record.queryReplyListener.dispose();
+  record.ptyResize.dispose();
+  record.disposeTerminalWhenIdle = true;
+  disposeHeadlessTerminalIfIdle(record);
+  if (killPty && !record.exited) {
     try {
       record.pty.kill();
     } catch (error) {
@@ -989,6 +1466,21 @@ function disposeAllSessions(): void {
         error: error instanceof Error ? error.message : String(error)
       });
     }
-    sessions.delete(record.sessionId);
   }
+}
+
+function disposeHeadlessTerminalIfIdle(record: SessionRuntime): void {
+  if (!record.disposeTerminalWhenIdle || record.inFlightOutputRuns > 0) {
+    return;
+  }
+  record.disposeTerminalWhenIdle = false;
+  record.terminal.dispose();
+}
+
+function disposeAllSessions(): void {
+  for (const record of [...sessions.values()]) {
+    flushPtyProfileBucket(record);
+    disposeSession(record, true);
+  }
+  deltaStore.clear();
 }

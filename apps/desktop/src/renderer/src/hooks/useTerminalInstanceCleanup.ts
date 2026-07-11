@@ -1,32 +1,25 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect } from "react";
 
-import type { Id, ShellStoreSnapshot } from "@kmux/proto";
+import type { Id } from "@kmux/proto";
+import { subscribeRemovedTerminalSurfaces } from "./useShellStore";
 
 interface UseTerminalInstanceCleanupOptions {
-  workspacePaneTrees: ShellStoreSnapshot["workspacePaneTrees"];
   releaseTerminalSurface: (surfaceId: Id) => void;
+  forgetTerminalStreamSurface?: (surfaceId: Id) => void;
 }
 
 export function useTerminalInstanceCleanup({
-  workspacePaneTrees,
-  releaseTerminalSurface
+  releaseTerminalSurface,
+  forgetTerminalStreamSurface
 }: UseTerminalInstanceCleanupOptions): void {
-  const allSurfaceIds = useMemo(
+  useEffect(
     () =>
-      Object.values(workspacePaneTrees)
-        .flatMap((tree) => Object.keys(tree.surfaces))
-        .sort(),
-    [workspacePaneTrees]
+      subscribeRemovedTerminalSurfaces((surfaceIds) => {
+        for (const surfaceId of surfaceIds) {
+          forgetTerminalStreamSurface?.(surfaceId);
+          releaseTerminalSurface(surfaceId);
+        }
+      }),
+    [forgetTerminalStreamSurface, releaseTerminalSurface]
   );
-  const prevAllSurfaceIdsRef = useRef(new Set<Id>());
-
-  useEffect(() => {
-    const currentIds = new Set(allSurfaceIds);
-    for (const surfaceId of prevAllSurfaceIdsRef.current) {
-      if (!currentIds.has(surfaceId)) {
-        releaseTerminalSurface(surfaceId);
-      }
-    }
-    prevAllSurfaceIdsRef.current = currentIds;
-  }, [allSurfaceIds, releaseTerminalSurface]);
 }

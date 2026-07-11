@@ -1,16 +1,7 @@
-import { BrowserWindow } from "electron";
-
 import type { AppAction, AppState } from "@kmux/core";
-import { makeId } from "@kmux/proto";
 import type {
   Id,
-  SurfaceAttachCompletionResult,
-  SurfaceAttachPayload,
-  SurfaceChunkSegment,
   SurfaceSnapshotOptions,
-  SurfaceChunkPayload,
-  SurfaceResizePayload,
-  SurfaceExitPayload,
   SurfaceSnapshotPayload,
   TerminalKeyInput,
   UsageVendor
@@ -19,9 +10,6 @@ import type { PtyEvent } from "../shared/ptyProtocol";
 
 import type { PtyHostManager } from "./ptyHost";
 import { logDiagnostics } from "../shared/diagnostics";
-import { profileNowMs } from "../shared/nodeSmoothnessProfile";
-import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
-import type { SmoothnessProfileRecorder } from "../shared/smoothnessProfile";
 
 interface TerminalBridgeOptions {
   getState: () => AppState;
@@ -30,47 +18,8 @@ interface TerminalBridgeOptions {
   onSurfaceInputText?: (surfaceId: Id, text: string) => void;
   getSurfaceVendor?: (surfaceId: Id) => UsageVendor;
   isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
-  profileRecorder?: SmoothnessProfileRecorder;
 }
-
-interface SurfaceAttachmentState {
-  attachId: Id;
-  sessionId: Id;
-  status: "hydrating" | "ready";
-  queuedChunks: SurfaceChunkPayload[];
-  queuedBytes: number;
-  queueOverflowed: boolean;
-  overflowedThroughSequence: number | null;
-  pendingSnapshotSequence: number | null;
-  replayCount: number;
-  pendingExit: SurfaceExitPayload | null;
-  hydratePromise: Promise<SurfaceAttachPayload | null> | null;
-}
-
-type AttachDegradedRecoveryDetails = {
-  contentsId: number;
-  surfaceId: Id;
-  snapshotSequence: number | null;
-  overflowedThroughSequence: number | null;
-} & (
-  | {
-      policy?: "fresh-snapshot-then-ready";
-      recoverySnapshots: number;
-    }
-  | {
-      policy: "replay-budget-exhausted";
-      replayCount: number;
-    }
-);
-
-const ATTACH_SNAPSHOT_SETTLE_MS = 120;
-const ATTACH_QUEUE_MAX_CHUNKS = 1000;
-const ATTACH_QUEUE_MAX_BYTES = 2 * 1024 * 1024;
-const ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS = 2;
-const ATTACH_MAX_REPLAY_CYCLES = 3;
 const TITLE_METADATA_COALESCE_MS = 1000;
-const PROFILE_TERMINAL_BUCKET_MIN_CHUNKS = 100;
-const PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS = 1000;
 type CodexInputAttentionMatch = {
   reason:
     | "plan-mode-prompt"
@@ -90,40 +39,16 @@ export interface TerminalBridge {
   sendText(surfaceId: Id, text: string): void;
   sendKey(surfaceId: Id, key: string): void;
   sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void;
-  resizeSurface(
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id | null,
-    cols: number,
-    rows: number
-  ): Promise<void>;
   snapshotSurface(
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
   ): Promise<SurfaceSnapshotPayload | null>;
-  attachSurface(
-    contentsId: number,
-    surfaceId: Id,
-    expectedSessionId: Id
-  ): Promise<SurfaceAttachPayload | null>;
-  completeAttachSurface(
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id,
-    expectedSessionId: Id
-  ): Promise<SurfaceAttachCompletionResult>;
-  detachSurface(contentsId: number, surfaceId: Id, expectedSessionId: Id): void;
   handlePtyEvent(event: PtyEvent): void;
 }
 
 export function createTerminalBridge(
   options: TerminalBridgeOptions
 ): TerminalBridge {
-  const attachedSurfacesByContents = new Map<
-    number,
-    Map<Id, SurfaceAttachmentState>
-  >();
-  const hydratedSurfaceSessions = new Set<string>();
   const pendingTitleMetadata = new Map<
     string,
     {
@@ -135,45 +60,6 @@ export function createTerminalBridge(
   >();
   const lastTitleMetadataDispatchAt = new Map<string, number>();
   const lastDispatchedTitleMetadata = new Map<string, string>();
-  const terminalIpcBucket = createSmoothnessProfileBucket<{
-    surfaceId: Id;
-    sessionId: Id;
-    startedAt: number;
-    chunks: number;
-    bytes: number;
-    sends: number;
-    maxSendDurationMs: number;
-  }>({
-    minEvents: PROFILE_TERMINAL_BUCKET_MIN_CHUNKS,
-    maxDurationMs: PROFILE_TERMINAL_BUCKET_MAX_DURATION_MS,
-    now: profileNowMs,
-    createDetails: (key, startedAt) => {
-      const [surfaceId, sessionId] = key.split("\u0000") as [Id, Id];
-      return {
-        surfaceId,
-        sessionId,
-        startedAt,
-        chunks: 0,
-        bytes: 0,
-        sends: 0,
-        maxSendDurationMs: 0
-      };
-    },
-    onFlush: (details, durationMs, at) => {
-      if (!options.profileRecorder?.enabled) {
-        return;
-      }
-      options.profileRecorder.record({
-        source: "main",
-        name: "terminal.ipc.bucket",
-        at,
-        details: {
-          ...details,
-          durationMs
-        }
-      });
-    }
-  });
 
   function surfaceSessionId(surfaceId: Id): Id | null {
     const surface = options.getState().surfaces[surfaceId];
@@ -185,10 +71,6 @@ export function createTerminalBridge(
   }
 
   function titleMetadataKey(surfaceId: Id, sessionId: Id): string {
-    return `${surfaceId}\u0000${sessionId}`;
-  }
-
-  function surfaceSessionKey(surfaceId: Id, sessionId: Id): string {
     return `${surfaceId}\u0000${sessionId}`;
   }
 
@@ -245,33 +127,41 @@ export function createTerminalBridge(
   function sendText(surfaceId: Id, text: string): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
-      const dismissKey = dismissKeyFromText(text);
-      if (dismissKey) {
-        clearVisibleAgentNeedsInput(surfaceId, {
-          kind: "dismiss",
-          key: dismissKey
-        });
-      } else if (isSubmitText(text)) {
-        clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
-      }
-      options.onSurfaceInputText?.(surfaceId, text);
+      observeTextInput(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
     }
+  }
+
+  function observeTextInput(surfaceId: Id, text: string): void {
+    const dismissKey = dismissKeyFromText(text);
+    if (dismissKey) {
+      clearVisibleAgentNeedsInput(surfaceId, {
+        kind: "dismiss",
+        key: dismissKey
+      });
+    } else if (isSubmitText(text)) {
+      clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
+    }
+    options.onSurfaceInputText?.(surfaceId, text);
   }
 
   function sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void {
     const sessionId = surfaceSessionId(surfaceId);
     if (sessionId) {
-      const dismissKey = dismissKeyFromKeyInput(input);
-      if (dismissKey) {
-        clearVisibleAgentNeedsInput(surfaceId, {
-          kind: "dismiss",
-          key: dismissKey
-        });
-      } else if (isSubmitKeyInput(input)) {
-        clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
-      }
+      observeKeyInput(surfaceId, input);
       options.getPtyHost()?.sendKey(sessionId, input);
+    }
+  }
+
+  function observeKeyInput(surfaceId: Id, input: TerminalKeyInput): void {
+    const dismissKey = dismissKeyFromKeyInput(input);
+    if (dismissKey) {
+      clearVisibleAgentNeedsInput(surfaceId, {
+        kind: "dismiss",
+        key: dismissKey
+      });
+    } else if (isSubmitKeyInput(input)) {
+      clearVisibleAgentNeedsInput(surfaceId, { kind: "submit" });
     }
   }
 
@@ -411,74 +301,6 @@ export function createTerminalBridge(
     pendingTitleMetadata.delete(key);
   }
 
-  async function resizeSurface(
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id | null,
-    cols: number,
-    rows: number,
-    gestureActive?: boolean
-  ): Promise<void> {
-    const sessionId = surfaceSessionId(surfaceId);
-    if (!sessionId) {
-      return;
-    }
-    if (attachId) {
-      const attachment = attachedSurfacesByContents
-        .get(contentsId)
-        ?.get(surfaceId);
-      if (
-        attachment?.status !== "ready" ||
-        attachment.attachId !== attachId ||
-        attachment.sessionId !== sessionId
-      ) {
-        return;
-      }
-    }
-
-    const startedAt = profileNowMs();
-    const ptyHost = options.getPtyHost();
-    if (options.profileRecorder?.enabled) {
-      options.profileRecorder.record({
-        source: "main",
-        name: "terminal.resize.request",
-        at: startedAt,
-        details: {
-          surfaceId,
-          sessionId,
-          attachId,
-          cols,
-          rows,
-          hasPtyHost: Boolean(ptyHost)
-        }
-      });
-    }
-    try {
-      if (attachId) {
-        await ptyHost?.resize(sessionId, cols, rows, attachId, gestureActive);
-      } else {
-        await ptyHost?.resize(sessionId, cols, rows, undefined, gestureActive);
-      }
-    } finally {
-      if (options.profileRecorder?.enabled) {
-        const endedAt = profileNowMs();
-        options.profileRecorder.record({
-          source: "main",
-          name: "terminal.resize.ack",
-          at: endedAt,
-          details: {
-            surfaceId,
-            sessionId,
-            attachId,
-            cols,
-            rows,
-            durationMs: endedAt - startedAt
-          }
-        });
-      }
-    }
-  }
-
   async function snapshotSurface(
     surfaceId: Id,
     snapshotOptions: SurfaceSnapshotOptions = {}
@@ -492,606 +314,6 @@ export function createTerminalBridge(
         .getPtyHost()
         ?.snapshot(surface.sessionId, surfaceId, snapshotOptions)) ?? null
     );
-  }
-
-  function createHydratingAttachment(sessionId: Id): SurfaceAttachmentState {
-    return {
-      attachId: makeId("attach"),
-      sessionId,
-      status: "hydrating",
-      queuedChunks: [],
-      queuedBytes: 0,
-      queueOverflowed: false,
-      overflowedThroughSequence: null,
-      pendingSnapshotSequence: null,
-      replayCount: 0,
-      pendingExit: null,
-      hydratePromise: null
-    };
-  }
-
-  function resetAttachmentForHydration(
-    attachment: SurfaceAttachmentState,
-    sessionId: Id
-  ): void {
-    Object.assign(attachment, createHydratingAttachment(sessionId));
-  }
-
-  function markAttachmentReady(
-    contentsId: number,
-    surfaceId: Id,
-    attachment: SurfaceAttachmentState,
-    snapshotSequence: number
-  ): void {
-    attachment.status = "ready";
-    attachment.hydratePromise = null;
-    attachment.pendingSnapshotSequence = null;
-    attachment.replayCount = 0;
-    hydratedSurfaceSessions.add(
-      surfaceSessionKey(surfaceId, attachment.sessionId)
-    );
-    flushQueuedTerminalEvents(
-      contentsId,
-      surfaceId,
-      attachment.sessionId,
-      snapshotSequence
-    );
-  }
-
-  async function attachSurface(
-    contentsId: number,
-    surfaceId: Id,
-    expectedSessionId: Id
-  ): Promise<SurfaceAttachPayload | null> {
-    if (!isCurrentSurfaceSession(surfaceId, expectedSessionId)) {
-      return null;
-    }
-
-    const attached =
-      attachedSurfacesByContents.get(contentsId) ??
-      new Map<Id, SurfaceAttachmentState>();
-    attachedSurfacesByContents.set(contentsId, attached);
-
-    let existingAttachment = attached.get(surfaceId);
-    if (
-      existingAttachment &&
-      existingAttachment.sessionId !== expectedSessionId
-    ) {
-      removeAttachment(contentsId, surfaceId, existingAttachment);
-      existingAttachment = undefined;
-    }
-    if (existingAttachment?.hydratePromise) {
-      return existingAttachment.hydratePromise;
-    }
-
-    const attachment =
-      existingAttachment ?? createHydratingAttachment(expectedSessionId);
-    if (existingAttachment) {
-      resetAttachmentForHydration(attachment, expectedSessionId);
-    }
-    attached.set(surfaceId, attachment);
-
-    attachment.hydratePromise = (async () => {
-      if (!isCurrentSurfaceSession(surfaceId, expectedSessionId)) {
-        removeAttachment(contentsId, surfaceId, attachment);
-        return null;
-      }
-      let snapshot = await snapshotSurface(
-        surfaceId,
-        hydratedSurfaceSessions.has(
-          surfaceSessionKey(surfaceId, expectedSessionId)
-        )
-          ? {}
-          : {
-              settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
-            }
-      );
-      const currentAttachment = attachedSurfacesByContents
-        .get(contentsId)
-        ?.get(surfaceId);
-      if (
-        currentAttachment !== attachment ||
-        !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
-        (snapshot && snapshot.sessionId !== expectedSessionId)
-      ) {
-        return null;
-      }
-      const recovery = await recoverHydrationOverflow({
-        contentsId,
-        surfaceId,
-        expectedSessionId,
-        attachment,
-        snapshot
-      });
-      if (recovery.status === "stale") {
-        return null;
-      }
-      snapshot = recovery.snapshot;
-
-      if (!snapshot) {
-        markAttachmentReady(contentsId, surfaceId, attachment, 0);
-        return null;
-      }
-      attachment.pendingSnapshotSequence = snapshot.sequence;
-      return {
-        attachId: attachment.attachId,
-        snapshot
-      };
-    })().catch((error) => {
-      removeAttachment(contentsId, surfaceId, attachment);
-      throw error;
-    });
-
-    return attachment.hydratePromise;
-  }
-
-  async function completeAttachSurface(
-    contentsId: number,
-    surfaceId: Id,
-    attachId: Id,
-    expectedSessionId: Id
-  ): Promise<SurfaceAttachCompletionResult> {
-    const attachment = attachedSurfacesByContents
-      .get(contentsId)
-      ?.get(surfaceId);
-    if (
-      !attachment ||
-      attachment.status === "ready" ||
-      attachment.attachId !== attachId ||
-      attachment.sessionId !== expectedSessionId ||
-      !isCurrentSurfaceSession(surfaceId, expectedSessionId)
-    ) {
-      return { status: "stale" };
-    }
-
-    if (attachment.queueOverflowed) {
-      if (attachment.replayCount >= ATTACH_MAX_REPLAY_CYCLES) {
-        recordDegradedAttachRecovery({
-          contentsId,
-          surfaceId,
-          snapshotSequence: attachment.pendingSnapshotSequence,
-          overflowedThroughSequence: attachment.overflowedThroughSequence,
-          policy: "replay-budget-exhausted",
-          replayCount: attachment.replayCount
-        });
-        clearHydrationOverflow(attachment);
-      } else {
-        const recoverySnapshot = await snapshotSurface(surfaceId, {
-          settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
-        });
-        const currentAttachment = attachedSurfacesByContents
-          .get(contentsId)
-          ?.get(surfaceId);
-        if (
-          currentAttachment !== attachment ||
-          attachment.attachId !== attachId ||
-          !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
-          (recoverySnapshot && recoverySnapshot.sessionId !== expectedSessionId)
-        ) {
-          return { status: "stale" };
-        }
-        const recovery = await recoverHydrationOverflow({
-          contentsId,
-          surfaceId,
-          expectedSessionId,
-          attachment,
-          snapshot: recoverySnapshot
-        });
-        if (recovery.status === "stale") {
-          return { status: "stale" };
-        }
-        if (recovery.snapshot) {
-          attachment.pendingSnapshotSequence = recovery.snapshot.sequence;
-          attachment.replayCount += 1;
-          return {
-            status: "replay",
-            attachId,
-            snapshot: recovery.snapshot
-          };
-        }
-      }
-    }
-
-    markAttachmentReady(
-      contentsId,
-      surfaceId,
-      attachment,
-      attachment.pendingSnapshotSequence ?? 0
-    );
-    return { status: "ready" };
-  }
-
-  async function recoverHydrationOverflow({
-    contentsId,
-    surfaceId,
-    expectedSessionId,
-    attachment,
-    snapshot
-  }: {
-    contentsId: number;
-    surfaceId: Id;
-    expectedSessionId: Id;
-    attachment: SurfaceAttachmentState;
-    snapshot: SurfaceSnapshotPayload | null;
-  }): Promise<
-    | { status: "current"; snapshot: SurfaceSnapshotPayload | null }
-    | { status: "stale" }
-  > {
-    let recoverySnapshots = 0;
-    while (
-      shouldRecoverHydrationOverflow(attachment, snapshot) &&
-      recoverySnapshots < ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS
-    ) {
-      recoverySnapshots += 1;
-      snapshot = await snapshotSurface(surfaceId, {
-        settleForMs: ATTACH_SNAPSHOT_SETTLE_MS
-      });
-      const latestAttachment = attachedSurfacesByContents
-        .get(contentsId)
-        ?.get(surfaceId);
-      if (
-        latestAttachment !== attachment ||
-        attachment.sessionId !== expectedSessionId ||
-        !isCurrentSurfaceSession(surfaceId, expectedSessionId) ||
-        (snapshot && snapshot.sessionId !== expectedSessionId)
-      ) {
-        return { status: "stale" };
-      }
-    }
-    if (attachment.queueOverflowed) {
-      if (hydrationOverflowCoveredBySnapshot(attachment, snapshot)) {
-        clearHydrationOverflow(attachment);
-      } else {
-        recordDegradedAttachRecovery({
-          contentsId,
-          surfaceId,
-          recoverySnapshots,
-          snapshotSequence: snapshot?.sequence ?? null,
-          overflowedThroughSequence: attachment.overflowedThroughSequence
-        });
-        clearHydrationOverflow(attachment);
-      }
-    }
-
-    return { status: "current", snapshot };
-  }
-
-  function detachSurface(
-    contentsId: number,
-    surfaceId: Id,
-    expectedSessionId: Id
-  ): void {
-    const attachment = attachedSurfacesByContents
-      .get(contentsId)
-      ?.get(surfaceId);
-    if (!attachment || attachment.sessionId !== expectedSessionId) {
-      return;
-    }
-    removeAttachment(contentsId, surfaceId, attachment);
-  }
-
-  function removeAttachment(
-    contentsId: number,
-    surfaceId: Id,
-    expectedAttachment?: SurfaceAttachmentState
-  ): void {
-    const attached = attachedSurfacesByContents.get(contentsId);
-    if (expectedAttachment && attached?.get(surfaceId) !== expectedAttachment) {
-      return;
-    }
-    attached?.delete(surfaceId);
-    if (attached && attached.size === 0) {
-      attachedSurfacesByContents.delete(contentsId);
-    }
-  }
-
-  function sendTerminalEvent(
-    contentsId: number,
-    event:
-      | { type: "chunk"; payload: SurfaceChunkPayload }
-      | { type: "resize"; payload: SurfaceResizePayload }
-      | { type: "exit"; payload: SurfaceExitPayload }
-  ): void {
-    const window = BrowserWindow.getAllWindows().find(
-      (entry) => entry.webContents.id === contentsId
-    );
-    const sendStartedAt = profileNowMs();
-    window?.webContents.send("kmux:terminal-event", event);
-    if (options.profileRecorder?.enabled && event.type === "chunk") {
-      const now = profileNowMs();
-      terminalIpcBucket.record(
-        `${event.payload.surfaceId}\u0000${event.payload.sessionId}`,
-        (details) => {
-          details.chunks += 1;
-          details.bytes += Buffer.byteLength(event.payload.chunk, "utf8");
-          details.sends += 1;
-          details.maxSendDurationMs = Math.max(
-            details.maxSendDurationMs,
-            now - sendStartedAt
-          );
-        }
-      );
-    }
-  }
-
-  function surfaceAttachmentEntries(
-    surfaceId: Id,
-    sessionId: Id
-  ): Array<[number, SurfaceAttachmentState]> {
-    const entries: Array<[number, SurfaceAttachmentState]> = [];
-    for (const [contentsId, attached] of attachedSurfacesByContents.entries()) {
-      const attachment = attached.get(surfaceId);
-      if (attachment?.sessionId === sessionId) {
-        entries.push([contentsId, attachment]);
-      }
-    }
-    return entries;
-  }
-
-  function flushQueuedTerminalEvents(
-    contentsId: number,
-    surfaceId: Id,
-    sessionId: Id,
-    snapshotSequence: number
-  ): void {
-    const attachment = attachedSurfacesByContents
-      .get(contentsId)
-      ?.get(surfaceId);
-    if (!attachment || attachment.sessionId !== sessionId) {
-      return;
-    }
-
-    const queuedChunks = attachment.queuedChunks
-      .map((payload) =>
-        trimHydrationChunkAfterSnapshot(payload, snapshotSequence)
-      )
-      .filter((payload): payload is SurfaceChunkPayload => Boolean(payload))
-      .sort(
-        (left, right) =>
-          chunkStartSequence(left) - chunkStartSequence(right) ||
-          left.sequence - right.sequence
-      );
-    options.profileRecorder?.record({
-      source: "main",
-      name: "terminal.attach.queue",
-      at: profileNowMs(),
-      details: {
-        contentsId,
-        surfaceId,
-        sessionId,
-        queuedChunks: queuedChunks.length,
-        queuedBytes: attachment.queuedBytes,
-        queueOverflowed: attachment.queueOverflowed,
-        snapshotSequence
-      }
-    });
-    attachment.queuedChunks = [];
-    attachment.queuedBytes = 0;
-    for (const payload of queuedChunks) {
-      sendTerminalEvent(contentsId, {
-        type: "chunk",
-        payload
-      });
-    }
-    if (attachment.pendingExit) {
-      sendTerminalEvent(contentsId, {
-        type: "exit",
-        payload: attachment.pendingExit
-      });
-      attachment.pendingExit = null;
-    }
-  }
-
-  function forwardTerminalChunk(payload: SurfaceChunkPayload): void {
-    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
-      return;
-    }
-    for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId,
-      payload.sessionId
-    )) {
-      if (attachment.status === "hydrating") {
-        queueHydrationChunk(attachment, payload);
-        continue;
-      }
-      sendTerminalEvent(contentsId, {
-        type: "chunk",
-        payload
-      });
-    }
-  }
-
-  function forwardTerminalResize(payload: SurfaceResizePayload): void {
-    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
-      return;
-    }
-    if (!payload.attachId) {
-      return;
-    }
-    for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId,
-      payload.sessionId
-    )) {
-      if (
-        attachment.status === "hydrating" ||
-        attachment.attachId !== payload.attachId
-      ) {
-        continue;
-      }
-      sendTerminalEvent(contentsId, {
-        type: "resize",
-        payload
-      });
-    }
-  }
-
-  function chunkStartSequence(payload: SurfaceChunkPayload): number {
-    return payload.fromSequence ?? payload.sequence;
-  }
-
-  function trimHydrationChunkAfterSnapshot(
-    payload: SurfaceChunkPayload,
-    snapshotSequence: number
-  ): SurfaceChunkPayload | null {
-    if (payload.sequence <= snapshotSequence) {
-      return null;
-    }
-    if (!payload.segments || payload.segments.length === 0) {
-      return payload;
-    }
-
-    let trimOffset = 0;
-    const segments: SurfaceChunkSegment[] = [];
-    for (const segment of payload.segments) {
-      if (segment.sequence > snapshotSequence) {
-        segments.push(segment);
-        continue;
-      }
-      trimOffset += segment.length;
-    }
-    if (segments.length === 0) {
-      return null;
-    }
-    if (segments.length === payload.segments.length) {
-      return payload;
-    }
-
-    return {
-      surfaceId: payload.surfaceId,
-      sessionId: payload.sessionId,
-      fromSequence: segments[0].sequence,
-      sequence: segments[segments.length - 1].sequence,
-      chunk: payload.chunk.slice(trimOffset),
-      cwd: segments[segments.length - 1].cwd ?? payload.cwd,
-      segments
-    };
-  }
-
-  function recordDegradedAttachRecovery(
-    input: AttachDegradedRecoveryDetails
-  ): void {
-    const {
-      contentsId,
-      surfaceId,
-      snapshotSequence,
-      overflowedThroughSequence
-    } = input;
-    const commonDetails = {
-      contentsId,
-      surfaceId,
-      snapshotSequence,
-      overflowedThroughSequence
-    };
-    const details =
-      input.policy === "replay-budget-exhausted"
-        ? {
-            ...commonDetails,
-            policy: input.policy,
-            replayCount: input.replayCount,
-            maxReplayCycles: ATTACH_MAX_REPLAY_CYCLES
-          }
-        : {
-            ...commonDetails,
-            policy: "fresh-snapshot-then-ready" as const,
-            recoverySnapshots: input.recoverySnapshots,
-            maxRecoverySnapshots: ATTACH_QUEUE_MAX_RECOVERY_SNAPSHOTS
-          };
-    logDiagnostics("main.terminal.attach.queue.degraded", details);
-    options.profileRecorder?.record({
-      source: "main",
-      name: "terminal.attach.queue.degraded",
-      at: profileNowMs(),
-      details
-    });
-  }
-
-  function queueHydrationChunk(
-    attachment: SurfaceAttachmentState,
-    payload: SurfaceChunkPayload
-  ): void {
-    if (attachment.queueOverflowed) {
-      attachment.overflowedThroughSequence = Math.max(
-        attachment.overflowedThroughSequence ?? 0,
-        payload.sequence
-      );
-      return;
-    }
-    const chunkBytes = Buffer.byteLength(payload.chunk, "utf8");
-    const nextQueuedBytes = attachment.queuedBytes + chunkBytes;
-    if (
-      attachment.queuedChunks.length + 1 > ATTACH_QUEUE_MAX_CHUNKS ||
-      nextQueuedBytes > ATTACH_QUEUE_MAX_BYTES
-    ) {
-      attachment.overflowedThroughSequence = Math.max(
-        maxQueuedChunkSequence(attachment.queuedChunks),
-        payload.sequence
-      );
-      attachment.queuedChunks = [];
-      attachment.queuedBytes = 0;
-      attachment.queueOverflowed = true;
-      return;
-    }
-    attachment.queuedChunks.push(payload);
-    attachment.queuedBytes = nextQueuedBytes;
-  }
-
-  function shouldRecoverHydrationOverflow(
-    attachment: SurfaceAttachmentState,
-    snapshot: SurfaceSnapshotPayload | null
-  ): boolean {
-    if (!snapshot || attachment.pendingExit || !attachment.queueOverflowed) {
-      return false;
-    }
-    const overflowedThroughSequence = attachment.overflowedThroughSequence;
-    return (
-      overflowedThroughSequence !== null &&
-      snapshot.sequence < overflowedThroughSequence
-    );
-  }
-
-  function hydrationOverflowCoveredBySnapshot(
-    attachment: SurfaceAttachmentState,
-    snapshot: SurfaceSnapshotPayload | null
-  ): boolean {
-    const overflowedThroughSequence = attachment.overflowedThroughSequence;
-    return (
-      snapshot !== null &&
-      overflowedThroughSequence !== null &&
-      snapshot.sequence >= overflowedThroughSequence
-    );
-  }
-
-  function clearHydrationOverflow(attachment: SurfaceAttachmentState): void {
-    attachment.queueOverflowed = false;
-    attachment.overflowedThroughSequence = null;
-    attachment.queuedChunks = [];
-    attachment.queuedBytes = 0;
-  }
-
-  function maxQueuedChunkSequence(chunks: SurfaceChunkPayload[]): number {
-    return chunks.reduce(
-      (maxSequence, payload) => Math.max(maxSequence, payload.sequence),
-      0
-    );
-  }
-
-  function forwardTerminalExit(payload: SurfaceExitPayload): void {
-    if (!isCurrentSurfaceSession(payload.surfaceId, payload.sessionId)) {
-      return;
-    }
-    for (const [contentsId, attachment] of surfaceAttachmentEntries(
-      payload.surfaceId,
-      payload.sessionId
-    )) {
-      if (attachment.status === "hydrating") {
-        attachment.pendingExit = payload;
-        continue;
-      }
-      sendTerminalEvent(contentsId, {
-        type: "exit",
-        payload
-      });
-    }
   }
 
   function handlePtyEvent(event: PtyEvent): void {
@@ -1263,11 +485,31 @@ export function createTerminalBridge(
         });
         return;
       }
-      case "chunk":
-        forwardTerminalChunk(event.payload);
+      case "input.observed": {
+        const currentSession = options
+          .getPtyHost()
+          ?.sessionRef(event.session.surfaceId, event.session.sessionId);
+        if (!currentSession || currentSession.epoch !== event.session.epoch) {
+          return;
+        }
+        if (event.input.type === "text") {
+          observeTextInput(event.session.surfaceId, event.input.text);
+        } else if (event.input.type === "key") {
+          observeKeyInput(event.session.surfaceId, event.input.input);
+        }
         return;
-      case "resize":
-        forwardTerminalResize(event.payload);
+      }
+      case "runtime.lost":
+        for (const session of event.sessions) {
+          if (!isCurrentSurfaceSession(session.surfaceId, session.sessionId)) {
+            continue;
+          }
+          flushPendingTitleMetadata(session.surfaceId, session.sessionId);
+          options.dispatchAppAction({
+            type: "session.exited",
+            sessionId: session.sessionId
+          });
+        }
         return;
       case "exit":
         flushPendingTitleMetadata(
@@ -1279,7 +521,6 @@ export function createTerminalBridge(
           sessionId: event.payload.sessionId,
           exitCode: event.payload.exitCode
         });
-        forwardTerminalExit(event.payload);
         return;
       case "error":
         console.error("[pty-host]", event.message);
@@ -1294,11 +535,7 @@ export function createTerminalBridge(
     sendText,
     sendKey,
     sendKeyInput,
-    resizeSurface,
     snapshotSurface,
-    attachSurface,
-    completeAttachSurface,
-    detachSurface,
     handlePtyEvent
   };
 }

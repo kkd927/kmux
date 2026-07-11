@@ -11,7 +11,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resolveAgentStorageRoots } from "./agentStorage";
-import { createUsageAdapters, scanUsageHistoryDays } from "./usage";
+import {
+  createUsageAdapters,
+  scanUsageAdaptersAtStartup,
+  scanUsageHistoryDays,
+  type UsageAdapter,
+  type UsageEventSample
+} from "./usage";
 
 const cleanupPaths: string[] = [];
 
@@ -1170,6 +1176,139 @@ describe("usage adapters", () => {
         totalCostUsd: 0.8,
         totalTokens: 680
       })
+    ]);
+  });
+
+  it("builds startup history and today's live cursor from one source scan", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-startup-scan-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    mkdirSync(usageDir, { recursive: true });
+    const usagePath = path.join(usageDir, "usage.jsonl");
+    const priorDay = new Date(2026, 3, 16, 11, 0, 0, 0);
+    const currentDay = new Date(2026, 3, 17, 11, 0, 0, 0);
+    const startOfCurrentDay = new Date(2026, 3, 17, 0, 0, 0, 0).getTime();
+
+    writeFileSync(
+      usagePath,
+      [
+        JSON.stringify({
+          timestamp: priorDay.toISOString(),
+          session_id: "claude-startup-prior",
+          input_tokens: 100,
+          output_tokens: 20,
+          estimated_cost: 0.12
+        }),
+        JSON.stringify({
+          timestamp: currentDay.toISOString(),
+          session_id: "claude-startup-current",
+          input_tokens: 200,
+          output_tokens: 30,
+          estimated_cost: 0.23
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const adapters = createUsageAdapters({
+      env: { KMUX_CLAUDE_USAGE_DIR: usageDir },
+      homeDir: root,
+      platform: "linux"
+    });
+    try {
+      const startup = await scanUsageAdaptersAtStartup(adapters, {
+        startOfDayMs: startOfCurrentDay,
+        historyRange: {
+          fromMs: new Date(2026, 3, 16, 0, 0, 0, 0).getTime(),
+          toMs: new Date(2026, 3, 17, 23, 59, 59, 999).getTime()
+        }
+      });
+
+      expect(startup.historyDays).toEqual([
+        expect.objectContaining({ dayKey: "2026-04-16", totalTokens: 120 }),
+        expect.objectContaining({ dayKey: "2026-04-17", totalTokens: 230 })
+      ]);
+      expect(startup.reads.flatMap((read) => read.samples)).toEqual([
+        expect.objectContaining({ sessionId: "claude-startup-current" })
+      ]);
+
+      appendFileSync(
+        usagePath,
+        `${JSON.stringify({
+          timestamp: new Date(2026, 3, 17, 12, 0, 0, 0).toISOString(),
+          session_id: "claude-startup-appended",
+          input_tokens: 50,
+          output_tokens: 10,
+          estimated_cost: 0.06
+        })}\n`,
+        "utf8"
+      );
+      const claudeAdapter = adapters.find(
+        (adapter) => adapter.vendor === "claude"
+      );
+      expect(
+        (await claudeAdapter!.readIncremental(startOfCurrentDay)).samples
+      ).toEqual([
+        expect.objectContaining({ sessionId: "claude-startup-appended" })
+      ]);
+    } finally {
+      for (const adapter of adapters) {
+        adapter.close();
+      }
+    }
+  });
+
+  it("scans startup history larger than the JavaScript argument limit without dropping live samples", async () => {
+    const startOfDayMs = new Date(2026, 3, 17, 0, 0, 0, 0).getTime();
+    const priorDayMs = new Date(2026, 3, 16, 12, 0, 0, 0).getTime();
+    const currentDayMs = new Date(2026, 3, 17, 12, 0, 0, 0).getTime();
+    const sampleCount = 150_000;
+    const samples: UsageEventSample[] = Array.from(
+      { length: sampleCount },
+      (_, index) => ({
+        vendor: "claude",
+        timestampMs: index === sampleCount - 1 ? currentDayMs : priorDayMs,
+        sourcePath: "/tmp/large-usage-history.jsonl",
+        sourceType: "jsonl",
+        eventId: `large-history-${index}`,
+        inputTokens: 1,
+        outputTokens: 0,
+        cacheTokens: 0,
+        totalTokens: 1,
+        estimatedCostUsd: 0,
+        costSource: "unavailable"
+      })
+    );
+    const adapter: UsageAdapter = {
+      vendor: "claude",
+      initialScan: vi.fn(async () => ({ sourceCount: 1, samples: [] })),
+      initialScanRange: vi.fn(async () => ({ sourceCount: 1, samples })),
+      readIncremental: vi.fn(async () => ({ sourceCount: 1, samples: [] })),
+      watch: vi.fn(() => () => undefined),
+      close: vi.fn()
+    };
+
+    const startup = await scanUsageAdaptersAtStartup([adapter], {
+      startOfDayMs,
+      historyRange: {
+        fromMs: priorDayMs,
+        toMs: currentDayMs
+      }
+    });
+
+    expect(startup.reads).toEqual([
+      {
+        sourceCount: 1,
+        samples: [samples[sampleCount - 1]]
+      }
+    ]);
+    expect(startup.historyDays).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-04-16",
+        totalTokens: sampleCount - 1
+      }),
+      expect.objectContaining({ dayKey: "2026-04-17", totalTokens: 1 })
     ]);
   });
 

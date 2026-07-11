@@ -3,169 +3,52 @@ import {
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY
 } from "@kmux/core";
 
-import {
-  TerminalTypographyController,
-  createFontInventoryProvider,
-  createStaticFontInventoryProvider,
-  parseFontConfigFamilies
-} from "./terminalTypography";
+import { TerminalTypographyController } from "./terminalTypography";
 
 describe("terminal typography controller", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("parses fontconfig family output from Linux fc-list", () => {
-    expect(
-      parseFontConfigFamilies(
-        [
-          "JetBrains Mono,JetBrainsMono Nerd Font Mono",
-          "Noto Sans",
-          "JetBrains Mono",
-          ""
-        ].join("\n")
-      )
-    ).toEqual(["JetBrains Mono", "JetBrainsMono Nerd Font Mono", "Noto Sans"]);
-  });
-
-  it("uses fc-list for Linux font inventory", async () => {
-    const execFile = vi.fn(async () => ({
-      stdout: "JetBrains Mono,JetBrainsMono Nerd Font Mono\nNoto Sans\n"
-    }));
-    const provider = createFontInventoryProvider(
-      { PATH: "/usr/bin" },
-      "linux",
-      execFile
-    );
-
-    await expect(provider.listFontFamilies()).resolves.toEqual([
-      "JetBrains Mono",
-      "JetBrainsMono Nerd Font Mono",
-      "Noto Sans"
-    ]);
-    expect(execFile).toHaveBeenCalledWith(
-      "fc-list",
-      ["--format", "%{family}\n"],
-      expect.objectContaining({
-        env: { PATH: "/usr/bin" }
-      })
-    );
-  });
-
-  it("falls back to pending typography state when Linux fc-list is unavailable", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const provider = createFontInventoryProvider(
-      {},
-      "linux",
-      vi.fn(async () => {
-        throw new Error("fc-list unavailable");
-      })
-    );
-    const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: provider,
-      shouldLogInventoryErrors: () => false
-    });
-
-    await expect(controller.listFontFamilies()).resolves.toEqual([]);
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(controller.getViewModel().status).toBe("pending");
-  });
-
-  it("always includes the built-in glyph font and appends compatible installed fonts", async () => {
-    const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: createStaticFontInventoryProvider([
-        "JetBrains Mono",
-        "Symbols Nerd Font Mono",
-        "Hack Nerd Font Mono"
-      ])
-    });
-
-    await controller.listFontFamilies();
-
-    expect(controller.getViewModel().symbolFallbackFamilies).toEqual([
-      KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
-      "Symbols Nerd Font Mono",
-      "Hack Nerd Font Mono"
-    ]);
-    expect(controller.getViewModel().autoFallbackApplied).toBe(true);
-    expect(controller.getViewModel().status).toBe("pending");
-  });
-
-  it("does not duplicate the default JetBrainsMono Nerd Font Mono text font as a symbol fallback", async () => {
-    const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: createStaticFontInventoryProvider([
-        "JetBrains Mono",
-        "JetBrainsMono Nerd Font Mono"
-      ])
-    });
-
-    await controller.listFontFamilies();
-    const resolvedView = controller.getViewModel();
-
-    expect(resolvedView.symbolFallbackFamilies).toEqual([
-      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
-    ]);
-    expect(resolvedView.textFontFamily).toContain(
-      '"JetBrainsMono Nerd Font Mono"'
-    );
-    expect(resolvedView.status).toBe("pending");
-
-    controller.reportProbe({
-      stackHash: resolvedView.stackHash,
-      issues: []
-    });
-
-    expect(controller.getViewModel().status).toBe("ready");
-  });
-
-  it("keeps legacy symbol fallback preferences ahead of the built-in glyph font", async () => {
+  it("builds the stack from the user text font, saved symbol fallbacks, and the built-in glyph font", () => {
     const controller = new TerminalTypographyController({
       initialSettings: {
         ...createDefaultTerminalTypographySettings(),
+        preferredTextFontFamily: '"Fira Code", monospace',
         preferredSymbolFallbackFamilies: ["Legacy Nerd Font Mono"]
-      },
-      fontInventoryProvider: createStaticFontInventoryProvider([
-        "JetBrains Mono"
-      ])
+      }
     });
 
-    await controller.listFontFamilies();
+    expect(controller.getViewModel()).toEqual(
+      expect.objectContaining({
+        textFontFamily: '"Fira Code", monospace',
+        symbolFallbackFamilies: [
+          "Legacy Nerd Font Mono",
+          KMUX_BUILTIN_SYMBOL_FONT_FAMILY
+        ],
+        status: "pending",
+        issues: []
+      })
+    );
+    expect(controller.getViewModel().resolvedFontFamily).toContain(
+      '"Fira Code"'
+    );
+  });
+
+  it("does not duplicate the text font in the symbol fallback stack", () => {
+    const controller = new TerminalTypographyController({
+      initialSettings: {
+        ...createDefaultTerminalTypographySettings(),
+        preferredTextFontFamily: '"Legacy Nerd Font Mono", monospace',
+        preferredSymbolFallbackFamilies: ["Legacy Nerd Font Mono"]
+      }
+    });
 
     expect(controller.getViewModel().symbolFallbackFamilies).toEqual([
-      "Legacy Nerd Font Mono",
       KMUX_BUILTIN_SYMBOL_FONT_FAMILY
     ]);
   });
 
-  it("does not reintroduce system monospace fonts as symbol fallbacks", async () => {
+  it("keeps preview side-effect free", async () => {
     const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: createStaticFontInventoryProvider([
-        "JetBrains Mono",
-        "Menlo"
-      ])
+      initialSettings: createDefaultTerminalTypographySettings()
     });
-
-    await controller.listFontFamilies();
-
-    expect(controller.getViewModel().symbolFallbackFamilies).toEqual([
-      KMUX_BUILTIN_SYMBOL_FONT_FAMILY
-    ]);
-  });
-
-  it("keeps preview side-effect free and ignores stale probe reports", async () => {
-    const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: createStaticFontInventoryProvider([
-        "JetBrains Mono",
-        "Symbols Nerd Font Mono"
-      ])
-    });
-
-    await controller.listFontFamilies();
     const initialView = controller.getViewModel();
 
     const preview = await controller.preview({
@@ -177,59 +60,26 @@ describe("terminal typography controller", () => {
     expect(preview.symbolFallbackFamilies).toContain(
       KMUX_BUILTIN_SYMBOL_FONT_FAMILY
     );
-    expect(controller.getViewModel().textFontFamily).toBe(
-      initialView.textFontFamily
-    );
-
-    controller.reportProbe({
-      stackHash: "stale-stack",
-      issues: [
-        {
-          code: "powerline_glyph_missing",
-          severity: "warning"
-        }
-      ]
-    });
-
     expect(controller.getViewModel()).toEqual(initialView);
   });
 
-  it("suppresses font inventory warnings once shutdown has started", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("ignores stale probe reports and applies the current renderer probe", () => {
+    const onDidChange = vi.fn();
     const controller = new TerminalTypographyController({
       initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: {
-        async listFontFamilies() {
-          throw new Error("system profiler unavailable");
-        }
-      },
-      shouldLogInventoryErrors: () => false
+      onDidChange
     });
+    const initialView = controller.getViewModel();
 
-    await expect(controller.listFontFamilies()).resolves.toEqual([]);
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
-
-  it("swallows broken-pipe logging failures while falling back to pending typography state", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {
-      const error = new Error("write EPIPE") as Error & { code?: string };
-      error.code = "EPIPE";
-      throw error;
+    controller.reportProbe({
+      stackHash: "stale-stack",
+      issues: [{ code: "powerline_glyph_missing", severity: "warning" }]
     });
-    const controller = new TerminalTypographyController({
-      initialSettings: createDefaultTerminalTypographySettings(),
-      fontInventoryProvider: {
-        async listFontFamilies() {
-          throw new Error("system profiler unavailable");
-        }
-      }
-    });
+    expect(controller.getViewModel()).toEqual(initialView);
+    expect(onDidChange).not.toHaveBeenCalled();
 
-    await expect(controller.listFontFamilies()).resolves.toEqual([]);
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Failed to load terminal font inventory",
-      expect.any(Error)
-    );
-    expect(controller.getViewModel().status).toBe("pending");
+    controller.reportProbe({ stackHash: initialView.stackHash, issues: [] });
+    expect(controller.getViewModel().status).toBe("ready");
+    expect(onDidChange).toHaveBeenCalledTimes(1);
   });
 });

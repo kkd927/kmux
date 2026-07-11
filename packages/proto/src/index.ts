@@ -458,44 +458,10 @@ export interface SurfaceCapturePayload {
   rendererTrusted: boolean | null;
 }
 
-export interface SurfaceAttachPayload {
-  attachId: Id;
-  snapshot: SurfaceSnapshotPayload;
-}
-
-export type SurfaceAttachCompletionResult =
-  | { status: "ready" }
-  | { status: "replay"; attachId: Id; snapshot: SurfaceSnapshotPayload }
-  | { status: "stale" };
-
-export interface SurfaceChunkSegment {
-  sequence: number;
-  length: number;
-  cwd?: string;
-}
-
 export interface SurfaceSnapshotCwdRange {
   startLine: number;
   endLine: number;
   cwd: string;
-}
-
-export interface SurfaceChunkPayload {
-  surfaceId: Id;
-  sessionId: Id;
-  fromSequence?: number;
-  sequence: number;
-  chunk: string;
-  cwd?: string;
-  segments?: SurfaceChunkSegment[];
-}
-
-export interface SurfaceResizePayload {
-  surfaceId: Id;
-  sessionId: Id;
-  attachId?: Id;
-  cols: number;
-  rows: number;
 }
 
 export interface SurfaceExitPayload {
@@ -578,7 +544,6 @@ export interface ImportedTerminalThemePalette {
 export type TerminalTypographyStatus = "pending" | "ready" | "degraded";
 
 export type TerminalTypographyIssueCode =
-  | "text_font_missing"
   | "symbol_font_missing"
   | "non_monospaced_text_font"
   | "nerd_glyph_missing"
@@ -857,6 +822,8 @@ export interface ShellViewModel {
 
 export interface ShellStoreSnapshot {
   version: number;
+  /** Lightweight inventory used to dispose inactive warm terminals after gaps. */
+  surfaceIds: Id[];
   windowId: Id;
   title: string;
   sidebarVisible: boolean;
@@ -864,7 +831,6 @@ export interface ShellStoreSnapshot {
   workspaceRows: WorkspaceRowVm[];
   activeWorkspace: ActiveWorkspaceActivityVm;
   activeWorkspacePaneTree: ActiveWorkspacePaneTreeVm;
-  workspacePaneTrees: Record<Id, ActiveWorkspacePaneTreeVm>;
   notifications: NotificationItem[];
   unreadNotifications: number;
   settings: KmuxSettings;
@@ -877,13 +843,10 @@ export interface WorkspaceRowsPatch {
   order?: Id[];
 }
 
-export interface WorkspacePaneTreesPatch {
-  upsert?: Record<Id, ActiveWorkspacePaneTreeVm>;
-  remove?: Id[];
-}
-
 export interface ShellPatch {
   version: number;
+  /** Full lightweight inventory, emitted only when surface membership changes. */
+  surfaceIds?: Id[];
   windowId?: Id;
   title?: string;
   sidebarVisible?: boolean;
@@ -892,7 +855,7 @@ export interface ShellPatch {
   workspaceRowsPatch?: WorkspaceRowsPatch;
   activeWorkspace?: ActiveWorkspaceActivityVm;
   activeWorkspacePaneTree?: ActiveWorkspacePaneTreeVm;
-  workspacePaneTreesPatch?: WorkspacePaneTreesPatch;
+  removedSurfaceIds?: Id[];
   notifications?: NotificationItem[];
   unreadNotifications?: number;
   settings?: KmuxSettings;
@@ -974,3 +937,4 @@ function createUuid(): string {
 }
 
 export * from "./agentHooks";
+export * from "./terminalDataPlane";

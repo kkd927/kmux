@@ -16,7 +16,7 @@ The first supported Linux target is GUI desktop Linux, not headless Linux. Ubunt
 - macOS behavior remains compatibility-preserving during the platform refactor.
 - POSIX socket wire/env remains `KMUX_SOCKET_PATH` for the macOS/Linux phase.
 - Platform behavior is composed in main, while renderer and pty-host receive only serializable policies and descriptors.
-- pty-host protocol becomes desktop-owned; `packages/core` emits desktop-neutral spawn effects.
+- pty-host lifecycle/spawn control contracts become desktop-owned; the transport-neutral terminal data-plane contract remains in `@kmux/proto`, and `packages/core` emits desktop-neutral spawn effects.
 - Linux paths use XDG roots, with safe `/run/user/${uid}` and private `tmpdir()` fallbacks for runtime sockets.
 - Subscription usage is required for providers with verified Linux credential sources; unverified provider quotas can show normal unavailable states.
 - Linux stable publishing stays gated until packaged AppImage, updater, notification identity, hook, shell, socket, and output-continuity checks pass.
@@ -533,7 +533,7 @@ Shortcut defaults and settings migration:
 
 Terminal output continuity depends on stable xterm.js cell metrics. Linux support must verify the terminal font stack, not just the app shell.
 
-Font inventory is also platform-specific. The current macOS provider can use `system_profiler`, but Linux needs a capability-based provider such as `fc-list` from fontconfig, a bundled-font-only fallback, or a renderer-probe-driven fallback. Missing `system_profiler` on Linux must not break settings or terminal typography.
+Terminal typography does not inventory host fonts. It uses the saved text font, preserved symbol fallbacks, and the bundled kmux symbol font, then validates the resulting stack with the renderer probe on every platform.
 
 The renderer should keep a platform-neutral preferred stack when bundled fonts are available, and Linux smoke should verify:
 
@@ -622,7 +622,7 @@ Terminal spawn flow:
 2. pty-host applies the resolved shell path, args, env stripping, integration policy, hook env, env precedence, and agent PATH prepend from serializable launch data.
 3. hook runtime env is present before spawning the pty.
 4. `node-pty` spawns the prepared launch.
-5. terminal snapshot, hydration, resize, font metrics, and output batching logic remains platform-neutral.
+5. terminal checkpoint/delta streaming, hydration, resize, font metrics, and renderer scheduling remain platform-neutral.
 
 ## Error Handling
 
@@ -656,7 +656,7 @@ Unit tests:
 - hook helper installation independent of shell integration.
 - agent wrapper installation independent of shell integration.
 - agent PATH prepend independent of OSC7/cwd shell rc integration.
-- Linux font inventory provider behavior when `fc-list` is available and when only bundled/default fallbacks are available.
+- Renderer-probe behavior with user-selected fonts and the bundled symbol fallback.
 - Linux subprocess command builders for Codex `script` probing, `ps` process matching, and optional `lsof`/fallback metadata.
 - unsupported platform startup behavior.
 
@@ -772,9 +772,9 @@ Manual validation:
    - add `KMUX_STATE_DIR`, `KMUX_DATA_DIR`, or a broader `KMUX_PROFILE_DIR` decision for dev/test isolation.
    - expose `captureRoot`, `attachmentRoot`, `rawOutputRoot`, `nativeCacheRoot`, and `diagnosticsRoot` instead of deriving non-socket storage from socket dirname or runtime dir.
 5. Move shell defaults, shell probe policy, hook runtime env construction, documented env precedence, agent PATH prepend, and `ShellLaunchPolicy` into platform shell code.
-6. Move the pty-host protocol boundary:
+6. Move the pty-host control protocol boundary:
    - add characterization tests for current spawn, resize, input, snapshot, raw output, and notification behavior.
-   - move pty-host request/event types and `ShellLaunchPolicy` toward `apps/desktop/src/shared/ptyProtocol.ts`.
+   - move pty-host lifecycle/spawn request/event types and `ShellLaunchPolicy` toward `apps/desktop/src/shared/ptyProtocol.ts`; keep the direct terminal data-plane v2 contract in `@kmux/proto`.
    - update `packages/core` to emit desktop-neutral session spawn effects instead of constructing pty-host-specific session specs.
    - map core session effects to pty-host IPC in desktop main after shell/path/runtime policy is composed.
    - ensure pty-host consumes serializable shell launch data instead of hard-coded platform fallbacks.
@@ -805,7 +805,7 @@ Manual validation:
 - Linux app can be built and launched on Ubuntu Desktop.
 - Linux can spawn a shell through `node-pty` in dev and packaged AppImage.
 - Linux shell env recovery finds user-installed agent CLIs from GUI-launched sessions.
-- pty-host-specific request/event contracts are desktop-owned, and `packages/core` emits desktop-neutral session spawn effects that main maps into pty-host IPC.
+- pty-host lifecycle/spawn request/event contracts are desktop-owned, terminal data-plane v2 remains transport-neutral in `@kmux/proto`, and `packages/core` emits desktop-neutral session spawn effects that main maps into pty-host control IPC.
 - pty-host receives serializable shell launch policy and has no hard-coded `/bin/zsh` platform fallback.
 - pty-host final env follows documented `ShellLaunchPolicy` precedence and includes `KMUX_SOCKET_PATH`, `KMUX_AGENT_BIN_DIR`, and `KMUX_NODE_PATH` before spawning.
 - Linux terminal output remains stable through pane splitting, surface switching, restore, font loading, and foreground resize.

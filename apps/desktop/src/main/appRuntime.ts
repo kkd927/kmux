@@ -10,8 +10,6 @@ import {
   type SessionSpawnEffect,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
-  buildAllWorkspacePaneTreesVm,
-  buildWorkspacePaneTreeVm,
   buildNotificationsVm,
   buildShellSettingsVm,
   buildShellWindowChromeVm,
@@ -23,7 +21,6 @@ import {
   migrateShortcutDefaultsForPlatform
 } from "@kmux/core";
 import type {
-  ActiveWorkspacePaneTreeVm,
   ExternalAgentSessionRef,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
@@ -36,10 +33,10 @@ import type {
   ShortcutDefaultsPlatform,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
-  WorkspacePaneTreesPatch,
   WorkspaceRowsPatch,
   WorkspaceRowVm
 } from "@kmux/proto";
+import { makeId } from "@kmux/proto";
 import type {
   SettingsFileStore,
   SnapshotFileStore,
@@ -51,10 +48,7 @@ import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
 import type { ExternalSessionResumeSpec } from "./externalSessions";
 import { logDiagnostics } from "../shared/diagnostics";
-import {
-  type FontInventoryProvider,
-  TerminalTypographyController
-} from "./terminalTypography";
+import { TerminalTypographyController } from "./terminalTypography";
 import { profileNowMs } from "../shared/nodeSmoothnessProfile";
 import type { SmoothnessProfileRecorder } from "../shared/smoothnessProfile";
 import {
@@ -75,7 +69,6 @@ export interface AppRuntimeOptions {
   shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
   refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
-  fontInventoryProvider?: FontInventoryProvider;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
@@ -102,7 +95,6 @@ export interface AppRuntime {
   restoreInitialState(): AppState;
   capabilityList(): string[];
   identify(): ShellIdentity;
-  listTerminalFontFamilies(): Promise<string[]>;
   previewTerminalTypography(
     settings: TerminalTypographySettings
   ): Promise<ResolvedTerminalTypographyVm>;
@@ -118,13 +110,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let ptyHost: PtyHostManager | null = null;
   let mainWindow: BrowserWindow | null = null;
   let persistTimer: NodeJS.Timeout | null = null;
-  let shuttingDown = false;
   let shellState: ShellStoreSnapshot | null = null;
   let suppressTerminalTypographyPatch = 0;
   const terminalTypographyController = new TerminalTypographyController({
     initialSettings: createRuntimeDefaultSettings().terminalTypography,
-    fontInventoryProvider: options.fontInventoryProvider,
-    shouldLogInventoryErrors: () => !shuttingDown,
     onDidChange: () => {
       if (store && suppressTerminalTypographyPatch === 0) {
         emitShellPatch(new Set(["terminalTypography"]));
@@ -167,11 +156,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const state = getState();
     return {
       version,
+      surfaceIds: Object.keys(state.surfaces),
       ...buildShellWindowChromeVm(state),
       workspaceRows: buildWorkspaceRowsVm(state),
       activeWorkspace: buildActiveWorkspaceActivityVm(state),
       activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
-      workspacePaneTrees: buildAllWorkspacePaneTreesVm(state),
       notifications: buildNotificationsVm(state),
       settings: buildShellSettingsVm(state),
       terminalTypography: terminalTypographyController.getViewModel()
@@ -215,20 +204,29 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
 
   function emitShellPatch(
     groups: Set<ShellGroup>,
-    profileContext: ShellPatchProfileContext = {}
+    profileContext: ShellPatchProfileContext = {},
+    removedSurfaceIds: Id[] = []
   ): void {
-    if (!store || groups.size === 0) {
+    if (!store || (groups.size === 0 && removedSurfaceIds.length === 0)) {
       return;
     }
 
     const profileStartedAt = profileNowMs();
     const currentShellState = getShellState();
     const nextPatch: ShellPatch = {
-      version: currentShellState.version
+      version: currentShellState.version,
+      ...(removedSurfaceIds.length > 0 ? { removedSurfaceIds } : {})
     };
     const nextShellStatePatch: Partial<Omit<ShellStoreSnapshot, "version">> =
       {};
-    let didChange = false;
+    let didChange = removedSurfaceIds.length > 0;
+
+    const surfaceIds = Object.keys(getState().surfaces);
+    if (!isDeepStrictEqual(currentShellState.surfaceIds, surfaceIds)) {
+      nextPatch.surfaceIds = surfaceIds;
+      nextShellStatePatch.surfaceIds = surfaceIds;
+      didChange = true;
+    }
 
     if (groups.has("window")) {
       const nextWindowChrome = buildShellWindowChromeVm(getState());
@@ -319,22 +317,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       ) {
         nextPatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
         nextShellStatePatch.activeWorkspacePaneTree = activeWorkspacePaneTree;
-        didChange = true;
-      }
-    }
-
-    if (groups.has("workspacePaneTrees")) {
-      const state = getState();
-      const currentTrees = currentShellState.workspacePaneTrees;
-      const nextTrees: Record<Id, ActiveWorkspacePaneTreeVm> = {};
-      const paneTreesPatch = buildWorkspacePaneTreesPatch(
-        state,
-        currentTrees,
-        nextTrees
-      );
-      if (paneTreesPatch) {
-        nextPatch.workspacePaneTreesPatch = paneTreesPatch;
-        nextShellStatePatch.workspacePaneTrees = nextTrees;
         didChange = true;
       }
     }
@@ -483,6 +465,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function dispatchAppAction(action: AppAction): void {
+    const previousSurfaceIds =
+      store && actionMayRemoveSurfaces(action)
+        ? Object.keys(store.getState().surfaces)
+        : [];
     const previousSettings = store?.getState().settings.terminalTypography;
     const result = store?.dispatch(action) ?? {
       effects: [],
@@ -529,6 +515,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       });
     }
     const currentState = store?.getState();
+    const removedSurfaceIds = currentState
+      ? previousSurfaceIds.filter(
+          (surfaceId) => !currentState.surfaces[surfaceId]
+        )
+      : [];
     if (currentState) {
       options.onDidDispatchAppAction?.(action, currentState);
     }
@@ -548,7 +539,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     runEffects(effects);
     emitShellPatch(
       shellGroups,
-      shellPatchProfileContextForAction(action, effects)
+      shellPatchProfileContextForAction(action, effects),
+      removedSurfaceIds
     );
   }
 
@@ -634,10 +626,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       activeSurfaceId: surfaceId,
       capabilities: capabilityList()
     };
-  }
-
-  function listTerminalFontFamilies(): Promise<string[]> {
-    return terminalTypographyController.listFontFamilies();
   }
 
   function previewTerminalTypography(
@@ -825,7 +813,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function shutdown(): void {
-    shuttingDown = true;
     if (persistTimer) {
       clearTimeout(persistTimer);
     }
@@ -876,7 +863,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     restoreInitialState,
     capabilityList,
     identify,
-    listTerminalFontFamilies,
     previewTerminalTypography,
     reportTerminalTypographyProbe,
     getExternalAgentSessions,
@@ -910,6 +896,7 @@ function buildPtySessionSpec(effect: SessionSpawnEffect): PtySessionSpec {
   return {
     sessionId: effect.sessionId,
     surfaceId: effect.surfaceId,
+    runtimeEpoch: makeId("epoch"),
     workspaceId: effect.workspaceId,
     launch: effect.launch,
     cols: effect.initialSize.cols,
@@ -928,12 +915,16 @@ function clearSnapshotNotifications(state: AppState): void {
 
 function resetRestoredSessions(state: AppState): void {
   for (const session of Object.values(state.sessions)) {
-    if (session.runtimeState !== "exited") {
-      session.runtimeState = "pending";
-      session.shellInputReady = false;
-      delete session.pid;
-      delete session.exitCode;
+    const surface = state.surfaces[session.surfaceId];
+    if (!surface || surface.sessionId !== session.id) {
+      continue;
     }
+    // An exited runtime is meaningful only within the process that observed
+    // it. A persisted surface starts a fresh runtime epoch on the next launch.
+    session.runtimeState = "pending";
+    session.shellInputReady = false;
+    delete session.pid;
+    delete session.exitCode;
   }
 }
 
@@ -967,7 +958,6 @@ type ShellGroup =
   | "workspaceRows"
   | "activeWorkspace"
   | "activeWorkspacePaneTree"
-  | "workspacePaneTrees"
   | "notifications"
   | "settings"
   | "terminalTypography";
@@ -982,37 +972,15 @@ interface ShellPatchProfileContext {
   surfaceMetadataFields?: string[];
 }
 
-function buildWorkspacePaneTreesPatch(
-  state: AppState,
-  currentTrees: Record<Id, ActiveWorkspacePaneTreeVm>,
-  nextTreesOut: Record<Id, ActiveWorkspacePaneTreeVm>
-): WorkspacePaneTreesPatch | null {
-  const currentIds = new Set(Object.keys(currentTrees));
-  const nextIds = new Set(Object.keys(state.workspaces));
-  const remove = [...currentIds].filter((id) => !nextIds.has(id));
-  const upsert: Record<Id, ActiveWorkspacePaneTreeVm> = {};
-
-  Object.assign(nextTreesOut, currentTrees);
-  for (const id of remove) {
-    delete nextTreesOut[id];
-  }
-
-  for (const id of nextIds) {
-    const nextTree = buildWorkspacePaneTreeVm(state, id);
-    nextTreesOut[id] = nextTree;
-    if (!isDeepStrictEqual(currentTrees[id], nextTree)) {
-      upsert[id] = nextTree;
-    }
-  }
-
-  if (remove.length === 0 && Object.keys(upsert).length === 0) {
-    return null;
-  }
-
-  return {
-    ...(Object.keys(upsert).length > 0 ? { upsert } : {}),
-    ...(remove.length > 0 ? { remove } : {})
-  };
+function actionMayRemoveSurfaces(action: AppAction): boolean {
+  return (
+    action.type === "workspace.close" ||
+    action.type === "workspace.closeOthers" ||
+    action.type === "pane.close" ||
+    action.type === "surface.close" ||
+    action.type === "surface.closeOthers" ||
+    action.type === "state.restore"
+  );
 }
 
 function buildWorkspaceRowsPatch(
@@ -1064,9 +1032,6 @@ function shellGroupsFromMutation(
   }
   if (mutation.activeWorkspacePaneTree) {
     groups.add("activeWorkspacePaneTree");
-  }
-  if (mutation.paneTreeWorkspaceIds && mutation.paneTreeWorkspaceIds.size > 0) {
-    groups.add("workspacePaneTrees");
   }
   if (mutation.notifications) {
     groups.add("notifications");

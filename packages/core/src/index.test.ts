@@ -66,8 +66,6 @@ describe("core reducer", () => {
       workspaceRows: true,
       activeWorkspacePaneTree: true
     });
-    expect(result.mutation.paneTreeWorkspaceIds).toBeInstanceOf(Set);
-    expect(result.mutation.paneTreeWorkspaceIds!.size).toBeGreaterThan(0);
   });
 
   it("reports shell chrome and settings mutations on their owned slices", () => {

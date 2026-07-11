@@ -645,6 +645,9 @@ describe("app runtime restore", () => {
 
   it("restores a clean-shutdown snapshot when restore-on-launch is set", () => {
     const snapshot = createInitialState("/bin/zsh");
+    const exitedSessionId = Object.keys(snapshot.sessions)[0]!;
+    snapshot.sessions[exitedSessionId].runtimeState = "exited";
+    snapshot.sessions[exitedSessionId].exitCode = 137;
 
     applyAction(snapshot, {
       type: "workspace.create",
@@ -666,12 +669,60 @@ describe("app runtime restore", () => {
 
     expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
     for (const session of Object.values(restored.sessions)) {
-      if (snapshot.sessions[session.id]?.runtimeState !== "exited") {
-        expect(session.runtimeState).toBe("pending");
-        expect(session.shellInputReady).toBe(false);
-        expect("pid" in session).toBe(false);
-        expect("exitCode" in session).toBe(false);
+      expect(session.runtimeState).toBe("pending");
+      expect(session.shellInputReady).toBe(false);
+      expect("pid" in session).toBe(false);
+      expect("exitCode" in session).toBe(false);
+    }
+  });
+
+  it("respawns persisted exited surfaces with fresh runtime epochs on the next launch", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    applyAction(snapshot, {
+      type: "workspace.create",
+      name: "restored project"
+    });
+    for (const session of Object.values(snapshot.sessions)) {
+      session.runtimeState = "exited";
+      session.shellInputReady = false;
+      session.pid = 42;
+      session.exitCode = 1;
+    }
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
       }
+    });
+
+    const restored = runtime.restoreInitialState();
+    const restoredSessionIds = new Set(
+      Object.values(restored.surfaces).map((surface) => surface.sessionId)
+    );
+    for (const sessionId of restoredSessionIds) {
+      expect(restored.sessions[sessionId]).toMatchObject({
+        runtimeState: "pending",
+        shellInputReady: false
+      });
+      expect(restored.sessions[sessionId]).not.toHaveProperty("pid");
+      expect(restored.sessions[sessionId]).not.toHaveProperty("exitCode");
+    }
+
+    const ptyHost = { send: vi.fn() };
+    runtime.setStore(new AppStore(restored));
+    runtime.setPtyHost(ptyHost as never);
+    runtime.respawnRestoredSessions();
+
+    const spawnMessages = ptyHost.send.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "spawn");
+    expect(spawnMessages).toHaveLength(restoredSessionIds.size);
+    expect(
+      new Set(spawnMessages.map((message) => message.spec.sessionId))
+    ).toEqual(restoredSessionIds);
+    for (const message of spawnMessages) {
+      expect(message.spec.runtimeEpoch).toMatch(/^epoch_/);
     }
   });
 
@@ -760,7 +811,8 @@ describe("app runtime restore", () => {
   it("replaces restored agent session launches with resume launches before respawn", () => {
     const snapshot = createInitialState("/bin/zsh");
     const sessionId = Object.keys(snapshot.sessions)[0]!;
-    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].runtimeState = "exited";
+    snapshot.sessions[sessionId].exitCode = 137;
     snapshot.sessions[sessionId].agentSessionRef = {
       vendor: "codex",
       externalKey: "codex:codex-session",
@@ -812,6 +864,9 @@ describe("app runtime restore", () => {
     expect(resolveExternalAgentSession).toHaveBeenCalledWith(
       "codex:codex-session"
     );
+    expect(snapshot.sessions[sessionId]).not.toHaveProperty("runtimeEpoch");
+    expect(snapshot.sessions[sessionId]).not.toHaveProperty("sequence");
+    expect(spawnMessage.spec.runtimeEpoch).toMatch(/^epoch_/);
     expect(spawnMessage.spec.launch).toMatchObject({
       cwd: "/tmp/project",
       initialInput: "codex resume codex-session\r",
@@ -1113,6 +1168,56 @@ describe("app runtime shell patches", () => {
     }
   });
 
+  it("emits removal tombstones and the current surface inventory", () => {
+    const runtime = createRuntime(false);
+    const window = createMockWindow();
+    browserWindows.push(window);
+
+    try {
+      const state = runtime.getState();
+      const originalWorkspaceId =
+        state.windows[state.activeWindowId].activeWorkspaceId;
+      runtime.dispatchAppAction({ type: "workspace.create", name: "hidden" });
+      const hiddenWorkspaceId =
+        state.windows[state.activeWindowId].activeWorkspaceId;
+      const hiddenSurfaceIds = Object.values(state.surfaces)
+        .filter(
+          (surface) =>
+            state.panes[surface.paneId]?.workspaceId === hiddenWorkspaceId
+        )
+        .map((surface) => surface.id);
+
+      runtime.dispatchAppAction({
+        type: "workspace.select",
+        workspaceId: originalWorkspaceId
+      });
+      window.webContents.send.mockClear();
+
+      runtime.dispatchAppAction({
+        type: "workspace.close",
+        workspaceId: hiddenWorkspaceId
+      });
+
+      const remainingSurfaceIds = Object.keys(runtime.getState().surfaces);
+
+      expect(getLastShellPatch(window)).toEqual(
+        expect.objectContaining({
+          removedSurfaceIds: hiddenSurfaceIds,
+          surfaceIds: remainingSurfaceIds,
+          workspaceRowsPatch: expect.objectContaining({
+            remove: [hiddenWorkspaceId]
+          })
+        })
+      );
+      expect(runtime.getShellState().surfaceIds).toEqual(remainingSurfaceIds);
+      expect(getLastShellPatch(window)).not.toHaveProperty(
+        "workspacePaneTreesPatch"
+      );
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
   it("builds shell snapshots with an activity-only active workspace slice", () => {
     const runtime = createRuntime(false);
 
@@ -1141,6 +1246,10 @@ describe("app runtime shell patches", () => {
           activePaneId: expect.any(String)
         })
       );
+      expect(snapshot.surfaceIds).toEqual(
+        Object.keys(runtime.getState().surfaces)
+      );
+      expect(snapshot).not.toHaveProperty("workspacePaneTrees");
     } finally {
       runtime.shutdown();
     }
@@ -1419,11 +1528,7 @@ describe("app runtime shell patches", () => {
             actionSurfaceId: surfaceId,
             effectTypes: expect.arrayContaining(["persist"]),
             surfaceMetadataFields: ["title"],
-            requestedGroups: [
-              "activeWorkspacePaneTree",
-              "workspacePaneTrees",
-              "workspaceRows"
-            ]
+            requestedGroups: ["activeWorkspacePaneTree", "workspaceRows"]
           })
         })
       );

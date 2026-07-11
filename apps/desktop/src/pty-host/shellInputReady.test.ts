@@ -64,7 +64,7 @@ describe("pty-host shell input readiness", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("flushes pending output before emitting ready or writing queued input", () => {
+  it("runs the ready hook before emitting ready", () => {
     const record = createRecord("codex\r");
     const calls: string[] = [];
     record.pty.write = (text: string) => {
@@ -75,11 +75,11 @@ describe("pty-host shell input readiness", () => {
     markShellInputReady(
       record,
       (event) => calls.push(`event:${event.type}`),
-      () => calls.push("flush")
+      () => calls.push("ready")
     );
 
     expect(record.writes).toEqual(["codex\r"]);
-    expect(calls).toEqual(["flush", "write:codex\r", "event:shell.ready"]);
+    expect(calls).toEqual(["write:codex\r", "ready", "event:shell.ready"]);
   });
 
   it("uses a fallback timer so integrated shells cannot stay blocked forever", () => {

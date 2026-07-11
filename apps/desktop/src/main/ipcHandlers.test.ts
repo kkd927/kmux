@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { BrowserWindow, Menu, type MenuItemConstructorOptions } from "electron";
+import {
+  BrowserWindow,
+  Menu,
+  type IpcMainInvokeEvent,
+  type MenuItemConstructorOptions
+} from "electron";
 import { buildDefaultShortcuts } from "@kmux/ui";
 
 import type {
@@ -13,6 +18,10 @@ import type {
   TerminalFileLinkResolveResult
 } from "@kmux/proto";
 import { createRendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
+import type {
+  TerminalStreamAttachResult,
+  TerminalStreamGrant
+} from "../shared/terminalPort";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>()
@@ -52,19 +61,11 @@ function registerTestHandlers(options: {
   snapshot: ExternalAgentSessionsSnapshot;
   resumeResult: ExternalAgentSessionResumeResult;
   attachmentResult?: CreateImageAttachmentsResult;
-  completeAttachSurface?: (
-    contentsId: number,
+  attachTerminalStream?: (
+    event: IpcMainInvokeEvent,
     surfaceId: string,
-    attachId: string,
     expectedSessionId: string
-  ) => Promise<{ status: "ready" }>;
-  resizeSurface?: (
-    contentsId: number,
-    surfaceId: string,
-    attachId: string | null,
-    cols: number,
-    rows: number
-  ) => Promise<void>;
+  ) => TerminalStreamAttachResult;
   openExternalUrl?: (url: string) => Promise<void>;
   openTerminalFilePath?: (
     surfaceId: string,
@@ -100,19 +101,15 @@ function registerTestHandlers(options: {
     getUsageView: vi.fn(),
     getUpdaterState: vi.fn(),
     dispatchAppAction: vi.fn(),
-    attachSurface: vi.fn(),
-    completeAttachSurface: options.completeAttachSurface ?? vi.fn(),
+    attachTerminalStream: options.attachTerminalStream ?? vi.fn(),
     snapshotSurface: vi.fn(),
-    detachSurface: vi.fn(),
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
     openExternalUrl: options.openExternalUrl ?? vi.fn(),
     openTerminalFilePath: options.openTerminalFilePath ?? vi.fn(),
     resolveTerminalFileLinks:
       options.resolveTerminalFileLinks ?? vi.fn(() => ({ links: [] })),
-    resizeSurface: options.resizeSurface ?? vi.fn(),
     identify: vi.fn(),
-    listTerminalFontFamilies: vi.fn(),
     previewTerminalTypography: vi.fn(),
     reportTerminalTypographyProbe: vi.fn(),
     importTerminalThemePalette: vi.fn(),
@@ -199,6 +196,45 @@ describe("ipc handlers", () => {
         keepProcessAliveWhenLastWindowCloses: true
       }
     });
+  });
+
+  it("passes the invoking frame through when requesting a terminal stream", () => {
+    const grant: TerminalStreamGrant = {
+      attachId: "attach_1",
+      session: {
+        surfaceId: "surface_1",
+        sessionId: "session_1",
+        epoch: "epoch_1"
+      }
+    };
+    const result = {
+      status: "granted",
+      grant
+    } satisfies TerminalStreamAttachResult;
+    const attachTerminalStream = vi.fn(() => result);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      attachTerminalStream
+    });
+    const handler = handlers.get("kmux:terminal-stream:attach");
+    const event = {
+      sender: { id: 7 },
+      senderFrame: { routingId: 9 }
+    } as unknown as IpcMainInvokeEvent;
+
+    expect(handler?.(event, "surface_1", "session_1")).toBe(result);
+    expect(attachTerminalStream).toHaveBeenCalledWith(
+      event,
+      "surface_1",
+      "session_1"
+    );
   });
 
   it("registers external session list and resume handlers", async () => {
@@ -435,68 +471,6 @@ describe("ipc handlers", () => {
       vi.mocked(BrowserWindow.fromWebContents).mockReset();
       vi.mocked(Menu.buildFromTemplate).mockReset();
     }
-  });
-
-  it("registers attach completion handler", async () => {
-    const completeAttachSurface = vi.fn(async () => ({
-      status: "ready" as const
-    }));
-    registerTestHandlers({
-      snapshot: {
-        updatedAt: "2026-05-13T12:00:00.000Z",
-        sessions: []
-      },
-      resumeResult: {
-        workspaceId: "workspace-1",
-        surfaceId: "surface-1"
-      },
-      completeAttachSurface
-    });
-
-    const handler = handlers.get("kmux:attach-surface-complete");
-
-    expect(handler).toBeTypeOf("function");
-    await expect(
-      Promise.resolve(
-        handler?.({ sender: { id: 44 } }, "surface-1", "attach-1", "session-1")
-      )
-    ).resolves.toEqual({ status: "ready" });
-    expect(completeAttachSurface).toHaveBeenCalledWith(
-      44,
-      "surface-1",
-      "attach-1",
-      "session-1"
-    );
-  });
-
-  it("routes resize requests with sender and attach identity", async () => {
-    const resizeSurface = vi.fn(async () => {});
-    registerTestHandlers({
-      snapshot: {
-        updatedAt: "2026-05-13T12:00:00.000Z",
-        sessions: []
-      },
-      resumeResult: {
-        workspaceId: "workspace-1",
-        surfaceId: "surface-1"
-      },
-      resizeSurface
-    });
-
-    const handler = handlers.get("kmux:terminal:resize");
-
-    expect(handler).toBeTypeOf("function");
-    await Promise.resolve(
-      handler?.({ sender: { id: 44 } }, "surface-1", "attach-1", 132, 43)
-    );
-    expect(resizeSurface).toHaveBeenCalledWith(
-      44,
-      "surface-1",
-      "attach-1",
-      132,
-      43,
-      undefined
-    );
   });
 
   it("registers external URL open handler", async () => {

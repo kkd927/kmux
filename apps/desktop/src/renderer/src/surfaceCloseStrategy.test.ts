@@ -2,7 +2,6 @@ import {
   applyAction,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
-  buildAllWorkspacePaneTreesVm,
   buildNotificationsVm,
   buildShellSettingsVm,
   buildShellWindowChromeVm,
@@ -18,14 +17,16 @@ import {
   determineSurfaceCloseStrategy
 } from "./surfaceCloseStrategy";
 
-function buildShellState(state: ReturnType<typeof createInitialState>): ShellStoreSnapshot {
+function buildShellState(
+  state: ReturnType<typeof createInitialState>
+): ShellStoreSnapshot {
   return {
     version: 0,
+    surfaceIds: Object.keys(state.surfaces),
     ...buildShellWindowChromeVm(state),
     workspaceRows: buildWorkspaceRowsVm(state),
     activeWorkspace: buildActiveWorkspaceActivityVm(state),
     activeWorkspacePaneTree: buildActiveWorkspacePaneTreeVm(state),
-    workspacePaneTrees: buildAllWorkspacePaneTreesVm(state),
     notifications: buildNotificationsVm(state),
     settings: buildShellSettingsVm(state),
     terminalTypography: createPendingResolvedTerminalTypographyVm(
@@ -57,13 +58,13 @@ describe("surface close strategy", () => {
     applyAction(state, { type: "workspace.create", name: "alpha" });
     applyAction(state, { type: "workspace.select", workspaceId });
 
-    expect(determineSurfaceCloseStrategy(buildShellState(state), surfaceId)).toEqual(
-      {
-        kind: "confirm-workspace-close",
-        workspaceId,
-        isLastWorkspace: false
-      }
-    );
+    expect(
+      determineSurfaceCloseStrategy(buildShellState(state), surfaceId)
+    ).toEqual({
+      kind: "confirm-workspace-close",
+      workspaceId,
+      isLastWorkspace: false
+    });
   });
 
   it("asks for replacement confirmation when the workspace is the app's last workspace", () => {
@@ -72,13 +73,13 @@ describe("surface close strategy", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
 
-    expect(determineSurfaceCloseStrategy(buildShellState(state), surfaceId)).toEqual(
-      {
-        kind: "confirm-workspace-close",
-        workspaceId,
-        isLastWorkspace: true
-      }
-    );
+    expect(
+      determineSurfaceCloseStrategy(buildShellState(state), surfaceId)
+    ).toEqual({
+      kind: "confirm-workspace-close",
+      workspaceId,
+      isLastWorkspace: true
+    });
   });
 
   it("asks for workspace close confirmation when closing the app's last pane surface", () => {

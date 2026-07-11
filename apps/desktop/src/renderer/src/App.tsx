@@ -64,6 +64,7 @@ import type {
   SurfaceTabDropDirection
 } from "./surfaceTabDrag";
 import * as terminalInstanceStore from "./terminalInstanceStore";
+import { terminalStreamClient } from "./terminalStreamClient";
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
@@ -124,7 +125,9 @@ type WorktreeConversionDialog =
 
 const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
-const EMPTY_WORKSPACE_PANE_TREES: ShellStoreSnapshot["workspacePaneTrees"] = {};
+const forgetTerminalStreamSurface = (surfaceId: string): void => {
+  terminalStreamClient.forgetSurface(surfaceId);
+};
 const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" }
@@ -146,9 +149,6 @@ export function App(): JSX.Element {
   );
   const activeWorkspacePaneTree = useShellSelector(
     (snapshot) => snapshot?.activeWorkspacePaneTree ?? null
-  );
-  const workspacePaneTrees = useShellSelector(
-    (snapshot) => snapshot?.workspacePaneTrees ?? EMPTY_WORKSPACE_PANE_TREES
   );
   const notifications = useShellSelector(
     (snapshot) => snapshot?.notifications ?? EMPTY_NOTIFICATIONS
@@ -200,9 +200,7 @@ export function App(): JSX.Element {
   const [prefersDarkColorScheme, setPrefersDarkColorScheme] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const [settingsDraft, setSettingsDraft] = useState(settings ?? undefined);
-  const [availableTerminalFontFamilies, setAvailableTerminalFontFamilies] =
-    useState<string[]>([]);
+  const [settingsDraft, setSettingsDraft] = useState<KmuxSettings>();
   const [
     settingsTerminalTypographyPreview,
     setSettingsTerminalTypographyPreview
@@ -232,23 +230,6 @@ export function App(): JSX.Element {
     worktreeDialogOpen: false
   });
   useEffect(() => {
-    setSettingsDraft(
-      settings
-        ? {
-            ...settings,
-            shortcuts: omitDeprecatedShortcuts(settings.shortcuts)
-          }
-        : undefined
-    );
-  }, [settings]);
-
-  useEffect(() => {
-    if (!settingsOpen) {
-      setSettingsThemeNotice(null);
-    }
-  }, [settingsOpen]);
-
-  useEffect(() => {
     void window.kmux.setUsageDashboardOpen(usageDashboardOpen);
   }, [usageDashboardOpen]);
 
@@ -257,7 +238,7 @@ export function App(): JSX.Element {
   }, [activeWorkspacePaneTree?.id]);
 
   useTerminalInstanceCleanup({
-    workspacePaneTrees,
+    forgetTerminalStreamSurface,
     releaseTerminalSurface: terminalInstanceStore.release
   });
 
@@ -412,24 +393,6 @@ export function App(): JSX.Element {
   }, [terminalTypography?.stackHash, terminalTypography?.resolvedFontFamily]);
 
   useEffect(() => {
-    if (!settingsOpen) {
-      setSettingsTerminalTypographyPreview(null);
-      return;
-    }
-
-    let active = true;
-    void window.kmux.listTerminalFontFamilies().then((fontFamilies) => {
-      if (active) {
-        setAvailableTerminalFontFamilies(fontFamilies);
-      }
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [settingsOpen]);
-
-  useEffect(() => {
     if (!settingsOpen || !settingsDraft) {
       setSettingsTerminalTypographyPreview(null);
       return;
@@ -523,7 +486,7 @@ export function App(): JSX.Element {
     closeWorkspaceCloseConfirm: () => setPendingWorkspaceClose(null),
     closeWorktreeDialog,
     setSearchSurfaceId,
-    setSettingsOpen,
+    closeSettingsModal,
     setNotificationsOpen,
     setRightPanelKind: setActiveRightPanel,
     closePalette,
@@ -1016,11 +979,10 @@ export function App(): JSX.Element {
           />
         ) : null}
         <main className={styles.main}>
-          {Object.values(workspacePaneTrees).map((tree) => (
+          {activeWorkspacePaneTree ? (
             <PaneTree
-              key={tree.id}
-              workspace={tree}
-              active={tree.id === activeWorkspacePaneTree?.id}
+              key={activeWorkspacePaneTree.id}
+              workspace={activeWorkspacePaneTree}
               settings={settings}
               reservedSystemChords={
                 platformDescriptor.keyboard.reservedSystemChords
@@ -1094,7 +1056,7 @@ export function App(): JSX.Element {
               }}
               onToggleSearch={(surfaceId) => setSearchSurfaceId(surfaceId)}
             />
-          ))}
+          ) : null}
         </main>
         {activeRightPanel ? (
           <RightSidebarHost
@@ -1203,7 +1165,6 @@ export function App(): JSX.Element {
         settingsDraft={settingsDraft}
         setSettingsDraft={setSettingsDraft}
         settingsThemeNotice={settingsThemeNotice}
-        availableTerminalFontFamilies={availableTerminalFontFamilies}
         terminalTypographyPreview={
           settingsTerminalTypographyPreview ?? terminalTypography
         }
@@ -1220,7 +1181,7 @@ export function App(): JSX.Element {
           void handleExportTerminalThemeVariant(variant)
         }
         onOpenSettingsJson={() => window.kmux.openSettingsJson()}
-        onCloseSettings={() => setSettingsOpen(false)}
+        onCloseSettings={closeSettingsModal}
         onSaveSettings={(draft) => {
           const settingsPatch = {
             ...draft,
@@ -1229,8 +1190,7 @@ export function App(): JSX.Element {
           void dispatch({
             type: "settings.update",
             patch: settingsPatch
-          });
-          setSettingsOpen(false);
+          }).then(closeSettingsModal);
         }}
       />
     </div>
@@ -1275,9 +1235,25 @@ export function App(): JSX.Element {
   }
 
   function openSettingsModal(): void {
+    if (!settings) {
+      return;
+    }
+    setSettingsDraft({
+      ...settings,
+      shortcuts: omitDeprecatedShortcuts(settings.shortcuts)
+    });
+    setSettingsThemeNotice(null);
+    setSettingsTerminalTypographyPreview(null);
     requestAnimationFrame(() => {
       setSettingsOpen(true);
     });
+  }
+
+  function closeSettingsModal(): void {
+    setSettingsOpen(false);
+    setSettingsDraft(undefined);
+    setSettingsTerminalTypographyPreview(null);
+    setSettingsThemeNotice(null);
   }
 
   function beginWorkspaceRename(

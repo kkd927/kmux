@@ -1,6 +1,7 @@
 # kmux Product Spec
 
 Date: 2026-04-22
+Updated: 2026-07-11
 
 ## 1. Product Definition
 
@@ -26,18 +27,20 @@ The baseline architecture is defined in [`0002-electron-xterm-mvp-architecture.m
 
 Processes:
 
-- `electron-main`: single writer, file-store persistence, socket API, metadata scheduling
-- `pty-host`: `node-pty` and `@xterm/headless` session runtime
-- `renderer`: split UI, sidebar, overlays, visible terminals, and warm surface-scoped terminal widgets used to preserve workspace and surface switch continuity
+- `electron-main`: product-state control plane, file-store persistence, socket API, metadata scheduling, terminal-attach authorization, and lifecycle
+- `pty-host`: one Electron utility-process supervisor containing `node-pty` and `@xterm/headless` session runtimes
+- `renderer`: split UI, sidebar, overlays, visible terminals, one terminal stream router, and a bounded warm terminal cache
 
 Hard rules:
 
 - The renderer must not own PTYs directly.
-- The renderer may keep surface-scoped `xterm.js` widget instances warm across workspace and surface switches to avoid destructive remounts, blank intermediate states, lost focus, and TUI redraw churn.
+- Main must authorize terminal attaches but must not relay terminal bulk output, input, or resize traffic. Each authorized live attach uses a dedicated renderer-to-supervisor `MessagePort` capability.
+- Only each pane's active surface in the active workspace may stay live-attached. Inactive workspace pane trees and hidden surface tabs must detach from the terminal stream.
+- The renderer may keep detached surface-scoped `xterm.js` widget instances in a bounded LRU across workspace and surface switches to avoid destructive remounts, blank intermediate states, lost focus, and TUI redraw churn.
 - Warm terminal widgets are renderer-only caches. The `pty-host` remains the owner of PTY and headless terminal state, and `electron-main` remains the source of truth for workspace, pane, surface, and session state.
-- Hidden surface tabs within a pane must still detach from the terminal stream; switching tabs must hydrate the selected surface widget from that surface's snapshot/stream.
 - Warm terminal widgets must be released when their surfaces leave product state.
 - Any terminal surface visible in the active workspace must continue rendering live output regardless of pane focus, app focus, or interaction with other panes.
+- Terminal attach and recovery must preserve epoch and mutation-sequence ordering through checkpoint, resume, and resync paths.
 - All state mutation must flow through the main reducer.
 - Stable `windowId`, `workspaceId`, `paneId`, `surfaceId`, and `sessionId` values must be preserved.
 - Workspace switching must preserve the active pane tree's terminal continuity without making hidden workspace widgets authoritative for session state.
@@ -73,8 +76,8 @@ Hard rules:
 - Search, find-next, and find-previous
 - Copy mode
 - OSC-based cwd, title, and bell handling
-- Attach snapshot plus incremental output
-- Surface-scoped warm terminal preservation across workspace and surface switches
+- Checkpoint/resume attach plus ordered incremental output and atomic resync
+- Bounded surface-scoped warm terminal preservation across workspace and surface switches
 - Default `xterm.js` renderer behavior across splits, surfaces, and workspace switches
 
 ### 3.4 Sidebar / Notifications
@@ -106,16 +109,17 @@ Hard rules:
 
 - Closing the last app window on macOS must keep the app process, PTY sessions, socket server, and in-memory workspace state alive
 - Reopening the app from the Dock or `activate` flow while the process is still alive must restore the same live workspace, pane, surface, notification, and focus state without a cold boot
-- Explicit app quit, including `Cmd+Q`, must shut down background services and start the next launch from a fresh workspace session
-- Clean relaunch must preserve persisted settings and window chrome state, but must not reuse the previous workspace layout, pane graph, surface tabs, or session set
-- Snapshot persistence exists for crash or unclean shutdown recovery only; a clean shutdown must not restore the previous working set on the next launch
+- Explicit app quit, including `Cmd+Q`, must shut down the PTY supervisor, sessions, socket server, and other background services cleanly.
+- When `Restore workspaces after quitting` is enabled, a clean relaunch must restore the persisted workspace, pane, surface, and session launch state, then create fresh runtime epochs and respawn those sessions. Runtime epochs and terminal stream sequences are never persisted.
+- When `Restore workspaces after quitting` is disabled, a clean relaunch must preserve settings and window chrome state but start with a fresh working set.
+- Snapshot persistence must continue to support crash or unclean-shutdown recovery independently of the clean-quit preference.
 
 ## 4. Validation Criteria
 
 - Preserve a polished window chrome, sidebar, pane header, split geometry, and dark palette baseline with strong readability.
 - Treat pane body content as a functional verification target; it may be masked in visual diffing.
 - Pass `npm run test` and `npm run build`.
-- After launch, verify workspace, split, surface, notification, socket, close-window continuity, clean-quit fresh launch, and crash-recovery behavior.
+- After launch, verify workspace, split, surface, notification, socket, close-window continuity, both clean-quit restore modes, and crash-recovery behavior.
 - Workspace switching validation must cover terminal continuity: no blank intermediate pane body, no lost focused terminal input, no stale active surface after returning to a workspace, and no accidental reuse after a pane or workspace is closed.
 - Warm terminal validation must cover resource policy: closed panes and surfaces release cached terminal widgets, and inactive tab hydration still uses the selected surface's snapshot/stream.
 - If a problem is found, fix it and rerun validation.

@@ -255,7 +255,6 @@ async function expectTerminalContinuitySamples(
 ): Promise<void> {
   const samples: Array<{
     text: string;
-    hiddenMarkerCount: number;
     hiddenByVisibility: boolean;
     frameWidth: number;
   }> = [];
@@ -276,10 +275,6 @@ async function expectTerminalContinuitySamples(
 
           return {
             text: rows?.textContent ?? "",
-            hiddenMarkerCount:
-              terminal?.querySelectorAll(
-                "[data-terminal-replay-hidden], [data-terminal-resize-redraw-hidden]"
-              ).length ?? 0,
             hiddenByVisibility: elements.some(
               (element) => getComputedStyle(element).visibility === "hidden"
             ),
@@ -295,7 +290,6 @@ async function expectTerminalContinuitySamples(
   const failedSample = samples.find(
     (sample) =>
       !sample.text.includes(marker) ||
-      sample.hiddenMarkerCount > 0 ||
       sample.hiddenByVisibility ||
       sample.frameWidth <= 0
   );
@@ -494,6 +488,30 @@ test("terminal renders with xterm DOM rows by default", async () => {
     await expect(textFontInput).toHaveValue(/"JetBrainsMono Nerd Font Mono"/);
     await expect(textFontInput).not.toHaveValue(/kmux JetBrainsMono/);
     await expect(page.getByTestId("terminal-typography-preview")).toBeVisible();
+  } finally {
+    await closeKmux(launched);
+  }
+});
+
+test("settings modal discards an unsaved text font when cancelled", async () => {
+  const launched = await launchKmux("kmux-e2e-settings-cancel-draft-");
+
+  try {
+    const page = launched.page;
+    const savedFont = (await getView(page)).settings.terminalTypography
+      .preferredTextFontFamily;
+
+    await openSettingsCategory(page, "Terminal");
+    await page.getByLabel("Text font").fill('"Unsaved Font", monospace');
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByTestId("settings-dialog")).toHaveCount(0);
+
+    await openSettingsCategory(page, "Terminal");
+    await expect(page.getByLabel("Text font")).toHaveValue(savedFont);
+    expect(
+      (await getView(page)).settings.terminalTypography
+        .preferredTextFontFamily
+    ).toBe(savedFont);
   } finally {
     await closeKmux(launched);
   }

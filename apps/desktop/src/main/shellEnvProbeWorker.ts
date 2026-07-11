@@ -2,6 +2,10 @@ import type * as PtyModule from "node-pty";
 import { isAbsolute } from "node:path";
 
 import { loadNodePty } from "../pty-host/nodePtyLoader";
+import {
+  SHELL_ENV_PROBE_MAX_OUTPUT_BYTES,
+  ShellEnvProbeOutputBuffer
+} from "./shellEnvProbeOutput";
 
 interface ShellEnvProbeWorkerRequest {
   type: "probe";
@@ -16,12 +20,18 @@ interface ShellEnvProbeWorkerResult {
   stdout: string;
 }
 
+interface ShellEnvProbeWorkerStarted {
+  type: "started";
+  ptyPid: number;
+}
+
 interface ShellEnvProbeWorkerError {
   type: "error";
   message: string;
 }
 
 type ShellEnvProbeWorkerMessage =
+  | ShellEnvProbeWorkerStarted
   | ShellEnvProbeWorkerResult
   | ShellEnvProbeWorkerError;
 
@@ -34,11 +44,6 @@ function cleanupActivePty(signal: NodeJS.Signals = "SIGTERM"): void {
     return;
   }
   try {
-    pty.kill(signal);
-  } catch {
-    // ignore
-  }
-  try {
     process.kill(-pty.pid, signal);
   } catch {
     try {
@@ -46,6 +51,11 @@ function cleanupActivePty(signal: NodeJS.Signals = "SIGTERM"): void {
     } catch {
       // ignore
     }
+  }
+  try {
+    pty.kill(signal);
+  } catch {
+    // ignore
   }
 }
 
@@ -70,31 +80,49 @@ function sendAndExit(
 
 async function runProbe(request: ShellEnvProbeWorkerRequest): Promise<string> {
   const pty = loadNodePty();
-  let output = "";
+  const output = new ShellEnvProbeOutputBuffer();
 
   return await new Promise((resolve, reject) => {
+    let settled = false;
+    let spawnedPty: PtyModule.IPty;
     try {
-      activePty = pty.spawn(request.shellPath, request.args, {
+      spawnedPty = pty.spawn(request.shellPath, request.args, {
         name: "xterm-256color",
         cols: 80,
         rows: 24,
         cwd: resolveProbeCwd(request),
         env: request.env
       });
+      activePty = spawnedPty;
+      sendWorkerMessage({ type: "started", ptyPid: spawnedPty.pid });
     } catch (error) {
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
 
-    activePty.onData((chunk) => {
-      output += chunk;
+    spawnedPty.onData((chunk) => {
+      if (settled || output.append(chunk)) {
+        return;
+      }
+      settled = true;
+      cleanupActivePty("SIGKILL");
+      reject(
+        new Error(
+          `shell env PTY probe exceeded ${SHELL_ENV_PROBE_MAX_OUTPUT_BYTES} output bytes`
+        )
+      );
     });
 
-    activePty.onExit(({ exitCode, signal }) => {
-      const finishedOutput = output;
-      activePty = null;
+    spawnedPty.onExit(({ exitCode, signal }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (activePty === spawnedPty) {
+        activePty = null;
+      }
       if (exitCode === 0) {
-        resolve(finishedOutput);
+        resolve(output.toString());
         return;
       }
       reject(
@@ -104,6 +132,19 @@ async function runProbe(request: ShellEnvProbeWorkerRequest): Promise<string> {
       );
     });
   });
+}
+
+function sendWorkerMessage(message: ShellEnvProbeWorkerMessage): void {
+  if (!process.send || !process.connected) {
+    return;
+  }
+  try {
+    process.send(message, () => {
+      // Parent-side timeout and disconnect handling own cleanup.
+    });
+  } catch {
+    // The parent may have exited between the connected check and send.
+  }
 }
 
 function resolveProbeCwd(request: ShellEnvProbeWorkerRequest): string {
@@ -140,7 +181,12 @@ process.once("message", async (message: ShellEnvProbeWorkerRequest) => {
 });
 
 process.on("SIGTERM", () => {
-  cleanupActivePty();
+  cleanupActivePty("SIGKILL");
+  process.exit(1);
+});
+
+process.on("disconnect", () => {
+  cleanupActivePty("SIGKILL");
   process.exit(1);
 });
 

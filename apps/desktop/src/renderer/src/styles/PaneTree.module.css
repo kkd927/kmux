@@ -7,11 +7,6 @@
   min-height: 0;
 }
 
-.tree[data-active="false"] {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .tree > * {
   flex: 1;
   min-width: 0;

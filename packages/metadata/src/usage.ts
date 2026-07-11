@@ -71,6 +71,10 @@ export interface UsageAdapterDirtyOptions {
 export interface UsageAdapter {
   readonly vendor: UsageVendor;
   initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult>;
+  initialScanRange?(
+    range: UsageTimeRange,
+    cursorDayStartMs: number
+  ): Promise<UsageAdapterReadResult>;
   readIncremental(startOfDayMs: number): Promise<UsageAdapterReadResult>;
   markDirty?(options?: UsageAdapterDirtyOptions): void;
   watch(onChange: () => void): () => void;
@@ -102,6 +106,11 @@ type UsageTimeRange = {
   fromMs: number;
   toMs?: number;
 };
+
+export interface UsageStartupScanResult {
+  reads: UsageAdapterReadResult[];
+  historyDays?: UsageHistoryDay[];
+}
 
 interface JsonlCursor {
   kind: "jsonl";
@@ -218,6 +227,19 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   async initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult> {
+    this.resetForInitialScan(startOfDayMs);
+    return this.readAllSources({ fromMs: startOfDayMs }, true);
+  }
+
+  async initialScanRange(
+    range: UsageTimeRange,
+    cursorDayStartMs: number
+  ): Promise<UsageAdapterReadResult> {
+    this.resetForInitialScan(cursorDayStartMs);
+    return this.readAllSources(range, true, dayKeyFor(cursorDayStartMs));
+  }
+
+  private resetForInitialScan(startOfDayMs: number): void {
     this.dayKey = dayKeyFor(startOfDayMs);
     this.codexContexts.clear();
     this.codexTotals.clear();
@@ -226,7 +248,6 @@ class FileUsageAdapter implements UsageAdapter {
     this.sourceIndexDirty = true;
     this.dirtySourceIndex = true;
     this.dirtyPaths.clear();
-    return this.readAllSources({ fromMs: startOfDayMs }, true);
   }
 
   async readIncremental(startOfDayMs: number): Promise<UsageAdapterReadResult> {
@@ -309,7 +330,8 @@ class FileUsageAdapter implements UsageAdapter {
 
   private async readAllSources(
     range: UsageTimeRange,
-    useCursors: boolean
+    useCursors: boolean,
+    cursorDayKey = dayKeyFor(range.fromMs)
   ): Promise<UsageAdapterReadResult> {
     this.refreshAntigravityWorkspaceByConversation();
     const samples: UsageEventSample[] = [];
@@ -317,10 +339,24 @@ class FileUsageAdapter implements UsageAdapter {
 
     for (const source of sources) {
       if (source.kind === "json") {
-        samples.push(...this.readJsonSource(source, range, useCursors));
+        for (const sample of this.readJsonSource(
+          source,
+          range,
+          useCursors,
+          cursorDayKey
+        )) {
+          samples.push(sample);
+        }
         continue;
       }
-      samples.push(...this.readJsonlSource(source, range, useCursors));
+      for (const sample of this.readJsonlSource(
+        source,
+        range,
+        useCursors,
+        cursorDayKey
+      )) {
+        samples.push(sample);
+      }
     }
 
     return {
@@ -500,7 +536,8 @@ class FileUsageAdapter implements UsageAdapter {
   private readJsonlSource(
     source: SourceDescriptor,
     range: UsageTimeRange,
-    useCursors: boolean
+    useCursors: boolean,
+    cursorDayKey: string
   ): UsageEventSample[] {
     const stats = safeStat(source.path);
     if (!stats) {
@@ -508,12 +545,11 @@ class FileUsageAdapter implements UsageAdapter {
       return [];
     }
 
-    const dayKey = dayKeyFor(range.fromMs);
     const previous = this.cursors.get(source.path);
     let offset =
       useCursors &&
       previous?.kind === "jsonl" &&
-      previous.dayKey === dayKey &&
+      previous.dayKey === cursorDayKey &&
       previous.inode === stats.ino &&
       stats.size >= previous.offset
         ? previous.offset
@@ -563,7 +599,7 @@ class FileUsageAdapter implements UsageAdapter {
     if (useCursors) {
       this.cursors.set(source.path, {
         kind: "jsonl",
-        dayKey,
+        dayKey: cursorDayKey,
         offset,
         inode: Number(stats.ino),
         mtimeMs: Number(stats.mtimeMs)
@@ -576,7 +612,8 @@ class FileUsageAdapter implements UsageAdapter {
   private readJsonSource(
     source: SourceDescriptor,
     range: UsageTimeRange,
-    useCursors: boolean
+    useCursors: boolean,
+    cursorDayKey: string
   ): UsageEventSample[] {
     const stats = safeStat(source.path);
     if (!stats) {
@@ -584,12 +621,11 @@ class FileUsageAdapter implements UsageAdapter {
       return [];
     }
 
-    const dayKey = dayKeyFor(range.fromMs);
     const previous = this.cursors.get(source.path);
     if (
       useCursors &&
       previous?.kind === "json" &&
-      previous.dayKey === dayKey &&
+      previous.dayKey === cursorDayKey &&
       previous.inode === Number(stats.ino) &&
       previous.mtimeMs === Number(stats.mtimeMs)
     ) {
@@ -614,7 +650,7 @@ class FileUsageAdapter implements UsageAdapter {
       if (useCursors) {
         this.cursors.set(source.path, {
           kind: "json",
-          dayKey,
+          dayKey: cursorDayKey,
           inode: Number(stats.ino),
           mtimeMs: Number(stats.mtimeMs)
         });
@@ -672,6 +708,51 @@ export function createUsageAdapters(
   ];
 }
 
+export async function scanUsageAdaptersAtStartup(
+  adapters: UsageAdapter[],
+  options: {
+    startOfDayMs: number;
+    historyRange?: { fromMs: number; toMs: number };
+  }
+): Promise<UsageStartupScanResult> {
+  if (!options.historyRange) {
+    return {
+      reads: await Promise.all(
+        adapters.map((adapter) => adapter.initialScan(options.startOfDayMs))
+      )
+    };
+  }
+
+  const scanResults = await Promise.all(
+    adapters.map(async (adapter) => {
+      if (!adapter.initialScanRange) {
+        const read = await adapter.initialScan(options.startOfDayMs);
+        return { read, historySamples: read.samples };
+      }
+      const historyRead = await adapter.initialScanRange(
+        options.historyRange!,
+        options.startOfDayMs
+      );
+      return {
+        read: {
+          sourceCount: historyRead.sourceCount,
+          samples: historyRead.samples.filter(
+            (sample) => sample.timestampMs >= options.startOfDayMs
+          )
+        },
+        historySamples: historyRead.samples
+      };
+    })
+  );
+
+  return {
+    reads: scanResults.map((result) => result.read),
+    historyDays: summarizeUsageHistorySampleGroups(
+      scanResults.map((result) => result.historySamples)
+    )
+  };
+}
+
 export async function scanUsageHistoryDays(options: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -686,6 +767,61 @@ export async function scanUsageHistoryDays(options: {
     agentStorageRoots: options.agentStorageRoots,
     platform: options.platform
   });
+  const historySamples = new Map<string, UsageEventSample>();
+
+  try {
+    for (const adapter of adapters) {
+      if (!(adapter instanceof FileUsageAdapter)) {
+        continue;
+      }
+      const result = await adapter.scanRange({
+        fromMs: options.fromMs,
+        toMs: options.toMs
+      });
+      appendUsageHistorySamples(historySamples, result.samples);
+    }
+  } finally {
+    for (const adapter of adapters) {
+      adapter.close();
+    }
+  }
+
+  return summarizeDedupedUsageHistorySamples(historySamples.values());
+}
+
+function summarizeUsageHistorySampleGroups(
+  sampleGroups: Iterable<Iterable<UsageEventSample>>
+): UsageHistoryDay[] {
+  const historySamples = new Map<string, UsageEventSample>();
+  for (const samples of sampleGroups) {
+    appendUsageHistorySamples(historySamples, samples);
+  }
+  return summarizeDedupedUsageHistorySamples(historySamples.values());
+}
+
+function appendUsageHistorySamples(
+  historySamples: Map<string, UsageEventSample>,
+  samples: Iterable<UsageEventSample>
+): void {
+  for (const sample of samples) {
+    if (sample.vendor === "unknown") {
+      continue;
+    }
+    const identity = usageHistorySampleIdentity(sample);
+    const existingSample = historySamples.get(identity);
+    if (existingSample) {
+      if (shouldReplaceUsageSample(existingSample, sample)) {
+        historySamples.set(identity, sample);
+      }
+      continue;
+    }
+    historySamples.set(identity, sample);
+  }
+}
+
+function summarizeDedupedUsageHistorySamples(
+  historySamples: Iterable<UsageEventSample>
+): UsageHistoryDay[] {
   const bucketMap = new Map<
     string,
     {
@@ -705,41 +841,6 @@ export async function scanUsageHistoryDays(options: {
       >;
     }
   >();
-  const historySamples: UsageEventSample[] = [];
-  const historySampleIndexes = new Map<string, number>();
-
-  try {
-    for (const adapter of adapters) {
-      if (!(adapter instanceof FileUsageAdapter)) {
-        continue;
-      }
-      const result = await adapter.scanRange({
-        fromMs: options.fromMs,
-        toMs: options.toMs
-      });
-      for (const sample of result.samples) {
-        if (sample.vendor === "unknown") {
-          continue;
-        }
-        const identity = usageHistorySampleIdentity(sample);
-        const existingIndex = historySampleIndexes.get(identity);
-        if (existingIndex !== undefined) {
-          const existingSample = historySamples[existingIndex];
-          if (shouldReplaceUsageSample(existingSample, sample)) {
-            historySamples[existingIndex] = sample;
-          }
-          continue;
-        }
-        historySampleIndexes.set(identity, historySamples.length);
-        historySamples.push(sample);
-      }
-    }
-  } finally {
-    for (const adapter of adapters) {
-      adapter.close();
-    }
-  }
-
   for (const sample of historySamples) {
     const dayKey = dayKeyFor(sample.timestampMs);
     const dayBucket = bucketMap.get(dayKey) ?? {
@@ -906,7 +1007,9 @@ function walkFiles(
     }
     const nextPath = join(rootPath, entry.name);
     if (entry.isDirectory()) {
-      files.push(...walkFiles(nextPath, depth + 1, includeHiddenDirs));
+      for (const file of walkFiles(nextPath, depth + 1, includeHiddenDirs)) {
+        files.push(file);
+      }
       continue;
     }
     if (entry.isFile()) {

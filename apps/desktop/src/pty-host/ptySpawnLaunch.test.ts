@@ -32,6 +32,7 @@ function createSpawnRequest(
     spec: {
       sessionId: "session_1",
       surfaceId: "surface_1",
+      runtimeEpoch: "epoch_1",
       workspaceId: "workspace_1",
       launch: {
         cwd: "/home/test/project",

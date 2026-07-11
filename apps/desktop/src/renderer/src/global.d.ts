@@ -17,26 +17,25 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   UsageViewSnapshot,
-  SurfaceAttachCompletionResult,
-  SurfaceAttachPayload,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolveResult,
+  TerminalKeyInput,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
-  TerminalKeyInput,
   UpdaterState,
   WorktreeConversionPreview,
   WorktreeBulkRemoveResult,
   WorktreeRemoveResult,
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
-import type { TerminalEvent } from "../../preload/index";
+import type { TerminalStreamAttachResult } from "../../shared/terminalPort";
 
 declare global {
   interface Window {
+    __kmuxLastShellPublishAt?: number;
     kmux: {
       getPlatform(): Promise<RendererPlatformDescriptor>;
       getPathForFile(file: File): string;
@@ -53,20 +52,10 @@ declare global {
         listener: (snapshot: UsageViewSnapshot) => void
       ): () => void;
       subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
-      subscribeTerminal(listener: (event: TerminalEvent) => void): () => void;
-      attachSurface(
+      attachTerminalStream(
         surfaceId: string,
         expectedSessionId: string
-      ): Promise<SurfaceAttachPayload | null>;
-      completeAttachSurface(
-        surfaceId: string,
-        attachId: string,
-        expectedSessionId: string
-      ): Promise<SurfaceAttachCompletionResult>;
-      detachSurface(
-        surfaceId: string,
-        expectedSessionId: string
-      ): Promise<void>;
+      ): Promise<TerminalStreamAttachResult>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
       openExternalUrl(url: string): Promise<void>;
@@ -85,14 +74,6 @@ declare global {
       ): Promise<CreateImageAttachmentsResult>;
       readClipboardImages(): Promise<CreateImageAttachmentPayload[]>;
       hasPasteableClipboardContent(): Promise<boolean>;
-      resizeSurface(
-        surfaceId: string,
-        attachId: string | null,
-        cols: number,
-        rows: number,
-        gestureActive?: boolean
-      ): Promise<void>;
-      listTerminalFontFamilies(): Promise<string[]>;
       previewTerminalTypography(
         settings: TerminalTypographySettings
       ): Promise<ResolvedTerminalTypographyVm>;
@@ -167,6 +148,9 @@ declare global {
       profileSmoothnessEnabled(): boolean;
       recordSmoothnessProfileEvent(
         event: SmoothnessProfileEvent
+      ): Promise<void>;
+      recordSmoothnessProfileEvents(
+        events: SmoothnessProfileEvent[]
       ): Promise<void>;
     };
     kmuxTest?: {

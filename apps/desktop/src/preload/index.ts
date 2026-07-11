@@ -2,6 +2,12 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
+import {
+  KMUX_TERMINAL_PORT_CHANNEL,
+  KMUX_TERMINAL_PORT_WINDOW_MESSAGE,
+  type TerminalStreamAttachResult,
+  type TerminalStreamGrant
+} from "../shared/terminalPort";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type {
   SurfaceContextAction,
@@ -23,13 +29,8 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   UsageViewSnapshot,
-  SurfaceAttachCompletionResult,
-  SurfaceAttachPayload,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
-  SurfaceChunkPayload,
-  SurfaceResizePayload,
-  SurfaceExitPayload,
   SurfaceSnapshotPayload,
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolveResult,
@@ -43,10 +44,27 @@ import type {
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 
-export type TerminalEvent =
-  | { type: "chunk"; payload: SurfaceChunkPayload }
-  | { type: "resize"; payload: SurfaceResizePayload }
-  | { type: "exit"; payload: SurfaceExitPayload };
+ipcRenderer.on(
+  KMUX_TERMINAL_PORT_CHANNEL,
+  (event, grant: TerminalStreamGrant) => {
+    const port = event.ports[0];
+    if (!port) {
+      return;
+    }
+    try {
+      window.postMessage(
+        {
+          type: KMUX_TERMINAL_PORT_WINDOW_MESSAGE,
+          grant
+        },
+        "*",
+        [port]
+      );
+    } catch {
+      port.close();
+    }
+  }
+);
 
 const api = {
   getPlatform(): Promise<RendererPlatformDescriptor> {
@@ -95,39 +113,12 @@ const api = {
     ipcRenderer.on("kmux:updater", handler);
     return () => ipcRenderer.off("kmux:updater", handler);
   },
-  subscribeTerminal(listener: (event: TerminalEvent) => void): () => void {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      payload: TerminalEvent
-    ) => listener(payload);
-    ipcRenderer.on("kmux:terminal-event", handler);
-    return () => ipcRenderer.off("kmux:terminal-event", handler);
-  },
-  attachSurface(
+  attachTerminalStream(
     surfaceId: string,
     expectedSessionId: string
-  ): Promise<SurfaceAttachPayload | null> {
+  ): Promise<TerminalStreamAttachResult> {
     return ipcRenderer.invoke(
-      "kmux:attach-surface",
-      surfaceId,
-      expectedSessionId
-    );
-  },
-  completeAttachSurface(
-    surfaceId: string,
-    attachId: string,
-    expectedSessionId: string
-  ): Promise<SurfaceAttachCompletionResult> {
-    return ipcRenderer.invoke(
-      "kmux:attach-surface-complete",
-      surfaceId,
-      attachId,
-      expectedSessionId
-    );
-  },
-  detachSurface(surfaceId: string, expectedSessionId: string): Promise<void> {
-    return ipcRenderer.invoke(
-      "kmux:detach-surface",
+      "kmux:terminal-stream:attach",
       surfaceId,
       expectedSessionId
     );
@@ -178,25 +169,6 @@ const api = {
   },
   hasPasteableClipboardContent(): Promise<boolean> {
     return ipcRenderer.invoke("kmux:clipboard:has-pasteable-content");
-  },
-  resizeSurface(
-    surfaceId: string,
-    attachId: string | null,
-    cols: number,
-    rows: number,
-    gestureActive?: boolean
-  ): Promise<void> {
-    return ipcRenderer.invoke(
-      "kmux:terminal:resize",
-      surfaceId,
-      attachId,
-      cols,
-      rows,
-      gestureActive
-    );
-  },
-  listTerminalFontFamilies(): Promise<string[]> {
-    return ipcRenderer.invoke("kmux:terminal-typography:fonts:list");
   },
   previewTerminalTypography(
     settings: TerminalTypographySettings
@@ -365,6 +337,11 @@ const api = {
   },
   recordSmoothnessProfileEvent(event: SmoothnessProfileEvent): Promise<void> {
     return ipcRenderer.invoke("kmux:profile:event", event);
+  },
+  recordSmoothnessProfileEvents(
+    events: SmoothnessProfileEvent[]
+  ): Promise<void> {
+    return ipcRenderer.invoke("kmux:profile:events", events);
   }
 };
 

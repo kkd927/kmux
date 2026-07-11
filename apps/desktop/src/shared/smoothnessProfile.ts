@@ -22,6 +22,17 @@ export type SmoothnessProfileEventName =
   | "terminal.resize.ack"
   | "terminal.resize.apply"
   | "terminal.reflow"
+  | "terminal.data-plane.receive"
+  | "terminal.data-plane.parsed"
+  | "terminal.data-plane.render"
+  | "terminal.data-plane.paint"
+  | "terminal.data-plane.resync"
+  | "terminal.data-plane.attach"
+  | "terminal.data-plane.cache"
+  | "terminal.data-plane.resume-settle"
+  | "terminal.data-plane.input"
+  | "terminal.data-plane.main-ingress"
+  | "terminal.data-plane.supervisor"
   | "pane-divider.drag.start"
   | "pane-divider.drag.end";
 
@@ -35,6 +46,7 @@ export interface SmoothnessProfileEvent {
 export interface SmoothnessProfileRecorder {
   enabled: boolean;
   record(event: SmoothnessProfileEvent): void;
+  recordMany?(events: SmoothnessProfileEvent[]): void;
 }
 
 export function isSmoothnessProfileEnabled(

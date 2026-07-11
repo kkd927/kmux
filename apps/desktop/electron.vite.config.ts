@@ -29,7 +29,8 @@ export default defineConfig({
           shellEnvProbeWorker: resolve(
             currentDir,
             "src/main/shellEnvProbeWorker.ts"
-          )
+          ),
+          usageScanWorker: resolve(currentDir, "src/main/usageScanWorker.ts")
         }
       }
     }

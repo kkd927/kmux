@@ -39,9 +39,7 @@ describe("desktop pty protocol", () => {
     expect(resolveDefaultShellArgs("/opt/homebrew/bin/fish", "darwin")).toEqual(
       ["-l"]
     );
-    expect(resolveDefaultShellArgs("/bin/bash", "darwin")).toEqual([
-      "--login"
-    ]);
+    expect(resolveDefaultShellArgs("/bin/bash", "darwin")).toEqual(["--login"]);
     expect(resolveDefaultShellArgs("/usr/local/bin/pwsh", "darwin")).toEqual([
       "-Login"
     ]);
@@ -95,9 +93,9 @@ describe("desktop pty protocol", () => {
     expect(resolvePolicyShellPath(shellLaunchPolicy, { shell: "codex" })).toBe(
       "codex"
     );
-    expect(resolvePolicyShellArgs(shellLaunchPolicy, { shell: "codex" })).toEqual(
-      []
-    );
+    expect(
+      resolvePolicyShellArgs(shellLaunchPolicy, { shell: "codex" })
+    ).toEqual([]);
     expect(resolvePolicyShellPath(shellLaunchPolicy, {})).not.toBe("/bin/zsh");
   });
 
@@ -109,6 +107,7 @@ describe("desktop pty protocol", () => {
         spec: {
           sessionId: "session_1",
           surfaceId: "surface_1",
+          runtimeEpoch: "epoch_1",
           workspaceId: "workspace_1",
           launch: {
             cwd: "/home/test/project",
@@ -123,14 +122,6 @@ describe("desktop pty protocol", () => {
             TERM_PROGRAM: "kmux"
           }
         }
-      },
-      {
-        type: "resize",
-        sessionId: "session_1",
-        attachId: "attach_1",
-        requestId: "resize_1",
-        cols: 132,
-        rows: 40
       },
       {
         type: "input:text",
@@ -169,18 +160,8 @@ describe("desktop pty protocol", () => {
     });
   });
 
-  it("keeps output, raw-output snapshot, and notification events serializable", () => {
+  it("keeps control-plane snapshot and notification events serializable", () => {
     const events: PtyEvent[] = [
-      {
-        type: "chunk",
-        payload: {
-          surfaceId: "surface_1",
-          sessionId: "session_1",
-          sequence: 12,
-          chunk: "hello",
-          segments: [{ sequence: 12, length: 5 }]
-        }
-      },
       {
         type: "snapshot",
         requestId: "snapshot_1",
@@ -206,29 +187,12 @@ describe("desktop pty protocol", () => {
         }
       },
       {
-        type: "resize",
-        payload: {
-          surfaceId: "surface_1",
-          sessionId: "session_1",
-          attachId: "attach_1",
-          cols: 132,
-          rows: 40
-        }
-      },
-      {
         type: "terminal.notification",
         surfaceId: "surface_1",
         sessionId: "session_1",
         protocol: 9,
         title: "Codex",
         message: "Needs input"
-      },
-      {
-        type: "resize:ack",
-        sessionId: "session_1",
-        requestId: "resize_1",
-        cols: 132,
-        rows: 40
       }
     ];
 

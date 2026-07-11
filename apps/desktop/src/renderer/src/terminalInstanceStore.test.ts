@@ -21,35 +21,50 @@ vi.mock("@xterm/addon-web-links", () => ({
 }));
 
 import {
-  acquire,
+  acquireSettlementPin,
+  acquireVisible,
   clearAttachment,
   clearAttachmentReady,
   clearRenderSink,
   detachAttachment,
   getAttachmentSessionId,
-  getLineCwdsForTerminal,
+  getTerminalCacheDiagnostics,
   getReadyAttachId,
   invalidateHydration,
-  isCurrentAttachment,
   isCurrentTerminal,
   getRenderSink,
   release,
   releaseAll,
+  releaseVisibilityPin,
   getLastHydratedSurfaceId,
   getLastHydratedSurfaceSequence,
   markSurfaceHydrated,
   markAttachmentReady,
   markSurfaceRendered,
+  prepareVisibleSet,
   registerAttachment,
+  replaceTerminalBundle,
+  restoreHydrationState,
   setRenderSink,
-  waitForPendingDetach,
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
 
-function makeInstance(): TerminalInstance {
+function makeInstance(
+  dimensions: {
+    cols?: number;
+    normalLines?: number;
+    alternateLines?: number;
+  } = {}
+): TerminalInstance {
   const host = document.createElement("div");
   const terminal = new Terminal();
+  const normal = { length: dimensions.normalLines ?? 4 };
+  const alternate = { length: dimensions.alternateLines ?? 0 };
+  Object.assign(terminal as unknown as Record<string, unknown>, {
+    cols: dimensions.cols ?? 80,
+    buffer: { active: normal, normal, alternate }
+  });
   return {
     host,
     terminal,
@@ -73,7 +88,6 @@ function makeInstance(): TerminalInstance {
     attachmentSessionId: null,
     attachmentToken: null,
     readyAttachId: null,
-    pendingDetachPromise: null,
     renderSink: null
   };
 }
@@ -86,38 +100,68 @@ afterEach(() => {
   releaseAll();
 });
 
-describe("acquire", () => {
-  it("creates a new instance on first call", () => {
-    const init = vi.fn(makeInstance);
-    const { instance, isNew } = acquire("pane-1", init);
-    expect(isNew).toBe(true);
-    expect(init).toHaveBeenCalledOnce();
-    expect(instance).toBeDefined();
-    release("pane-1");
+describe("replaceTerminalBundle", () => {
+  it("keeps the visible surface capability and cache ownership on widget swap", () => {
+    const { instance, visibilityPin } = acquireVisible(
+      "surface-swap",
+      makeInstance
+    );
+    const cleanup = vi.fn();
+    const token = registerAttachment("surface-swap", "session-1", cleanup);
+    expect(token).not.toBeNull();
+    markAttachmentReady("surface-swap", "session-1", "attach-1", token!);
+    markSurfaceHydrated("surface-swap", "surface-swap", 9);
+    const oldTerminal = instance.terminal;
+    const replacement = makeInstance();
+
+    const previous = replaceTerminalBundle(
+      "surface-swap",
+      oldTerminal,
+      replacement
+    );
+
+    expect(previous?.terminal).toBe(oldTerminal);
+    expect(isCurrentTerminal("surface-swap", replacement.terminal)).toBe(true);
+    expect(getReadyAttachId("surface-swap", "session-1")).toBe("attach-1");
+    expect(getLastHydratedSurfaceSequence("surface-swap")).toBe(9);
+    expect(cleanup).not.toHaveBeenCalled();
+
+    releaseVisibilityPin("surface-swap", visibilityPin);
+    expect(replacement.terminal.dispose).not.toHaveBeenCalled();
   });
 
-  it("returns existing instance on second call (store hit)", () => {
-    const init = vi.fn(makeInstance);
-    const { instance: first } = acquire("pane-2", init);
-    const { instance: second, isNew } = acquire("pane-2", init);
-    expect(isNew).toBe(false);
-    expect(init).toHaveBeenCalledOnce();
-    expect(second).toBe(first);
-    release("pane-2");
+  it("rejects replacement once the surface no longer has a visible owner", () => {
+    const { instance, visibilityPin } = acquireVisible(
+      "surface-hidden-swap",
+      makeInstance
+    );
+    releaseVisibilityPin("surface-hidden-swap", visibilityPin);
+    const replacement = makeInstance();
+
+    expect(
+      replaceTerminalBundle(
+        "surface-hidden-swap",
+        instance.terminal,
+        replacement
+      )
+    ).toBeNull();
+    expect(isCurrentTerminal("surface-hidden-swap", instance.terminal)).toBe(
+      true
+    );
   });
 });
 
 describe("release", () => {
   it("disposes the terminal and removes from store", () => {
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-4", init);
+    const { instance } = acquireVisible("pane-4", init);
     const disposeSpy = vi.spyOn(instance.terminal, "dispose");
 
     release("pane-4");
     expect(disposeSpy).toHaveBeenCalledOnce();
 
     // Store is cleared — next acquire creates a new instance
-    const { isNew } = acquire("pane-4", init);
+    const { isNew } = acquireVisible("pane-4", init);
     expect(isNew).toBe(true);
     release("pane-4");
   });
@@ -125,7 +169,7 @@ describe("release", () => {
   it("removes host from DOM on release", () => {
     const parent = document.createElement("div");
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-5", init);
+    const { instance } = acquireVisible("pane-5", init);
     parent.appendChild(instance.host);
 
     release("pane-5");
@@ -138,7 +182,7 @@ describe("release", () => {
 
   it("runs attachment cleanup before disposing", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-attachment", init);
+    acquireVisible("pane-attachment", init);
     const cleanup = vi.fn();
 
     expect(
@@ -152,7 +196,7 @@ describe("release", () => {
 
   it("clears a failed attachment without disposing the terminal", () => {
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-attachment", init);
+    const { instance } = acquireVisible("pane-attachment", init);
     const cleanup = vi.fn();
     const disposeSpy = vi.spyOn(instance.terminal, "dispose");
 
@@ -170,7 +214,7 @@ describe("release", () => {
 
   it("tracks the active attachment session and ready attach id", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-attachment", init);
+    acquireVisible("pane-attachment", init);
     const cleanup = vi.fn();
 
     const token = registerAttachment("pane-attachment", "session-1", cleanup);
@@ -198,7 +242,7 @@ describe("release", () => {
 
   it("ignores ready changes from stale attachment tokens", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-attachment", init);
+    acquireVisible("pane-attachment", init);
     const firstCleanup = vi.fn();
     const secondCleanup = vi.fn();
 
@@ -208,9 +252,6 @@ describe("release", () => {
       firstCleanup
     );
     expect(firstToken).not.toBeNull();
-    expect(
-      isCurrentAttachment("pane-attachment", "session-1", firstToken!)
-    ).toBe(true);
     expect(clearAttachment("pane-attachment", firstCleanup)).toBe(true);
 
     const secondToken = registerAttachment(
@@ -246,7 +287,7 @@ describe("release", () => {
 
   it("detaches the registered attachment without disposing the terminal", () => {
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-attachment", init);
+    const { instance } = acquireVisible("pane-attachment", init);
     const cleanup = vi.fn();
     const disposeSpy = vi.spyOn(instance.terminal, "dispose");
 
@@ -263,107 +304,212 @@ describe("release", () => {
 
     release("pane-attachment");
   });
+});
 
-  it("keeps pending detach waiters blocked until async cleanup settles", async () => {
-    const init = vi.fn(makeInstance);
-    acquire("pane-attachment", init);
-    let resolveDetach!: () => void;
-    const cleanup = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveDetach = resolve;
-        })
+describe("warm terminal LRU", () => {
+  it("reserves the incoming visible set across a workspace tree handoff", async () => {
+    const incoming = new Map<string, TerminalInstance>();
+    const incomingKeys = [
+      "incoming-0",
+      "incoming-1",
+      "incoming-2",
+      "incoming-3"
+    ];
+    for (const key of incomingKeys) {
+      const acquired = acquireVisible(key, () => {
+        const instance = makeInstance();
+        incoming.set(key, instance);
+        return instance;
+      });
+      releaseVisibilityPin(key, acquired.visibilityPin);
+    }
+
+    const outgoing = [
+      "outgoing-0",
+      "outgoing-1",
+      "outgoing-2",
+      "outgoing-3"
+    ].map((key) => ({ key, ...acquireVisible(key, makeInstance) }));
+    prepareVisibleSet(incomingKeys);
+    for (const entry of outgoing) {
+      releaseVisibilityPin(entry.key, entry.visibilityPin);
+    }
+    const reacquired = incomingKeys.map((key) =>
+      acquireVisible(key, makeInstance)
     );
-
-    expect(
-      registerAttachment("pane-attachment", "session-1", cleanup)
-    ).not.toBeNull();
-    detachAttachment("pane-attachment");
-
-    let settled = false;
-    const pending = waitForPendingDetach("pane-attachment").then(() => {
-      settled = true;
-    });
     await Promise.resolve();
-    expect(settled).toBe(false);
 
-    resolveDetach();
-    await pending;
-    expect(settled).toBe(true);
+    expect(reacquired.every((entry) => !entry.isNew)).toBe(true);
+    for (const instance of incoming.values()) {
+      expect(instance.terminal.dispose).not.toHaveBeenCalled();
+    }
+    expect(getTerminalCacheDiagnostics()).toMatchObject({
+      visibleTerminals: 4,
+      warmTerminals: 4,
+      boundViolationCount: 0
+    });
 
-    release("pane-attachment");
+    for (const [index, entry] of reacquired.entries()) {
+      releaseVisibilityPin(incomingKeys[index]!, entry.visibilityPin);
+    }
   });
 
-  it("waits for all in-flight detach cleanups before reattaching", async () => {
-    const init = vi.fn(makeInstance);
-    acquire("pane-attachment", init);
-    let resolveFirstDetach!: () => void;
-    let resolveSecondDetach!: () => void;
-    const firstCleanup = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveFirstDetach = resolve;
-        })
-    );
-    const secondCleanup = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSecondDetach = resolve;
-        })
-    );
+  it("keeps an overlapping pane-move handoff pinned until its final owner leaves", () => {
+    const first = acquireVisible("handoff", makeInstance);
+    const second = acquireVisible("handoff", makeInstance);
 
-    expect(
-      registerAttachment("pane-attachment", "session-1", firstCleanup)
-    ).not.toBeNull();
-    detachAttachment("pane-attachment");
-    expect(
-      registerAttachment("pane-attachment", "session-1", secondCleanup)
-    ).not.toBeNull();
-    detachAttachment("pane-attachment");
+    releaseVisibilityPin("handoff", first.visibilityPin);
+    for (const key of ["warm-a", "warm-b", "warm-c", "warm-d", "warm-e"]) {
+      const warm = acquireVisible(key, makeInstance);
+      releaseVisibilityPin(key, warm.visibilityPin);
+    }
 
-    let settled = false;
-    const pending = waitForPendingDetach("pane-attachment").then(() => {
-      settled = true;
+    expect(second.instance.terminal.dispose).not.toHaveBeenCalled();
+    releaseVisibilityPin("handoff", second.visibilityPin);
+    expect(second.instance.terminal.dispose).not.toHaveBeenCalled();
+  });
+
+  it("keeps a hidden terminal out of the warm LRU until parser settlement releases its lease", () => {
+    const settling = acquireVisible("settling", makeInstance);
+    const settlementPin = acquireSettlementPin("settling");
+    expect(settlementPin).not.toBeNull();
+    releaseVisibilityPin("settling", settling.visibilityPin);
+
+    for (const key of ["warm-0", "warm-1", "warm-2", "warm-3", "warm-4"]) {
+      const warm = acquireVisible(key, makeInstance);
+      releaseVisibilityPin(key, warm.visibilityPin);
+    }
+
+    expect(settling.instance.terminal.dispose).not.toHaveBeenCalled();
+    releaseVisibilityPin("settling", settlementPin!);
+    expect(settling.instance.terminal.dispose).not.toHaveBeenCalled();
+  });
+
+  it("seals an attachment before its last visible pin becomes evictable", () => {
+    const settling = acquireVisible("attached-settling", makeInstance);
+    let settlementPin: ReturnType<typeof acquireSettlementPin> = null;
+    const cleanup = vi.fn(() => {
+      settlementPin = acquireSettlementPin("attached-settling");
     });
-    await Promise.resolve();
-    expect(settled).toBe(false);
+    registerAttachment("attached-settling", "session-1", cleanup);
 
-    resolveSecondDetach();
-    await Promise.resolve();
-    expect(settled).toBe(false);
+    releaseVisibilityPin("attached-settling", settling.visibilityPin);
 
-    resolveFirstDetach();
-    await pending;
-    expect(settled).toBe(true);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(settlementPin).not.toBeNull();
+    for (const key of ["warm-0", "warm-1", "warm-2", "warm-3", "warm-4"]) {
+      const warm = acquireVisible(key, makeInstance);
+      releaseVisibilityPin(key, warm.visibilityPin);
+    }
+    expect(settling.instance.terminal.dispose).not.toHaveBeenCalled();
 
-    release("pane-attachment");
+    releaseVisibilityPin("attached-settling", settlementPin!);
+    expect(settling.instance.terminal.dispose).not.toHaveBeenCalled();
+  });
+
+  it("keeps at most four detached terminals and evicts the least recently used", () => {
+    const instances = new Map<string, TerminalInstance>();
+    const detach = (key: string): void => {
+      const acquired = acquireVisible(key, () => {
+        const instance = makeInstance();
+        instances.set(key, instance);
+        return instance;
+      });
+      releaseVisibilityPin(key, acquired.visibilityPin);
+    };
+
+    for (const key of ["surface-0", "surface-1", "surface-2", "surface-3"]) {
+      detach(key);
+    }
+
+    const recentlyUsed = acquireVisible("surface-0", makeInstance);
+    releaseVisibilityPin("surface-0", recentlyUsed.visibilityPin);
+    detach("surface-4");
+
+    expect(instances.get("surface-0")?.terminal.dispose).not.toHaveBeenCalled();
+    expect(instances.get("surface-1")?.terminal.dispose).toHaveBeenCalledOnce();
+    expect(instances.get("surface-2")?.terminal.dispose).not.toHaveBeenCalled();
+    expect(instances.get("surface-3")?.terminal.dispose).not.toHaveBeenCalled();
+    expect(instances.get("surface-4")?.terminal.dispose).not.toHaveBeenCalled();
+    expect(getTerminalCacheDiagnostics()).toMatchObject({
+      warmTerminals: 4,
+      peakWarmTerminals: 4,
+      maxWarmTerminals: 4,
+      boundViolationCount: 0
+    });
+  });
+
+  it("evicts warm terminals until their combined buffers fit four million cells", () => {
+    const first = acquireVisible("large-0", () =>
+      makeInstance({ cols: 1_000, normalLines: 1_500 })
+    );
+    const second = acquireVisible("large-1", () =>
+      makeInstance({ cols: 1_000, normalLines: 1_500 })
+    );
+    const third = acquireVisible("large-2", () =>
+      makeInstance({ cols: 1_000, normalLines: 1_500 })
+    );
+
+    releaseVisibilityPin("large-0", first.visibilityPin);
+    releaseVisibilityPin("large-1", second.visibilityPin);
+    releaseVisibilityPin("large-2", third.visibilityPin);
+
+    expect(first.instance.terminal.dispose).toHaveBeenCalledOnce();
+    expect(second.instance.terminal.dispose).not.toHaveBeenCalled();
+    expect(third.instance.terminal.dispose).not.toHaveBeenCalled();
+    expect(getTerminalCacheDiagnostics()).toMatchObject({
+      warmBufferCells: 3_000_000,
+      peakWarmBufferCells: 3_000_000,
+      maxWarmBufferCells: 4_000_000,
+      boundViolationCount: 0
+    });
+  });
+
+  it("never evicts a visible terminal, even when its buffer exceeds the warm cap", () => {
+    const visible = acquireVisible("visible", () =>
+      makeInstance({ cols: 2_000, normalLines: 2_500 })
+    );
+
+    for (const key of ["warm-0", "warm-1", "warm-2", "warm-3", "warm-4"]) {
+      const warm = acquireVisible(key, makeInstance);
+      releaseVisibilityPin(key, warm.visibilityPin);
+    }
+
+    expect(visible.instance.terminal.dispose).not.toHaveBeenCalled();
+
+    releaseVisibilityPin("visible", visible.visibilityPin);
+    expect(visible.instance.terminal.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("disposes a deleted surface immediately and ignores its stale pin", () => {
+    const visible = acquireVisible("deleted", makeInstance);
+
+    release("deleted");
+    releaseVisibilityPin("deleted", visible.visibilityPin);
+
+    expect(visible.instance.terminal.dispose).toHaveBeenCalledOnce();
+    expect(acquireVisible("deleted", makeInstance).isNew).toBe(true);
   });
 });
 
 describe("terminal liveness", () => {
-  it("matches the stored terminal instance and line cwd tracker", () => {
+  it("matches the stored terminal instance", () => {
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-live", init);
+    const { instance } = acquireVisible("pane-live", init);
     const otherTerminal = new Terminal();
 
     expect(isCurrentTerminal("pane-live", instance.terminal)).toBe(true);
     expect(isCurrentTerminal("pane-live", otherTerminal)).toBe(false);
-    expect(getLineCwdsForTerminal("pane-live", instance.terminal)).toBe(
-      instance.lineCwds
-    );
-    expect(getLineCwdsForTerminal("pane-live", otherTerminal)).toBeNull();
-
     release("pane-live");
 
     expect(isCurrentTerminal("pane-live", instance.terminal)).toBe(false);
-    expect(getLineCwdsForTerminal("pane-live", instance.terminal)).toBeNull();
   });
 });
 
 describe("render sink", () => {
   it("clears only the current render sink", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-sink", init);
+    acquireVisible("pane-sink", init);
     const firstSink = {
       write: vi.fn(),
       fitAndSync: vi.fn(async () => {})
@@ -388,7 +534,7 @@ describe("render sink", () => {
 describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
   it("returns null before any hydration", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-6", init);
+    acquireVisible("pane-6", init);
     expect(getLastHydratedSurfaceId("pane-6")).toBeNull();
     release("pane-6");
   });
@@ -399,7 +545,7 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("reflects the surface id after markSurfaceHydrated", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-7", init);
+    acquireVisible("pane-7", init);
     markSurfaceHydrated("pane-7", "surface-abc");
     expect(getLastHydratedSurfaceId("pane-7")).toBe("surface-abc");
     release("pane-7");
@@ -407,12 +553,12 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("resets to null after release + re-acquire", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-8", init);
+    acquireVisible("pane-8", init);
     markSurfaceHydrated("pane-8", "surface-abc");
     release("pane-8");
 
     // Fresh acquire must not carry over the previous surface id
-    acquire("pane-8", init);
+    acquireVisible("pane-8", init);
     expect(getLastHydratedSurfaceId("pane-8")).toBeNull();
     release("pane-8");
   });
@@ -423,7 +569,7 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("clears line cwd state when hydration is invalidated", () => {
     const init = vi.fn(makeInstance);
-    const { instance } = acquire("pane-cwd", init);
+    const { instance } = acquireVisible("pane-cwd", init);
     markSurfaceHydrated("pane-cwd", "surface-abc", 12);
 
     invalidateHydration("pane-cwd");
@@ -436,7 +582,7 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("tracks the rendered sequence for the hydrated surface", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-9", init);
+    acquireVisible("pane-9", init);
     markSurfaceHydrated("pane-9", "surface-abc", 12);
     expect(getLastHydratedSurfaceSequence("pane-9")).toBe(12);
 
@@ -447,7 +593,7 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
 
   it("does not move the rendered sequence backward for the same hydrated surface", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-11", init);
+    acquireVisible("pane-11", init);
     markSurfaceHydrated("pane-11", "surface-abc", 20);
 
     markSurfaceHydrated("pane-11", "surface-abc", 12);
@@ -456,9 +602,21 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
     release("pane-11");
   });
 
+  it("restores the exact cursor after a failed checkpoint transaction", () => {
+    acquireVisible("pane-rollback", makeInstance);
+    markSurfaceHydrated("pane-rollback", "surface-current", 20);
+    markSurfaceHydrated("pane-rollback", "surface-current", 30);
+
+    restoreHydrationState("pane-rollback", "surface-current", 20);
+
+    expect(getLastHydratedSurfaceId("pane-rollback")).toBe("surface-current");
+    expect(getLastHydratedSurfaceSequence("pane-rollback")).toBe(20);
+    release("pane-rollback");
+  });
+
   it("ignores rendered sequence updates for stale surfaces", () => {
     const init = vi.fn(makeInstance);
-    acquire("pane-10", init);
+    acquireVisible("pane-10", init);
     markSurfaceHydrated("pane-10", "surface-current", 12);
 
     markSurfaceRendered("pane-10", "surface-stale", 13);

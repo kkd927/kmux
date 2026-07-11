@@ -21,6 +21,17 @@ const rendererSafeSharedPlatformRoots = ["apps/desktop/src/shared/platform"];
 const desktopPtyProtocolContractFiles = [
   "apps/desktop/src/shared/ptyProtocol.ts"
 ];
+const terminalDataPlaneContractFile = "packages/proto/src/terminalDataPlane.ts";
+const terminalDataPlaneRuntimeRoots = [
+  "apps/desktop/src/main",
+  "apps/desktop/src/preload",
+  "apps/desktop/src/renderer/src",
+  "apps/desktop/src/pty-host",
+  "apps/desktop/src/shared"
+];
+const terminalDataPlaneExplicitContractFiles = [
+  "apps/desktop/src/renderer/src/global.d.ts"
+];
 const packageContractRoots = [
   "packages/core/src",
   "packages/proto/src",
@@ -52,6 +63,14 @@ const desktopPtyProtocolTypeNames = [
   "PtyRequest",
   "PtySessionSpec",
   "ShellLaunchPolicy"
+];
+const terminalDataPlaneTypeNames = [
+  "TerminalSessionRef",
+  "TerminalCheckpoint",
+  "TerminalOutputSegment",
+  "TerminalDelta",
+  "TerminalDataPlaneClientMessage",
+  "TerminalDataPlaneHostMessage"
 ];
 const ptyHostDisallowedPackagePrefixes = [
   "@kmux/core",
@@ -115,6 +134,28 @@ function readSourceFiles(roots) {
       filePath: normalized(filePath),
       source: readFileSync(filePath, "utf8")
     }))
+  );
+}
+
+function readExplicitSourceFiles(filePaths) {
+  return filePaths.map((filePath) => ({
+    filePath: normalized(filePath),
+    source: readFileSync(filePath, "utf8")
+  }));
+}
+
+function exportedTypeDeclaration(source, typeName) {
+  const declarationStart = source.indexOf(`export type ${typeName} =`);
+  if (declarationStart < 0) {
+    return null;
+  }
+  const remaining = source.slice(declarationStart + 1);
+  const nextExport = /\nexport (?:type|interface|function|class|const)\b/.exec(
+    remaining
+  );
+  return source.slice(
+    declarationStart,
+    nextExport ? declarationStart + 1 + nextExport.index : source.length
   );
 }
 
@@ -224,7 +265,8 @@ describe("architecture boundaries", () => {
       importSpecifiers(source)
         .filter(
           (specifier) =>
-            specifier.includes("apps/desktop") || isMainProcessSpecifier(specifier)
+            specifier.includes("apps/desktop") ||
+            isMainProcessSpecifier(specifier)
         )
         .map((specifier) => `${filePath} imports ${specifier}`)
     );
@@ -260,12 +302,14 @@ describe("architecture boundaries", () => {
   });
 
   it("keeps the desktop pty protocol contract free of runtime services", () => {
-    const importViolations = desktopPtyProtocolContractFiles.flatMap((filePath) => {
-      const source = readFileSync(filePath, "utf8");
-      return importSpecifiers(source)
-        .filter(isDesktopPtyProtocolDisallowedSpecifier)
-        .map((specifier) => `${filePath} imports ${specifier}`);
-    });
+    const importViolations = desktopPtyProtocolContractFiles.flatMap(
+      (filePath) => {
+        const source = readFileSync(filePath, "utf8");
+        return importSpecifiers(source)
+          .filter(isDesktopPtyProtocolDisallowedSpecifier)
+          .map((specifier) => `${filePath} imports ${specifier}`);
+      }
+    );
     const runtimeGlobalViolations = desktopPtyProtocolContractFiles.flatMap(
       (filePath) => {
         const source = readFileSync(filePath, "utf8");
@@ -289,6 +333,158 @@ describe("architecture boundaries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("keeps terminal data plane v2 transport-neutral and owned by @kmux/proto", () => {
+    const contractSource = readFileSync(terminalDataPlaneContractFile, "utf8");
+    const protoIndexSource = readFileSync(
+      "packages/proto/src/index.ts",
+      "utf8"
+    );
+    const duplicateDeclarations = readSourceFiles([
+      "apps/desktop/src/shared"
+    ]).flatMap(({ filePath, source }) =>
+      terminalDataPlaneTypeNames
+        .filter((typeName) =>
+          new RegExp(`\\b(?:interface|type)\\s+${typeName}\\b`).test(source)
+        )
+        .map((typeName) => `${filePath} declares ${typeName}`)
+    );
+
+    for (const typeName of terminalDataPlaneTypeNames) {
+      expect(contractSource).toMatch(
+        new RegExp(`\\bexport\\s+(?:interface|type)\\s+${typeName}\\b`)
+      );
+    }
+    expect(protoIndexSource).toMatch(
+      /export \* from ["']\.\/terminalDataPlane["']/
+    );
+    expect(duplicateDeclarations).toEqual([]);
+  });
+
+  it("keeps the production terminal stream v2-only", () => {
+    const violations = readSourceFiles(terminalDataPlaneRuntimeRoots).flatMap(
+      ({ filePath, source }) => {
+        const patterns = [
+          [
+            "runtime protocol environment switch",
+            /\bKMUX_TERMINAL_STREAM_PROTOCOL(?:_ENV)?\b/
+          ],
+          ["runtime protocol resolver", /\bresolveTerminalStreamProtocol\b/],
+          ["v1/v2 runtime protocol type", /\bTerminalStreamProtocol\b/],
+          ["legacy v1 terminal path", /\bv1\b/]
+        ];
+        if (!/(?:terminal|pty)/i.test(filePath)) {
+          return patterns
+            .slice(0, 3)
+            .flatMap(([label, pattern]) =>
+              pattern.test(source) ? [`${filePath} references ${label}`] : []
+            );
+        }
+        return patterns.flatMap(([label, pattern]) =>
+          pattern.test(source) ? [`${filePath} references ${label}`] : []
+        );
+      }
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps terminal bulk output and legacy hydration APIs out of Main IPC", () => {
+    const sources = [
+      ...readSourceFiles([
+        "apps/desktop/src/main",
+        "apps/desktop/src/preload",
+        "apps/desktop/src/renderer/src"
+      ]),
+      ...readExplicitSourceFiles(terminalDataPlaneExplicitContractFiles)
+    ];
+    const disallowedPatterns = [
+      ["terminal bulk relay channel", /["']kmux:terminal-event["']/],
+      ["terminal chunk relay payload", /\bSurfaceChunkPayload\b/],
+      ["terminal resize relay payload", /\bSurfaceResizePayload\b/],
+      ["renderer terminal bulk subscription", /\bsubscribeTerminal\b/],
+      ["legacy surface attach API", /\battachSurface\b/],
+      ["legacy attach completion API", /\bcompleteAttachSurface\b/],
+      ["legacy surface attach payload", /\bSurfaceAttachPayload\b/],
+      ["legacy attach completion payload", /\bSurfaceAttachCompletionResult\b/],
+      ["legacy surface attach IPC channel", /["']kmux:attach-surface["']/],
+      [
+        "legacy attach completion IPC channel",
+        /["']kmux:attach-surface-complete["']/
+      ]
+    ];
+    const violations = sources.flatMap(({ filePath, source }) =>
+      disallowedPatterns.flatMap(([label, pattern]) =>
+        pattern.test(source) ? [`${filePath} references ${label}`] : []
+      )
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps legacy chunk batching and resize events out of the pty host", () => {
+    const ptyProtocolSource = readFileSync(
+      "apps/desktop/src/shared/ptyProtocol.ts",
+      "utf8"
+    );
+    const ptyEvent = exportedTypeDeclaration(ptyProtocolSource, "PtyEvent");
+    expect(ptyEvent).not.toBeNull();
+
+    const protocolViolations = [
+      ["chunk", /\btype:\s*["']chunk["']/],
+      ["resize", /\btype:\s*["']resize["']/],
+      ["resize acknowledgement", /\btype:\s*["']resize:ack["']/]
+    ].flatMap(([label, pattern]) =>
+      pattern.test(ptyEvent ?? "")
+        ? [
+            `apps/desktop/src/shared/ptyProtocol.ts declares legacy ${label} PtyEvent`
+          ]
+        : []
+    );
+    const hostViolations = readSourceFiles([
+      "apps/desktop/src/pty-host"
+    ]).flatMap(({ filePath, source }) => {
+      const patterns = [
+        ["legacy OutputBatcher", /\bOutputBatcher\b/],
+        ["legacy chunk event send", /\bsend\(\s*\{\s*type:\s*["']chunk["']/],
+        [
+          "legacy resize event send",
+          /\bsend\(\s*\{\s*type:\s*["']resize(?::ack)?["']/
+        ]
+      ];
+      return patterns.flatMap(([label, pattern]) =>
+        pattern.test(source) ? [`${filePath} references ${label}`] : []
+      );
+    });
+
+    expect([...protocolViolations, ...hostViolations]).toEqual([]);
+  });
+
+  it("retains diagnostic snapshots and terminal metadata on the control channel", () => {
+    const ptyProtocolSource = readFileSync(
+      "apps/desktop/src/shared/ptyProtocol.ts",
+      "utf8"
+    );
+    const ptyRequest = exportedTypeDeclaration(ptyProtocolSource, "PtyRequest");
+    const ptyEvent = exportedTypeDeclaration(ptyProtocolSource, "PtyEvent");
+
+    expect(ptyRequest).not.toBeNull();
+    expect(ptyEvent).not.toBeNull();
+    expect(ptyRequest).toMatch(/\btype:\s*["']snapshot["']/);
+    for (const eventType of [
+      "snapshot",
+      "metadata",
+      "bell",
+      "terminal.notification",
+      "input.observed",
+      "runtime.lost",
+      "exit"
+    ]) {
+      expect(ptyEvent).toMatch(
+        new RegExp(`\\btype:\\s*["']${eventType.replace(".", "\\.")}["']`)
+      );
+    }
+  });
+
   it("keeps the Linux-phase IPC wire contract on KMUX_SOCKET_PATH", () => {
     const endpointEnvViolations = readSourceFiles(
       linuxPhaseWireContractRoots
@@ -298,9 +494,8 @@ describe("architecture boundaries", () => {
         : []
     );
     const protoSource = readFileSync("packages/proto/src/index.ts", "utf8");
-    const shellIdentity = /export interface ShellIdentity \{([\s\S]*?)\n\}/.exec(
-      protoSource
-    )?.[1];
+    const shellIdentity =
+      /export interface ShellIdentity \{([\s\S]*?)\n\}/.exec(protoSource)?.[1];
 
     expect(endpointEnvViolations).toEqual([]);
     expect(shellIdentity).toBeTruthy();

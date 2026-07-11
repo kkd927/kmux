@@ -1,4 +1,15 @@
 import type { SurfaceSnapshotCwdRange } from "@kmux/proto";
+import {
+  TERMINAL_DATA_PLANE_MAX_CWD_RANGES,
+  TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES
+} from "@kmux/proto";
+
+export const TERMINAL_CWD_RANGE_MAX_RETAINED_BYTES = 4 * 1024 * 1024;
+
+interface StoredCwdRange {
+  range: SurfaceSnapshotCwdRange;
+  cwdBytes: number;
+}
 
 export interface TerminalCwdRangeTrackerLineSource {
   getBufferLength(): number;
@@ -32,8 +43,43 @@ export interface TerminalCwdRangeSnapshotWindow {
 export function createTerminalCwdRangeTracker(
   lineSource: TerminalCwdRangeTrackerLineSource
 ): TerminalCwdRangeTracker {
-  const ranges: SurfaceSnapshotCwdRange[] = [];
+  const ranges: Array<StoredCwdRange | undefined> = [];
+  let rangeHead = 0;
+  let retainedCwdBytes = 0;
   let trimmedLineCount = 0;
+
+  function retainedRangeCount(): number {
+    return ranges.length - rangeHead;
+  }
+
+  function evictOldestRange(): void {
+    const oldest = ranges[rangeHead];
+    if (!oldest) {
+      rangeHead += 1;
+      return;
+    }
+    ranges[rangeHead] = undefined;
+    rangeHead += 1;
+    retainedCwdBytes = Math.max(0, retainedCwdBytes - oldest.cwdBytes);
+  }
+
+  function compactRangeHead(): void {
+    if (rangeHead < 1_024) {
+      return;
+    }
+    ranges.splice(0, rangeHead);
+    rangeHead = 0;
+  }
+
+  function enforceRangeBounds(): void {
+    while (
+      retainedRangeCount() > TERMINAL_DATA_PLANE_MAX_CWD_RANGES ||
+      retainedCwdBytes > TERMINAL_CWD_RANGE_MAX_RETAINED_BYTES
+    ) {
+      evictOldestRange();
+    }
+    compactRangeHead();
+  }
 
   function normalizeRange(input: {
     startLine: number;
@@ -59,19 +105,35 @@ export function createTerminalCwdRangeTracker(
         return;
       }
       trimmedLineCount += normalizedAmount;
-      for (let index = ranges.length - 1; index >= 0; index -= 1) {
-        const range = ranges[index];
+      const retained: StoredCwdRange[] = [];
+      retainedCwdBytes = 0;
+      for (let index = rangeHead; index < ranges.length; index += 1) {
+        const stored = ranges[index];
+        if (!stored) {
+          continue;
+        }
+        const range = stored.range;
         range.startLine -= normalizedAmount;
         range.endLine -= normalizedAmount;
         if (range.endLine < 0) {
-          ranges.splice(index, 1);
           continue;
         }
         range.startLine = Math.max(0, range.startLine);
+        retained.push(stored);
+        retainedCwdBytes += stored.cwdBytes;
       }
+      ranges.length = 0;
+      for (const stored of retained) {
+        ranges.push(stored);
+      }
+      rangeHead = 0;
     },
     recordWrite(input) {
       if (!input.cwd) {
+        return;
+      }
+      const cwdBytes = Buffer.byteLength(input.cwd, "utf8");
+      if (cwdBytes > TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES) {
         return;
       }
       const next = normalizeRange({
@@ -82,7 +144,7 @@ export function createTerminalCwdRangeTracker(
       if (!next) {
         return;
       }
-      const previous = ranges[ranges.length - 1];
+      const previous = ranges[ranges.length - 1]?.range;
       if (
         previous?.cwd === next.cwd &&
         previous.endLine + 1 >= next.startLine
@@ -90,7 +152,9 @@ export function createTerminalCwdRangeTracker(
         previous.endLine = Math.max(previous.endLine, next.endLine);
         return;
       }
-      ranges.push(next);
+      ranges.push({ range: next, cwdBytes });
+      retainedCwdBytes += cwdBytes;
+      enforceRangeBounds();
     },
     snapshotRanges(options = {}) {
       const length = lineSource.getBufferLength();
@@ -103,17 +167,24 @@ export function createTerminalCwdRangeTracker(
       if (windowEnd < windowStart) {
         return [];
       }
-      return ranges
-        .map((range) => {
-          const startLine = Math.max(range.startLine, windowStart);
-          const endLine = Math.min(range.endLine, windowEnd);
-          return {
-            startLine: startLine - lineOffset,
-            endLine: endLine - lineOffset,
-            cwd: range.cwd
-          };
-        })
-        .filter((range) => range.endLine >= range.startLine);
+      const snapshot: SurfaceSnapshotCwdRange[] = [];
+      for (let index = rangeHead; index < ranges.length; index += 1) {
+        const range = ranges[index]?.range;
+        if (!range) {
+          continue;
+        }
+        const startLine = Math.max(range.startLine, windowStart);
+        const endLine = Math.min(range.endLine, windowEnd);
+        if (endLine < startLine) {
+          continue;
+        }
+        snapshot.push({
+          startLine: startLine - lineOffset,
+          endLine: endLine - lineOffset,
+          cwd: range.cwd
+        });
+      }
+      return snapshot;
     }
   };
 }

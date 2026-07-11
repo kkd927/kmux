@@ -23,7 +23,6 @@ import {
   type AgentStorageRoots,
   type AiCliProcessMatch,
   type AiCliProcessProbe,
-  createUsageAdapters,
   estimateUsageComponentCosts,
   resolveCanonicalModelId,
   scanUsageHistoryDays,
@@ -31,6 +30,7 @@ import {
   usageSampleIdentity,
   type SupportedPricingVendor,
   type UsageAdapter,
+  type UsageAdapterReadResult,
   type UsageCostSource as SampleCostSource,
   type UsageEventSample
 } from "@kmux/metadata";
@@ -46,6 +46,10 @@ import {
   type SubscriptionProviderAuthDetector,
   type SubscriptionProviderFetcher
 } from "./subscriptionUsage";
+import {
+  createUsageScanWorkerClient,
+  type UsageScanService
+} from "./usageScanWorkerClient";
 
 const ACTIVE_REFRESH_MS = 10_000;
 const DASHBOARD_REFRESH_MS = 15_000;
@@ -232,6 +236,7 @@ interface UsageRuntimeOptions {
   getState: () => AppState;
   dispatchAppAction: (action: AppAction) => void;
   adapters?: UsageAdapter[];
+  scanService?: UsageScanService;
   historyStore?: UsageHistoryFileStore;
   resolveAiCliProcesses?: ResolveAiCliProcesses;
   env?: NodeJS.ProcessEnv;
@@ -260,14 +265,17 @@ export interface UsageRuntime {
 }
 
 export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
-  const adapters =
-    options.adapters ??
-    createUsageAdapters({
-      env: options.env,
-      homeDir: options.homeDir,
-      agentStorageRoots: options.agentStorageRoots,
-      platform: options.platform
-    });
+  const adapters = options.adapters ?? [];
+  const scanService =
+    options.scanService ??
+    (options.adapters === undefined
+      ? createUsageScanWorkerClient({
+          env: options.env,
+          homeDir: options.homeDir,
+          agentStorageRoots: options.agentStorageRoots,
+          platform: options.platform
+        })
+      : null);
   const emitSnapshot =
     options.emitSnapshot ??
     ((snapshot: UsageViewSnapshot) => {
@@ -316,6 +324,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   let dayKey = dayKeyFor(now());
   let historyDays = normalizeHistoryDays(options.historyStore?.load() ?? []);
   let historyBackfillPromise: Promise<void> | null = null;
+  let workerHistoryBackfillComplete = false;
   let lastAuthVisibilityRefreshAtMs = Number.NEGATIVE_INFINITY;
 
   const bindings = new Map<Id, SurfaceBinding>();
@@ -346,17 +355,20 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
     started = true;
-    const cleanups = adapters.map((adapter) =>
-      adapter.watch(() => {
-        const nowMs = now();
-        for (const candidate of manualCandidates.values()) {
-          if (candidate.vendor === adapter.vendor) {
-            candidate.nextProbeAtMs = nowMs;
-          }
+    const handleUsageSourceChange = (vendor: UsageVendor): void => {
+      const nowMs = now();
+      for (const candidate of manualCandidates.values()) {
+        if (candidate.vendor === vendor) {
+          candidate.nextProbeAtMs = nowMs;
         }
-        void refreshNow();
-      })
-    );
+      }
+      void refreshNow();
+    };
+    const cleanups = scanService
+      ? [scanService.watch(handleUsageSourceChange)]
+      : adapters.map((adapter) =>
+          adapter.watch(() => handleUsageSourceChange(adapter.vendor))
+        );
     watchCleanup = () => {
       for (const cleanup of cleanups) {
         cleanup();
@@ -365,7 +377,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     scheduleRefresh();
     scheduleSubscriptionRefresh();
     void refreshNow();
-    void backfillHistoryIfNeeded();
+    if (!scanService) {
+      void backfillHistoryIfNeeded();
+    }
   }
 
   function shutdown(): void {
@@ -385,6 +399,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     for (const adapter of adapters) {
       adapter.close();
     }
+    scanService?.close();
   }
 
   function getSnapshot(): UsageViewSnapshot {
@@ -780,13 +795,56 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
 
     const startOfDayMs = startOfLocalDay(now());
-    const reads = await Promise.all(
-      adapters.map((adapter) =>
-        initialScanComplete
-          ? adapter.readIncremental(startOfDayMs)
-          : adapter.initialScan(startOfDayMs)
-      )
-    );
+    let reads: UsageAdapterReadResult[];
+    if (scanService) {
+      const historyRange = workerHistoryBackfillComplete
+        ? undefined
+        : resolveHistoryBackfillRange();
+      try {
+        const result = await scanService.scan({
+          startOfDayMs,
+          initial: !initialScanComplete,
+          ...(historyRange ? { historyRange } : {})
+        });
+        reads = result.reads;
+        if (result.historyDays) {
+          historyDays = normalizeHistoryDays(result.historyDays);
+          options.historyStore?.save(historyDays);
+        }
+        workerHistoryBackfillComplete = true;
+      } catch (error) {
+        const hasWorkerDiagnostic =
+          error instanceof Error &&
+          ("workerStack" in error || "workerContext" in error);
+        const workerDiagnostic =
+          process.env.NODE_ENV === "development" && hasWorkerDiagnostic
+            ? {
+                message: error.message,
+                stack:
+                  "workerStack" in error ? String(error.workerStack) : error.stack,
+                context:
+                  "workerContext" in error
+                    ? String(error.workerContext)
+                    : undefined
+              }
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        console.warn(
+          "[usage] scan worker failed; keeping the last usage snapshot:",
+          workerDiagnostic
+        );
+        return;
+      }
+    } else {
+      reads = await Promise.all(
+        adapters.map((adapter) =>
+          initialScanComplete
+            ? adapter.readIncremental(startOfDayMs)
+            : adapter.initialScan(startOfDayMs)
+        )
+      );
+    }
     initialScanComplete = true;
 
     for (const read of reads) {
@@ -855,6 +913,26 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       });
 
     return historyBackfillPromise;
+  }
+
+  function resolveHistoryBackfillRange():
+    | { fromMs: number; toMs: number }
+    | undefined {
+    if (!options.historyStore) {
+      return undefined;
+    }
+    const expectedDayKeys = buildRollingDayKeys(now(), USAGE_HISTORY_DAY_COUNT);
+    const shouldBackfill = expectedDayKeys.some(
+      (expectedDayKey) =>
+        !historyDays.some((day) => day.dayKey === expectedDayKey)
+    );
+    if (!shouldBackfill) {
+      return undefined;
+    }
+    return {
+      fromMs: startOfRollingDayRange(now(), USAGE_HISTORY_DAY_COUNT),
+      toMs: endOfLocalDay(now())
+    };
   }
 
   async function refreshManualCliBindings(): Promise<void> {
@@ -1654,6 +1732,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     vendor: Exclude<UsageVendor, "unknown">,
     dirtyOptions?: Parameters<NonNullable<UsageAdapter["markDirty"]>>[0]
   ): void {
+    if (scanService) {
+      scanService.markDirty(vendor, dirtyOptions);
+      return;
+    }
     for (const adapter of adapters) {
       if (adapter.vendor === vendor) {
         adapter.markDirty?.(dirtyOptions);

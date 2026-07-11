@@ -42,9 +42,9 @@ describe("smoothness profiling", () => {
       expect(resolveNodeSmoothnessProfileLogPath(sandbox)).toBe(
         join(sandbox, DEFAULT_SMOOTHNESS_PROFILE_FILENAME)
       );
-      expect(resolveNodeSmoothnessProfileLogPath(join(sandbox, "profile"))).toBe(
-        join(sandbox, "profile", DEFAULT_SMOOTHNESS_PROFILE_FILENAME)
-      );
+      expect(
+        resolveNodeSmoothnessProfileLogPath(join(sandbox, "profile"))
+      ).toBe(join(sandbox, "profile", DEFAULT_SMOOTHNESS_PROFILE_FILENAME));
       expect(
         resolveNodeSmoothnessProfileLogPath(
           join(sandbox, "smoothness-profile.jsonl")
@@ -86,8 +86,24 @@ describe("smoothness profiling", () => {
           payloadBytes: 123
         }
       });
+      recorder.recordMany?.([
+        {
+          source: "renderer",
+          name: "terminal.data-plane.render",
+          at: 13,
+          details: { sequence: 2 }
+        },
+        {
+          source: "pty-host",
+          name: "terminal.data-plane.supervisor",
+          at: 14,
+          details: { sessions: 1 }
+        }
+      ]);
 
-      const [line] = readFileSync(logPath, "utf8").trim().split("\n");
+      const [line, rendererLine, hostLine] = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n");
       expect(JSON.parse(line)).toEqual({
         source: "main",
         name: "shell.patch.emit",
@@ -97,6 +113,14 @@ describe("smoothness profiling", () => {
           requestedGroups: ["workspaceRows"],
           payloadBytes: 123
         }
+      });
+      expect(JSON.parse(rendererLine)).toMatchObject({
+        source: "renderer",
+        name: "terminal.data-plane.render"
+      });
+      expect(JSON.parse(hostLine)).toMatchObject({
+        source: "pty-host",
+        name: "terminal.data-plane.supervisor"
       });
     } finally {
       rmSync(sandbox, { force: true, recursive: true });

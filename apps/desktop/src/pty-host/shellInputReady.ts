@@ -24,7 +24,7 @@ export function isShellReadyOscPayload(payload: string): boolean {
 export function markShellInputReady(
   record: ShellInputReadyRecord,
   emit: (event: PtyEvent) => void,
-  flushOutput?: () => void
+  onReady?: () => void
 ): boolean {
   if (record.shellInputReady) {
     return false;
@@ -32,13 +32,13 @@ export function markShellInputReady(
 
   record.shellInputReady = true;
   disposeShellReadyFallback(record);
-  flushOutput?.();
 
   const pendingInitialInput = record.pendingInitialInput;
   record.pendingInitialInput = undefined;
   if (pendingInitialInput) {
     record.pty.write(pendingInitialInput);
   }
+  onReady?.();
 
   emit({
     type: "shell.ready",
@@ -51,8 +51,8 @@ export function markShellInputReady(
 export function armShellReadyFallback(
   record: ShellInputReadyRecord,
   emit: (event: PtyEvent) => void,
-  flushOutput?: () => void,
-  fallbackMs = SHELL_READY_FALLBACK_MS
+  fallbackMs = SHELL_READY_FALLBACK_MS,
+  onReady?: () => void
 ): void {
   if (record.shellInputReady || record.shellReadyFallbackTimer) {
     return;
@@ -60,13 +60,11 @@ export function armShellReadyFallback(
 
   record.shellReadyFallbackTimer = setTimeout(() => {
     record.shellReadyFallbackTimer = null;
-    markShellInputReady(record, emit, flushOutput);
+    markShellInputReady(record, emit, onReady);
   }, fallbackMs);
 }
 
-export function disposeShellReadyFallback(
-  record: ShellInputReadyRecord
-): void {
+export function disposeShellReadyFallback(record: ShellInputReadyRecord): void {
   if (!record.shellReadyFallbackTimer) {
     return;
   }

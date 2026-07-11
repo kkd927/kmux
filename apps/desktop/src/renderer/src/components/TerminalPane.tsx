@@ -7,11 +7,10 @@ import {
   useRef,
   useState
 } from "react";
+import { flushSync } from "react-dom";
 
-import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { FitAddon } from "@xterm/addon-fit";
+import type { SearchAddon } from "@xterm/addon-search";
 import { Terminal, type IDisposable, type ILinkHandler } from "@xterm/xterm";
 
 import type {
@@ -20,7 +19,8 @@ import type {
   KmuxSettings,
   ResolvedTerminalThemeVm,
   ResolvedTerminalTypographyVm,
-  SurfaceVm
+  SurfaceVm,
+  TerminalDelta
 } from "@kmux/proto";
 import {
   getTerminalSearchDecorations,
@@ -46,27 +46,27 @@ import {
   shouldSuppressXtermDuringIme,
   type PendingTerminalEnterRewrite
 } from "../terminalRenderer";
-import {
-  hydrateAttachedTerminal,
-  reattachPreservedTerminal
-} from "../terminalAttachHydration";
-import {
-  createTerminalLineCwdTracker,
-  type TerminalLineCwdRange,
-  type TerminalLineCwdTracker
-} from "../terminalLineCwdTracker";
+import { type TerminalLineCwdTracker } from "../terminalLineCwdTracker";
 import { registerTerminalFileLinkProvider } from "../terminalFileLinks";
 import {
   installTerminalForegroundFit,
   type TerminalForegroundFitController
 } from "../terminalForegroundFit";
-import { createTerminalReplayVisibility } from "../terminalReplayVisibility";
+import { SurfaceTerminalCheckpointController } from "../terminalCheckpointController";
 import {
-  pauseTerminalRenderer,
-  resumeAndRefreshTerminalRenderer
-} from "../terminalRenderRefresh";
-import { createTerminalChunkBatcher } from "../terminalChunkBatcher";
+  createTerminalBundle,
+  type TerminalBundle,
+  type TerminalDiagnosticMetadata,
+  type TerminalHostElement
+} from "../terminalBundle";
+import { refreshTerminalRenderer } from "../terminalRenderRefresh";
 import * as terminalInstanceStore from "../terminalInstanceStore";
+import {
+  terminalStreamClient,
+  type AttachedTerminalStream,
+  TerminalStreamPendingInputBuffer
+} from "../terminalStreamClient";
+import type { TerminalStreamSink } from "../terminalStreamRouter";
 import { resizeTerminalKeepingBottomAnchor } from "../terminalResizeAnchor";
 import { createTerminalResizeSync } from "../terminalResizeSync";
 import { createTerminalDividerFitThrottle } from "../terminalDividerFitThrottle";
@@ -111,7 +111,6 @@ export interface TerminalFocusRequest {
 interface TerminalPaneProps {
   paneId: string;
   focused: boolean;
-  active: boolean;
   surfaces: SurfaceVm[];
   activeSurfaceId: string;
   settings: KmuxSettings;
@@ -143,11 +142,6 @@ interface TerminalPaneProps {
   onToggleSearch: (surfaceId: string | null) => void;
   focusRequest?: TerminalFocusRequest | null;
 }
-
-type TerminalSnapshotWithCwdRanges = {
-  sequence: number | null;
-  cwdRanges?: TerminalLineCwdRange[];
-};
 
 type OpenTerminalFilePathWithBaseCwd = (
   surfaceId: string,
@@ -190,16 +184,6 @@ type PendingEnterRewrite = PendingTerminalEnterRewrite & {
   timeout: ReturnType<typeof setTimeout>;
 };
 
-type TerminalDiagnosticMetadata = {
-  hydratedSequence: number | null;
-  renderedSequence: number | null;
-};
-
-type TerminalDiagnosticElement = HTMLDivElement & {
-  __kmuxTerminal?: Terminal;
-  __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
-};
-
 type TerminalWriter = (
   terminal: Terminal,
   data: string,
@@ -209,7 +193,11 @@ type TerminalWriter = (
 
 type TerminalFitAndSync = (
   terminal: Terminal,
-  options?: { fit?: FitAddon | null; surfaceId?: string | null }
+  options?: {
+    fit?: FitAddon | null;
+    surfaceId?: string | null;
+    force?: boolean;
+  }
 ) => Promise<void>;
 
 type TerminalRenderSinkContext = {
@@ -220,15 +208,67 @@ type TerminalRenderSinkContext = {
 
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
-const TERMINAL_WRITE_CALLBACK_TIMEOUT_MS = 10_000;
-// Skip-ahead safety valve: agent CLI output tops out around 100-250KB/s, so
-// this backlog is only reachable when a pathological flood (yes, cat of a
-// huge file) outruns xterm parsing. Recovery re-hydrates from a fresh
-// snapshot instead of replaying the backlog, trading flood scrollback
-// (snapshots restore TERMINAL_RESTORE_SCROLLBACK_LINES) for a live screen.
-const TERMINAL_LIVE_CHUNK_BACKLOG_LIMIT_CHARS = 8_000_000;
+const TERMINAL_ATTACH_REARM_INITIAL_DELAY_MS = 1_000;
+const TERMINAL_ATTACH_REARM_MAX_DELAY_MS = 30_000;
+const TERMINAL_DIRECT_RESIZE_ACK_TIMEOUT_MS = 10_000;
+let nextTerminalDirectResizeRequestId = 0;
+
+interface TerminalFitMemo {
+  width: number;
+  height: number;
+  cols: number;
+  rows: number;
+  optionsKey: string;
+}
+
+function terminalFitOptionsKey(terminal: Terminal): string {
+  const options = terminal.options;
+  return JSON.stringify([
+    options.fontFamily,
+    options.fontSize,
+    options.fontWeight,
+    options.fontWeightBold,
+    options.lineHeight,
+    options.letterSpacing,
+    typeof window === "undefined" ? 1 : window.devicePixelRatio
+  ]);
+}
 const EXTERNAL_TERMINAL_LINK_PROTOCOLS = new Set(["http:", "https:"]);
-const INACTIVE_WORKSPACE_RENDER_PAUSE_DELAY_MS = 2000;
+
+interface PendingTerminalResize {
+  sessionId: string;
+  cols: number;
+  rows: number;
+  gestureActive: boolean;
+}
+
+interface PendingDirectResizeAcknowledgement {
+  attachId: string;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+interface TerminalCwdWriteCursor {
+  pendingWrites: number;
+  nextStartLine: number;
+  trimmedLineCount: number;
+}
+
+function cwdAtDataOffset(
+  delta: Extract<TerminalDelta, { type: "output" }>,
+  dataOffset: number
+): string | undefined {
+  let offset = 0;
+  for (const segment of delta.segments) {
+    const nextOffset = offset + segment.data.length;
+    if (dataOffset < nextOffset) {
+      return segment.cwd;
+    }
+    offset = nextOffset;
+  }
+  return delta.segments.at(-1)?.cwd;
+}
 
 function openExternalTerminalLink(rawUrl: string): void {
   let url: URL;
@@ -265,6 +305,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const lineCwdsRef = useRef<TerminalLineCwdTracker | null>(null);
+  const cwdWriteCursorsRef = useRef(
+    new WeakMap<Terminal, TerminalCwdWriteCursor>()
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const surfaceWrapperRefs = useRef(new Map<string, HTMLDivElement>());
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -275,12 +318,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     useState<SurfaceTabDropDirection | null>(null);
   const [imageDropActive, setImageDropActive] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState<string | null>(null);
+  const [terminalGeneration, setTerminalGeneration] = useState(0);
+  const [terminalAttachmentGeneration, setTerminalAttachmentGeneration] =
+    useState(0);
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
-  const paneActiveRef = useRef(props.active);
   const paneFocusedRef = useRef(props.focused);
-  const previousPaneActiveRef = useRef(props.active);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
+  const terminalStreamEligible = activeSurface.sessionState !== "pending";
   const previousActiveSurfaceIdRef = useRef(activeSurface.id);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -305,12 +350,24 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const writeTerminalRef = useRef<TerminalWriter>(() => false);
   const fitAndSyncTerminalRef = useRef<TerminalFitAndSync>(async () => {});
   const renderSinkContextRef = useRef<TerminalRenderSinkContext | null>(null);
-  const pendingRendererRefreshFrameRef = useRef<number | null>(null);
-  const pendingRendererRefreshesRef = useRef(new Map<Terminal, string>());
-  const inactiveRendererPauseTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const inactiveRendererPauseReadyRef = useRef(false);
+  const terminalStreamRef = useRef<AttachedTerminalStream | null>(null);
+  const terminalCheckpointControllerRef =
+    useRef<SurfaceTerminalCheckpointController | null>(null);
+  const createTerminalBundleRef = useRef<(surfaceId: string) => TerminalBundle>(
+    () => {
+      throw new Error("terminal bundle factory is not ready");
+    }
+  );
+  const pendingTerminalStreamInputRef = useRef(
+    new TerminalStreamPendingInputBuffer()
+  );
+  const terminalFitMemosRef = useRef(new WeakMap<Terminal, TerminalFitMemo>());
+  const pendingDirectResizeAcksRef = useRef(
+    new Map<string, PendingDirectResizeAcknowledgement>()
+  );
+  const pendingTerminalResizeRef = useRef(
+    new Map<string, PendingTerminalResize>()
+  );
   // The xterm instance is surface-scoped, but PTY size is still synced from
   // the pane that currently displays the surface.
   const surfaceResizeDimensionsRef = useRef(
@@ -362,9 +419,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     patch: Partial<TerminalDiagnosticMetadata>
   ): void {
     const elements = [
-      containerRef.current as TerminalDiagnosticElement | null,
+      containerRef.current as TerminalHostElement | null,
       surfaceWrapperRefs.current.get(surfaceId) as
-        | TerminalDiagnosticElement
+        | TerminalHostElement
         | undefined
     ];
     for (const element of elements) {
@@ -376,6 +433,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           element.__kmuxTerminalDiagnostics?.hydratedSequence ?? null,
         renderedSequence:
           element.__kmuxTerminalDiagnostics?.renderedSequence ?? null,
+        attachAvailableSequence:
+          element.__kmuxTerminalDiagnostics?.attachAvailableSequence ?? null,
+        renderGeneration:
+          element.__kmuxTerminalDiagnostics?.renderGeneration ?? 0,
+        lastOnRenderAt:
+          element.__kmuxTerminalDiagnostics?.lastOnRenderAt ?? null,
         ...patch
       };
       element.__kmuxTerminalDiagnostics = diagnostics;
@@ -393,6 +456,23 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           diagnostics.renderedSequence
         );
       }
+      if (diagnostics.attachAvailableSequence === null) {
+        delete element.dataset.terminalAttachAvailableSequence;
+      } else {
+        element.dataset.terminalAttachAvailableSequence = String(
+          diagnostics.attachAvailableSequence
+        );
+      }
+      element.dataset.terminalRenderGeneration = String(
+        diagnostics.renderGeneration
+      );
+      if (diagnostics.lastOnRenderAt === null) {
+        delete element.dataset.terminalLastOnRenderAt;
+      } else {
+        element.dataset.terminalLastOnRenderAt = String(
+          diagnostics.lastOnRenderAt
+        );
+      }
     }
   }
 
@@ -400,7 +480,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     wrapper: ParentNode | null,
     terminal: Terminal
   ): void {
-    const diagnosticWrapper = wrapper as TerminalDiagnosticElement | null;
+    const diagnosticWrapper = wrapper as TerminalHostElement | null;
     if (diagnosticWrapper?.__kmuxTerminal !== terminal) {
       return;
     }
@@ -408,6 +488,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     delete diagnosticWrapper.__kmuxTerminalDiagnostics;
     delete diagnosticWrapper.dataset.terminalHydratedSequence;
     delete diagnosticWrapper.dataset.terminalRenderedSequence;
+    delete diagnosticWrapper.dataset.terminalAttachAvailableSequence;
+    delete diagnosticWrapper.dataset.terminalRenderGeneration;
+    delete diagnosticWrapper.dataset.terminalLastOnRenderAt;
     delete diagnosticWrapper.dataset.terminalViewportY;
     delete diagnosticWrapper.dataset.terminalBaseY;
     delete diagnosticWrapper.dataset.terminalBracketedPasteMode;
@@ -430,13 +513,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       wrapper.appendChild(host);
     }
 
-    const diagnosticWrapper = wrapper as TerminalDiagnosticElement;
+    const diagnosticWrapper = wrapper as TerminalHostElement;
     diagnosticWrapper.__kmuxTerminal = terminal;
     diagnosticWrapper.__kmuxTerminalDiagnostics = (
-      host as TerminalDiagnosticElement
+      host as TerminalHostElement
     ).__kmuxTerminalDiagnostics;
     syncSurfaceTerminalMetrics(surfaceId, terminal);
-    refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
+    if (moved) {
+      refreshTerminalRenderer(terminal);
+    }
     return moved;
   }
 
@@ -464,7 +549,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const searchDecorationsRef = useRef(terminalSearchDecorations);
 
   activeSurfaceRef.current = activeSurface;
-  paneActiveRef.current = props.active;
   paneFocusedRef.current = props.focused;
   copyModeRef.current = copyMode;
   queryRef.current = query;
@@ -475,16 +559,96 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   copyModeSelectAllShortcutRef.current = props.copyModeSelectAllShortcut;
   onToggleSearchRef.current = props.onToggleSearch;
   searchDecorationsRef.current = terminalSearchDecorations;
+  createTerminalBundleRef.current = (surfaceId: string): TerminalBundle =>
+    createTerminalBundle({
+      createTerminal: () =>
+        new Terminal({
+          allowProposedApi: true,
+          fontFamily: props.terminalTypography.resolvedFontFamily,
+          fontSize: props.settings.terminalTypography.fontSize,
+          lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
+          fontWeight: 400,
+          cursorBlink: true,
+          macOptionIsMeta: false,
+          macOptionClickForcesSelection: props.keyboardPlatform === "darwin",
+          altClickMovesCursor: false,
+          rightClickSelectsWord: false,
+          scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
+          minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
+          theme: terminalTheme,
+          linkHandler: terminalLinkHandler
+        }),
+      onWebLink: openExternalTerminalLink,
+      registerBufferTrimListener: registerTerminalBufferTrimHandler,
+      registerFileLinks: (terminal, lineCwds) => {
+        const openTerminalFilePath = window.kmux
+          .openTerminalFilePath as OpenTerminalFilePathWithBaseCwd;
+        return registerTerminalFileLinkProvider({
+          terminal,
+          getKeyboardPlatform: () => keyboardPlatformRef.current,
+          surfaceId,
+          openFilePath: (targetSurfaceId, rawPath, baseCwd) =>
+            openTerminalFilePath(targetSurfaceId, rawPath, baseCwd),
+          getCwdForBufferLine: (bufferLineNumber) =>
+            lineCwds.getCwdForLine(bufferLineNumber)
+        });
+      }
+    });
+
+  function rejectPendingDirectResizeAcknowledgements(
+    attachId: string | null,
+    reason: string
+  ): void {
+    for (const [requestId, pending] of pendingDirectResizeAcksRef.current) {
+      if (attachId && pending.attachId !== attachId) {
+        continue;
+      }
+      pendingDirectResizeAcksRef.current.delete(requestId);
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(reason));
+    }
+  }
+
   if (!resizeSyncRef.current) {
     resizeSyncRef.current = createTerminalResizeSync({
-      sendResize: (surfaceId, attachId, cols, rows, gestureActive) =>
-        window.kmux.resizeSurface(
-          surfaceId,
-          attachId,
-          cols,
-          rows,
-          gestureActive
-        )
+      sendResize: (surfaceId, attachId, cols, rows, gestureActive) => {
+        const stream = terminalStreamRef.current;
+        if (
+          stream &&
+          !stream.registration.closed &&
+          stream.grant.attachId === attachId &&
+          stream.grant.session.surfaceId === surfaceId
+        ) {
+          const requestId = `renderer_resize_${++nextTerminalDirectResizeRequestId}`;
+          return new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              pendingDirectResizeAcksRef.current.delete(requestId);
+              reject(
+                new Error("terminal direct resize acknowledgement timed out")
+              );
+            }, TERMINAL_DIRECT_RESIZE_ACK_TIMEOUT_MS);
+            pendingDirectResizeAcksRef.current.set(requestId, {
+              attachId,
+              timeout,
+              resolve,
+              reject
+            });
+            try {
+              stream.registration.resize(cols, rows, {
+                requestId,
+                gestureActive
+              });
+            } catch (error) {
+              pendingDirectResizeAcksRef.current.delete(requestId);
+              clearTimeout(timeout);
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          });
+        }
+        return Promise.reject(
+          new Error("terminal stream is not ready for direct resize")
+        );
+      }
     });
   }
 
@@ -527,99 +691,60 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     return terminalInstanceStore.getReadyAttachId(surfaceId, sessionId);
   }
 
-  function isVisibleSurfaceRenderer(surfaceId: string): boolean {
-    if (!paneActiveRef.current) {
-      return false;
-    }
-    const wrapper = surfaceWrapperRefs.current.get(surfaceId);
-    if (wrapper?.dataset.active !== "true") {
-      return false;
-    }
-    return true;
-  }
-
-  function refreshVisibleSurfaceRenderer(
-    surfaceId: string,
-    terminal: Terminal,
-    options: { force?: boolean } = {}
-  ): void {
-    if (!isVisibleSurfaceRenderer(surfaceId)) {
-      return;
-    }
-    resumeAndRefreshTerminalRenderer(terminal, options);
-  }
-
-  function scheduleVisibleSurfaceRendererRefresh(
-    surfaceId: string,
-    terminal: Terminal
-  ): void {
-    if (!isVisibleSurfaceRenderer(surfaceId)) {
-      reassertInactiveWorkspaceRendererPause(terminal);
-      return;
-    }
-    pendingRendererRefreshesRef.current.set(terminal, surfaceId);
-    if (pendingRendererRefreshFrameRef.current !== null) {
-      return;
-    }
-    pendingRendererRefreshFrameRef.current = requestAnimationFrame(() => {
-      pendingRendererRefreshFrameRef.current = null;
-      const pendingRefreshes = Array.from(
-        pendingRendererRefreshesRef.current.entries()
-      );
-      pendingRendererRefreshesRef.current.clear();
-      for (const [pendingTerminal, pendingSurfaceId] of pendingRefreshes) {
-        // Non-forced: a running renderer already repaints dirty rows on its
-        // own; this only resumes a paused renderer so streaming output does
-        // not force a full-viewport re-render every animation frame.
-        refreshVisibleSurfaceRenderer(pendingSurfaceId, pendingTerminal);
-      }
-    });
-  }
-
-  function cancelInactiveRendererPause(): void {
-    if (inactiveRendererPauseTimerRef.current === null) {
-      inactiveRendererPauseReadyRef.current = false;
-      return;
-    }
-    clearTimeout(inactiveRendererPauseTimerRef.current);
-    inactiveRendererPauseTimerRef.current = null;
-    inactiveRendererPauseReadyRef.current = false;
-  }
-
-  function scheduleInactiveWorkspaceRendererPause(terminal: Terminal): void {
-    cancelInactiveRendererPause();
-    inactiveRendererPauseTimerRef.current = setTimeout(() => {
-      inactiveRendererPauseTimerRef.current = null;
-      if (paneActiveRef.current || terminalRef.current !== terminal) {
-        inactiveRendererPauseReadyRef.current = false;
-        return;
-      }
-      inactiveRendererPauseReadyRef.current = true;
-      pauseTerminalRenderer(terminal);
-    }, INACTIVE_WORKSPACE_RENDER_PAUSE_DELAY_MS);
-  }
-
-  function reassertInactiveWorkspaceRendererPause(terminal: Terminal): void {
+  function sendTerminalText(surfaceId: string, text: string): void {
+    const stream = terminalStreamRef.current;
+    const sessionId = sessionIdForSurface(surfaceId);
+    const diagnosticWrapper = surfaceWrapperRefs.current.get(surfaceId);
     if (
-      paneActiveRef.current ||
-      !inactiveRendererPauseReadyRef.current ||
-      terminalRef.current !== terminal
+      stream?.grant.session.surfaceId === surfaceId &&
+      stream.grant.session.sessionId === sessionId &&
+      !stream.registration.closed
     ) {
+      if (diagnosticWrapper) {
+        diagnosticWrapper.dataset.terminalLastInputRoute = "live-stream";
+        diagnosticWrapper.dataset.terminalLastInputBytes = String(text.length);
+      }
+      stream.registration.sendText(text);
       return;
     }
-    pauseTerminalRenderer(terminal);
+    if (diagnosticWrapper) {
+      diagnosticWrapper.dataset.terminalLastInputRoute = "pending-stream";
+      diagnosticWrapper.dataset.terminalLastInputBytes = String(text.length);
+    }
+    if (
+      !sessionId ||
+      !pendingTerminalStreamInputRef.current.enqueueText(
+        surfaceId,
+        sessionId,
+        text
+      )
+    ) {
+      showAttachmentStatus("Terminal input buffer full");
+    }
   }
 
-  useEffect(() => {
-    return () => {
-      if (pendingRendererRefreshFrameRef.current !== null) {
-        cancelAnimationFrame(pendingRendererRefreshFrameRef.current);
-        pendingRendererRefreshFrameRef.current = null;
-      }
-      pendingRendererRefreshesRef.current.clear();
-      cancelInactiveRendererPause();
-    };
-  }, []);
+  function sendTerminalBinary(surfaceId: string, data: string): void {
+    const stream = terminalStreamRef.current;
+    const sessionId = sessionIdForSurface(surfaceId);
+    if (
+      stream?.grant.session.surfaceId === surfaceId &&
+      stream.grant.session.sessionId === sessionId &&
+      !stream.registration.closed
+    ) {
+      stream.registration.sendBinary(data);
+      return;
+    }
+    if (
+      !sessionId ||
+      !pendingTerminalStreamInputRef.current.enqueueBinary(
+        surfaceId,
+        sessionId,
+        data
+      )
+    ) {
+      showAttachmentStatus("Terminal input buffer full");
+    }
+  }
 
   function syncTerminalViewportBackground(): void {
     const container = containerRef.current;
@@ -687,7 +812,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   function shouldFocusActiveTerminal(surfaceId: string): boolean {
     return (
       paneFocusedRef.current &&
-      paneActiveRef.current &&
       activeSurfaceRef.current?.id === surfaceId &&
       !showSearchRef.current &&
       !isEditingOutsideTerminal()
@@ -763,7 +887,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const { cols, rows, surfaceId, generation, previousCols, previousRows } =
       input;
     if (terminal.cols === cols && terminal.rows === rows) {
-      return false;
+      return true;
     }
 
     const applyStartedAt = performance.now();
@@ -814,7 +938,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   async function fitAndSyncTerminal(
     terminal: Terminal,
-    options: { fit?: FitAddon | null; surfaceId?: string | null } = {}
+    options: {
+      fit?: FitAddon | null;
+      surfaceId?: string | null;
+      force?: boolean;
+    } = {}
   ): Promise<void> {
     const fit = options.fit ?? fitRef.current;
     if (!fit) {
@@ -822,17 +950,56 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
     const surfaceId = options.surfaceId ?? activeSurfaceRef.current?.id ?? null;
     const requiresActiveSurface = !options.surfaceId;
-    if (surfaceId) {
-      refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
-    }
     const previousCols = terminal.cols;
     const previousRows = terminal.rows;
-    const fitStartedAt = performance.now();
-    const dims = fit.proposeDimensions();
-    const fitDurationMs = performance.now() - fitStartedAt;
+    const fitHost = surfaceId
+      ? terminalInstanceStore.getTerminalBundle(surfaceId)?.host
+      : containerRef.current;
+    const fitRect = fitHost?.getBoundingClientRect();
+    const optionsKey = terminalFitOptionsKey(terminal);
+    const fitMemo = terminalFitMemosRef.current.get(terminal);
     const syncedSurfaceDimensions = surfaceId
       ? surfaceResizeDimensionsRef.current.get(surfaceId)
       : undefined;
+    const surfaceAlreadySynced = Boolean(
+      surfaceId &&
+      syncedSurfaceDimensions?.cols === previousCols &&
+      syncedSurfaceDimensions?.rows === previousRows
+    );
+    if (
+      fitRect &&
+      fitMemo &&
+      Math.abs(fitMemo.width - fitRect.width) < 0.5 &&
+      Math.abs(fitMemo.height - fitRect.height) < 0.5 &&
+      fitMemo.cols === previousCols &&
+      fitMemo.rows === previousRows &&
+      fitMemo.optionsKey === optionsKey &&
+      !options.force &&
+      (!surfaceId || surfaceAlreadySynced)
+    ) {
+      recordRendererSmoothnessProfileEvent("terminal.fit", {
+        paneId: props.paneId,
+        surfaceId,
+        previousCols,
+        previousRows,
+        cols: previousCols,
+        rows: previousRows,
+        valid: true,
+        changed: false,
+        surfaceSynced: surfaceAlreadySynced,
+        skipped: true,
+        durationMs: 0
+      });
+      if (surfaceId) {
+        syncSurfaceTerminalMetrics(surfaceId, terminal);
+      } else {
+        syncTerminalMetrics(terminal);
+      }
+      return;
+    }
+    const fitStartedAt = performance.now();
+    const dims = fit.proposeDimensions();
+    const fitDurationMs = performance.now() - fitStartedAt;
     const terminalSizeChanged = Boolean(
       dims &&
       Number.isFinite(dims.cols) &&
@@ -875,6 +1042,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) {
       return;
     }
+    if (fitRect) {
+      terminalFitMemosRef.current.set(terminal, {
+        width: fitRect.width,
+        height: fitRect.height,
+        cols: dims.cols,
+        rows: dims.rows,
+        optionsKey
+      });
+    }
     if (!terminalSizeChanged && (!surfaceId || surfaceSizeSynced)) {
       if (surfaceId) {
         syncSurfaceTerminalMetrics(surfaceId, terminal);
@@ -888,22 +1064,42 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const streamReady = Boolean(surfaceId && readyAttachId);
     const attachId = streamReady ? readyAttachId : null;
     if (!streamReady) {
-      const resized = applyTerminalResize(terminal, {
-        cols: dims.cols,
-        rows: dims.rows,
-        surfaceId,
-        generation,
-        previousCols,
-        previousRows
-      });
-      if (!resized && terminalSizeChanged) {
-        return;
+      const preserveResumeGeometry = Boolean(
+        surfaceId &&
+        terminalInstanceStore.getLastHydratedSurfaceId(surfaceId) ===
+          surfaceId &&
+        terminalInstanceStore.getLastHydratedSurfaceSequence(surfaceId) !== null
+      );
+      if (!preserveResumeGeometry) {
+        const resized = applyTerminalResize(terminal, {
+          cols: dims.cols,
+          rows: dims.rows,
+          surfaceId,
+          generation,
+          previousCols,
+          previousRows
+        });
+        if (!resized && terminalSizeChanged) {
+          return;
+        }
       }
       if (surfaceId) {
-        syncSurfaceTerminalMetrics(surfaceId, terminal);
+        const sessionId = sessionIdForSurface(surfaceId);
+        if (sessionId) {
+          pendingTerminalResizeRef.current.set(surfaceId, {
+            sessionId,
+            cols: dims.cols,
+            rows: dims.rows,
+            gestureActive: isPaneDividerDragActive()
+          });
+        }
+        if (!preserveResumeGeometry) {
+          syncSurfaceTerminalMetrics(surfaceId, terminal);
+        }
       } else {
         syncTerminalMetrics(terminal);
       }
+      return;
     }
     if (!surfaceId) {
       return;
@@ -960,16 +1156,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     }
   }
 
-  async function waitForTerminalFonts(): Promise<void> {
-    if (typeof document === "undefined" || !("fonts" in document)) {
-      return;
-    }
-    if (document.fonts.status === "loaded") {
-      return;
-    }
-    await document.fonts.ready;
-  }
-
   function matchesTerminalShortcut(
     event: Pick<
       KeyboardEvent,
@@ -992,13 +1178,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   ): boolean {
     if (!isRendererSmoothnessProfileEnabled() || !profileSurfaceId) {
       terminal.write(data, () => {
-        if (profileSurfaceId) {
-          syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-          scheduleVisibleSurfaceRendererRefresh(profileSurfaceId, terminal);
-        } else {
-          syncTerminalMetrics(terminal);
+        try {
+          if (profileSurfaceId) {
+            syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
+          } else {
+            syncTerminalMetrics(terminal);
+          }
+        } catch (error) {
+          console.warn("Failed to update terminal write metrics", error);
+        } finally {
+          afterWrite?.();
         }
-        afterWrite?.();
       });
       return true;
     }
@@ -1014,17 +1204,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       );
     });
     terminal.write(data, () => {
-      const now = performance.now();
-      writeProfileBucketRef.current.record(bucketKey, (profile) => {
-        profile.queueDepth = Math.max(0, profile.queueDepth - 1);
-        profile.maxDurationMs = Math.max(
-          profile.maxDurationMs,
-          now - startedAt
-        );
-      });
-      syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
-      scheduleVisibleSurfaceRendererRefresh(profileSurfaceId, terminal);
-      afterWrite?.();
+      try {
+        const now = performance.now();
+        writeProfileBucketRef.current.record(bucketKey, (profile) => {
+          profile.queueDepth = Math.max(0, profile.queueDepth - 1);
+          profile.maxDurationMs = Math.max(
+            profile.maxDurationMs,
+            now - startedAt
+          );
+        });
+        syncSurfaceTerminalMetrics(profileSurfaceId, terminal);
+      } catch (error) {
+        console.warn("Failed to update profiled terminal write metrics", error);
+      } finally {
+        afterWrite?.();
+      }
     });
     return true;
   }
@@ -1234,84 +1428,150 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     // Keep the terminal surface alive across tab switches and pane split
     // remounts. Full-screen TUIs keep mouse tracking state inside xterm, so
     // only release this instance when the surface itself is removed.
-    const { instance } = terminalInstanceStore.acquire(
-      terminalInstanceKey,
-      () => {
-        const host = document.createElement("div") as TerminalDiagnosticElement;
-        host.style.cssText =
-          "width:100%;height:100%;min-height:0;overflow:hidden;";
-        const terminal = new Terminal({
-          allowProposedApi: true,
-          fontFamily: props.terminalTypography.resolvedFontFamily,
-          fontSize: props.settings.terminalTypography.fontSize,
-          lineHeight: props.settings.terminalTypography.lineHeight || 1.0,
-          fontWeight: 400,
-          cursorBlink: true,
-          macOptionIsMeta: false,
-          macOptionClickForcesSelection: props.keyboardPlatform === "darwin",
-          altClickMovesCursor: false,
-          rightClickSelectsWord: false,
-          scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
-          minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
-          theme: terminalTheme,
-          linkHandler: terminalLinkHandler
-        });
-        host.__kmuxTerminal = terminal;
-        host.__kmuxTerminalDiagnostics = {
-          hydratedSequence: null,
-          renderedSequence: null
+    const { instance, visibilityPin, isNew } =
+      terminalInstanceStore.acquireVisible(terminalInstanceKey, () => ({
+        ...createTerminalBundleRef.current(activeSurface.id),
+        lastHydratedSurfaceId: null,
+        lastHydratedSurfaceSequence: null,
+        attachmentCleanup: null,
+        attachmentSessionId: null,
+        attachmentToken: null,
+        readyAttachId: null,
+        renderSink: null
+      }));
+    recordRendererSmoothnessProfileEvent("terminal.data-plane.cache", {
+      surfaceId: activeSurface.id,
+      isNew,
+      lastHydratedSurfaceId: instance.lastHydratedSurfaceId,
+      lastHydratedSurfaceSequence: instance.lastHydratedSurfaceSequence
+    });
+    let checkpointBindingToken: ReturnType<
+      SurfaceTerminalCheckpointController["bind"]
+    > | null = null;
+    instance.checkpointController ??= new SurfaceTerminalCheckpointController({
+      getCurrentBundle: () => {
+        const current =
+          terminalInstanceStore.getTerminalBundle(terminalInstanceKey);
+        if (!current) {
+          throw new Error("terminal surface was released");
+        }
+        return current;
+      },
+      beginCooperativeWrite: (laneId, data, write) =>
+        terminalStreamClient.beginCooperativeWrite(laneId, data, write)
+    });
+    const checkpointController = instance.checkpointController;
+    terminalCheckpointControllerRef.current = checkpointController;
+    checkpointBindingToken = checkpointController.bind({
+      createBundle: () => createTerminalBundleRef.current(activeSurface.id),
+      getWrapper: () =>
+        surfaceWrapperRefs.current.get(activeSurface.id) ?? null,
+      commitBundle: (expected, replacement, checkpoint, swapGeneration) => {
+        const currentWrapper = surfaceWrapperRefs.current.get(activeSurface.id);
+        if (!currentWrapper) {
+          return false;
+        }
+        const previousHydration = {
+          surfaceId:
+            terminalInstanceStore.getLastHydratedSurfaceId(terminalInstanceKey),
+          sequence:
+            terminalInstanceStore.getLastHydratedSurfaceSequence(
+              terminalInstanceKey
+            )
         };
-        const fit = new FitAddon();
-        const search = new SearchAddon();
-        const unicode11 = new Unicode11Addon();
-        const webLinks = new WebLinksAddon((_event, uri) => {
-          openExternalTerminalLink(uri);
-        });
-        const lineCwds = createTerminalLineCwdTracker();
-        const lineCwdTrimListener = registerTerminalBufferTrimHandler(
-          terminal,
-          (amount) => {
-            lineCwds.handleTrim(amount);
-          }
+        const previousInputReady = currentWrapper.dataset.terminalInputReady;
+        const previous = terminalInstanceStore.replaceTerminalBundle(
+          terminalInstanceKey,
+          expected.terminal,
+          replacement
         );
-        terminal.loadAddon(fit);
-        terminal.loadAddon(search);
-        terminal.loadAddon(unicode11);
-        terminal.loadAddon(webLinks);
-        const openTerminalFilePath = window.kmux
-          .openTerminalFilePath as OpenTerminalFilePathWithBaseCwd;
-        const fileLinks = registerTerminalFileLinkProvider({
-          terminal,
-          getKeyboardPlatform: () => keyboardPlatformRef.current,
-          surfaceId: activeSurface.id,
-          openFilePath: (surfaceId, rawPath, baseCwd) =>
-            openTerminalFilePath(surfaceId, rawPath, baseCwd),
-          getCwdForBufferLine: (bufferLineNumber) =>
-            lineCwds.getCwdForLine(bufferLineNumber)
-        });
-        terminal.unicode.activeVersion = "11";
-        terminal.open(host);
-        return {
-          host,
-          terminal,
-          fit,
-          search,
-          unicode11,
-          webLinks,
-          fileLinks,
-          lineCwdTrimListener,
-          lineCwds,
-          lastHydratedSurfaceId: null,
-          lastHydratedSurfaceSequence: null,
-          attachmentCleanup: null,
-          attachmentSessionId: null,
-          attachmentToken: null,
-          readyAttachId: null,
-          pendingDetachPromise: null,
-          renderSink: null
-        };
+        if (!previous) {
+          return false;
+        }
+        try {
+          clearWrapperTerminalDiagnostics(
+            previous.host.parentNode,
+            previous.terminal
+          );
+          if (previous.host.parentNode === currentWrapper) {
+            currentWrapper.replaceChild(replacement.host, previous.host);
+          } else {
+            previous.host.remove();
+            currentWrapper.appendChild(replacement.host);
+          }
+          containerRef.current = replacement.host;
+          terminalRef.current = replacement.terminal;
+          fitRef.current = replacement.fit;
+          searchRef.current = replacement.search;
+          lineCwdsRef.current = replacement.lineCwds;
+          renderSinkContextRef.current = {
+            terminal: replacement.terminal,
+            fit: replacement.fit,
+            surfaceId: activeSurface.id
+          };
+          delete currentWrapper.dataset.terminalInputReady;
+          attachTerminalHostToCurrentWrapper(
+            activeSurface.id,
+            replacement.terminal,
+            replacement.host
+          );
+          refreshTerminalRenderer(replacement.terminal);
+          terminalInstanceStore.markSurfaceHydrated(
+            terminalInstanceKey,
+            activeSurface.id,
+            checkpoint.sequence
+          );
+          updateTerminalDiagnostics(activeSurface.id, replacement.terminal, {
+            hydratedSequence: checkpoint.sequence,
+            renderedSequence: checkpoint.sequence,
+            renderGeneration: swapGeneration,
+            lastOnRenderAt: null
+          });
+          flushSync(() => {
+            setTerminalGeneration((generation) => generation + 1);
+          });
+          return true;
+        } catch (error) {
+          const rolledBack = terminalInstanceStore.replaceTerminalBundle(
+            terminalInstanceKey,
+            replacement.terminal,
+            previous
+          );
+          if (rolledBack) {
+            terminalInstanceStore.restoreHydrationState(
+              terminalInstanceKey,
+              previousHydration.surfaceId,
+              previousHydration.sequence
+            );
+            replacement.host.remove();
+            currentWrapper.appendChild(previous.host);
+            containerRef.current = previous.host;
+            terminalRef.current = previous.terminal;
+            fitRef.current = previous.fit;
+            searchRef.current = previous.search;
+            lineCwdsRef.current = previous.lineCwds;
+            renderSinkContextRef.current = {
+              terminal: previous.terminal,
+              fit: previous.fit,
+              surfaceId: activeSurface.id
+            };
+            attachTerminalHostToCurrentWrapper(
+              activeSurface.id,
+              previous.terminal,
+              previous.host
+            );
+            if (previousInputReady === undefined) {
+              delete currentWrapper.dataset.terminalInputReady;
+            } else {
+              currentWrapper.dataset.terminalInputReady = previousInputReady;
+            }
+            refreshTerminalRenderer(previous.terminal);
+          }
+          console.warn("Failed to commit terminal checkpoint", error);
+          return false;
+        }
       }
-    );
+    });
     containerRef.current = instance.host;
     terminalRef.current = instance.terminal;
     fitRef.current = instance.fit;
@@ -1329,10 +1589,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       });
     }
     return () => {
-      clearWrapperTerminalDiagnostics(
-        instance.host.parentNode,
-        instance.terminal
-      );
+      if (checkpointBindingToken) {
+        instance.checkpointController?.unbind(checkpointBindingToken);
+      }
+      const ownedWrapper = wrapper as TerminalHostElement;
+      if (ownedWrapper.__kmuxTerminal) {
+        clearWrapperTerminalDiagnostics(
+          ownedWrapper,
+          ownedWrapper.__kmuxTerminal
+        );
+      }
       if (terminalRef.current === instance.terminal) {
         terminalRef.current = null;
         fitRef.current = null;
@@ -1340,8 +1606,32 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         lineCwdsRef.current = null;
         containerRef.current = null;
       }
+      if (
+        terminalCheckpointControllerRef.current ===
+        instance.checkpointController
+      ) {
+        terminalCheckpointControllerRef.current = null;
+      }
+      terminalInstanceStore.releaseVisibilityPin(
+        terminalInstanceKey,
+        visibilityPin
+      );
     };
   }, [activeSurface.id, terminalInstanceKey]);
+
+  useLayoutEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    const renderListener = terminal.onRender(() => {
+      updateTerminalDiagnostics(activeSurface.id, terminal, {
+        lastOnRenderAt: performance.now()
+      });
+      terminalStreamRef.current?.registration.notifyRendered();
+    });
+    return () => renderListener.dispose();
+  }, [activeSurface.id, terminalGeneration, terminalInstanceKey]);
 
   useLayoutEffect(() => {
     const terminal = terminalRef.current;
@@ -1376,8 +1666,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!previousSessionId || previousSessionId === activeSurface.sessionId) {
       return;
     }
-    terminal.reset();
-    terminal.clearSelection();
+    // Keep the last authoritative frame visible until the new epoch's
+    // checkpoint has parsed in an offscreen xterm and commits atomically.
+    terminalCheckpointControllerRef.current?.cancelPending(
+      "terminal session changed during checkpoint hydration"
+    );
+    pendingTerminalResizeRef.current.delete(activeSurface.id);
     terminalInstanceStore.detachAttachment(activeSurface.id);
     terminalInstanceStore.invalidateHydration(terminalInstanceKey);
     updateTerminalDiagnostics(activeSurface.id, terminal, {
@@ -1434,14 +1728,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           current?.terminal ?? initialTerminal,
           {
             fit: current?.fit ?? initialFit,
-            surfaceId: current?.surfaceId ?? initialSurfaceId
+            surfaceId: current?.surfaceId ?? initialSurfaceId,
+            force: true
           }
-        );
-      },
-      beforeFitAndSync: () => {
-        const current = renderSinkContextRef.current;
-        surfaceResizeDimensionsRef.current.delete(
-          current?.surfaceId ?? initialSurfaceId
         );
       }
     };
@@ -1701,7 +1990,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           );
         const currentSurface = activeSurfaceRef.current;
         if (commitText && currentSurface) {
-          void window.kmux.sendText(currentSurface.id, commitText);
+          sendTerminalText(currentSurface.id, commitText);
           if (xtermTextarea) {
             xtermTextarea.value = "";
           }
@@ -1743,16 +2032,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     void fitAndSyncTerminal(terminal);
     const dividerFitThrottle = createTerminalDividerFitThrottle({
       runFit: () => {
-        void fitAndSyncTerminal(terminal).catch(() => {
+        void fitAndSyncTerminal(terminal, { force: true }).catch(() => {
           // ignore resize errors during unmount
         });
       }
     });
     const foregroundFit = installTerminalForegroundFit({
       isActive: () =>
-        paneActiveRef.current &&
-        terminalRef.current === terminal &&
-        Boolean(activeSurfaceRef.current),
+        terminalRef.current === terminal && Boolean(activeSurfaceRef.current),
       getFitElement: () => containerRef.current,
       fitAndSync: () => {
         dividerFitThrottle.requestFit();
@@ -1811,7 +2098,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (rewrite.clearPending) {
         clearPendingEnterRewrite();
       }
-      void window.kmux.sendText(currentSurface.id, rewrite.data);
+      sendTerminalText(currentSurface.id, rewrite.data);
+    });
+    const disposeBinary = terminal.onBinary((data) => {
+      const currentSurface = activeSurfaceRef.current;
+      if (currentSurface) {
+        sendTerminalBinary(currentSurface.id, data);
+      }
     });
     const disposeWriteParsed = terminal.onWriteParsed(() => {
       syncTerminalMetrics(terminal);
@@ -1819,6 +2112,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const disposeScroll = terminal.onScroll(() => {
       syncTerminalMetrics(terminal);
     });
+    const inputReadyWrapper = surfaceWrapperRefs.current.get(
+      activeSurfaceRef.current?.id ?? ""
+    ) as TerminalHostElement | undefined;
+    if (inputReadyWrapper?.__kmuxTerminal === terminal) {
+      inputReadyWrapper.dataset.terminalInputReady = "true";
+    }
 
     return () => {
       if (foregroundFitRef.current === foregroundFit) {
@@ -1833,8 +2132,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         resizeTimeout = null;
       }
       disposeData.dispose();
+      disposeBinary.dispose();
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
+      if (inputReadyWrapper?.__kmuxTerminal === terminal) {
+        delete inputReadyWrapper.dataset.terminalInputReady;
+      }
       container.removeEventListener("keydown", handleTerminalShortcut, true);
       container.removeEventListener("paste", handleTerminalPaste, true);
       if (xtermTextarea) {
@@ -1854,28 +2157,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       clearPendingEnterRewrite();
     };
-  }, [props.keyboardPlatform, props.paneId, terminalInstanceKey]);
-
-  useEffect(() => {
-    const wasActive = previousPaneActiveRef.current;
-    previousPaneActiveRef.current = props.active;
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-    if (!props.active) {
-      scheduleInactiveWorkspaceRendererPause(terminal);
-      return;
-    }
-    cancelInactiveRendererPause();
-    if (!wasActive) {
-      const surfaceId = activeSurfaceRef.current?.id;
-      if (surfaceId) {
-        refreshVisibleSurfaceRenderer(surfaceId, terminal, { force: true });
-      }
-      foregroundFitRef.current?.scheduleFit();
-    }
-  }, [props.active, terminalInstanceKey]);
+  }, [
+    props.keyboardPlatform,
+    props.paneId,
+    terminalGeneration,
+    terminalInstanceKey
+  ]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1905,463 +2192,453 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.settings.terminalTypography.lineHeight,
     props.terminalTheme.minimumContrastRatio,
     terminalTheme,
+    terminalGeneration,
     terminalInstanceKey
   ]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
-    if (!terminal || !activeSurface) {
+    const checkpointController = terminalCheckpointControllerRef.current;
+    if (
+      !terminal ||
+      !activeSurface ||
+      !terminalStreamEligible ||
+      !checkpointController
+    ) {
       return;
     }
     const surfaceId = activeSurface.id;
     const sessionId = activeSurface.sessionId;
-    const existingAttachmentSessionId =
-      terminalInstanceStore.getAttachmentSessionId(surfaceId);
-    if (
-      existingAttachmentSessionId &&
-      existingAttachmentSessionId !== sessionId
-    ) {
-      terminalInstanceStore.detachAttachment(surfaceId);
-    }
-    if (terminalInstanceStore.hasAttachment(surfaceId, sessionId)) {
-      return;
-    }
-
-    let attached = true;
-    let terminalOperationQueue = Promise.resolve();
+    const instanceKey = terminalInstanceKey;
+    let mounted = true;
+    let rearmAttempt = 0;
+    const attachAbortController = new AbortController();
+    let rearmTimer: ReturnType<typeof setTimeout> | null = null;
+    let stream: AttachedTerminalStream | null = null;
+    let preservePendingInputForReattach = false;
     let attachmentToken: terminalInstanceStore.TerminalAttachmentToken | null =
       null;
-    const instanceKey = terminalInstanceKey;
-    const attachedLineCwds = terminalInstanceStore.getLineCwdsForTerminal(
-      instanceKey,
-      terminal
-    );
-    const replayVisibility = createTerminalReplayVisibility({
-      host: containerRef.current,
-      wrapper: surfaceWrapperRefs.current.get(surfaceId) ?? null
-    });
-    const writeAttachedTerminal = (
+
+    const writeToCurrentTerminal = (
+      bundle: TerminalBundle,
       data: string,
-      afterWrite?: () => void,
-      profileSurfaceId = surfaceId
+      onParsed: () => void
     ): boolean => {
       const sink = terminalInstanceStore.getRenderSink(instanceKey);
       if (sink) {
-        return sink.write(data, afterWrite, profileSurfaceId);
+        return sink.write(data, onParsed, surfaceId);
       }
-      if (terminalInstanceStore.isCurrentTerminal(instanceKey, terminal)) {
-        terminal.write(data, () => {
-          afterWrite?.();
-        });
-        return true;
+      if (
+        !terminalInstanceStore.isCurrentTerminal(instanceKey, bundle.terminal)
+      ) {
+        return false;
       }
-      return false;
+      bundle.terminal.write(data, onParsed);
+      return true;
     };
-    const waitForAttachedTerminalWrite = (
-      data: string,
-      profileSurfaceId: string,
-      afterWrite?: () => void
-    ): Promise<boolean> =>
-      new Promise((resolve) => {
-        let settled = false;
-        const finish = (didWrite: boolean): void => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          clearTimeout(timeout);
-          resolve(didWrite);
-        };
-        const timeout = setTimeout(() => {
-          // Distinguishes "xterm never confirmed the write" from a dropped
-          // write in captures and logs; the parse may still complete later,
-          // but its bookkeeping callback is skipped once this fires.
-          console.warn("kmux: terminal write callback timed out", {
-            surfaceId: profileSurfaceId,
-            bytes: data.length,
-            timeoutMs: TERMINAL_WRITE_CALLBACK_TIMEOUT_MS
+
+    const checkpointSink: TerminalStreamSink = {
+      async applyCheckpoint(checkpoint) {
+        const result = await checkpointController.applyCheckpoint(checkpoint);
+        const currentTerminal = checkpointController.currentBundle.terminal;
+        surfaceResizeDimensionsRef.current.set(surfaceId, {
+          cols: checkpoint.cols,
+          rows: checkpoint.rows
+        });
+        updateTerminalDiagnostics(surfaceId, currentTerminal, {
+          attachAvailableSequence: checkpoint.sequence
+        });
+        return result;
+      },
+      applyResume(resume) {
+        const bundle = checkpointController.currentBundle;
+        const currentTerminal = bundle.terminal;
+        if (
+          currentTerminal.cols !== resume.cols ||
+          currentTerminal.rows !== resume.rows
+        ) {
+          const resized = applyTerminalResize(currentTerminal, {
+            cols: resume.cols,
+            rows: resume.rows,
+            surfaceId,
+            generation: ++resizeGenerationRef.current,
+            previousCols: currentTerminal.cols,
+            previousRows: currentTerminal.rows
           });
-          finish(false);
-        }, TERMINAL_WRITE_CALLBACK_TIMEOUT_MS);
-        let didScheduleWrite = false;
-        try {
-          didScheduleWrite = writeAttachedTerminal(
-            data,
-            () => {
-              if (settled) {
-                return;
-              }
-              try {
-                afterWrite?.();
-              } finally {
-                finish(true);
-              }
-            },
-            profileSurfaceId
-          );
-        } catch (error) {
-          console.warn("Failed to write terminal output", error);
-          finish(false);
+          if (!resized) {
+            throw new Error("failed to restore terminal resume geometry");
+          }
+        }
+        surfaceResizeDimensionsRef.current.set(surfaceId, {
+          cols: resume.cols,
+          rows: resume.rows
+        });
+        syncSurfaceTerminalMetrics(surfaceId, currentTerminal);
+        terminalInstanceStore.markSurfaceHydrated(
+          instanceKey,
+          surfaceId,
+          resume.resumedFromSequence
+        );
+        updateTerminalDiagnostics(surfaceId, bundle.terminal, {
+          hydratedSequence: resume.resumedFromSequence,
+          renderedSequence: resume.resumedFromSequence,
+          attachAvailableSequence: resume.availableSequence
+        });
+      },
+      write(data, onParsed, context) {
+        const bundle = checkpointController.currentBundle;
+        const currentTerminal = bundle.terminal;
+        const lineCwds = bundle.lineCwds;
+        const cwd = cwdAtDataOffset(context.delta, context.dataOffset);
+        let cwdCursor = cwdWriteCursorsRef.current.get(currentTerminal);
+        if (!cwdCursor) {
+          cwdCursor = {
+            pendingWrites: 0,
+            nextStartLine:
+              currentTerminal.buffer.active.baseY +
+              currentTerminal.buffer.active.cursorY,
+            trimmedLineCount: lineCwds.getTrimmedLineCount()
+          };
+          cwdWriteCursorsRef.current.set(currentTerminal, cwdCursor);
+        }
+        cwdCursor.pendingWrites += 1;
+        const didWrite = writeToCurrentTerminal(bundle, data, () => {
+          try {
+            const trimmedLineCount = lineCwds.getTrimmedLineCount();
+            const trimDuringWrite =
+              trimmedLineCount - cwdCursor.trimmedLineCount;
+            const startLine = cwdCursor.nextStartLine - trimDuringWrite;
+            const endLine =
+              currentTerminal.buffer.active.baseY +
+              currentTerminal.buffer.active.cursorY;
+            cwdCursor.nextStartLine = endLine;
+            cwdCursor.trimmedLineCount = trimmedLineCount;
+            if (cwd) {
+              lineCwds.recordWrite({
+                startLine,
+                endLine,
+                cwd
+              });
+            }
+            if (context.finalPart) {
+              terminalInstanceStore.markSurfaceRendered(
+                instanceKey,
+                surfaceId,
+                context.delta.sequence
+              );
+              updateTerminalDiagnostics(surfaceId, currentTerminal, {
+                renderedSequence: context.delta.sequence
+              });
+            }
+          } catch (error) {
+            console.warn("Failed to update parsed terminal metadata", error);
+          } finally {
+            cwdCursor.pendingWrites = Math.max(0, cwdCursor.pendingWrites - 1);
+            if (cwdCursor.pendingWrites === 0) {
+              cwdWriteCursorsRef.current.delete(currentTerminal);
+            }
+            onParsed();
+          }
+        });
+        if (!didWrite) {
+          cwdCursor.pendingWrites = Math.max(0, cwdCursor.pendingWrites - 1);
+          if (cwdCursor.pendingWrites === 0) {
+            cwdWriteCursorsRef.current.delete(currentTerminal);
+          }
+          throw new Error("terminal output target is no longer current");
+        }
+      },
+      resize(delta) {
+        const bundle = checkpointController.currentBundle;
+        const currentTerminal = bundle.terminal;
+        const generation = ++resizeGenerationRef.current;
+        const resized = applyTerminalResize(currentTerminal, {
+          cols: delta.cols,
+          rows: delta.rows,
+          surfaceId,
+          generation,
+          previousCols: currentTerminal.cols,
+          previousRows: currentTerminal.rows
+        });
+        if (!resized) {
+          throw new Error("failed to apply authoritative terminal resize");
+        }
+        surfaceResizeDimensionsRef.current.set(surfaceId, {
+          cols: delta.cols,
+          rows: delta.rows
+        });
+        terminalInstanceStore.markSurfaceRendered(
+          instanceKey,
+          surfaceId,
+          delta.sequence
+        );
+        updateTerminalDiagnostics(surfaceId, currentTerminal, {
+          renderedSequence: delta.sequence
+        });
+        syncSurfaceTerminalMetrics(surfaceId, currentTerminal);
+      },
+      resizeAcknowledged(event) {
+        const pending = pendingDirectResizeAcksRef.current.get(event.requestId);
+        if (!pending || pending.attachId !== event.attachId) {
           return;
         }
-        if (!didScheduleWrite) {
-          finish(false);
-        }
-      });
-    const fitAttachedTerminal = async (): Promise<void> => {
-      await terminalInstanceStore.getRenderSink(instanceKey)?.fitAndSync();
-    };
-    const isCurrentAttachedSession = (): boolean =>
-      attached &&
-      attachmentToken !== null &&
-      terminalInstanceStore.isCurrentAttachment(
-        surfaceId,
-        sessionId,
-        attachmentToken
-      );
-    const isCurrentSessionEvent = (payload: {
-      surfaceId: string;
-      sessionId: string;
-    }): boolean =>
-      payload.surfaceId === surfaceId &&
-      payload.sessionId === sessionId &&
-      attached &&
-      attachmentToken !== null &&
-      terminalInstanceStore.isCurrentAttachment(
-        surfaceId,
-        sessionId,
-        attachmentToken
-      );
-    const isSameSurfaceSession = (payload: {
-      surfaceId: string;
-      sessionId: string;
-    }): boolean =>
-      payload.surfaceId === surfaceId &&
-      payload.sessionId === sessionId &&
-      surfaceSessionIdsRef.current.get(payload.surfaceId) === payload.sessionId;
-    const enqueueTerminalOperation = (
-      operation: () => Promise<void> | void
-    ): void => {
-      terminalOperationQueue = terminalOperationQueue
-        .catch(() => undefined)
-        .then(() => operation())
-        .catch(() => undefined);
-    };
-    type LiveChunkPayloadWithCwd = {
-      surfaceId: string;
-      sessionId: string;
-      sequence: number;
-      chunk: string;
-      cwd?: string;
-    };
-    // Chunks at or below the last replayed snapshot sequence are already in
-    // the terminal; stragglers delivered around a re-hydration must not be
-    // written again.
-    let minLiveChunkSequence = 0;
-    let recoveringFromChunkBacklog = false;
-    const liveChunkBatcher =
-      createTerminalChunkBatcher<LiveChunkPayloadWithCwd>({
-        enqueueOperation: enqueueTerminalOperation,
-        isCurrentEvent: (payload) =>
-          payload.sequence > minLiveChunkSequence &&
-          isCurrentSessionEvent(payload),
-        writeChunk: (payload, afterParsed) =>
-          writeAttachedTerminal(payload.chunk, afterParsed, payload.surfaceId),
-        waitForFinalChunkWrite: (payload, afterParsed) =>
-          waitForAttachedTerminalWrite(
-            payload.chunk,
-            payload.surfaceId,
-            afterParsed
-          ),
-        readCursorLine: () =>
-          terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
-        readTrimmedLineCount: () =>
-          attachedLineCwds?.getTrimmedLineCount() ?? 0,
-        recordWrite: (range) => {
-          attachedLineCwds?.recordWrite({
-            startLine: range.startLine,
-            endLine: range.endLine,
-            cwd: range.cwd
-          });
-        },
-        onBatchRendered: (payload) => {
-          terminalInstanceStore.markSurfaceRendered(
-            instanceKey,
-            payload.surfaceId,
-            payload.sequence
-          );
-          const renderedSequence =
-            terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey);
-          updateTerminalDiagnostics(payload.surfaceId, terminal, {
-            renderedSequence
-          });
-        },
-        backlogLimitChars: TERMINAL_LIVE_CHUNK_BACKLOG_LIMIT_CHARS,
-        onBacklogExceeded: () => {
-          recoverFromChunkBacklog();
-        }
-      });
-    const markSnapshotRendered = (
-      attachId: string,
-      snapshot: TerminalSnapshotWithCwdRanges
-    ) => {
-      if (!isCurrentAttachedSession()) {
-        return Promise.resolve({ status: "stale" as const });
-      }
-      if (typeof snapshot.sequence === "number") {
-        minLiveChunkSequence = Math.max(
-          minLiveChunkSequence,
-          snapshot.sequence
-        );
-      }
-      attachedLineCwds?.importSnapshotRanges(snapshot.cwdRanges);
-      terminalInstanceStore.markSurfaceHydrated(
-        instanceKey,
-        surfaceId,
-        snapshot.sequence
-      );
-      const renderedSequence =
-        terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey);
-      updateTerminalDiagnostics(surfaceId, terminal, {
-        hydratedSequence: snapshot.sequence,
-        renderedSequence
-      });
-      return window.kmux
-        .completeAttachSurface(surfaceId, attachId, sessionId)
-        .then((completion) => {
-          const currentToken = attachmentToken;
-          if (!currentToken || !isCurrentAttachedSession()) {
-            return { status: "stale" as const };
+        pendingDirectResizeAcksRef.current.delete(event.requestId);
+        clearTimeout(pending.timeout);
+        pending.resolve();
+      },
+      exit(event) {
+        const bundle = checkpointController.currentBundle;
+        return new Promise<void>((resolve) => {
+          const message = `\r\n\u001b[31mSession exited${
+            typeof event.exitCode === "number" ? ` (${event.exitCode})` : ""
+          }\u001b[0m\r\n`;
+          if (!writeToCurrentTerminal(bundle, message, resolve)) {
+            resolve();
           }
-          if (completion.status === "ready") {
-            terminalInstanceStore.markAttachmentReady(
-              surfaceId,
-              sessionId,
-              attachId,
-              currentToken
-            );
-          } else {
+        });
+      },
+      detached(reason) {
+        rejectPendingDirectResizeAcknowledgements(
+          stream?.grant.attachId ?? null,
+          `terminal stream detached before resize acknowledgement (${reason})`
+        );
+        checkpointController.cancelPending(
+          `terminal stream detached during checkpoint hydration (${reason})`
+        );
+        const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+        delete wrapper?.dataset.terminalStreamReady;
+        if (mounted && reason === "replaced") {
+          preservePendingInputForReattach = true;
+          if (attachmentToken) {
             terminalInstanceStore.clearAttachmentReady(
               surfaceId,
               sessionId,
-              currentToken
+              attachmentToken
             );
           }
-          return completion;
+          queueMicrotask(() => {
+            if (mounted) {
+              setTerminalAttachmentGeneration((generation) => generation + 1);
+            }
+          });
+        }
+      },
+      reportError(error) {
+        console.warn("Terminal data stream failed", {
+          surfaceId,
+          sessionId,
+          error
         });
+        if (mounted) {
+          showAttachmentStatus("Terminal stream interrupted");
+        }
+      }
     };
 
-    const unsubscribe = window.kmux.subscribeTerminal((event) => {
-      if (event.type === "chunk" && isCurrentSessionEvent(event.payload)) {
-        const payload = event.payload as typeof event.payload & {
-          cwd?: string;
-        };
-        liveChunkBatcher.enqueue(payload);
+    const cleanupAttachment = (): void => {
+      if (rearmTimer) {
+        clearTimeout(rearmTimer);
+        rearmTimer = null;
       }
-      if (event.type === "resize" && isCurrentSessionEvent(event.payload)) {
-        const payload = event.payload;
-        liveChunkBatcher.seal();
-        enqueueTerminalOperation(() => {
-          if (!isCurrentSessionEvent(payload)) {
-            return;
-          }
-          if (
-            !payload.attachId ||
-            terminalInstanceStore.getReadyAttachId(
-              payload.surfaceId,
-              payload.sessionId
-            ) !== payload.attachId
-          ) {
-            return;
-          }
-          applyTerminalResize(terminal, {
-            cols: payload.cols,
-            rows: payload.rows,
-            surfaceId: payload.surfaceId,
-            generation: resizeGenerationRef.current,
-            previousCols: terminal.cols,
-            previousRows: terminal.rows
-          });
-          surfaceResizeDimensionsRef.current.set(payload.surfaceId, {
-            cols: payload.cols,
-            rows: payload.rows
-          });
-          syncSurfaceTerminalMetrics(payload.surfaceId, terminal);
-        });
-      }
-      if (event.type === "exit" && isCurrentSessionEvent(event.payload)) {
-        const payload = event.payload;
-        liveChunkBatcher.seal();
-        enqueueTerminalOperation(async () => {
-          if (!isSameSurfaceSession(payload)) {
-            return;
-          }
-          await waitForAttachedTerminalWrite(
-            `\r\n\u001b[31mSession exited${typeof payload.exitCode === "number" ? ` (${payload.exitCode})` : ""}\u001b[0m\r\n`,
-            payload.surfaceId
-          );
-        });
-      }
-    });
-    const cleanupAttachment = () => {
-      if (!attached) {
+      attachAbortController.abort();
+      if (!mounted) {
         return;
       }
-      attached = false;
+      const currentStream = stream;
+      mounted = false;
+      rejectPendingDirectResizeAcknowledgements(
+        currentStream?.grant.attachId ?? null,
+        "terminal stream closed before resize acknowledgement"
+      );
       terminalInstanceStore.clearAttachment(surfaceId, cleanupAttachment);
-      replayVisibility.dispose();
-      unsubscribe();
-      return window.kmux.detachSurface(surfaceId, sessionId).catch((error) => {
-        console.warn("Failed to detach terminal surface", error);
-      });
+      if (terminalStreamRef.current === currentStream) {
+        terminalStreamRef.current = null;
+      }
+      if (currentStream) {
+        const settlementPin =
+          terminalInstanceStore.acquireSettlementPin(instanceKey);
+        void terminalStreamClient
+          .detach(currentStream, "hidden")
+          .finally(() => {
+            if (settlementPin) {
+              terminalInstanceStore.releaseVisibilityPin(
+                instanceKey,
+                settlementPin
+              );
+            }
+          });
+      }
+      const currentSurface = activeSurfaceRef.current;
+      if (
+        !preservePendingInputForReattach ||
+        currentSurface?.id !== surfaceId ||
+        currentSurface.sessionId !== sessionId
+      ) {
+        pendingTerminalStreamInputRef.current.discard();
+      }
+      const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+      if (
+        wrapper &&
+        wrapper.dataset.terminalStreamReady === currentStream?.grant.attachId
+      ) {
+        delete wrapper.dataset.terminalStreamReady;
+      }
     };
+
+    const scheduleAttachRearm = (retry: () => void): void => {
+      if (!mounted || attachAbortController.signal.aborted || rearmTimer) {
+        return;
+      }
+      const delay = Math.min(
+        TERMINAL_ATTACH_REARM_INITIAL_DELAY_MS * 2 ** Math.min(rearmAttempt, 5),
+        TERMINAL_ATTACH_REARM_MAX_DELAY_MS
+      );
+      rearmAttempt += 1;
+      rearmTimer = setTimeout(() => {
+        rearmTimer = null;
+        if (mounted && !attachAbortController.signal.aborted) {
+          retry();
+        }
+      }, delay);
+    };
+
+    const existingSessionId =
+      terminalInstanceStore.getAttachmentSessionId(surfaceId);
+    if (existingSessionId) {
+      // A pane move can briefly mount the new owner before React unmounts the
+      // old one. Transfer the surface-scoped claim now; TerminalStreamClient
+      // defers the final close to a microtask, so the new claim reuses the
+      // same direct port without dropping output.
+      terminalInstanceStore.detachAttachment(surfaceId);
+    }
     attachmentToken = terminalInstanceStore.registerAttachment(
       surfaceId,
       sessionId,
       cleanupAttachment
     );
     if (!attachmentToken) {
-      attached = false;
-      unsubscribe();
       return;
     }
-    const attachCurrentSurface = async () => {
-      await terminalInstanceStore.waitForPendingDetach(surfaceId);
-      if (!isCurrentAttachedSession()) {
-        return null;
-      }
-      return window.kmux.attachSurface(surfaceId, sessionId);
-    };
-    // Backlog skip-ahead: drop the unparsed chunk backlog and re-run the
-    // preserved-terminal attach flow. The bridge resets the attachment to
-    // hydrating (queueing further chunks), takes a fresh snapshot, and the
-    // replay replaces the terminal content at the current sequence; the
-    // minLiveChunkSequence gate rejects in-flight chunks the snapshot
-    // already contains.
-    const recoverFromChunkBacklog = (): void => {
-      if (recoveringFromChunkBacklog || !isCurrentAttachedSession()) {
-        return;
-      }
-      recoveringFromChunkBacklog = true;
-      liveChunkBatcher.discardPending();
-      void (async () => {
-        try {
-          await reattachPreservedTerminal({
-            terminal,
-            isMounted: isCurrentAttachedSession,
-            isTerminalActive: (candidate) => candidate === terminal,
-            waitForTerminalFonts,
-            attachSurface: attachCurrentSurface,
-            lastRenderedSequence:
-              terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
-            beforeFitAndSync: () => {
-              terminalInstanceStore
-                .getRenderSink(instanceKey)
-                ?.beforeFitAndSync?.();
-            },
-            fitAndSyncTerminal: fitAttachedTerminal,
-            writeTerminal: (_terminal, data, afterWrite) => {
-              const didScheduleWrite = writeAttachedTerminal(
-                data,
-                afterWrite,
-                surfaceId
-              );
-              if (!didScheduleWrite) {
-                terminalInstanceStore.invalidateHydration(instanceKey);
-              }
-              return didScheduleWrite;
-            },
-            onReplayStart: replayVisibility.hide,
-            onReplayEnd: replayVisibility.revealAfterPaint,
-            onSnapshotRendered: markSnapshotRendered
-          });
-        } finally {
-          recoveringFromChunkBacklog = false;
-        }
-      })().catch(() => {
-        // Mirror the mount flow: a failed re-attach leaves the bridge
-        // without an attachment, so release the store side too and let the
-        // next attach re-establish it.
-        if (!attached) {
-          return;
-        }
-        terminalInstanceStore.detachAttachment(surfaceId);
-      });
-    };
-
-    void (async () => {
-      if (!attached) {
-        return;
-      }
-      const lastHydratedSurfaceId =
-        terminalInstanceStore.getLastHydratedSurfaceId(instanceKey);
-      if (lastHydratedSurfaceId === surfaceId) {
-        await reattachPreservedTerminal({
-          terminal,
-          isMounted: isCurrentAttachedSession,
-          isTerminalActive: (candidate) => candidate === terminal,
-          waitForTerminalFonts,
-          attachSurface: attachCurrentSurface,
-          lastRenderedSequence:
-            terminalInstanceStore.getLastHydratedSurfaceSequence(instanceKey),
-          beforeFitAndSync: () => {
-            // Force one resize after the surface is live so TUI mouse/scroll
-            // state is refreshed without relying on a detached resize.
-            terminalInstanceStore
-              .getRenderSink(instanceKey)
-              ?.beforeFitAndSync?.();
-          },
-          fitAndSyncTerminal: fitAttachedTerminal,
-          writeTerminal: (_terminal, data, afterWrite) => {
-            const didScheduleWrite = writeAttachedTerminal(
-              data,
-              afterWrite,
-              surfaceId
-            );
-            if (!didScheduleWrite) {
-              terminalInstanceStore.invalidateHydration(instanceKey);
-            }
-            return didScheduleWrite;
-          },
-          onReplayStart: replayVisibility.hide,
-          onReplayEnd: replayVisibility.revealAfterPaint,
-          onSnapshotRendered: markSnapshotRendered
-        });
-      } else {
-        await hydrateAttachedTerminal({
-          terminal,
-          isMounted: isCurrentAttachedSession,
-          isTerminalActive: (candidate) => candidate === terminal,
-          waitForTerminalFonts,
-          fitAndSyncTerminal: fitAttachedTerminal,
-          attachSurface: attachCurrentSurface,
-          writeTerminal: (_terminal, data, afterWrite) => {
-            const didScheduleWrite = writeAttachedTerminal(
-              data,
-              afterWrite,
-              surfaceId
-            );
-            if (!didScheduleWrite) {
-              terminalInstanceStore.invalidateHydration(instanceKey);
-            }
-            return didScheduleWrite;
-          },
-          onReplayStart: replayVisibility.hide,
-          onReplayEnd: replayVisibility.revealAfterPaint,
-          onSnapshotRendered: markSnapshotRendered
-        });
-      }
-      if (isCurrentAttachedSession() && shouldFocusActiveTerminal(surfaceId)) {
-        focusTerminalInput();
-      }
-    })().catch(() => {
-      if (!attached) {
-        return;
-      }
-      terminalInstanceStore.detachAttachment(surfaceId);
+    updateTerminalDiagnostics(surfaceId, terminal, {
+      attachAvailableSequence: null
     });
-    return undefined;
-  }, [activeSurface?.id, activeSurface?.sessionId, terminalInstanceKey]);
+
+    const attachStream = (): void => {
+      void terminalStreamClient
+        .attachWithRetryOutcome({
+          surfaceId,
+          expectedSessionId: sessionId,
+          sink: checkpointSink,
+          signal: attachAbortController.signal,
+          resumeFromSequence: () =>
+            terminalInstanceStore.getLastHydratedSurfaceId(instanceKey) ===
+            surfaceId
+              ? (terminalInstanceStore.getLastHydratedSurfaceSequence(
+                  instanceKey
+                ) ?? undefined)
+              : undefined,
+          shouldWriteImmediately: () => {
+            const currentTerminal = checkpointController.currentBundle.terminal;
+            return (
+              currentTerminal.buffer.active.type === "alternate" ||
+              currentTerminal.buffer.active.viewportY <
+                currentTerminal.buffer.active.baseY ||
+              currentTerminal.modes.mouseTrackingMode !== "none" ||
+              currentTerminal.modes.synchronizedOutputMode
+            );
+          },
+          invalidateResume: () =>
+            terminalInstanceStore.invalidateHydration(instanceKey)
+        })
+        .then((outcome) => {
+          if (outcome.status !== "attached") {
+            if (
+              outcome.status === "retryable-not-ready" &&
+              mounted &&
+              !attachAbortController.signal.aborted &&
+              activeSurfaceRef.current?.id === surfaceId &&
+              activeSurfaceRef.current.sessionId === sessionId &&
+              activeSurfaceRef.current.sessionState === "running"
+            ) {
+              scheduleAttachRearm(attachStream);
+            } else {
+              pendingTerminalStreamInputRef.current.discard();
+              if (outcome.status === "denied" && mounted) {
+                showAttachmentStatus("Terminal stream unavailable");
+                terminalInstanceStore.detachAttachment(surfaceId);
+              }
+            }
+            return;
+          }
+          const attachedStream = outcome.stream;
+          if (!mounted) {
+            pendingTerminalStreamInputRef.current.discard();
+            terminalStreamClient.detach(attachedStream, "hidden");
+            return;
+          }
+          rearmAttempt = 0;
+          stream = attachedStream;
+          terminalStreamRef.current = attachedStream;
+          const wrapper = surfaceWrapperRefs.current.get(surfaceId);
+          if (wrapper) {
+            wrapper.dataset.terminalStreamReady = attachedStream.grant.attachId;
+          }
+          pendingTerminalStreamInputRef.current.flush(attachedStream);
+          let attachmentReady = false;
+          if (attachmentToken) {
+            attachmentReady = terminalInstanceStore.markAttachmentReady(
+              surfaceId,
+              sessionId,
+              attachedStream.grant.attachId,
+              attachmentToken
+            );
+          }
+          if (!attachmentReady) {
+            throw new Error("terminal attachment became stale before ready");
+          }
+          const pendingResize = pendingTerminalResizeRef.current.get(surfaceId);
+          if (pendingResize?.sessionId === sessionId) {
+            pendingTerminalResizeRef.current.delete(surfaceId);
+            void resizeSyncRef.current?.request({
+              surfaceId,
+              attachId: attachedStream.grant.attachId,
+              generation: ++resizeGenerationRef.current,
+              cols: pendingResize.cols,
+              rows: pendingResize.rows,
+              gestureActive: pendingResize.gestureActive
+            });
+          } else {
+            pendingTerminalResizeRef.current.delete(surfaceId);
+            surfaceResizeDimensionsRef.current.delete(surfaceId);
+            const currentBundle = checkpointController.currentBundle;
+            void fitAndSyncTerminalRef.current(currentBundle.terminal, {
+              fit: currentBundle.fit,
+              surfaceId,
+              force: true
+            });
+          }
+          if (shouldFocusActiveTerminal(surfaceId)) {
+            focusTerminalInput(surfaceId);
+          }
+        })
+        .catch((error) => {
+          pendingTerminalStreamInputRef.current.discard();
+          console.warn("Failed to attach terminal data stream", error);
+          if (mounted) {
+            terminalInstanceStore.detachAttachment(surfaceId);
+          }
+        });
+    };
+    attachStream();
+
+    return cleanupAttachment;
+  }, [
+    activeSurface?.id,
+    activeSurface?.sessionId,
+    terminalStreamEligible,
+    terminalAttachmentGeneration,
+    terminalInstanceKey
+  ]);
 
   useEffect(() => {
     if (!props.showSearch || !query) {
@@ -2373,16 +2650,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       incremental: true,
       decorations: terminalSearchDecorations
     });
-  }, [props.showSearch, query, terminalSearchDecorations]);
+  }, [props.showSearch, query, terminalSearchDecorations, terminalGeneration]);
 
   useEffect(() => {
-    if (!props.showSearch || !props.active) {
+    if (!props.showSearch) {
       return;
     }
     setCopyMode(false);
     searchInputRef.current?.focus();
     searchInputRef.current?.select();
-  }, [props.showSearch, props.active]);
+  }, [props.showSearch]);
 
   useEffect(() => {
     setCopyMode(false);
@@ -2407,9 +2684,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   }, [
     activeSurface.id,
     props.focused,
-    props.active,
     props.showSearch,
-    props.focusRequest
+    props.focusRequest,
+    terminalGeneration
   ]);
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);

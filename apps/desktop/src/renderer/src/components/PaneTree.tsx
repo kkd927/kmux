@@ -28,7 +28,6 @@ import { TerminalPane, type TerminalFocusRequest } from "./TerminalPane";
 
 export interface PaneTreeProps {
   workspace: ActiveWorkspacePaneTreeVm;
-  active: boolean;
   settings: KmuxSettings;
   reservedSystemChords: KeyChord[];
   keyboardPlatform: PlatformKeyboardPolicy["platform"];
@@ -69,7 +68,7 @@ export const PaneTree = memo(function PaneTree(
     surfaceCount: Object.keys(props.workspace.surfaces).length
   }));
   return (
-    <div className={styles.tree} data-active={props.active ? "true" : "false"}>
+    <div className={styles.tree}>
       <PaneNode nodeId={props.workspace.rootNodeId} {...props} />
     </div>
   );
@@ -81,7 +80,6 @@ function arePaneTreePropsEqual(
 ): boolean {
   const equal =
     left.workspace === right.workspace &&
-    left.active === right.active &&
     left.settings === right.settings &&
     left.reservedSystemChords === right.reservedSystemChords &&
     left.keyboardPlatform === right.keyboardPlatform &&
@@ -125,7 +123,6 @@ function PaneNode(
       <TerminalPane
         paneId={pane.id}
         focused={pane.focused}
-        active={props.active}
         surfaces={surfaces}
         activeSurfaceId={pane.activeSurfaceId}
         settings={props.settings}

@@ -6,11 +6,9 @@ import {
 } from "react";
 
 import type {
-  ActiveWorkspacePaneTreeVm,
   Id,
   ShellPatch,
   ShellStoreSnapshot,
-  WorkspacePaneTreesPatch,
   WorkspaceRowVm,
   WorkspaceRowsPatch
 } from "@kmux/proto";
@@ -18,6 +16,7 @@ import {
   isRendererSmoothnessProfileEnabled,
   recordRendererSmoothnessProfileEvent
 } from "../smoothnessProfile";
+import { prepareVisibleSet } from "../terminalInstanceStore";
 
 let snapshot: ShellStoreSnapshot | null = null;
 let initialized = false;
@@ -26,7 +25,9 @@ let snapshotRequest: Promise<void> | null = null;
 let pendingPatches: ShellPatch[] = [];
 let recoveringGap = false;
 let refetchAfterCurrentRequest = false;
+const pendingRemovedSurfaceIds = new Set<Id>();
 const listeners = new Set<() => void>();
+const removedSurfaceListeners = new Set<(surfaceIds: Id[]) => void>();
 
 function ensureInitialized(): void {
   if (initialized) {
@@ -87,6 +88,7 @@ function applyPendingPatches(
       refetchAfterCurrentRequest = true;
       continue;
     }
+    queueRemovedSurfaces(patch.removedSurfaceIds);
     resolvedSnapshot = applyShellPatchWithProfile(resolvedSnapshot, patch);
   }
   return resolvedSnapshot;
@@ -105,6 +107,7 @@ function applyOrRecoverFromShellPatch(
     void requestShellState();
     return;
   }
+  queueRemovedSurfaces(patch.removedSurfaceIds);
   publishSnapshot(applyShellPatchWithProfile(currentSnapshot, patch));
 }
 
@@ -132,19 +135,26 @@ function applyShellPatch(
   if (patch.version <= currentSnapshot.version) {
     return currentSnapshot;
   }
-  const { workspaceRowsPatch, workspacePaneTreesPatch, ...snapshotPatch } = patch;
+  const { workspaceRowsPatch } = patch;
+  const surfaceIds =
+    patch.surfaceIds ??
+    (patch.removedSurfaceIds
+      ? (currentSnapshot.surfaceIds ?? []).filter(
+          (surfaceId) => !patch.removedSurfaceIds?.includes(surfaceId)
+        )
+      : currentSnapshot.surfaceIds);
+  const snapshotPatch = { ...patch };
+  delete snapshotPatch.workspaceRowsPatch;
+  delete snapshotPatch.removedSurfaceIds;
   const workspaceRows = workspaceRowsPatch
     ? applyWorkspaceRowsPatch(currentSnapshot.workspaceRows, workspaceRowsPatch)
     : (patch.workspaceRows ?? currentSnapshot.workspaceRows);
-  const workspacePaneTrees = workspacePaneTreesPatch
-    ? applyWorkspacePaneTreesPatch(currentSnapshot.workspacePaneTrees, workspacePaneTreesPatch)
-    : (currentSnapshot.workspacePaneTrees ?? {});
 
   return {
     ...currentSnapshot,
     ...snapshotPatch,
-    workspaceRows,
-    workspacePaneTrees
+    surfaceIds,
+    workspaceRows
   };
 }
 
@@ -179,24 +189,24 @@ function applyWorkspaceRowsPatch(
   return orderedRows;
 }
 
-function applyWorkspacePaneTreesPatch(
-  currentTrees: Record<Id, ActiveWorkspacePaneTreeVm>,
-  patch: WorkspacePaneTreesPatch
-): Record<Id, ActiveWorkspacePaneTreeVm> {
-  const next = { ...currentTrees };
-  for (const id of patch.remove ?? []) {
-    delete next[id];
-  }
-  if (patch.upsert) {
-    Object.assign(next, patch.upsert);
-  }
-  return next;
-}
-
 function publishSnapshot(nextSnapshot: ShellStoreSnapshot): void {
   if (snapshot && nextSnapshot.version <= snapshot.version) {
     return;
   }
+  if (snapshot) {
+    const nextSurfaceIds = new Set(nextSnapshot.surfaceIds ?? []);
+    queueRemovedSurfaces(
+      (snapshot.surfaceIds ?? []).filter(
+        (surfaceId) => !nextSurfaceIds.has(surfaceId)
+      )
+    );
+  }
+  prepareVisibleSet(
+    Object.values(nextSnapshot.activeWorkspacePaneTree.panes).map(
+      (pane) => pane.activeSurfaceId
+    )
+  );
+  window.__kmuxLastShellPublishAt = performance.now();
   snapshot = nextSnapshot;
   const notifyStartedAt = isRendererSmoothnessProfileEnabled()
     ? performance.now()
@@ -204,6 +214,7 @@ function publishSnapshot(nextSnapshot: ShellStoreSnapshot): void {
   for (const listener of listeners) {
     listener();
   }
+  flushRemovedSurfaces();
   if (isRendererSmoothnessProfileEnabled()) {
     recordRendererSmoothnessProfileEvent("shell.selector.notify", {
       version: nextSnapshot.version,
@@ -218,21 +229,66 @@ function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-    if (listeners.size === 0 && unsubscribeRemote) {
-      unsubscribeRemote();
-      unsubscribeRemote = null;
-      initialized = false;
-      snapshot = null;
-      snapshotRequest = null;
-      pendingPatches = [];
-      recoveringGap = false;
-      refetchAfterCurrentRequest = false;
-    }
+    teardownIfUnused();
+  };
+}
+
+function queueRemovedSurfaces(surfaceIds: Id[] | undefined): void {
+  if (!surfaceIds || surfaceIds.length === 0) {
+    return;
+  }
+  for (const surfaceId of surfaceIds) {
+    pendingRemovedSurfaceIds.add(surfaceId);
+  }
+}
+
+function flushRemovedSurfaces(): void {
+  if (pendingRemovedSurfaceIds.size === 0) {
+    return;
+  }
+  const surfaceIds = [...pendingRemovedSurfaceIds];
+  pendingRemovedSurfaceIds.clear();
+  for (const listener of removedSurfaceListeners) {
+    listener(surfaceIds);
+  }
+}
+
+function teardownIfUnused(): void {
+  if (
+    listeners.size > 0 ||
+    removedSurfaceListeners.size > 0 ||
+    !unsubscribeRemote
+  ) {
+    return;
+  }
+  unsubscribeRemote();
+  unsubscribeRemote = null;
+  initialized = false;
+  snapshot = null;
+  snapshotRequest = null;
+  pendingPatches = [];
+  pendingRemovedSurfaceIds.clear();
+  recoveringGap = false;
+  refetchAfterCurrentRequest = false;
+}
+
+export function subscribeRemovedTerminalSurfaces(
+  listener: (surfaceIds: Id[]) => void
+): () => void {
+  removedSurfaceListeners.add(listener);
+  ensureInitialized();
+  return () => {
+    removedSurfaceListeners.delete(listener);
+    teardownIfUnused();
   };
 }
 
 export function useShellSnapshot(): ShellStoreSnapshot | null {
-  return useSyncExternalStore(subscribe, () => snapshot, () => snapshot);
+  return useSyncExternalStore(
+    subscribe,
+    () => snapshot,
+    () => snapshot
+  );
 }
 
 export function useShellSnapshotRef(): MutableRefObject<ShellStoreSnapshot | null> {

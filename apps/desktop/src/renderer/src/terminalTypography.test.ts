@@ -78,8 +78,7 @@ describe("terminal typography probe helpers", () => {
       "Glyph support ready"
     );
     expect(describeTerminalTypographySupportLines(readyVm)).toEqual([
-      "Using built-in kmux glyph font.",
-      "Compatible installed font detected: JetBrainsMono Nerd Font Mono"
+      "Using built-in kmux glyph font."
     ]);
   });
 

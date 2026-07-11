@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   closeKmuxApp,
   createSandbox,
+  descendantProcessIds,
   destroySandbox,
   dispatch,
   getRuntimeEnv,
@@ -11,6 +12,7 @@ import {
   launchKmuxWithSandbox,
   quitKmuxAppCleanly,
   runCliJson,
+  waitForProcessIdsExit,
   waitForSurfaceSnapshotContains,
   waitForView
 } from "./helpers";
@@ -256,8 +258,52 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       )
     ).toBe(true);
 
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForView(
+      page,
+      (view) =>
+        view.activeWorkspace.id === targetWorkspaceId &&
+        view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
+          activeSurfaceId &&
+        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
+          "running",
+      "packaged renderer reload should preserve the active running surface",
+      15_000
+    );
+    const reloadedTerminal = page.getByTestId(`terminal-${activeSurfaceId}`);
+    await expect(reloadedTerminal).toHaveAttribute(
+      "data-terminal-stream-ready",
+      /\S+/,
+      { timeout: 15_000 }
+    );
+    const reloadMarker = "packaged-smoke-renderer-reload-ok";
+    runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
+      "surface",
+      "send-text",
+      "--surface",
+      activeSurfaceId,
+      "--text",
+      `echo ${reloadMarker}\r`
+    ]);
+    const reloadSnapshot = await waitForSurfaceSnapshotContains(
+      page,
+      activeSurfaceId,
+      reloadMarker,
+      15_000
+    );
+    expect(reloadSnapshot).toContain(reloadMarker);
+    await expect(reloadedTerminal.locator(".xterm-rows")).toContainText(
+      reloadMarker
+    );
+
+    const appPid = launched.app.process()?.pid;
+    expect(appPid).toBeTruthy();
+    const descendantPids = descendantProcessIds(appPid as number);
+    expect(descendantPids.length).toBeGreaterThan(0);
+
     await quitKmuxAppCleanly(launched);
     launchedCleanlyQuit = true;
+    await waitForProcessIdsExit(descendantPids);
 
     relaunch = await launchKmuxWithSandbox(sandbox, {
       executablePath: packagedExecutablePath

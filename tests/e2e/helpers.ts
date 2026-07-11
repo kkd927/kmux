@@ -371,7 +371,7 @@ function listProcesses(): Array<{
     });
 }
 
-function descendantProcessIds(rootPid: number): number[] {
+export function descendantProcessIds(rootPid: number): number[] {
   const processes = listProcesses();
   const childrenByParent = new Map<number, number[]>();
   for (const processInfo of processes) {
@@ -392,6 +392,36 @@ function descendantProcessIds(rootPid: number): number[] {
   }
 
   return descendants;
+}
+
+export async function waitForProcessIdsExit(
+  processIds: number[],
+  timeoutMs = 5_000
+): Promise<void> {
+  const pending = new Set(processIds.filter((pid) => pid > 0));
+  const startedAt = Date.now();
+
+  while (pending.size > 0 && Date.now() - startedAt < timeoutMs) {
+    const livePids = new Set(
+      listProcesses().map((processInfo) => processInfo.pid)
+    );
+    for (const pid of pending) {
+      if (!livePids.has(pid)) {
+        pending.delete(pid);
+      }
+    }
+    if (pending.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  if (pending.size > 0) {
+    throw new Error(
+      `kmux descendant processes did not exit within ${timeoutMs}ms: ${[
+        ...pending
+      ].join(", ")}`
+    );
+  }
 }
 
 function killPid(pid: number): void {
@@ -461,7 +491,7 @@ export async function getView(page: Page): Promise<TestShellView> {
 export function terminalInputForSurface(page: Page, surfaceId: string) {
   return page
     .getByTestId(`terminal-${surfaceId}`)
-    .locator("textarea.xterm-helper-textarea");
+    .locator("textarea.xterm-helper-textarea:visible");
 }
 
 export async function dispatch(

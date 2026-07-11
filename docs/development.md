@@ -59,6 +59,7 @@ This now rebuilds `node-pty` only. Persistence uses JSON file stores under the k
 - `npm run test:e2e`: run Playwright Electron tests
 - `npm run test:e2e:visible`: run Playwright Electron tests with a visible window
 - `npm run smoke:packaged:mac`: mount the latest packaged DMG and run a packaged-app smoke spec
+- `npm run profile:terminal-data-plane`: build kmux and run the opt-in 16-session/4-visible terminal data-plane, 4 MiB burst, and ring-gap recovery gates
 - `npm run package:linux`: build a local/internal Linux AppImage with publishing disabled
 - `npm run gate:walking-skeleton`: run the portable walking-skeleton preflight for local diagnostics
 - `npm run gate:walking-skeleton:linux`: on Ubuntu Desktop LTS with display and Ubuntu/GNOME/Unity desktop session env, run the complete walking-skeleton gate
@@ -119,6 +120,22 @@ npm run profile:smoothness
 
 That command builds kmux, launches the Electron e2e workload with profiling enabled, generates terminal/sidebar churn, and verifies that the profile JSONL file is produced.
 
+## Terminal Data Plane Gate
+
+Run the direct terminal-stream performance and correctness workload on an idle
+machine:
+
+```bash
+npm run profile:terminal-data-plane
+```
+
+The gate exercises 16 sessions with four visible surfaces, workspace switching,
+interactive echo probes, a 4 MiB burst, and ring-gap checkpoint replacement. It
+also verifies that Main receives no terminal bulk output and that queue, ring,
+credit, cache, event-loop, parse, render, and paint bounds remain within their
+configured limits. Treat measurements taken during unrelated CPU- or I/O-heavy
+builds as contaminated and repeat them on an idle host.
+
 ## Recommended Validation Flow
 
 Run the narrowest useful checks first, then broaden out:
@@ -152,7 +169,8 @@ packages/
 ## Development Notes
 
 - `electron-main` is the single writer for product state.
+- `electron-main` authorizes terminal attaches and transfers capabilities, but terminal output, input, and resize do not use Main as a bulk relay.
 - PTY and session lifetime stay outside the renderer.
-- Hidden surfaces must not keep live DOM terminals mounted.
+- Only active surfaces in the active workspace stay live-attached; detached terminals may be retained only by the bounded warm LRU.
 - UI-facing changes should be validated with Playwright when practical.
 - Keep documentation and tests in sync with behavior changes.

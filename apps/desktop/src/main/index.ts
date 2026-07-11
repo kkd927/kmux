@@ -1,4 +1,11 @@
-import { app, BrowserWindow, dialog, Menu, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  Menu,
+  shell,
+  utilityProcess
+} from "electron";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +39,7 @@ import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
 import {
   buildShellLaunchPolicy,
+  cancelShellEnvironmentRefresh,
   resolveShellEnvironment
 } from "./shellEnvironment";
 import { openSettingsJsonFile, openWithMacTextEditor } from "./settingsJson";
@@ -40,11 +48,11 @@ import { KmuxSocketServer } from "./socketServer";
 import { createSurfaceCaptureService } from "./surfaceCapture";
 import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
+import { createTerminalDataPlaneController } from "./terminalDataPlane";
 import {
   openTerminalFilePath as openTerminalFilePathFromTerminal,
   resolveTerminalFileLinks as resolveTerminalFileLinksFromTerminal
 } from "./terminalFileOpen";
-import { createFontInventoryProvider } from "./terminalTypography";
 import { createUpdaterController } from "./updater";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
@@ -187,6 +195,7 @@ async function bootstrap(): Promise<void> {
     platform: platformRuntime.shell.platform,
     cachePath: paths.shellEnvCachePath
   });
+  process.once("exit", cancelShellEnvironmentRefresh);
   logDiagnostics("main.shell-environment.resolved", {
     shellPath: resolvedShellEnv.shellPath,
     source: resolvedShellEnv.source
@@ -261,10 +270,6 @@ async function bootstrap(): Promise<void> {
     defaultShellPath: resolvedShellEnv.shellPath,
     shortcutDefaultsPlatform: platformRuntime.platformId,
     refreshMetadata: (...args) => metadataRuntime.refreshMetadata(...args),
-    fontInventoryProvider: createFontInventoryProvider(
-      resolvedShellEnv.baseEnv,
-      platformRuntime.platformId
-    ),
     onDidDispatchAppAction: (action) => {
       metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
@@ -332,7 +337,9 @@ async function bootstrap(): Promise<void> {
   let updater!: ReturnType<typeof createUpdaterController>;
   let lifecycle!: ReturnType<typeof createMainLifecycleController>;
 
-  ptyHost = new PtyHostManager();
+  ptyHost = new PtyHostManager((modulePath, args, options) =>
+    utilityProcess.fork(modulePath, args, options)
+  );
   runtime.setPtyHost(ptyHost);
 
   const terminalBridge = createTerminalBridge({
@@ -343,8 +350,11 @@ async function bootstrap(): Promise<void> {
     onSurfaceInputText: (surfaceId, text) => {
       usageRuntime.handleTerminalInput(surfaceId, text);
     },
-    getPtyHost: () => ptyHost,
-    profileRecorder: smoothnessProfile
+    getPtyHost: () => ptyHost
+  });
+  const terminalDataPlane = createTerminalDataPlaneController({
+    getState: runtime.getState,
+    getPtyHost: () => ptyHost
   });
   const surfaceCaptureService = createSurfaceCaptureService({
     captureRoot: paths.captureRoot,
@@ -410,14 +420,13 @@ async function bootstrap(): Promise<void> {
   logDiagnostics("main.pty-host.starting", {
     diagnosticsLogPath: resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV]
   });
+  ptyHost.on("event", terminalBridge.handlePtyEvent);
   ptyHost.start({
     ...resolvedShellEnv.baseEnv,
     ...shellWrapperRuntime.env,
     [KMUX_RAW_OUTPUT_ROOT_ENV]: paths.rawOutputRoot,
     [KMUX_NATIVE_CACHE_ROOT_ENV]: paths.nativeCacheRoot
   });
-  ptyHost.on("event", terminalBridge.handlePtyEvent);
-
   socketServer.setRuntime({
     getState: runtime.getState,
     dispatch: runtime.dispatchAppAction,
@@ -450,10 +459,8 @@ async function bootstrap(): Promise<void> {
     createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
-    attachSurface: terminalBridge.attachSurface,
-    completeAttachSurface: terminalBridge.completeAttachSurface,
+    attachTerminalStream: terminalDataPlane.attach,
     snapshotSurface: terminalBridge.snapshotSurface,
-    detachSurface: terminalBridge.detachSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,
     openExternalUrl: async (rawUrl) => {
@@ -479,9 +486,7 @@ async function bootstrap(): Promise<void> {
         candidates,
         getState: runtime.getState
       }),
-    resizeSurface: terminalBridge.resizeSurface,
     identify: runtime.identify,
-    listTerminalFontFamilies: runtime.listTerminalFontFamilies,
     previewTerminalTypography: runtime.previewTerminalTypography,
     reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,
     importTerminalThemePalette: importItermcolorsPalette,
@@ -520,7 +525,14 @@ async function bootstrap(): Promise<void> {
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
     installDownloadedUpdate: () => updater.quitAndInstall(),
     clipboard: createMainClipboardService(),
-    recordProfileEvent: (event) => smoothnessProfile.record(event)
+    recordProfileEvent: (event) => smoothnessProfile.record(event),
+    recordProfileEvents: (events) => {
+      if (smoothnessProfile.recordMany) {
+        smoothnessProfile.recordMany(events);
+      } else {
+        events.forEach((event) => smoothnessProfile.record(event));
+      }
+    }
   });
 
   let currentMainWindow: BrowserWindow | null = null;
@@ -619,6 +631,7 @@ async function bootstrap(): Promise<void> {
         logDiagnostics("main.shutdown.begin", {});
         unsubscribeUpdater();
         updater.dispose();
+        cancelShellEnvironmentRefresh();
         runtime.shutdown();
         metadataRuntime.dispose();
         usageRuntime.shutdown();
@@ -629,9 +642,9 @@ async function bootstrap(): Promise<void> {
         ptyHost = null;
 
         const socketStop = server?.stop();
-        host?.stop();
+        const hostStop = host?.stop();
         try {
-          await socketStop;
+          await Promise.all([socketStop, hostStop]);
         } finally {
           shellWrapperRuntime.cleanup();
         }

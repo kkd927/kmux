@@ -48,8 +48,8 @@ export function createMainLifecycleController(
   options: MainLifecycleOptions
 ): MainLifecycleController {
   const shouldConfirmQuit = options.shouldConfirmQuit ?? true;
-  let quitApproved = false;
-  let quitDialogOpen = false;
+  let confirmationBypassed = false;
+  let quitPhase: "idle" | "confirming" | "shutting-down" | "complete" = "idle";
   let shutdownPromise: Promise<void> | null = null;
 
   const shutdownOnce = (): Promise<void> => {
@@ -61,9 +61,23 @@ export function createMainLifecycleController(
     return shutdownPromise;
   };
 
+  const beginShutdown = (): void => {
+    if (quitPhase === "shutting-down" || quitPhase === "complete") {
+      return;
+    }
+    quitPhase = "shutting-down";
+    void shutdownOnce().finally(() => {
+      if (quitPhase !== "shutting-down") {
+        return;
+      }
+      quitPhase = "complete";
+      options.app.quit();
+    });
+  };
+
   return {
     allowQuit(): void {
-      quitApproved = true;
+      confirmationBypassed = true;
     },
     handleActivate(): void {
       if (options.getWindowCount() === 0) {
@@ -71,31 +85,37 @@ export function createMainLifecycleController(
       }
     },
     handleBeforeQuit(event: BeforeQuitEventLike): void {
+      if (quitPhase === "complete") {
+        return;
+      }
+
+      // Electron does not await promises returned by before-quit listeners.
+      // Hold the first quit until every runtime has acknowledged shutdown, then
+      // re-enter app.quit() once in the complete phase.
+      event.preventDefault();
+      if (quitPhase === "confirming" || quitPhase === "shutting-down") {
+        return;
+      }
+
       const shouldWarn =
         options.isMac &&
         shouldConfirmQuit &&
-        !quitApproved &&
+        !confirmationBypassed &&
         options.getWarnBeforeQuit();
 
       if (!shouldWarn) {
-        quitApproved = true;
-        void shutdownOnce();
+        beginShutdown();
         return;
       }
 
-      event.preventDefault();
-      if (quitDialogOpen) {
-        return;
-      }
-
-      quitDialogOpen = true;
+      quitPhase = "confirming";
       void options
         .confirmQuit(options.getCurrentWindow(), {
           restoreWorkspacesAfterQuit: options.getRestoreWorkspacesAfterQuit()
         })
         .then((result) => {
-          quitDialogOpen = false;
           if (!result.confirmed) {
+            quitPhase = "idle";
             return;
           }
           if (result.suppressFutureWarnings) {
@@ -104,11 +124,10 @@ export function createMainLifecycleController(
           options.setRestoreWorkspacesAfterQuit(
             result.restoreWorkspacesAfterQuit
           );
-          quitApproved = true;
-          options.app.quit();
+          beginShutdown();
         })
         .catch((error) => {
-          quitDialogOpen = false;
+          quitPhase = "idle";
           console.error("[main:quit-confirmation]", error);
         });
     },

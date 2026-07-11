@@ -124,7 +124,6 @@ interface AppOverlaysProps {
   settingsDraft: KmuxSettings | undefined;
   setSettingsDraft: Dispatch<SetStateAction<KmuxSettings | undefined>>;
   settingsThemeNotice: string | null;
-  availableTerminalFontFamilies: string[];
   terminalTypographyPreview: ResolvedTerminalTypographyVm | null;
   terminalThemePreview: ResolvedTerminalThemeVm | null;
   onImportTerminalTheme: () => void;
@@ -1275,14 +1274,13 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                             Text font
                           </span>
                           <span className={styles.settingsRowDescription}>
-                            Terminal monospace font. Glyph fallback stays
-                            automatic.
+                            Terminal monospace font. kmux keeps its built-in
+                            glyph fallback at the end of the stack.
                           </span>
                         </span>
                         <input
                           aria-label="Text font"
                           type="text"
-                          list="terminal-font-families"
                           value={
                             props.settingsDraft.terminalTypography
                               .preferredTextFontFamily
@@ -1297,13 +1295,6 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                           }}
                         />
                       </label>
-                      <datalist id="terminal-font-families">
-                        {props.availableTerminalFontFamilies.map(
-                          (fontFamily) => (
-                            <option key={fontFamily} value={fontFamily} />
-                          )
-                        )}
-                      </datalist>
                       <label className={styles.settingsRow}>
                         <span className={styles.settingsRowCopy}>
                           <span className={styles.settingsRowTitle}>

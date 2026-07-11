@@ -1,0 +1,118 @@
+import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { IDisposable, Terminal } from "@xterm/xterm";
+
+import {
+  createTerminalLineCwdTracker,
+  type TerminalLineCwdTracker
+} from "./terminalLineCwdTracker";
+import { SupervisorTerminalQueryAuthorityAddon } from "./supervisorTerminalQueryAuthority";
+
+export interface TerminalDiagnosticMetadata {
+  hydratedSequence: number | null;
+  renderedSequence: number | null;
+  attachAvailableSequence: number | null;
+  renderGeneration: number;
+  lastOnRenderAt: number | null;
+}
+
+export type TerminalHostElement = HTMLDivElement & {
+  __kmuxTerminal?: Terminal;
+  __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
+};
+
+/**
+ * Everything whose lifetime is tied to one concrete xterm parser/widget.
+ * Surface attachment and cache metadata deliberately live outside this bundle
+ * so a checkpoint can replace the widget without replacing its capability.
+ */
+export interface TerminalBundle {
+  host: TerminalHostElement;
+  terminal: Terminal;
+  fit: FitAddon;
+  search: SearchAddon;
+  unicode11: Unicode11Addon;
+  webLinks: WebLinksAddon;
+  fileLinks: IDisposable;
+  lineCwdTrimListener: IDisposable;
+  lineCwds: TerminalLineCwdTracker;
+}
+
+export interface CreateTerminalBundleOptions {
+  createTerminal(): Terminal;
+  onWebLink(uri: string): void;
+  registerFileLinks(
+    terminal: Terminal,
+    lineCwds: TerminalLineCwdTracker
+  ): IDisposable;
+  registerBufferTrimListener(
+    terminal: Terminal,
+    onTrim: (amount: number) => void
+  ): IDisposable;
+}
+
+/** Shared by initial mount and offscreen checkpoint hydration. */
+export function createTerminalBundle({
+  createTerminal,
+  onWebLink,
+  registerFileLinks,
+  registerBufferTrimListener
+}: CreateTerminalBundleOptions): TerminalBundle {
+  const host = document.createElement("div") as TerminalHostElement;
+  host.style.cssText = "width:100%;height:100%;min-height:0;overflow:hidden;";
+  const terminal = createTerminal();
+  host.__kmuxTerminal = terminal;
+  host.__kmuxTerminalDiagnostics = {
+    hydratedSequence: null,
+    renderedSequence: null,
+    attachAvailableSequence: null,
+    renderGeneration: 0,
+    lastOnRenderAt: null
+  };
+
+  const fit = new FitAddon();
+  const search = new SearchAddon();
+  const unicode11 = new Unicode11Addon();
+  const webLinks = new WebLinksAddon((_event, uri) => {
+    onWebLink(uri);
+  });
+  const lineCwds = createTerminalLineCwdTracker();
+  const lineCwdTrimListener = registerBufferTrimListener(terminal, (amount) => {
+    lineCwds.handleTrim(amount);
+  });
+
+  terminal.loadAddon(fit);
+  terminal.loadAddon(search);
+  terminal.loadAddon(unicode11);
+  terminal.loadAddon(webLinks);
+  const fileLinks = registerFileLinks(terminal, lineCwds);
+  // Load last so these public parser handlers run before xterm's built-ins.
+  // The supervisor answers model-state queries from its authoritative buffer;
+  // the renderer still owns browser-only color, pixel, focus, and mouse data.
+  terminal.loadAddon(new SupervisorTerminalQueryAuthorityAddon());
+  terminal.unicode.activeVersion = "11";
+  terminal.open(host);
+
+  return {
+    host,
+    terminal,
+    fit,
+    search,
+    unicode11,
+    webLinks,
+    fileLinks,
+    lineCwdTrimListener,
+    lineCwds
+  };
+}
+
+export function disposeTerminalBundle(bundle: TerminalBundle): void {
+  if (bundle.host.parentNode) {
+    bundle.host.parentNode.removeChild(bundle.host);
+  }
+  bundle.fileLinks.dispose();
+  bundle.lineCwdTrimListener.dispose();
+  bundle.terminal.dispose();
+}
