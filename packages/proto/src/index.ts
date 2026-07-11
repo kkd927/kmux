@@ -66,6 +66,8 @@ export interface ExternalAgentSessionVm {
   vendor: ExternalAgentSessionVendor;
   vendorLabel: "CODEX" | "CLAUDE" | "AGY";
   title: string;
+  recentConversation?: string;
+  model?: string;
   cwd?: string;
   createdAt?: string;
   updatedAt?: string;

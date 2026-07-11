@@ -2810,92 +2810,48 @@
   color: var(--usage-amber);
 }
 
-.externalSessionsTableWrap {
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-.externalSessionsTable {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.externalSessionsTableHead {
-  background: rgba(255, 255, 255, 0.018);
-  border-top: 1px solid var(--usage-card-border);
-  border-bottom: 1px solid var(--usage-card-border);
-}
-
-.externalSessionsTableHead th {
-  padding: 10px 2px;
-  color: var(--usage-muted);
-  font-size: 0.688rem;
-  line-height: 1.2;
-  font-weight: 650;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.externalSessionsTableHead th:first-child {
-  padding-left: 6px;
-}
-
-.externalSessionsTableHead th:last-child {
-  padding-right: 6px;
-}
-
-.externalSessionsTableHead th:nth-child(1) {
-  width: 46px;
-}
-
-.externalSessionsTableHead th:nth-child(2) {
-  width: 70px;
-}
-
-.externalSessionsTableHead th:nth-child(4) {
-  width: 38px;
-  text-align: right;
-}
-
-.externalSessionsTableBody {
-  color: var(--usage-body);
+.externalSessionsList {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .externalSessionRow {
   --session-accent: var(--usage-muted);
-  --session-accent-bg: var(--usage-track);
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 0;
   border-bottom: 1px solid var(--usage-card-border);
-  background: rgba(255, 255, 255, 0.006);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: default;
-  transition: background 120ms ease;
+  transition:
+    background 80ms ease,
+    opacity 80ms ease;
 }
 
 .externalSessionRow[data-vendor="codex"] {
   --session-accent: #9cb9ff;
-  --session-accent-bg: rgba(156, 185, 255, 0.055);
 }
 
 .externalSessionRow[data-vendor="antigravity"] {
   --session-accent: #56d364;
-  --session-accent-bg: rgba(86, 211, 100, 0.055);
 }
 
 .externalSessionRow[data-vendor="claude"] {
   --session-accent: #fdb022;
-  --session-accent-bg: rgba(253, 176, 34, 0.055);
-}
-
-.externalSessionRow:nth-child(even) {
-  background: rgba(255, 255, 255, 0.014);
 }
 
 .externalSessionRow:hover {
-  background: var(--usage-track);
-}
-
-:global(html[data-color-theme="dark"]) .externalSessionRow:hover {
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--card-hover);
 }
 
 .externalSessionRow:focus-visible {
@@ -2911,52 +2867,50 @@
   cursor: pointer;
 }
 
-.externalSessionTitleCell,
-.externalSessionCell {
-  padding: 11px 2px;
-  vertical-align: middle;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.externalSessionRow td:first-child {
-  padding-left: 6px;
-}
-
-.externalSessionRow td:last-child {
-  padding-right: 6px;
-}
-
-.externalSessionTitleCell {
-  min-width: 0;
-  overflow: hidden;
-}
-
 .externalSessionTitle {
   display: block;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  color: var(--usage-title);
-  font-size: 0.875rem;
-  line-height: 1.25;
-  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 1.077rem;
+  line-height: 1.2;
+  font-weight: 600;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.externalSessionConversation {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.923rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.externalSessionMeta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 0.846rem;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
 .externalSessionVendor {
-  display: inline-block;
-  position: relative;
-  top: 1px;
-  max-width: 100%;
-  overflow: hidden;
-  color: color-mix(in srgb, var(--session-accent) 72%, var(--usage-body));
-  font-size: 0.625rem;
-  line-height: 1.25;
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--session-accent) 72%, var(--text-tertiary));
   font-weight: 650;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .externalSessionRow[data-vendor="codex"] .externalSessionVendor {
@@ -2971,31 +2925,15 @@
   color: #d9a954;
 }
 
-.externalSessionProject,
-.externalSessionTime {
-  color: var(--usage-body);
-  font-size: 0.875rem;
-  line-height: 1.25;
-  font-weight: 400;
-  white-space: nowrap;
-}
-
-.externalSessionProject {
-  display: block;
-  max-width: 100%;
+.externalSessionModel {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.externalSessionTimeCell {
-  text-align: right;
-}
-
 .externalSessionTime {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .usageDashboard {

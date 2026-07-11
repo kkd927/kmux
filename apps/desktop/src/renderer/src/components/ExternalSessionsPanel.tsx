@@ -265,26 +265,14 @@ export function ExternalSessionsPanel(
       ) : null}
 
       {filteredSessions.length > 0 ? (
-        <div className={styles.externalSessionsTableWrap}>
-          <table className={styles.externalSessionsTable}>
-            <thead className={styles.externalSessionsTableHead}>
-              <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">Workspace</th>
-                <th scope="col">Title</th>
-                <th scope="col">Time</th>
-              </tr>
-            </thead>
-            <tbody className={styles.externalSessionsTableBody}>
-              {visibleSessions.map((session) => (
-                <ExternalSessionRow
-                  key={session.key}
-                  session={session}
-                  onResume={props.onResume}
-                />
-              ))}
-            </tbody>
-          </table>
+        <div className={styles.externalSessionsList}>
+          {visibleSessions.map((session) => (
+            <ExternalSessionRow
+              key={session.key}
+              session={session}
+              onResume={props.onResume}
+            />
+          ))}
         </div>
       ) : null}
 
@@ -307,7 +295,6 @@ function ExternalSessionRow(props: {
   session: ExternalAgentSessionVm;
   onResume: (key: string) => void;
 }): JSX.Element {
-  const workspaceName = props.session.cwd ? basename(props.session.cwd) : "—";
   const canResume = props.session.canResume;
   const resume = () => {
     if (canResume) {
@@ -316,13 +303,13 @@ function ExternalSessionRow(props: {
   };
 
   return (
-    <tr
+    <button
+      type="button"
       className={styles.externalSessionRow}
       data-testid="external-session-row"
       data-vendor={props.session.vendor}
       data-disabled={canResume ? "false" : "true"}
       tabIndex={canResume ? 0 : -1}
-      role="button"
       aria-disabled={!canResume}
       title={props.session.resumeCommandPreview}
       aria-label={`Resume ${props.session.vendorLabel} session ${props.session.title}`}
@@ -334,42 +321,41 @@ function ExternalSessionRow(props: {
         }
       }}
     >
-      <td className={styles.externalSessionCell}>
+      <span
+        className={styles.externalSessionTitle}
+        data-testid="external-session-title"
+        title={props.session.title}
+      >
+        {props.session.title}
+      </span>
+      <span
+        className={styles.externalSessionConversation}
+        data-testid="external-session-conversation"
+        title={props.session.recentConversation}
+      >
+        {props.session.recentConversation ?? "No recent conversation"}
+      </span>
+      <span className={styles.externalSessionMeta}>
         <span className={styles.externalSessionVendor}>
           {props.session.vendorLabel}
         </span>
-      </td>
-      <td className={styles.externalSessionCell}>
-        <span
-          className={styles.externalSessionProject}
-          title={props.session.cwd ?? undefined}
-        >
-          {workspaceName}
-        </span>
-      </td>
-      <td className={styles.externalSessionTitleCell}>
-        <span
-          className={styles.externalSessionTitle}
-          data-testid="external-session-title"
-          title={props.session.title}
-        >
-          {props.session.title}
-        </span>
-      </td>
-      <td
-        className={`${styles.externalSessionCell} ${styles.externalSessionTimeCell}`}
-      >
+        {props.session.model ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span
+              className={styles.externalSessionModel}
+              title={props.session.model}
+            >
+              {props.session.model}
+            </span>
+          </>
+        ) : null}
         <span className={styles.externalSessionTime}>
           {props.session.relativeTimeLabel}
         </span>
-      </td>
-    </tr>
+      </span>
+    </button>
   );
-}
-
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) ?? path;
 }
 
 function describeSessionCount(

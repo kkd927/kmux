@@ -25,7 +25,7 @@ type ConversationSignatureEntry =
   | string
   | {
       entry: string;
-      mtimeMs: number;
+      effectiveMtimeMs: number;
       signature: string;
     };
 
@@ -33,6 +33,7 @@ export interface AntigravityConversationMetadata {
   conversationId: string;
   workspace?: string;
   title?: string;
+  recentConversation?: string;
   createdAt?: string;
   updatedAt?: string;
   mtimeMs: number;
@@ -87,7 +88,9 @@ function readAntigravityConversationMetadataUncached(
     if (!isRecord(record)) {
       continue;
     }
-    const workspace = normalizePathValue(pickFirstString(record, ["workspace"]));
+    const workspace = normalizePathValue(
+      pickFirstString(record, ["workspace"])
+    );
     const conversationId = pickFirstString(record, ["conversationId"]);
     if (!conversationId) {
       continue;
@@ -163,11 +166,15 @@ function conversationsSignature(
         if (!stats.isFile()) {
           return [];
         }
+        const effectiveMtimeMs = sqliteEffectiveMtimeMs(
+          path,
+          Number(stats.mtimeMs)
+        );
         return [
           {
             entry,
-            mtimeMs: Number(stats.mtimeMs),
-            signature: `${entry}:${stats.size}:${Number(stats.mtimeMs)}`
+            effectiveMtimeMs,
+            signature: `${entry}:${stats.size}:${Number(stats.mtimeMs)}:${fileSignature(`${path}-wal`)}`
           }
         ];
       } catch {
@@ -182,7 +189,7 @@ function conversationsSignature(
         return String(left).localeCompare(String(right));
       }
       return (
-        right.mtimeMs - left.mtimeMs ||
+        right.effectiveMtimeMs - left.effectiveMtimeMs ||
         left.entry.localeCompare(right.entry)
       );
     })
@@ -222,12 +229,14 @@ function buildHistoryConversationRecord(
     typeof timestampMs === "number"
       ? new Date(timestampMs).toISOString()
       : undefined;
+  const display = pickFirstString(record, ["display"]);
+  const title = sanitizeTitle(display);
+  const recentConversation = sanitizePreview(display);
   return {
     conversationId,
     ...(workspace ? { workspace } : {}),
-    ...(sanitizeTitle(pickFirstString(record, ["display"]))
-      ? { title: sanitizeTitle(pickFirstString(record, ["display"])) }
-      : {}),
+    ...(title ? { title } : {}),
+    ...(recentConversation ? { recentConversation } : {}),
     ...(timestamp ? { createdAt: timestamp, updatedAt: timestamp } : {}),
     mtimeMs: timestampMs ?? 0
   };
@@ -256,7 +265,13 @@ function listAntigravityConversationFiles(
       if (!stats.isFile()) {
         return [];
       }
-      return [{ path, mtimeMs: Number(stats.mtimeMs) }];
+      return [
+        {
+          path,
+          createdAt: new Date(stats.birthtimeMs).toISOString(),
+          mtimeMs: sqliteEffectiveMtimeMs(path, Number(stats.mtimeMs))
+        }
+      ];
     } catch {
       return [];
     }
@@ -270,16 +285,7 @@ function listAntigravityConversationFiles(
       if (!isUuidLike(conversationId)) {
         return [];
       }
-      let createdAt: string | undefined;
-      let updatedAt = new Date(candidate.mtimeMs).toISOString();
-      try {
-        const stats = statSync(candidate.path);
-        createdAt = new Date(stats.birthtimeMs).toISOString();
-        updatedAt = new Date(stats.mtimeMs).toISOString();
-      } catch {
-        // Conversation files are best-effort metadata sources.
-      }
-      const title = extractPromptFromDb(candidate.path);
+      const details = extractConversationDetailsFromDb(candidate.path);
       return [
         {
           conversationId,
@@ -290,13 +296,30 @@ function listAntigravityConversationFiles(
               projectWorkspaces
             )
           ),
-          ...(title ? { title } : {}),
-          ...(createdAt ? { createdAt } : {}),
-          updatedAt,
+          ...(details.title ? { title: details.title } : {}),
+          ...(details.recentConversation
+            ? { recentConversation: details.recentConversation }
+            : {}),
+          createdAt: candidate.createdAt,
+          updatedAt: new Date(candidate.mtimeMs).toISOString(),
           mtimeMs: candidate.mtimeMs
         }
       ];
     });
+}
+
+function sqliteEffectiveMtimeMs(
+  databasePath: string,
+  databaseMtimeMs: number
+): number {
+  try {
+    const walStats = statSync(`${databasePath}-wal`);
+    return walStats.isFile()
+      ? Math.max(databaseMtimeMs, Number(walStats.mtimeMs))
+      : databaseMtimeMs;
+  } catch {
+    return databaseMtimeMs;
+  }
 }
 
 function readAntigravityProjectWorkspaces(
@@ -339,6 +362,8 @@ function upsertConversation(
     conversationId: record.conversationId,
     workspace: record.workspace ?? previous.workspace,
     title: record.title ?? previous.title,
+    recentConversation:
+      record.recentConversation ?? previous.recentConversation,
     createdAt: earliestIsoTimestamp(previous.createdAt, record.createdAt),
     updatedAt: latestIsoTimestamp(previous.updatedAt, record.updatedAt),
     mtimeMs: Math.max(previous.mtimeMs, record.mtimeMs)
@@ -425,7 +450,9 @@ function numericField(
   key: string
 ): number | undefined {
   const value = object?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function normalizePathValue(value: string | undefined): string | undefined {
@@ -440,6 +467,17 @@ function sanitizeTitle(value: string | undefined): string | undefined {
   }
   return normalized.length > MAX_TITLE_LENGTH
     ? `${normalized.slice(0, MAX_TITLE_LENGTH - 3)}...`
+    : normalized;
+}
+
+function sanitizePreview(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const maxLength = 220;
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 3)}...`
     : normalized;
 }
 
@@ -482,24 +520,37 @@ function isUuidLike(value: string): boolean {
   );
 }
 
-function extractPromptFromDb(dbPath: string): string | undefined {
+function extractConversationDetailsFromDb(dbPath: string): {
+  title?: string;
+  recentConversation?: string;
+} {
   const DatabaseSync = loadDatabaseSync();
   if (!DatabaseSync) {
-    return undefined;
+    return {};
   }
 
   let db: DatabaseSyncInstance | undefined;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
-    const row = db
+    const firstRow = db
       .prepare(
         "SELECT step_payload FROM steps WHERE idx = 0 AND step_type = 14 LIMIT 1"
       )
       .get() as unknown;
-    const payload = isRecord(row) ? row.step_payload : undefined;
-    if (payload instanceof Uint8Array) {
-      return sanitizeTitle(extractPromptFromPayload(Buffer.from(payload)));
-    }
+    const latestRow = db
+      .prepare(
+        "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1"
+      )
+      .get() as unknown;
+    const firstPrompt = promptFromStepRow(firstRow);
+    const latestPrompt = promptFromStepRow(latestRow);
+    return {
+      ...optionalStringProperty("title", sanitizeTitle(firstPrompt)),
+      ...optionalStringProperty(
+        "recentConversation",
+        sanitizePreview(latestPrompt)
+      )
+    };
   } catch {
     // Database sync might fail if the file is locked, busy, or corrupted
   } finally {
@@ -509,7 +560,14 @@ function extractPromptFromDb(dbPath: string): string | undefined {
       // Closing is best-effort because this reader is optional metadata.
     }
   }
-  return undefined;
+  return {};
+}
+
+function promptFromStepRow(row: unknown): string | undefined {
+  const payload = isRecord(row) ? row.step_payload : undefined;
+  return payload instanceof Uint8Array
+    ? extractPromptFromPayload(Buffer.from(payload))
+    : undefined;
 }
 
 function loadDatabaseSync(): DatabaseSyncConstructor | undefined {

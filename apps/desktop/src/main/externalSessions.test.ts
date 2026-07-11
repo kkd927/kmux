@@ -68,7 +68,7 @@ function createTestExternalSessionIndexer(
 
 function writeAntigravitySqliteConversation(
   path: string,
-  prompt: string,
+  prompt: string | string[],
   mtime: Date
 ): boolean {
   const DatabaseSync = loadTestDatabaseSync();
@@ -82,9 +82,13 @@ function writeAntigravitySqliteConversation(
     db.exec(
       "CREATE TABLE steps (idx INTEGER NOT NULL, step_type INTEGER NOT NULL, step_payload BLOB)"
     );
-    db.prepare(
+    const insert = db.prepare(
       "INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)"
-    ).run(0, 14, encodePromptPayload(prompt));
+    );
+    const prompts = Array.isArray(prompt) ? prompt : [prompt];
+    prompts.forEach((value, index) => {
+      insert.run(index, 14, encodePromptPayload(value));
+    });
   } finally {
     db.close();
   }
@@ -487,6 +491,71 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Actual Codex request");
   });
 
+  it("ignores Codex recommended plugin metadata when deriving session titles", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-07-11T12:00:00.000Z");
+    const mtime = new Date("2026-07-11T11:00:00.000Z");
+
+    writeJsonl(
+      join(
+        homeDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "07",
+        "11",
+        "rollout-2026-07-11T11-00-codex-plugins.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: {
+            id: "codex-plugins",
+            cwd: "/Users/test/codex-project"
+          }
+        },
+        {
+          type: "response_item",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  "<recommended_plugins>\n" +
+                  "<plugin>Use this plugin automatically</plugin>\n" +
+                  "</recommended_plugins>"
+              }
+            ]
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: {
+            type: "user_message",
+            message: "Show the real Codex request as the title"
+          }
+        }
+      ],
+      mtime
+    );
+
+    const snapshot = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => now
+    }).listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      title: "Show the real Codex request as the title",
+      recentConversation: "Show the real Codex request as the title"
+    });
+  });
+
   it("ignores Codex repository instructions when deriving session titles", () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-05-28T12:00:00.000Z");
@@ -727,6 +796,29 @@ describe("external session indexer", () => {
             type: "thread_name_updated",
             thread_name: "Tab focus root cause"
           }
+        },
+        {
+          type: "response_item",
+          timestamp: codexMtime.toISOString(),
+          payload: {
+            type: "reasoning",
+            content: "x".repeat(300_000)
+          }
+        },
+        {
+          type: "turn_context",
+          timestamp: codexMtime.toISOString(),
+          payload: {
+            model: "gpt-5.4"
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: codexMtime.toISOString(),
+          payload: {
+            type: "agent_message",
+            message: "Terminal focus now remains stable across pane switches."
+          }
         }
       ],
       codexMtime
@@ -752,6 +844,19 @@ describe("external session indexer", () => {
           message: {
             content: [{ type: "text", text: "Review sidebar behavior" }]
           }
+        },
+        {
+          type: "assistant",
+          timestamp: claudeMtime.toISOString(),
+          message: {
+            model: "claude-sonnet-4-5",
+            content: [
+              {
+                type: "text",
+                text: "The sidebar keeps the active session visible."
+              }
+            ]
+          }
         }
       ],
       claudeMtime
@@ -770,6 +875,9 @@ describe("external session indexer", () => {
       key: "codex:codex-session",
       vendorLabel: "CODEX",
       title: "Tab focus root cause",
+      recentConversation:
+        "Terminal focus now remains stable across pane switches.",
+      model: "gpt-5.4",
       cwd: "/Users/test/codex-project",
       relativeTimeLabel: "1h",
       canResume: true,
@@ -779,9 +887,277 @@ describe("external session indexer", () => {
       key: "claude:claude-session",
       vendorLabel: "CLAUDE",
       title: "Review sidebar behavior",
+      recentConversation: "The sidebar keeps the active session visible.",
+      model: "claude-sonnet-4-5",
       cwd: "/Users/test/claude-project",
       relativeTimeLabel: "3h",
       resumeCommandPreview: "claude --resume claude-session"
+    });
+  });
+
+  it("invalidates cached session previews when a transcript grows", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-04-26T12:00:00.000Z");
+    const firstMtime = new Date("2026-04-26T11:00:00.000Z");
+    const nextMtime = new Date("2026-04-26T11:01:00.000Z");
+    const sessionPath = join(
+      homeDir,
+      ".codex",
+      "sessions",
+      "2026",
+      "04",
+      "26",
+      "rollout-2026-04-26T11-00-cache-session.jsonl"
+    );
+    const metadata = {
+      type: "session_meta",
+      timestamp: firstMtime.toISOString(),
+      payload: {
+        id: "cache-session",
+        cwd: "/Users/test/codex-project"
+      }
+    };
+
+    writeJsonl(
+      sessionPath,
+      [
+        metadata,
+        {
+          type: "event_msg",
+          timestamp: firstMtime.toISOString(),
+          payload: { type: "user_message", message: "Initial request" }
+        }
+      ],
+      firstMtime
+    );
+
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => now
+    });
+    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+      recentConversation: "Initial request"
+    });
+
+    writeJsonl(
+      sessionPath,
+      [
+        metadata,
+        {
+          type: "event_msg",
+          timestamp: firstMtime.toISOString(),
+          payload: { type: "user_message", message: "Initial request" }
+        },
+        {
+          type: "turn_context",
+          timestamp: nextMtime.toISOString(),
+          payload: { model: "gpt-5.4" }
+        },
+        {
+          type: "event_msg",
+          timestamp: nextMtime.toISOString(),
+          payload: { type: "agent_message", message: "Updated response" }
+        }
+      ],
+      nextMtime
+    );
+
+    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+      recentConversation: "Updated response",
+      model: "gpt-5.4"
+    });
+  });
+
+  it("keeps the first Codex session metadata as the transcript identity", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-07-11T12:00:00.000Z");
+    const mtime = new Date("2026-07-11T11:00:00.000Z");
+
+    writeJsonl(
+      join(
+        homeDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "07",
+        "11",
+        "rollout-2026-07-11T11-00-own-session.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: {
+            id: "own-session",
+            cwd: "/Users/test/own-project",
+            thread_source: "user"
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: { type: "user_message", message: "Own session request" }
+        },
+        {
+          type: "response_item",
+          timestamp: mtime.toISOString(),
+          payload: { type: "reasoning", content: "x".repeat(300_000) }
+        },
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: {
+            id: "replayed-parent-session",
+            cwd: "/Users/test/parent-project",
+            thread_source: "user"
+          }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: { type: "agent_message", message: "Own session response" }
+        }
+      ],
+      mtime
+    );
+
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      commandAvailability: () => true
+    });
+    const snapshot = indexer.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: "codex:own-session",
+      cwd: "/Users/test/own-project",
+      recentConversation: "Own session response",
+      resumeCommandPreview: "codex resume own-session"
+    });
+    expect(
+      indexer.resolveExternalAgentSession("codex:replayed-parent-session")
+    ).toBeNull();
+  });
+
+  it("skips Codex subagents before applying the user session limit", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-07-11T12:00:00.000Z");
+    const cases = [
+      {
+        id: "subagent-thread-source",
+        ageMinutes: 1,
+        metadata: { thread_source: "subagent" }
+      },
+      {
+        id: "subagent-source-object",
+        ageMinutes: 2,
+        metadata: { source: { subagent: { parent_thread_id: "parent" } } }
+      },
+      { id: "user-session-newer", ageMinutes: 3, metadata: {} },
+      { id: "user-session-older", ageMinutes: 4, metadata: {} }
+    ];
+
+    for (const testCase of cases) {
+      const mtime = new Date(now.getTime() - testCase.ageMinutes * 60_000);
+      writeJsonl(
+        join(
+          homeDir,
+          ".codex",
+          "sessions",
+          "2026",
+          "07",
+          "11",
+          `rollout-${testCase.id}.jsonl`
+        ),
+        [
+          {
+            type: "session_meta",
+            timestamp: mtime.toISOString(),
+            payload: {
+              id: testCase.id,
+              cwd: `/Users/test/${testCase.id}`,
+              ...testCase.metadata
+            }
+          },
+          {
+            type: "event_msg",
+            timestamp: mtime.toISOString(),
+            payload: { type: "user_message", message: testCase.id }
+          }
+        ],
+        mtime
+      );
+    }
+
+    const snapshot = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => now,
+      maxFilesPerVendor: 2
+    }).listExternalAgentSessions();
+
+    expect(snapshot.sessions.map((session) => session.key)).toEqual([
+      "codex:user-session-newer",
+      "codex:user-session-older"
+    ]);
+  });
+
+  it("keeps only the latest Codex transcript when physical files share a session id", () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-07-11T12:00:00.000Z");
+    const cases = [
+      {
+        fileId: "newer-copy",
+        ageMinutes: 1,
+        message: "Latest physical transcript"
+      },
+      {
+        fileId: "older-copy",
+        ageMinutes: 2,
+        message: "Older physical transcript"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const mtime = new Date(now.getTime() - testCase.ageMinutes * 60_000);
+      writeJsonl(
+        join(
+          homeDir,
+          ".codex",
+          "sessions",
+          "2026",
+          "07",
+          "11",
+          `rollout-${testCase.fileId}.jsonl`
+        ),
+        [
+          {
+            type: "session_meta",
+            timestamp: mtime.toISOString(),
+            payload: {
+              id: "shared-session-id",
+              cwd: "/Users/test/shared-project"
+            }
+          },
+          {
+            type: "event_msg",
+            timestamp: mtime.toISOString(),
+            payload: { type: "agent_message", message: testCase.message }
+          }
+        ],
+        mtime
+      );
+    }
+
+    const snapshot = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => now
+    }).listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      key: "codex:shared-session-id",
+      recentConversation: "Latest physical transcript"
     });
   });
 
@@ -984,6 +1360,7 @@ describe("external session indexer", () => {
     const workspace = "/Users/test/antigravity-project";
     const updatedAt = new Date("2026-06-02T14:57:53.000Z");
     const prompt = `Database prompt title\n${"x".repeat(140)}`;
+    const recentPrompt = "Most recent Antigravity request";
     const normalizedPrompt = prompt.replace(/\s+/gu, " ").trim();
     const expectedTitle = `${normalizedPrompt.slice(0, 93)}...`;
 
@@ -1007,7 +1384,7 @@ describe("external session indexer", () => {
         "conversations",
         `${conversationId}.db`
       ),
-      prompt,
+      [prompt, recentPrompt],
       updatedAt
     );
     if (!wroteDb) {
@@ -1025,6 +1402,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0]).toMatchObject({
       key: `antigravity:${conversationId}`,
       title: expectedTitle,
+      recentConversation: recentPrompt,
       cwd: workspace,
       resumeCommandPreview: `agy --conversation ${conversationId}`
     });

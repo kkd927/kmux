@@ -32,6 +32,16 @@ function createSnapshot(count = 31): ExternalAgentSessionsSnapshot {
           index === 0
             ? "Fix terminal focus"
             : `${vendor.vendorLabel} Session ${String(sessionNumber).padStart(2, "0")}`,
+        recentConversation:
+          index === 0
+            ? "Terminal focus remains stable across pane switches"
+            : `Recent conversation ${sessionNumber}`,
+        model:
+          vendor.vendor === "codex"
+            ? "gpt-5.4"
+            : vendor.vendor === "claude"
+              ? "claude-sonnet-4-5"
+              : undefined,
         cwd: `/Users/test/project-${sessionNumber}`,
         updatedAt: "2026-04-26T11:00:00.000Z",
         relativeTimeLabel: `${sessionNumber}m`,
@@ -59,7 +69,7 @@ describe("ExternalSessionsPanel", () => {
     container.remove();
   });
 
-  it("renders TailAdmin table chrome around the original four session columns", () => {
+  it("renders workspace-style three-line session rows", () => {
     act(() => {
       root.render(
         <ExternalSessionsPanel
@@ -73,20 +83,16 @@ describe("ExternalSessionsPanel", () => {
     });
 
     expect(container.textContent).toContain("Sessions");
-    expect(container.textContent).toContain("Agent");
-    expect(container.textContent).not.toContain("Vendor");
-    expect(container.textContent).toContain("Workspace");
-    expect(container.textContent).toContain("Title");
-    expect(container.textContent).toContain("Time");
-    expect(container.textContent).not.toContain("Products");
-    expect(container.textContent).not.toContain("Resume");
+    expect(container.querySelector("table")).toBeNull();
     expect(container.textContent).toContain("CODEX");
     expect(container.textContent).toContain("CLAUDE");
     expect(container.textContent).toContain("AGY");
-    expect(container.textContent).toContain("project-1");
     expect(container.textContent).toContain("Fix terminal focus");
+    expect(container.textContent).toContain(
+      "Terminal focus remains stable across pane switches"
+    );
+    expect(container.textContent).toContain("gpt-5.4");
     expect(container.textContent).toContain("1m");
-    expect(container.textContent).not.toContain("시간");
     expect(container.textContent).not.toContain("codex resume session-1");
     expect(container.textContent).not.toContain("CODEX Session 31");
     expect(sessionCountText(container)).toBe("(31)");
