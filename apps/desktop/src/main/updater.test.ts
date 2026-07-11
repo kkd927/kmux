@@ -177,6 +177,23 @@ describe("updater controller", () => {
     expect(testLinux.updater.checkForUpdates).not.toHaveBeenCalled();
   });
 
+  it("keeps packaged app updates on the stable release channel", () => {
+    const packagedMac = createHarness({
+      platform: "darwin",
+      isPackaged: true
+    });
+    const packagedLinux = createHarness({
+      platform: "linux",
+      isPackaged: true,
+      env: {
+        APPIMAGE: "/tmp/kmux-0.4.6-linux-x64.AppImage"
+      }
+    });
+
+    expect(packagedMac.updater.allowPrerelease).toBe(false);
+    expect(packagedLinux.updater.allowPrerelease).toBe(false);
+  });
+
   it("accepts platform-composed updater enablement", async () => {
     const disabledByRuntime = createHarness({ enabled: false });
     const enabledByRuntime = createHarness({

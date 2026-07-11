@@ -21,6 +21,8 @@ extraResources:
 artifactBuildCompleted: ./build/artifact-build-completed.cjs
 
 publish:
+  # GitHub Actions creates and classifies releases; electron-builder only
+  # packages updater metadata because distribution commands use --publish never.
   provider: github
   owner: kkd927
   repo: kmux

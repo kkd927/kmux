@@ -14,7 +14,24 @@ permissions:
   contents: write
 
 jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      release_kind: ${{ steps.release.outputs.release_kind }}
+      is_prerelease: ${{ steps.release.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate release tag and package versions
+        id: release
+        if: github.event_name == 'push'
+        run: node scripts/release-tag.mjs
+
   verify:
+    needs: release-metadata
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
@@ -27,6 +44,7 @@ jobs:
       - run: npm run test
 
   package-macos:
+    needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +130,7 @@ jobs:
           compression-level: 0
 
   package-linux:
+    needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +183,7 @@ jobs:
   publish-release:
     if: github.event_name == 'push'
     needs:
+      - release-metadata
       - verify
       - package-macos
       - package-linux
@@ -224,6 +244,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_KIND: ${{ needs.release-metadata.outputs.release_kind }}
+          IS_PRERELEASE: ${{ needs.release-metadata.outputs.is_prerelease }}
         run: |
           shopt -s nullglob
           assets=(
@@ -235,7 +257,22 @@ jobs:
             release-assets/latest-linux*.yml
           )
           test "${#assets[@]}" -gt 0
+          case "$RELEASE_KIND:$IS_PRERELEASE" in
+            stable:false)
+              release_args=(--latest --prerelease=false)
+              ;;
+            prerelease:true)
+              release_args=(--latest=false --prerelease)
+              ;;
+            *)
+              echo "Invalid release metadata: kind=$RELEASE_KIND prerelease=$IS_PRERELEASE" >&2
+              exit 1
+              ;;
+          esac
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --draft=false \
+              "${release_args[@]}"
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
             notes_args=(--generate-notes)
@@ -245,5 +282,7 @@ jobs:
             fi
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --title "$GITHUB_REF_NAME" \
+              --verify-tag \
+              "${release_args[@]}" \
               "${notes_args[@]}"
           fi
