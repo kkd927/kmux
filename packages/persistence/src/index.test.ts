@@ -346,6 +346,49 @@ describe("file-store persistence", () => {
     expect(repricedStore.load()).toEqual([]);
   });
 
+  it("treats usage history as stale when the aggregation revision changes", async () => {
+    const usageHistoryPath = join(
+      sandboxDir,
+      "usage-history-aggregation-revision.json"
+    );
+    const persistenceModule = (await import("./index")) as {
+      createUsageHistoryStore?: (
+        path: string,
+        pricingRevision?: string,
+        aggregationRevision?: string
+      ) => {
+        load(): unknown;
+        save(value: unknown): void;
+      };
+    };
+
+    expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
+
+    const initialStore = persistenceModule.createUsageHistoryStore!(
+      usageHistoryPath,
+      "pricing-revision-a",
+      "aggregation-revision-a"
+    );
+    initialStore.save([
+      {
+        dayKey: "2026-07-12",
+        totalCostUsd: 0,
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 100,
+        totalTokens: 100,
+        vendors: []
+      }
+    ]);
+
+    const correctedStore = persistenceModule.createUsageHistoryStore!(
+      usageHistoryPath,
+      "pricing-revision-a",
+      "aggregation-revision-b"
+    );
+    expect(correctedStore.load()).toEqual([]);
+  });
+
   it("returns the dedicated usage history path in the default app paths", async () => {
     const configDir = join(sandboxDir, "config");
     const runtimeDir = join(sandboxDir, "runtime");

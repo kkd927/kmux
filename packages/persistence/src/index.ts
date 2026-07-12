@@ -124,6 +124,7 @@ interface WindowStateEnvelope {
 
 interface UsageHistoryEnvelope {
   version: number;
+  aggregationRevision?: string;
   pricingRevision?: string;
   days: UsageHistoryDayRecord[];
 }
@@ -386,7 +387,8 @@ export function createSettingsStore(settingsPath: string): SettingsFileStore {
 
 export function createUsageHistoryStore(
   usageHistoryPath: string,
-  pricingRevision?: string
+  pricingRevision?: string,
+  aggregationRevision?: string
 ): UsageHistoryFileStore {
   mkdirSync(dirname(usageHistoryPath), { recursive: true });
 
@@ -413,6 +415,13 @@ export function createUsageHistoryStore(
         warnInvalidFile(usageHistoryPath, "stale usage pricing revision");
         return [];
       }
+      if (
+        aggregationRevision &&
+        envelope.aggregationRevision !== aggregationRevision
+      ) {
+        warnInvalidFile(usageHistoryPath, "stale usage aggregation revision");
+        return [];
+      }
       return envelope.days as UsageHistoryDayRecord[];
     },
     save(days) {
@@ -420,6 +429,7 @@ export function createUsageHistoryStore(
         usageHistoryPath,
         JSON.stringify({
           version: USAGE_HISTORY_STORE_VERSION,
+          aggregationRevision,
           pricingRevision,
           days
         } satisfies UsageHistoryEnvelope)

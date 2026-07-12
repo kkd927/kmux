@@ -19,6 +19,7 @@ import type {
 } from "@kmux/proto";
 import {
   type AgentStorageRoots,
+  isCodexSubagentSessionMetadata,
   readAntigravityConversationMetadataFromRoot,
   resolveAgentStorageRoots
 } from "@kmux/metadata";
@@ -289,7 +290,7 @@ function parseCodexSessionCandidate(
   candidate: CandidateFile
 ): ExternalSessionRecord | null {
   const identity = firstCodexSessionMetadata(candidate.path);
-  if (identity && isCodexSubagentSession(identity)) {
+  if (identity && isCodexSubagentSessionMetadata(identity)) {
     return null;
   }
   const records = parseJsonlEdges(candidate.path);
@@ -312,7 +313,7 @@ function parseCodexSessionCandidate(
     }
     if (object?.type === "session_meta" && payload && !sawSessionMeta) {
       sawSessionMeta = true;
-      if (isCodexSubagentSession(payload)) {
+      if (isCodexSubagentSessionMetadata(payload)) {
         return null;
       }
       sessionId = pickFirstString(payload, ["id", "session_id", "sessionId"]);
@@ -374,17 +375,6 @@ function firstCodexSessionMetadata(
     }
   }
   return null;
-}
-
-function isCodexSubagentSession(payload: Record<string, unknown>): boolean {
-  const threadSource = pickFirstString(payload, [
-    "thread_source",
-    "threadSource"
-  ]);
-  if (threadSource?.toLowerCase() === "subagent") {
-    return true;
-  }
-  return Boolean(asObject(asObject(payload.source)?.subagent));
 }
 
 function listClaudeSessions(

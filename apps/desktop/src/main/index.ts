@@ -13,6 +13,7 @@ import electronUpdater from "electron-updater";
 
 import {
   resolveAgentStorageRoots,
+  USAGE_AGGREGATION_REVISION,
   USAGE_PRICING_REVISION
 } from "@kmux/metadata";
 
@@ -179,7 +180,8 @@ async function bootstrap(): Promise<void> {
   const settingsStore = createSettingsStore(paths.settingsPath);
   const usageHistoryStore = createUsageHistoryStore(
     paths.usageHistoryPath,
-    USAGE_PRICING_REVISION
+    USAGE_PRICING_REVISION,
+    USAGE_AGGREGATION_REVISION
   );
   const savedSettings = settingsStore.load();
   const shellWrapperRuntime = createShellWrapperRuntime({

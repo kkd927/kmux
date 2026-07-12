@@ -930,6 +930,173 @@ describe("usage adapters", () => {
     ]);
   });
 
+  it("counts Codex team usage from the root rollout without replaying subagent histories", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-team-"));
+    cleanupPaths.push(root);
+    const sessionsRoot = path.join(root, "sessions");
+    const codexDir = path.join(sessionsRoot, "2026", "07", "12");
+    mkdirSync(codexDir, { recursive: true });
+    const rootSessionPath = path.join(
+      codexDir,
+      "rollout-2026-07-12T09-00-00-root.jsonl"
+    );
+    const subagentThreadSourcePath = path.join(
+      codexDir,
+      "rollout-2026-07-12T09-01-00-subagent-thread-source.jsonl"
+    );
+    const subagentSourceObjectPath = path.join(
+      codexDir,
+      "rollout-2026-07-12T09-02-00-subagent-source-object.jsonl"
+    );
+
+    writeFileSync(
+      rootSessionPath,
+      [
+        codexSessionMetadata("2026-07-12T09:00:00.000Z", {
+          id: "root-session",
+          cwd: "/tmp/kmux-codex-team",
+          thread_source: "user"
+        }),
+        codexTurnContext("2026-07-12T09:00:01.000Z", "gpt-5.6-sol"),
+        codexTokenCount("2026-07-12T09:00:02.000Z", 100, 20, 10),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    writeFileSync(
+      subagentThreadSourcePath,
+      [
+        codexSessionMetadata("2026-07-12T09:01:00.000Z", {
+          id: "subagent-thread-source",
+          session_id: "root-session",
+          parent_thread_id: "root-session",
+          thread_source: "subagent"
+        }),
+        codexSessionMetadata("2026-07-12T09:01:00.001Z", {
+          id: "root-session",
+          thread_source: "user"
+        }),
+        codexTurnContext("2026-07-12T09:01:00.002Z", "gpt-5.6-sol"),
+        codexTokenCount("2026-07-12T09:01:00.003Z", 100, 20, 10),
+        codexTokenCount("2026-07-12T09:01:00.004Z", 180, 40, 20),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    writeFileSync(
+      subagentSourceObjectPath,
+      [
+        codexSessionMetadata("2026-07-12T09:02:00.000Z", {
+          id: "subagent-source-object",
+          session_id: "root-session",
+          source: {
+            subagent: {
+              thread_spawn: { parent_thread_id: "root-session" }
+            }
+          }
+        }),
+        codexTokenCount("2026-07-12T09:02:00.001Z", 180, 40, 20),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const [, codexAdapter] = createUsageAdapters({
+      env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
+      homeDir: root
+    });
+    const startOfDayMs = startOfLocalDay(
+      new Date("2026-07-12T09:00:00.000Z").getTime()
+    );
+    const initial = await codexAdapter.initialScan(startOfDayMs);
+
+    expect(initial.sourceCount).toBe(3);
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        sessionId: "root-session",
+        model: "gpt-5.6-sol",
+        totalTokens: 110
+      })
+    ]);
+
+    appendFileSync(
+      subagentThreadSourcePath,
+      `${codexTokenCount("2026-07-12T09:03:00.000Z", 240, 50, 30)}\n`,
+      "utf8"
+    );
+    appendFileSync(
+      rootSessionPath,
+      `${codexTokenCount("2026-07-12T09:03:01.000Z", 160, 30, 20)}\n`,
+      "utf8"
+    );
+
+    const incremental = await codexAdapter.readIncremental(startOfDayMs);
+    expect(incremental.samples).toEqual([
+      expect.objectContaining({
+        sessionId: "root-session",
+        totalTokens: 70
+      })
+    ]);
+
+    const days = await scanUsageHistoryDays({
+      env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
+      homeDir: root,
+      fromMs: startOfDayMs,
+      toMs: new Date("2026-07-12T23:59:59.999Z").getTime()
+    });
+    expect(days).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-07-12",
+        totalTokens: 180,
+        vendors: [
+          expect.objectContaining({ vendor: "codex", totalTokens: 180 })
+        ]
+      })
+    ]);
+  });
+
+  it("keeps the first Codex session metadata as the usage identity", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-identity-"));
+    cleanupPaths.push(root);
+    const sessionsRoot = path.join(root, "sessions");
+    const codexDir = path.join(sessionsRoot, "2026", "07", "12");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      path.join(codexDir, "rollout-2026-07-12T10-00-00-root.jsonl"),
+      [
+        codexSessionMetadata("2026-07-12T10:00:00.000Z", {
+          id: "canonical-root-session",
+          cwd: "/tmp/canonical-root",
+          model: "gpt-5.6-sol"
+        }),
+        codexSessionMetadata("2026-07-12T10:00:01.000Z", {
+          id: "replayed-session",
+          cwd: "/tmp/replayed"
+        }),
+        codexTokenCount("2026-07-12T10:00:02.000Z", 50, 10, 5),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const [, codexAdapter] = createUsageAdapters({
+      env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
+      homeDir: root
+    });
+    const result = await codexAdapter.initialScan(
+      startOfLocalDay(new Date("2026-07-12T10:00:00.000Z").getTime())
+    );
+
+    expect(result.samples).toEqual([
+      expect.objectContaining({
+        sessionId: "canonical-root-session",
+        cwd: "/tmp/canonical-root",
+        model: "gpt-5.6-sol",
+        totalTokens: 55
+      })
+    ]);
+  });
+
   it("parses Antigravity transcript usage from local conversation storage", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-"));
     cleanupPaths.push(root);
@@ -1496,4 +1663,42 @@ function startOfLocalDay(timestampMs: number): number {
   const date = new Date(timestampMs);
   date.setHours(0, 0, 0, 0);
   return date.getTime();
+}
+
+function codexSessionMetadata(
+  timestamp: string,
+  payload: Record<string, unknown>
+): string {
+  return JSON.stringify({ timestamp, type: "session_meta", payload });
+}
+
+function codexTurnContext(timestamp: string, model: string): string {
+  return JSON.stringify({
+    timestamp,
+    type: "turn_context",
+    payload: { model }
+  });
+}
+
+function codexTokenCount(
+  timestamp: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number
+): string {
+  return JSON.stringify({
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: inputTokens,
+          cached_input_tokens: cachedInputTokens,
+          output_tokens: outputTokens,
+          total_tokens: inputTokens + outputTokens
+        }
+      }
+    }
+  });
 }

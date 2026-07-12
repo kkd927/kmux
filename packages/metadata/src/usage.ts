@@ -22,6 +22,7 @@ import {
   resolveAgentStorageRoots
 } from "./agentStorage";
 import { readAntigravityWorkspaceByConversationFromRoot } from "./antigravityStorage";
+import { isCodexSubagentSessionMetadata } from "./codexSession";
 import { estimateModelCost } from "./modelPricing";
 
 const JSON_EXTENSIONS = new Set([".json"]);
@@ -30,6 +31,9 @@ const MAX_RECURSION_DEPTH = 6;
 const WATCH_DEBOUNCE_MS = 180;
 const SOURCE_INDEX_RESYNC_MS = 60_000;
 const WATCH_ROOT_RETRY_MS = 60_000;
+const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
+
+export const USAGE_AGGREGATION_REVISION = "codex-root-authoritative-v2";
 
 export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
 export type UsageCostSource = "reported" | "estimated" | "unavailable";
@@ -153,6 +157,8 @@ type ObjectCandidate = {
 
 type CodexSessionContext = {
   cwd?: string;
+  hasSessionMetadata?: boolean;
+  isSubagent?: boolean;
   model?: string;
   projectPath?: string;
   sessionId?: string;
@@ -172,6 +178,11 @@ type TokenUsageTotals = {
   totalTokens: number;
 };
 
+type CodexSourceIdentity = {
+  inode: number;
+  isSubagent: boolean;
+};
+
 interface FileUsageAdapterOptions {
   includeJson?: boolean;
   includeHiddenDirs?: boolean;
@@ -185,6 +196,10 @@ class FileUsageAdapter implements UsageAdapter {
 
   private readonly codexContexts = new Map<string, CodexSessionContext>();
   private readonly codexTotals = new Map<string, TokenUsageTotals>();
+  private readonly codexSourceIdentities = new Map<
+    string,
+    CodexSourceIdentity
+  >();
   private readonly antigravityContexts = new Map<
     string,
     AntigravitySessionContext
@@ -490,6 +505,7 @@ class FileUsageAdapter implements UsageAdapter {
     this.cursors.delete(sourcePath);
     this.codexContexts.delete(sourcePath);
     this.codexTotals.delete(sourcePath);
+    this.codexSourceIdentities.delete(sourcePath);
     this.antigravityContexts.delete(sourcePath);
     this.dirtyPaths.delete(sourcePath);
   }
@@ -542,6 +558,22 @@ class FileUsageAdapter implements UsageAdapter {
     const stats = safeStat(source.path);
     if (!stats) {
       this.removeTrackedSource(source.path);
+      return [];
+    }
+
+    // Codex team counters are shared with the root conversation. Forked
+    // rollout files replay that same counter, so reading them would count the
+    // team's usage once per subagent. The root rollout remains authoritative.
+    if (this.isCodexSubagentSource(source.path, Number(stats.ino))) {
+      if (useCursors) {
+        this.cursors.set(source.path, {
+          kind: "jsonl",
+          dayKey: cursorDayKey,
+          offset: Number(stats.size),
+          inode: Number(stats.ino),
+          mtimeMs: Number(stats.mtimeMs)
+        });
+      }
       return [];
     }
 
@@ -607,6 +639,26 @@ class FileUsageAdapter implements UsageAdapter {
     }
 
     return samples;
+  }
+
+  private isCodexSubagentSource(sourcePath: string, inode: number): boolean {
+    if (this.vendor !== "codex") {
+      return false;
+    }
+    const cached = this.codexSourceIdentities.get(sourcePath);
+    if (cached?.inode === inode) {
+      return cached.isSubagent;
+    }
+    const metadata = readFirstCodexSessionMetadata(sourcePath);
+    if (!metadata) {
+      return false;
+    }
+    const identity = {
+      inode,
+      isSubagent: isCodexSubagentSessionMetadata(metadata)
+    };
+    this.codexSourceIdentities.set(sourcePath, identity);
+    return identity.isSubagent;
   }
 
   private readJsonSource(
@@ -1064,6 +1116,27 @@ function readJsonlSlice(
   }
 }
 
+function readFirstCodexSessionMetadata(
+  filePath: string
+): Record<string, unknown> | null {
+  const prefix = readJsonlSlice(filePath, 0, CODEX_IDENTITY_SCAN_BYTES);
+  for (const line of prefix.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const record = JSON.parse(trimmed) as Record<string, unknown>;
+      if (record.type === "session_meta" && isRecord(record.payload)) {
+        return record.payload;
+      }
+    } catch {
+      // The prefix may end in the middle of a JSONL record.
+    }
+  }
+  return null;
+}
+
 function stringMapEquals(
   left: Map<string, string>,
   right: Map<string, string>
@@ -1319,21 +1392,31 @@ function extractCodexUsageSamples(
   if (recordType === "session_meta") {
     const payload = isRecord(record.payload) ? record.payload : {};
     const previous = contexts.get(sourcePath) ?? {};
+    const isFirstMetadata = !previous.hasSessionMetadata;
     contexts.set(sourcePath, {
-      cwd:
-        normalizePathValue(
-          pickFirstString(payload, ["cwd", "project_path", "projectPath"])
-        ) ?? previous.cwd,
-      model:
-        pickFirstString(payload, ["model", "model_name", "modelName"]) ??
-        previous.model,
-      projectPath:
-        normalizePathValue(
-          pickFirstString(payload, ["project_path", "projectPath", "cwd"])
-        ) ?? previous.projectPath,
-      sessionId:
-        pickFirstString(payload, ["id", "session_id", "sessionId"]) ??
-        previous.sessionId
+      ...previous,
+      cwd: isFirstMetadata
+        ? (normalizePathValue(
+            pickFirstString(payload, ["cwd", "project_path", "projectPath"])
+          ) ?? previous.cwd)
+        : previous.cwd,
+      hasSessionMetadata: true,
+      isSubagent: isFirstMetadata
+        ? isCodexSubagentSessionMetadata(payload)
+        : previous.isSubagent,
+      model: isFirstMetadata
+        ? (pickFirstString(payload, ["model", "model_name", "modelName"]) ??
+          previous.model)
+        : previous.model,
+      projectPath: isFirstMetadata
+        ? (normalizePathValue(
+            pickFirstString(payload, ["project_path", "projectPath", "cwd"])
+          ) ?? previous.projectPath)
+        : previous.projectPath,
+      sessionId: isFirstMetadata
+        ? (pickFirstString(payload, ["id", "session_id", "sessionId"]) ??
+          previous.sessionId)
+        : previous.sessionId
     });
     return [];
   }
@@ -1356,6 +1439,10 @@ function extractCodexUsageSamples(
 
   const payload = isRecord(record.payload) ? record.payload : null;
   if (!payload || payload.type !== "token_count") {
+    return [];
+  }
+  const context = contexts.get(sourcePath);
+  if (context?.isSubagent) {
     return [];
   }
   const info = isRecord(payload.info) ? payload.info : null;
@@ -1426,7 +1513,6 @@ function extractCodexUsageSamples(
     return [];
   }
 
-  const context = contexts.get(sourcePath);
   const timestampMs = normalizeTimestamp(
     record.timestamp ?? payload.timestamp,
     Date.now()
