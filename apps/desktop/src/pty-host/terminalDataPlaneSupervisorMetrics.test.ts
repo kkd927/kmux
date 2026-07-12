@@ -58,7 +58,10 @@ const ringStore = {
   peakTotalBytes: 768,
   peakTotalEvents: 6,
   boundViolationCount: 0,
-  oversizedDeltaCount: 1
+  oversizedDeltaCount: 1,
+  replayLookupMissCount: 3,
+  internalCursorMissCount: 2,
+  internalCursorMissEpisodeCount: 1
 };
 
 describe("terminal data-plane supervisor metrics", () => {
@@ -124,6 +127,9 @@ describe("terminal data-plane supervisor metrics", () => {
       ringPeakTotalEvents: 6,
       ringBoundViolationCount: 0,
       ringOversizedDeltaCount: 1,
+      ringReplayLookupMissCount: 3,
+      ringInternalCursorMissCount: 2,
+      ringInternalCursorMissEpisodeCount: 1,
       maxSessionRingEvents: 2,
       maxSessionRingBytes: 256,
       peakSessionRingEvents: 4,

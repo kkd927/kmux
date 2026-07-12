@@ -13,6 +13,8 @@ export interface TerminalDeltaStoreOptions<T> {
   sizeOf: (delta: T) => number;
   /** Optional wire-flow accounting used for bounded replay windows. */
   replaySizeOf?: (delta: T) => number;
+  /** Classifies an exact-lookup miss as an internal replay cursor. */
+  isInternalReplayCursor?: (delta: T, sequence: number) => boolean;
 }
 
 export interface TerminalDeltaReplayWindow {
@@ -47,6 +49,9 @@ export interface TerminalDeltaStoreStats {
   peakTotalEvents: number;
   boundViolationCount: number;
   oversizedDeltaCount: number;
+  replayLookupMissCount: number;
+  internalCursorMissCount: number;
+  internalCursorMissEpisodeCount: number;
 }
 
 export interface TerminalDeltaSessionStats {
@@ -95,6 +100,10 @@ export class TerminalDeltaStore<T> {
   private peakTotalEvents = 0;
   private boundViolationCount = 0;
   private oversizedDeltaCount = 0;
+  private replayLookupMissCount = 0;
+  private internalCursorMissCount = 0;
+  private internalCursorMissEpisodeCount = 0;
+  private readonly lastInternalCursorMissBySession = new Map<string, number>();
 
   constructor(private readonly options: TerminalDeltaStoreOptions<T>) {
     requirePositiveInteger(options.maxSessionBytes, "maxSessionBytes");
@@ -197,6 +206,23 @@ export class TerminalDeltaStore<T> {
     const replayIndex = this.findReplayIndex(ring, sequence);
     const first = ring.entries[ring.head];
     if (replayIndex < 0) {
+      this.replayLookupMissCount += 1;
+      const containingIndex = this.findContainingReplayIndex(ring, sequence);
+      const containingEntry =
+        containingIndex < 0 ? undefined : ring.entries[containingIndex];
+      if (
+        containingEntry &&
+        this.options.isInternalReplayCursor?.(
+          containingEntry.value,
+          sequence
+        ) === true
+      ) {
+        this.internalCursorMissCount += 1;
+        if (this.lastInternalCursorMissBySession.get(sessionId) !== sequence) {
+          this.lastInternalCursorMissBySession.set(sessionId, sequence);
+          this.internalCursorMissEpisodeCount += 1;
+        }
+      }
       return {
         status: "gap",
         latestSequence: ring.latestSequence,
@@ -245,12 +271,14 @@ export class TerminalDeltaStore<T> {
     }
     this.clearRetained(ring);
     this.rings.delete(sessionId);
+    this.lastInternalCursorMissBySession.delete(sessionId);
   }
 
   clear(): void {
     this.rings.clear();
     this.totalBytes = 0;
     this.totalEvents = 0;
+    this.lastInternalCursorMissBySession.clear();
   }
 
   stats(): TerminalDeltaStoreStats {
@@ -267,7 +295,10 @@ export class TerminalDeltaStore<T> {
       peakTotalBytes: this.peakTotalBytes,
       peakTotalEvents: this.peakTotalEvents,
       boundViolationCount: this.boundViolationCount,
-      oversizedDeltaCount: this.oversizedDeltaCount
+      oversizedDeltaCount: this.oversizedDeltaCount,
+      replayLookupMissCount: this.replayLookupMissCount,
+      internalCursorMissCount: this.internalCursorMissCount,
+      internalCursorMissEpisodeCount: this.internalCursorMissEpisodeCount
     };
   }
 
@@ -398,6 +429,29 @@ export class TerminalDeltaStore<T> {
         low = middle + 1;
       } else {
         high = middle - 1;
+      }
+    }
+    return -1;
+  }
+
+  private findContainingReplayIndex(
+    ring: SessionRing<T>,
+    sequence: number
+  ): number {
+    let low = ring.head;
+    let high = ring.entries.length - 1;
+    while (low <= high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const entry = ring.entries[middle];
+      if (!entry) {
+        throw new Error("terminal delta ring contains an empty live entry");
+      }
+      if (sequence <= entry.range.fromSequence) {
+        high = middle - 1;
+      } else if (sequence >= entry.range.sequence) {
+        low = middle + 1;
+      } else {
+        return middle;
       }
     }
     return -1;

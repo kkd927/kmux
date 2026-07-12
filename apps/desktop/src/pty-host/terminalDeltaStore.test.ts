@@ -306,6 +306,41 @@ describe("TerminalDeltaStore", () => {
     });
   });
 
+  it("counts replayable internal cursors only after an exact lookup miss", () => {
+    let classifierCalls = 0;
+    const store = new TerminalDeltaStore<TestDelta>({
+      maxSessionBytes: 100,
+      maxSessionEvents: 10,
+      maxTotalBytes: 100,
+      maxTotalEvents: 10,
+      rangeOf: (value) => value,
+      sizeOf: (value) => value.bytes,
+      isInternalReplayCursor: (_value, sequence) => {
+        classifierCalls += 1;
+        return sequence === 1;
+      }
+    });
+    store.append("session_1", delta("one-through-three", 3, 5, 0));
+
+    expect(store.replayAfter("session_1", 0)).toMatchObject({ status: "ok" });
+    expect(classifierCalls).toBe(0);
+    expect(store.stats()).toMatchObject({
+      replayLookupMissCount: 0,
+      internalCursorMissCount: 0,
+      internalCursorMissEpisodeCount: 0
+    });
+
+    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "gap" });
+    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "gap" });
+    expect(store.replayAfter("session_1", 2)).toMatchObject({ status: "gap" });
+    expect(classifierCalls).toBe(3);
+    expect(store.stats()).toMatchObject({
+      replayLookupMissCount: 3,
+      internalCursorMissCount: 2,
+      internalCursorMissEpisodeCount: 1
+    });
+  });
+
   it("rejects a resume cursor ahead of the authoritative sequence", () => {
     const store = createStore();
     store.append("session_1", delta("one", 1));

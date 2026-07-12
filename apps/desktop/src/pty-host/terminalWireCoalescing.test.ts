@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   coalesceTerminalOutputForWire,
   coalesceTerminalDeltasForWire,
+  isTerminalOutputSegmentCursor,
   splitTerminalOutputText,
   terminalDeltaRetainedBytes
 } from "./terminalWireCoalescing";
@@ -83,6 +84,27 @@ describe("coalesceTerminalOutputForWire", () => {
 
     expect(terminalDeltaRetainedBytes(delta)).toBe(5);
     expect(delta.byteLength).toBe(1);
+  });
+
+  it("recognizes only retained output segment cursors", () => {
+    const output: TerminalDelta = {
+      type: "output",
+      fromSequence: 0,
+      sequence: 3,
+      byteLength: 8,
+      segments: [segment(1, 4), segment(3, 4)]
+    };
+
+    expect(isTerminalOutputSegmentCursor(output, 1)).toBe(true);
+    expect(isTerminalOutputSegmentCursor(output, 2)).toBe(false);
+    expect(isTerminalOutputSegmentCursor(output, 0)).toBe(false);
+    expect(isTerminalOutputSegmentCursor(output, 3)).toBe(false);
+    expect(
+      isTerminalOutputSegmentCursor(
+        { type: "resize", sequence: 3, cols: 80, rows: 24 },
+        2
+      )
+    ).toBe(false);
   });
 
   it("keeps input-correlated segments isolated for latency tracing", () => {

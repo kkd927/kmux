@@ -26,6 +26,18 @@ export function terminalDeltaRetainedBytes(delta: TerminalDelta): number {
   );
 }
 
+export function isTerminalOutputSegmentCursor(
+  delta: TerminalDelta,
+  sequence: number
+): boolean {
+  return (
+    delta.type === "output" &&
+    sequence > delta.fromSequence &&
+    sequence < delta.sequence &&
+    delta.segments.some((segment) => segment.sequence === sequence)
+  );
+}
+
 /** Splits PTY text on Unicode code-point boundaries before sequencing it. */
 export function splitTerminalOutputText(
   data: string,
