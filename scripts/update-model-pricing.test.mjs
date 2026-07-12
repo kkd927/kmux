@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { parseClaudePricingTable } from "./update-model-pricing.mjs";
+import {
+  parseClaudePricingTable,
+  parseOpenAiTextTokenPricingHtml
+} from "./update-model-pricing.mjs";
 
 const SONNET_WINDOW_ROWS = [
   [
@@ -163,6 +166,54 @@ describe("update-model-pricing Claude parser", () => {
   });
 });
 
+describe("update-model-pricing OpenAI parser", () => {
+  it("maps text-token prices by header after cache-write columns are added", () => {
+    const [entry] = parseOpenAiTextTokenPricingHtml(
+      openAiTextTokenPricingPage(
+        [
+          "Model",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output"
+        ],
+        [
+          "gpt-5.5",
+          "$5.00",
+          "$0.50",
+          "-",
+          "$30.00",
+          "$10.00",
+          "$1.00",
+          "-",
+          "$45.00"
+        ]
+      )
+    );
+
+    expect(entry).toEqual({
+      modelId: "gpt-5.5",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.00003,
+      cacheReadCostPerToken: 0.0000005,
+      inputCostPerTokenAboveThreshold: 0.00001,
+      outputCostPerTokenAboveThreshold: 0.000045,
+      cacheReadCostPerTokenAboveThreshold: 0.000001,
+      tieredPricingThresholdTokens: 272_000
+    });
+  });
+
+  it("fails when rendered pricing rows are unavailable", () => {
+    expect(() =>
+      parseOpenAiTextTokenPricingHtml(openAiPropsOnlyPricingPage())
+    ).toThrow(/Could not find rendered OpenAI text-token pricing rows/u);
+  });
+});
+
 function table(rows) {
   return `<table>
     <tr>
@@ -179,4 +230,27 @@ function table(rows) {
       )
       .join("\n")}
   </table>`;
+}
+
+function openAiTextTokenPricingPage(header, row) {
+  const props = JSON.stringify({
+    tier: "standard",
+    rows: [["gpt-5.5 (< 272K context length)"]]
+  }).replace(/"/gu, "&quot;");
+  return `<div component-export="TextTokenPricingTables" props="${props}">
+    <table>
+      <tr>${header.map((cell) => `<th>${cell}</th>`).join("")}</tr>
+      <tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>
+    </table>
+  </div>`;
+}
+
+function openAiPropsOnlyPricingPage() {
+  const props = JSON.stringify({
+    tier: "standard",
+    rows: [["gpt-5.5 (< 272K context length)", 5, 0.5, "-", 30]]
+  }).replace(/"/gu, "&quot;");
+  return `<div component-export="TextTokenPricingTables" props="${props}">
+    <table></table>
+  </div>`;
 }

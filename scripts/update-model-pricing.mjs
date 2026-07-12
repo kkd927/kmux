@@ -127,7 +127,7 @@ export function parseClaudePricingTable(
 
 async function fetchCodexPricing() {
   const html = await fetchText(SOURCES.codex);
-  const textTokenEntries = fetchOpenAiTextTokenPricing(html);
+  const textTokenEntries = parseOpenAiTextTokenPricingHtml(html);
   const tables = parseAstroPricingTables(html);
   const standardCodexTable = tables.find(
     (table) =>
@@ -152,7 +152,7 @@ async function fetchCodexPricing() {
   return [...textTokenEntries, ...codexEntries];
 }
 
-function fetchOpenAiTextTokenPricing(html) {
+export function parseOpenAiTextTokenPricingHtml(html) {
   const standardTextTokenTable = parseTextTokenPricingTables(html).find(
     (table) => table.tier === "standard"
   );
@@ -167,10 +167,11 @@ function fetchOpenAiTextTokenPricing(html) {
       .filter((model) => model.thresholdTokens)
       .map((model) => [model.modelId, model.thresholdTokens])
   );
-  const rows =
-    standardTextTokenTable.renderedRows.length > 0
-      ? standardTextTokenTable.renderedRows
-      : standardTextTokenTable.propsRows;
+  const rows = standardTextTokenTable.renderedRows;
+  if (rows.length === 0) {
+    throw new Error("Could not find rendered OpenAI text-token pricing rows.");
+  }
+  const columns = openAiTextTokenPricingColumns(rows);
 
   return rows
     .map((row) => [openAiTextModelInfo(row[0]).modelId, ...row.slice(1)])
@@ -178,11 +179,30 @@ function fetchOpenAiTextTokenPricing(html) {
     .map((row) => {
       const entry = {
         modelId: row[0],
-        inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[1])),
-        outputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[3])),
-        cacheReadCostPerToken: dollarsPerMillion(parseOptionalNumber(row[2]))
+        inputCostPerToken: dollarsPerMillion(
+          parseRequiredNumber(row[columns.input[0]])
+        ),
+        outputCostPerToken: dollarsPerMillion(
+          parseRequiredNumber(row[columns.output[0]])
+        ),
+        cacheReadCostPerToken: dollarsPerMillion(
+          parseOptionalNumber(row[columns.cachedInput[0]])
+        )
       };
-      if (hasPrice(row[4]) && hasPrice(row[6])) {
+      if (
+        columns.cacheWrites.length > 0 &&
+        hasPrice(row[columns.cacheWrites[0]])
+      ) {
+        entry.cacheCreateCostPerToken = dollarsPerMillion(
+          parseRequiredNumber(row[columns.cacheWrites[0]])
+        );
+      }
+      if (
+        columns.input.length > 1 &&
+        columns.output.length > 1 &&
+        hasPrice(row[columns.input[1]]) &&
+        hasPrice(row[columns.output[1]])
+      ) {
         const threshold = thresholdByModel.get(entry.modelId);
         if (!threshold) {
           throw new Error(
@@ -190,18 +210,55 @@ function fetchOpenAiTextTokenPricing(html) {
           );
         }
         entry.inputCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseRequiredNumber(row[4])
+          parseRequiredNumber(row[columns.input[1]])
         );
         entry.outputCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseRequiredNumber(row[6])
+          parseRequiredNumber(row[columns.output[1]])
         );
         entry.cacheReadCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseOptionalNumber(row[5])
+          parseOptionalNumber(row[columns.cachedInput[1]])
         );
+        if (
+          columns.cacheWrites.length > 1 &&
+          hasPrice(row[columns.cacheWrites[1]])
+        ) {
+          entry.cacheCreateCostPerTokenAboveThreshold = dollarsPerMillion(
+            parseRequiredNumber(row[columns.cacheWrites[1]])
+          );
+        }
         entry.tieredPricingThresholdTokens = threshold;
       }
       return entry;
     });
+}
+
+function openAiTextTokenPricingColumns(rows) {
+  const header = rows.find(
+    (row) =>
+      row[0] === "Model" && row.includes("Input") && row.includes("Output")
+  );
+  if (!header) {
+    throw new Error("Could not find OpenAI text-token pricing column headers.");
+  }
+
+  const columns = {
+    input: findColumnIndexes(header, "Input"),
+    cachedInput: findColumnIndexes(header, "Cached input"),
+    cacheWrites: findColumnIndexes(header, "Cache writes"),
+    output: findColumnIndexes(header, "Output")
+  };
+  for (const key of ["input", "cachedInput", "output"]) {
+    if (columns[key].length === 0) {
+      throw new Error(
+        `Could not find OpenAI text-token pricing ${key} column.`
+      );
+    }
+  }
+  return columns;
+}
+
+function findColumnIndexes(header, label) {
+  return header.flatMap((value, index) => (value === label ? [index] : []));
 }
 
 async function fetchGeminiPricing() {
