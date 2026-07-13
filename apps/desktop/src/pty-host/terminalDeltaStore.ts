@@ -13,8 +13,8 @@ export interface TerminalDeltaStoreOptions<T> {
   sizeOf: (delta: T) => number;
   /** Optional wire-flow accounting used for bounded replay windows. */
   replaySizeOf?: (delta: T) => number;
-  /** Classifies an exact-lookup miss as an internal replay cursor. */
-  isInternalReplayCursor?: (delta: T, sequence: number) => boolean;
+  /** Rebuilds the replayable suffix after a cursor inside one retained delta. */
+  sliceAfterInternalCursor?: (delta: T, sequence: number) => T | null;
 }
 
 export interface TerminalDeltaReplayWindow {
@@ -203,59 +203,108 @@ export class TerminalDeltaStore<T> {
       };
     }
 
-    const replayIndex = this.findReplayIndex(ring, sequence);
+    let replayIndex = this.findReplayIndex(ring, sequence);
     const first = ring.entries[ring.head];
+    let internalSuffix:
+      | { value: T; replayBytes: number }
+      | undefined;
     if (replayIndex < 0) {
       this.replayLookupMissCount += 1;
       const containingIndex = this.findContainingReplayIndex(ring, sequence);
       const containingEntry =
         containingIndex < 0 ? undefined : ring.entries[containingIndex];
+      const slicedValue = containingEntry
+        ? this.options.sliceAfterInternalCursor?.(
+            containingEntry.value,
+            sequence
+          )
+        : undefined;
       if (
         containingEntry &&
-        this.options.isInternalReplayCursor?.(
-          containingEntry.value,
-          sequence
-        ) === true
+        slicedValue !== null &&
+        slicedValue !== undefined
       ) {
+        const slicedRange = this.options.rangeOf(slicedValue);
+        if (
+          slicedRange.fromSequence !== sequence ||
+          slicedRange.sequence !== containingEntry.range.sequence
+        ) {
+          throw new Error(
+            "internal terminal delta suffix must preserve the requested and retained sequence boundaries"
+          );
+        }
+        const replayBytes =
+          this.options.replaySizeOf?.(slicedValue) ??
+          this.options.sizeOf(slicedValue);
+        if (!Number.isSafeInteger(replayBytes) || replayBytes < 0) {
+          throw new RangeError(
+            "internal terminal delta suffix replay size must be a non-negative safe integer"
+          );
+        }
         this.internalCursorMissCount += 1;
         if (this.lastInternalCursorMissBySession.get(sessionId) !== sequence) {
           this.lastInternalCursorMissBySession.set(sessionId, sequence);
           this.internalCursorMissEpisodeCount += 1;
         }
+        internalSuffix = {
+          value: slicedValue,
+          replayBytes
+        };
+        replayIndex = containingIndex + 1;
+      } else {
+        return {
+          status: "gap",
+          latestSequence: ring.latestSequence,
+          retainedFromSequence:
+            first === undefined
+              ? ring.latestSequence + 1
+              : first.range.fromSequence + 1
+        };
       }
-      return {
-        status: "gap",
-        latestSequence: ring.latestSequence,
-        retainedFromSequence:
-          first === undefined
-            ? ring.latestSequence + 1
-            : first.range.fromSequence + 1
-      };
     }
 
     const deltas: T[] = [];
     let replayBytes = 0;
-    for (let index = replayIndex; index < ring.entries.length; index += 1) {
-      const entry = ring.entries[index];
-      if (!entry) {
-        continue;
-      }
+    const appendReplayDelta = (
+      value: T,
+      valueReplayBytes: number
+    ): "continue" | "stop" => {
       if (deltas.length >= maxEvents) {
-        break;
+        return "stop";
       }
-      if (entry.replayBytes > 0 && replayBytes + entry.replayBytes > maxBytes) {
+      if (
+        valueReplayBytes > 0 &&
+        replayBytes + valueReplayBytes > maxBytes
+      ) {
         // Preserve a source delta that is larger than the requested window as
         // one standalone replay item. If ordered zero-byte mutations were
         // already selected, return them first and leave the output at the next
         // exact cursor.
         if (deltas.length > 0) {
-          break;
+          return "stop";
         }
-        deltas.push(entry.value);
+        deltas.push(value);
+        return "stop";
+      }
+      deltas.push(value);
+      replayBytes += valueReplayBytes;
+      return "continue";
+    };
+    if (
+      internalSuffix &&
+      appendReplayDelta(internalSuffix.value, internalSuffix.replayBytes) ===
+        "stop"
+    ) {
+      return { status: "ok", latestSequence: ring.latestSequence, deltas };
+    }
+    for (let index = replayIndex; index < ring.entries.length; index += 1) {
+      const entry = ring.entries[index];
+      if (!entry) {
+        continue;
+      }
+      if (appendReplayDelta(entry.value, entry.replayBytes) === "stop") {
         break;
       }
-      deltas.push(entry.value);
-      replayBytes += entry.replayBytes;
     }
     return { status: "ok", latestSequence: ring.latestSequence, deltas };
   }

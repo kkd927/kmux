@@ -82,7 +82,7 @@ import {
 import { createUtilityProcessControlTransport } from "./utilityProcessTransport";
 import {
   coalesceTerminalOutputForWire,
-  isTerminalOutputSegmentCursor,
+  sliceTerminalOutputAfterSequence,
   splitTerminalOutputText,
   terminalDeltaRetainedBytes,
   TERMINAL_OUTPUT_SEGMENT_MAX_BYTES
@@ -204,7 +204,7 @@ const deltaStore = new TerminalDeltaStore<TerminalDelta>({
   }),
   sizeOf: terminalDeltaRetainedBytes,
   replaySizeOf: (delta) => (delta.type === "output" ? delta.byteLength : 0),
-  isInternalReplayCursor: isTerminalOutputSegmentCursor
+  sliceAfterInternalCursor: sliceTerminalOutputAfterSequence
 });
 const dataPlaneSupervisorMetrics = createTerminalDataPlaneSupervisorMetrics({
   recorder: smoothnessProfile,

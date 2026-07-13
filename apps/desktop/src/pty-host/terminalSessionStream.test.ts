@@ -21,7 +21,10 @@ import {
   TerminalSessionStream,
   TERMINAL_SESSION_STREAM_MAX_OUTSTANDING_OUTPUT_BYTES
 } from "./terminalSessionStream";
-import { terminalDeltaRetainedBytes } from "./terminalWireCoalescing";
+import {
+  sliceTerminalOutputAfterSequence,
+  terminalDeltaRetainedBytes
+} from "./terminalWireCoalescing";
 import { TerminalCheckpointTooLargeError } from "./snapshotCache";
 
 const session: TerminalSessionRef = {
@@ -59,7 +62,8 @@ function createDeltaStore(
       sequence: delta.sequence
     }),
     sizeOf: terminalDeltaRetainedBytes,
-    replaySizeOf: (delta) => (delta.type === "output" ? delta.byteLength : 0)
+    replaySizeOf: (delta) => (delta.type === "output" ? delta.byteLength : 0),
+    sliceAfterInternalCursor: sliceTerminalOutputAfterSequence
   });
 }
 
@@ -373,6 +377,55 @@ describe("TerminalSessionStream", () => {
       peakAttachmentOutstandingOutputBytes: 5,
       creditBoundViolationCount: 0
     });
+  });
+
+  it("replays the retained suffix after wire coalescing exposes an internal cursor", async () => {
+    const { stream, createCheckpoint } = createHarness();
+    const port = new FakePort();
+    stream.bind("attach_1", port);
+    port.receive({
+      ...clientEnvelope(),
+      type: "attach",
+      creditBytes: 3
+    });
+    await vi.waitFor(() => expect(port.sent).toHaveLength(1));
+
+    stream.publish({
+      type: "output",
+      fromSequence: 0,
+      sequence: 2,
+      byteLength: 6,
+      segments: [
+        { sequence: 1, data: "one", byteLength: 3 },
+        { sequence: 2, data: "two", byteLength: 3 }
+      ]
+    });
+    expect(port.sent.at(-1)).toMatchObject({
+      type: "delta",
+      delta: { fromSequence: 0, sequence: 1, byteLength: 3 }
+    });
+
+    port.receive({
+      ...clientEnvelope(),
+      type: "credit",
+      acknowledgedSequence: 1,
+      bytes: 3
+    });
+    await vi.waitFor(() => expect(port.sent).toHaveLength(3));
+
+    expect(port.sent.at(-1)).toMatchObject({
+      type: "delta",
+      delta: {
+        fromSequence: 1,
+        sequence: 2,
+        byteLength: 3,
+        segments: [{ sequence: 2, data: "two" }]
+      }
+    });
+    expect(
+      port.sent.filter((message) => message.type === "resync-required")
+    ).toHaveLength(0);
+    expect(createCheckpoint).toHaveBeenCalledOnce();
   });
 
   it("does not rebuild the unsent replay while waiting for renderer credit", async () => {

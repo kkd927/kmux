@@ -295,7 +295,7 @@ describe("TerminalDeltaStore", () => {
     );
   });
 
-  it("requires resume cursors to land on a committed delta boundary", () => {
+  it("reports a gap when no retained suffix supports an internal cursor", () => {
     const store = createStore();
     store.append("session_1", delta("one-through-three", 3, 5, 0));
 
@@ -306,8 +306,8 @@ describe("TerminalDeltaStore", () => {
     });
   });
 
-  it("counts replayable internal cursors only after an exact lookup miss", () => {
-    let classifierCalls = 0;
+  it("replays a sliced suffix only after an exact cursor lookup misses", () => {
+    let slicerCalls = 0;
     const store = new TerminalDeltaStore<TestDelta>({
       maxSessionBytes: 100,
       maxSessionEvents: 10,
@@ -315,25 +315,46 @@ describe("TerminalDeltaStore", () => {
       maxTotalEvents: 10,
       rangeOf: (value) => value,
       sizeOf: (value) => value.bytes,
-      isInternalReplayCursor: (_value, sequence) => {
-        classifierCalls += 1;
-        return sequence === 1;
+      replaySizeOf: (value) => value.bytes,
+      sliceAfterInternalCursor: (value, sequence) => {
+        slicerCalls += 1;
+        return sequence === 1
+          ? {
+              ...value,
+              id: `${value.id}-after-${sequence}`,
+              fromSequence: sequence,
+              bytes: 3
+            }
+          : null;
       }
     });
     store.append("session_1", delta("one-through-three", 3, 5, 0));
+    store.append("session_1", delta("resize-after-suffix", 4, 0));
 
     expect(store.replayAfter("session_1", 0)).toMatchObject({ status: "ok" });
-    expect(classifierCalls).toBe(0);
+    expect(slicerCalls).toBe(0);
     expect(store.stats()).toMatchObject({
       replayLookupMissCount: 0,
       internalCursorMissCount: 0,
       internalCursorMissEpisodeCount: 0
     });
 
-    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "gap" });
-    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "gap" });
+    expect(store.replayAfter("session_1", 1)).toEqual({
+      status: "ok",
+      latestSequence: 4,
+      deltas: [
+        {
+          id: "one-through-three-after-1",
+          fromSequence: 1,
+          sequence: 3,
+          bytes: 3
+        },
+        delta("resize-after-suffix", 4, 0)
+      ]
+    });
+    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "ok" });
     expect(store.replayAfter("session_1", 2)).toMatchObject({ status: "gap" });
-    expect(classifierCalls).toBe(3);
+    expect(slicerCalls).toBe(3);
     expect(store.stats()).toMatchObject({
       replayLookupMissCount: 3,
       internalCursorMissCount: 2,

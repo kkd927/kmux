@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   coalesceTerminalOutputForWire,
   coalesceTerminalDeltasForWire,
-  isTerminalOutputSegmentCursor,
+  sliceTerminalOutputAfterSequence,
   splitTerminalOutputText,
   terminalDeltaRetainedBytes
 } from "./terminalWireCoalescing";
@@ -86,25 +86,38 @@ describe("coalesceTerminalOutputForWire", () => {
     expect(delta.byteLength).toBe(1);
   });
 
-  it("recognizes only retained output segment cursors", () => {
+  it("slices a retained output after an internal segment cursor", () => {
     const output: TerminalDelta = {
       type: "output",
-      fromSequence: 0,
-      sequence: 3,
-      byteLength: 8,
-      segments: [segment(1, 4), segment(3, 4)]
+      fromSequence: 10,
+      sequence: 13,
+      byteLength: 12,
+      segments: [segment(11, 3), segment(12, 4), segment(13, 5)]
     };
+    output.segments[2]!.cwd = "/workspace";
 
-    expect(isTerminalOutputSegmentCursor(output, 1)).toBe(true);
-    expect(isTerminalOutputSegmentCursor(output, 2)).toBe(false);
-    expect(isTerminalOutputSegmentCursor(output, 0)).toBe(false);
-    expect(isTerminalOutputSegmentCursor(output, 3)).toBe(false);
+    expect(sliceTerminalOutputAfterSequence(output, 12)).toEqual({
+      type: "output",
+      fromSequence: 12,
+      sequence: 13,
+      byteLength: 5,
+      segments: [
+        {
+          sequence: 13,
+          data: "xxxxx",
+          byteLength: 5,
+          cwd: "/workspace"
+        }
+      ]
+    });
+    expect(sliceTerminalOutputAfterSequence(output, 10)).toBeNull();
+    expect(sliceTerminalOutputAfterSequence(output, 13)).toBeNull();
     expect(
-      isTerminalOutputSegmentCursor(
-        { type: "resize", sequence: 3, cols: 80, rows: 24 },
-        2
+      sliceTerminalOutputAfterSequence(
+        { type: "resize", sequence: 13, cols: 80, rows: 24 },
+        12
       )
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("keeps input-correlated segments isolated for latency tracing", () => {

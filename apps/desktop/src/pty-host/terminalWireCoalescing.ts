@@ -26,16 +26,44 @@ export function terminalDeltaRetainedBytes(delta: TerminalDelta): number {
   );
 }
 
-export function isTerminalOutputSegmentCursor(
+/** Returns the retained output suffix after a wire-visible segment cursor. */
+export function sliceTerminalOutputAfterSequence(
   delta: TerminalDelta,
   sequence: number
-): boolean {
-  return (
-    delta.type === "output" &&
-    sequence > delta.fromSequence &&
-    sequence < delta.sequence &&
-    delta.segments.some((segment) => segment.sequence === sequence)
-  );
+): TerminalDelta | null {
+  const segmentIndex = terminalOutputSegmentIndexAfter(delta, sequence);
+  if (delta.type !== "output" || segmentIndex === null) {
+    return null;
+  }
+  const segments = delta.segments.slice(segmentIndex);
+  return {
+    type: "output",
+    fromSequence: sequence,
+    sequence: delta.sequence,
+    byteLength: segments.reduce(
+      (byteLength, segment) => byteLength + segment.byteLength,
+      0
+    ),
+    segments
+  };
+}
+
+function terminalOutputSegmentIndexAfter(
+  delta: TerminalDelta,
+  sequence: number
+): number | null {
+  if (
+    delta.type !== "output" ||
+    sequence <= delta.fromSequence ||
+    sequence >= delta.sequence
+  ) {
+    return null;
+  }
+  const segmentIndex = sequence - delta.fromSequence;
+  return delta.segments[segmentIndex - 1]?.sequence === sequence &&
+    delta.segments[segmentIndex]?.sequence === sequence + 1
+    ? segmentIndex
+    : null;
 }
 
 /** Splits PTY text on Unicode code-point boundaries before sequencing it. */
