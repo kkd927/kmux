@@ -2943,7 +2943,8 @@
 .externalSessionVendor {
   flex: 0 0 auto;
   color: color-mix(in srgb, var(--session-accent) 72%, var(--text-tertiary));
-  font-weight: 650;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .externalSessionRow[data-vendor="codex"] .externalSessionVendor {
