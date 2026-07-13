@@ -33,28 +33,6 @@ const MANUAL_ALIASES = {
 const MANUAL_ENTRIES = {};
 
 const VENDOR_ORDER = ["claude", "codex", "gemini"];
-const CODEX_MODEL_ORDER = [
-  "gpt-5.5",
-  "gpt-5.5-pro",
-  "gpt-5-codex",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.4-nano",
-  "gpt-5.4-pro",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-  "gpt-5.2-pro",
-  "gpt-5.2-codex",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-mini",
-  "codex-mini-latest",
-  "gpt-5.1",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-5-nano",
-  "gpt-5-pro"
-];
 
 async function main() {
   const check = process.argv.includes("--check");
@@ -167,6 +145,7 @@ export function parseOpenAiTextTokenPricingHtml(html) {
       .filter((model) => model.thresholdTokens)
       .map((model) => [model.modelId, model.thresholdTokens])
   );
+  const sharedLongContextThreshold = sharedMapValue(thresholdByModel);
   const rows = standardTextTokenTable.renderedRows;
   if (rows.length === 0) {
     throw new Error("Could not find rendered OpenAI text-token pricing rows.");
@@ -175,7 +154,7 @@ export function parseOpenAiTextTokenPricingHtml(html) {
 
   return rows
     .map((row) => [openAiTextModelInfo(row[0]).modelId, ...row.slice(1)])
-    .filter((row) => /^gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro))?$/u.test(row[0]))
+    .filter((row) => isOpenAiGptTextModelId(row[0]))
     .map((row) => {
       const entry = {
         modelId: row[0],
@@ -203,7 +182,8 @@ export function parseOpenAiTextTokenPricingHtml(html) {
         hasPrice(row[columns.input[1]]) &&
         hasPrice(row[columns.output[1]])
       ) {
-        const threshold = thresholdByModel.get(entry.modelId);
+        const threshold =
+          thresholdByModel.get(entry.modelId) ?? sharedLongContextThreshold;
         if (!threshold) {
           throw new Error(
             `Could not find OpenAI long-context threshold for ${entry.modelId}.`
@@ -259,6 +239,21 @@ function openAiTextTokenPricingColumns(rows) {
 
 function findColumnIndexes(header, label) {
   return header.flatMap((value, index) => (value === label ? [index] : []));
+}
+
+function sharedMapValue(valuesByKey) {
+  const values = [...new Set(valuesByKey.values())];
+  return values.length === 1 ? values[0] : undefined;
+}
+
+function isOpenAiGptTextModelId(modelId) {
+  if (!/^gpt-/iu.test(modelId)) {
+    return false;
+  }
+  if (!/^gpt-\d+(?:\.\d+)?(?:-[a-z0-9]+)*$/u.test(modelId)) {
+    throw new Error(`Unsupported OpenAI GPT text model ID: ${modelId}`);
+  }
+  return true;
 }
 
 async function fetchGeminiPricing() {
@@ -395,7 +390,11 @@ function mergeManualEntries(vendor, entries) {
       merged.set(entry.modelId, entry);
     }
   }
-  return [...merged.values()].sort((left, right) =>
+  return sortModelPricingEntries(vendor, [...merged.values()]);
+}
+
+export function sortModelPricingEntries(vendor, entries) {
+  return [...entries].sort((left, right) =>
     compareModelIds(vendor, left.modelId, right.modelId)
   );
 }
@@ -522,16 +521,34 @@ function assertEntries(vendor, entries) {
 
 function compareModelIds(vendor, left, right) {
   if (vendor === "codex") {
-    const leftIndex = CODEX_MODEL_ORDER.indexOf(left);
-    const rightIndex = CODEX_MODEL_ORDER.indexOf(right);
-    if (leftIndex !== -1 || rightIndex !== -1) {
-      return (
-        (leftIndex === -1 ? 999 : leftIndex) -
-        (rightIndex === -1 ? 999 : rightIndex)
-      );
-    }
+    return compareCodexModelIds(left, right);
   }
   return compareVersionLike(right, left);
+}
+
+function compareCodexModelIds(left, right) {
+  const leftVersion = codexModelVersion(left);
+  const rightVersion = codexModelVersion(right);
+  if (leftVersion && rightVersion) {
+    return (
+      rightVersion.major - leftVersion.major ||
+      rightVersion.minor - leftVersion.minor
+    );
+  }
+  if (leftVersion) {
+    return -1;
+  }
+  if (rightVersion) {
+    return 1;
+  }
+  return compareVersionLike(right, left);
+}
+
+function codexModelVersion(modelId) {
+  const match = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/u.exec(modelId);
+  return match
+    ? { major: Number(match[1]), minor: Number(match[2] ?? 0) }
+    : null;
 }
 
 function compareVersionLike(left, right) {

@@ -1509,6 +1509,14 @@
   line-height: 1.4;
 }
 
+.settingsInlinePath {
+  margin-left: 0.35em;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-family: var(--kmux-terminal-font-family);
+  font-size: 0.923rem;
+}
+
 .settingsRow > select,
 .settingsRow > input:not([type="checkbox"]) {
   justify-self: end;
@@ -1526,6 +1534,27 @@
   margin: 0;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+.settingsRowButton {
+  justify-self: end;
+  min-width: 92px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.settingsRowButton:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+.settingsRowButton:disabled {
+  cursor: default;
+  opacity: 0.65;
 }
 
 .settingsRangeControl {
@@ -2221,6 +2250,10 @@
   .settingsRow > input:not([type="checkbox"]) {
     justify-self: stretch;
     width: 100%;
+  }
+
+  .settingsRowButton {
+    justify-self: start;
   }
 
   .settingsRangeControl {

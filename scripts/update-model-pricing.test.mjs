@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseClaudePricingTable,
-  parseOpenAiTextTokenPricingHtml
+  parseOpenAiTextTokenPricingHtml,
+  sortModelPricingEntries
 } from "./update-model-pricing.mjs";
 
 const SONNET_WINDOW_ROWS = [
@@ -191,7 +192,10 @@ describe("update-model-pricing OpenAI parser", () => {
           "$1.00",
           "-",
           "$45.00"
-        ]
+        ],
+        {
+          propsRows: [["gpt-5.5 (< 272K context length)"]]
+        }
       )
     );
 
@@ -207,10 +211,111 @@ describe("update-model-pricing OpenAI parser", () => {
     });
   });
 
+  it.each(["gpt-5.6-sol", "gpt-5.7-orbit"])(
+    "parses %s without a model-suffix allowlist",
+    (modelId) => {
+      const [entry] = parseOpenAiTextTokenPricingHtml(
+        openAiTextTokenPricingPage(
+          ["Model", "Input", "Cached input", "Cache writes", "Output"],
+          [modelId, "$5.00", "$0.50", "$6.25", "$30.00"]
+        )
+      );
+
+      expect(entry).toEqual({
+        modelId,
+        inputCostPerToken: 0.000005,
+        outputCostPerToken: 0.00003,
+        cacheReadCostPerToken: 0.0000005,
+        cacheCreateCostPerToken: 0.00000625
+      });
+    }
+  );
+
+  it("applies the shared long-context threshold to new GPT variants", () => {
+    const [entry] = parseOpenAiTextTokenPricingHtml(
+      openAiTextTokenPricingPage(
+        [
+          "Model",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output"
+        ],
+        [
+          "gpt-5.6-sol",
+          "$5.00",
+          "$0.50",
+          "$6.25",
+          "$30.00",
+          "$10.00",
+          "$1.00",
+          "$12.50",
+          "$45.00"
+        ],
+        {
+          propsRows: [
+            ["gpt-5.6-sol"],
+            ["gpt-5.5 (< 272K context length)"]
+          ]
+        }
+      )
+    );
+
+    expect(entry).toEqual({
+      modelId: "gpt-5.6-sol",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.00003,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      inputCostPerTokenAboveThreshold: 0.00001,
+      outputCostPerTokenAboveThreshold: 0.000045,
+      cacheReadCostPerTokenAboveThreshold: 0.000001,
+      cacheCreateCostPerTokenAboveThreshold: 0.0000125,
+      tieredPricingThresholdTokens: 272_000
+    });
+  });
+
+  it("fails on malformed GPT model IDs instead of silently dropping them", () => {
+    expect(() =>
+      parseOpenAiTextTokenPricingHtml(
+        openAiTextTokenPricingPage(
+          ["Model", "Input", "Cached input", "Cache writes", "Output"],
+          ["gpt-5.6-sol/bad", "$5.00", "$0.50", "$6.25", "$30.00"]
+        )
+      )
+    ).toThrow(/Unsupported OpenAI GPT text model ID/u);
+  });
+
   it("fails when rendered pricing rows are unavailable", () => {
     expect(() =>
       parseOpenAiTextTokenPricingHtml(openAiPropsOnlyPricingPage())
     ).toThrow(/Could not find rendered OpenAI text-token pricing rows/u);
+  });
+});
+
+describe("update-model-pricing model ordering", () => {
+  it("sorts Codex models by version and preserves source order within a version", () => {
+    const entries = [
+      { modelId: "gpt-5.5" },
+      { modelId: "gpt-5.6-sol" },
+      { modelId: "gpt-5.6-terra" },
+      { modelId: "gpt-5.7-orbit" },
+      { modelId: "codex-mini-latest" }
+    ];
+
+    expect(
+      sortModelPricingEntries("codex", entries).map((entry) => entry.modelId)
+    ).toEqual([
+      "gpt-5.7-orbit",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.5",
+      "codex-mini-latest"
+    ]);
   });
 });
 
@@ -232,10 +337,10 @@ function table(rows) {
   </table>`;
 }
 
-function openAiTextTokenPricingPage(header, row) {
+function openAiTextTokenPricingPage(header, row, options = {}) {
   const props = JSON.stringify({
     tier: "standard",
-    rows: [["gpt-5.5 (< 272K context length)"]]
+    rows: options.propsRows ?? [[row[0]]]
   }).replace(/"/gu, "&quot;");
   return `<div component-export="TextTokenPricingTables" props="${props}">
     <table>

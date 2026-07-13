@@ -37,7 +37,13 @@ import {
   markShellInputReady
 } from "./shellInputReady";
 import { resolvePtySpawnLaunch } from "./ptySpawnLaunch";
-import { PTY_STDOUT_LOGS_ENV, logDiagnostics } from "../shared/diagnostics";
+import {
+  applyDiagnosticsLogPath,
+  DIAGNOSTICS_LOG_PATH_ENV,
+  PTY_STDOUT_LOGS_ENV,
+  logDiagnostics,
+  resolveDiagnosticsLogPath
+} from "../shared/diagnostics";
 import {
   TERMINAL_LIVE_SCROLLBACK_LINES,
   TERMINAL_RESTORE_SCROLLBACK_LINES
@@ -1291,6 +1297,21 @@ function handlePtyRequest(
   }
 
   switch (request.type) {
+    case "diagnostics.configure": {
+      const previousLogPath = resolveDiagnosticsLogPath(
+        process.env[DIAGNOSTICS_LOG_PATH_ENV]
+      );
+      const logPath = applyDiagnosticsLogPath(process.env, request.logPath);
+      logDiagnostics(
+        "pty-host.diagnostics.configuration.changed",
+        {
+          enabled: Boolean(logPath),
+          logPath
+        },
+        logPath ?? previousLogPath
+      );
+      break;
+    }
     case "spawn":
       spawnSession(request);
       break;

@@ -14,6 +14,7 @@ import type {
 import { makeId } from "@kmux/proto";
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import {
+  applyDiagnosticsLogPath,
   DIAGNOSTICS_LOG_PATH_ENV,
   PTY_STDOUT_LOGS_ENV,
   resolveDiagnosticsLogPath
@@ -245,6 +246,28 @@ export class PtyHostManager extends EventEmitter {
         }`
       } satisfies PtyEvent);
     });
+  }
+
+  configureDiagnosticsLogPath(logPath: string | undefined): boolean {
+    const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+    if (this.lastStartEnv) {
+      applyDiagnosticsLogPath(this.lastStartEnv, resolvedLogPath);
+    }
+
+    const child = this.child;
+    if (!child) {
+      return true;
+    }
+
+    try {
+      child.postMessage({
+        type: "diagnostics.configure",
+        ...(resolvedLogPath ? { logPath: resolvedLogPath } : {})
+      } satisfies PtyRequest);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   stop(): Promise<void> {
@@ -559,6 +582,7 @@ function requestSessionId(request: PtyRequest): Id | undefined {
       return request.sessionId;
     case "stream.bind":
       return request.session.sessionId;
+    case "diagnostics.configure":
     case "shutdown":
       return undefined;
   }

@@ -246,6 +246,7 @@ function createSettings(): KmuxSettings {
     notificationSound: false,
     themeMode: "dark",
     surfaceDiagnosticCaptureMode: "default",
+    diagnosticLoggingEnabled: false,
     terminalTypography: {
       preferredTextFontFamily: "JetBrains Mono",
       preferredSymbolFallbackFamilies: [],
@@ -546,6 +547,7 @@ describe("TerminalPane visibility cleanup", () => {
       ),
       showSurfaceContextMenu: vi.fn(async () => {}),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
+      reportTerminalStreamError: vi.fn(async () => {}),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
     };
     container = document.createElement("div");
@@ -815,6 +817,17 @@ describe("TerminalPane visibility cleanup", () => {
         recoverable: false
       });
       await flushMicrotasks(20);
+    });
+
+    expect(window.kmux.reportTerminalStreamError).toHaveBeenCalledWith({
+      surfaceId: "surface_1",
+      sessionId: "session_surface_1",
+      error: {
+        kind: "host-error",
+        code: "internal",
+        message: "replace stream",
+        recoverable: false
+      }
     });
 
     const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as {

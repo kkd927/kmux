@@ -6,6 +6,7 @@ import {
   type TerminalStreamAttachResult,
   type TerminalStreamGrant
 } from "../shared/terminalPort";
+import type { TerminalStreamErrorReport } from "../shared/terminalStreamDiagnostics";
 
 type IpcListener = (...args: unknown[]) => unknown;
 
@@ -140,4 +141,40 @@ describe("terminal stream preload bridge", () => {
     );
   });
 
+  it("reports structured terminal stream errors through the dedicated IPC channel", async () => {
+    const report = {
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      error: {
+        kind: "sequence-gap",
+        expectedSequence: 10,
+        receivedSequence: 12,
+        message: "expected sequence 10, received 12"
+      }
+    } satisfies TerminalStreamErrorReport;
+    mocks.invoke.mockResolvedValue(undefined);
+    const api = mocks.exposed.get("kmux") as {
+      reportTerminalStreamError(
+        report: TerminalStreamErrorReport
+      ): Promise<void>;
+    };
+
+    await expect(
+      api.reportTerminalStreamError(report)
+    ).resolves.toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "kmux:terminal-stream:report-error",
+      report
+    );
+  });
+
+  it("exposes diagnostics log clearing without accepting a renderer path", async () => {
+    mocks.invoke.mockResolvedValue(true);
+    const api = mocks.exposed.get("kmux") as {
+      clearDiagnosticLog(): Promise<boolean>;
+    };
+
+    await expect(api.clearDiagnosticLog()).resolves.toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledWith("kmux:diagnostics:clear-log");
+  });
 });

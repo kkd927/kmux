@@ -101,6 +101,7 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
       themeMode: "dark",
       shell: "/bin/zsh",
       surfaceDiagnosticCaptureMode: "default",
+      diagnosticLoggingEnabled: false,
       shortcuts: {
         "workspace.rename": "Meta+R",
         "workspace.close": "Meta+Shift+W"

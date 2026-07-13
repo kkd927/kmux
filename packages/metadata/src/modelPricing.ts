@@ -152,6 +152,42 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   ],
   codex: [
     {
+      modelId: "gpt-5.6-sol",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.00003,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      inputCostPerTokenAboveThreshold: 0.00001,
+      outputCostPerTokenAboveThreshold: 0.000045,
+      cacheReadCostPerTokenAboveThreshold: 0.000001,
+      cacheCreateCostPerTokenAboveThreshold: 0.0000125,
+      tieredPricingThresholdTokens: 272_000
+    },
+    {
+      modelId: "gpt-5.6-terra",
+      inputCostPerToken: 0.0000025,
+      outputCostPerToken: 0.000015,
+      cacheReadCostPerToken: 0.00000025,
+      cacheCreateCostPerToken: 0.000003125,
+      inputCostPerTokenAboveThreshold: 0.000005,
+      outputCostPerTokenAboveThreshold: 0.0000225,
+      cacheReadCostPerTokenAboveThreshold: 0.0000005,
+      cacheCreateCostPerTokenAboveThreshold: 0.00000625,
+      tieredPricingThresholdTokens: 272_000
+    },
+    {
+      modelId: "gpt-5.6-luna",
+      inputCostPerToken: 0.000001,
+      outputCostPerToken: 0.000006,
+      cacheReadCostPerToken: 0.0000001,
+      cacheCreateCostPerToken: 0.00000125,
+      inputCostPerTokenAboveThreshold: 0.000002,
+      outputCostPerTokenAboveThreshold: 0.000009,
+      cacheReadCostPerTokenAboveThreshold: 0.0000002,
+      cacheCreateCostPerTokenAboveThreshold: 0.0000025,
+      tieredPricingThresholdTokens: 272_000
+    },
+    {
       modelId: "gpt-5.5",
       inputCostPerToken: 0.000005,
       outputCostPerToken: 0.00003,
@@ -170,12 +206,6 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       outputCostPerTokenAboveThreshold: 0.00027,
       cacheReadCostPerTokenAboveThreshold: 0,
       tieredPricingThresholdTokens: 272_000
-    },
-    {
-      modelId: "gpt-5-codex",
-      inputCostPerToken: 0.00000125,
-      outputCostPerToken: 0.00001,
-      cacheReadCostPerToken: 0.000000125
     },
     {
       modelId: "gpt-5.4",
@@ -238,6 +268,12 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       inputCostPerToken: 0.00000025,
       outputCostPerToken: 0.000002,
       cacheReadCostPerToken: 0.000000025
+    },
+    {
+      modelId: "gpt-5-codex",
+      inputCostPerToken: 0.00000125,
+      outputCostPerToken: 0.00001,
+      cacheReadCostPerToken: 0.000000125
     },
     {
       modelId: "codex-mini-latest",

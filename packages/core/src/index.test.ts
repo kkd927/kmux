@@ -1694,6 +1694,27 @@ describe("core reducer", () => {
     expect(settings.notificationSound).toBe(true);
     expect(settings.shortcutDefaultsPlatform).toBe("darwin");
     expect(settings.surfaceDiagnosticCaptureMode).toBe("default");
+    expect(settings.diagnosticLoggingEnabled).toBe(false);
+  });
+
+  it("stores explicit diagnostic logging preferences", () => {
+    const current = createDefaultSettings();
+
+    expect(
+      mergeSettings(current, { diagnosticLoggingEnabled: true })
+        .diagnosticLoggingEnabled
+    ).toBe(true);
+    expect(
+      mergeSettings(current, { diagnosticLoggingEnabled: false })
+        .diagnosticLoggingEnabled
+    ).toBe(false);
+    expect(
+      sanitizeSettings({
+        ...current,
+        diagnosticLoggingEnabled: "yes"
+      } as unknown as ReturnType<typeof createDefaultSettings>)
+        .diagnosticLoggingEnabled
+    ).toBe(false);
   });
 
   it("stores explicit surface diagnostic capture preferences", () => {

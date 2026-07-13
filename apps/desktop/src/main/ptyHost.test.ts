@@ -228,6 +228,28 @@ describe("resolvePtyHostLaunchOptions", () => {
     );
   });
 
+  it("reconfigures diagnostics logging in a running pty-host", () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start({ PATH: "/usr/local/bin" });
+
+    expect(manager.configureDiagnosticsLogPath(" /tmp/kmux-debug.log ")).toBe(
+      true
+    );
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: "diagnostics.configure",
+      logPath: "/tmp/kmux-debug.log"
+    });
+
+    expect(manager.configureDiagnosticsLogPath(undefined)).toBe(true);
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: "diagnostics.configure"
+    });
+  });
+
   it("enables raw PTY stdout logging only when explicitly requested in development", () => {
     const fakeChild = createFakeUtilityProcess();
 

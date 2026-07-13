@@ -48,6 +48,7 @@ interface AppOverlaysProps {
   shortcutLabelStyle: ShortcutLabelStyle;
   reservedSystemChords: KeyChord[];
   surfaceDiagnosticCaptureDefaultEnabled: boolean;
+  diagnosticLogPath?: string;
   paletteOpen: boolean;
   paletteQuery: string;
   paletteSelectedIndex: number;
@@ -134,6 +135,7 @@ interface AppOverlaysProps {
   onSetTerminalThemeContrast: (value: number) => void;
   onExportTerminalThemeVariant: (variant: TerminalThemeVariant) => void;
   onOpenSettingsJson: () => Promise<void>;
+  onClearDiagnosticLog: () => Promise<boolean>;
   onCloseSettings: () => void;
   onSaveSettings: (settingsDraft: KmuxSettings) => void;
 }
@@ -380,6 +382,9 @@ export function formatRecordedShortcut(
 export function AppOverlays(props: AppOverlaysProps): JSX.Element {
   const [activeSettingsCategory, setActiveSettingsCategory] =
     useState<SettingsCategoryId>("general");
+  const [diagnosticLogClearStatus, setDiagnosticLogClearStatus] = useState<
+    "idle" | "clearing" | "cleared" | "failed"
+  >("idle");
   const [recordingShortcutCommand, setRecordingShortcutCommand] = useState<
     string | null
   >(null);
@@ -407,6 +412,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
   );
 
   useEffect(() => {
+    setDiagnosticLogClearStatus("idle");
     if (props.settingsOpen) {
       setActiveSettingsCategory("general");
     } else {
@@ -430,6 +436,17 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           }
         : current
     );
+  }
+
+  async function handleClearDiagnosticLog(): Promise<void> {
+    setDiagnosticLogClearStatus("clearing");
+    try {
+      setDiagnosticLogClearStatus(
+        (await props.onClearDiagnosticLog()) ? "cleared" : "failed"
+      );
+    } catch {
+      setDiagnosticLogClearStatus("failed");
+    }
   }
 
   function handleShortcutRecorderKeyDown(
@@ -1003,6 +1020,60 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                             });
                           }}
                         />
+                      </div>
+                      <div className={styles.settingsRow}>
+                        <span className={styles.settingsRowCopy}>
+                          <span className={styles.settingsRowTitle}>
+                            Enable logging
+                          </span>
+                          <span className={styles.settingsRowDescription}>
+                            Writes structured app and terminal diagnostics to
+                            <code className={styles.settingsInlinePath}>
+                              {props.diagnosticLogPath ?? "kmux-debug.log"}
+                            </code>
+                            . Logs may include paths, session metadata, and
+                            terminal notification text.
+                          </span>
+                        </span>
+                        <input
+                          aria-label="Enable logging"
+                          type="checkbox"
+                          checked={props.settingsDraft.diagnosticLoggingEnabled}
+                          onChange={(event) => {
+                            updateSettingsDraft(props.setSettingsDraft, {
+                              diagnosticLoggingEnabled:
+                                event.currentTarget.checked
+                            });
+                          }}
+                        />
+                      </div>
+                      <div className={styles.settingsRow}>
+                        <span className={styles.settingsRowCopy}>
+                          <span className={styles.settingsRowTitle}>
+                            Stored diagnostic log
+                          </span>
+                          <span className={styles.settingsRowDescription}>
+                            Removes the current kmux-debug.log without changing
+                            the logging setting.
+                            <span aria-live="polite">
+                              {diagnosticLogClearStatus === "cleared"
+                                ? " Log cleared."
+                                : diagnosticLogClearStatus === "failed"
+                                  ? " Could not clear the log."
+                                  : ""}
+                            </span>
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.settingsRowButton}
+                          disabled={diagnosticLogClearStatus === "clearing"}
+                          onClick={() => void handleClearDiagnosticLog()}
+                        >
+                          {diagnosticLogClearStatus === "clearing"
+                            ? "Clearing…"
+                            : "Clear log"}
+                        </button>
                       </div>
                     </div>
                   </div>

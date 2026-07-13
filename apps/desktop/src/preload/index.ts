@@ -9,6 +9,7 @@ import {
   type TerminalStreamGrant
 } from "../shared/terminalPort";
 import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
+import type { TerminalStreamErrorReport } from "../shared/terminalStreamDiagnostics";
 import type {
   SurfaceContextAction,
   SurfaceContextMenuContext
@@ -123,6 +124,9 @@ const api = {
       expectedSessionId
     );
   },
+  reportTerminalStreamError(report: TerminalStreamErrorReport): Promise<void> {
+    return ipcRenderer.invoke("kmux:terminal-stream:report-error", report);
+  },
   sendText(surfaceId: string, text: string): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:text", surfaceId, text);
   },
@@ -195,6 +199,9 @@ const api = {
   },
   openSettingsJson(): Promise<void> {
     return ipcRenderer.invoke("kmux:settings-json:open");
+  },
+  clearDiagnosticLog(): Promise<boolean> {
+    return ipcRenderer.invoke("kmux:diagnostics:clear-log");
   },
   readClipboardText(): Promise<string> {
     return ipcRenderer.invoke("kmux:clipboard:read-text");

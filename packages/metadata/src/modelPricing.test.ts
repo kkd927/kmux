@@ -68,22 +68,24 @@ describe("model pricing", () => {
   it("uses exact pricing for the latest OpenAI text-token Codex model entries", () => {
     const estimate = estimateUsageComponentCosts({
       vendor: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       inputTokens: 2_000,
       outputTokens: 400,
       thinkingTokens: 100,
       cacheReadTokens: 800,
-      cacheWriteTokens: 0,
+      cacheWriteTokens: 200,
       cacheWriteTokensKnown: true
     });
 
     expect(estimate).toEqual(
       expect.objectContaining({
-        modelId: "gpt-5.5",
+        modelId: "gpt-5.6-sol",
         inputCostUsd: expect.closeTo(0.01, 8),
         outputCostUsd: expect.closeTo(0.012, 8),
         thinkingCostUsd: expect.closeTo(0.003, 8),
-        cacheReadCostUsd: expect.closeTo(0.0004, 8)
+        cacheReadCostUsd: expect.closeTo(0.0004, 8),
+        cacheWriteCostUsd: expect.closeTo(0.00125, 8),
+        cacheWriteCostKnown: true
       })
     );
   });

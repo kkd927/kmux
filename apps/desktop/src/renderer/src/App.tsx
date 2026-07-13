@@ -1101,6 +1101,7 @@ export function App(): JSX.Element {
         surfaceDiagnosticCaptureDefaultEnabled={
           platformDescriptor.debugging.surfaceDiagnosticCaptureDefaultEnabled
         }
+        diagnosticLogPath={platformDescriptor.debugging.diagnosticLogPath}
         paletteOpen={paletteOpen}
         paletteQuery={paletteQuery}
         paletteSelectedIndex={paletteSelectedIndex}
@@ -1181,6 +1182,7 @@ export function App(): JSX.Element {
           void handleExportTerminalThemeVariant(variant)
         }
         onOpenSettingsJson={() => window.kmux.openSettingsJson()}
+        onClearDiagnosticLog={() => window.kmux.clearDiagnosticLog()}
         onCloseSettings={closeSettingsModal}
         onSaveSettings={(draft) => {
           const settingsPatch = {

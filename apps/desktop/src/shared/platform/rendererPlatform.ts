@@ -15,6 +15,7 @@ export interface RendererPlatformDescriptor {
   };
   debugging: {
     surfaceDiagnosticCaptureDefaultEnabled: boolean;
+    diagnosticLogPath?: string;
   };
 }
 

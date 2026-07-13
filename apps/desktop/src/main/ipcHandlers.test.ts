@@ -22,6 +22,7 @@ import type {
   TerminalStreamAttachResult,
   TerminalStreamGrant
 } from "../shared/terminalPort";
+import type { TerminalStreamErrorReport } from "../shared/terminalStreamDiagnostics";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>()
@@ -66,6 +67,7 @@ function registerTestHandlers(options: {
     surfaceId: string,
     expectedSessionId: string
   ) => TerminalStreamAttachResult;
+  reportTerminalStreamError?: (report: TerminalStreamErrorReport) => void;
   openExternalUrl?: (url: string) => Promise<void>;
   openTerminalFilePath?: (
     surfaceId: string,
@@ -77,6 +79,7 @@ function registerTestHandlers(options: {
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
   isSurfaceDiagnosticsEnabled?: () => boolean;
+  clearDiagnosticLog?: () => boolean;
   captureSurfaceDiagnostics?: (
     surfaceId: string
   ) => Promise<SurfaceCapturePayload>;
@@ -102,6 +105,7 @@ function registerTestHandlers(options: {
     getUpdaterState: vi.fn(),
     dispatchAppAction: vi.fn(),
     attachTerminalStream: options.attachTerminalStream ?? vi.fn(),
+    reportTerminalStreamError: options.reportTerminalStreamError ?? vi.fn(),
     snapshotSurface: vi.fn(),
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
@@ -115,6 +119,7 @@ function registerTestHandlers(options: {
     importTerminalThemePalette: vi.fn(),
     exportTerminalThemePalette: vi.fn(),
     openSettingsJson: vi.fn(),
+    clearDiagnosticLog: options.clearDiagnosticLog ?? vi.fn(() => true),
     isSurfaceDiagnosticsEnabled:
       options.isSurfaceDiagnosticsEnabled ?? vi.fn(() => false),
     captureSurfaceDiagnostics:
@@ -237,6 +242,60 @@ describe("ipc handlers", () => {
     );
   });
 
+  it("forwards only validated terminal stream error reports", () => {
+    const reportTerminalStreamError = vi.fn();
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      reportTerminalStreamError
+    });
+    const handler = handlers.get("kmux:terminal-stream:report-error");
+
+    expect(
+      handler?.(
+        {},
+        {
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          error: {
+            kind: "host-error",
+            code: "runtime-lost",
+            message: "PTY runtime disconnected",
+            recoverable: true
+          }
+        }
+      )
+    ).toBeUndefined();
+    expect(reportTerminalStreamError).toHaveBeenCalledWith({
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      error: {
+        kind: "host-error",
+        code: "runtime-lost",
+        message: "PTY runtime disconnected",
+        recoverable: true
+      }
+    });
+
+    expect(() =>
+      handler?.(
+        {},
+        {
+          surfaceId: "surface_1",
+          sessionId: "session_1",
+          error: { kind: "unknown", message: "bad payload" }
+        }
+      )
+    ).toThrow("Invalid terminal stream error report");
+    expect(reportTerminalStreamError).toHaveBeenCalledTimes(1);
+  });
+
   it("registers external session list and resume handlers", async () => {
     const snapshot: ExternalAgentSessionsSnapshot = {
       updatedAt: "2026-04-26T12:00:00.000Z",
@@ -338,6 +397,26 @@ describe("ipc handlers", () => {
     expect(clipboard.writeText).toHaveBeenCalledWith("new text");
     expect(clipboard.readImages).toHaveBeenCalledTimes(1);
     expect(clipboard.hasPasteableContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the fixed diagnostics log through a pathless IPC action", async () => {
+    const clearDiagnosticLog = vi.fn(() => true);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-05-27T12:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      clearDiagnosticLog
+    });
+
+    await expect(
+      Promise.resolve(handlers.get("kmux:diagnostics:clear-log")?.({}))
+    ).resolves.toBe(true);
+    expect(clearDiagnosticLog).toHaveBeenCalledOnce();
   });
 
   it("captures surface diagnostics only when enabled", async () => {

@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  truncateSync,
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 import { describe, expect, it } from "vitest";
 
+import { MAX_DIAGNOSTICS_LOG_BYTES } from "../shared/diagnostics";
 import {
   prepareShellIntegrationLaunch,
   writeAgentWrapperBinaries
@@ -219,6 +221,12 @@ describe("shell integration launch preparation", () => {
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "path.isAbsolute(logPath)"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      "fs.fchmodSync(logFile, 0o600)"
+    );
+    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
+      `const maxLogBytes = ${MAX_DIAGNOSTICS_LOG_BYTES}`
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'TERM_SESSION_ID="${TERM_SESSION_ID:-}"'
@@ -958,6 +966,70 @@ describe("shell integration launch preparation", () => {
           "tui.notification_method=bel",
           "status"
         ]);
+      } finally {
+        rmSync(fakeCodexDir, { recursive: true, force: true });
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_WRAPPER_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "bounds and secures diagnostics written by the Codex wrapper",
+    async () => {
+      const prepared = prepareShellIntegrationLaunch(
+        "/bin/zsh",
+        ["-l"],
+        {
+          HOME: "/Users/test"
+        },
+        { enabled: true }
+      );
+
+      const wrapperDir = prepared.env.ZDOTDIR;
+      expect(wrapperDir).toBeTruthy();
+      if (!wrapperDir) {
+        throw new Error("expected ZDOTDIR wrapper to be set");
+      }
+
+      const wrapperCodex = join(wrapperDir, "bin", "codex");
+      const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
+      const fakeCodex = join(fakeCodexDir, "codex");
+      const logPath = join(fakeCodexDir, "kmux-debug.log");
+      const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
+
+      writeFileSync(fakeCodex, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(fakeCodex, 0o755);
+      writeFileSync(logPath, "stale-wrapper-record\n", { mode: 0o644 });
+      truncateSync(logPath, MAX_DIAGNOSTICS_LOG_BYTES);
+      chmodSync(logPath, 0o644);
+
+      try {
+        const child = spawn(wrapperCodex, ["status"], {
+          env: {
+            ...process.env,
+            HOME: fakeHome,
+            PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
+            KMUX_DEBUG_LOG_PATH: logPath,
+            KMUX_NODE_PATH: process.execPath,
+            TERM_PROGRAM: "kmux"
+          },
+          stdio: ["ignore", "pipe", "pipe"]
+        });
+
+        let stderr = "";
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString("utf8");
+        });
+        const [exitCode] = (await once(child, "close")) as [number | null];
+
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe("");
+        const contents = readFileSync(logPath, "utf8");
+        expect(contents).toContain('"scope":"codex.wrapper.invoke"');
+        expect(contents).not.toContain("stale-wrapper-record");
+        expect(statSync(logPath).size).toBeLessThan(MAX_DIAGNOSTICS_LOG_BYTES);
+        expect(statSync(logPath).mode & 0o777).toBe(0o600);
       } finally {
         rmSync(fakeCodexDir, { recursive: true, force: true });
         rmSync(fakeHome, { recursive: true, force: true });

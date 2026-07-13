@@ -42,6 +42,10 @@ import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 import type { SurfaceContextMenuContext } from "../shared/surfaceContextMenu";
 import type { TerminalStreamAttachResult } from "../shared/terminalPort";
+import {
+  normalizeTerminalStreamErrorReport,
+  type TerminalStreamErrorReport
+} from "../shared/terminalStreamDiagnostics";
 
 interface IpcHandlersOptions {
   getPlatformDescriptor: () => RendererPlatformDescriptor;
@@ -61,6 +65,7 @@ interface IpcHandlersOptions {
     surfaceId: Id,
     expectedSessionId: Id
   ) => TerminalStreamAttachResult;
+  reportTerminalStreamError: (report: TerminalStreamErrorReport) => void;
   snapshotSurface: (
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
@@ -93,6 +98,7 @@ interface IpcHandlersOptions {
     palette: TerminalColorPalette
   ) => Promise<boolean>;
   openSettingsJson: () => Promise<void>;
+  clearDiagnosticLog: () => boolean;
   isSurfaceDiagnosticsEnabled: () => boolean;
   captureSurfaceDiagnostics: (surfaceId: Id) => Promise<SurfaceCapturePayload>;
   prepareWorktreeConversion: (
@@ -181,6 +187,16 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       options.attachTerminalStream(event, surfaceId, expectedSessionId)
   );
   ipcMain.handle(
+    "kmux:terminal-stream:report-error",
+    (_event, report: unknown) => {
+      const normalized = normalizeTerminalStreamErrorReport(report);
+      if (!normalized) {
+        throw new Error("Invalid terminal stream error report");
+      }
+      options.reportTerminalStreamError(normalized);
+    }
+  );
+  ipcMain.handle(
     "kmux:snapshot-surface",
     async (
       _event,
@@ -235,6 +251,9 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     }
   );
   ipcMain.handle("kmux:settings-json:open", () => options.openSettingsJson());
+  ipcMain.handle("kmux:diagnostics:clear-log", () =>
+    options.clearDiagnosticLog()
+  );
   ipcMain.handle(
     "kmux:surface-diagnostics:capture",
     async (_event, surfaceId: Id): Promise<SurfaceCapturePayload> => {

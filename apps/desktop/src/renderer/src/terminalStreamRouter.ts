@@ -25,6 +25,7 @@ import {
   RendererTerminalWriteArbiter,
   type RendererTerminalWriteArbiterOptions
 } from "./rendererTerminalWriteArbiter";
+import type { TerminalStreamError } from "../../shared/terminalStreamDiagnostics";
 
 type MaybePromise<T> = T | Promise<T>;
 const MAX_PENDING_RENDER_METRICS = 2_048;
@@ -74,27 +75,7 @@ export interface TerminalCheckpointApplyResult {
   swapGeneration?: number;
 }
 
-export type TerminalStreamRouterError =
-  | {
-      kind: "invalid-message";
-      message: string;
-    }
-  | {
-      kind: "sequence-gap";
-      expectedSequence: number;
-      receivedSequence: number;
-      message: string;
-    }
-  | {
-      kind: "host-error";
-      code: Extract<TerminalDataPlaneHostMessage, { type: "error" }>["code"];
-      message: string;
-      recoverable: boolean;
-    }
-  | {
-      kind: "sink-error" | "port-error";
-      message: string;
-    };
+export type TerminalStreamRouterError = TerminalStreamError;
 
 /**
  * The sink owns the xterm widget. Completion callbacks must run only after

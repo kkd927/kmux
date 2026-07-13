@@ -65,6 +65,7 @@ export interface PtySessionSpec {
 export type PtyRequest =
   | DesktopPtySpawnRequest
   | { type: "shutdown"; requestId: Id }
+  | { type: "diagnostics.configure"; logPath?: string }
   | {
       type: "stream.bind";
       attachId: Id;

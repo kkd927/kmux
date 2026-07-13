@@ -2429,6 +2429,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           sessionId,
           error
         });
+        void window.kmux
+          .reportTerminalStreamError({ surfaceId, sessionId, error })
+          .catch((reportingError) => {
+            console.warn("Terminal stream diagnostics report failed", {
+              surfaceId,
+              sessionId,
+              error: reportingError
+            });
+          });
         if (mounted) {
           showAttachmentStatus("Terminal stream interrupted");
         }

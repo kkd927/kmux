@@ -1,8 +1,20 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  writeSync
+} from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 
 export const DIAGNOSTICS_LOG_PATH_ENV = "KMUX_DEBUG_LOG_PATH";
 export const PTY_STDOUT_LOGS_ENV = "KMUX_PTY_STDOUT_LOGS";
+export const DEFAULT_DIAGNOSTICS_LOG_FILE_NAME = "kmux-debug.log";
+export const MAX_DIAGNOSTICS_LOG_BYTES = 20 * 1024 * 1024;
 
 interface DiagnosticsFormatOptions {
   now?: Date;
@@ -44,17 +56,94 @@ export function logDiagnostics(
     return false;
   }
 
+  let fileDescriptor: number | undefined;
+
   try {
-    mkdirSync(dirname(resolvedLogPath), { recursive: true });
-    appendFileSync(
-      resolvedLogPath,
-      formatDiagnosticsRecord(scope, details),
-      "utf8"
-    );
+    const formattedRecord = formatDiagnosticsRecord(scope, details);
+    const originalRecordBytes = Buffer.byteLength(formattedRecord);
+    const record =
+      originalRecordBytes <= MAX_DIAGNOSTICS_LOG_BYTES
+        ? formattedRecord
+        : formatDiagnosticsRecord(scope, {
+            diagnosticRecordTruncated: true,
+            originalRecordBytes
+          });
+    const recordBytes = Buffer.byteLength(record);
+    mkdirSync(dirname(resolvedLogPath), { recursive: true, mode: 0o700 });
+    fileDescriptor = openSync(resolvedLogPath, "a", 0o600);
+    fchmodSync(fileDescriptor, 0o600);
+    if (
+      fstatSync(fileDescriptor).size + recordBytes >
+      MAX_DIAGNOSTICS_LOG_BYTES
+    ) {
+      ftruncateSync(fileDescriptor, 0);
+    }
+    writeSync(fileDescriptor, record, null, "utf8");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fileDescriptor !== undefined) {
+      try {
+        closeSync(fileDescriptor);
+      } catch {
+        // Diagnostics must never interfere with app behavior.
+      }
+    }
+  }
+}
+
+export function prepareExistingDiagnosticsLogFile(
+  logPath: string | undefined
+): boolean {
+  const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+  if (!resolvedLogPath) {
+    return false;
+  }
+
+  let fileDescriptor: number | undefined;
+  try {
+    chmodSync(resolvedLogPath, 0o600);
+    fileDescriptor = openSync(resolvedLogPath, "r+");
+    if (fstatSync(fileDescriptor).size > MAX_DIAGNOSTICS_LOG_BYTES) {
+      ftruncateSync(fileDescriptor, 0);
+    }
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  } finally {
+    if (fileDescriptor !== undefined) {
+      try {
+        closeSync(fileDescriptor);
+      } catch {
+        // Diagnostics maintenance must never interfere with app startup.
+      }
+    }
+  }
+}
+
+export function clearDiagnosticsLog(logPath: string | undefined): boolean {
+  const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+  if (!resolvedLogPath) {
+    return false;
+  }
+
+  try {
+    rmSync(resolvedLogPath, { force: true });
     return true;
   } catch {
     return false;
   }
+}
+
+export function clearDiagnosticsLogForEnableTransition(options: {
+  previouslyEnabled: boolean;
+  nextEnabled: boolean;
+  logPath: string;
+}): boolean | undefined {
+  return options.nextEnabled && !options.previouslyEnabled
+    ? clearDiagnosticsLog(options.logPath)
+    : undefined;
 }
 
 export function resolveDiagnosticsLogPath(
@@ -62,4 +151,26 @@ export function resolveDiagnosticsLogPath(
 ): string | undefined {
   const normalized = logPath?.trim();
   return normalized && isAbsolute(normalized) ? normalized : undefined;
+}
+
+export function resolveEffectiveDiagnosticsLogPath(options: {
+  settingsEnabled: boolean;
+  settingsLogPath: string;
+}): string | undefined {
+  return options.settingsEnabled
+    ? resolveDiagnosticsLogPath(options.settingsLogPath)
+    : undefined;
+}
+
+export function applyDiagnosticsLogPath(
+  env: NodeJS.ProcessEnv,
+  logPath: string | undefined
+): string | undefined {
+  const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+  if (resolvedLogPath) {
+    env[DIAGNOSTICS_LOG_PATH_ENV] = resolvedLogPath;
+  } else {
+    delete env[DIAGNOSTICS_LOG_PATH_ENV];
+  }
+  return resolvedLogPath;
 }

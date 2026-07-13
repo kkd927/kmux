@@ -586,6 +586,7 @@ export interface KmuxSettings {
   shell?: string;
   shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
   surfaceDiagnosticCaptureMode: SurfaceDiagnosticCaptureMode;
+  diagnosticLoggingEnabled: boolean;
   shortcuts: Record<string, string>;
   terminalTypography: TerminalTypographySettings;
   terminalThemes: TerminalThemeSettings;

@@ -11,6 +11,7 @@ import { basename, join } from "node:path";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 
+import { MAX_DIAGNOSTICS_LOG_BYTES } from "../shared/diagnostics";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
 
 export const KMUX_ZSH_WRAPPER_DIR_ENV = "KMUX_ZSH_WRAPPER_DIR";
@@ -1270,12 +1271,33 @@ function buildCodexWrapperScript(): string {
     "  loggerStdinIsTTY: Boolean(process.stdin.isTTY),",
     "};",
     "",
-    "fs.mkdirSync(path.dirname(logPath), { recursive: true });",
-    "fs.appendFileSync(",
-    "  logPath,",
-    "  `${new Date().toISOString()} pid=${process.env.KMUX_DEBUG_LOG_PID || process.pid} ${JSON.stringify(record)}\\n`,",
-    "  'utf8'",
-    ");",
+    "const serializeRecord = (value) =>",
+    "  `${new Date().toISOString()} pid=${process.env.KMUX_DEBUG_LOG_PID || process.pid} ${JSON.stringify(value)}\\n`;",
+    "const formattedRecord = serializeRecord(record);",
+    `const maxLogBytes = ${MAX_DIAGNOSTICS_LOG_BYTES};`,
+    "const originalRecordBytes = Buffer.byteLength(formattedRecord);",
+    "const logRecord = originalRecordBytes <= maxLogBytes",
+    "  ? formattedRecord",
+    "  : serializeRecord({",
+    "      scope: record.scope,",
+    "      diagnosticRecordTruncated: true,",
+    "      originalRecordBytes,",
+    "    });",
+    "",
+    "fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });",
+    "const logFile = fs.openSync(logPath, 'a', 0o600);",
+    "try {",
+    "  fs.fchmodSync(logFile, 0o600);",
+    "  if (",
+    "    fs.fstatSync(logFile).size + Buffer.byteLength(logRecord) >",
+    "    maxLogBytes",
+    "  ) {",
+    "    fs.ftruncateSync(logFile, 0);",
+    "  }",
+    "  fs.writeSync(logFile, logRecord, null, 'utf8');",
+    "} finally {",
+    "  fs.closeSync(logFile);",
+    "}",
     "EOF",
     "}",
     "",

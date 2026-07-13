@@ -349,6 +349,7 @@ export function createDefaultSettings(
     shell: shellPath,
     shortcutDefaultsPlatform,
     surfaceDiagnosticCaptureMode: "default",
+    diagnosticLoggingEnabled: false,
     shortcuts: buildDefaultShortcuts(shortcutDefaultsPlatform),
     terminalTypography: createDefaultTerminalTypographySettings(),
     terminalThemes: createDefaultTerminalThemeSettings()
@@ -459,6 +460,10 @@ export function mergeSettings(
       nextPatch.surfaceDiagnosticCaptureMode ??
         current.surfaceDiagnosticCaptureMode
     ),
+    diagnosticLoggingEnabled:
+      typeof nextPatch.diagnosticLoggingEnabled === "boolean"
+        ? nextPatch.diagnosticLoggingEnabled
+        : current.diagnosticLoggingEnabled,
     terminalTypography: sanitizeTerminalTypographySettings(
       nextPatch.terminalTypography,
       patch,

@@ -80,9 +80,14 @@ import {
   importItermcolorsPalette
 } from "./itermcolors";
 import {
+  applyDiagnosticsLogPath,
+  clearDiagnosticsLog,
+  clearDiagnosticsLogForEnableTransition,
+  DEFAULT_DIAGNOSTICS_LOG_FILE_NAME,
   DIAGNOSTICS_LOG_PATH_ENV,
   logDiagnostics,
-  resolveDiagnosticsLogPath
+  prepareExistingDiagnosticsLogFile,
+  resolveEffectiveDiagnosticsLogPath
 } from "../shared/diagnostics";
 import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
 import {
@@ -153,12 +158,31 @@ async function bootstrap(): Promise<void> {
     startupWmClass: LINUX_STARTUP_WM_CLASS,
     ...(notificationIconPath ? { iconPath: notificationIconPath } : {})
   });
+  const settingsStore = createSettingsStore(paths.settingsPath);
+  const savedSettings = settingsStore.load();
+  const settingsDiagnosticsLogPath = join(
+    paths.diagnosticsRoot,
+    DEFAULT_DIAGNOSTICS_LOG_FILE_NAME
+  );
+  const existingDiagnosticsLogPrepared = prepareExistingDiagnosticsLogFile(
+    settingsDiagnosticsLogPath
+  );
+  let diagnosticLoggingSettingEnabled =
+    savedSettings?.diagnosticLoggingEnabled ?? false;
+  let diagnosticsLogPath = resolveEffectiveDiagnosticsLogPath({
+    settingsEnabled: diagnosticLoggingSettingEnabled,
+    settingsLogPath: settingsDiagnosticsLogPath
+  });
+  applyDiagnosticsLogPath(process.env, diagnosticsLogPath);
   const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
     version: app.getVersion(),
     platform: platformRuntime.platformId,
-    diagnosticsLogPath: process.env[DIAGNOSTICS_LOG_PATH_ENV],
+    diagnosticsLogPath,
+    diagnosticLoggingSettingEnabled,
+    diagnosticLoggingSource: diagnosticsLogPath ? "settings" : "disabled",
+    existingDiagnosticsLogPrepared,
     smoothnessProfileEnabled: smoothnessProfile.enabled,
     smoothnessProfileLogPath: process.env[KMUX_PROFILE_LOG_PATH_ENV]
   });
@@ -177,13 +201,11 @@ async function bootstrap(): Promise<void> {
   });
   const snapshotStore = createSnapshotStore(paths.statePath);
   const windowStateStore = createWindowStateStore(paths.windowStatePath);
-  const settingsStore = createSettingsStore(paths.settingsPath);
   const usageHistoryStore = createUsageHistoryStore(
     paths.usageHistoryPath,
     USAGE_PRICING_REVISION,
     USAGE_AGGREGATION_REVISION
   );
-  const savedSettings = settingsStore.load();
   const shellWrapperRuntime = createShellWrapperRuntime({
     platform: platformRuntime.shell.platform,
     tmpDir: join(paths.cacheDir, "shell-wrappers")
@@ -207,14 +229,7 @@ async function bootstrap(): Promise<void> {
     homeDir: userHomeDir,
     env: resolvedShellEnv.baseEnv
   });
-  const diagnosticsLogPath = resolveDiagnosticsLogPath(
-    process.env[DIAGNOSTICS_LOG_PATH_ENV]
-  );
-  if (diagnosticsLogPath) {
-    resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV] = diagnosticsLogPath;
-  } else {
-    delete resolvedShellEnv.baseEnv[DIAGNOSTICS_LOG_PATH_ENV];
-  }
+  applyDiagnosticsLogPath(resolvedShellEnv.baseEnv, diagnosticsLogPath);
   const smoothnessProfileLogPath =
     process.env[KMUX_PROFILE_LOG_PATH_ENV]?.trim();
   if (isSmoothnessProfileLogPathAllowed(smoothnessProfileLogPath)) {
@@ -223,6 +238,35 @@ async function bootstrap(): Promise<void> {
   } else {
     delete resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV];
   }
+  const configureDiagnosticLogging = (settingsEnabled: boolean): void => {
+    const previousLogPath = diagnosticsLogPath;
+    const previousLogCleared = clearDiagnosticsLogForEnableTransition({
+      previouslyEnabled: diagnosticLoggingSettingEnabled,
+      nextEnabled: settingsEnabled,
+      logPath: settingsDiagnosticsLogPath
+    });
+    diagnosticLoggingSettingEnabled = settingsEnabled;
+    diagnosticsLogPath = resolveEffectiveDiagnosticsLogPath({
+      settingsEnabled,
+      settingsLogPath: settingsDiagnosticsLogPath
+    });
+    applyDiagnosticsLogPath(process.env, diagnosticsLogPath);
+    applyDiagnosticsLogPath(resolvedShellEnv.baseEnv, diagnosticsLogPath);
+    const ptyHostConfigured =
+      ptyHost?.configureDiagnosticsLogPath(diagnosticsLogPath) ?? true;
+    logDiagnostics(
+      "main.diagnostics.configuration.changed",
+      {
+        settingsEnabled,
+        effectiveEnabled: Boolean(diagnosticsLogPath),
+        source: diagnosticsLogPath ? "settings" : "disabled",
+        logPath: diagnosticsLogPath,
+        previousLogCleared,
+        ptyHostConfigured
+      },
+      diagnosticsLogPath ?? previousLogPath
+    );
+  };
   writeAgentHookHelpers(paths.agentHookBinDir);
   writeAgentWrapperBinaries(paths.agentWrapperBinDir);
   const claudeIntegrationResult = ensureClaudeHooksInstalled(userHomeDir, {
@@ -272,7 +316,13 @@ async function bootstrap(): Promise<void> {
     defaultShellPath: resolvedShellEnv.shellPath,
     shortcutDefaultsPlatform: platformRuntime.platformId,
     refreshMetadata: (...args) => metadataRuntime.refreshMetadata(...args),
-    onDidDispatchAppAction: (action) => {
+    onDidDispatchAppAction: (action, state) => {
+      const settings = state.settings;
+      if (
+        settings.diagnosticLoggingEnabled !== diagnosticLoggingSettingEnabled
+      ) {
+        configureDiagnosticLogging(settings.diagnosticLoggingEnabled);
+      }
       metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
     },
@@ -446,7 +496,13 @@ async function bootstrap(): Promise<void> {
   });
 
   registerIpcHandlers({
-    getPlatformDescriptor: () => platformRuntime.rendererDescriptor,
+    getPlatformDescriptor: () => ({
+      ...platformRuntime.rendererDescriptor,
+      debugging: {
+        ...platformRuntime.rendererDescriptor.debugging,
+        diagnosticLogPath: settingsDiagnosticsLogPath
+      }
+    }),
     getShellState: runtime.getShellState,
     getWorkspaceContextView: () => {
       const shellState = runtime.getShellState();
@@ -462,6 +518,14 @@ async function bootstrap(): Promise<void> {
     getUpdaterState: () => updater.getState(),
     dispatchAppAction: runtime.dispatchAppAction,
     attachTerminalStream: terminalDataPlane.attach,
+    reportTerminalStreamError: ({ surfaceId, sessionId, error }) => {
+      logDiagnostics("main.terminal-stream.error", {
+        source: "renderer",
+        surfaceId,
+        sessionId,
+        ...error
+      });
+    },
     snapshotSurface: terminalBridge.snapshotSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,
@@ -517,6 +581,7 @@ async function bootstrap(): Promise<void> {
         platformRuntime.rendererDescriptor.debugging
           .surfaceDiagnosticCaptureDefaultEnabled
       ),
+    clearDiagnosticLog: () => clearDiagnosticsLog(settingsDiagnosticsLogPath),
     captureSurfaceDiagnostics,
     prepareWorktreeConversion: worktreeRuntime.prepareConversion,
     createWorktreeWorkspace: worktreeRuntime.createWorkspace,

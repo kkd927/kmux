@@ -1,6 +1,7 @@
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
+import type { TerminalStreamErrorReport } from "../../shared/terminalStreamDiagnostics";
 import type {
   SurfaceContextAction,
   SurfaceContextMenuContext
@@ -56,6 +57,9 @@ declare global {
         surfaceId: string,
         expectedSessionId: string
       ): Promise<TerminalStreamAttachResult>;
+      reportTerminalStreamError(
+        report: TerminalStreamErrorReport
+      ): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
       openExternalUrl(url: string): Promise<void>;
@@ -86,6 +90,7 @@ declare global {
         palette: TerminalColorPalette
       ): Promise<boolean>;
       openSettingsJson(): Promise<void>;
+      clearDiagnosticLog(): Promise<boolean>;
       readClipboardText(): Promise<string>;
       writeClipboardText(text: string): Promise<void>;
       windowControl(
