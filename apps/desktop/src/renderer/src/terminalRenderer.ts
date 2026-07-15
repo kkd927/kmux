@@ -4,12 +4,20 @@ import type {
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult
 } from "@kmux/proto";
+import type {
+  TerminalImeCompositionPhase,
+  TerminalImeNavigationKey
+} from "../../terminalKeyboard";
 
 export {
   resolveTerminalEnterRewrite,
+  resolveTerminalImeKeyAction,
+  resolveTerminalImeNavigationSequence,
   shouldDeferTerminalShortcutToIme,
-  shouldSuppressXtermDuringIme,
   type TerminalEnterRewrite,
+  type TerminalImeCompositionPhase,
+  type TerminalImeKeyAction,
+  type TerminalImeNavigationKey,
   type TerminalKeyboardEventLike
 } from "../../terminalKeyboard";
 
@@ -27,12 +35,23 @@ export interface TerminalEnterRewriteResult {
   clearPending: boolean;
 }
 
-export interface TerminalImeDuplicateCommitGuard {
+export interface TerminalImeInputController {
   compositionStart(textareaValue: string): void;
   compositionUpdate(text: string): void;
-  compositionEnd(textareaValue: string, fallbackText?: string): string;
+  compositionEnd(
+    textareaValue: string,
+    fallbackText?: string
+  ): TerminalImeCompositionEndResult;
+  deferNavigation(key: TerminalImeNavigationKey): void;
+  finishComposition(settlementId: number): TerminalImeNavigationKey[];
+  getPhase(): TerminalImeCompositionPhase;
   reset(): void;
   filterData(data: string): string | null;
+}
+
+export interface TerminalImeCompositionEndResult {
+  commitText: string;
+  settlementId: number;
 }
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
@@ -41,7 +60,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set<string>([
   "image/gif",
   "image/webp"
 ]);
-const IME_DUPLICATE_COMMIT_WINDOW_MS = 1500;
+const IME_RECENT_COMMIT_WINDOW_MS = 1500;
 const ALLOWED_PASTE_CONTROL_CODES = new Set([0x09, 0x0a, 0x0d]);
 // Intentionally reject C0/C1 control characters from dropped file paths.
 // eslint-disable-next-line no-control-regex
@@ -170,7 +189,8 @@ export function formatDroppedFilePathsForTerminal(
 ): string {
   return Array.from(paths)
     .filter(
-      (path) => path.length > 0 && !TERMINAL_CONTROL_CHARACTER_PATTERN.test(path)
+      (path) =>
+        path.length > 0 && !TERMINAL_CONTROL_CHARACTER_PATTERN.test(path)
     )
     .map((path) => `'${path.replace(/'/g, "'\\''")}'`)
     .join(" ");
@@ -204,21 +224,24 @@ export function applyPendingTerminalEnterRewrite(
   };
 }
 
-export function createTerminalImeDuplicateCommitGuard(
+export function createTerminalImeInputController(
   options: {
     now?: () => number;
     duplicateWindowMs?: number;
   } = {}
-): TerminalImeDuplicateCommitGuard {
+): TerminalImeInputController {
   const now = options.now ?? (() => performance.now());
   const duplicateWindowMs =
-    options.duplicateWindowMs ?? IME_DUPLICATE_COMMIT_WINDOW_MS;
-  let active = false;
+    options.duplicateWindowMs ?? IME_RECENT_COMMIT_WINDOW_MS;
   let startValue = "";
   let lastCompositionText = "";
   let endedCompositionText = "";
   let endedCommitText = "";
   let endedAt = 0;
+  let nextCompositionId = 0;
+  let activeCompositionId: number | null = null;
+  const settlingCompositionIds: number[] = [];
+  const deferredNavigationKeys = new Map<number, TerminalImeNavigationKey[]>();
 
   const hasImeText = (data: string): boolean => {
     for (const character of data) {
@@ -232,7 +255,8 @@ export function createTerminalImeDuplicateCommitGuard(
 
   return {
     compositionStart(textareaValue: string): void {
-      active = true;
+      activeCompositionId = ++nextCompositionId;
+      deferredNavigationKeys.set(activeCompositionId, []);
       startValue = textareaValue;
       lastCompositionText = "";
       endedCompositionText = "";
@@ -240,12 +264,21 @@ export function createTerminalImeDuplicateCommitGuard(
       endedAt = 0;
     },
     compositionUpdate(text: string): void {
-      if (active) {
+      if (activeCompositionId !== null) {
         lastCompositionText = text;
       }
     },
-    compositionEnd(textareaValue: string, fallbackText = ""): string {
-      active = false;
+    compositionEnd(
+      textareaValue: string,
+      fallbackText = ""
+    ): TerminalImeCompositionEndResult {
+      const settlementId = activeCompositionId ?? ++nextCompositionId;
+      activeCompositionId = null;
+      settlingCompositionIds.push(settlementId);
+      deferredNavigationKeys.set(
+        settlementId,
+        deferredNavigationKeys.get(settlementId) ?? []
+      );
       endedAt = now();
       endedCompositionText = lastCompositionText;
       endedCommitText =
@@ -254,10 +287,37 @@ export function createTerminalImeDuplicateCommitGuard(
         endedCompositionText;
       startValue = textareaValue;
       lastCompositionText = "";
-      return endedCommitText;
+      return { commitText: endedCommitText, settlementId };
+    },
+    deferNavigation(key: TerminalImeNavigationKey): void {
+      const compositionId =
+        activeCompositionId ?? settlingCompositionIds.at(-1) ?? null;
+      if (compositionId !== null) {
+        const keys = deferredNavigationKeys.get(compositionId) ?? [];
+        keys.push(key);
+        deferredNavigationKeys.set(compositionId, keys);
+      }
+    },
+    finishComposition(settlementId: number): TerminalImeNavigationKey[] {
+      const settlementIndex = settlingCompositionIds.indexOf(settlementId);
+      if (settlementIndex < 0) {
+        return [];
+      }
+      settlingCompositionIds.splice(settlementIndex, 1);
+      const result = deferredNavigationKeys.get(settlementId) ?? [];
+      deferredNavigationKeys.delete(settlementId);
+      return result;
+    },
+    getPhase(): TerminalImeCompositionPhase {
+      if (activeCompositionId !== null) {
+        return "composing";
+      }
+      return settlingCompositionIds.length > 0 ? "settling" : "idle";
     },
     reset(): void {
-      active = false;
+      activeCompositionId = null;
+      settlingCompositionIds.length = 0;
+      deferredNavigationKeys.clear();
       startValue = "";
       lastCompositionText = "";
       endedCompositionText = "";
@@ -268,7 +328,7 @@ export function createTerminalImeDuplicateCommitGuard(
       if (!data) {
         return null;
       }
-      if (active) {
+      if (activeCompositionId !== null) {
         return hasImeText(data) ? null : data;
       }
       if (!endedAt || now() - endedAt > duplicateWindowMs) {

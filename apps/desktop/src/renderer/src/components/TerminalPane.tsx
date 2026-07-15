@@ -34,17 +34,19 @@ import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   countSupportedImageFiles,
-  createTerminalImeDuplicateCommitGuard,
+  createTerminalImeInputController,
   createTerminalPaneXtermTheme,
   formatDroppedFilePathsForTerminal,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  resolveTerminalImeKeyAction,
+  resolveTerminalImeNavigationSequence,
   sanitizeTerminalPasteText,
   shouldDeferTerminalShortcutToIme,
   shouldUseImagePaste,
-  shouldSuppressXtermDuringIme,
-  type PendingTerminalEnterRewrite
+  type PendingTerminalEnterRewrite,
+  type TerminalImeNavigationKey
 } from "../terminalRenderer";
 import { type TerminalLineCwdTracker } from "../terminalLineCwdTracker";
 import { registerTerminalFileLinkProvider } from "../terminalFileLinks";
@@ -410,8 +412,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
     })
   );
-  const linuxImeDuplicateCommitGuardRef = useRef(
-    createTerminalImeDuplicateCommitGuard()
+  const terminalImeInputControllerRef = useRef(
+    createTerminalImeInputController()
   );
   const isPastingRef = useRef(false);
 
@@ -1829,7 +1831,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!container || !terminal) {
       return;
     }
-    const imeCompositionRef = { current: false };
+    const imeInputController = terminalImeInputControllerRef.current;
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
@@ -1866,7 +1868,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (!currentSurface) {
         return;
       }
-      if (shouldDeferTerminalShortcutToIme(event, imeCompositionRef.current)) {
+      if (
+        shouldDeferTerminalShortcutToIme(
+          event,
+          imeInputController.getPhase() === "composing"
+        )
+      ) {
         return;
       }
       queueEnterRewrite(event, currentSurface.id);
@@ -2050,43 +2057,67 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     container.addEventListener("keydown", handleTerminalShortcut, true);
     container.addEventListener("paste", handleTerminalPaste, true);
     const xtermTextarea = terminal.textarea;
-    const handleCompositionStart = (): void => {
-      imeCompositionRef.current = true;
-      if (props.keyboardPlatform === "linux") {
-        linuxImeDuplicateCommitGuardRef.current.compositionStart(
-          xtermTextarea?.value ?? ""
+    const imeSettlementTimeouts = new Set<ReturnType<typeof setTimeout>>();
+    const replayDeferredImeNavigation = (
+      navigationKeys: readonly TerminalImeNavigationKey[]
+    ): void => {
+      for (const key of navigationKeys) {
+        terminal.input(
+          resolveTerminalImeNavigationSequence(
+            key,
+            terminal.modes.applicationCursorKeysMode
+          ),
+          true
         );
       }
     };
+    const handleCompositionStart = (): void => {
+      imeInputController.compositionStart(xtermTextarea?.value ?? "");
+    };
     const handleCompositionUpdate = (event: CompositionEvent): void => {
-      if (props.keyboardPlatform === "linux") {
-        linuxImeDuplicateCommitGuardRef.current.compositionUpdate(event.data);
-      }
+      imeInputController.compositionUpdate(event.data);
     };
     const handleCompositionEnd = (event: CompositionEvent): void => {
-      imeCompositionRef.current = false;
-      if (props.keyboardPlatform === "linux") {
-        const commitText =
-          linuxImeDuplicateCommitGuardRef.current.compositionEnd(
-            xtermTextarea?.value ?? "",
-            event.data
-          );
-        const currentSurface = activeSurfaceRef.current;
-        if (commitText && currentSurface) {
-          sendTerminalText(currentSurface.id, commitText);
-          if (xtermTextarea) {
-            xtermTextarea.value = "";
-          }
-        }
+      const { commitText, settlementId } = imeInputController.compositionEnd(
+        xtermTextarea?.value ?? "",
+        event.data
+      );
+      const currentSurface = activeSurfaceRef.current;
+      if (props.keyboardPlatform === "linux" && commitText && currentSurface) {
+        sendTerminalText(currentSurface.id, commitText);
       }
+      // An empty ibus compositionend may still be followed by xterm's one real
+      // commit. Leave the textarea intact until the settlement callback in
+      // that case; filterData allows that first commit and rejects repeats.
+      if (props.keyboardPlatform === "linux" && xtermTextarea && commitText) {
+        xtermTextarea.value = "";
+      }
+      // xterm defers its own compositionend send with setTimeout(0). Run after
+      // that callback. macOS leaves commit authority and textarea ownership to
+      // xterm; Linux clears any ibus residue after xterm had one chance to send.
+      const settlementTimeout = setTimeout(() => {
+        imeSettlementTimeouts.delete(settlementTimeout);
+        const navigationKeys =
+          imeInputController.finishComposition(settlementId);
+        if (
+          props.keyboardPlatform === "linux" &&
+          xtermTextarea &&
+          imeInputController.getPhase() === "idle"
+        ) {
+          xtermTextarea.value = "";
+        }
+        replayDeferredImeNavigation(navigationKeys);
+      }, 0);
+      imeSettlementTimeouts.add(settlementTimeout);
     };
     // Reset stale composition state if focus leaves the textarea (e.g. surface
     // switch, OS-level shortcut) without a matching compositionend.
     const handleTextareaBlur = (): void => {
-      imeCompositionRef.current = false;
-      if (props.keyboardPlatform === "linux") {
-        linuxImeDuplicateCommitGuardRef.current.reset();
+      for (const timeout of imeSettlementTimeouts) {
+        clearTimeout(timeout);
       }
+      imeSettlementTimeouts.clear();
+      imeInputController.reset();
     };
     if (xtermTextarea) {
       xtermTextarea.addEventListener(
@@ -2100,14 +2131,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
       xtermTextarea.addEventListener("blur", handleTextareaBlur);
     }
-    terminal.attachCustomKeyEventHandler(
-      (event) =>
-        !shouldSuppressXtermDuringIme(
-          event,
-          imeCompositionRef.current,
-          props.keyboardPlatform
-        )
-    );
+    terminal.attachCustomKeyEventHandler((event) => {
+      const action = resolveTerminalImeKeyAction(
+        event,
+        imeInputController.getPhase(),
+        props.keyboardPlatform
+      );
+      if (action.type === "defer-navigation") {
+        imeInputController.deferNavigation(action.key);
+      }
+      return action.type === "process";
+    });
     syncTerminalViewportBackground();
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
@@ -2191,8 +2225,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       }
       let dataToSend = data;
       if (props.keyboardPlatform === "linux" && !isPastingRef.current) {
-        const filteredData =
-          linuxImeDuplicateCommitGuardRef.current.filterData(data);
+        const filteredData = imeInputController.filterData(data);
         if (!filteredData) {
           return;
         }
@@ -2263,6 +2296,11 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         );
         xtermTextarea.removeEventListener("blur", handleTextareaBlur);
       }
+      for (const timeout of imeSettlementTimeouts) {
+        clearTimeout(timeout);
+      }
+      imeSettlementTimeouts.clear();
+      imeInputController.reset();
       clearPendingEnterRewrite();
     };
   }, [

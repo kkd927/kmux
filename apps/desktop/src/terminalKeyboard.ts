@@ -16,7 +16,24 @@ export interface TerminalKeyboardEventLike {
   type?: string;
 }
 
-export type TerminalImeKeySuppressionPlatform = "darwin" | "linux";
+export type TerminalImePlatform = "darwin" | "linux";
+
+export type TerminalImeCompositionPhase = "idle" | "composing" | "settling";
+
+export type TerminalImeNavigationKey =
+  | "ArrowLeft"
+  | "ArrowRight"
+  | "ArrowUp"
+  | "ArrowDown"
+  | "Home"
+  | "End"
+  | "PageUp"
+  | "PageDown";
+
+export type TerminalImeKeyAction =
+  | { type: "process" }
+  | { type: "suppress" }
+  | { type: "defer-navigation"; key: TerminalImeNavigationKey };
 
 export interface TerminalEnterRewrite {
   sequence: string;
@@ -89,7 +106,7 @@ export function resolveTerminalEnterRewrite(
   return { sequence };
 }
 
-const IME_NAVIGATION_KEYS = new Set([
+const IME_NAVIGATION_KEYS = new Set<TerminalImeNavigationKey>([
   "ArrowLeft",
   "ArrowRight",
   "ArrowUp",
@@ -100,32 +117,51 @@ const IME_NAVIGATION_KEYS = new Set([
   "PageDown"
 ]);
 
-// xterm.js's CompositionHelper only keeps composition alive for keyCodes
-// 16/17/18/20/229. Linux ibus/fcitx can deliver ordinary physical keydown
-// events while KeyboardEvent.isComposing is true; if those reach xterm,
-// CompositionHelper calls _finalizeComposition(false) and flushes the current
-// preedit substring to the PTY before the IME commit. That is visible as
-// repeated Korean syllables. macOS does not need that broad suppression, but it
-// still needs the narrower Meta/navigation guards below for xterm's whitelist.
-export function shouldSuppressXtermDuringIme(
+function isTerminalImeNavigationKey(
+  key: string
+): key is TerminalImeNavigationKey {
+  return IME_NAVIGATION_KEYS.has(key as TerminalImeNavigationKey);
+}
+
+// xterm.js's CompositionHelper finalizes composition for keyCodes other than
+// 16/17/18/20/229. This function only decides which platform-specific keydowns
+// may reach xterm; macOS leaves the commit itself to xterm's delayed finalizer,
+// while Linux keeps its explicit commit and duplicate-filtering path.
+//
+// Linux ibus/fcitx can emit ordinary physical keydowns during composition, so
+// all of them stay suppressed as before. On macOS, an unmodified navigation key
+// must still reach the PTY, but only after the current composition has settled;
+// otherwise xterm can flush a preedit substring and leave it in its textarea.
+export function resolveTerminalImeKeyAction(
   event: TerminalKeyboardEventLike,
-  isComposing: boolean,
-  platform: TerminalImeKeySuppressionPlatform
-): boolean {
+  phase: TerminalImeCompositionPhase,
+  platform: TerminalImePlatform
+): TerminalImeKeyAction {
   if (event.type !== undefined && event.type !== "keydown") {
-    return false;
+    return { type: "process" };
   }
   const composing =
-    isComposing ||
+    phase === "composing" ||
     event.isComposing === true ||
     isImeProcessKey(event) ||
     event.key === "Process";
-  if (!composing) {
-    return false;
-  }
 
   if (platform === "linux") {
-    return true;
+    return composing ? { type: "suppress" } : { type: "process" };
+  }
+
+  if (!composing && phase !== "settling") {
+    return { type: "process" };
+  }
+
+  if (
+    isTerminalImeNavigationKey(event.key) &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey
+  ) {
+    return { type: "defer-navigation", key: event.key };
   }
 
   if (
@@ -134,15 +170,40 @@ export function shouldSuppressXtermDuringIme(
     !event.altKey &&
     !event.shiftKey
   ) {
-    return true;
+    return { type: "suppress" };
   }
 
   if (
     (event.metaKey || event.altKey) &&
-    IME_NAVIGATION_KEYS.has(event.key)
+    isTerminalImeNavigationKey(event.key)
   ) {
-    return true;
+    return { type: "suppress" };
   }
 
-  return false;
+  return { type: "process" };
+}
+
+export function resolveTerminalImeNavigationSequence(
+  key: TerminalImeNavigationKey,
+  applicationCursorKeysMode: boolean
+): string {
+  const cursorPrefix = applicationCursorKeysMode ? "\u001bO" : "\u001b[";
+  switch (key) {
+    case "ArrowUp":
+      return `${cursorPrefix}A`;
+    case "ArrowDown":
+      return `${cursorPrefix}B`;
+    case "ArrowRight":
+      return `${cursorPrefix}C`;
+    case "ArrowLeft":
+      return `${cursorPrefix}D`;
+    case "Home":
+      return `${cursorPrefix}H`;
+    case "End":
+      return `${cursorPrefix}F`;
+    case "PageUp":
+      return "\u001b[5~";
+    case "PageDown":
+      return "\u001b[6~";
+  }
 }

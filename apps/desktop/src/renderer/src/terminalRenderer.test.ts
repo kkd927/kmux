@@ -8,16 +8,17 @@ import {
 import {
   applyPendingTerminalEnterRewrite,
   countSupportedImageFiles,
-  createTerminalImeDuplicateCommitGuard,
+  createTerminalImeInputController,
   createTerminalPaneXtermTheme,
   formatDroppedFilePathsForTerminal,
   isSupportedImageMimeType,
   pasteClipboardIntoTerminal,
   resolveTerminalEnterRewrite,
+  resolveTerminalImeKeyAction,
+  resolveTerminalImeNavigationSequence,
   sanitizeTerminalPasteText,
   shouldDeferTerminalShortcutToIme,
-  shouldUseImagePaste,
-  shouldSuppressXtermDuringIme
+  shouldUseImagePaste
 } from "./terminalRenderer";
 import type { TerminalKeyboardEventLike } from "./terminalRenderer";
 import { THEMES } from "@kmux/ui";
@@ -450,21 +451,21 @@ describe("terminal renderer helpers", () => {
     ).toBeNull();
   });
 
-  it("swallows Linux keydown events during IME composition", () => {
+  it("suppresses Linux keydown events only during active IME composition", () => {
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "KeyA",
           key: "a",
           keyCode: 65,
           type: "keydown"
         }),
-        true,
+        "composing",
         "linux"
       )
-    ).toBe(true);
+    ).toEqual({ type: "suppress" });
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "",
           key: "Process",
@@ -472,12 +473,12 @@ describe("terminal renderer helpers", () => {
           isComposing: true,
           type: "keydown"
         }),
-        false,
+        "idle",
         "linux"
       )
-    ).toBe(true);
+    ).toEqual({ type: "suppress" });
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "Enter",
           key: "Enter",
@@ -485,30 +486,39 @@ describe("terminal renderer helpers", () => {
           shiftKey: true,
           type: "keydown"
         }),
-        true,
+        "composing",
         "linux"
       )
-    ).toBe(true);
-  });
-
-  it("does not swallow keydown events when not composing", () => {
+    ).toEqual({ type: "suppress" });
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "KeyA",
           key: "a",
           keyCode: 65,
           type: "keydown"
         }),
-        false,
+        "settling",
         "linux"
       )
-    ).toBe(false);
+    ).toEqual({ type: "process" });
   });
 
-  it("does not swallow non-keydown events", () => {
+  it("processes idle and non-keydown events normally", () => {
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
+        keyboardEvent({
+          code: "KeyA",
+          key: "a",
+          keyCode: 65,
+          type: "keydown"
+        }),
+        "idle",
+        "linux"
+      )
+    ).toEqual({ type: "process" });
+    expect(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "KeyA",
           key: "a",
@@ -516,15 +526,15 @@ describe("terminal renderer helpers", () => {
           metaKey: true,
           type: "keyup"
         }),
-        true,
+        "composing",
         "linux"
       )
-    ).toBe(false);
+    ).toEqual({ type: "process" });
   });
 
   it("leaves ordinary macOS composing letters to xterm", () => {
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "KeyA",
           key: "a",
@@ -532,15 +542,15 @@ describe("terminal renderer helpers", () => {
           isComposing: true,
           type: "keydown"
         }),
-        false,
+        "idle",
         "darwin"
       )
-    ).toBe(false);
+    ).toEqual({ type: "process" });
   });
 
-  it("still swallows bare Meta keydown during macOS IME composition", () => {
+  it("suppresses bare Meta and modified navigation during macOS composition", () => {
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           code: "MetaLeft",
           key: "Meta",
@@ -548,13 +558,11 @@ describe("terminal renderer helpers", () => {
           metaKey: true,
           type: "keydown"
         }),
-        true,
+        "composing",
         "darwin"
       )
-    ).toBe(true);
-  });
+    ).toEqual({ type: "suppress" });
 
-  it("swallows Cmd + navigation keys during macOS IME composition", () => {
     for (const key of [
       "ArrowLeft",
       "ArrowRight",
@@ -566,165 +574,209 @@ describe("terminal renderer helpers", () => {
       "PageDown"
     ]) {
       expect(
-        shouldSuppressXtermDuringIme(
+        resolveTerminalImeKeyAction(
           keyboardEvent({
             key,
             metaKey: true,
             type: "keydown"
           }),
-          true,
+          "composing",
           "darwin"
         )
-      ).toBe(true);
-    }
-  });
-
-  it("swallows Alt + navigation keys during macOS IME composition", () => {
-    for (const key of [
-      "ArrowLeft",
-      "ArrowRight",
-      "ArrowUp",
-      "ArrowDown",
-      "Home",
-      "End",
-      "PageUp",
-      "PageDown"
-    ]) {
+      ).toEqual({ type: "suppress" });
       expect(
-        shouldSuppressXtermDuringIme(
+        resolveTerminalImeKeyAction(
           keyboardEvent({
             key,
             altKey: true,
             type: "keydown"
           }),
-          true,
+          "composing",
           "darwin"
         )
-      ).toBe(true);
+      ).toEqual({ type: "suppress" });
     }
   });
 
-  it("leaves bare navigation keys to xterm during macOS IME composition", () => {
+  it("defers bare macOS navigation until composition settles", () => {
     expect(
-      shouldSuppressXtermDuringIme(
-        keyboardEvent({
-          key: "ArrowLeft",
-          type: "keydown"
-        }),
-        true,
+      resolveTerminalImeKeyAction(
+        keyboardEvent({ key: "ArrowLeft", type: "keydown" }),
+        "composing",
         "darwin"
       )
-    ).toBe(false);
-  });
-
-  it("does not swallow modifier + navigation when not composing", () => {
+    ).toEqual({ type: "defer-navigation", key: "ArrowLeft" });
     expect(
-      shouldSuppressXtermDuringIme(
+      resolveTerminalImeKeyAction(
+        keyboardEvent({ key: "ArrowRight", type: "keydown" }),
+        "settling",
+        "darwin"
+      )
+    ).toEqual({ type: "defer-navigation", key: "ArrowRight" });
+    expect(
+      resolveTerminalImeKeyAction(
+        keyboardEvent({ key: "ArrowLeft", type: "keydown" }),
+        "idle",
+        "darwin"
+      )
+    ).toEqual({ type: "process" });
+    expect(
+      resolveTerminalImeKeyAction(
         keyboardEvent({
           key: "ArrowLeft",
           metaKey: true,
           type: "keydown"
         }),
-        false,
+        "idle",
         "darwin"
       )
-    ).toBe(false);
+    ).toEqual({ type: "process" });
+  });
+
+  it("encodes deferred navigation like xterm in normal and application cursor modes", () => {
+    expect(resolveTerminalImeNavigationSequence("ArrowLeft", false)).toBe(
+      "\u001b[D"
+    );
+    expect(resolveTerminalImeNavigationSequence("ArrowLeft", true)).toBe(
+      "\u001bOD"
+    );
+    expect(resolveTerminalImeNavigationSequence("Home", false)).toBe(
+      "\u001b[H"
+    );
+    expect(resolveTerminalImeNavigationSequence("End", true)).toBe("\u001bOF");
+    expect(resolveTerminalImeNavigationSequence("PageUp", true)).toBe(
+      "\u001b[5~"
+    );
+    expect(resolveTerminalImeNavigationSequence("PageDown", false)).toBe(
+      "\u001b[6~"
+    );
   });
 
   it("uses one explicit Linux IME commit while suppressing xterm composition data", () => {
     let time = 0;
-    const guard = createTerminalImeDuplicateCommitGuard({
+    const controller = createTerminalImeInputController({
       now: () => time,
       duplicateWindowMs: 20
     });
 
-    guard.compositionStart("");
-    guard.compositionUpdate("가");
-    expect(guard.filterData("가")).toBeNull();
+    controller.compositionStart("");
+    controller.compositionUpdate("가");
+    expect(controller.filterData("가")).toBeNull();
     time = 1;
-    expect(guard.compositionEnd("가", "가")).toBe("가");
+    const firstEnd = controller.compositionEnd("가", "가");
+    expect(firstEnd.commitText).toBe("가");
 
     time = 2;
-    expect(guard.filterData("가")).toBeNull();
+    expect(controller.filterData("가")).toBeNull();
 
-    guard.compositionStart("");
-    guard.compositionUpdate("가");
-    expect(guard.filterData("가")).toBeNull();
-    expect(guard.compositionEnd("가", "가")).toBe("가");
+    controller.finishComposition(firstEnd.settlementId);
+    controller.compositionStart("");
+    controller.compositionUpdate("가");
+    expect(controller.filterData("가")).toBeNull();
+    expect(controller.compositionEnd("가", "가").commitText).toBe("가");
     time = 30;
-    expect(guard.filterData("가")).toBe("가");
+    expect(controller.filterData("가")).toBe("가");
   });
 
-  it("keeps a space typed immediately after a Linux IME commit while removing the duplicate commit", () => {
+  it("keeps deferred navigation attached to its composition across overlapping settlements", () => {
+    const controller = createTerminalImeInputController();
+
+    controller.compositionStart("");
+    controller.compositionUpdate("삭제");
+    controller.deferNavigation("ArrowLeft");
+    const firstEnd = controller.compositionEnd("삭제", "삭제");
+
+    controller.compositionStart("삭제");
+    controller.compositionUpdate("발행 후");
+    controller.deferNavigation("ArrowRight");
+    expect(controller.getPhase()).toBe("composing");
+
+    expect(controller.finishComposition(firstEnd.settlementId)).toEqual([
+      "ArrowLeft"
+    ]);
+    expect(controller.getPhase()).toBe("composing");
+
+    const secondEnd = controller.compositionEnd("삭제발행 후", "발행 후");
+    expect(secondEnd.commitText).toBe("발행 후");
+    expect(controller.getPhase()).toBe("settling");
+    expect(controller.finishComposition(secondEnd.settlementId)).toEqual([
+      "ArrowRight"
+    ]);
+    expect(controller.getPhase()).toBe("idle");
+  });
+
+  it("keeps a space after a Linux IME commit while removing the duplicate commit", () => {
     let time = 0;
-    const guard = createTerminalImeDuplicateCommitGuard({
+    const controller = createTerminalImeInputController({
       now: () => time,
       duplicateWindowMs: 20
     });
 
-    guard.compositionStart("");
-    guard.compositionUpdate("한");
+    controller.compositionStart("");
+    controller.compositionUpdate("한");
     time = 1;
-    expect(guard.compositionEnd("한", "한")).toBe("한");
+    expect(controller.compositionEnd("한", "한").commitText).toBe("한");
 
     time = 2;
-    expect(guard.filterData("한 ")).toBe(" ");
-    expect(guard.filterData(" ")).toBe(" ");
+    expect(controller.filterData("한 ")).toBe(" ");
+    expect(controller.filterData(" ")).toBe(" ");
   });
 
-  it("removes a duplicate Linux IME commit even when xterm emits a different Unicode normalization form", () => {
+  it("removes a duplicate Linux IME commit across Unicode normalization forms", () => {
     let time = 0;
-    const guard = createTerminalImeDuplicateCommitGuard({
+    const controller = createTerminalImeInputController({
       now: () => time,
       duplicateWindowMs: 20
     });
     const composed = "한";
     const decomposed = composed.normalize("NFD");
 
-    guard.compositionStart("");
-    guard.compositionUpdate(composed);
+    controller.compositionStart("");
+    controller.compositionUpdate(composed);
     time = 1;
-    expect(guard.compositionEnd(composed, composed)).toBe(composed);
+    expect(controller.compositionEnd(composed, composed).commitText).toBe(
+      composed
+    );
 
     time = 2;
-    expect(guard.filterData(`${decomposed} `)).toBe(" ");
-    expect(guard.filterData(decomposed)).toBeNull();
+    expect(controller.filterData(`${decomposed} `)).toBe(" ");
+    expect(controller.filterData(decomposed)).toBeNull();
   });
 
   it("allows the first post-composition commit when ibus ends composition with empty data", () => {
     let time = 0;
-    const guard = createTerminalImeDuplicateCommitGuard({
+    const controller = createTerminalImeInputController({
       now: () => time,
       duplicateWindowMs: 20
     });
 
-    guard.compositionStart("안");
-    guard.compositionUpdate("녕");
-    guard.compositionUpdate("");
+    controller.compositionStart("안");
+    controller.compositionUpdate("녕");
+    controller.compositionUpdate("");
     time = 1;
-    expect(guard.compositionEnd("안", "")).toBe("");
+    expect(controller.compositionEnd("안", "").commitText).toBe("");
 
     time = 2;
-    expect(guard.filterData("녕")).toBe("녕");
+    expect(controller.filterData("녕")).toBe("녕");
   });
 
   it("suppresses only an immediate repeated post-composition commit from xterm", () => {
     let time = 0;
-    const guard = createTerminalImeDuplicateCommitGuard({
+    const controller = createTerminalImeInputController({
       now: () => time,
       duplicateWindowMs: 20
     });
 
-    guard.compositionStart("안");
-    guard.compositionUpdate("녕");
-    guard.compositionUpdate("");
+    controller.compositionStart("안");
+    controller.compositionUpdate("녕");
+    controller.compositionUpdate("");
     time = 1;
-    expect(guard.compositionEnd("안", "")).toBe("");
+    expect(controller.compositionEnd("안", "").commitText).toBe("");
 
     time = 2;
-    expect(guard.filterData("녕")).toBe("녕");
-    expect(guard.filterData("녕")).toBeNull();
-    expect(guard.filterData(" ")).toBe(" ");
+    expect(controller.filterData("녕")).toBe("녕");
+    expect(controller.filterData("녕")).toBeNull();
+    expect(controller.filterData(" ")).toBe(" ");
   });
 
   it("applies pending Enter rewrites only to the originating surface CR", () => {

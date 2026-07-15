@@ -97,6 +97,9 @@ vi.mock("@xterm/addon-web-links", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => {
+    let onDataListener: ((data: string) => void) | undefined;
+    let compositionStartIndex = 0;
+    let compositionActive = false;
     const cell = {
       chars: "",
       width: 0,
@@ -146,12 +149,35 @@ vi.mock("@xterm/xterm", () => ({
         }
       },
       modes: {
+        applicationCursorKeysMode: false,
         bracketedPasteMode: false
       },
       textarea: document.createElement("textarea"),
       loadAddon: vi.fn(),
       registerLinkProvider: vi.fn(() => ({ dispose: vi.fn() })),
       open: vi.fn((host: HTMLElement) => {
+        terminal.textarea.addEventListener("compositionstart", () => {
+          compositionActive = true;
+          compositionStartIndex = terminal.textarea.value.length;
+        });
+        terminal.textarea.addEventListener("compositionend", () => {
+          const endedCompositionStartIndex = compositionStartIndex;
+          compositionActive = false;
+          // Match xterm's CompositionHelper: native propagation updates the
+          // textarea after compositionend, then xterm reads the final value.
+          setTimeout(() => {
+            const endIndex = compositionActive
+              ? compositionStartIndex
+              : terminal.textarea.value.length;
+            const data = terminal.textarea.value.slice(
+              endedCompositionStartIndex,
+              endIndex
+            );
+            if (data) {
+              onDataListener?.(data);
+            }
+          }, 0);
+        });
         const xterm = document.createElement("div");
         xterm.className = "xterm";
         const viewport = document.createElement("div");
@@ -166,7 +192,13 @@ vi.mock("@xterm/xterm", () => ({
         host.append(xterm);
       }),
       attachCustomKeyEventHandler: vi.fn(),
-      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onData: vi.fn((listener: (data: string) => void) => {
+        onDataListener = listener;
+        return { dispose: vi.fn() };
+      }),
+      input: vi.fn((data: string) => {
+        onDataListener?.(data);
+      }),
       onBinary: vi.fn(() => ({ dispose: vi.fn() })),
       onRender: vi.fn(() => ({ dispose: vi.fn() })),
       onWriteParsed: vi.fn(() => ({ dispose: vi.fn() })),
@@ -335,6 +367,15 @@ function createTextPasteEvent(text: string): ClipboardEvent {
       getData: vi.fn((format: string) => (format === "text/plain" ? text : ""))
     }
   });
+  return event;
+}
+
+function createCompositionEvent(
+  type: "compositionstart" | "compositionupdate" | "compositionend",
+  data = ""
+): CompositionEvent {
+  const event = new Event(type, { bubbles: true }) as CompositionEvent;
+  Object.defineProperty(event, "data", { value: data });
   return event;
 }
 
@@ -2013,5 +2054,161 @@ describe("TerminalPane visibility cleanup", () => {
         })
       )
     ).toBe(true);
+  });
+
+  it("preserves xterm's delayed ibus commit after an empty compositionend", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    const terminalTextarea = container.querySelector<HTMLTextAreaElement>(
+      "[data-testid='terminal-surface_1'] textarea"
+    );
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { onData: ReturnType<typeof vi.fn> }
+      | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as
+      | ((data: string) => void)
+      | undefined;
+    expect(terminalTextarea).not.toBeNull();
+    expect(onData).toBeTypeOf("function");
+
+    const attach = latestTerminalStreamAttach("surface_1");
+    const sentTexts = (): string[] =>
+      attach.port.sent.flatMap((message) =>
+        message.type === "input:text" ? [message.text] : []
+      );
+
+    act(() => {
+      terminalTextarea!.value = "안";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionupdate", "녕")
+      );
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionupdate", "")
+      );
+      terminalTextarea!.dispatchEvent(createCompositionEvent("compositionend"));
+      // Some ibus paths expose the final text only after compositionend.
+      terminalTextarea!.value = "안녕";
+    });
+
+    expect(terminalTextarea!.value).toBe("안녕");
+    expect(sentTexts()).toEqual([]);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(sentTexts()).toEqual(["녕"]);
+    expect(terminalTextarea!.value).toBe("");
+
+    act(() => {
+      onData!("녕");
+    });
+    expect(sentTexts()).toEqual(["녕"]);
+  });
+
+  it("uses xterm's propagated macOS IME commit before replaying bare navigation", async () => {
+    const props = createProps("surface_1");
+    props.keyboardPlatform = "darwin";
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    const terminalTextarea = container.querySelector<HTMLTextAreaElement>(
+      "[data-testid='terminal-surface_1'] textarea"
+    );
+    expect(terminalTextarea).not.toBeNull();
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+          input: ReturnType<typeof vi.fn>;
+        }
+      | undefined;
+    const handler = terminal?.attachCustomKeyEventHandler.mock.calls.at(
+      -1
+    )?.[0] as ((event: KeyboardEvent) => boolean) | undefined;
+    expect(handler).toBeTypeOf("function");
+
+    const attach = latestTerminalStreamAttach("surface_1");
+    const sentTexts = (): string[] =>
+      attach.port.sent.flatMap((message) =>
+        message.type === "input:text" ? [message.text] : []
+      );
+
+    act(() => {
+      terminalTextarea!.value = "";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      terminalTextarea!.value = "간";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionupdate", "간")
+      );
+      expect(
+        handler!(
+          new KeyboardEvent("keydown", {
+            key: "ArrowLeft",
+            code: "ArrowLeft"
+          })
+        )
+      ).toBe(false);
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionend", "간")
+      );
+      // Chromium can expose the real commit only after compositionend. This
+      // non-prefix correction catches both an early guessed send and a clear.
+      terminalTextarea!.value = "가나";
+      expect(
+        handler!(
+          new KeyboardEvent("keydown", {
+            key: "ArrowRight",
+            code: "ArrowRight"
+          })
+        )
+      ).toBe(false);
+    });
+
+    expect(terminalTextarea!.value).toBe("가나");
+    expect(sentTexts()).toEqual([]);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(terminal!.input.mock.calls).toEqual([
+      ["\u001b[D", true],
+      ["\u001b[C", true]
+    ]);
+    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C"]);
+
+    act(() => {
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      terminalTextarea!.value = "가나발행";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionupdate", "발행")
+      );
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionend", "발행")
+      );
+      terminalTextarea!.value = "가나발행 후";
+    });
+
+    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C"]);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(terminalTextarea!.value).toBe("가나발행 후");
+    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C", "발행 후"]);
   });
 });
