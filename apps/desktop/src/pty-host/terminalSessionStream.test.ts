@@ -629,6 +629,36 @@ describe("TerminalSessionStream", () => {
     });
   });
 
+  it("toggles transfer telemetry without changing sequence or credit", async () => {
+    const { stream } = createHarness();
+    const port = new FakePort();
+    stream.bind("attach_1", port);
+    await attach(port);
+
+    stream.publish(outputDelta(1, "one"));
+    const first = port.sent.at(-1);
+    expect(first).toMatchObject({ type: "delta", delta: { sequence: 1 } });
+    expect(first).not.toHaveProperty("telemetry");
+    port.receive({
+      ...clientEnvelope(),
+      type: "credit",
+      acknowledgedSequence: 1,
+      bytes: 3
+    });
+
+    stream.configureTelemetryNow(() => 2_000);
+    stream.publish(outputDelta(2, "two"));
+    expect(port.sent.at(-1)).toMatchObject({
+      type: "delta",
+      delta: { sequence: 2 },
+      telemetry: { portSentAt: 2_000 }
+    });
+    expect(stream.stats()).toMatchObject({
+      creditBytes: TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES - 3,
+      outstandingOutputBytes: 3
+    });
+  });
+
   it("does not let a renderer mint credit by acknowledging the same output twice", async () => {
     const { stream } = createHarness();
     const port = new FakePort();

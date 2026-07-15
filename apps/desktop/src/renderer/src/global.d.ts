@@ -151,6 +151,9 @@ declare global {
       downloadAvailableUpdate(): Promise<void>;
       installDownloadedUpdate(): Promise<void>;
       profileSmoothnessEnabled(): boolean;
+      subscribeDiagnosticsLogging(
+        listener: (enabled: boolean) => void
+      ): () => void;
       recordSmoothnessProfileEvent(
         event: SmoothnessProfileEvent
       ): Promise<void>;

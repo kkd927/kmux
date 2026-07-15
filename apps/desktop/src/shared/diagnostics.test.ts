@@ -21,15 +21,18 @@ import {
   formatDiagnosticsRecord,
   formatLocalLogTimestamp,
   logDiagnostics,
+  logTerminalDiagnostics,
   MAX_DIAGNOSTICS_LOG_BYTES,
   prepareExistingDiagnosticsLogFile,
-  resolveEffectiveDiagnosticsLogPath
+  resolveEffectiveDiagnosticsLogPath,
+  setDiagnosticsRecordSink
 } from "./diagnostics";
 
 describe("diagnostics logging", () => {
   const originalLogPath = process.env[DIAGNOSTICS_LOG_PATH_ENV];
 
   afterEach(() => {
+    setDiagnosticsRecordSink(null);
     if (typeof originalLogPath === "string") {
       process.env[DIAGNOSTICS_LOG_PATH_ENV] = originalLogPath;
       return;
@@ -67,6 +70,47 @@ describe("diagnostics logging", () => {
     expect(logDiagnostics("terminal.notification", { protocol: 9 })).toBe(
       false
     );
+  });
+
+  it("does not serialize details or create records while no sink or path is enabled", () => {
+    delete process.env[DIAGNOSTICS_LOG_PATH_ENV];
+    const details = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("details should not be inspected");
+        }
+      }
+    );
+
+    expect(() => logDiagnostics("disabled", details)).not.toThrow();
+    expect(logDiagnostics("disabled", details)).toBe(false);
+  });
+
+  it("routes normal and terminal records through the configured process sink", () => {
+    const records: unknown[] = [];
+    process.env[DIAGNOSTICS_LOG_PATH_ENV] = "/tmp/kmux-debug.log";
+    setDiagnosticsRecordSink((record) => {
+      records.push(record);
+      return true;
+    });
+
+    expect(logDiagnostics("main.record", { value: 1 })).toBe(true);
+    expect(logTerminalDiagnostics("terminal.record", { sequence: 2 })).toBe(
+      true
+    );
+    expect(records).toEqual([
+      expect.objectContaining({
+        scope: "main.record",
+        details: { value: 1 },
+        terminalTelemetry: false
+      }),
+      expect.objectContaining({
+        scope: "terminal.record",
+        details: { sequence: 2 },
+        terminalTelemetry: true
+      })
+    ]);
   });
 
   it("is a no-op when diagnostics path is blank or relative", () => {

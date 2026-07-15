@@ -16,6 +16,18 @@ export const PTY_STDOUT_LOGS_ENV = "KMUX_PTY_STDOUT_LOGS";
 export const DEFAULT_DIAGNOSTICS_LOG_FILE_NAME = "kmux-debug.log";
 export const MAX_DIAGNOSTICS_LOG_BYTES = 20 * 1024 * 1024;
 
+export interface DiagnosticsRecord {
+  at: string;
+  pid: number;
+  scope: string;
+  details: Record<string, unknown>;
+  terminalTelemetry: boolean;
+}
+
+export type DiagnosticsRecordSink = (record: DiagnosticsRecord) => boolean;
+
+let diagnosticsRecordSink: DiagnosticsRecordSink | null = null;
+
 interface DiagnosticsFormatOptions {
   now?: Date;
   pid?: number;
@@ -46,12 +58,69 @@ export function formatDiagnosticsRecord(
   } ${JSON.stringify(record)}\n`;
 }
 
+export function formatStructuredDiagnosticsRecord(
+  record: DiagnosticsRecord
+): string {
+  return `${record.at} pid=${record.pid} ${JSON.stringify({
+    scope: record.scope,
+    ...record.details
+  })}\n`;
+}
+
+export function setDiagnosticsRecordSink(
+  sink: DiagnosticsRecordSink | null
+): void {
+  diagnosticsRecordSink = sink;
+}
+
 export function logDiagnostics(
   scope: string,
   details: Record<string, unknown> = {},
   logPath: string | undefined = process.env[DIAGNOSTICS_LOG_PATH_ENV]
 ): boolean {
-  const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
+  return recordDiagnostics(scope, details, false, logPath);
+}
+
+export function logTerminalDiagnostics(
+  scope: string,
+  details: Record<string, unknown> = {}
+): boolean {
+  return recordDiagnostics(scope, details, true);
+}
+
+function recordDiagnostics(
+  scope: string,
+  details: Record<string, unknown>,
+  terminalTelemetry: boolean,
+  logPath: string | undefined = process.env[DIAGNOSTICS_LOG_PATH_ENV]
+): boolean {
+  const sink = diagnosticsRecordSink;
+  const resolvedLogPath = sink ? undefined : resolveDiagnosticsLogPath(logPath);
+  if (!sink && !resolvedLogPath) {
+    return false;
+  }
+
+  const structuredRecord: DiagnosticsRecord = {
+    at: new Date().toISOString(),
+    pid: process.pid,
+    scope,
+    details,
+    terminalTelemetry
+  };
+
+  try {
+    JSON.stringify({ scope, ...details });
+  } catch {
+    return false;
+  }
+
+  if (sink) {
+    try {
+      return sink(structuredRecord);
+    } catch {
+      return false;
+    }
+  }
   if (!resolvedLogPath) {
     return false;
   }

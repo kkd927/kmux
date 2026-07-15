@@ -64,6 +64,7 @@ import type {
   SurfaceTabDropDirection
 } from "./surfaceTabDrag";
 import * as terminalInstanceStore from "./terminalInstanceStore";
+import { clearRendererDiagnosticLog } from "./smoothnessProfile";
 import { terminalStreamClient } from "./terminalStreamClient";
 import styles from "./styles/App.module.css";
 
@@ -1182,7 +1183,7 @@ export function App(): JSX.Element {
           void handleExportTerminalThemeVariant(variant)
         }
         onOpenSettingsJson={() => window.kmux.openSettingsJson()}
-        onClearDiagnosticLog={() => window.kmux.clearDiagnosticLog()}
+        onClearDiagnosticLog={clearRendererDiagnosticLog}
         onCloseSettings={closeSettingsModal}
         onSaveSettings={(draft) => {
           const settingsPatch = {

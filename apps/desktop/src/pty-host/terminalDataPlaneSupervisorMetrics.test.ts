@@ -65,6 +65,25 @@ const ringStore = {
 };
 
 describe("terminal data-plane supervisor metrics", () => {
+  it("creates no event-loop monitor or interval while its recorder is disabled", () => {
+    const createDelayMonitor = vi.fn();
+    const setIntervalFn = vi.fn();
+
+    const metrics = createTerminalDataPlaneSupervisorMetrics({
+      recorder: { enabled: false, record: vi.fn() },
+      now: () => 0,
+      readSessions: () => [],
+      readRing: () => ringStore,
+      createDelayMonitor,
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval
+    });
+
+    metrics.sample();
+    metrics.stop();
+    expect(createDelayMonitor).not.toHaveBeenCalled();
+    expect(setIntervalFn).not.toHaveBeenCalled();
+  });
+
   it("aggregates only bounded queue, ring, and credit counters", () => {
     expect(
       collectTerminalDataPlaneSupervisorDetails(

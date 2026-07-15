@@ -18,6 +18,10 @@ import {
   KMUX_PROFILE_LOG_PATH_ENV,
   isSmoothnessProfileEnabled
 } from "../shared/smoothnessProfile";
+import {
+  DIAGNOSTICS_LOG_PATH_ENV,
+  resolveDiagnosticsLogPath
+} from "../shared/diagnostics";
 import type {
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
@@ -66,6 +70,13 @@ ipcRenderer.on(
     }
   }
 );
+
+let diagnosticLoggingEnabled = Boolean(
+  resolveDiagnosticsLogPath(process.env[DIAGNOSTICS_LOG_PATH_ENV])
+);
+ipcRenderer.on("kmux:diagnostics-logging", (_event, enabled: boolean) => {
+  diagnosticLoggingEnabled = Boolean(enabled);
+});
 
 const api = {
   getPlatform(): Promise<RendererPlatformDescriptor> {
@@ -338,9 +349,20 @@ const api = {
     return ipcRenderer.invoke("kmux:updater:install");
   },
   profileSmoothnessEnabled(): boolean {
-    return isSmoothnessProfileEnabled({
-      [KMUX_PROFILE_LOG_PATH_ENV]: process.env[KMUX_PROFILE_LOG_PATH_ENV]
-    });
+    return (
+      diagnosticLoggingEnabled ||
+      isSmoothnessProfileEnabled({
+        [KMUX_PROFILE_LOG_PATH_ENV]: process.env[KMUX_PROFILE_LOG_PATH_ENV]
+      })
+    );
+  },
+  subscribeDiagnosticsLogging(
+    listener: (enabled: boolean) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean) =>
+      listener(Boolean(enabled));
+    ipcRenderer.on("kmux:diagnostics-logging", handler);
+    return () => ipcRenderer.off("kmux:diagnostics-logging", handler);
   },
   recordSmoothnessProfileEvent(event: SmoothnessProfileEvent): Promise<void> {
     return ipcRenderer.invoke("kmux:profile:event", event);

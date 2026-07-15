@@ -109,8 +109,10 @@ export class TerminalSessionStream {
   private closedNotified = false;
   private readonly maxOutstandingOutputEvents: number;
   private readonly maxReplayEvents: number;
+  private telemetryNow: (() => number) | undefined;
 
   constructor(private readonly options: TerminalSessionStreamOptions) {
+    this.telemetryNow = options.telemetryNow;
     // The per-attachment ledger is only an acknowledgement cursor over the
     // shared delta ring. Keep it no larger than the ring itself even if a
     // caller configures a larger ring for diagnostics or tests.
@@ -124,6 +126,10 @@ export class TerminalSessionStream {
 
   get attachmentCount(): number {
     return this.attachments.size;
+  }
+
+  configureTelemetryNow(telemetryNow: (() => number) | undefined): void {
+    this.telemetryNow = telemetryNow;
   }
 
   stats(): TerminalSessionStreamStats {
@@ -738,10 +744,10 @@ export class TerminalSessionStream {
     }
     try {
       const outboundMessage: TerminalDataPlaneHostMessage =
-        message.type === "delta" && this.options.telemetryNow
+        message.type === "delta" && this.telemetryNow
           ? {
               ...message,
-              telemetry: { portSentAt: this.options.telemetryNow() }
+              telemetry: { portSentAt: this.telemetryNow() }
             }
           : message;
       attachment.port.postMessage(outboundMessage);

@@ -42,8 +42,15 @@ import {
   DIAGNOSTICS_LOG_PATH_ENV,
   PTY_STDOUT_LOGS_ENV,
   logDiagnostics,
-  resolveDiagnosticsLogPath
+  logTerminalDiagnostics,
+  setDiagnosticsRecordSink,
+  resolveDiagnosticsLogPath,
+  type DiagnosticsRecord
 } from "../shared/diagnostics";
+import type {
+  SmoothnessProfileEvent,
+  SmoothnessProfileRecorder
+} from "../shared/smoothnessProfile";
 import {
   TERMINAL_LIVE_SCROLLBACK_LINES,
   TERMINAL_RESTORE_SCROLLBACK_LINES
@@ -88,6 +95,11 @@ import {
   TERMINAL_OUTPUT_SEGMENT_MAX_BYTES
 } from "./terminalWireCoalescing";
 import { createTerminalQueryReplyHandler } from "./terminalQueryReply";
+import { createPtyDiagnosticsIpcBatcher } from "./diagnosticsIpcBatcher";
+import {
+  resolveTerminalOutputGapMs,
+  settlePtyProfileBucketsBeforeDiagnosticsDisable
+} from "./terminalDiagnostics";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -129,6 +141,7 @@ interface SessionRuntime {
     inputAcceptedAt: number;
     inputSequence: number;
   };
+  lastDiagnosticOutputAt?: number;
   outputSegmenterState: TerminalOutputSegmenterState;
   rawOutputTail: string;
   rawOutputTailTruncated: boolean;
@@ -180,6 +193,46 @@ const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
 const controlTransport = createUtilityProcessControlTransport();
 let ipcChannelClosed = false;
 let shutdownRequested = false;
+function createDiagnosticsIpc() {
+  return createPtyDiagnosticsIpcBatcher({
+    enabled: true,
+    sendBatch: (records) => {
+      if (!controlTransport.available || ipcChannelClosed) {
+        return false;
+      }
+      try {
+        controlTransport.postMessage({ type: "diagnostics.batch", records });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  });
+}
+
+let diagnosticsIpc = resolveDiagnosticsLogPath(
+  process.env[DIAGNOSTICS_LOG_PATH_ENV]
+)
+  ? createDiagnosticsIpc()
+  : null;
+const recordPtyDiagnostics = (record: DiagnosticsRecord): boolean =>
+  diagnosticsIpc?.record(record) ?? false;
+setDiagnosticsRecordSink(diagnosticsIpc ? recordPtyDiagnostics : null);
+const terminalMetricsProfile: SmoothnessProfileRecorder = {
+  get enabled() {
+    return smoothnessProfile.enabled || Boolean(diagnosticsIpc?.enabled);
+  },
+  record(event: SmoothnessProfileEvent): void {
+    smoothnessProfile.record(event);
+    if (diagnosticsIpc?.enabled && event.name.startsWith("terminal.")) {
+      logTerminalDiagnostics(event.name, {
+        source: event.source,
+        eventAt: event.at,
+        ...event.details
+      });
+    }
+  }
+};
 const PROFILE_PTY_BUCKET_MIN_CHUNKS = 100;
 const PROFILE_PTY_BUCKET_MAX_DURATION_MS = 1000;
 const SESSION_OUTPUT_SLICE_BYTES = TERMINAL_OUTPUT_SEGMENT_MAX_BYTES;
@@ -206,17 +259,35 @@ const deltaStore = new TerminalDeltaStore<TerminalDelta>({
   replaySizeOf: (delta) => (delta.type === "output" ? delta.byteLength : 0),
   sliceAfterInternalCursor: sliceTerminalOutputAfterSequence
 });
-const dataPlaneSupervisorMetrics = createTerminalDataPlaneSupervisorMetrics({
-  recorder: smoothnessProfile,
-  now: profileNowMs,
-  readSessions: () =>
-    [...sessions.values()].map((record) => ({
-      queue: record.mutationQueue.stats(),
-      ring: deltaStore.sessionStats(record.sessionId),
-      stream: record.stream.stats()
-    })),
-  readRing: () => deltaStore.stats()
-});
+function createDataPlaneSupervisorMetrics() {
+  return createTerminalDataPlaneSupervisorMetrics({
+    recorder: terminalMetricsProfile,
+    now: profileNowMs,
+    readSessions: () =>
+      [...sessions.values()].map((record) => ({
+        queue: record.mutationQueue.stats(),
+        ring: deltaStore.sessionStats(record.sessionId),
+        stream: record.stream.stats()
+      })),
+    readRing: () => deltaStore.stats()
+  });
+}
+
+let dataPlaneSupervisorMetrics = createDataPlaneSupervisorMetrics();
+
+function refreshTerminalTelemetry(): void {
+  dataPlaneSupervisorMetrics.stop();
+  dataPlaneSupervisorMetrics = createDataPlaneSupervisorMetrics();
+  const telemetryNow = terminalMetricsProfile.enabled
+    ? () => terminalDataPlaneNowMs(performance)
+    : undefined;
+  for (const record of sessions.values()) {
+    record.stream.configureTelemetryNow(telemetryNow);
+    if (!diagnosticsIpc?.enabled) {
+      record.lastDiagnosticOutputAt = undefined;
+    }
+  }
+}
 const sessionScheduler = new FairSessionScheduler({
   schedule: (callback) => setImmediate(callback),
   onDrainError: (sessionId, error) => {
@@ -263,7 +334,7 @@ const ptyBucket = createSmoothnessProfileBucket<{
     };
   },
   onFlush: (details, durationMs, at) => {
-    smoothnessProfile.record({
+    terminalMetricsProfile.record({
       source: "pty-host",
       name: "terminal.pty.bucket",
       at,
@@ -348,11 +419,15 @@ function handleIpcChannelClosed(error?: unknown): void {
       error: error instanceof Error ? error.message : String(error)
     });
   }
+  diagnosticsIpc?.close();
+  diagnosticsIpc = null;
+  applyDiagnosticsLogPath(process.env, undefined);
+  setDiagnosticsRecordSink(null);
   disposeAllSessions();
 }
 
 function recordPtyChunk(record: SessionRuntime, chunk: string): void {
-  if (!smoothnessProfile.enabled) {
+  if (!terminalMetricsProfile.enabled) {
     return;
   }
   const bytes = Buffer.byteLength(chunk, "utf8");
@@ -599,7 +674,7 @@ function enqueueTerminalBarrier<T>(
 }
 
 function flushPtyProfileBucket(record: SessionRuntime): void {
-  if (smoothnessProfile.enabled) {
+  if (terminalMetricsProfile.enabled) {
     ptyBucket.flush(`${record.surfaceId}\u0000${record.sessionId}`);
   }
 }
@@ -926,7 +1001,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       writeOrQueueDirectInput(record, encodeTerminalKeyInput(input)),
     resize: (resizeRequest) => requestDirectResize(record, resizeRequest),
     onInputObserved: (message) => {
-      const inputAcceptedAt = smoothnessProfile.enabled
+      const inputAcceptedAt = terminalMetricsProfile.enabled
         ? terminalDataPlaneNowMs(performance)
         : undefined;
       if (inputAcceptedAt !== undefined) {
@@ -942,7 +1017,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           : message.type === "input:binary"
             ? message.data.length
             : Buffer.byteLength(encodeTerminalKeyInput(message.input), "utf8");
-      smoothnessProfile.record({
+      terminalMetricsProfile.record({
         source: "pty-host",
         name: "terminal.data-plane.input",
         at: profileNowMs(),
@@ -954,7 +1029,10 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           inputAcceptedAt,
           inputSequence: record.inputTelemetrySequence,
           shellInputReady: record.shellInputReady,
-          pendingDirectInputBytes: record.pendingDirectInputBytes
+          pendingDirectInputBytes: record.pendingDirectInputBytes,
+          queue: record.mutationQueue.stats(),
+          ring: deltaStore.sessionStats(record.sessionId),
+          stream: record.stream.stats()
         }
       });
       send({
@@ -968,7 +1046,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
               : { type: "key", input: message.input }
       });
     },
-    ...(smoothnessProfile.enabled
+    ...(terminalMetricsProfile.enabled
       ? { telemetryNow: () => terminalDataPlaneNowMs(performance) }
       : {})
   });
@@ -1218,9 +1296,34 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   ptyProcess.onData((chunk) => {
-    const ptyReadAt = smoothnessProfile.enabled
+    const ptyReadAt = terminalMetricsProfile.enabled
       ? terminalDataPlaneNowMs(performance)
       : undefined;
+    if (diagnosticsIpc?.enabled && ptyReadAt !== undefined) {
+      const previousOutputAt = record.lastDiagnosticOutputAt;
+      const gapMs = resolveTerminalOutputGapMs(previousOutputAt, ptyReadAt);
+      if (gapMs !== undefined) {
+        logTerminalDiagnostics("terminal.data-plane.output-gap", {
+          surfaceId: record.surfaceId,
+          sessionId: record.sessionId,
+          gapMs,
+          ptyReadAt,
+          nextSequence: record.sequence + 1,
+          chunkBytes: Buffer.byteLength(chunk, "utf8"),
+          ...(record.pendingInputTelemetry
+            ? {
+                inputSequence: record.pendingInputTelemetry.inputSequence,
+                inputToOutputMs:
+                  ptyReadAt - record.pendingInputTelemetry.inputAcceptedAt
+              }
+            : {}),
+          queue: record.mutationQueue.stats(),
+          ring: deltaStore.sessionStats(record.sessionId),
+          stream: record.stream.stats()
+        });
+      }
+      record.lastDiagnosticOutputAt = ptyReadAt;
+    }
     const visibleAtPtyRead = record.stream.attachmentCount > 0;
     const pendingInputTelemetry = record.pendingInputTelemetry;
     record.pendingInputTelemetry = undefined;
@@ -1289,6 +1392,10 @@ function handlePtyRequest(
     shutdownRequested = true;
     dataPlaneSupervisorMetrics.stop();
     disposeAllSessions();
+    diagnosticsIpc?.close();
+    diagnosticsIpc = null;
+    applyDiagnosticsLogPath(process.env, undefined);
+    setDiagnosticsRecordSink(null);
     send({ type: "shutdown:ack", requestId: request.requestId });
     return;
   }
@@ -1298,20 +1405,43 @@ function handlePtyRequest(
 
   switch (request.type) {
     case "diagnostics.configure": {
-      const previousLogPath = resolveDiagnosticsLogPath(
-        process.env[DIAGNOSTICS_LOG_PATH_ENV]
-      );
-      const logPath = applyDiagnosticsLogPath(process.env, request.logPath);
-      logDiagnostics(
-        "pty-host.diagnostics.configuration.changed",
-        {
-          enabled: Boolean(logPath),
-          logPath
-        },
-        logPath ?? previousLogPath
-      );
+      const nextLogPath = resolveDiagnosticsLogPath(request.logPath);
+      if (nextLogPath) {
+        applyDiagnosticsLogPath(process.env, nextLogPath);
+        diagnosticsIpc ??= createDiagnosticsIpc();
+        setDiagnosticsRecordSink(recordPtyDiagnostics);
+        refreshTerminalTelemetry();
+        logDiagnostics("pty-host.diagnostics.configuration.changed", {
+          enabled: true,
+          logPath: nextLogPath
+        });
+      } else {
+        settlePtyProfileBucketsBeforeDiagnosticsDisable({
+          continuousProfileEnabled: smoothnessProfile.enabled,
+          flushAll: () => ptyBucket.flushAll()
+        });
+        logDiagnostics("pty-host.diagnostics.configuration.changed", {
+          enabled: false
+        });
+        diagnosticsIpc?.flush();
+        diagnosticsIpc?.close();
+        diagnosticsIpc = null;
+        setDiagnosticsRecordSink(null);
+        applyDiagnosticsLogPath(process.env, undefined);
+        refreshTerminalTelemetry();
+      }
+      diagnosticsIpc?.flush();
+      send({
+        type: "diagnostics.configured",
+        requestId: request.requestId,
+        enabled: Boolean(nextLogPath)
+      });
       break;
     }
+    case "diagnostics.flush":
+      diagnosticsIpc?.flush();
+      send({ type: "diagnostics.flushed", requestId: request.requestId });
+      break;
     case "spawn":
       spawnSession(request);
       break;

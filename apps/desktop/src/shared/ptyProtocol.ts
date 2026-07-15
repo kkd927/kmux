@@ -8,6 +8,7 @@ import type {
   TerminalKeyInput,
   TerminalNotificationProtocol
 } from "@kmux/proto";
+import type { DiagnosticsRecord } from "./diagnostics";
 
 export type ShellIntegrationMode = "none" | "posix-wrapper";
 export type ShellPolicyPlatform =
@@ -65,7 +66,8 @@ export interface PtySessionSpec {
 export type PtyRequest =
   | DesktopPtySpawnRequest
   | { type: "shutdown"; requestId: Id }
-  | { type: "diagnostics.configure"; logPath?: string }
+  | { type: "diagnostics.configure"; requestId: Id; logPath?: string }
+  | { type: "diagnostics.flush"; requestId: Id }
   | {
       type: "stream.bind";
       attachId: Id;
@@ -86,6 +88,13 @@ export type PtyRequest =
 export type PtyEvent =
   | { type: "ready" }
   | { type: "shutdown:ack"; requestId: Id }
+  | { type: "diagnostics.batch"; records: DiagnosticsRecord[] }
+  | {
+      type: "diagnostics.configured";
+      requestId: Id;
+      enabled: boolean;
+    }
+  | { type: "diagnostics.flushed"; requestId: Id }
   | {
       type: "spawned";
       sessionId: Id;

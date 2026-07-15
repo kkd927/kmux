@@ -98,7 +98,7 @@ interface IpcHandlersOptions {
     palette: TerminalColorPalette
   ) => Promise<boolean>;
   openSettingsJson: () => Promise<void>;
-  clearDiagnosticLog: () => boolean;
+  clearDiagnosticLog: () => boolean | Promise<boolean>;
   isSurfaceDiagnosticsEnabled: () => boolean;
   captureSurfaceDiagnostics: (surfaceId: Id) => Promise<SurfaceCapturePayload>;
   prepareWorktreeConversion: (

@@ -217,8 +217,8 @@ interface Attachment {
   preAttachSequence: number | null;
   /** True only after the renderer has parsed the attach-time replay cursor. */
   liveCaughtUp: boolean;
-  readonly metrics: TerminalStreamMetricsRecorder | undefined;
-  readonly metricsSampleEvery: number;
+  metrics: TerminalStreamMetricsRecorder | undefined;
+  metricsSampleEvery: number;
   outputMetricOrdinal: number;
   readonly outputMetrics: Map<number, TerminalOutputMetricTrace>;
   readonly pendingRenderMetrics: TerminalOutputMetricTrace[];
@@ -314,6 +314,25 @@ export class TerminalStreamRouter {
 
   get size(): number {
     return this.attachments.size;
+  }
+
+  configureMetrics(
+    metrics: TerminalStreamMetricsRecorder | undefined,
+    metricsSampleEvery = 1
+  ): void {
+    for (const attachment of this.attachments.values()) {
+      attachment.metrics = metrics;
+      attachment.metricsSampleEvery = Math.max(
+        1,
+        Math.floor(metricsSampleEvery)
+      );
+      if (!metrics) {
+        attachment.outputMetrics.clear();
+        attachment.pendingRenderMetrics.length = 0;
+        attachment.paintIntervalsMs.length = 0;
+        attachment.paintPendingSinceAt = null;
+      }
+    }
   }
 
   /**

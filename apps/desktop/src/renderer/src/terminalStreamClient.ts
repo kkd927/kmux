@@ -9,7 +9,8 @@ import {
 import { terminalDataPlaneNowMs } from "../../shared/terminalDataPlaneMetrics";
 import {
   isRendererSmoothnessProfileEnabled,
-  recordRendererSmoothnessProfileEvent
+  recordRendererSmoothnessProfileEvent,
+  subscribeRendererDiagnosticsLogging
 } from "./smoothnessProfile";
 import {
   type CooperativeTerminalWriteTask,
@@ -260,6 +261,7 @@ export class TerminalStreamClient {
   private disposed = false;
   private readonly portTransferTimeoutMs: number;
   private readonly retryDelaysMs: readonly number[];
+  private readonly unsubscribeDiagnosticsLogging: () => void;
 
   constructor(
     private readonly router = new TerminalStreamRouter(),
@@ -271,6 +273,20 @@ export class TerminalStreamClient {
       options.portTransferTimeoutMs ?? PORT_TRANSFER_TIMEOUT_MS
     );
     this.retryDelaysMs = options.retryDelaysMs ?? ATTACH_RETRY_DELAYS_MS;
+    this.unsubscribeDiagnosticsLogging = subscribeRendererDiagnosticsLogging(
+      () => {
+        const metricsEnabled = isRendererSmoothnessProfileEnabled();
+        this.router.configureMetrics(
+          metricsEnabled
+            ? {
+                now: () => terminalDataPlaneNowMs(performance),
+                record: recordRendererSmoothnessProfileEvent
+              }
+            : undefined,
+          TERMINAL_OUTPUT_PROFILE_SAMPLE_EVERY
+        );
+      }
+    );
   }
 
   beginCooperativeWrite(
@@ -736,6 +752,7 @@ export class TerminalStreamClient {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubscribeDiagnosticsLogging();
     this.pendingAttaches.clear();
     for (const surfaceId of [...this.pendingResumeSettles.keys()]) {
       this.cancelPendingResumeSettle(surfaceId, true);

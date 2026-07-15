@@ -7,10 +7,18 @@ const PROFILE_BATCH_MAX_EVENTS = 256;
 const PROFILE_BATCH_FLUSH_MS = 200;
 const pendingEvents: SmoothnessProfileEvent[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let flushOperation = Promise.resolve();
 
 export function isRendererSmoothnessProfileEnabled(): boolean {
   const bridge = window.kmux as Partial<typeof window.kmux> | undefined;
   return Boolean(bridge?.profileSmoothnessEnabled?.());
+}
+
+export function subscribeRendererDiagnosticsLogging(
+  listener: (enabled: boolean) => void
+): () => void {
+  const bridge = window.kmux as Partial<typeof window.kmux> | undefined;
+  return bridge?.subscribeDiagnosticsLogging?.(listener) ?? (() => {});
 }
 
 export function recordRendererSmoothnessProfileEvent(
@@ -28,30 +36,38 @@ export function recordRendererSmoothnessProfileEvent(
   };
   pendingEvents.push(event);
   if (pendingEvents.length >= PROFILE_BATCH_MAX_EVENTS) {
-    flushRendererSmoothnessProfileEvents();
+    void flushRendererSmoothnessProfileEvents();
     return;
   }
   flushTimer ??= setTimeout(
-    flushRendererSmoothnessProfileEvents,
+    () => void flushRendererSmoothnessProfileEvents(),
     PROFILE_BATCH_FLUSH_MS
   );
 }
 
-function flushRendererSmoothnessProfileEvents(): void {
+export function flushRendererSmoothnessProfileEvents(): Promise<void> {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  if (pendingEvents.length === 0) {
-    return;
-  }
   const events = pendingEvents.splice(0);
-  const bridge = window.kmux as Partial<typeof window.kmux> | undefined;
-  if (bridge?.recordSmoothnessProfileEvents) {
-    void bridge.recordSmoothnessProfileEvents(events);
-    return;
+  if (events.length > 0) {
+    const send = async (): Promise<void> => {
+      const bridge = window.kmux as Partial<typeof window.kmux> | undefined;
+      if (bridge?.recordSmoothnessProfileEvents) {
+        await bridge.recordSmoothnessProfileEvents(events);
+        return;
+      }
+      for (const event of events) {
+        await bridge?.recordSmoothnessProfileEvent?.(event);
+      }
+    };
+    flushOperation = flushOperation.then(send, send).catch(() => undefined);
   }
-  for (const event of events) {
-    void bridge?.recordSmoothnessProfileEvent?.(event);
-  }
+  return flushOperation;
+}
+
+export async function clearRendererDiagnosticLog(): Promise<boolean> {
+  await flushRendererSmoothnessProfileEvents();
+  return window.kmux.clearDiagnosticLog();
 }

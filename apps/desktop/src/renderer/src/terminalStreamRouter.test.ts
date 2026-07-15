@@ -720,6 +720,55 @@ describe("TerminalStreamRouter", () => {
     expect(records[2]?.details).not.toHaveProperty("data");
   });
 
+  it("toggles metrics for an existing attachment without changing output or credit", async () => {
+    const records: string[] = [];
+    const router = new TerminalStreamRouter();
+    const harness = register(router);
+    await waitForCheckpoint(harness, 0);
+
+    harness.port.receive(output(0, "before"));
+    await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
+    harness.writes[0]?.complete();
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(1));
+
+    router.configureMetrics(
+      {
+        now: () => 1_000,
+        record: (name) => records.push(name)
+      },
+      1
+    );
+    harness.port.receive(output(1, "during"));
+    await vi.waitFor(() => expect(harness.writes).toHaveLength(2));
+    harness.writes[1]?.complete();
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(2));
+
+    router.configureMetrics(undefined);
+    const recordCountAfterDisable = records.length;
+    harness.port.receive(output(2, "after"));
+    await vi.waitFor(() => expect(harness.writes).toHaveLength(3));
+    harness.writes[2]?.complete();
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(3));
+
+    expect(records).toContain("terminal.data-plane.receive");
+    expect(records).toContain("terminal.data-plane.parsed");
+    expect(records).toHaveLength(recordCountAfterDisable);
+    expect(
+      harness.port.sent
+        .filter((message) => message.type === "credit")
+        .map((message) => ({
+          sequence:
+            message.type === "credit" ? message.acknowledgedSequence : -1,
+          bytes: message.type === "credit" ? message.bytes : -1
+        }))
+    ).toEqual([
+      { sequence: 1, bytes: 6 },
+      { sequence: 2, bytes: 6 },
+      { sequence: 3, bytes: 5 }
+    ]);
+    router.dispose();
+  });
+
   it("closes only the failed surface when parsed bookkeeping throws", async () => {
     const router = new TerminalStreamRouter();
     const harness = register(router, {

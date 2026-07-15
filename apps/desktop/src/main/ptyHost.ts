@@ -13,6 +13,7 @@ import type {
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
+import type { DiagnosticsRecord } from "../shared/diagnostics";
 import {
   applyDiagnosticsLogPath,
   DIAGNOSTICS_LOG_PATH_ENV,
@@ -68,6 +69,7 @@ export function resolvePtyHostLaunchOptions(
 }
 
 const SHUTDOWN_ACK_TIMEOUT_MS = 2000;
+const DIAGNOSTICS_CONFIGURATION_ACK_TIMEOUT_MS = 2000;
 
 export type ForkPtyHostProcess = (
   modulePath: string,
@@ -103,6 +105,13 @@ export class PtyHostManager extends EventEmitter {
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
   private readonly queuedInputRequests = new Map<Id, PtyRequest[]>();
   private readonly sessionRefs = new Map<Id, TerminalSessionRef>();
+  private readonly pendingDiagnosticsConfigurations = new Map<
+    Id,
+    {
+      resolve: (configured: boolean) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
   constructor(private readonly forkProcess: ForkPtyHostProcess) {
     super();
   }
@@ -161,6 +170,17 @@ export class PtyHostManager extends EventEmitter {
     this.child = child;
 
     child.on("message", (event: PtyEvent) => {
+      if (event.type === "diagnostics.batch") {
+        this.emit("diagnostics", event.records satisfies DiagnosticsRecord[]);
+        return;
+      }
+      if (
+        event.type === "diagnostics.configured" ||
+        event.type === "diagnostics.flushed"
+      ) {
+        this.completeDiagnosticsRequest(event.requestId, true);
+        return;
+      }
       if (event.type === "shutdown:ack") {
         const pendingStop = this.pendingStop;
         if (
@@ -248,7 +268,7 @@ export class PtyHostManager extends EventEmitter {
     });
   }
 
-  configureDiagnosticsLogPath(logPath: string | undefined): boolean {
+  configureDiagnosticsLogPath(logPath: string | undefined): Promise<boolean> {
     const resolvedLogPath = resolveDiagnosticsLogPath(logPath);
     if (this.lastStartEnv) {
       applyDiagnosticsLogPath(this.lastStartEnv, resolvedLogPath);
@@ -256,18 +276,64 @@ export class PtyHostManager extends EventEmitter {
 
     const child = this.child;
     if (!child) {
-      return true;
+      return Promise.resolve(true);
     }
 
+    const requestId = makeId("diagnostics");
+    const configured = this.waitForDiagnosticsRequest(requestId);
     try {
       child.postMessage({
         type: "diagnostics.configure",
+        requestId,
         ...(resolvedLogPath ? { logPath: resolvedLogPath } : {})
       } satisfies PtyRequest);
-      return true;
+      return configured;
     } catch {
-      return false;
+      this.completeDiagnosticsRequest(requestId, false);
+      return Promise.resolve(false);
     }
+  }
+
+  flushDiagnostics(): Promise<boolean> {
+    const child = this.child;
+    if (!child) {
+      return Promise.resolve(true);
+    }
+    const requestId = makeId("diagnostics");
+    const flushed = this.waitForDiagnosticsRequest(requestId);
+    try {
+      child.postMessage({
+        type: "diagnostics.flush",
+        requestId
+      } satisfies PtyRequest);
+      return flushed;
+    } catch {
+      this.completeDiagnosticsRequest(requestId, false);
+      return Promise.resolve(false);
+    }
+  }
+
+  private waitForDiagnosticsRequest(requestId: Id): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.completeDiagnosticsRequest(requestId, false);
+      }, DIAGNOSTICS_CONFIGURATION_ACK_TIMEOUT_MS);
+      timeout.unref?.();
+      this.pendingDiagnosticsConfigurations.set(requestId, {
+        resolve,
+        timeout
+      });
+    });
+  }
+
+  private completeDiagnosticsRequest(requestId: Id, completed: boolean): void {
+    const pending = this.pendingDiagnosticsConfigurations.get(requestId);
+    if (!pending) {
+      return;
+    }
+    this.pendingDiagnosticsConfigurations.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(completed);
   }
 
   stop(): Promise<void> {
@@ -341,6 +407,11 @@ export class PtyHostManager extends EventEmitter {
     this.queuedRequests.clear();
     this.queuedInputRequests.clear();
     this.sessionRefs.clear();
+    for (const pending of this.pendingDiagnosticsConfigurations.values()) {
+      clearTimeout(pending.timeout);
+      pending.resolve(false);
+    }
+    this.pendingDiagnosticsConfigurations.clear();
     this.flushPendingSnapshots();
   }
 
@@ -583,6 +654,7 @@ function requestSessionId(request: PtyRequest): Id | undefined {
     case "stream.bind":
       return request.session.sessionId;
     case "diagnostics.configure":
+    case "diagnostics.flush":
     case "shutdown":
       return undefined;
   }

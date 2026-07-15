@@ -228,26 +228,115 @@ describe("resolvePtyHostLaunchOptions", () => {
     );
   });
 
-  it("reconfigures diagnostics logging in a running pty-host", () => {
+  it("waits for pty-host diagnostics batches to flush before configuration completes", async () => {
     const postMessage = vi.fn();
     const fakeChild = createFakeUtilityProcess(postMessage);
     const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
     const manager = new PtyHostManager(forkProcess);
 
     manager.start({ PATH: "/usr/local/bin" });
+    const onDiagnostics = vi.fn();
+    manager.on("diagnostics", onDiagnostics);
 
-    expect(manager.configureDiagnosticsLogPath(" /tmp/kmux-debug.log ")).toBe(
-      true
+    const enablePromise = manager.configureDiagnosticsLogPath(
+      " /tmp/kmux-debug.log "
     );
-    expect(postMessage).toHaveBeenLastCalledWith({
+    const enableRequest = postMessage.mock.calls.at(-1)?.[0];
+    expect(enableRequest).toEqual({
       type: "diagnostics.configure",
+      requestId: expect.any(String),
       logPath: "/tmp/kmux-debug.log"
     });
-
-    expect(manager.configureDiagnosticsLogPath(undefined)).toBe(true);
-    expect(postMessage).toHaveBeenLastCalledWith({
-      type: "diagnostics.configure"
+    fakeChild.emit("message", {
+      type: "diagnostics.batch",
+      records: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          pid: 12,
+          scope: "pty-host.diagnostics.configuration.changed",
+          details: { enabled: true },
+          terminalTelemetry: false
+        }
+      ]
     });
+    expect(onDiagnostics).toHaveBeenCalledWith([
+      expect.objectContaining({
+        scope: "pty-host.diagnostics.configuration.changed"
+      })
+    ]);
+    fakeChild.emit("message", {
+      type: "diagnostics.configured",
+      requestId: enableRequest.requestId,
+      enabled: true
+    });
+    await expect(enablePromise).resolves.toBe(true);
+
+    const disablePromise = manager.configureDiagnosticsLogPath(undefined);
+    const disableRequest = postMessage.mock.calls.at(-1)?.[0];
+    expect(disableRequest).toEqual({
+      type: "diagnostics.configure",
+      requestId: expect.any(String)
+    });
+    fakeChild.emit("message", {
+      type: "diagnostics.configured",
+      requestId: disableRequest.requestId,
+      enabled: false
+    });
+    await expect(disablePromise).resolves.toBe(true);
+  });
+
+  it("flushes pty-host diagnostic batches before clear can continue", async () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+    const onDiagnostics = vi.fn();
+    manager.on("diagnostics", onDiagnostics);
+    manager.start();
+
+    const flushed = manager.flushDiagnostics();
+    const request = postMessage.mock.calls.at(-1)?.[0];
+    expect(request).toEqual({
+      type: "diagnostics.flush",
+      requestId: expect.any(String)
+    });
+    fakeChild.emit("message", {
+      type: "diagnostics.batch",
+      records: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          pid: 12,
+          scope: "before-clear",
+          details: {},
+          terminalTelemetry: false
+        }
+      ]
+    });
+    expect(onDiagnostics).toHaveBeenCalledOnce();
+    fakeChild.emit("message", {
+      type: "diagnostics.flushed",
+      requestId: request.requestId
+    });
+
+    await expect(flushed).resolves.toBe(true);
+  });
+
+  it("does not hang diagnostics configuration when the pty-host omits its acknowledgement", async () => {
+    vi.useFakeTimers();
+    const fakeChild = createFakeUtilityProcess();
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    try {
+      manager.start();
+      const configured = manager.configureDiagnosticsLogPath(
+        "/tmp/kmux-debug.log"
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(configured).resolves.toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("enables raw PTY stdout logging only when explicitly requested in development", () => {

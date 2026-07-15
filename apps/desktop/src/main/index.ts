@@ -82,13 +82,16 @@ import {
 import {
   applyDiagnosticsLogPath,
   clearDiagnosticsLog,
-  clearDiagnosticsLogForEnableTransition,
   DEFAULT_DIAGNOSTICS_LOG_FILE_NAME,
   DIAGNOSTICS_LOG_PATH_ENV,
   logDiagnostics,
+  logTerminalDiagnostics,
   prepareExistingDiagnosticsLogFile,
-  resolveEffectiveDiagnosticsLogPath
+  resolveEffectiveDiagnosticsLogPath,
+  setDiagnosticsRecordSink,
+  type DiagnosticsRecord
 } from "../shared/diagnostics";
+import { createAsyncDiagnosticsWriter } from "./asyncDiagnosticsWriter";
 import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
 import {
   KMUX_PROFILE_LOG_PATH_ENV,
@@ -174,6 +177,20 @@ async function bootstrap(): Promise<void> {
     settingsLogPath: settingsDiagnosticsLogPath
   });
   applyDiagnosticsLogPath(process.env, diagnosticsLogPath);
+  let diagnosticsWriter = diagnosticsLogPath
+    ? createAsyncDiagnosticsWriter()
+    : null;
+  if (diagnosticsWriter && diagnosticsLogPath) {
+    const configured = await diagnosticsWriter.configure(diagnosticsLogPath);
+    if (!configured) {
+      diagnosticsLogPath = undefined;
+      diagnosticsWriter = null;
+      applyDiagnosticsLogPath(process.env, undefined);
+    }
+  }
+  const recordMainDiagnostics = (record: DiagnosticsRecord): boolean =>
+    diagnosticsWriter?.record(record) ?? false;
+  setDiagnosticsRecordSink(diagnosticsWriter ? recordMainDiagnostics : null);
   const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
@@ -238,34 +255,68 @@ async function bootstrap(): Promise<void> {
   } else {
     delete resolvedShellEnv.baseEnv[KMUX_PROFILE_LOG_PATH_ENV];
   }
+  let diagnosticConfiguration = Promise.resolve();
+  const broadcastDiagnosticLoggingConfiguration = (enabled: boolean): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("kmux:diagnostics-logging", enabled);
+    }
+  };
   const configureDiagnosticLogging = (settingsEnabled: boolean): void => {
+    const previouslyEnabled = diagnosticLoggingSettingEnabled;
     const previousLogPath = diagnosticsLogPath;
-    const previousLogCleared = clearDiagnosticsLogForEnableTransition({
-      previouslyEnabled: diagnosticLoggingSettingEnabled,
-      nextEnabled: settingsEnabled,
-      logPath: settingsDiagnosticsLogPath
-    });
     diagnosticLoggingSettingEnabled = settingsEnabled;
-    diagnosticsLogPath = resolveEffectiveDiagnosticsLogPath({
+    const nextDiagnosticsLogPath = resolveEffectiveDiagnosticsLogPath({
       settingsEnabled,
       settingsLogPath: settingsDiagnosticsLogPath
     });
-    applyDiagnosticsLogPath(process.env, diagnosticsLogPath);
-    applyDiagnosticsLogPath(resolvedShellEnv.baseEnv, diagnosticsLogPath);
-    const ptyHostConfigured =
-      ptyHost?.configureDiagnosticsLogPath(diagnosticsLogPath) ?? true;
-    logDiagnostics(
-      "main.diagnostics.configuration.changed",
-      {
-        settingsEnabled,
-        effectiveEnabled: Boolean(diagnosticsLogPath),
-        source: diagnosticsLogPath ? "settings" : "disabled",
-        logPath: diagnosticsLogPath,
-        previousLogCleared,
-        ptyHostConfigured
-      },
-      diagnosticsLogPath ?? previousLogPath
-    );
+    diagnosticsLogPath = nextDiagnosticsLogPath;
+    applyDiagnosticsLogPath(process.env, nextDiagnosticsLogPath);
+    applyDiagnosticsLogPath(resolvedShellEnv.baseEnv, nextDiagnosticsLogPath);
+    diagnosticConfiguration = diagnosticConfiguration
+      .then(async () => {
+        let previousLogCleared: boolean | undefined;
+        let effectiveLogPath = nextDiagnosticsLogPath;
+        if (settingsEnabled) {
+          diagnosticsWriter ??= createAsyncDiagnosticsWriter();
+          const writerConfigured = await diagnosticsWriter.configure(
+            settingsDiagnosticsLogPath
+          );
+          if (!writerConfigured) {
+            effectiveLogPath = undefined;
+            diagnosticsWriter = null;
+            setDiagnosticsRecordSink(null);
+            diagnosticsLogPath = undefined;
+            applyDiagnosticsLogPath(process.env, undefined);
+            applyDiagnosticsLogPath(resolvedShellEnv.baseEnv, undefined);
+          } else if (!previouslyEnabled) {
+            previousLogCleared = await diagnosticsWriter.clear();
+            setDiagnosticsRecordSink(recordMainDiagnostics);
+          } else {
+            setDiagnosticsRecordSink(recordMainDiagnostics);
+          }
+        }
+        const ptyHostConfigured =
+          (await ptyHost?.configureDiagnosticsLogPath(effectiveLogPath)) ??
+          true;
+        logDiagnostics("main.diagnostics.configuration.changed", {
+          settingsEnabled,
+          effectiveEnabled: Boolean(effectiveLogPath),
+          source: effectiveLogPath ? "settings" : "disabled",
+          logPath: effectiveLogPath,
+          previousLogPath,
+          previousLogCleared,
+          ptyHostConfigured
+        });
+        if (!settingsEnabled && diagnosticsWriter) {
+          await diagnosticsWriter.configure(undefined);
+          diagnosticsWriter = null;
+          setDiagnosticsRecordSink(null);
+        }
+        broadcastDiagnosticLoggingConfiguration(Boolean(effectiveLogPath));
+      })
+      .catch(() => {
+        // Diagnostics configuration must never affect application behavior.
+      });
   };
   writeAgentHookHelpers(paths.agentHookBinDir);
   writeAgentWrapperBinaries(paths.agentWrapperBinDir);
@@ -392,6 +443,14 @@ async function bootstrap(): Promise<void> {
   ptyHost = new PtyHostManager((modulePath, args, options) =>
     utilityProcess.fork(modulePath, args, options)
   );
+  ptyHost.on("diagnostics", (records: DiagnosticsRecord[]) => {
+    if (!diagnosticsWriter) {
+      return;
+    }
+    for (const record of records) {
+      diagnosticsWriter.record(record);
+    }
+  });
   runtime.setPtyHost(ptyHost);
 
   const terminalBridge = createTerminalBridge({
@@ -581,7 +640,16 @@ async function bootstrap(): Promise<void> {
         platformRuntime.rendererDescriptor.debugging
           .surfaceDiagnosticCaptureDefaultEnabled
       ),
-    clearDiagnosticLog: () => clearDiagnosticsLog(settingsDiagnosticsLogPath),
+    clearDiagnosticLog: async () => {
+      if (!diagnosticsWriter) {
+        return clearDiagnosticsLog(settingsDiagnosticsLogPath);
+      }
+      const ptyDiagnosticsFlushed = (await ptyHost?.flushDiagnostics()) ?? true;
+      if (!ptyDiagnosticsFlushed) {
+        return false;
+      }
+      return diagnosticsWriter.clear();
+    },
     captureSurfaceDiagnostics,
     prepareWorktreeConversion: worktreeRuntime.prepareConversion,
     createWorktreeWorkspace: worktreeRuntime.createWorkspace,
@@ -592,12 +660,30 @@ async function bootstrap(): Promise<void> {
     downloadAvailableUpdate: () => updater.downloadUpdate("inline"),
     installDownloadedUpdate: () => updater.quitAndInstall(),
     clipboard: createMainClipboardService(),
-    recordProfileEvent: (event) => smoothnessProfile.record(event),
+    recordProfileEvent: (event) => {
+      smoothnessProfile.record(event);
+      if (event.name.startsWith("terminal.")) {
+        logTerminalDiagnostics(event.name, {
+          source: event.source,
+          eventAt: event.at,
+          ...event.details
+        });
+      }
+    },
     recordProfileEvents: (events) => {
       if (smoothnessProfile.recordMany) {
         smoothnessProfile.recordMany(events);
       } else {
         events.forEach((event) => smoothnessProfile.record(event));
+      }
+      for (const event of events) {
+        if (event.name.startsWith("terminal.")) {
+          logTerminalDiagnostics(event.name, {
+            source: event.source,
+            eventAt: event.at,
+            ...event.details
+          });
+        }
       }
     }
   });
@@ -703,6 +789,7 @@ async function bootstrap(): Promise<void> {
         metadataRuntime.dispose();
         usageRuntime.shutdown();
 
+        await diagnosticConfiguration;
         const server = socketServer;
         socketServer = null;
         const host = ptyHost;
@@ -712,6 +799,10 @@ async function bootstrap(): Promise<void> {
         const hostStop = host?.stop();
         try {
           await Promise.all([socketStop, hostStop]);
+          await diagnosticsWriter?.close();
+          diagnosticsWriter = null;
+          applyDiagnosticsLogPath(process.env, undefined);
+          setDiagnosticsRecordSink(null);
         } finally {
           shellWrapperRuntime.cleanup();
         }
