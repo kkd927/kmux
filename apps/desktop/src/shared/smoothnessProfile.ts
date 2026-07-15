@@ -32,6 +32,7 @@ export type SmoothnessProfileEventName =
   | "terminal.data-plane.cache"
   | "terminal.data-plane.resume-settle"
   | "terminal.data-plane.input"
+  | "terminal.focus.lifecycle"
   | "terminal.data-plane.main-ingress"
   | "terminal.data-plane.supervisor"
   | "pane-divider.drag.start"

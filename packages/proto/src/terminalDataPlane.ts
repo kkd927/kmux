@@ -34,6 +34,22 @@ export interface TerminalCwdRange {
   cwd: string;
 }
 
+export type TerminalInputDiagnosticKind =
+  | "focus-in"
+  | "focus-out"
+  | "mouse"
+  | "keyboard-or-paste"
+  | "binary"
+  | "key";
+
+export type TerminalOutputDiagnosticKind =
+  | "osc-title-only"
+  | "osc-only"
+  | "screen"
+  | "mixed"
+  | "control-only"
+  | "indeterminate";
+
 /**
  * Optional profiling timestamps use high-resolution Unix epoch milliseconds
  * so samples remain comparable across the utility and renderer processes.
@@ -42,11 +58,14 @@ export interface TerminalCwdRange {
 export interface TerminalOutputTelemetry {
   ptyReadAt: number;
   headlessCommitAt: number;
+  /** Content-free classification of what the PTY read can visibly mutate. */
+  outputKind?: TerminalOutputDiagnosticKind;
   /** True only when a renderer attachment existed at the PTY read boundary. */
   visibleAtPtyRead?: boolean;
   /** Correlates the first PTY read after an accepted input without its data. */
   inputAcceptedAt?: number;
   inputSequence?: number;
+  inputKind?: TerminalInputDiagnosticKind;
 }
 
 export interface TerminalDataPlaneHostTelemetry {
@@ -702,6 +721,12 @@ function validateOutputTelemetry(value: unknown, path: string): string | null {
     return `${path}.headlessCommitAt must not precede ptyReadAt`;
   }
   if (
+    value.outputKind !== undefined &&
+    !isTerminalOutputDiagnosticKind(value.outputKind)
+  ) {
+    return `${path}.outputKind is invalid`;
+  }
+  if (
     value.visibleAtPtyRead !== undefined &&
     typeof value.visibleAtPtyRead !== "boolean"
   ) {
@@ -730,8 +755,42 @@ function validateOutputTelemetry(value: unknown, path: string): string | null {
     if ((value.inputAcceptedAt as number) > (value.ptyReadAt as number)) {
       return `${path}.inputAcceptedAt must not follow ptyReadAt`;
     }
+    if (
+      value.inputKind !== undefined &&
+      !isTerminalInputDiagnosticKind(value.inputKind)
+    ) {
+      return `${path}.inputKind is invalid`;
+    }
+  } else if (value.inputKind !== undefined) {
+    return `${path}.inputKind requires inputAcceptedAt and inputSequence`;
   }
   return null;
+}
+
+function isTerminalInputDiagnosticKind(
+  value: unknown
+): value is TerminalInputDiagnosticKind {
+  return (
+    value === "focus-in" ||
+    value === "focus-out" ||
+    value === "mouse" ||
+    value === "keyboard-or-paste" ||
+    value === "binary" ||
+    value === "key"
+  );
+}
+
+function isTerminalOutputDiagnosticKind(
+  value: unknown
+): value is TerminalOutputDiagnosticKind {
+  return (
+    value === "osc-title-only" ||
+    value === "osc-only" ||
+    value === "screen" ||
+    value === "mixed" ||
+    value === "control-only" ||
+    value === "indeterminate"
+  );
 }
 
 function validateTimestamp(value: unknown, path: string): string | null {

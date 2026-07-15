@@ -15,6 +15,8 @@ import type {
   SurfaceSnapshotPayload,
   TerminalCheckpoint,
   TerminalDelta,
+  TerminalInputDiagnosticKind,
+  TerminalOutputDiagnosticKind,
   TerminalSessionRef
 } from "@kmux/proto";
 import { TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES } from "@kmux/proto";
@@ -61,6 +63,12 @@ import {
 } from "../shared/nodeSmoothnessProfile";
 import { createSmoothnessProfileBucket } from "../shared/smoothnessProfileBucket";
 import { terminalDataPlaneNowMs } from "../shared/terminalDataPlaneMetrics";
+import {
+  classifyTerminalBinaryInput,
+  classifyTerminalTextInput,
+  createTerminalOutputDiagnosticClassifier,
+  type TerminalOutputDiagnosticClassifier
+} from "../shared/terminalInteractionDiagnostics";
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import {
@@ -146,8 +154,11 @@ interface SessionRuntime {
   pendingInputTelemetry?: {
     inputAcceptedAt: number;
     inputSequence: number;
+    inputKind: TerminalInputDiagnosticKind;
   };
   lastDiagnosticOutputAt?: number;
+  outputDiagnosticClassifier?: TerminalOutputDiagnosticClassifier;
+  outputDiagnosticClassifierActive: boolean;
   outputSegmenterState: TerminalOutputSegmenterState;
   rawOutputTail: string;
   rawOutputTailTruncated: boolean;
@@ -189,8 +200,10 @@ interface QueuedOutputSegment {
   telemetry?: {
     ptyReadAt: number;
     visibleAtPtyRead: boolean;
+    outputKind: TerminalOutputDiagnosticKind;
     inputAcceptedAt?: number;
     inputSequence?: number;
+    inputKind?: TerminalInputDiagnosticKind;
   };
 }
 
@@ -300,6 +313,10 @@ function refreshTerminalTelemetry(): void {
     if (!diagnosticsIpc?.enabled) {
       record.lastDiagnosticOutputAt = undefined;
     }
+    if (!terminalMetricsProfile.enabled) {
+      record.outputDiagnosticClassifier = undefined;
+      record.outputDiagnosticClassifierActive = false;
+    }
   }
 }
 const sessionScheduler = new FairSessionScheduler({
@@ -332,6 +349,9 @@ const ptyBucket = createSmoothnessProfileBucket<{
   chunks: number;
   bytes: number;
   maxChunkBytes: number;
+  firstPtyReadAt: number | null;
+  lastPtyReadAt: number | null;
+  outputKinds: Record<TerminalOutputDiagnosticKind, number>;
 }>({
   minEvents: PROFILE_PTY_BUCKET_MIN_CHUNKS,
   maxDurationMs: PROFILE_PTY_BUCKET_MAX_DURATION_MS,
@@ -344,7 +364,17 @@ const ptyBucket = createSmoothnessProfileBucket<{
       startedAt,
       chunks: 0,
       bytes: 0,
-      maxChunkBytes: 0
+      maxChunkBytes: 0,
+      firstPtyReadAt: null,
+      lastPtyReadAt: null,
+      outputKinds: {
+        "osc-title-only": 0,
+        "osc-only": 0,
+        screen: 0,
+        mixed: 0,
+        "control-only": 0,
+        indeterminate: 0
+      }
     };
   },
   onFlush: (details, durationMs, at) => {
@@ -440,7 +470,12 @@ function handleIpcChannelClosed(error?: unknown): void {
   disposeAllSessions();
 }
 
-function recordPtyChunk(record: SessionRuntime, chunk: string): void {
+function recordPtyChunk(
+  record: SessionRuntime,
+  chunk: string,
+  outputKind: TerminalOutputDiagnosticKind,
+  ptyReadAt: number
+): void {
   if (!terminalMetricsProfile.enabled) {
     return;
   }
@@ -451,6 +486,9 @@ function recordPtyChunk(record: SessionRuntime, chunk: string): void {
       details.chunks += 1;
       details.bytes += bytes;
       details.maxChunkBytes = Math.max(details.maxChunkBytes, bytes);
+      details.firstPtyReadAt ??= ptyReadAt;
+      details.lastPtyReadAt = ptyReadAt;
+      details.outputKinds[outputKind] += 1;
     }
   );
 }
@@ -499,7 +537,8 @@ function createRawOutputHistory(
 function appendRawOutputHistory(
   record: SessionRuntime,
   chunk: string,
-  chunkSequence: number
+  chunkSequence: number,
+  telemetry: QueuedOutputSegment["telemetry"]
 ): void {
   if (!record.rawOutputLogPath || !record.rawOutputIndexPath) {
     return;
@@ -523,7 +562,14 @@ function appendRawOutputHistory(
         charEnd: record.rawOutputLogChars,
         utf8Bytes: byteLength,
         chars: chunk.length,
-        at: new Date(record.lastActivityAt).toISOString()
+        at: new Date(
+          telemetry?.ptyReadAt ?? record.lastActivityAt
+        ).toISOString(),
+        ptyReadAt: telemetry?.ptyReadAt,
+        outputKind: telemetry?.outputKind,
+        visibleAtPtyRead: telemetry?.visibleAtPtyRead,
+        inputSequence: telemetry?.inputSequence,
+        inputKind: telemetry?.inputKind
       })}\n`,
       "utf8"
     );
@@ -591,7 +637,12 @@ async function writeTerminalOutputRun(
         record.sequence += 1;
         const chunkSequence = record.sequence;
         const byteLength = Buffer.byteLength(segment.chunk, "utf8");
-        appendRawOutputHistory(record, segment.chunk, chunkSequence);
+        appendRawOutputHistory(
+          record,
+          segment.chunk,
+          chunkSequence,
+          segment.telemetry
+        );
         try {
           record.terminal.write(segment.chunk, () => {
             try {
@@ -626,13 +677,15 @@ async function writeTerminalOutputRun(
                       telemetry: {
                         ptyReadAt: segment.telemetry.ptyReadAt,
                         headlessCommitAt: terminalDataPlaneNowMs(performance),
+                        outputKind: segment.telemetry.outputKind,
                         visibleAtPtyRead: segment.telemetry.visibleAtPtyRead,
                         ...(segment.telemetry.inputAcceptedAt === undefined
                           ? {}
                           : {
                               inputAcceptedAt:
                                 segment.telemetry.inputAcceptedAt,
-                              inputSequence: segment.telemetry.inputSequence
+                              inputSequence: segment.telemetry.inputSequence,
+                              inputKind: segment.telemetry.inputKind
                             })
                       }
                     }
@@ -854,6 +907,7 @@ function sendSnapshotAfterMutationQueue(
   void enqueueTerminalBarrier(record, () => {
     if (sessions.get(record.sessionId) === record) {
       if (options.includeRawOutputTail) {
+        ptyBucket.flushAll();
         for (const sessionRecord of sessions.values()) {
           logPtyResizeState(sessionRecord, "diagnostic-snapshot", {
             requestedSurfaceId: record.surfaceId
@@ -1134,11 +1188,20 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       const inputAcceptedAt = terminalMetricsProfile.enabled
         ? terminalDataPlaneNowMs(performance)
         : undefined;
-      if (inputAcceptedAt !== undefined) {
+      const inputKind =
+        inputAcceptedAt === undefined
+          ? undefined
+          : message.type === "input:text"
+            ? classifyTerminalTextInput(message.text)
+            : message.type === "input:binary"
+              ? classifyTerminalBinaryInput(message.data)
+              : "key";
+      if (inputAcceptedAt !== undefined && inputKind !== undefined) {
         record.inputTelemetrySequence += 1;
         record.pendingInputTelemetry = {
           inputAcceptedAt,
-          inputSequence: record.inputTelemetrySequence
+          inputSequence: record.inputTelemetrySequence,
+          inputKind
         };
       }
       const inputBytes =
@@ -1155,6 +1218,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           surfaceId: record.surfaceId,
           sessionId: record.sessionId,
           kind: message.type,
+          inputKind,
           bytes: inputBytes,
           inputAcceptedAt,
           inputSequence: record.inputTelemetrySequence,
@@ -1263,6 +1327,10 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     pendingDirectInputs: [],
     pendingDirectInputBytes: 0,
     inputTelemetrySequence: 0,
+    outputDiagnosticClassifier: terminalMetricsProfile.enabled
+      ? createTerminalOutputDiagnosticClassifier()
+      : undefined,
+    outputDiagnosticClassifierActive: terminalMetricsProfile.enabled,
     outputSegmenterState: { pendingOsc7: false, pendingOsc7Prefix: "" },
     rawOutputTail: "",
     rawOutputTailTruncated: false,
@@ -1479,9 +1547,22 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   ptyProcess.onData((chunk) => {
-    const ptyReadAt = terminalMetricsProfile.enabled
+    const telemetryEnabled = terminalMetricsProfile.enabled;
+    const ptyReadAt = telemetryEnabled
       ? terminalDataPlaneNowMs(performance)
       : undefined;
+    let outputKind: TerminalOutputDiagnosticKind | undefined;
+    if (telemetryEnabled) {
+      const classifier = (record.outputDiagnosticClassifier ??=
+        createTerminalOutputDiagnosticClassifier());
+      if (!record.outputDiagnosticClassifierActive) {
+        classifier.invalidate();
+        record.outputDiagnosticClassifierActive = true;
+      }
+      outputKind = classifier.classify(chunk);
+    } else {
+      record.outputDiagnosticClassifierActive = false;
+    }
     if (diagnosticsIpc?.enabled && ptyReadAt !== undefined) {
       const previousOutputAt = record.lastDiagnosticOutputAt;
       const gapMs = resolveTerminalOutputGapMs(previousOutputAt, ptyReadAt);
@@ -1493,9 +1574,11 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           ptyReadAt,
           nextSequence: record.sequence + 1,
           chunkBytes: Buffer.byteLength(chunk, "utf8"),
+          outputKind,
           ...(record.pendingInputTelemetry
             ? {
                 inputSequence: record.pendingInputTelemetry.inputSequence,
+                inputKind: record.pendingInputTelemetry.inputKind,
                 inputToOutputMs:
                   ptyReadAt - record.pendingInputTelemetry.inputAcceptedAt
               }
@@ -1510,7 +1593,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     const visibleAtPtyRead = record.stream.attachmentCount > 0;
     const pendingInputTelemetry = record.pendingInputTelemetry;
     record.pendingInputTelemetry = undefined;
-    recordPtyChunk(record, chunk);
+    if (outputKind !== undefined && ptyReadAt !== undefined) {
+      recordPtyChunk(record, chunk, outputKind, ptyReadAt);
+    }
     appendRawOutputTail(record, chunk);
     record.lastActivityAt = Date.now();
     const splitOutput = splitTerminalOutputByOsc7({
@@ -1521,13 +1606,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     for (const segment of splitOutput.segments) {
       enqueueTerminalOutputSegment(
         record,
-        ptyReadAt === undefined
+        ptyReadAt === undefined || outputKind === undefined
           ? segment
           : {
               ...segment,
               telemetry: {
                 ptyReadAt,
                 visibleAtPtyRead,
+                outputKind,
                 ...pendingInputTelemetry
               }
             }

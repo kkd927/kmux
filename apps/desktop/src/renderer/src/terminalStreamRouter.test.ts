@@ -677,9 +677,11 @@ describe("TerminalStreamRouter", () => {
             telemetry: {
               ptyReadAt: 1_000,
               headlessCommitAt: 1_002,
+              outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999,
-              inputSequence: 7
+              inputSequence: 7,
+              inputKind: "mouse"
             }
           }
         ]
@@ -703,6 +705,8 @@ describe("TerminalStreamRouter", () => {
       visibleAtPtyRead: true,
       inputAcceptedAt: 999,
       inputSequence: 7,
+      inputKind: "mouse",
+      outputKinds: ["screen"],
       ptyReadToHeadlessCommitMs: 2,
       portTransferMs: 1,
       portReceiveToParsedMs: 4,

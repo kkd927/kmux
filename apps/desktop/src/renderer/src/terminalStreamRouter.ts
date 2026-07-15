@@ -4,7 +4,9 @@ import type {
   TerminalDataPlaneDetachReason,
   TerminalDataPlaneHostMessage,
   TerminalDelta,
+  TerminalInputDiagnosticKind,
   TerminalKeyInput,
+  TerminalOutputDiagnosticKind,
   TerminalSessionRef
 } from "@kmux/proto";
 import {
@@ -282,6 +284,8 @@ interface TerminalOutputMetricTrace {
   visibleAtPtyRead?: boolean;
   inputAcceptedAt?: number;
   inputSequence?: number;
+  inputKind?: TerminalInputDiagnosticKind;
+  outputKinds?: TerminalOutputDiagnosticKind[];
 }
 
 /** Routes every live surface port without one global IPC listener per pane. */
@@ -1376,6 +1380,13 @@ export class TerminalStreamRouter {
             headlessCommitAt: Math.max(
               ...telemetry.map((value) => value.headlessCommitAt)
             ),
+            outputKinds: Array.from(
+              new Set(
+                telemetry.flatMap((value) =>
+                  value.outputKind === undefined ? [] : [value.outputKind]
+                )
+              )
+            ),
             visibleAtPtyRead:
               attachment.liveCaughtUp &&
               telemetry.every((value) => value.visibleAtPtyRead === true) &&
@@ -1387,7 +1398,8 @@ export class TerminalStreamRouter {
             ...(inputTelemetry
               ? {
                   inputAcceptedAt: inputTelemetry.inputAcceptedAt,
-                  inputSequence: inputTelemetry.inputSequence
+                  inputSequence: inputTelemetry.inputSequence,
+                  inputKind: inputTelemetry.inputKind
                 }
               : {})
           }
@@ -1505,6 +1517,8 @@ export class TerminalStreamRouter {
       visibleAtPtyRead: trace.visibleAtPtyRead,
       inputAcceptedAt: trace.inputAcceptedAt,
       inputSequence: trace.inputSequence,
+      inputKind: trace.inputKind,
+      outputKinds: trace.outputKinds,
       ptyReadAt: trace.ptyReadAt,
       headlessCommitAt: trace.headlessCommitAt,
       portSentAt: trace.portSentAt,

@@ -150,7 +150,10 @@ vi.mock("@xterm/xterm", () => ({
       },
       modes: {
         applicationCursorKeysMode: false,
-        bracketedPasteMode: false
+        bracketedPasteMode: false,
+        sendFocusMode: false,
+        mouseTrackingMode: "none",
+        synchronizedOutputMode: false
       },
       textarea: document.createElement("textarea"),
       loadAddon: vi.fn(),
@@ -235,6 +238,7 @@ vi.mock("@xterm/xterm", () => ({
 import { Terminal } from "@xterm/xterm";
 import { TerminalPane } from "./TerminalPane";
 import * as terminalInstanceStore from "../terminalInstanceStore";
+import { flushRendererSmoothnessProfileEvents } from "../smoothnessProfile";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -624,6 +628,43 @@ describe("TerminalPane visibility cleanup", () => {
         rightClickSelectsWord: false
       })
     );
+  });
+
+  it("installs interaction diagnostics only while diagnostic logging is enabled", async () => {
+    let diagnosticsEnabled = false;
+    let notifyDiagnosticsLogging: ((enabled: boolean) => void) | null = null;
+    window.kmux.profileSmoothnessEnabled = vi.fn(() => diagnosticsEnabled);
+    window.kmux.subscribeDiagnosticsLogging = vi.fn((listener) => {
+      notifyDiagnosticsLogging = listener;
+      return vi.fn();
+    });
+    window.kmux.recordSmoothnessProfileEvents = vi.fn(async () => {});
+
+    await act(async () => {
+      root.render(<TerminalPane {...createProps("surface_1")} />);
+      await flushMicrotasks();
+    });
+    const terminal = vi.mocked(Terminal).mock.results[0]?.value as {
+      onWriteParsed: ReturnType<typeof vi.fn>;
+    };
+    expect(terminal.onWriteParsed).toHaveBeenCalledTimes(1);
+
+    diagnosticsEnabled = true;
+    await act(async () => {
+      notifyDiagnosticsLogging?.(true);
+      await flushMicrotasks();
+    });
+    expect(terminal.onWriteParsed).toHaveBeenCalledTimes(2);
+    const diagnosticListenerDispose = terminal.onWriteParsed.mock.results[1]
+      ?.value.dispose as ReturnType<typeof vi.fn>;
+
+    diagnosticsEnabled = false;
+    await act(async () => {
+      notifyDiagnosticsLogging?.(false);
+      await flushMicrotasks();
+    });
+    expect(diagnosticListenerDispose).toHaveBeenCalledOnce();
+    await flushRendererSmoothnessProfileEvents();
   });
 
   it("uses one direct v2 port for checkpoint, text, binary, and detach", async () => {

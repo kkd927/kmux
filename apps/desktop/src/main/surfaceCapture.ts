@@ -399,6 +399,8 @@ function createRendererCaptureScript(
     });
     const readSequenceValue = (value) =>
       typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const readStringValue = (value) =>
+      typeof value === 'string' ? value : null;
     const readAttrSequence = (attr) => {
       // Missing attributes must stay null: Number(null) is 0 and would turn
       // "diagnostics never initialized" into a plausible-looking sequence.
@@ -526,11 +528,89 @@ function createRendererCaptureScript(
     }));
     const terminalHost = findTerminalHost(root);
     const terminal = root.__kmuxTerminal || (terminalHost ? terminalHost.__kmuxTerminal : undefined);
+    const diagnosticMetadataSources = [
+      terminalHost ? terminalHost.__kmuxTerminalDiagnostics : null,
+      root.__kmuxTerminalDiagnostics || null
+    ].filter(Boolean);
+    const latestDiagnosticMetadata = (timestampKey) => {
+      let latest = diagnosticMetadataSources[0] || null;
+      let latestAt = latest
+        ? (readSequenceValue(latest[timestampKey]) ?? -Infinity)
+        : -Infinity;
+      for (const candidate of diagnosticMetadataSources.slice(1)) {
+        const candidateAt =
+          readSequenceValue(candidate[timestampKey]) ?? -Infinity;
+        if (candidateAt > latestAt) {
+          latest = candidate;
+          latestAt = candidateAt;
+        }
+      }
+      return latest;
+    };
+    const focusMetadata = latestDiagnosticMetadata('lastFocusEventAt');
+    const inputMetadata = latestDiagnosticMetadata('lastInputAt');
+    const writeMetadata = latestDiagnosticMetadata('lastWriteAt');
+    const parsedMetadata = latestDiagnosticMetadata('lastParsedAt');
+    const renderMetadata = latestDiagnosticMetadata('lastOnRenderAt');
     const terminalDiagnostics = {
       ...readDiagnostics(root),
       targetSequence,
       waitTimedOut,
       waitDurationMs
+    };
+    const terminalTextarea = terminal ? terminal.textarea : null;
+    const activeElementKind = (() => {
+      const element = document.activeElement;
+      if (!element) return 'none';
+      if (element === terminalTextarea) return 'terminal-textarea';
+      if (element === document.body) return 'body';
+      if (element instanceof HTMLInputElement) return 'input';
+      if (element instanceof HTMLTextAreaElement) return 'textarea';
+      if (element instanceof HTMLButtonElement) return 'button';
+      if (element instanceof HTMLAnchorElement) return 'link';
+      return element instanceof HTMLElement
+        ? element.tagName.toLowerCase()
+        : 'other';
+    })();
+    const pane = root.closest('[data-pane-id]');
+    const paneFocusedAttr = pane ? pane.getAttribute('data-focused') : null;
+    const interactionDiagnostics = {
+      visibilityState: document.visibilityState,
+      paneFocused:
+        paneFocusedAttr === 'true'
+          ? true
+          : paneFocusedAttr === 'false'
+            ? false
+            : null,
+      activeElementKind,
+      terminalTextareaFocused:
+        Boolean(terminalTextarea) && document.activeElement === terminalTextarea,
+      sendFocusMode:
+        terminal && terminal.modes
+          ? Boolean(terminal.modes.sendFocusMode)
+          : null,
+      mouseTrackingMode:
+        terminal && terminal.modes
+          ? readStringValue(terminal.modes.mouseTrackingMode)
+          : null,
+      synchronizedOutputMode:
+        terminal && terminal.modes
+          ? Boolean(terminal.modes.synchronizedOutputMode)
+          : null,
+      attachId: root.getAttribute('data-terminal-stream-ready'),
+      inputReady: root.getAttribute('data-terminal-input-ready') === 'true',
+      lastFocusEvent: readStringValue(focusMetadata?.lastFocusEvent),
+      lastFocusEventAt: readSequenceValue(focusMetadata?.lastFocusEventAt),
+      lastInputKind: readStringValue(inputMetadata?.lastInputKind),
+      lastInputAt: readSequenceValue(inputMetadata?.lastInputAt),
+      lastInputBytes: readSequenceValue(inputMetadata?.lastInputBytes),
+      lastInputRoute: root.getAttribute('data-terminal-last-input-route'),
+      lastWriteAt: readSequenceValue(writeMetadata?.lastWriteAt),
+      lastWriteSequence: readSequenceValue(writeMetadata?.lastWriteSequence),
+      lastParsedAt: readSequenceValue(parsedMetadata?.lastParsedAt),
+      lastParsedSequence: readSequenceValue(parsedMetadata?.lastParsedSequence),
+      lastOnRenderAt: readSequenceValue(renderMetadata?.lastOnRenderAt),
+      lastOnRenderSequence: readSequenceValue(renderMetadata?.lastOnRenderSequence)
     };
     let bufferRows = [];
     let bottomRows = [];
@@ -593,6 +673,7 @@ function createRendererCaptureScript(
           height: window.innerHeight
         },
         terminalDiagnostics,
+        interactionDiagnostics,
         scroll,
         rootRect: rectToJson(root.getBoundingClientRect()),
         xtermRect: xterm ? rectToJson(xterm.getBoundingClientRect()) : null,
@@ -619,6 +700,7 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
       : escapeForDiagnostics(tail(rawOutputTail, RAW_OUTPUT_TAIL_PREVIEW_CHARS));
   const domBufferComparison = compareDomBufferRows(payload);
   const diagnostics = payload.renderer.dom?.terminalDiagnostics;
+  const interaction = payload.renderer.dom?.interactionDiagnostics;
   const lines = [
     `capturedAt=${payload.capturedAt}`,
     `surfaceId=${payload.surfaceId}`,
@@ -641,6 +723,32 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     `renderer.diagnosticsSources=${
       diagnostics ? JSON.stringify(diagnostics.sources) : ""
     }`,
+    `renderer.documentHasFocus=${payload.renderer.dom?.documentHasFocus ?? ""}`,
+    `renderer.visibilityState=${interaction?.visibilityState ?? ""}`,
+    `renderer.paneFocused=${interaction?.paneFocused ?? ""}`,
+    `renderer.activeElementKind=${interaction?.activeElementKind ?? ""}`,
+    `renderer.terminalTextareaFocused=${
+      interaction?.terminalTextareaFocused ?? ""
+    }`,
+    `renderer.sendFocusMode=${interaction?.sendFocusMode ?? ""}`,
+    `renderer.mouseTrackingMode=${interaction?.mouseTrackingMode ?? ""}`,
+    `renderer.synchronizedOutputMode=${
+      interaction?.synchronizedOutputMode ?? ""
+    }`,
+    `renderer.attachId=${interaction?.attachId ?? ""}`,
+    `renderer.inputReady=${interaction?.inputReady ?? ""}`,
+    `renderer.lastFocusEvent=${interaction?.lastFocusEvent ?? ""}`,
+    `renderer.lastFocusEventAt=${interaction?.lastFocusEventAt ?? ""}`,
+    `renderer.lastInputKind=${interaction?.lastInputKind ?? ""}`,
+    `renderer.lastInputAt=${interaction?.lastInputAt ?? ""}`,
+    `renderer.lastInputBytes=${interaction?.lastInputBytes ?? ""}`,
+    `renderer.lastInputRoute=${interaction?.lastInputRoute ?? ""}`,
+    `renderer.lastWriteAt=${interaction?.lastWriteAt ?? ""}`,
+    `renderer.lastWriteSequence=${interaction?.lastWriteSequence ?? ""}`,
+    `renderer.lastParsedAt=${interaction?.lastParsedAt ?? ""}`,
+    `renderer.lastParsedSequence=${interaction?.lastParsedSequence ?? ""}`,
+    `renderer.lastOnRenderAt=${interaction?.lastOnRenderAt ?? ""}`,
+    `renderer.lastOnRenderSequence=${interaction?.lastOnRenderSequence ?? ""}`,
     `renderer.isAtBottom=${payload.renderer.dom?.scroll?.isAtBottom ?? ""}`,
     `renderer.scrollOffsetRows=${
       payload.renderer.dom?.scroll?.scrollOffsetRows ?? ""
@@ -688,6 +796,8 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     "4. [renderer.xterm.buffer.rows]",
     "5. [renderer.dom.rows] and terminal.png",
     "If raw PTY stream does not contain the missing text or contains later erase/overwrite sequences before the snapshot sequence, inspect the agent CLI terminal output. If raw PTY stream contains stable text but pty.snapshot does not, inspect pty-host headless ingestion/serialization. If pty.snapshot has it but renderer buffer does not, inspect bridge attach/replay/live delivery. If renderer buffer has it but DOM/screenshot do not, inspect xterm render/paint.",
+    "For an interaction stall, correlate terminal.focus.lifecycle and terminal.data-plane.input with rawOutputIndex outputKind, then compare renderer.lastWriteSequence, lastParsedSequence, and lastOnRenderSequence.",
+    "osc-title-only means the PTY emitted title activity without a terminal-body mutation; indeterminate means logging began in the middle of an unobserved VT sequence.",
     "",
     "[renderer.dom-buffer.mismatches.trimmed]",
     ...(domBufferComparison === null

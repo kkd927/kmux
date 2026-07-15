@@ -84,7 +84,8 @@ import {
 } from "../shortcutLabels";
 import {
   isRendererSmoothnessProfileEnabled,
-  recordRendererSmoothnessProfileEvent
+  recordRendererSmoothnessProfileEvent,
+  subscribeRendererDiagnosticsLogging
 } from "../smoothnessProfile";
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
 import {
@@ -93,6 +94,11 @@ import {
   type KeyboardShortcutPlatform
 } from "../../../shared/platform/keyboardPolicy";
 import { TERMINAL_LIVE_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
+import { terminalDataPlaneNowMs } from "../../../shared/terminalDataPlaneMetrics";
+import {
+  classifyTerminalBinaryInput,
+  classifyTerminalTextInput
+} from "../../../shared/terminalInteractionDiagnostics";
 import {
   canDropSurfaceTabOnPane,
   decodeSurfaceTabDragPayload,
@@ -216,6 +222,36 @@ const TERMINAL_ATTACH_REARM_MAX_DELAY_MS = 30_000;
 const TERMINAL_DIRECT_RESIZE_ACK_TIMEOUT_MS = 10_000;
 let nextTerminalDirectResizeRequestId = 0;
 
+function terminalActiveElementKind(
+  element: Element | null,
+  terminalTextarea: HTMLTextAreaElement | undefined
+): string {
+  if (!element) {
+    return "none";
+  }
+  if (element === terminalTextarea) {
+    return "terminal-textarea";
+  }
+  if (element === document.body) {
+    return "body";
+  }
+  if (element instanceof HTMLInputElement) {
+    return "input";
+  }
+  if (element instanceof HTMLTextAreaElement) {
+    return "textarea";
+  }
+  if (element instanceof HTMLButtonElement) {
+    return "button";
+  }
+  if (element instanceof HTMLAnchorElement) {
+    return "link";
+  }
+  return element instanceof HTMLElement
+    ? element.tagName.toLowerCase()
+    : "other";
+}
+
 interface TerminalFitMemo {
   width: number;
   height: number;
@@ -325,8 +361,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const [terminalGeneration, setTerminalGeneration] = useState(0);
   const [terminalAttachmentGeneration, setTerminalAttachmentGeneration] =
     useState(0);
+  const [terminalDiagnosticsEnabled, setTerminalDiagnosticsEnabled] = useState(
+    () => isRendererSmoothnessProfileEnabled()
+  );
   const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
   const paneFocusedRef = useRef(props.focused);
+  const terminalDiagnosticsEnabledRef = useRef(terminalDiagnosticsEnabled);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
   const terminalStreamEligible = activeSurface.sessionState !== "pending";
@@ -443,6 +483,22 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           element.__kmuxTerminalDiagnostics?.renderGeneration ?? 0,
         lastOnRenderAt:
           element.__kmuxTerminalDiagnostics?.lastOnRenderAt ?? null,
+        lastOnRenderSequence:
+          element.__kmuxTerminalDiagnostics?.lastOnRenderSequence ?? null,
+        lastWriteAt: element.__kmuxTerminalDiagnostics?.lastWriteAt ?? null,
+        lastWriteSequence:
+          element.__kmuxTerminalDiagnostics?.lastWriteSequence ?? null,
+        lastParsedAt: element.__kmuxTerminalDiagnostics?.lastParsedAt ?? null,
+        lastParsedSequence:
+          element.__kmuxTerminalDiagnostics?.lastParsedSequence ?? null,
+        lastInputAt: element.__kmuxTerminalDiagnostics?.lastInputAt ?? null,
+        lastInputKind: element.__kmuxTerminalDiagnostics?.lastInputKind ?? null,
+        lastInputBytes:
+          element.__kmuxTerminalDiagnostics?.lastInputBytes ?? null,
+        lastFocusEventAt:
+          element.__kmuxTerminalDiagnostics?.lastFocusEventAt ?? null,
+        lastFocusEvent:
+          element.__kmuxTerminalDiagnostics?.lastFocusEvent ?? null,
         ...patch
       };
       element.__kmuxTerminalDiagnostics = diagnostics;
@@ -554,6 +610,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   activeSurfaceRef.current = activeSurface;
   paneFocusedRef.current = props.focused;
+  terminalDiagnosticsEnabledRef.current = terminalDiagnosticsEnabled;
   copyModeRef.current = copyMode;
   queryRef.current = query;
   showSearchRef.current = props.showSearch;
@@ -721,6 +778,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const sessionId = sessionIdForSurface(surfaceId);
     const diagnosticWrapper = surfaceWrapperRefs.current.get(surfaceId);
     if (
+      terminalDiagnosticsEnabledRef.current &&
+      activeSurfaceRef.current?.id === surfaceId &&
+      terminalRef.current
+    ) {
+      updateTerminalDiagnostics(surfaceId, terminalRef.current, {
+        lastInputAt: terminalDataPlaneNowMs(performance),
+        lastInputKind: classifyTerminalTextInput(text),
+        lastInputBytes: UTF8_ENCODER.encode(text).byteLength
+      });
+    }
+    if (
       stream?.grant.session.surfaceId === surfaceId &&
       stream.grant.session.sessionId === sessionId &&
       !stream.registration.closed
@@ -751,13 +819,35 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   function sendTerminalBinary(surfaceId: string, data: string): void {
     const stream = terminalStreamRef.current;
     const sessionId = sessionIdForSurface(surfaceId);
+    const diagnosticWrapper = terminalDiagnosticsEnabledRef.current
+      ? surfaceWrapperRefs.current.get(surfaceId)
+      : undefined;
+    if (
+      terminalDiagnosticsEnabledRef.current &&
+      activeSurfaceRef.current?.id === surfaceId &&
+      terminalRef.current
+    ) {
+      updateTerminalDiagnostics(surfaceId, terminalRef.current, {
+        lastInputAt: terminalDataPlaneNowMs(performance),
+        lastInputKind: classifyTerminalBinaryInput(data),
+        lastInputBytes: data.length
+      });
+    }
     if (
       stream?.grant.session.surfaceId === surfaceId &&
       stream.grant.session.sessionId === sessionId &&
       !stream.registration.closed
     ) {
+      if (diagnosticWrapper) {
+        diagnosticWrapper.dataset.terminalLastInputRoute = "live-stream";
+        diagnosticWrapper.dataset.terminalLastInputBytes = String(data.length);
+      }
       stream.registration.sendBinary(data);
       return;
+    }
+    if (diagnosticWrapper) {
+      diagnosticWrapper.dataset.terminalLastInputRoute = "pending-stream";
+      diagnosticWrapper.dataset.terminalLastInputBytes = String(data.length);
     }
     if (
       !sessionId ||
@@ -794,6 +884,49 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   function focusTerminalInput(
     surfaceId = activeSurfaceRef.current?.id ?? null
   ): void {
+    if (terminalDiagnosticsEnabledRef.current) {
+      const terminal = terminalRef.current;
+      const currentSurface = activeSurfaceRef.current;
+      const stream = terminalStreamRef.current;
+      const attachedStream =
+        currentSurface &&
+        stream?.grant.session.surfaceId === currentSurface.id &&
+        stream.grant.session.sessionId === currentSurface.sessionId
+          ? stream
+          : null;
+      const observedAt = terminalDataPlaneNowMs(performance);
+      if (terminal && currentSurface?.id === surfaceId) {
+        updateTerminalDiagnostics(currentSurface.id, terminal, {
+          lastFocusEventAt: observedAt,
+          lastFocusEvent: "focus-request"
+        });
+      }
+      recordRendererSmoothnessProfileEvent("terminal.focus.lifecycle", {
+        event: "focus-request",
+        observedAt,
+        paneId: props.paneId,
+        paneFocused: paneFocusedRef.current,
+        requestedSurfaceId: surfaceId,
+        surfaceId: currentSurface?.id ?? null,
+        sessionId: currentSurface?.sessionId ?? null,
+        attachId: attachedStream?.grant.attachId ?? null,
+        epoch: attachedStream?.grant.session.epoch ?? null,
+        focusEligible: surfaceId ? shouldFocusActiveTerminal(surfaceId) : false,
+        documentHasFocus: document.hasFocus(),
+        documentVisibility: document.visibilityState,
+        activeElementKind: terminalActiveElementKind(
+          document.activeElement,
+          terminal?.textarea
+        ),
+        terminalTextareaFocused:
+          Boolean(terminal?.textarea) &&
+          document.activeElement === terminal?.textarea,
+        sendFocusMode: terminal?.modes.sendFocusMode ?? null,
+        cols: terminal?.cols ?? null,
+        rows: terminal?.rows ?? null
+      });
+    }
+
     const focusActiveTerminal = (remainingAttempts: number): void => {
       if (!surfaceId || !shouldFocusActiveTerminal(surfaceId)) {
         return;
@@ -1493,6 +1626,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
   }, []);
 
+  useEffect(
+    () =>
+      subscribeRendererDiagnosticsLogging(() => {
+        const enabled = isRendererSmoothnessProfileEnabled();
+        terminalDiagnosticsEnabledRef.current = enabled;
+        setTerminalDiagnosticsEnabled(enabled);
+      }),
+    []
+  );
+
   useEffect(() => {
     return window.kmux.subscribeSurfaceContextMenuAction((event) => {
       if (!props.surfaces.some((surface) => surface.id === event.surfaceId)) {
@@ -1708,13 +1851,164 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const renderListener = terminal.onRender(() => {
+      const diagnostics = (containerRef.current as TerminalHostElement | null)
+        ?.__kmuxTerminalDiagnostics;
       updateTerminalDiagnostics(activeSurface.id, terminal, {
-        lastOnRenderAt: performance.now()
+        lastOnRenderAt: terminalDataPlaneNowMs(performance),
+        ...(terminalDiagnosticsEnabledRef.current
+          ? {
+              lastOnRenderSequence:
+                diagnostics?.lastParsedSequence ??
+                diagnostics?.renderedSequence ??
+                null
+            }
+          : {})
       });
       terminalStreamRef.current?.registration.notifyRendered();
     });
     return () => renderListener.dispose();
   }, [activeSurface.id, terminalGeneration, terminalInstanceKey]);
+
+  useEffect(() => {
+    if (!terminalDiagnosticsEnabled) {
+      return;
+    }
+    const terminal = terminalRef.current;
+    const terminalTextarea = terminal?.textarea;
+    if (!terminal || !terminalTextarea) {
+      return;
+    }
+
+    const recordLifecycle = (
+      event: string,
+      target: EventTarget | null = document.activeElement,
+      extraDetails: Record<string, unknown> = {}
+    ): void => {
+      if (
+        !terminalDiagnosticsEnabledRef.current ||
+        terminalRef.current !== terminal ||
+        activeSurfaceRef.current?.id !== activeSurface.id
+      ) {
+        return;
+      }
+      const observedAt = terminalDataPlaneNowMs(performance);
+      if (
+        event !== "diagnostics-snapshot" &&
+        event !== "terminal-modes-changed"
+      ) {
+        updateTerminalDiagnostics(activeSurface.id, terminal, {
+          lastFocusEventAt: observedAt,
+          lastFocusEvent: event
+        });
+      }
+      const diagnostics = (containerRef.current as TerminalHostElement | null)
+        ?.__kmuxTerminalDiagnostics;
+      const stream = terminalStreamRef.current;
+      const attachedStream =
+        stream?.grant.session.surfaceId === activeSurface.id &&
+        stream.grant.session.sessionId === activeSurface.sessionId
+          ? stream
+          : null;
+      recordRendererSmoothnessProfileEvent("terminal.focus.lifecycle", {
+        event,
+        observedAt,
+        paneId: props.paneId,
+        paneFocused: paneFocusedRef.current,
+        surfaceId: activeSurface.id,
+        sessionId: activeSurface.sessionId,
+        attachId: attachedStream?.grant.attachId ?? null,
+        epoch: attachedStream?.grant.session.epoch ?? null,
+        documentHasFocus: document.hasFocus(),
+        documentVisibility: document.visibilityState,
+        activeElementKind: terminalActiveElementKind(
+          document.activeElement,
+          terminalTextarea
+        ),
+        targetKind: terminalActiveElementKind(
+          target instanceof Element ? target : null,
+          terminalTextarea
+        ),
+        terminalTextareaFocused: document.activeElement === terminalTextarea,
+        sendFocusMode: terminal.modes.sendFocusMode,
+        mouseTrackingMode: terminal.modes.mouseTrackingMode,
+        synchronizedOutputMode: terminal.modes.synchronizedOutputMode,
+        bufferType: terminal.buffer.active.type,
+        cols: terminal.cols,
+        rows: terminal.rows,
+        viewportY: terminal.buffer.active.viewportY,
+        baseY: terminal.buffer.active.baseY,
+        lastWriteAt: diagnostics?.lastWriteAt ?? null,
+        lastWriteSequence: diagnostics?.lastWriteSequence ?? null,
+        lastParsedAt: diagnostics?.lastParsedAt ?? null,
+        lastParsedSequence: diagnostics?.lastParsedSequence ?? null,
+        lastOnRenderAt: diagnostics?.lastOnRenderAt ?? null,
+        lastOnRenderSequence: diagnostics?.lastOnRenderSequence ?? null,
+        lastInputAt: diagnostics?.lastInputAt ?? null,
+        lastInputKind: diagnostics?.lastInputKind ?? null,
+        ...extraDetails
+      });
+    };
+
+    const handleWindowFocus = (event: FocusEvent): void =>
+      recordLifecycle("window-focus", event.target);
+    const handleWindowBlur = (event: FocusEvent): void =>
+      recordLifecycle("window-blur", event.target);
+    const handleVisibilityChange = (): void =>
+      recordLifecycle(`document-${document.visibilityState}`, document);
+    const handleTerminalFocus = (event: FocusEvent): void =>
+      recordLifecycle("terminal-focus", event.target);
+    const handleTerminalBlur = (event: FocusEvent): void =>
+      recordLifecycle("terminal-blur", event.target);
+    let lastModes = {
+      sendFocusMode: terminal.modes.sendFocusMode,
+      mouseTrackingMode: terminal.modes.mouseTrackingMode,
+      synchronizedOutputMode: terminal.modes.synchronizedOutputMode
+    };
+    const modeListener = terminal.onWriteParsed(() => {
+      const modes = {
+        sendFocusMode: terminal.modes.sendFocusMode,
+        mouseTrackingMode: terminal.modes.mouseTrackingMode,
+        synchronizedOutputMode: terminal.modes.synchronizedOutputMode
+      };
+      if (
+        lastModes.sendFocusMode === modes.sendFocusMode &&
+        lastModes.mouseTrackingMode === modes.mouseTrackingMode &&
+        lastModes.synchronizedOutputMode === modes.synchronizedOutputMode
+      ) {
+        return;
+      }
+      const previousModes = lastModes;
+      lastModes = modes;
+      recordLifecycle("terminal-modes-changed", terminalTextarea, {
+        previousModes,
+        modes
+      });
+    });
+
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    terminalTextarea.addEventListener("focus", handleTerminalFocus);
+    terminalTextarea.addEventListener("blur", handleTerminalBlur);
+    recordLifecycle("diagnostics-snapshot");
+
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      terminalTextarea.removeEventListener("focus", handleTerminalFocus);
+      terminalTextarea.removeEventListener("blur", handleTerminalBlur);
+      modeListener.dispose();
+    };
+  }, [
+    activeSurface.id,
+    activeSurface.sessionId,
+    props.focused,
+    props.paneId,
+    terminalDiagnosticsEnabled,
+    terminalGeneration,
+    terminalInstanceKey
+  ]);
 
   useLayoutEffect(() => {
     const terminal = terminalRef.current;
@@ -1760,7 +2054,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     terminalInstanceStore.invalidateHydration(terminalInstanceKey);
     updateTerminalDiagnostics(activeSurface.id, terminal, {
       hydratedSequence: null,
-      renderedSequence: null
+      renderedSequence: null,
+      lastOnRenderSequence: null,
+      lastWriteAt: null,
+      lastWriteSequence: null,
+      lastParsedAt: null,
+      lastParsedSequence: null,
+      lastInputAt: null,
+      lastInputKind: null,
+      lastInputBytes: null,
+      lastFocusEventAt: null,
+      lastFocusEvent: null
     });
   }, [activeSurface.id, activeSurface.sessionId, terminalInstanceKey]);
 
@@ -2439,6 +2743,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         const currentTerminal = bundle.terminal;
         const lineCwds = bundle.lineCwds;
         const cwd = cwdAtDataOffset(context.delta, context.dataOffset);
+        if (terminalDiagnosticsEnabledRef.current) {
+          updateTerminalDiagnostics(surfaceId, currentTerminal, {
+            lastWriteAt: terminalDataPlaneNowMs(performance),
+            lastWriteSequence: context.delta.sequence
+          });
+        }
         let cwdCursor = cwdWriteCursorsRef.current.get(currentTerminal);
         if (!cwdCursor) {
           cwdCursor = {
@@ -2476,7 +2786,13 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                 context.delta.sequence
               );
               updateTerminalDiagnostics(surfaceId, currentTerminal, {
-                renderedSequence: context.delta.sequence
+                renderedSequence: context.delta.sequence,
+                ...(terminalDiagnosticsEnabledRef.current
+                  ? {
+                      lastParsedAt: terminalDataPlaneNowMs(performance),
+                      lastParsedSequence: context.delta.sequence
+                    }
+                  : {})
               });
             }
           } catch (error) {

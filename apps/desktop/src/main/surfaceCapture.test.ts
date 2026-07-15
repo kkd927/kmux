@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Script } from "node:vm";
 
 import type { BrowserWindow } from "electron";
 
@@ -227,6 +228,36 @@ function bufferRow(index: number, text: string, absoluteY = index) {
 }
 
 describe("surface capture renderer formatting", () => {
+  it("emits a syntactically valid renderer diagnostic probe", async () => {
+    const captureRoot = mkdtempSync(join(tmpdir(), "kmux-surface-capture-"));
+    cleanupPaths.push(captureRoot);
+    let rendererProbe = "";
+    const fakeWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        executeJavaScript: vi.fn(async (source: string) => {
+          rendererProbe = source;
+          return { ok: false, error: "probe parse test" };
+        }),
+        capturePage: vi.fn(async () => ({ toPNG: () => Buffer.alloc(4) }))
+      }
+    } as unknown as BrowserWindow;
+    const service = createSurfaceCaptureService({
+      captureRoot,
+      getState: createState,
+      getWindow: () => fakeWindow,
+      snapshotSurface: vi.fn(async () => null)
+    });
+
+    await service.captureSurface(surfaceId, {
+      settleForMs: 0,
+      timeoutMs: 1
+    });
+
+    expect(rendererProbe).not.toBe("");
+    expect(() => new Script(rendererProbe)).not.toThrow();
+  });
+
   it("treats trailing-whitespace-only differences as matching rows", async () => {
     const captureRoot = mkdtempSync(join(tmpdir(), "kmux-surface-capture-"));
     cleanupPaths.push(captureRoot);
@@ -251,6 +282,55 @@ describe("surface capture renderer formatting", () => {
     expect(text).toContain("renderer.domBufferMismatchRowsRaw=2");
     expect(text).toContain("renderer.domMatchesXtermBuffer=true");
     expect(text).toContain("[renderer.dom-buffer.mismatches.trimmed]\n<none>");
+  });
+
+  it("includes focus and renderer progress diagnostics in the text capture", async () => {
+    const captureRoot = mkdtempSync(join(tmpdir(), "kmux-surface-capture-"));
+    cleanupPaths.push(captureRoot);
+    const service = createSurfaceCaptureService({
+      captureRoot,
+      getState: createState,
+      getWindow: () =>
+        createFakeWindow(
+          createRendererDom({
+            interactionDiagnostics: {
+              visibilityState: "visible",
+              paneFocused: true,
+              activeElementKind: "terminal-textarea",
+              terminalTextareaFocused: true,
+              sendFocusMode: true,
+              mouseTrackingMode: "sgr",
+              synchronizedOutputMode: false,
+              attachId: "attach-1",
+              inputReady: true,
+              lastFocusEvent: "terminal-focus",
+              lastFocusEventAt: 1_000,
+              lastInputKind: "mouse",
+              lastInputAt: 1_001,
+              lastInputBytes: 10,
+              lastInputRoute: "live-stream",
+              lastWriteAt: 1_002,
+              lastWriteSequence: 41,
+              lastParsedAt: 1_003,
+              lastParsedSequence: 41,
+              lastOnRenderAt: 1_004,
+              lastOnRenderSequence: 41
+            }
+          })
+        ),
+      snapshotSurface: vi.fn(async () => createSnapshot())
+    });
+
+    const capture = await service.captureSurface(surfaceId, {
+      settleForMs: 0,
+      timeoutMs: 1
+    });
+    const text = readFileSync(capture.files.text, "utf8");
+
+    expect(text).toContain("renderer.activeElementKind=terminal-textarea");
+    expect(text).toContain("renderer.sendFocusMode=true");
+    expect(text).toContain("renderer.lastInputKind=mouse");
+    expect(text).toContain("renderer.lastOnRenderSequence=41");
   });
 
   it("reports mismatch details for rows that differ beyond trailing whitespace", async () => {

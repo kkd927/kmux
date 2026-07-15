@@ -3,6 +3,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { IDisposable, Terminal } from "@xterm/xterm";
+import type { TerminalInputDiagnosticKind } from "@kmux/proto";
 
 import {
   createTerminalLineCwdTracker,
@@ -15,7 +16,18 @@ export interface TerminalDiagnosticMetadata {
   renderedSequence: number | null;
   attachAvailableSequence: number | null;
   renderGeneration: number;
+  /** All *At fields below use high-resolution Unix epoch milliseconds. */
   lastOnRenderAt: number | null;
+  lastOnRenderSequence: number | null;
+  lastWriteAt: number | null;
+  lastWriteSequence: number | null;
+  lastParsedAt: number | null;
+  lastParsedSequence: number | null;
+  lastInputAt: number | null;
+  lastInputKind: TerminalInputDiagnosticKind | null;
+  lastInputBytes: number | null;
+  lastFocusEventAt: number | null;
+  lastFocusEvent: string | null;
 }
 
 export type TerminalHostElement = HTMLDivElement & {
@@ -69,7 +81,17 @@ export function createTerminalBundle({
     renderedSequence: null,
     attachAvailableSequence: null,
     renderGeneration: 0,
-    lastOnRenderAt: null
+    lastOnRenderAt: null,
+    lastOnRenderSequence: null,
+    lastWriteAt: null,
+    lastWriteSequence: null,
+    lastParsedAt: null,
+    lastParsedSequence: null,
+    lastInputAt: null,
+    lastInputKind: null,
+    lastInputBytes: null,
+    lastFocusEventAt: null,
+    lastFocusEvent: null
   };
 
   const fit = new FitAddon();

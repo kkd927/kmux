@@ -349,6 +349,29 @@ export interface SurfaceCaptureRendererDom {
     waitDurationMs: number;
     sources: SurfaceCaptureDiagnosticSources;
   };
+  interactionDiagnostics?: {
+    visibilityState: string;
+    paneFocused: boolean | null;
+    activeElementKind: string;
+    terminalTextareaFocused: boolean;
+    sendFocusMode: boolean | null;
+    mouseTrackingMode: string | null;
+    synchronizedOutputMode: boolean | null;
+    attachId: string | null;
+    inputReady: boolean;
+    lastFocusEvent: string | null;
+    lastFocusEventAt: number | null;
+    lastInputKind: string | null;
+    lastInputAt: number | null;
+    lastInputBytes: number | null;
+    lastInputRoute: string | null;
+    lastWriteAt: number | null;
+    lastWriteSequence: number | null;
+    lastParsedAt: number | null;
+    lastParsedSequence: number | null;
+    lastOnRenderAt: number | null;
+    lastOnRenderSequence: number | null;
+  };
   scroll: {
     isAtBottom: boolean;
     scrollOffsetRows: number;

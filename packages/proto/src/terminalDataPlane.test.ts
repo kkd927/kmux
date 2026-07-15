@@ -215,9 +215,11 @@ describe("terminal data plane host validation", () => {
             telemetry: {
               ptyReadAt: 1_000.25,
               headlessCommitAt: 1_002.75,
+              outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999.75,
-              inputSequence: 1
+              inputSequence: 1,
+              inputKind: "mouse"
             }
           }
         ]
@@ -274,6 +276,49 @@ describe("terminal data plane host validation", () => {
       ok: false,
       error:
         "delta.segments[0].telemetry.visibleAtPtyRead must be a boolean when provided"
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({
+        ...message,
+        delta: {
+          ...message.delta,
+          segments: [
+            {
+              ...firstSegment,
+              telemetry: {
+                ptyReadAt: 2_000,
+                headlessCommitAt: 2_001,
+                outputKind: "title-ish"
+              }
+            }
+          ]
+        }
+      })
+    ).toEqual({
+      ok: false,
+      error: "delta.segments[0].telemetry.outputKind is invalid"
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({
+        ...message,
+        delta: {
+          ...message.delta,
+          segments: [
+            {
+              ...firstSegment,
+              telemetry: {
+                ptyReadAt: 2_000,
+                headlessCommitAt: 2_001,
+                inputKind: "mouse"
+              }
+            }
+          ]
+        }
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        "delta.segments[0].telemetry.inputKind requires inputAcceptedAt and inputSequence"
     });
   });
 
