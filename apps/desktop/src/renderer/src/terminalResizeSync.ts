@@ -7,6 +7,8 @@ export interface TerminalResizeSyncRequest {
   cols: number;
   rows: number;
   gestureActive: boolean;
+  /** Human-readable diagnostics origin; it never changes resize semantics. */
+  trigger?: string;
 }
 
 export type TerminalResizeSyncResult = TerminalResizeSyncRequest & {
@@ -20,7 +22,9 @@ interface TerminalResizeSyncOptions {
     attachId: string | null,
     cols: number,
     rows: number,
-    gestureActive: boolean
+    gestureActive: boolean,
+    generation: number,
+    trigger?: string
   ) => Promise<void>;
 }
 
@@ -34,7 +38,9 @@ interface SurfaceResizeState {
 }
 
 export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
-  request(request: TerminalResizeSyncRequest): Promise<TerminalResizeSyncResult>;
+  request(
+    request: TerminalResizeSyncRequest
+  ): Promise<TerminalResizeSyncResult>;
 } {
   const states = new Map<string, SurfaceResizeState>();
 
@@ -50,6 +56,7 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
       cols: request.cols,
       rows: request.rows,
       gestureActive: request.gestureActive,
+      ...(request.trigger ? { trigger: request.trigger } : {}),
       status,
       ...(error === undefined ? {} : { error })
     });
@@ -85,7 +92,9 @@ export function createTerminalResizeSync(options: TerminalResizeSyncOptions): {
           request.attachId,
           request.cols,
           request.rows,
-          request.gestureActive
+          request.gestureActive,
+          request.generation,
+          request.trigger
         );
       } catch (caughtError) {
         failed = true;

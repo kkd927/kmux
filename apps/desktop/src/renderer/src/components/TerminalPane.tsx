@@ -197,6 +197,7 @@ type TerminalFitAndSync = (
     fit?: FitAddon | null;
     surfaceId?: string | null;
     force?: boolean;
+    triggers?: readonly string[];
   }
 ) => Promise<void>;
 
@@ -240,6 +241,7 @@ interface PendingTerminalResize {
   cols: number;
   rows: number;
   gestureActive: boolean;
+  trigger?: string;
 }
 
 interface PendingDirectResizeAcknowledgement {
@@ -611,7 +613,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   if (!resizeSyncRef.current) {
     resizeSyncRef.current = createTerminalResizeSync({
-      sendResize: (surfaceId, attachId, cols, rows, gestureActive) => {
+      sendResize: (
+        surfaceId,
+        attachId,
+        cols,
+        rows,
+        gestureActive,
+        generation,
+        trigger
+      ) => {
         const stream = terminalStreamRef.current;
         if (
           stream &&
@@ -620,6 +630,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           stream.grant.session.surfaceId === surfaceId
         ) {
           const requestId = `renderer_resize_${++nextTerminalDirectResizeRequestId}`;
+          if (isRendererSmoothnessProfileEnabled()) {
+            recordRendererSmoothnessProfileEvent("terminal.resize.transport", {
+              paneId: props.paneId,
+              surfaceId,
+              attachId,
+              requestId,
+              generation,
+              cols,
+              rows,
+              gestureActive,
+              trigger: trigger ?? "unspecified"
+            });
+          }
           return new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => {
               pendingDirectResizeAcksRef.current.delete(requestId);
@@ -882,10 +905,18 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       generation: number;
       previousCols: number;
       previousRows: number;
+      trigger?: string;
     }
   ): boolean {
-    const { cols, rows, surfaceId, generation, previousCols, previousRows } =
-      input;
+    const {
+      cols,
+      rows,
+      surfaceId,
+      generation,
+      previousCols,
+      previousRows,
+      trigger = "unspecified"
+    } = input;
     if (terminal.cols === cols && terminal.rows === rows) {
       return true;
     }
@@ -902,6 +933,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         previousRows,
         cols,
         rows,
+        trigger,
         durationMs: applyEndedAt - applyStartedAt
       });
       requestAnimationFrame(() => {
@@ -914,6 +946,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           generation,
           cols,
           rows,
+          trigger,
           viewportY: terminal.buffer.active.viewportY,
           baseY: terminal.buffer.active.baseY,
           durationMs: performance.now() - applyEndedAt
@@ -929,6 +962,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         previousRows,
         cols,
         rows,
+        trigger,
         failed: true,
         durationMs: performance.now() - applyStartedAt
       });
@@ -942,6 +976,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       fit?: FitAddon | null;
       surfaceId?: string | null;
       force?: boolean;
+      triggers?: readonly string[];
     } = {}
   ): Promise<void> {
     const fit = options.fit ?? fitRef.current;
@@ -956,6 +991,31 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       ? terminalInstanceStore.getTerminalBundle(surfaceId)?.host
       : containerRef.current;
     const fitRect = fitHost?.getBoundingClientRect();
+    const diagnosticsEnabled = isRendererSmoothnessProfileEnabled();
+    const triggers = diagnosticsEnabled
+      ? options.triggers && options.triggers.length > 0
+        ? Array.from(new Set(options.triggers))
+        : ["unspecified"]
+      : undefined;
+    const trigger = triggers?.join(",");
+    const diagnosticContext = diagnosticsEnabled
+      ? {
+          triggers,
+          hostWidth: fitRect?.width ?? null,
+          hostHeight: fitRect?.height ?? null,
+          windowInnerWidth:
+            typeof window === "undefined" ? null : window.innerWidth,
+          windowInnerHeight:
+            typeof window === "undefined" ? null : window.innerHeight,
+          documentVisibility:
+            typeof document === "undefined" ? null : document.visibilityState,
+          documentFocused:
+            typeof document === "undefined" ? null : document.hasFocus(),
+          bufferType: terminal.buffer.active.type,
+          viewportY: terminal.buffer.active.viewportY,
+          baseY: terminal.buffer.active.baseY
+        }
+      : undefined;
     const optionsKey = terminalFitOptionsKey(terminal);
     const fitMemo = terminalFitMemosRef.current.get(terminal);
     const syncedSurfaceDimensions = surfaceId
@@ -977,19 +1037,22 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       !options.force &&
       (!surfaceId || surfaceAlreadySynced)
     ) {
-      recordRendererSmoothnessProfileEvent("terminal.fit", {
-        paneId: props.paneId,
-        surfaceId,
-        previousCols,
-        previousRows,
-        cols: previousCols,
-        rows: previousRows,
-        valid: true,
-        changed: false,
-        surfaceSynced: surfaceAlreadySynced,
-        skipped: true,
-        durationMs: 0
-      });
+      if (diagnosticContext) {
+        recordRendererSmoothnessProfileEvent("terminal.fit", {
+          paneId: props.paneId,
+          surfaceId,
+          previousCols,
+          previousRows,
+          cols: previousCols,
+          rows: previousRows,
+          valid: true,
+          changed: false,
+          surfaceSynced: surfaceAlreadySynced,
+          skipped: true,
+          ...diagnosticContext,
+          durationMs: 0
+        });
+      }
       if (surfaceId) {
         syncSurfaceTerminalMetrics(surfaceId, terminal);
       } else {
@@ -1021,18 +1084,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       dims.cols > 0 &&
       dims.rows > 0
     );
-    recordRendererSmoothnessProfileEvent("terminal.fit", {
-      paneId: props.paneId,
-      surfaceId,
-      previousCols,
-      previousRows,
-      cols: dims?.cols ?? null,
-      rows: dims?.rows ?? null,
-      valid: validDims,
-      changed: validDims ? terminalSizeChanged : false,
-      surfaceSynced: validDims ? surfaceSizeSynced : false,
-      durationMs: fitDurationMs
-    });
+    if (diagnosticContext) {
+      recordRendererSmoothnessProfileEvent("terminal.fit", {
+        paneId: props.paneId,
+        surfaceId,
+        previousCols,
+        previousRows,
+        cols: dims?.cols ?? null,
+        rows: dims?.rows ?? null,
+        valid: validDims,
+        changed: validDims ? terminalSizeChanged : false,
+        surfaceSynced: validDims ? surfaceSizeSynced : false,
+        ...diagnosticContext,
+        durationMs: fitDurationMs
+      });
+    }
     if (
       !dims ||
       !Number.isFinite(dims.cols) ||
@@ -1077,7 +1143,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           surfaceId,
           generation,
           previousCols,
-          previousRows
+          previousRows,
+          trigger
         });
         if (!resized && terminalSizeChanged) {
           return;
@@ -1090,7 +1157,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             sessionId,
             cols: dims.cols,
             rows: dims.rows,
-            gestureActive: isPaneDividerDragActive()
+            gestureActive: isPaneDividerDragActive(),
+            trigger
           });
         }
         if (!preserveResumeGeometry) {
@@ -1105,36 +1173,48 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
 
-    const requestStartedAt = performance.now();
-    recordRendererSmoothnessProfileEvent("terminal.resize.request", {
-      paneId: props.paneId,
-      surfaceId,
-      generation,
-      previousCols,
-      previousRows,
-      cols: dims.cols,
-      rows: dims.rows
-    });
+    const requestStartedAt = diagnosticsEnabled ? performance.now() : null;
+    if (diagnosticsEnabled) {
+      recordRendererSmoothnessProfileEvent("terminal.resize.request", {
+        paneId: props.paneId,
+        surfaceId,
+        generation,
+        previousCols,
+        previousRows,
+        cols: dims.cols,
+        rows: dims.rows,
+        triggers,
+        attachId
+      });
+    }
     const resizeResult = await resizeSyncRef.current?.request({
       surfaceId,
       attachId,
       generation,
       cols: dims.cols,
       rows: dims.rows,
-      gestureActive: isPaneDividerDragActive()
+      gestureActive: isPaneDividerDragActive(),
+      trigger
     });
-    recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
-      paneId: props.paneId,
-      surfaceId,
-      generation,
-      previousCols,
-      previousRows,
-      cols: dims.cols,
-      rows: dims.rows,
-      failed: resizeResult?.status === "failed",
-      superseded: resizeResult?.status === "superseded",
-      durationMs: performance.now() - requestStartedAt
-    });
+    if (isRendererSmoothnessProfileEnabled()) {
+      recordRendererSmoothnessProfileEvent("terminal.resize.ack", {
+        paneId: props.paneId,
+        surfaceId,
+        generation,
+        previousCols,
+        previousRows,
+        cols: dims.cols,
+        rows: dims.rows,
+        triggers: triggers ?? ["diagnostics-enabled-after-request"],
+        attachId,
+        failed: resizeResult?.status === "failed",
+        superseded: resizeResult?.status === "superseded",
+        durationMs:
+          requestStartedAt === null
+            ? null
+            : performance.now() - requestStartedAt
+      });
+    }
     if (
       resizeResult?.status !== "synced" ||
       generation !== resizeGenerationRef.current ||
@@ -1585,7 +1665,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (moved) {
       void fitAndSyncTerminal(instance.terminal, {
         fit: instance.fit,
-        surfaceId: activeSurface.id
+        surfaceId: activeSurface.id,
+        triggers: ["surface-host-acquired"]
       });
     }
     return () => {
@@ -1649,7 +1730,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (moved) {
       void fitAndSyncTerminal(terminal, {
         fit,
-        surfaceId: activeSurface.id
+        surfaceId: activeSurface.id,
+        triggers: ["surface-host-moved"]
       });
     }
   });
@@ -1729,7 +1811,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           {
             fit: current?.fit ?? initialFit,
             surfaceId: current?.surfaceId ?? initialSurfaceId,
-            force: true
+            force: true,
+            triggers: ["terminal-render-sink"]
           }
         );
       }
@@ -2029,10 +2112,26 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    void fitAndSyncTerminal(terminal);
-    const dividerFitThrottle = createTerminalDividerFitThrottle({
+    void fitAndSyncTerminal(terminal, { triggers: ["terminal-mounted"] });
+    let pendingThrottledFitTriggers: Set<string> | null = null;
+    let dividerFitThrottle: ReturnType<typeof createTerminalDividerFitThrottle>;
+    const requestThrottledFit = (trigger?: string): void => {
+      if (trigger && isRendererSmoothnessProfileEnabled()) {
+        pendingThrottledFitTriggers ??= new Set<string>();
+        pendingThrottledFitTriggers.add(trigger);
+      }
+      dividerFitThrottle.requestFit();
+    };
+    dividerFitThrottle = createTerminalDividerFitThrottle({
       runFit: () => {
-        void fitAndSyncTerminal(terminal, { force: true }).catch(() => {
+        const triggers = pendingThrottledFitTriggers
+          ? Array.from(pendingThrottledFitTriggers)
+          : undefined;
+        pendingThrottledFitTriggers = null;
+        void fitAndSyncTerminal(terminal, {
+          force: true,
+          triggers: triggers && triggers.length > 0 ? triggers : undefined
+        }).catch(() => {
           // ignore resize errors during unmount
         });
       }
@@ -2040,8 +2139,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const foregroundFit = installTerminalForegroundFit({
       isActive: () =>
         terminalRef.current === terminal && Boolean(activeSurfaceRef.current),
+      shouldCollectTriggers: isRendererSmoothnessProfileEnabled,
       getFitElement: () => containerRef.current,
-      fitAndSync: () => {
+      fitAndSync: (triggers) => {
+        if (!isRendererSmoothnessProfileEnabled()) {
+          dividerFitThrottle.requestFit();
+          return;
+        }
+        for (const trigger of triggers) {
+          pendingThrottledFitTriggers ??= new Set<string>();
+          pendingThrottledFitTriggers.add(`foreground:${trigger}`);
+        }
         dividerFitThrottle.requestFit();
       },
       onError: () => {
@@ -2056,7 +2164,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         clearTimeout(resizeTimeout);
       }
       resizeTimeout = setTimeout(() => {
-        dividerFitThrottle.requestFit();
+        requestThrottledFit("terminal-resize-observer");
       }, 30);
     });
     resizeObserver.observe(container);
@@ -2073,7 +2181,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (surfaceId) {
         surfaceResizeDimensionsRef.current.delete(surfaceId);
       }
-      dividerFitThrottle.requestFit();
+      requestThrottledFit("pane-divider-drag-ended");
     });
 
     const disposeData = terminal.onData((data) => {
@@ -2185,7 +2293,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     requestAnimationFrame(() => {
       syncTerminalViewportBackground();
     });
-    void fitAndSyncTerminal(terminal);
+    void fitAndSyncTerminal(terminal, {
+      triggers: ["terminal-options-changed"]
+    });
   }, [
     props.terminalTypography.resolvedFontFamily,
     props.settings.terminalTypography.fontSize,
@@ -2263,7 +2373,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             surfaceId,
             generation: ++resizeGenerationRef.current,
             previousCols: currentTerminal.cols,
-            previousRows: currentTerminal.rows
+            previousRows: currentTerminal.rows,
+            trigger: "terminal-stream-resume"
           });
           if (!resized) {
             throw new Error("failed to restore terminal resume geometry");
@@ -2358,7 +2469,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           surfaceId,
           generation,
           previousCols: currentTerminal.cols,
-          previousRows: currentTerminal.rows
+          previousRows: currentTerminal.rows,
+          trigger: "pty-authoritative-resize"
         });
         if (!resized) {
           throw new Error("failed to apply authoritative terminal resize");
@@ -2614,7 +2726,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               generation: ++resizeGenerationRef.current,
               cols: pendingResize.cols,
               rows: pendingResize.rows,
-              gestureActive: pendingResize.gestureActive
+              gestureActive: pendingResize.gestureActive,
+              trigger: pendingResize.trigger
             });
           } else {
             pendingTerminalResizeRef.current.delete(surfaceId);
@@ -2623,7 +2736,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             void fitAndSyncTerminalRef.current(currentBundle.terminal, {
               fit: currentBundle.fit,
               surfaceId,
-              force: true
+              force: true,
+              triggers: ["terminal-stream-attached"]
             });
           }
           if (shouldFocusActiveTerminal(surfaceId)) {

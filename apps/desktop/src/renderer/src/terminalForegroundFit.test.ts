@@ -95,6 +95,7 @@ describe("terminal foreground fit", () => {
 
     targetWindow.runNextAnimationFrame();
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenCalledWith(["window-focus"]);
     controller.dispose();
   });
 
@@ -109,13 +110,14 @@ describe("terminal foreground fit", () => {
       fitAndSync
     });
 
-    controller.scheduleFit();
+    controller.scheduleFit("manual");
 
     vi.advanceTimersByTime(120);
     targetWindow.runNextAnimationFrame();
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenCalledWith(["manual"]);
     controller.dispose();
   });
 
@@ -137,6 +139,7 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenCalledWith(["window-resize"]);
     controller.dispose();
   });
 
@@ -159,6 +162,7 @@ describe("terminal foreground fit", () => {
 
     vi.advanceTimersByTime(80);
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenLastCalledWith(["window-resize"]);
     expect(targetWindow.pendingAnimationFrameCount()).toBe(0);
     controller.dispose();
   });
@@ -182,6 +186,9 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
     targetWindow.runNextAnimationFrame();
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenLastCalledWith([
+      "fit-element-initial-measurement"
+    ]);
 
     vi.advanceTimersByTime(50);
     expect(fitAndSync).toHaveBeenCalledTimes(1);
@@ -193,6 +200,9 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(2);
+    expect(fitAndSync).toHaveBeenLastCalledWith([
+      "fit-element-dimension-change"
+    ]);
     controller.dispose();
   });
 
@@ -220,6 +230,7 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenCalledWith(["document-visible"]);
     controller.dispose();
   });
 
@@ -246,6 +257,38 @@ describe("terminal foreground fit", () => {
     targetWindow.runNextAnimationFrame();
 
     expect(fitAndSync).toHaveBeenCalledTimes(1);
+    expect(fitAndSync).toHaveBeenCalledWith([
+      "window-focus",
+      "window-pageshow"
+    ]);
+    controller.dispose();
+  });
+
+  it("collects trigger metadata only while diagnostics are enabled", () => {
+    const targetWindow = new FakeWindow();
+    const targetDocument = new FakeDocument();
+    const fitAndSync = vi.fn();
+    let diagnosticsEnabled = false;
+    const controller = installTerminalForegroundFit({
+      targetWindow,
+      targetDocument,
+      isActive: () => true,
+      shouldCollectTriggers: () => diagnosticsEnabled,
+      fitAndSync
+    });
+
+    dispatch(targetWindow, "focus");
+    vi.advanceTimersByTime(120);
+    targetWindow.runNextAnimationFrame();
+    targetWindow.runNextAnimationFrame();
+    expect(fitAndSync).toHaveBeenLastCalledWith([]);
+
+    diagnosticsEnabled = true;
+    dispatch(targetWindow, "resize");
+    vi.advanceTimersByTime(120);
+    targetWindow.runNextAnimationFrame();
+    targetWindow.runNextAnimationFrame();
+    expect(fitAndSync).toHaveBeenLastCalledWith(["window-resize"]);
     controller.dispose();
   });
 

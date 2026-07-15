@@ -24,13 +24,15 @@ describe("pty-host resize runtime", () => {
     const resized = prepareTerminalResize({
       record,
       cols: 120,
-      rows: 40
+      rows: 40,
+      requestId: "resize_1"
     });
 
     expect(resized).toBe(true);
     expect(events).toEqual(["ptyResize.request", "terminal.resize"]);
     expect(record.ptyResize.request).toHaveBeenCalledWith(120, 40, {
-      hold: false
+      hold: false,
+      requestId: "resize_1"
     });
   });
 

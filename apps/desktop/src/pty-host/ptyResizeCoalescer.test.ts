@@ -1,24 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createPtyResizeCoalescer } from "./ptyResizeCoalescer";
+import {
+  createPtyResizeCoalescer,
+  type PtyResizeCommitContext,
+  type PtyResizeRequestEvent
+} from "./ptyResizeCoalescer";
 
 const SETTLE_MS = 300;
 const HOLD_SAFETY_MS = 1500;
 
 function createHarness(): {
   commits: Array<[number, number]>;
+  commitContexts: PtyResizeCommitContext[];
+  requestEvents: PtyResizeRequestEvent[];
   coalescer: ReturnType<typeof createPtyResizeCoalescer>;
   advance: (ms: number) => void;
+  setDiagnosticsEnabled: (enabled: boolean) => void;
 } {
   let clock = 0;
+  let diagnosticsEnabled = true;
   let scheduled: { at: number; fire: () => void } | null = null;
   const commits: Array<[number, number]> = [];
+  const commitContexts: PtyResizeCommitContext[] = [];
+  const requestEvents: PtyResizeRequestEvent[] = [];
   const coalescer = createPtyResizeCoalescer({
     initialCols: 80,
     initialRows: 24,
-    commit: (cols, rows) => {
+    diagnosticsEnabled: () => diagnosticsEnabled,
+    commit: (cols, rows, context) => {
       commits.push([cols, rows]);
+      if (context) {
+        commitContexts.push(context);
+      }
     },
+    onRequest: (event) => requestEvents.push(event),
     settleMs: SETTLE_MS,
     holdSafetyMs: HOLD_SAFETY_MS,
     now: () => clock,
@@ -40,14 +55,40 @@ function createHarness(): {
     }
     clock = target;
   };
-  return { commits, coalescer, advance };
+  return {
+    commits,
+    commitContexts,
+    requestEvents,
+    coalescer,
+    advance,
+    setDiagnosticsEnabled: (enabled) => {
+      diagnosticsEnabled = enabled;
+    }
+  };
 }
 
 describe("pty resize coalescer", () => {
   it("commits an isolated width change immediately", () => {
-    const { commits, coalescer } = createHarness();
-    coalescer.request(120, 40);
+    const { commits, commitContexts, requestEvents, coalescer } =
+      createHarness();
+    coalescer.request(120, 40, { requestId: "resize_1" });
     expect(commits).toEqual([[120, 40]]);
+    expect(commitContexts).toEqual([
+      expect.objectContaining({
+        reason: "isolated",
+        requestId: "resize_1",
+        previousCols: 80,
+        previousRows: 24
+      })
+    ]);
+    expect(requestEvents).toEqual([
+      expect.objectContaining({
+        requestId: "resize_1",
+        decision: "isolated-committed",
+        committedCols: 80,
+        committedRows: 24
+      })
+    ]);
   });
 
   it("coalesces an unflagged storm into a leading and a settled commit", () => {
@@ -107,10 +148,19 @@ describe("pty resize coalescer", () => {
   });
 
   it("commits a held size through the safety timer when the release is lost", () => {
-    const { commits, coalescer, advance } = createHarness();
-    coalescer.request(100, 24, { hold: true });
+    const { commits, commitContexts, coalescer, advance } = createHarness();
+    coalescer.request(100, 24, {
+      hold: true,
+      requestId: "resize_held"
+    });
     advance(HOLD_SAFETY_MS);
     expect(commits).toEqual([[100, 24]]);
+    expect(commitContexts[0]).toEqual(
+      expect.objectContaining({
+        reason: "gesture-hold-safety",
+        requestId: "resize_held"
+      })
+    );
   });
 
   it("drops a held size when the grid returns to the committed size", () => {
@@ -131,10 +181,69 @@ describe("pty resize coalescer", () => {
     expect(commits).toEqual([[120, 40]]);
   });
 
+  it("skips diagnostic events and commit metadata while diagnostics are disabled", () => {
+    let diagnosticsEnabled = false;
+    const onRequest = vi.fn();
+    const commitContexts: Array<PtyResizeCommitContext | undefined> = [];
+    const coalescer = createPtyResizeCoalescer({
+      initialCols: 80,
+      initialRows: 24,
+      diagnosticsEnabled: () => diagnosticsEnabled,
+      onRequest,
+      commit: (_cols, _rows, context) => commitContexts.push(context)
+    });
+
+    coalescer.request(80, 30, { requestId: "resize_off" });
+    expect(onRequest).not.toHaveBeenCalled();
+    expect(commitContexts).toEqual([undefined]);
+
+    diagnosticsEnabled = true;
+    coalescer.request(80, 40, { requestId: "resize_on" });
+    expect(onRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "resize_on" })
+    );
+    expect(commitContexts[1]).toEqual(
+      expect.objectContaining({ requestId: "resize_on" })
+    );
+  });
+
+  it("records a delayed commit when diagnostics are enabled after its request", () => {
+    const {
+      coalescer,
+      advance,
+      commitContexts,
+      requestEvents,
+      setDiagnosticsEnabled
+    } = createHarness();
+    setDiagnosticsEnabled(false);
+
+    coalescer.request(100, 24, { requestId: "resize_off_1" });
+    advance(100);
+    coalescer.request(110, 24, { requestId: "resize_off_2" });
+    setDiagnosticsEnabled(true);
+    advance(SETTLE_MS);
+
+    expect(requestEvents).toEqual([]);
+    expect(commitContexts).toEqual([
+      expect.objectContaining({
+        reason: "storm-settled",
+        requestObserved: false,
+        requestId: undefined
+      })
+    ]);
+  });
+
   it("stops committing after dispose", () => {
     const { commits, coalescer, advance } = createHarness();
     coalescer.request(110, 24, { hold: true });
     coalescer.dispose();
+    expect(coalescer.getState()).toMatchObject({
+      disposed: true,
+      pendingCols: null,
+      pendingRows: null,
+      pendingRequestId: null,
+      heldByGesture: false
+    });
     advance(HOLD_SAFETY_MS * 2);
     coalescer.request(130, 40);
     expect(commits).toEqual([]);

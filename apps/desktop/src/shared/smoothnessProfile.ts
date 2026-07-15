@@ -19,6 +19,7 @@ export type SmoothnessProfileEventName =
   | "terminal.attach.queue.degraded"
   | "terminal.fit"
   | "terminal.resize.request"
+  | "terminal.resize.transport"
   | "terminal.resize.ack"
   | "terminal.resize.apply"
   | "terminal.reflow"

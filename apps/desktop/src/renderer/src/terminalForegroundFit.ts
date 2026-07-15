@@ -19,11 +19,26 @@ interface ForegroundFitElement {
   getBoundingClientRect: () => Pick<DOMRectReadOnly, "width" | "height">;
 }
 
+export type TerminalForegroundFitTrigger =
+  | "window-focus"
+  | "window-pageshow"
+  | "window-resize"
+  | "document-visible"
+  | "fit-element-initial-measurement"
+  | "fit-element-dimension-change"
+  | "manual";
+
+const NO_FOREGROUND_FIT_TRIGGERS: readonly TerminalForegroundFitTrigger[] = [];
+
 export interface TerminalForegroundFitOptions {
   targetWindow?: ForegroundFitWindow;
   targetDocument?: ForegroundFitDocument;
   isActive: () => boolean;
-  fitAndSync: () => void | Promise<void>;
+  fitAndSync: (
+    triggers: readonly TerminalForegroundFitTrigger[]
+  ) => void | Promise<void>;
+  /** Trigger metadata is diagnostic-only and remains unallocated when false. */
+  shouldCollectTriggers?: () => boolean;
   getFitElement?: () => ForegroundFitElement | null;
   delayMs?: number;
   frameFallbackMs?: number;
@@ -34,7 +49,7 @@ export interface TerminalForegroundFitOptions {
 }
 
 export interface TerminalForegroundFitController {
-  scheduleFit: () => void;
+  scheduleFit: (trigger?: TerminalForegroundFitTrigger) => void;
   dispose: () => void;
 }
 
@@ -43,6 +58,7 @@ export function installTerminalForegroundFit({
   targetDocument = typeof document === "undefined" ? undefined : document,
   isActive,
   fitAndSync,
+  shouldCollectTriggers = () => true,
   getFitElement,
   delayMs = DEFAULT_FOREGROUND_FIT_DELAY_MS,
   frameFallbackMs = DEFAULT_FOREGROUND_FIT_FRAME_FALLBACK_MS,
@@ -66,6 +82,7 @@ export function installTerminalForegroundFit({
   let disposed = false;
   let lastObservedWidth: number | null = null;
   let lastObservedHeight: number | null = null;
+  let pendingTriggers: Set<TerminalForegroundFitTrigger> | null = null;
 
   const clearScheduledFit = (): void => {
     if (timeout !== null) {
@@ -88,6 +105,7 @@ export function installTerminalForegroundFit({
 
   const runFit = (): void => {
     if (disposed || !isActive()) {
+      pendingTriggers = null;
       return;
     }
     if (frameFallbackTimeout !== null) {
@@ -102,8 +120,12 @@ export function installTerminalForegroundFit({
       targetWindow.cancelAnimationFrame(secondAnimationFrame);
       secondAnimationFrame = null;
     }
+    const triggers = pendingTriggers
+      ? Array.from(pendingTriggers)
+      : NO_FOREGROUND_FIT_TRIGGERS;
+    pendingTriggers = null;
     try {
-      void Promise.resolve(fitAndSync()).catch((error: unknown) => {
+      void Promise.resolve(fitAndSync(triggers)).catch((error: unknown) => {
         onError?.(error);
       });
     } catch (error) {
@@ -111,9 +133,15 @@ export function installTerminalForegroundFit({
     }
   };
 
-  const scheduleFit = (): void => {
+  const scheduleFit = (
+    trigger: TerminalForegroundFitTrigger = "manual"
+  ): void => {
     if (disposed || !isActive()) {
       return;
+    }
+    if (shouldCollectTriggers()) {
+      pendingTriggers ??= new Set<TerminalForegroundFitTrigger>();
+      pendingTriggers.add(trigger);
     }
     clearScheduledFit();
     timeout = setTimeoutFn(() => {
@@ -143,16 +171,17 @@ export function installTerminalForegroundFit({
 
     const previousWidth = lastObservedWidth;
     const previousHeight = lastObservedHeight;
-    const firstMeasurement =
-      previousWidth === null || previousHeight === null;
+    const firstMeasurement = previousWidth === null || previousHeight === null;
     const changed =
       !firstMeasurement &&
       (Math.abs(width - previousWidth) >= 1 ||
         Math.abs(height - previousHeight) >= 1);
     lastObservedWidth = width;
     lastObservedHeight = height;
-    if (firstMeasurement || changed) {
-      scheduleFit();
+    if (firstMeasurement) {
+      scheduleFit("fit-element-initial-measurement");
+    } else if (changed) {
+      scheduleFit("fit-element-dimension-change");
     }
   };
 
@@ -172,13 +201,17 @@ export function installTerminalForegroundFit({
 
   const handleVisibilityChange = (): void => {
     if (targetDocument.visibilityState === "visible") {
-      scheduleFit();
+      scheduleFit("document-visible");
     }
   };
 
-  targetWindow.addEventListener("focus", scheduleFit);
-  targetWindow.addEventListener("pageshow", scheduleFit);
-  targetWindow.addEventListener("resize", scheduleFit);
+  const handleFocus = (): void => scheduleFit("window-focus");
+  const handlePageShow = (): void => scheduleFit("window-pageshow");
+  const handleResize = (): void => scheduleFit("window-resize");
+
+  targetWindow.addEventListener("focus", handleFocus);
+  targetWindow.addEventListener("pageshow", handlePageShow);
+  targetWindow.addEventListener("resize", handleResize);
   targetDocument.addEventListener("visibilitychange", handleVisibilityChange);
   checkFitElementDimensions();
   scheduleDimensionPoll();
@@ -191,14 +224,15 @@ export function installTerminalForegroundFit({
         clearTimeoutFn(dimensionPollTimeout);
         dimensionPollTimeout = null;
       }
-      targetWindow.removeEventListener("focus", scheduleFit);
-      targetWindow.removeEventListener("pageshow", scheduleFit);
-      targetWindow.removeEventListener("resize", scheduleFit);
+      targetWindow.removeEventListener("focus", handleFocus);
+      targetWindow.removeEventListener("pageshow", handlePageShow);
+      targetWindow.removeEventListener("resize", handleResize);
       targetDocument.removeEventListener(
         "visibilitychange",
         handleVisibilityChange
       );
       clearScheduledFit();
+      pendingTriggers = null;
     }
   };
 }

@@ -65,9 +65,15 @@ import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import {
   createPtyResizeCoalescer,
-  type PtyResizeCoalescer
+  type PtyResizeCoalescer,
+  type PtyResizeCommitContext
 } from "./ptyResizeCoalescer";
 import { prepareTerminalResize } from "./resizeRuntime";
+import {
+  registerTerminalVtDiagnostics,
+  syncTerminalVtDiagnosticsRegistration,
+  type TerminalVtDestructiveEvent
+} from "./terminalVtDiagnostics";
 import { FairSessionScheduler } from "./fairSessionScheduler";
 import { SessionMutationQueue } from "./sessionMutationQueue";
 import { SnapshotCache } from "./snapshotCache";
@@ -156,6 +162,11 @@ interface SessionRuntime {
   parsedSequence: number;
   cols: number;
   rows: number;
+  lastPtyResizeCommit?: PtyResizeCommitContext & {
+    cols: number;
+    rows: number;
+  };
+  vtDiagnosticsListener?: DisposableLike;
   osc99State: Osc99NotificationState;
   shellInputReady: boolean;
   pendingInitialInput?: string;
@@ -215,6 +226,8 @@ let diagnosticsIpc = resolveDiagnosticsLogPath(
 )
   ? createDiagnosticsIpc()
   : null;
+const isTerminalDiagnosticsEnabled = (): boolean =>
+  Boolean(diagnosticsIpc?.enabled);
 const recordPtyDiagnostics = (record: DiagnosticsRecord): boolean =>
   diagnosticsIpc?.record(record) ?? false;
 setDiagnosticsRecordSink(diagnosticsIpc ? recordPtyDiagnostics : null);
@@ -283,6 +296,7 @@ function refreshTerminalTelemetry(): void {
     : undefined;
   for (const record of sessions.values()) {
     record.stream.configureTelemetryNow(telemetryNow);
+    syncSessionTerminalVtDiagnostics(record);
     if (!diagnosticsIpc?.enabled) {
       record.lastDiagnosticOutputAt = undefined;
     }
@@ -679,6 +693,92 @@ function flushPtyProfileBucket(record: SessionRuntime): void {
   }
 }
 
+function recordTerminalVtDiagnostic(
+  record: SessionRuntime,
+  event: TerminalVtDestructiveEvent
+): void {
+  if (!isTerminalDiagnosticsEnabled()) {
+    return;
+  }
+  const now = Date.now();
+  const lastResize = record.lastPtyResizeCommit;
+  const msSincePtyResizeCommit = lastResize
+    ? now - lastResize.committedAt
+    : null;
+  const buffer = record.terminal.buffer.active;
+  logTerminalDiagnostics(`terminal.vt.${event.kind}`, {
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    ...event,
+    cols: record.cols,
+    rows: record.rows,
+    bufferType: buffer.type,
+    cursorX: buffer.cursorX,
+    cursorY: buffer.cursorY,
+    viewportY: buffer.viewportY,
+    baseY: buffer.baseY,
+    bufferLength: buffer.length,
+    sequence: record.sequence,
+    parsedSequence: record.parsedSequence,
+    rawOutputLogBytes: record.rawOutputLogBytes,
+    rawOutputLogChars: record.rawOutputLogChars,
+    lastPtyResizeCommit: lastResize ?? null,
+    msSincePtyResizeCommit,
+    resizeAdjacent:
+      msSincePtyResizeCommit !== null &&
+      msSincePtyResizeCommit >= 0 &&
+      msSincePtyResizeCommit <= 5_000
+  });
+}
+
+function syncSessionTerminalVtDiagnostics(record: SessionRuntime): void {
+  const diagnosticsEnabled = isTerminalDiagnosticsEnabled();
+  const listenerEnabled = diagnosticsEnabled && !record.exited;
+  if (!listenerEnabled) {
+    record.vtDiagnosticsListener = syncTerminalVtDiagnosticsRegistration({
+      enabled: false,
+      current: record.vtDiagnosticsListener
+    });
+    if (!diagnosticsEnabled) {
+      record.lastPtyResizeCommit = undefined;
+    }
+    return;
+  }
+  record.vtDiagnosticsListener = syncTerminalVtDiagnosticsRegistration({
+    enabled: true,
+    current: record.vtDiagnosticsListener,
+    register: () =>
+      registerTerminalVtDiagnostics(record.terminal, (event) =>
+        recordTerminalVtDiagnostic(record, event)
+      )
+  });
+}
+
+function logPtyResizeState(
+  record: SessionRuntime,
+  reason: "diagnostics-enabled" | "diagnostic-snapshot",
+  details: Record<string, unknown> = {}
+): void {
+  if (!isTerminalDiagnosticsEnabled()) {
+    return;
+  }
+  logTerminalDiagnostics("terminal.pty-resize.state", {
+    reason,
+    surfaceId: record.surfaceId,
+    sessionId: record.sessionId,
+    exited: record.exited,
+    closing: record.closing,
+    headlessCols: record.cols,
+    headlessRows: record.rows,
+    ptyReportedCols: record.pty.cols,
+    ptyReportedRows: record.pty.rows,
+    coalescer: record.ptyResize.getState(),
+    lastPtyResizeCommit: record.lastPtyResizeCommit ?? null,
+    attachmentCount: record.stream.attachmentCount,
+    ...details
+  });
+}
+
 function snapshot(
   record: SessionRuntime,
   options: { includeRawOutputTail?: boolean } = {}
@@ -753,6 +853,13 @@ function sendSnapshotAfterMutationQueue(
 ): void {
   void enqueueTerminalBarrier(record, () => {
     if (sessions.get(record.sessionId) === record) {
+      if (options.includeRawOutputTail) {
+        for (const sessionRecord of sessions.values()) {
+          logPtyResizeState(sessionRecord, "diagnostic-snapshot", {
+            requestedSurfaceId: record.surfaceId
+          });
+        }
+      }
       send({
         type: "snapshot",
         requestId,
@@ -811,6 +918,7 @@ function requestDirectResize(
     cols: number;
     rows: number;
     gestureActive?: boolean;
+    requestId?: string;
   }
 ): Promise<{ sequence: number; cols: number; rows: number }> {
   return enqueueTerminalBarrier(record, () =>
@@ -824,6 +932,7 @@ function applyTerminalResizeMutation(
     cols: number;
     rows: number;
     gestureActive?: boolean;
+    requestId?: string;
   }
 ): { sequence: number; cols: number; rows: number } {
   if (request.cols <= 0 || request.rows <= 0) {
@@ -833,15 +942,36 @@ function applyTerminalResizeMutation(
       rows: record.rows
     };
   }
-  prepareTerminalResize({
+  const diagnosticsEnabled = isTerminalDiagnosticsEnabled();
+  const previousCols = diagnosticsEnabled ? record.cols : 0;
+  const previousRows = diagnosticsEnabled ? record.rows : 0;
+  const headlessGridChanged = prepareTerminalResize({
     record,
     cols: request.cols,
     rows: request.rows,
-    gestureActive: request.gestureActive
+    gestureActive: request.gestureActive,
+    requestId: diagnosticsEnabled ? request.requestId : undefined
   });
   record.snapshotCache.invalidate();
   record.sequence += 1;
   record.parsedSequence = record.sequence;
+  if (diagnosticsEnabled) {
+    logTerminalDiagnostics("terminal.resize.supervisor-request", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      requestId: request.requestId ?? null,
+      sequence: record.sequence,
+      previousCols,
+      previousRows,
+      requestedCols: request.cols,
+      requestedRows: request.rows,
+      appliedCols: record.cols,
+      appliedRows: record.rows,
+      headlessGridChanged,
+      gestureActive: request.gestureActive === true,
+      attachmentCount: record.stream.attachmentCount
+    });
+  }
   const delta: TerminalDelta = {
     type: "resize",
     sequence: record.sequence,
@@ -1068,13 +1198,53 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     ptyResize: createPtyResizeCoalescer({
       initialCols: request.spec.cols,
       initialRows: request.spec.rows,
-      commit: (cols, rows) => {
+      diagnosticsEnabled: isTerminalDiagnosticsEnabled,
+      onRequest: (event) => {
+        logTerminalDiagnostics("terminal.pty-resize.coalescer-request", {
+          surfaceId: request.spec.surfaceId,
+          sessionId: request.spec.sessionId,
+          ...event
+        });
+      },
+      commit: (cols, rows, context) => {
+        if (context) {
+          record.lastPtyResizeCommit = { ...context, cols, rows };
+        }
         try {
           ptyProcess.resize(cols, rows);
+          if (context) {
+            logTerminalDiagnostics("terminal.pty-resize.commit", {
+              surfaceId: request.spec.surfaceId,
+              sessionId: request.spec.sessionId,
+              ...context,
+              cols,
+              rows,
+              succeeded: true,
+              platform: process.platform,
+              sigwinchExpected: process.platform !== "win32",
+              ptyReportedCols: ptyProcess.cols,
+              ptyReportedRows: ptyProcess.rows
+            });
+          }
         } catch (error) {
+          record.lastPtyResizeCommit = undefined;
+          if (context) {
+            logTerminalDiagnostics("terminal.pty-resize.commit", {
+              surfaceId: request.spec.surfaceId,
+              sessionId: request.spec.sessionId,
+              ...context,
+              cols,
+              rows,
+              succeeded: false,
+              platform: process.platform,
+              sigwinchExpected: false,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
           logDiagnostics("pty-host.resize.commit.failed", {
             surfaceId: request.spec.surfaceId,
             sessionId: request.spec.sessionId,
+            ...(context ?? {}),
             cols,
             rows,
             error: error instanceof Error ? error.message : String(error)
@@ -1120,6 +1290,19 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     exited: false
   };
   sessions.set(record.sessionId, record);
+  syncSessionTerminalVtDiagnostics(record);
+  if (isTerminalDiagnosticsEnabled()) {
+    logTerminalDiagnostics("terminal.pty-resize.initial", {
+      surfaceId: record.surfaceId,
+      sessionId: record.sessionId,
+      cols: record.cols,
+      rows: record.rows,
+      ptyPid: record.pty.pid,
+      ptyReportedCols: record.pty.cols,
+      ptyReportedRows: record.pty.rows,
+      coalescer: record.ptyResize.getState()
+    });
+  }
   sessionScheduler.register(record.sessionId, () =>
     record.mutationQueue.drainSlice()
   );
@@ -1415,6 +1598,9 @@ function handlePtyRequest(
           enabled: true,
           logPath: nextLogPath
         });
+        for (const record of sessions.values()) {
+          logPtyResizeState(record, "diagnostics-enabled");
+        }
       } else {
         settlePtyProfileBucketsBeforeDiagnosticsDisable({
           continuousProfileEnabled: smoothnessProfile.enabled,
@@ -1572,6 +1758,8 @@ function finalizeSessionExit(record: SessionRuntime, exitCode?: number): void {
   disposeSettledSnapshotState(record);
   disposeShellReadyFallback(record);
   record.trimListener.dispose();
+  record.vtDiagnosticsListener?.dispose();
+  record.vtDiagnosticsListener = undefined;
   record.ptyResize.dispose();
   record.pendingDirectInputs = [];
   record.pendingDirectInputBytes = 0;
@@ -1606,6 +1794,8 @@ function disposeSession(record: SessionRuntime, killPty: boolean): void {
   deltaStore.removeSession(record.sessionId);
   record.trimListener.dispose();
   record.queryReplyListener.dispose();
+  record.vtDiagnosticsListener?.dispose();
+  record.vtDiagnosticsListener = undefined;
   record.ptyResize.dispose();
   record.disposeTerminalWhenIdle = true;
   disposeHeadlessTerminalIfIdle(record);

@@ -27,7 +27,9 @@ describe("terminal resize sync", () => {
           attachId: string | null,
           cols: number,
           rows: number,
-          gestureActive: boolean
+          gestureActive: boolean,
+          generation: number,
+          trigger?: string
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -66,7 +68,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       100,
       30,
-      false
+      false,
+      1,
+      undefined
     );
     await expect(supersededResult).resolves.toEqual(
       expect.objectContaining({
@@ -94,7 +98,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       120,
       40,
-      false
+      false,
+      3,
+      undefined
     );
 
     latest.resolve();
@@ -118,7 +124,9 @@ describe("terminal resize sync", () => {
           attachId: string | null,
           cols: number,
           rows: number,
-          gestureActive: boolean
+          gestureActive: boolean,
+          generation: number,
+          trigger?: string
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -158,7 +166,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       120,
       40,
-      false
+      false,
+      2,
+      undefined
     );
 
     latest.resolve();
@@ -183,7 +193,9 @@ describe("terminal resize sync", () => {
           attachId: string | null,
           cols: number,
           rows: number,
-          gestureActive: boolean
+          gestureActive: boolean,
+          generation: number,
+          trigger?: string
         ) => Promise<void>
       >()
       .mockImplementation((surfaceId) => {
@@ -229,7 +241,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       100,
       30,
-      false
+      false,
+      1,
+      undefined
     );
     expect(sendResize).toHaveBeenNthCalledWith(
       2,
@@ -237,7 +251,9 @@ describe("terminal resize sync", () => {
       "attach_2",
       80,
       24,
-      false
+      false,
+      1,
+      undefined
     );
 
     secondSurface.resolve();
@@ -267,7 +283,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       120,
       40,
-      false
+      false,
+      2,
+      undefined
     );
 
     latestFirstSurface.resolve();
@@ -291,7 +309,9 @@ describe("terminal resize sync", () => {
           attachId: string | null,
           cols: number,
           rows: number,
-          gestureActive: boolean
+          gestureActive: boolean,
+          generation: number,
+          trigger?: string
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -329,7 +349,9 @@ describe("terminal resize sync", () => {
       "attach_2",
       120,
       40,
-      false
+      false,
+      2,
+      undefined
     );
 
     second.resolve();
@@ -351,7 +373,9 @@ describe("terminal resize sync", () => {
           attachId: string | null,
           cols: number,
           rows: number,
-          gestureActive: boolean
+          gestureActive: boolean,
+          generation: number,
+          trigger?: string
         ) => Promise<void>
       >()
       .mockReturnValueOnce(first.promise)
@@ -387,7 +411,9 @@ describe("terminal resize sync", () => {
       "attach_1",
       120,
       40,
-      false
+      false,
+      2,
+      undefined
     );
 
     second.resolve();
