@@ -689,7 +689,7 @@ async function createProfileContext(
     JSON.parse(await readFile(configuredPath, "utf8")) as unknown
   );
   await verifyNativeProfileRuntimeArtifact(configuration);
-  const sharedCi = isSharedCiEnvironment();
+  const sharedCi = isSharedCiEnvironment(process.env.CI);
   let stopped = false;
   return {
     kind: "controlled-native",

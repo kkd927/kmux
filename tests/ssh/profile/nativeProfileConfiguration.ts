@@ -15,7 +15,7 @@ export const NATIVE_PROFILE_ARTIFACT_TARGETS = [
 export type NativeProfileArtifactTarget =
   (typeof NATIVE_PROFILE_ARTIFACT_TARGETS)[number];
 
-export function isSharedCiEnvironment(value = process.env.CI): boolean {
+export function isSharedCiEnvironment(value: string | undefined): boolean {
   if (value === undefined) return false;
   const normalized = value.trim().toLowerCase();
   return normalized !== "" && normalized !== "0" && normalized !== "false";
