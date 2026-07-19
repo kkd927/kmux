@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  assertRemoteRuntimeExecutableFormat,
   createRemoteRuntimeArtifactManifest,
   nativeRemoteRuntimeTarget,
   parseNativeArtifactAttestation,
@@ -101,6 +102,27 @@ describe("remote runtime artifact contract", () => {
       "linux-arm64-musl"
     );
     expect(nativeRemoteRuntimeTarget("win32", "x64")).toBeUndefined();
+  });
+
+  it("validates executable architecture from the target contract", () => {
+    expect(() =>
+      assertRemoteRuntimeExecutableFormat(
+        "linux-arm64-musl",
+        "kmuxd: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertRemoteRuntimeExecutableFormat(
+        "linux-x64-musl",
+        "kmuxd: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, stripped"
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertRemoteRuntimeExecutableFormat(
+        "linux-arm64-musl",
+        "kmuxd: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped"
+      )
+    ).toThrow(/executable format is invalid/u);
   });
 
   it("rejects manifest drift and unknown fields", () => {

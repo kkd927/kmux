@@ -3382,6 +3382,16 @@ describe("real system OpenSSH transport spike", () => {
         lastReceivedSequence: lastSequence
       });
       await reconnectedAttachment.checkpoint;
+      const detachedReplay = await collectTerminalUntil(
+        reconnectedAttachment,
+        detachedOutputTwo
+      );
+      const detachedOneIndex = detachedReplay.text.indexOf(detachedOutputOne);
+      const detachedTwoIndex = detachedReplay.text.indexOf(detachedOutputTwo);
+      expect(detachedOneIndex).toBeGreaterThanOrEqual(0);
+      expect(detachedTwoIndex).toBeGreaterThan(detachedOneIndex);
+      expect(detachedReplay.text.split(detachedOutputOne)).toHaveLength(2);
+      expect(detachedReplay.text.split(detachedOutputTwo)).toHaveLength(2);
       const reconnectMarker = `reconnect-marker-${suffix}`;
       await reconnectedAttachment.sendInput(
         uint64(1n),
@@ -3394,12 +3404,6 @@ describe("real system OpenSSH transport spike", () => {
         reconnectMarker
       );
       expect(afterReconnect.text).toContain(reconnectMarker);
-      const detachedOneIndex = afterReconnect.text.indexOf(detachedOutputOne);
-      const detachedTwoIndex = afterReconnect.text.indexOf(detachedOutputTwo);
-      expect(detachedOneIndex).toBeGreaterThanOrEqual(0);
-      expect(detachedTwoIndex).toBeGreaterThan(detachedOneIndex);
-      expect(afterReconnect.text.split(detachedOutputOne)).toHaveLength(2);
-      expect(afterReconnect.text.split(detachedOutputTwo)).toHaveLength(2);
       phase3Diagnostic("reattach-input");
       await reconnectedAttachment.detach();
       reconnectedAttachment = undefined;
@@ -4213,12 +4217,37 @@ describe("real system OpenSSH transport spike", () => {
     } finally {
       await firstPool.close();
       await secondPool.close();
+      const ownershipTarget = secondTarget ?? firstTarget;
+      if (ownershipTarget) {
+        await restoreSharedHomeOwnership(ownershipTarget);
+      }
       await secondTarget?.stop();
       await firstTarget?.stop();
       await rm(sharedHomePath, { recursive: true, force: true });
     }
   });
 });
+
+async function restoreSharedHomeOwnership(
+  selectedTarget: StartedSshTarget
+): Promise<void> {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) {
+    throw new Error("shared-home integration cleanup requires POSIX ownership");
+  }
+  const result = await selectedTarget.target.exec([
+    "chown",
+    "-R",
+    `${uid}:${gid}`,
+    "/home/kmux"
+  ]);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `could not restore shared-home ownership: ${result.stderr.trim()}`
+    );
+  }
+}
 
 async function connectAssignedMaster(
   pool: SshTransportPool,

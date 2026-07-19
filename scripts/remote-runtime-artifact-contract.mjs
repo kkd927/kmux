@@ -275,7 +275,7 @@ export async function verifyRemoteRuntimeArtifact(
     throw new Error(`${target} kmuxd SHA-256 does not match its manifest`);
   }
   const { stdout: fileOutput } = await execFileAsync("file", [executablePath]);
-  assertExecutableFormat(target, fileOutput);
+  assertRemoteRuntimeExecutableFormat(target, fileOutput);
   if (contract.signed) {
     if (process.platform === "darwin") {
       await execFileAsync("codesign", ["--verify", "--strict", executablePath]);
@@ -533,11 +533,13 @@ function hasSafeArtifactPermissions(metadata, kind, allowPackagedPermissions) {
   return kind === "manifest" ? (mode & 0o400) !== 0 : (mode & 0o500) === 0o500;
 }
 
-function assertExecutableFormat(target, output) {
-  const isDarwin = target.startsWith("darwin-");
-  const architecturePattern = target.endsWith("arm64")
-    ? /(?:arm64|aarch64)/iu
-    : /(?:x86[_-]64|x86-64)/iu;
+export function assertRemoteRuntimeExecutableFormat(target, output) {
+  const contract = requireRemoteRuntimeTarget(target);
+  const isDarwin = contract.platform === "darwin";
+  const architecturePattern =
+    contract.arch === "arm64"
+      ? /(?:arm64|aarch64)/iu
+      : /(?:x86[_-]64|x86-64)/iu;
   if (
     (isDarwin
       ? !/Mach-O 64-bit/iu.test(output)

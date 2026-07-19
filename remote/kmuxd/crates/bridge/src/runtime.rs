@@ -740,14 +740,22 @@ fn cohort_has_live_keeper(options: &CohortProxyServeOptions) -> Result<bool, Bri
             continue;
         }
         let descriptor = load_session_descriptor(&path)?;
-        if descriptor.resource_key.target_id == options.target_id
-            && descriptor.keeper_local_protocol_major == options.keeper_local_protocol_major
-            && matches!(
-                descriptor.state,
-                SessionDescriptorState::Creating | SessionDescriptorState::Running
-            )
+        if descriptor.resource_key.target_id != options.target_id
+            || descriptor.keeper_local_protocol_major != options.keeper_local_protocol_major
         {
-            return Ok(true);
+            continue;
+        }
+        match descriptor.state {
+            SessionDescriptorState::Creating => return Ok(true),
+            SessionDescriptorState::Running => {
+                // A keeper can die before it commits an exited descriptor. A
+                // stale `running` record must not pin its old executable
+                // cohort forever once that process is authoritatively gone.
+                if !keeper_process_is_definitively_absent(&descriptor)? {
+                    return Ok(true);
+                }
+            }
+            SessionDescriptorState::Exited | SessionDescriptorState::Terminated => {}
         }
     }
     Ok(false)
@@ -5867,6 +5875,42 @@ mod tests {
         corrupt["bytes"] = serde_json::json!(executable_bytes.len() + 1);
         fs::write(&manifest_path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
         assert!(verify_pinned_executable_contract(&executable_path, &generation, 2, 1).is_err());
+    }
+
+    #[test]
+    fn crashed_keeper_descriptor_does_not_pin_its_cohort_process() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let roots = test_roots(sandbox.path());
+        prepare_runtime_directories(&roots).unwrap();
+        let resource_key = test_resource_key("workspace_crashed_cohort", Some("session_crashed"));
+        let mut descriptor = test_session_descriptor(
+            sandbox.path(),
+            resource_key.clone(),
+            "crashed_cohort",
+            "create_crashed_cohort",
+            &"a".repeat(64),
+            false,
+        );
+        descriptor.state = SessionDescriptorState::Running;
+        descriptor.keeper_pid = Some(i32::MAX as u32);
+        descriptor.exit_code = None;
+        write_session_descriptor(
+            &session_descriptor_path(Path::new(&roots.state_root), &resource_key),
+            &descriptor,
+        )
+        .unwrap();
+
+        let options = CohortProxyServeOptions {
+            socket_path: Path::new(&roots.runtime_root)
+                .join("cohorts")
+                .join("test.sock"),
+            state_root: PathBuf::from(&roots.state_root),
+            runtime_root: PathBuf::from(&roots.runtime_root),
+            target_id: resource_key.target_id,
+            executable_generation: "d".repeat(64),
+            keeper_local_protocol_major: kmux_compat::KEEPER_LOCAL_PROTOCOL_MAJOR,
+        };
+        assert!(!cohort_has_live_keeper(&options).unwrap());
     }
 
     #[test]
