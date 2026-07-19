@@ -10,54 +10,54 @@ recorded below without marking deferred evidence as passed.
 
 ## Phase status
 
-| Phase | State               | Validation                                                       | Important+ findings  | Blockers                                   |
-| ----- | ------------------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------ |
-| 0     | passed              | 26 AC, 6 IM, and 10 PERF rows audited; repo tests green          | none open            | none                                       |
-| 1     | passed              | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                       |
-| 2     | passed              | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                       |
-| 3     | passed              | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                       |
-| 4     | validation deferred | 1/4 native targets; TS/Rust/real-SSH/local gate green            | all fixed; none open | final 3-target CI run                      |
-| 5     | passed              | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                       |
-| 6     | passed              | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                       |
-| 7     | passed              | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                       |
-| 8     | in progress         | 1,775 TS + 121 Rust + 24 real-SSH + E2E/local gate green         | all fixed; none open | native/normative-performance gates pending |
+| Phase | State       | Validation                                                       | Important+ findings  | Blockers                                   |
+| ----- | ----------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------ |
+| 0     | passed      | 26 AC, 6 IM, and 10 PERF rows audited; repo tests green          | none open            | none                                       |
+| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                       |
+| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                       |
+| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                       |
+| 4     | passed      | 4/4 actual matching-target native parity records                 | all fixed; none open | none                                       |
+| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                       |
+| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                       |
+| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                       |
+| 8     | in progress | 1,776 TS + 122 Rust + 24 real-SSH + 4/4 native + local gate      | all fixed; none open | native manual/performance evidence pending |
 
 ## Required automated-contract traceability
 
-| ID    | ADR contract                                                                                                         | Owner / phase                                  | Code owner                                                                                      | Required evidence                                                     | State   |
-| ----- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------- |
-| AC-01 | Checkpoint → resize → output matches live screen and geometry                                                        | proto + keeper terminal / 1, 3                 | `packages/proto`; `remote/kmuxd/crates/{terminal,journal,keeper}`                               | shared Rust/xterm conformance fixture plus real-SSH replay test       | passed  |
-| AC-02 | Replay/live barrier has no missing, duplicate, or reordered mutation                                                 | keeper + remote-host / 1, 3                    | `remote/kmuxd/crates/keeper`; `apps/desktop/src/remote-host`                                    | property/unit tests and transport-fault real-SSH test                 | passed  |
-| AC-03 | Main relays zero attachment bytes; bounded injection gets PTY ack; capture respects line/1 MiB caps                  | Main authorization + terminal providers / 2, 6 | `apps/desktop/src/main/remote`; `apps/desktop/src/main/targets`; `apps/desktop/src/remote-host` | IPC instrumentation/architecture tests and real-SSH CLI/capture tests | passed  |
-| AC-04 | Bridge, remote-host, SSH, and desktop loss leave keeper and agent alive                                              | keeper lifecycle + harness / 3                 | `remote/kmuxd/crates/{bridge,keeper}`; `tests/ssh`                                              | Toxiproxy/process-crash integration and Playwright restore            | passed  |
-| AC-05 | Keeper/parser failure isolation, including own PTY survival on caught parser failure                                 | keeper process/thread boundary / 1, 3          | `remote/kmuxd/crates/{keeper,terminal}`                                                         | Rust unwind/failure tests and two-keeper real-SSH fault test          | passed  |
-| AC-06 | Lease fencing, at-most-once retry, PTY-boundary ack, and partial-write prefix safety                                 | keeper input boundary / 3                      | `remote/kmuxd/crates/keeper`; remote terminal adapter                                           | Rust property/fault tests and real PTY integration                    | passed  |
-| AC-07 | `initialInput` is a separate durable launch-input and is never duplicated/replayed across an unknown new generation  | coordinator + keeper / 2, 3                    | `packages/core`; `apps/desktop/src/main/remote`; `remote/kmuxd/crates/keeper`                   | coordinator crash tests and real-SSH ambiguous-write test             | passed  |
-| AC-08 | Crash at every conversion WAL transition preserves local sessions, avoids duplicate keeper/orphan                    | conversion WAL + reconciler / 5                | `apps/desktop/src/main/remote/{conversionWal,remoteReconciler}`; runtime descriptors            | fsync/WAL fault matrix plus desktop/SSH integration                   | passed  |
-| AC-09 | Crash around admission/result/fact projection recovers same operation; renderer cannot dispatch Main-only facts      | operation store/coordinator / 2, 5             | `packages/core/src/main`; `apps/desktop/src/main/remote`; renderer IPC allowlist                | store/reducer/IPC crash matrix for every named mutation               | passed  |
-| AC-10 | Offline termination stays pending/retained until durable authoritative tombstone                                     | coordinator + retained inventory / 5           | Main remote lifecycle; runtime operation ledger                                                 | reducer/store tests and disconnect integration                        | passed  |
-| AC-11 | Create retry after ledger GC resolves the descriptor by create ID/resource key                                       | runtime descriptors + ledger / 3, 5            | `remote/kmuxd/crates/bridge`; descriptor store                                                  | Rust ledger-GC test and real-SSH retry                                | passed  |
-| AC-12 | Stale restart/forward revision after GC cannot mutate; last revision returns retained result                         | runtime revision ledger / 3, 7                 | bridge operation ledger; forward provider                                                       | Rust revision tests and real-SSH restart/forward retry                | passed  |
-| AC-13 | Unknown observation cannot infer exit, create replacement, or remove binding                                         | domain + reconciler / 2                        | `packages/core`; `apps/desktop/src/main/remote/remoteReconciler`                                | reducer/property tests and disconnect integration                     | passed  |
-| AC-14 | Opaque located paths and target bounds prevent remote values reaching local APIs or importing `PathAccess`           | core codecs + registry / 2, 7                  | `packages/core`; `apps/desktop/src/main/targets`; architecture lint                             | compile/runtime boundary tests and repository-wide architecture scan  | passed  |
-| AC-15 | Alias/config, host-key change/rotation, principal, installation, and execution-node mismatches fail closed           | transport pool + authority / 1, 8              | remote-host OpenSSH/handshake; doctor identity                                                  | real-OpenSSH trust/authority matrix                                   | passed  |
-| AC-16 | Shared-home nodes remain distinct; copied authority and UID/account mismatch fail closed                             | doctor node identity / 1, 8                    | `remote/kmuxd/crates/{doctor,platform}`                                                         | two-node shared-volume integration                                    | passed  |
-| AC-17 | Restore-disabled, explicit restart, and retained close keep distinct lifecycle contracts                             | reconciler + retained sessions / 5             | core state; Main retained inventory                                                             | reducer/store tests and Playwright lifecycle E2E                      | passed  |
-| AC-18 | CLI/capture/worktree primitives remain target-scoped and compatible with a future Agent Team without implementing it | providers + coordinator / 6, 7                 | Main target providers; CLI; worktree runtime                                                    | shared primitive contract suites and real-SSH E2E                     | passed  |
-| AC-19 | Detached/bridge-down hook and OSC events spool/replay exactly once                                                   | hook spool + bridge / 6                        | `remote/kmuxd/crates/{hook,bridge}`; Main event ack                                             | Rust spool crash tests and real-SSH replay                            | passed  |
-| AC-20 | First bootstrap without SFTP fails pre-mutation; installed terminal survives later SFTP outage                       | bootstrap + file provider / 1, 3, 7            | remote-host bootstrap/SFTP; runtime descriptors                                                 | SFTP-enabled/disabled real-SSH scenarios                              | passed  |
-| AC-21 | Incompatible checkpoint falls back to journal; truncation reports retained range                                     | proto + keeper + renderer adapter / 1, 3       | shared data plane; journal/checkpoint; terminal router                                          | conformance/property tests and reconnect integration                  | passed  |
-| AC-22 | Quota/full disk never acknowledges unrecorded output and eventually backpressures PTY reads                          | journal/storage / 5, 8                         | `remote/kmuxd/crates/journal`; retained storage UX                                              | tmpfs/quota Rust and real-SSH fault tests                             | passed  |
-| AC-23 | Parser unwind rebuild has no PTY stop or duplicate side effects; abort is per-keeper                                 | keeper terminal model / 1, 3                   | `remote/kmuxd/crates/{keeper,terminal}`                                                         | Rust side-effect dedupe tests and multi-keeper abort integration      | passed  |
-| AC-24 | Live generations are not GC'd; incompatible keeper uses exactly one pinned cohort proxy                              | bridge compatibility + installer / 4, 8        | `remote/kmuxd/crates/{bridge,compat}`; bootstrap GC                                             | native update matrix and connection/process audit                     | partial |
-| AC-25 | Every channel fails mux-only when master dies before/during launch, with no new TCP/auth                             | transport pool / 1, 8                          | `apps/desktop/src/remote-host/{sshTransportPool,muxOnlyOpenSshChannel}`                         | audited real-OpenSSH exec/SFTP/metadata/forward fault matrix          | passed  |
-| AC-26 | Concurrent provisional routes to the same authority/policy converge to one assigned master before mutation           | transport pool + Main promotion / 1            | remote-host transport pool; Main binding authorization                                          | connection-race integration with TCP/auth audit                       | passed  |
+| ID    | ADR contract                                                                                                         | Owner / phase                                  | Code owner                                                                                      | Required evidence                                                     | State  |
+| ----- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------ |
+| AC-01 | Checkpoint → resize → output matches live screen and geometry                                                        | proto + keeper terminal / 1, 3                 | `packages/proto`; `remote/kmuxd/crates/{terminal,journal,keeper}`                               | shared Rust/xterm conformance fixture plus real-SSH replay test       | passed |
+| AC-02 | Replay/live barrier has no missing, duplicate, or reordered mutation                                                 | keeper + remote-host / 1, 3                    | `remote/kmuxd/crates/keeper`; `apps/desktop/src/remote-host`                                    | property/unit tests and transport-fault real-SSH test                 | passed |
+| AC-03 | Main relays zero attachment bytes; bounded injection gets PTY ack; capture respects line/1 MiB caps                  | Main authorization + terminal providers / 2, 6 | `apps/desktop/src/main/remote`; `apps/desktop/src/main/targets`; `apps/desktop/src/remote-host` | IPC instrumentation/architecture tests and real-SSH CLI/capture tests | passed |
+| AC-04 | Bridge, remote-host, SSH, and desktop loss leave keeper and agent alive                                              | keeper lifecycle + harness / 3                 | `remote/kmuxd/crates/{bridge,keeper}`; `tests/ssh`                                              | Toxiproxy/process-crash integration and Playwright restore            | passed |
+| AC-05 | Keeper/parser failure isolation, including own PTY survival on caught parser failure                                 | keeper process/thread boundary / 1, 3          | `remote/kmuxd/crates/{keeper,terminal}`                                                         | Rust unwind/failure tests and two-keeper real-SSH fault test          | passed |
+| AC-06 | Lease fencing, at-most-once retry, PTY-boundary ack, and partial-write prefix safety                                 | keeper input boundary / 3                      | `remote/kmuxd/crates/keeper`; remote terminal adapter                                           | Rust property/fault tests and real PTY integration                    | passed |
+| AC-07 | `initialInput` is a separate durable launch-input and is never duplicated/replayed across an unknown new generation  | coordinator + keeper / 2, 3                    | `packages/core`; `apps/desktop/src/main/remote`; `remote/kmuxd/crates/keeper`                   | coordinator crash tests and real-SSH ambiguous-write test             | passed |
+| AC-08 | Crash at every conversion WAL transition preserves local sessions, avoids duplicate keeper/orphan                    | conversion WAL + reconciler / 5                | `apps/desktop/src/main/remote/{conversionWal,remoteReconciler}`; runtime descriptors            | fsync/WAL fault matrix plus desktop/SSH integration                   | passed |
+| AC-09 | Crash around admission/result/fact projection recovers same operation; renderer cannot dispatch Main-only facts      | operation store/coordinator / 2, 5             | `packages/core/src/main`; `apps/desktop/src/main/remote`; renderer IPC allowlist                | store/reducer/IPC crash matrix for every named mutation               | passed |
+| AC-10 | Offline termination stays pending/retained until durable authoritative tombstone                                     | coordinator + retained inventory / 5           | Main remote lifecycle; runtime operation ledger                                                 | reducer/store tests and disconnect integration                        | passed |
+| AC-11 | Create retry after ledger GC resolves the descriptor by create ID/resource key                                       | runtime descriptors + ledger / 3, 5            | `remote/kmuxd/crates/bridge`; descriptor store                                                  | Rust ledger-GC test and real-SSH retry                                | passed |
+| AC-12 | Stale restart/forward revision after GC cannot mutate; last revision returns retained result                         | runtime revision ledger / 3, 7                 | bridge operation ledger; forward provider                                                       | Rust revision tests and real-SSH restart/forward retry                | passed |
+| AC-13 | Unknown observation cannot infer exit, create replacement, or remove binding                                         | domain + reconciler / 2                        | `packages/core`; `apps/desktop/src/main/remote/remoteReconciler`                                | reducer/property tests and disconnect integration                     | passed |
+| AC-14 | Opaque located paths and target bounds prevent remote values reaching local APIs or importing `PathAccess`           | core codecs + registry / 2, 7                  | `packages/core`; `apps/desktop/src/main/targets`; architecture lint                             | compile/runtime boundary tests and repository-wide architecture scan  | passed |
+| AC-15 | Alias/config, host-key change/rotation, principal, installation, and execution-node mismatches fail closed           | transport pool + authority / 1, 8              | remote-host OpenSSH/handshake; doctor identity                                                  | real-OpenSSH trust/authority matrix                                   | passed |
+| AC-16 | Shared-home nodes remain distinct; copied authority and UID/account mismatch fail closed                             | doctor node identity / 1, 8                    | `remote/kmuxd/crates/{doctor,platform}`                                                         | two-node shared-volume integration                                    | passed |
+| AC-17 | Restore-disabled, explicit restart, and retained close keep distinct lifecycle contracts                             | reconciler + retained sessions / 5             | core state; Main retained inventory                                                             | reducer/store tests and Playwright lifecycle E2E                      | passed |
+| AC-18 | CLI/capture/worktree primitives remain target-scoped and compatible with a future Agent Team without implementing it | providers + coordinator / 6, 7                 | Main target providers; CLI; worktree runtime                                                    | shared primitive contract suites and real-SSH E2E                     | passed |
+| AC-19 | Detached/bridge-down hook and OSC events spool/replay exactly once                                                   | hook spool + bridge / 6                        | `remote/kmuxd/crates/{hook,bridge}`; Main event ack                                             | Rust spool crash tests and real-SSH replay                            | passed |
+| AC-20 | First bootstrap without SFTP fails pre-mutation; installed terminal survives later SFTP outage                       | bootstrap + file provider / 1, 3, 7            | remote-host bootstrap/SFTP; runtime descriptors                                                 | SFTP-enabled/disabled real-SSH scenarios                              | passed |
+| AC-21 | Incompatible checkpoint falls back to journal; truncation reports retained range                                     | proto + keeper + renderer adapter / 1, 3       | shared data plane; journal/checkpoint; terminal router                                          | conformance/property tests and reconnect integration                  | passed |
+| AC-22 | Quota/full disk never acknowledges unrecorded output and eventually backpressures PTY reads                          | journal/storage / 5, 8                         | `remote/kmuxd/crates/journal`; retained storage UX                                              | tmpfs/quota Rust and real-SSH fault tests                             | passed |
+| AC-23 | Parser unwind rebuild has no PTY stop or duplicate side effects; abort is per-keeper                                 | keeper terminal model / 1, 3                   | `remote/kmuxd/crates/{keeper,terminal}`                                                         | Rust side-effect dedupe tests and multi-keeper abort integration      | passed |
+| AC-24 | Live generations are not GC'd; incompatible keeper uses exactly one pinned cohort proxy                              | bridge compatibility + installer / 4, 8        | `remote/kmuxd/crates/{bridge,compat}`; bootstrap GC                                             | native update matrix and connection/process audit                     | passed |
+| AC-25 | Every channel fails mux-only when master dies before/during launch, with no new TCP/auth                             | transport pool / 1, 8                          | `apps/desktop/src/remote-host/{sshTransportPool,muxOnlyOpenSshChannel}`                         | audited real-OpenSSH exec/SFTP/metadata/forward fault matrix          | passed |
+| AC-26 | Concurrent provisional routes to the same authority/policy converge to one assigned master before mutation           | transport pool + Main promotion / 1            | remote-host transport pool; Main binding authorization                                          | connection-race integration with TCP/auth audit                       | passed |
 
 ## Integration and manual-validation traceability
 
 | ID    | ADR validation                                                                                                                                         | Owner / phase                    | Harness / command                                                       | State   |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ----------------------------------------------------------------------- | ------- |
-| IM-01 | PTY, reconnect, bridge update, and keeper isolation on actual Darwin arm64/x64 and Linux arm64/x64-musl targets                                        | native runtime matrix / 4, 8     | `npm run gate:ssh:native` with four matching target records             | partial |
+| IM-01 | PTY, reconnect, bridge update, and keeper isolation on actual Darwin arm64/x64 and Linux arm64/x64-musl targets                                        | native runtime matrix / 4, 8     | `npm run gate:ssh:native` with four matching target records             | passed  |
 | IM-02 | OpenSSH `Include`, `Match`, ProxyJump, ProxyCommand, agent, certificate, protected key, custom port, cancellation, first-use, and changed-key recovery | OpenSSH harness / 1, 8           | `npm run test:ssh:integration`; selected native trust checks            | passed  |
 | IM-03 | Known/unknown bootstrap shells, override behavior, and account-shell preservation                                                                      | bootstrap + keeper / 1, 3, 8     | real-SSH shell fixture matrix                                           | passed  |
 | IM-04 | Read-only/noexec/shared paths, NFS socket rejection, verified overrides, install race, read-back hash, and generation GC                               | doctor + installer / 1, 4, 8     | mounted real-SSH target fixtures and native filesystem checks           | partial |
@@ -290,7 +290,7 @@ unchanged.
   connect/disconnect races, and production assigned-master loss recovery. No
   performance experiment or alternate local scheduling/output path was kept.
 
-### Phase 4 — four-artifact parity (validation deferred)
+### Phase 4 — four-artifact parity (passed)
 
 - Implemented scope: exact artifact contracts and reproducible builders for
   `darwin-arm64`, `darwin-x64`, `linux-arm64-musl`, and `linux-x64-musl`;
@@ -320,8 +320,22 @@ unchanged.
   The native handshake additionally matched platform, architecture, ABI, and
   the conservative `ssh-disconnect` persistence level; unverified logout or
   reboot persistence is not advertised.
-  Darwin arm64, Linux arm64-musl, and Linux x64-musl matching-target records
-  have not run, so the required 4/4 matrix and IM-01 remain partial.
+  Final matching-runner GitHub Actions run
+  [29680424262](https://github.com/kkd927/kmux/actions/runs/29680424262)
+  then passed at commit `778086a64b0d7a935ea218e81300876643fa6f9d` on
+  all four actual targets without translation: Darwin arm64
+  `1579eb0e6a96548e3b39a008616650cced0eb4380fba3ab501a90ab3d54a81a7`
+  (3,722,320 bytes), Darwin x64
+  `d99d2affa662ceaf391664f1cc090dfa56595ec1d48eaad96c936b19fd410eec`
+  (4,140,048 bytes), Linux arm64-musl
+  `83e98d2387e14a676f4bfdff9e7bc50b45bb26fd13a908b1008d161d7097f207`
+  (3,805,632 bytes), and Linux x64-musl
+  `c045b00224091144c1752653d556ea567679b88c41ad2269965d2d26360718a1`
+  (4,453,344 bytes). Every record proved direct compatibility, one pinned
+  cohort across two incompatible hashes, reconnect replay, keeper isolation,
+  bridge restart, account-shell parity, persistence reporting, and idle-cohort
+  exit. The records explicitly report `sharedCi: true`, so they satisfy
+  functional native parity but are not normative performance evidence.
 - Regression validation: `npm test` passed 167 files / 1,560 tests with one
   existing skip; `npm run typecheck`, `npm run lint`, and `npm run build`
   passed. Rust formatting, 45 workspace tests/doc tests, and workspace/all-target
@@ -366,11 +380,10 @@ unchanged.
   persistence-level values, translated-architecture rejection, and an explicit
   null guard for the native runtime-parity mutation observation found by the
   first candidate build before official measurement.
-- Gate: not passed. The local paired gate is complete; the remaining Darwin
-  arm64, Linux arm64-musl, and Linux x64-musl records are deferred to the final
-  branch GitHub Actions run by the user-authorized execution-order deviation
-  below. This deferral permits Phase 5 work to begin but does not record the
-  three targets, the 4/4 matrix, IM-01, or the Phase 4 gate as passed.
+- Gate: passed. The user-authorized deferred final-branch run completed the
+  four matching-target records, AC-24, IM-01, and the Phase 4 gate without
+  substituting Docker, emulation, or shared-CI timing for native functionality
+  or controlled performance.
 
 ### Phase 5 — transactional lifecycle (passed)
 
@@ -579,15 +592,16 @@ unchanged.
   leases before quarantining and removing only the current executable
   generation. Authority, descriptors, journals, checkpoints, worktrees, and
   durable operations are preserved.
-- Full TypeScript validation passed 190 files with 1,775 tests passed, one
+- Full TypeScript validation passed 190 files with 1,776 tests passed, one
   existing skip, and zero failures. `npm run typecheck`, `npm run lint`, the
   production build, and `git diff --check` passed. Rust workspace validation
-  passed 121 tests plus rustfmt and all-target clippy with warnings denied.
-  The complete real system-OpenSSH suite passed all 24 scenarios in 153.963 s
+  passed 122 tests plus rustfmt and all-target clippy with warnings denied.
+  The complete real system-OpenSSH suite passed all 24 scenarios in 209.218 s
   with rebuilt `linux-x64-musl` artifact SHA-256
-  `0a23993a2a8dcf4b5bd51b50546c91f7e93e17d846cdfa9cb965045c77b0422a`
+  `c045b00224091144c1752653d556ea567679b88c41ad2269965d2d26360718a1`
   (4,453,344 bytes). The desktop-loss/restore E2E also passed against the same
-  durable keeper generation.
+  durable keeper generation on the final commit (`1/1`, 33.8 s test time,
+  37.5 s suite time).
 - The final security/lifecycle review fixed every Critical or Important
   finding and ended with none open. In particular, failed OpenSSH commands are
   process-bounded even when descendants retain stdio; remote-host owner death
@@ -597,6 +611,30 @@ unchanged.
   remain bounded and fail closed. A process-level real-OpenSSH test kills the
   owner after removing its copied config and observes the authenticated master
   count fall from one to zero without another authentication.
+- The first final-branch native run
+  [29679489702](https://github.com/kkd927/kmux/actions/runs/29679489702)
+  exposed one actual Important lifecycle defect and one Important artifact
+  verifier defect: a crashed keeper's stale `running` descriptor could pin its
+  incompatible cohort forever, and the Linux arm64 target parser read the
+  `-musl` suffix as x64. It also exposed two Linux integration-harness timing/
+  cleanup defects. Commit `778086a64b0d7a935ea218e81300876643fa6f9d`
+  makes cohort liveness consult authoritative PID absence, derives executable
+  architecture from the target contract, waits for both ordered detached
+  outputs before injecting the reconnect marker, and restores the test-owned
+  shared-home UID/GID before host cleanup. Focused regressions, the full 122-
+  test Rust workspace, 1,776 TypeScript tests, all 24 local real-SSH cases,
+  local Darwin x64 native parity, typecheck/lint/build/rustfmt/clippy, and
+  artifact verification passed with no Critical or Important finding left
+  open.
+- The corrected final matching-runner run
+  [29680424262](https://github.com/kkd927/kmux/actions/runs/29680424262)
+  passed `verify-mac`, `verify-linux`, the separately named Linux real-SSH job,
+  and all four actual native parity jobs. Every native record was un-translated
+  and proved PTY, direct/cohort update compatibility, detach/replay, keeper
+  isolation, bridge restart, shell parity, persistence reporting, and final-
+  keeper cohort shutdown. AC-24, IM-01, and the deferred Phase 4 gate are now
+  complete. As declared by each record, shared GitHub Actions runners provide
+  functional native evidence only, not controlled performance evidence.
 - A Phase 8 audit found that the original fixed envelope self-evaluated green,
   but a separately retained five-run measurement of the exact same pre-SSH
   revision would fail echo p99 (`50.4 ms` > `38.1 ms`) and warm switch
@@ -640,8 +678,14 @@ unchanged.
   loaded echo latency and an SFTP ratio of `0.199` do not satisfy or alter the
   native normative gates; report SHA-256 is
   `3af1c8f43cf9c29477d8bf565a53dc26f6a10d35599b602f3ceee627c23f51c9`.
-- Phase 8 is not yet passed. Normative native remote performance evidence and
-  the deferred four-target GitHub Actions matrix remain pending.
+- Phase 8 is not yet passed. The four-target functional native matrix is
+  complete. The unchanged controlled-native performance workload still needs
+  one non-shared result per artifact, and IM-04/IM-05 still need actual NFS/
+  unsuitable-socket and native sleep/wake evidence. No absolute
+  `KMUX_SSH_PROFILE_CONFIG` for those controlled targets is available in this
+  workspace; a final `npm run profile:ssh` audit therefore stopped before any
+  target mutation with the explicit missing-configuration error. Docker and
+  shared CI remain invalid substitutes.
 
 ## Material decisions, deviations, and blockers
 
@@ -661,16 +705,26 @@ unchanged.
   and recovered in dependency order. SSH target services are intentionally not
   cached because profile policy and verified authority are mutable locator
   state; each command receives a freshly target-bound path resolver.
-- Darwin x64 native parity and signed-Mach-O evidence has passed locally. On
+- Darwin x64 native parity and signed-Mach-O evidence first passed locally. On
   2026-07-18 the user explicitly authorized an execution-order and
   evidence-routing deviation: finish Phases 5–8 first, then create the final
   branch, commit and push it, and use the repository's matching-runner GitHub
   Actions matrix for `darwin-arm64`, `darwin-x64`, `linux-arm64-musl`, and
-  `linux-x64-musl`. Until that run passes, the other three records, the 4/4
-  matrix, IM-01, and the Phase 4/8 native gate remain partial. Docker and
-  emulation remain invalid substitutes. GitHub Actions results are functional
-  native-parity evidence only and cannot satisfy any controlled or normative
-  performance measurement.
+  `linux-x64-musl`. Run
+  [29680424262](https://github.com/kkd927/kmux/actions/runs/29680424262)
+  completed that matrix at 4/4 and closed AC-24, IM-01, and Phase 4. Docker and
+  emulation remain invalid substitutes. The GitHub Actions records explicitly
+  identify shared CI and therefore satisfy functional native parity only; they
+  cannot satisfy any controlled or normative performance measurement.
+- The remaining external prerequisites are recorded rather than bypassed.
+  IM-04 requires an actual unsuitable NFS/runtime-socket target and IM-05 an
+  actual native sleep/wake cycle. IM-06 and PERF-01 through PERF-08 require a
+  non-CI, non-shared controlled target for each artifact, matching the committed
+  hardware/network manifest, plus an absolute `KMUX_SSH_PROFILE_CONFIG` whose
+  audit command reports the physical TCP/authentication baseline. Resume each
+  performance record with
+  `KMUX_SSH_PROFILE_CONFIG=/absolute/path/to/config.json npm run profile:ssh`;
+  `npm run profile:ssh:functional` remains diagnostic Docker evidence only.
 - Agent Team is not implemented by this project. Phase 6 delivers hook, CLI,
   capture, notification, target/resource-key, and acknowledgement primitives
   that a future Agent Team can reuse; Phase 7 adds target-scoped worktree
