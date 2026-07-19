@@ -141,6 +141,49 @@ describe("Linux x64 remote terminal attachment", () => {
     }
   });
 
+  it("preserves the SSH channel close diagnosis on later input", async () => {
+    const child = new FakeChildProcess();
+    const attachment = new RemoteTerminalAttachment(
+      child as unknown as ChildProcess,
+      attachRequest()
+    );
+    child.sendControl(attachReady({ writerLeaseId: "lease_1" }));
+    await attachment.ready;
+    child.stderr.write("keeper outbound queue closed");
+    child.close();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(
+      attachment.sendInput(uint64(1n), new TextEncoder().encode("after-close"))
+    ).rejects.toMatchObject({
+      code: "attachment-closed",
+      message: expect.stringContaining("keeper outbound queue closed")
+    });
+  });
+
+  it("prefers the SSH close diagnosis when stdin errors first", async () => {
+    const child = new FakeChildProcess();
+    const attachment = new RemoteTerminalAttachment(
+      child as unknown as ChildProcess,
+      attachRequest()
+    );
+    child.sendControl(attachReady({ writerLeaseId: "lease_1" }));
+    await attachment.ready;
+    child.stdin.emit("error", new Error("write EPIPE"));
+    child.stderr.write("keeper outbound queue closed after EPIPE");
+    child.close();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(
+      attachment.sendInput(uint64(1n), new TextEncoder().encode("after-close"))
+    ).rejects.toMatchObject({
+      code: "attachment-closed",
+      message: expect.stringContaining(
+        "keeper outbound queue closed after EPIPE"
+      )
+    });
+  });
+
   it("rejects terminal mutations until the advertised checkpoint completes", async () => {
     const child = new FakeChildProcess();
     const attachment = new RemoteTerminalAttachment(

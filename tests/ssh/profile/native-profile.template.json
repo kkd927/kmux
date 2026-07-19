@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "environmentKind": "controlled-native",
+  "artifactTarget": "darwin-x64",
+  "runtimeArtifactPath": "/absolute/local/path/to/packaged/kmuxd",
+  "runtimeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "sshPath": "/usr/bin/ssh",
+  "sftpPath": "/usr/bin/sftp",
+  "configPath": "/absolute/path/to/isolated-ssh-config",
+  "host": "kmux-profile-target",
+  "controlRoot": "/absolute/private/path/to/control-root",
+  "runtimePath": "/absolute/remote/path/to/kmuxd",
+  "roots": {
+    "installRoot": "/absolute/remote/path/to/kmux/install",
+    "authorityRoot": "/absolute/remote/path/to/kmux/authority",
+    "stateRoot": "/absolute/remote/path/to/kmux/state",
+    "runtimeRoot": "/absolute/remote/path/to/kmux/run"
+  },
+  "targetId": "target_profile_darwin_x64",
+  "hardware": {
+    "physicalCpuCores": 1,
+    "memoryBytes": 1,
+    "stateStorage": "other",
+    "evidence": "replace with the target inspection command and result"
+  },
+  "network": {
+    "roundTripLatencyMs": 0,
+    "maximumInjectedJitterMs": 0,
+    "evidence": "replace with the network shaper and measurement record"
+  },
+  "resolvedRoutePhysicalTcpLegs": 1,
+  "auditSnapshot": {
+    "executable": "/absolute/path/to/audit-snapshot",
+    "args": []
+  },
+  "sharedHost": true
+}

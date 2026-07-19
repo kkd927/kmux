@@ -10,17 +10,17 @@ recorded below without marking deferred evidence as passed.
 
 ## Phase status
 
-| Phase | State       | Validation                                                          | Important+ findings  | Blockers                                    |
-| ----- | ----------- | ------------------------------------------------------------------- | -------------------- | ------------------------------------------- |
-| 0     | passed      | 26 AC, 6 IM, and 10 PERF rows audited; repo tests green             | none open            | none                                        |
-| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline                | all fixed; none open | none                                        |
-| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                     | all fixed; none open | none                                        |
-| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate    | all fixed; none open | none                                        |
-| 4     | passed      | 4/4 actual matching-target native parity records                    | all fixed; none open | none                                        |
-| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green                  | all fixed; none open | none                                        |
-| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                        |
-| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate           | all fixed; none open | none                                        |
-| 8     | in progress | 1,776 TS + 122 Rust + 24 real-SSH + 4/4 native/package + local gate | all fixed; none open | NFS/sleep-wake/performance evidence pending |
+| Phase | State       | Validation                                                       | Important+ findings  | Blockers                                               |
+| ----- | ----------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
+| 0     | passed      | 26 AC, 6 IM, and 11 PERF rows audited; repo tests green          | none open            | none                                                   |
+| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                                   |
+| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                                   |
+| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                                   |
+| 4     | passed      | 4/4 actual matching-target native parity records                 | all fixed; none open | none                                                   |
+| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                                   |
+| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                                   |
+| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                                   |
+| 8     | in progress | 1,801 TS + 125 Rust + 24 real-SSH + functional profile           | all fixed; none open | local numeric/final-native/NFS/sleep-wake/perf pending |
 
 ## Required automated-contract traceability
 
@@ -71,7 +71,10 @@ at 256 KiB/s, twelve detached at 64 KiB/s), 10 Hz echo probes, a 512 MiB SFTP
 transfer, repeated versioned Git status/diff, at least one group commit and
 checkpoint, controlled 20 ms RTT and <1 ms jitter, and a target with at least
 four physical cores, 8 GiB RAM, and SSD-backed state. The harness records p50,
-p95, and p99 where applicable.
+p95, and p99 where applicable. Each steady generator writes deterministic
+binary output in 4 KiB application chunks. After the steady interval, one
+already attached keeper emits a 4 MiB ASCII burst in 64 KiB chunks paced at
+20 ms while twenty echo probes traverse that same attachment.
 
 | ID      | Gate                                                                                         | Owner / phase              | Evidence                                                                    | State   |
 | ------- | -------------------------------------------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------------- | ------- |
@@ -85,6 +88,7 @@ p95, and p99 where applicable.
 | PERF-07 | One authenticated master route, baseline physical legs, zero feature auth attempts           | transport pool / 1, 8      | sshd/proxy connection audit                                                 | partial |
 | PERF-08 | Loaded SFTP throughput ≥ 80% of direct SFTP baseline on same master/link                     | SFTP + scheduler / 8       | paired native throughput samples                                            | pending |
 | PERF-09 | Workload/topology/limits remain unchanged unless an explicit ADR amendment is accepted       | release gate / 8           | manifest lock test and cumulative ADR review                                | passed  |
+| PERF-10 | 4 KiB steady generation and one ordered 4 MiB/64 KiB burst stay on the existing attachment   | keeper + profile / 8       | generator status, sequence audit, and twenty ordered echo probes            | partial |
 
 ## Local surface fixed-baseline regression traceability
 
@@ -96,12 +100,12 @@ exact pre-SSH revision in
 `tests/e2e/fixtures/local-terminal-regression-gates.v1.json`. The greater batch
 median is the baseline center; no candidate value participates.
 
-| ID       | Gate                                                                                                              | Owner / phase | Evidence                                                 | State                                |
-| -------- | ----------------------------------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------- | ------------------------------------ |
-| LPERF-01 | Local live output remains `pty-host` ring/coalescing/credit → direct port → singleton router → scheduler/xterm    | every phase   | function-level diff audit plus architecture tests        | P3/P4/P5/P6/P7/P8 passed             |
-| LPERF-02 | Every candidate run has no blank/stall, mutation loss/duplicate/reorder, or bound increase                        | every phase   | five-run candidate workload and raw profiles             | P3/P4 historical; P5/P6/P7/P8 passed |
-| LPERF-03 | Every candidate repeat median is at or below its fixed pre-SSH baseline limit                                     | every phase   | versioned baseline envelope and candidate gate report    | P3/P4 historical; P5/P6/P7/P8 passed |
-| LPERF-04 | Any final adjacent pre-SSH/candidate run is retained as diagnostic-only and cannot recalibrate or gate acceptance | Phase 8       | paired workload, raw profiles, and fixed-gate comparison | diagnostic retained                  |
+| ID       | Gate                                                                                                              | Owner / phase | Evidence                                                 | State                                            |
+| -------- | ----------------------------------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------- | ------------------------------------------------ |
+| LPERF-01 | Local live output remains `pty-host` ring/coalescing/credit → direct port → singleton router → scheduler/xterm    | every phase   | function-level diff audit plus architecture tests        | P3/P4/P5/P6/P7/P8 passed                         |
+| LPERF-02 | Every candidate run has no blank/stall, mutation loss/duplicate/reorder, or bound increase                        | every phase   | five-run candidate workload and raw profiles             | P3/P4 historical; P5/P6/P7/current P8 passed     |
+| LPERF-03 | Every candidate repeat median is at or below its fixed pre-SSH baseline limit                                     | every phase   | versioned baseline envelope and candidate gate report    | P3/P4 historical; P5/P6/P7 passed; final P8 open |
+| LPERF-04 | Any final adjacent pre-SSH/candidate run is retained as diagnostic-only and cannot recalibrate or gate acceptance | Phase 8       | paired workload, raw profiles, and fixed-gate comparison | diagnostic retained                              |
 
 Each later phase reruns the function-level audit and candidate-only fixed
 baseline gate. A prior phase pass is not evidence for a later phase. Any Phase
@@ -592,16 +596,15 @@ unchanged.
   leases before quarantining and removing only the current executable
   generation. Authority, descriptors, journals, checkpoints, worktrees, and
   durable operations are preserved.
-- Full TypeScript validation passed 190 files with 1,776 tests passed, one
+- Full TypeScript validation passed 191 files with 1,801 tests passed, one
   existing skip, and zero failures. `npm run typecheck`, `npm run lint`, the
-  production build, and `git diff --check` passed. Rust workspace validation
-  passed 122 tests plus rustfmt and all-target clippy with warnings denied.
-  The complete real system-OpenSSH suite passed all 24 scenarios in 209.218 s
-  with rebuilt `linux-x64-musl` artifact SHA-256
-  `c045b00224091144c1752653d556ea567679b88c41ad2269965d2d26360718a1`
-  (4,453,344 bytes). The desktop-loss/restore E2E also passed against the same
-  durable keeper generation on the final commit (`1/1`, 33.8 s test time,
-  37.5 s suite time).
+  production build, changed-file Prettier, and `git diff --check` passed. Rust
+  workspace validation passed 125 tests plus rustfmt and all-target clippy with
+  warnings denied. The complete real system-OpenSSH suite passed all 24
+  scenarios in 184.765 s with rebuilt `linux-x64-musl` artifact SHA-256
+  `3aa18ea7cca13d7507f5d2580a46933bd8bd8245acc394f4378fc744f4f4d18b`
+  (4,477,920 bytes). The desktop-loss/restore E2E also passed against the same
+  durable keeper generation (`1/1`, 34.3 s test time, 37.5 s suite time).
 - The final security/lifecycle review fixed every Critical or Important
   finding and ended with none open. In particular, failed OpenSSH commands are
   process-bounded even when descendants retain stdio; remote-host owner death
@@ -690,21 +693,101 @@ unchanged.
   `49.106 ms`, demonstrating that pair ordering on this loaded host can invert
   the verdict. Per the ADR, neither invocation replaces a fixed-gate sample,
   changes acceptance, or recalibrates the pre-SSH envelope.
-- `npm run profile:ssh:functional` completed the locked Docker workload with
-  16 keepers, four attached, 45,686 mutations, 241,859,645 output bytes, zero
-  missing/duplicate/reordered mutations, one baseline TCP/auth route and zero
-  feature route/auth deltas. This is retained functional evidence only. Docker
-  loaded echo latency and an SFTP ratio of `0.199` do not satisfy or alter the
-  native normative gates; report SHA-256 is
-  `3af1c8f43cf9c29477d8bf565a53dc26f6a10d35599b602f3ceee627c23f51c9`.
-- Phase 8 is not yet passed. The four-target functional native matrix is
-  complete. The unchanged controlled-native performance workload still needs
-  one non-shared result per artifact, and IM-04/IM-05 still need actual NFS/
-  unsuitable-socket and native sleep/wake evidence. No absolute
+- Final profile review found that the executable's steady generator had always
+  emitted at most 4 KiB per application write while the v1 manifest claimed
+  64 KiB. No controlled-native normative record had been accepted against that
+  mismatch. The v1 contract now explicitly uses 4 KiB steady writes and a
+  separate 4 MiB ASCII burst in 64 KiB writes paced at 20 ms. ADR 0005 and the
+  operator runbook state only this final contract; this progress record retains
+  the correction history. The manifest lock test compares the complete
+  topology, workload, generator, and gate objects.
+- The controlled-native harness now exact-decodes its operator configuration,
+  rejects shared CI and dirty normative sources, binds the configured digest to
+  one `O_NOFOLLOW` executable file handle, hashes the remote runtime downloaded
+  over the assigned master before mutation, and records both host and target
+  OpenSSH versions. All sixteen generators report exact steady/burst byte
+  counters after crossing journal admission; the burst gate proves
+  `begin < twenty echoes < end` on the original attachment. Review also bounded
+  an oversized profile input line before allocation and preserved an SSH
+  channel's close diagnosis on later input. No local live-output owner changed.
+- The latest `npm run profile:ssh:functional` completed the corrected Docker
+  workload with 16 keepers, four attached, 58,531 mutations, 248,790,937 output
+  bytes, zero missing/duplicate/reordered mutations, all 16 steady byte minima,
+  exactly one 4,194,304-byte burst, twenty ordered echo probes, one baseline
+  TCP/auth route, and zero feature route/auth deltas. It recorded host client
+  `OpenSSH_10.2p1, LibreSSL 3.3.6`, target server
+  `OpenSSH_9.2, OpenSSL 3.0.20 7 Apr 2026`, and runtime artifact SHA-256
+  `3aa18ea7cca13d7507f5d2580a46933bd8bd8245acc394f4378fc744f4f4d18b`.
+  This is retained functional evidence only; Docker loaded latency, process RSS,
+  and SFTP ratio do not satisfy or alter native gates. Report SHA-256 is
+  `8464658aa2e481df0c58abed3621183f6afb1757f0914b842530bb0bb29571ac`.
+- The final focused review found and fixed two additional Important evidence/
+  error-path defects. A channel-level `EPIPE` arriving before process close
+  could mask the later SSH stderr diagnosis from subsequent input, and the
+  controlled profile recorded the target's `ssh` client rather than the actual
+  `sshd` server version. Close diagnosis now prefers the bounded process-close
+  stderr without masking an earlier protocol error, and profile evidence records
+  host client plus target server. The focused regressions passed 37/37 and the
+  real system-OpenSSH functional profile above exercised the corrected version
+  probe. No Critical or Important finding remains open.
+- The current final source passed actual local `darwin-x64` native parity on
+  this non-translated Intel Mac. Artifact SHA-256 was
+  `c93369353d9c01a58f45c327cacb37d2ebcfbefbc19068812b17a2dba78214ed`
+  (4,114,560 bytes); direct/cohort compatibility, detach/replay, keeper
+  isolation, bridge restart, account-shell parity, persistence reporting, and
+  final cohort shutdown all passed. The other three targets and final desktop
+  packages still require the matching-runner workflow after commit.
+- A current final-candidate local gate rerun retained five complete samples with
+  zero functional or bound failures, but failed six numeric medians. The
+  separately installed `/Applications/kmux.app` version `1.0.0` had been
+  running for more than four hours and its renderer/GPU helpers were observed
+  at roughly 57–80%/17–21% CPU around the run. Candidate event-loop p95 and all
+  burst metrics still passed, while broad steady/render/switch stalls failed
+  together. This emitted evidence is not an infrastructure failure and is not
+  discarded or replaced: report SHA-256 is
+  `849ec4a0ec91faf14d8a09291536ec32a7903847512b1529e9d23050882d020b`.
+  The installed app is the active workspace in which this work runs, so
+  terminating it is not an acceptance prerequisite. A subsequent unchanged
+  invocation retained another five complete samples while that app remained
+  active and passed every functional, bound, and numeric contract. Echo p95 was
+  `22.80000001192093 ms` against `28.900000005960464 ms`, echo p99 was
+  `26.30000001192093 ms` against `52.92000000625849 ms`, render p95 was
+  `19.296142578125 ms` against `21.9228515625 ms`, render p99 was
+  `21.543212890625 ms` against `25.67724609375 ms`, scheduler max was
+  `0.2998046875 ms` against `0.800048828125 ms`, and warm switch was
+  `47.200000047683716 ms` against `66.5 ms`. All other fixed medians also
+  passed. The earlier complete failure remains evidence rather than being
+  replaced; the passing report SHA-256 is
+  `ebdfad52f314ea9c21dee49bdee99dfd87f67dba7c03e12ae1db1b5115b90441`.
+- The two final-source invocations after the additional remote-only review
+  fixes each retained five further complete samples with zero functional or
+  bound failures, but failed broad steady/render/switch numeric medians. The
+  first failed echo p95, render p95/p99, scheduler max, and warm switch; its
+  report SHA-256 is
+  `d653223b52c9bbc5963cc1cffbc4d487b6d6cf2e5eff31116db9bb42b57d862f`.
+  After all other validation load ended and a quiet interval, the unchanged
+  source failed those metrics plus echo p99; its report SHA-256 is
+  `c729b8884f03b681fdaf52f9947c5c1b101287fd90953d90f16ce337de32f43f`.
+  Event-loop p95, paint p95, every burst metric, continuity, and all fixed
+  bounds still passed in both invocations. The ten protected local output
+  owners remain unchanged, but these are valid emitted failures and are not
+  replaced by the earlier pass. LPERF-03 therefore remains open; the active
+  working kmux stays running and is not treated as something the gate may
+  terminate.
+- Phase 8 is not yet passed. The four-target functional native matrix and
+  desktop packaging records remain valid evidence for commit `c95840a7...`, but
+  the bounded profile reader changed the final runtime artifact afterward. The
+  final committed branch therefore still needs a fresh matching-target native
+  matrix and package verification. The unchanged controlled-native performance
+  workload also needs one non-shared result per artifact, and IM-04/IM-05 still
+  need actual NFS/unsuitable-socket and native sleep/wake evidence. No absolute
   `KMUX_SSH_PROFILE_CONFIG` for those controlled targets is available in this
   workspace; a final `npm run profile:ssh` audit therefore stopped before any
   target mutation with the explicit missing-configuration error. Docker and
-  shared CI remain invalid substitutes.
+  shared CI remain invalid substitutes. On the current Intel Mac, `nfsd` is
+  enabled but not running, no NFS mount exists, and passwordless administrative
+  access is unavailable; an actual sleep/wake cycle would suspend the user's
+  active machine and was not performed without explicit coordination.
 
 ## Material decisions, deviations, and blockers
 

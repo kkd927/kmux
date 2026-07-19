@@ -109,9 +109,27 @@ enum ProfileSubcommand {
 struct ProfileTerminalLoadCommand {
     #[arg(long, value_parser = parse_positive_rate)]
     bytes_per_second: u64,
+    #[arg(long, value_parser = parse_profile_chunk_bytes)]
+    steady_chunk_bytes: usize,
+    #[arg(long, value_parser = parse_profile_burst_bytes)]
+    burst_bytes: usize,
+    #[arg(long, value_parser = parse_profile_chunk_bytes)]
+    burst_chunk_bytes: usize,
+    #[arg(long, value_parser = parse_profile_interval_ms)]
+    burst_chunk_interval_ms: u64,
+    #[arg(long, value_parser = parse_profile_pause_ms)]
+    burst_echo_pause_ms: u64,
     #[arg(long, value_parser = parse_profile_seed)]
     seed: u64,
 }
+
+const PROFILE_BURST_TRIGGER_PREFIX: &[u8] = b"KMUX_PROFILE_BURST:";
+const PROFILE_BURST_BEGIN_PREFIX: &[u8] = b"KMUX_PROFILE_BURST_BEGIN:";
+const PROFILE_BURST_END_PREFIX: &[u8] = b"KMUX_PROFILE_BURST_END:";
+const PROFILE_STATUS_REQUEST_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS:";
+const PROFILE_STATUS_RESPONSE_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS:";
+const PROFILE_STATUS_END_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS_END:";
+const PROFILE_BURST_TOKEN_MAX_BYTES: usize = 128;
 
 #[derive(Args)]
 struct HookCommand {
@@ -437,7 +455,7 @@ fn main() -> anyhow::Result<()> {
         },
         RuntimeCommand::Profile(command) => match command.command {
             ProfileSubcommand::TerminalLoad(command) => {
-                run_profile_terminal_load(command.bytes_per_second, command.seed)?;
+                run_profile_terminal_load(command)?;
             }
         },
     }
@@ -464,11 +482,96 @@ fn parse_profile_seed(value: &str) -> Result<u64, String> {
     Ok(seed)
 }
 
-fn run_profile_terminal_load(bytes_per_second: u64, seed: u64) -> anyhow::Result<()> {
+fn parse_profile_chunk_bytes(value: &str) -> Result<usize, String> {
+    let bytes = value
+        .parse::<usize>()
+        .map_err(|_| "chunk-bytes must be a positive integer".to_owned())?;
+    if !(1..=1024 * 1024).contains(&bytes) {
+        return Err("chunk-bytes must be between 1 and 1048576".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn parse_profile_burst_bytes(value: &str) -> Result<usize, String> {
+    let bytes = value
+        .parse::<usize>()
+        .map_err(|_| "burst-bytes must be a positive integer".to_owned())?;
+    if !(1..=16 * 1024 * 1024).contains(&bytes) {
+        return Err("burst-bytes must be between 1 and 16777216".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn parse_profile_interval_ms(value: &str) -> Result<u64, String> {
+    let milliseconds = value
+        .parse::<u64>()
+        .map_err(|_| "burst-chunk-interval-ms must be a positive integer".to_owned())?;
+    if !(1..=1_000).contains(&milliseconds) {
+        return Err("burst-chunk-interval-ms must be between 1 and 1000".to_owned());
+    }
+    Ok(milliseconds)
+}
+
+fn parse_profile_pause_ms(value: &str) -> Result<u64, String> {
+    let milliseconds = value
+        .parse::<u64>()
+        .map_err(|_| "burst-echo-pause-ms must be a non-negative integer".to_owned())?;
+    if milliseconds > 1_000 {
+        return Err("burst-echo-pause-ms must be between 0 and 1000".to_owned());
+    }
+    Ok(milliseconds)
+}
+
+struct ProfileBurst {
+    token: Vec<u8>,
+    remaining_bytes: usize,
+    next_chunk_at: Instant,
+    paused_until: Instant,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ProfileInputLine {
+    Line(Vec<u8>),
+    Oversized,
+}
+
+fn read_profile_input_line(
+    input: &mut impl BufRead,
+    maximum_bytes: usize,
+) -> io::Result<Option<ProfileInputLine>> {
+    let mut line = Vec::with_capacity(maximum_bytes.min(128));
+    let read = input
+        .by_ref()
+        .take(u64::try_from(maximum_bytes.saturating_add(2)).unwrap_or(u64::MAX))
+        .read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if !line.ends_with(b"\n") && line.len() > maximum_bytes {
+        input.skip_until(b'\n')?;
+        return Ok(Some(ProfileInputLine::Oversized));
+    }
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+    if line.len() > maximum_bytes {
+        return Ok(Some(ProfileInputLine::Oversized));
+    }
+    Ok(Some(ProfileInputLine::Line(line)))
+}
+
+fn run_profile_terminal_load(command: ProfileTerminalLoadCommand) -> anyhow::Result<()> {
     // This hidden release-gate workload is intentionally implemented by the
     // shipped binary: targets do not need Python, Node, or another generator.
     // The PTY is raw/no-echo so an observed token is emitted by this process,
     // not optimistically echoed by the line discipline.
+    anyhow::ensure!(
+        command.burst_chunk_bytes <= command.burst_bytes
+            && command
+                .burst_bytes
+                .is_multiple_of(command.burst_chunk_bytes),
+        "profile burst bytes must be an exact positive multiple of its chunk size"
+    );
     let stdin = io::stdin();
     let mut terminal = tcgetattr(&stdin).context("profile PTY termios read failed")?;
     terminal.local_flags.remove(
@@ -495,14 +598,11 @@ fn run_profile_terminal_load(bytes_per_second: u64, seed: u64) -> anyhow::Result
     thread::spawn(move || {
         let mut input = io::BufReader::new(io::stdin().lock());
         loop {
-            let mut line = Vec::with_capacity(128);
-            match input.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {
-                    while matches!(line.last(), Some(b'\n' | b'\r')) {
-                        line.pop();
-                    }
-                    if line.len() <= 4 * 1024 && input_sender.send(line).is_err() {
+            match read_profile_input_line(&mut input, 4 * 1024) {
+                Ok(None) | Err(_) => return,
+                Ok(Some(ProfileInputLine::Oversized)) => continue,
+                Ok(Some(ProfileInputLine::Line(line))) => {
+                    if input_sender.send(line).is_err() {
                         return;
                     }
                 }
@@ -510,30 +610,131 @@ fn run_profile_terminal_load(bytes_per_second: u64, seed: u64) -> anyhow::Result
         }
     });
 
-    let chunk_bytes = usize::try_from(bytes_per_second.min(4 * 1024))
-        .context("profile output chunk size overflowed")?;
-    let interval = Duration::from_secs_f64(chunk_bytes as f64 / bytes_per_second as f64);
+    let steady_interval = Duration::from_secs_f64(
+        command.steady_chunk_bytes as f64 / command.bytes_per_second as f64,
+    );
+    let burst_chunk_interval = Duration::from_millis(command.burst_chunk_interval_ms);
+    let burst_echo_pause = Duration::from_millis(command.burst_echo_pause_ms);
     let mut next_output = Instant::now();
-    let mut generator = XorShift64::new(seed);
-    let mut chunk = vec![0_u8; chunk_bytes];
+    let mut generator = XorShift64::new(command.seed);
+    let mut steady_chunk = vec![0_u8; command.steady_chunk_bytes];
+    let burst_chunk = vec![b'x'; command.burst_chunk_bytes];
+    let mut burst: Option<ProfileBurst> = None;
+    let mut burst_started = false;
+    let mut steady_output_bytes = 0_u64;
+    let mut burst_output_bytes = 0_u64;
     let mut output = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
     output.write_all(b"KMUX_PROFILE_READY\n")?;
     output.flush()?;
     loop {
         while let Ok(token) = input_receiver.try_recv() {
+            if let Some(status_token) = profile_status_token(&token) {
+                write_profile_status(
+                    &mut output,
+                    status_token,
+                    steady_output_bytes,
+                    burst_output_bytes,
+                )?;
+                continue;
+            }
+            if !burst_started && let Some(burst_token) = profile_burst_token(&token) {
+                write_profile_marker(&mut output, PROFILE_BURST_BEGIN_PREFIX, burst_token)?;
+                let now = Instant::now();
+                burst = Some(ProfileBurst {
+                    token: burst_token.to_vec(),
+                    remaining_bytes: command.burst_bytes,
+                    next_chunk_at: now,
+                    paused_until: now,
+                });
+                burst_started = true;
+                continue;
+            }
             output.write_all(&token)?;
             output.write_all(b"\n")?;
+            output.flush()?;
+            if let Some(active_burst) = burst.as_mut() {
+                active_burst.paused_until = Instant::now() + burst_echo_pause;
+            }
         }
         let now = Instant::now();
-        if now >= next_output {
-            generator.fill(&mut chunk);
-            output.write_all(&chunk)?;
+        if let Some(active_burst) = burst.as_mut() {
+            let resume_at = active_burst.next_chunk_at.max(active_burst.paused_until);
+            if now < resume_at {
+                thread::sleep((resume_at - now).min(Duration::from_millis(2)));
+                continue;
+            }
+            let chunk_bytes = active_burst.remaining_bytes.min(burst_chunk.len());
+            output.write_all(&burst_chunk[..chunk_bytes])?;
             output.flush()?;
-            next_output += interval;
+            burst_output_bytes =
+                burst_output_bytes.saturating_add(u64::try_from(chunk_bytes).unwrap_or(u64::MAX));
+            active_burst.remaining_bytes -= chunk_bytes;
+            if active_burst.remaining_bytes == 0 {
+                let completed_token = active_burst.token.clone();
+                write_profile_marker(&mut output, PROFILE_BURST_END_PREFIX, &completed_token)?;
+                burst = None;
+                next_output = Instant::now() + steady_interval;
+            } else {
+                active_burst.next_chunk_at = Instant::now() + burst_chunk_interval;
+            }
+            continue;
+        }
+        if now >= next_output {
+            generator.fill(&mut steady_chunk);
+            output.write_all(&steady_chunk)?;
+            output.flush()?;
+            steady_output_bytes = steady_output_bytes
+                .saturating_add(u64::try_from(steady_chunk.len()).unwrap_or(u64::MAX));
+            next_output += steady_interval;
             continue;
         }
         thread::sleep((next_output - now).min(Duration::from_millis(2)));
     }
+}
+
+fn profile_burst_token(line: &[u8]) -> Option<&[u8]> {
+    profile_control_token(line, PROFILE_BURST_TRIGGER_PREFIX)
+}
+
+fn profile_status_token(line: &[u8]) -> Option<&[u8]> {
+    profile_control_token(line, PROFILE_STATUS_REQUEST_PREFIX)
+}
+
+fn profile_control_token<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    let token = line.strip_prefix(prefix)?;
+    if token.is_empty()
+        || token.len() > PROFILE_BURST_TOKEN_MAX_BYTES
+        || !token
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(token)
+}
+
+fn write_profile_status(
+    output: &mut impl Write,
+    token: &[u8],
+    steady_output_bytes: u64,
+    burst_output_bytes: u64,
+) -> anyhow::Result<()> {
+    output.write_all(PROFILE_STATUS_RESPONSE_PREFIX)?;
+    output.write_all(token)?;
+    writeln!(output, ":{steady_output_bytes}:{burst_output_bytes}")?;
+    write_profile_marker(output, PROFILE_STATUS_END_PREFIX, token)
+}
+
+fn write_profile_marker(
+    output: &mut impl Write,
+    prefix: &[u8],
+    token: &[u8],
+) -> anyhow::Result<()> {
+    output.write_all(prefix)?;
+    output.write_all(token)?;
+    output.write_all(b"\n")?;
+    output.flush()?;
+    Ok(())
 }
 
 struct XorShift64(u64);
@@ -817,6 +1018,85 @@ mod tests {
         assert_eq!(
             agent_hook_response("notification", "antigravity.Stop"),
             serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn profile_terminal_load_requires_the_versioned_workload_arguments() {
+        let command = CommandLine::try_parse_from([
+            "kmuxd",
+            "profile",
+            "terminal-load",
+            "--bytes-per-second",
+            "262144",
+            "--steady-chunk-bytes",
+            "4096",
+            "--burst-bytes",
+            "4194304",
+            "--burst-chunk-bytes",
+            "65536",
+            "--burst-chunk-interval-ms",
+            "20",
+            "--burst-echo-pause-ms",
+            "100",
+            "--seed",
+            "0x4b4d555852454d31",
+        ])
+        .unwrap();
+        let RuntimeCommand::Profile(profile) = command.command else {
+            panic!("expected profile command");
+        };
+        let ProfileSubcommand::TerminalLoad(load) = profile.command;
+        assert_eq!(load.bytes_per_second, 262_144);
+        assert_eq!(load.steady_chunk_bytes, 4_096);
+        assert_eq!(load.burst_bytes, 4_194_304);
+        assert_eq!(load.burst_chunk_bytes, 65_536);
+        assert_eq!(load.burst_chunk_interval_ms, 20);
+        assert_eq!(load.burst_echo_pause_ms, 100);
+        assert_eq!(load.seed, 0x4b4d_5558_5245_4d31);
+
+        assert!(
+            CommandLine::try_parse_from([
+                "kmuxd",
+                "profile",
+                "terminal-load",
+                "--bytes-per-second",
+                "262144",
+                "--seed",
+                "0x4b4d555852454d31",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn profile_burst_trigger_accepts_only_a_bounded_ascii_token() {
+        assert_eq!(
+            profile_burst_token(b"KMUX_PROFILE_BURST:profile_123"),
+            Some(b"profile_123".as_slice())
+        );
+        assert_eq!(profile_burst_token(b"ordinary-input"), None);
+        assert_eq!(profile_burst_token(b"KMUX_PROFILE_BURST:"), None);
+        assert_eq!(profile_burst_token(b"KMUX_PROFILE_BURST:bad token"), None);
+        assert_eq!(
+            profile_status_token(b"KMUX_PROFILE_STATUS:status_123"),
+            Some(b"status_123".as_slice())
+        );
+    }
+
+    #[test]
+    fn profile_input_reader_discards_an_oversized_line_without_losing_the_next_line() {
+        let mut bytes = vec![b'x'; 4 * 1024 + 1];
+        bytes.extend_from_slice(b"\nnext\n");
+        let mut input = io::Cursor::new(bytes);
+
+        assert_eq!(
+            read_profile_input_line(&mut input, 4 * 1024).unwrap(),
+            Some(ProfileInputLine::Oversized)
+        );
+        assert_eq!(
+            read_profile_input_line(&mut input, 4 * 1024).unwrap(),
+            Some(ProfileInputLine::Line(b"next".to_vec()))
         );
     }
 }

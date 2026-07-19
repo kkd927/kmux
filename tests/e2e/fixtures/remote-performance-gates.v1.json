@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "contract": "docs/adr/0005-ssh-remote-workspaces.md#normative-performance-and-resource-gates",
-  "changeControl": "Loosening a limit, reducing this workload, or changing its topology requires an explicit ADR amendment with benchmark evidence.",
+  "changeControl": "Loosening a limit, reducing this workload, or changing its topology or generator shape requires an explicit ADR amendment with benchmark evidence.",
   "referenceTargetMinimum": {
     "physicalCpuCores": 4,
     "memoryBytes": 8589934592,
@@ -54,7 +54,19 @@
       "encoding": "binary",
       "pattern": "seeded xorshift64 byte stream",
       "seed": "0x4b4d555852454d31",
-      "chunkBytes": 65536
+      "statusRequestPrefix": "KMUX_PROFILE_STATUS:",
+      "steadyChunkBytes": 4096,
+      "burst": {
+        "triggerPrefix": "KMUX_PROFILE_BURST:",
+        "pattern": "ASCII x byte stream",
+        "attachedKeepers": 1,
+        "totalBytes": 4194304,
+        "chunkBytes": 65536,
+        "chunkIntervalMs": 20,
+        "echoPauseMs": 100,
+        "echoProbes": 20,
+        "completionTimeoutMs": 30000
+      }
     },
     "journal": {
       "mustCrossGroupCommit": true,

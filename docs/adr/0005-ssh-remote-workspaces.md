@@ -2720,6 +2720,12 @@ its declared medians are checked against the raw `phase3Exit` entry samples. No
 post-SSH candidate value participates in the baseline. These immutable batches
 are captured once and are not silently replaced by a later phase-entry tree.
 
+The protected live-output path remains `pty-host` ring/coalescing/credit → a
+direct renderer `MessagePort` → the singleton `TerminalStreamRouter` → the
+existing scheduler/xterm path. SSH support may adapt remote attachments to the
+common data-plane contract, but it must not insert Main relay, remote selection,
+extra buffering, serialization, or instrumentation into that local path.
+
 For every implementation phase, run `npm run gate:terminal-data-plane` on the
 same host, OS, architecture, Electron/Node versions, build mode, terminal
 geometry, workload, profiler settings, and documented background-load policy.
@@ -2780,13 +2786,18 @@ detached sessions producing 64 KiB/s each, sends interactive echo probes at
 10 Hz, transfers a 512 MiB SFTP fixture, and repeatedly runs the versioned Git
 status/diff fixture. It runs long enough to cross journal group commits and at
 least one checkpoint. The harness records p50 as diagnostic data in addition to
-the gated p95/p99 values.
+the gated p95/p99 values. The steady terminal generator emits its deterministic
+binary stream in 4 KiB application chunks. After the steady measurement, one
+attached keeper emits a 4 MiB ASCII burst in 64 KiB application chunks paced at
+20 ms while twenty interactive echo probes run. The burst must complete through
+the existing attachment without a mutation gap, duplicate, reorder, or hidden
+reattach; burst timings are retained as diagnostic data.
 
 The manifest may tighten a limit or add platform-specific stricter gates.
-Loosening a limit, reducing the workload, or changing the topology requires an
-explicit ADR amendment with benchmark evidence. A slow or unsuitable state
-filesystem may fail capability probing instead of weakening the terminal
-continuity contract.
+Loosening a limit, reducing the workload, or changing the topology or generator
+shape requires an explicit ADR amendment with benchmark evidence. A slow or
+unsuitable state filesystem may fail capability probing instead of weakening
+the terminal continuity contract.
 
 ### Required Automated Contracts
 

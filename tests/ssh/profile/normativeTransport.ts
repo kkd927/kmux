@@ -48,6 +48,12 @@ import {
   type SshConnectionAuditSnapshot
 } from "../harness/connectionAudit";
 import type { StartedSshTarget } from "../harness/sshTarget";
+import {
+  decodeNativeProfileConfiguration,
+  isSharedCiEnvironment,
+  verifyNativeProfileRuntimeArtifact,
+  type NativeProfileConfiguration
+} from "./nativeProfileConfiguration";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -89,7 +95,21 @@ interface PerformanceManifest {
       repositoryCommit: string;
       repetitionsPerSecond: number;
     };
-    terminalOutputGenerator: { seed: string };
+    terminalOutputGenerator: {
+      seed: string;
+      statusRequestPrefix: string;
+      steadyChunkBytes: number;
+      burst: {
+        triggerPrefix: string;
+        attachedKeepers: number;
+        totalBytes: number;
+        chunkBytes: number;
+        chunkIntervalMs: number;
+        echoPauseMs: number;
+        echoProbes: number;
+        completionTimeoutMs: number;
+      };
+    };
     checkpoint: { minimumCompletedPerKeeper: number };
   };
   gates: {
@@ -119,38 +139,6 @@ interface AuditSnapshot extends SshConnectionAuditSnapshot {
   physicalTcpLegs: number;
 }
 
-interface NativeProfileConfiguration {
-  schemaVersion: 1;
-  environmentKind: "controlled-native";
-  artifactTarget:
-    | "darwin-arm64"
-    | "darwin-x64"
-    | "linux-arm64-musl"
-    | "linux-x64-musl";
-  sshPath: string;
-  sftpPath: string;
-  configPath: string;
-  host: string;
-  controlRoot?: string;
-  runtimePath: string;
-  roots: RemoteRuntimeRootsDto;
-  targetId: Id;
-  hardware: {
-    physicalCpuCores: number;
-    memoryBytes: number;
-    stateStorage: "ssd-backed" | "other";
-    evidence: string;
-  };
-  network: {
-    roundTripLatencyMs: number;
-    maximumInjectedJitterMs: number;
-    evidence: string;
-  };
-  resolvedRoutePhysicalTcpLegs: number;
-  auditSnapshot: { executable: string; args: string[] };
-  sharedHost: boolean;
-}
-
 interface ProfileContext {
   kind: "controlled-native" | "docker-functional";
   normative: boolean;
@@ -162,6 +150,7 @@ interface ProfileContext {
   host: string;
   controlRoot?: string;
   runtimePath: string;
+  expectedRuntimeSha256?: string;
   roots: RemoteRuntimeRootsDto;
   targetId: Id;
   hardware: NativeProfileConfiguration["hardware"];
@@ -176,6 +165,7 @@ interface SessionProfile {
   keeperGeneration: Id;
   attached: boolean;
   outputBytesPerSecond: number;
+  nextInputSequence: bigint;
   attachment?: RemoteTerminalAttachment;
   reader?: MutationReader;
 }
@@ -187,11 +177,12 @@ class MutationReader {
   missing = 0;
   duplicate = 0;
   reordered = 0;
+  private expectedSequence: bigint;
   private tail = Buffer.alloc(0);
   private readonly waiters = new Map<
     string,
     {
-      resolve(): void;
+      resolve(outputOffset: number): void;
       reject(error: Error): void;
       timeout: ReturnType<typeof setTimeout>;
     }
@@ -200,7 +191,11 @@ class MutationReader {
   private resolveCompleted!: () => void;
   private rejectCompleted!: (error: Error) => void;
 
-  constructor(private readonly attachment: RemoteTerminalAttachment) {
+  constructor(
+    private readonly attachment: RemoteTerminalAttachment,
+    firstMutationSequence: bigint
+  ) {
+    this.expectedSequence = firstMutationSequence;
     this.completed = new Promise<void>((resolveCompleted, rejectCompleted) => {
       this.resolveCompleted = resolveCompleted;
       this.rejectCompleted = rejectCompleted;
@@ -214,23 +209,28 @@ class MutationReader {
     void this.consume();
   }
 
-  waitFor(token: string, timeoutMs: number): Promise<void> {
-    if (this.tail.includes(Buffer.from(token, "utf8")))
-      return Promise.resolve();
+  waitFor(token: string, timeoutMs: number): Promise<number> {
+    const encodedToken = Buffer.from(token, "utf8");
+    const existingIndex = this.tail.indexOf(encodedToken);
+    if (existingIndex >= 0) {
+      return Promise.resolve(
+        this.outputBytes - this.tail.byteLength + existingIndex
+      );
+    }
     if (this.waiters.has(token)) {
       return Promise.reject(
         new Error(`duplicate mutation token waiter ${token}`)
       );
     }
-    return new Promise<void>((resolveToken, rejectToken) => {
+    return new Promise<number>((resolveToken, rejectToken) => {
       const timeout = setTimeout(() => {
         this.waiters.delete(token);
         rejectToken(new Error(`remote profile did not echo ${token}`));
       }, timeoutMs);
       this.waiters.set(token, {
-        resolve: () => {
+        resolve: (outputOffset) => {
           clearTimeout(timeout);
-          resolveToken();
+          resolveToken(outputOffset);
         },
         reject: (error) => {
           clearTimeout(timeout);
@@ -239,6 +239,10 @@ class MutationReader {
         timeout
       });
     });
+  }
+
+  tailText(): string {
+    return this.tail.toString("utf8");
   }
 
   private async consume(): Promise<void> {
@@ -266,13 +270,30 @@ class MutationReader {
 
   private observe(mutation: RemoteTerminalMutation): void {
     this.mutations += 1;
+    if (mutation.sequence > this.expectedSequence) {
+      this.missing = saturatingAddSafeInteger(
+        this.missing,
+        mutation.sequence - this.expectedSequence
+      );
+    } else if (mutation.sequence < this.expectedSequence) {
+      if (mutation.sequence + 1n === this.expectedSequence) {
+        this.duplicate += 1;
+      } else {
+        this.reordered += 1;
+      }
+    }
+    if (mutation.sequence >= this.expectedSequence) {
+      this.expectedSequence = mutation.sequence + 1n;
+    }
     if (mutation.kind !== "output" || !mutation.data) return;
+    const observedStartOffset = this.outputBytes - this.tail.byteLength;
     this.outputBytes += mutation.data.byteLength;
     const observed = Buffer.concat([this.tail, Buffer.from(mutation.data)]);
     for (const [token, waiter] of this.waiters) {
-      if (!observed.includes(Buffer.from(token, "utf8"))) continue;
+      const tokenIndex = observed.indexOf(Buffer.from(token, "utf8"));
+      if (tokenIndex < 0) continue;
       this.waiters.delete(token);
-      waiter.resolve();
+      waiter.resolve(observedStartOffset + tokenIndex);
     }
     this.tail = observed.subarray(-16 * 1024);
   }
@@ -290,11 +311,34 @@ let remoteFixturePath: string | undefined;
 
 try {
   context = await createProfileContext(manifest);
+  const sourceRevision = (
+    await runLocal("git", ["rev-parse", "HEAD"])
+  ).stdout.trim();
+  const workingTreeDirty =
+    (await runLocal("git", ["status", "--porcelain"])).stdout.trim().length > 0;
+  if (context.normative && workingTreeDirty) {
+    throw new Error("normative SSH profiling requires a clean local worktree");
+  }
   const auditBeforeMaster = await context.auditSnapshot();
   const assigned = await connectAssignedMaster(context, pool);
   const auditAfterMaster = await context.auditSnapshot();
   const routeBaseline = auditDelta(auditBeforeMaster, auditAfterMaster);
   assertRouteBaseline(context, manifest, routeBaseline);
+  const openSsh = await inspectOpenSshVersions(context, pool, assigned);
+  const runtimeSha256 = await readRemoteRuntimeSha256(
+    context,
+    pool,
+    assigned,
+    join(scratch, "remote-runtime-artifact")
+  );
+  if (
+    context.expectedRuntimeSha256 !== undefined &&
+    runtimeSha256 !== context.expectedRuntimeSha256
+  ) {
+    throw new Error(
+      `remote runtime SHA-256 ${runtimeSha256} does not match configured artifact ${context.expectedRuntimeSha256}`
+    );
+  }
 
   runtime = new LinuxX64RemoteRuntime({
     pool,
@@ -355,9 +399,12 @@ try {
       expectedKeeperGeneration: session.keeperGeneration,
       access: "write"
     });
-    await session.attachment.ready;
+    const ready = await session.attachment.ready;
     if ((await session.attachment.checkpoint) !== null) checkpointCount += 1;
-    session.reader = new MutationReader(session.attachment);
+    session.reader = new MutationReader(
+      session.attachment,
+      ready.replayFromSequence
+    );
     session.reader.start();
   }
 
@@ -368,6 +415,7 @@ try {
   const remoteHostRssSamples: number[] = [];
   const keeperRssSamples = new Map<number, number[]>();
   const journalSyncSamples: number[] = [];
+  const journalAdmittedBySession = new Map<Id, bigint>();
   let gitRepetitions = 0;
   let loadedSftp: Awaited<ReturnType<typeof runtime.downloadFile>> | undefined;
   let loadedSftpSeconds = 0;
@@ -418,7 +466,8 @@ try {
     profileEndsAt,
     remoteHostRssSamples,
     keeperRssSamples,
-    journalSyncSamples
+    journalSyncSamples,
+    journalAdmittedBySession
   );
 
   await Promise.all([
@@ -430,22 +479,55 @@ try {
   ]);
   loopDelay.disable();
   const durationMs = performance.now() - profileStartedAt;
+  const terminalBurst = await runTerminalBurst(sessions, manifest);
   if (!loadedSftp) throw new Error("loaded SFTP did not produce a result");
   await runtime.releaseFile(loadedSftp.localPath);
 
+  const generatorStatuses = new Map<
+    Id,
+    { steadyOutputBytes: bigint; burstOutputBytes: bigint }
+  >();
+  await Promise.all(
+    sessions
+      .filter((session) => session.attached)
+      .map(async (session) => {
+        generatorStatuses.set(
+          session.resourceKey.sessionId,
+          await queryTerminalGeneratorStatus(session, manifest)
+        );
+      })
+  );
+
   for (const session of sessions.filter((candidate) => !candidate.attached)) {
-    const attachment = await runtime.attach({
+    session.attachment = await runtime.attach({
       resourceKey: session.resourceKey,
       expectedKeeperGeneration: session.keeperGeneration,
-      access: "read"
+      access: "write"
     });
     try {
-      await attachment.ready;
-      if ((await attachment.checkpoint) !== null) checkpointCount += 1;
+      const ready = await session.attachment.ready;
+      if ((await session.attachment.checkpoint) !== null) checkpointCount += 1;
+      session.reader = new MutationReader(
+        session.attachment,
+        ready.replayFromSequence
+      );
+      session.reader.start();
+      generatorStatuses.set(
+        session.resourceKey.sessionId,
+        await queryTerminalGeneratorStatus(session, manifest)
+      );
     } finally {
-      await attachment.detach();
+      await session.attachment.detach();
+      await session.reader?.completed;
     }
   }
+
+  await recordJournalAdmitted(
+    runtime,
+    assigned.targetId as Id,
+    sessions[0]!.resourceKey.desktopInstallationId,
+    journalAdmittedBySession
+  );
 
   for (const session of sessions.filter((candidate) => candidate.attached)) {
     await session.attachment!.detach();
@@ -464,23 +546,21 @@ try {
   const report = {
     schemaVersion: 1,
     measuredAt: new Date().toISOString(),
-    sourceRevision: (
-      await runLocal("git", ["rev-parse", "HEAD"])
-    ).stdout.trim(),
-    workingTreeDirty:
-      (await runLocal("git", ["status", "--porcelain"])).stdout.trim().length >
-      0,
+    sourceRevision,
+    workingTreeDirty,
     environmentKind: context.kind,
     normative: context.normative,
     limitations: context.limitations,
     artifactTarget: context.artifactTarget,
     hardware: context.hardware,
     network: context.network,
+    openSsh,
     runtime: {
       platform: hello.platform,
       arch: hello.arch,
       abi: hello.abi,
       version: hello.runtimeVersion,
+      sha256: runtimeSha256,
       persistenceLevel: hello.persistenceLevel
     },
     workload: {
@@ -492,7 +572,39 @@ try {
       gitRepetitions,
       echoSamples: loadedEcho.length,
       directEchoSamples: directEcho.length,
-      sftpBytes: manifest.workload.sftp.bytes
+      sftpBytes: manifest.workload.sftp.bytes,
+      minimumEchoSamples: minimumScheduledRepetitions(
+        manifest.workload.minimumDurationMs,
+        manifest.workload.keyEcho.probesPerSecond
+      ),
+      minimumGitRepetitions: minimumScheduledRepetitions(
+        manifest.workload.minimumDurationMs,
+        manifest.workload.git.repetitionsPerSecond
+      ),
+      minimumAttachedOutputBytes:
+        (manifest.workload.minimumDurationMs / 1_000) *
+        manifest.workload.keepers.attached *
+        manifest.workload.keepers.attachedOutputBytesPerSecondEach,
+      terminalLoad: sessions.map((session) => ({
+        sessionId: session.resourceKey.sessionId,
+        attached: session.attached,
+        outputBytesPerSecond: session.outputBytesPerSecond,
+        minimumGeneratedBytes: BigInt(
+          (manifest.workload.minimumDurationMs / 1_000) *
+            session.outputBytesPerSecond
+        ).toString(),
+        generatedSteadyBytes: (
+          generatorStatuses.get(session.resourceKey.sessionId)
+            ?.steadyOutputBytes ?? -1n
+        ).toString(),
+        generatedBurstBytes: (
+          generatorStatuses.get(session.resourceKey.sessionId)
+            ?.burstOutputBytes ?? -1n
+        ).toString(),
+        journalAdmitted: (
+          journalAdmittedBySession.get(session.resourceKey.sessionId) ?? -1n
+        ).toString()
+      }))
     },
     metrics: {
       directEchoLatencyMs: directEchoSummary,
@@ -508,6 +620,7 @@ try {
         max: round(loopDelay.max / 1_000_000)
       },
       terminalMutationContinuity: continuity,
+      terminalBurst,
       keeperRssBytes: keeperRss,
       remoteHostProcessTreeRssBytes: {
         max: Math.max(0, ...remoteHostRssSamples),
@@ -575,17 +688,19 @@ async function createProfileContext(
   const configuration = decodeNativeProfileConfiguration(
     JSON.parse(await readFile(configuredPath, "utf8")) as unknown
   );
+  await verifyNativeProfileRuntimeArtifact(configuration);
+  const sharedCi = isSharedCiEnvironment();
   let stopped = false;
   return {
     kind: "controlled-native",
-    normative: !configuration.sharedHost && process.env.CI !== "true",
+    normative: !configuration.sharedHost && !sharedCi,
     limitations: [
       ...(configuration.sharedHost
         ? [
             "The target is marked as shared and cannot provide normative evidence."
           ]
         : []),
-      ...(process.env.CI === "true"
+      ...(sharedCi
         ? ["Shared CI execution cannot provide normative performance evidence."]
         : [])
     ],
@@ -598,6 +713,7 @@ async function createProfileContext(
       ? {}
       : { controlRoot: configuration.controlRoot }),
     runtimePath: configuration.runtimePath,
+    expectedRuntimeSha256: configuration.runtimeSha256,
     roots: structuredClone(configuration.roots),
     targetId: configuration.targetId,
     hardware: structuredClone(configuration.hardware),
@@ -708,6 +824,56 @@ async function connectAssignedMaster(
   });
 }
 
+async function inspectOpenSshVersions(
+  context: ProfileContext,
+  selectedPool: SshTransportPool,
+  assigned: AssignedSshMaster
+): Promise<{ hostClient: string; targetServer: string }> {
+  const host = await execFileAsync(context.sshPath, ["-V"], {
+    timeout: 10_000,
+    maxBuffer: MAX_COMMAND_OUTPUT_BYTES
+  });
+  const target = await runChannel(context, selectedPool, assigned, {
+    kind: "control",
+    remoteCommand:
+      "if command -v sshd >/dev/null 2>&1; then sshd -V 2>&1; " +
+      "elif [ -x /usr/sbin/sshd ]; then /usr/sbin/sshd -V 2>&1; " +
+      "else exit 127; fi"
+  });
+  return {
+    hostClient: requireOpenSshVersion(
+      `${host.stderr}\n${host.stdout}`.trim(),
+      "host"
+    ),
+    targetServer: requireOpenSshVersion(target.stdout.trim(), "target server")
+  };
+}
+
+async function readRemoteRuntimeSha256(
+  context: ProfileContext,
+  selectedPool: SshTransportPool,
+  assigned: AssignedSshMaster,
+  localPath: string
+): Promise<string> {
+  try {
+    await runChannel(
+      context,
+      selectedPool,
+      assigned,
+      { kind: "sftp" },
+      `get ${quoteSftpPath(context.runtimePath)} ${quoteSftpPath(localPath)}\nquit\n`,
+      5 * 60_000
+    );
+    const metadata = await stat(localPath);
+    if (metadata.size === 0 || metadata.size > 64 * 1024 * 1024) {
+      throw new Error("remote runtime artifact size is outside its hard bound");
+    }
+    return await sha256File(localPath);
+  } finally {
+    await rm(localPath, { force: true });
+  }
+}
+
 async function createProfileSessions(
   context: ProfileContext,
   selectedRuntime: LinuxX64RemoteRuntime,
@@ -750,6 +916,27 @@ async function createProfileSessions(
           "terminal-load",
           "--bytes-per-second",
           String(outputBytesPerSecond),
+          "--steady-chunk-bytes",
+          String(
+            selectedManifest.workload.terminalOutputGenerator.steadyChunkBytes
+          ),
+          "--burst-bytes",
+          String(
+            selectedManifest.workload.terminalOutputGenerator.burst.totalBytes
+          ),
+          "--burst-chunk-bytes",
+          String(
+            selectedManifest.workload.terminalOutputGenerator.burst.chunkBytes
+          ),
+          "--burst-chunk-interval-ms",
+          String(
+            selectedManifest.workload.terminalOutputGenerator.burst
+              .chunkIntervalMs
+          ),
+          "--burst-echo-pause-ms",
+          String(
+            selectedManifest.workload.terminalOutputGenerator.burst.echoPauseMs
+          ),
           "--seed",
           `0x${(baseSeed + BigInt(index + 1)).toString(16)}`
         ]
@@ -771,7 +958,8 @@ async function createProfileSessions(
       resourceKey,
       keeperGeneration: outcome.keeperGeneration,
       attached,
-      outputBytesPerSecond
+      outputBytesPerSecond,
+      nextInputSequence: 0n
     });
   }
   return created;
@@ -844,10 +1032,7 @@ async function measureLoadedEcho(
       })
     );
     const started = performance.now();
-    await session.attachment!.sendInput(
-      uint64(BigInt(index + 1)),
-      new TextEncoder().encode(`${token}\n`)
-    );
+    await sendProfileInput(session, `${token}\n`);
     const inputAcknowledgementMs = performance.now() - started;
     const observation = await observed;
     if (!observation.ok) {
@@ -861,6 +1046,155 @@ async function measureLoadedEcho(
     nextProbeAt = Math.max(nextProbeAt + intervalMs, performance.now());
   }
   return samples;
+}
+
+async function runTerminalBurst(
+  sessions: SessionProfile[],
+  selectedManifest: PerformanceManifest
+) {
+  const burst = selectedManifest.workload.terminalOutputGenerator.burst;
+  const targets = sessions
+    .filter((session) => session.attached)
+    .slice(0, burst.attachedKeepers);
+  if (targets.length !== burst.attachedKeepers) {
+    throw new Error("profile burst topology has too few attached keepers");
+  }
+  const keepers = await Promise.all(
+    targets.map(async (session, keeperIndex) => {
+      if (!session.attachment || !session.reader) {
+        throw new Error("profile burst keeper is not attached");
+      }
+      const token = `${keeperIndex}_${randomBytes(12).toString("hex")}`;
+      const beginMarker = `KMUX_PROFILE_BURST_BEGIN:${token}`;
+      const endMarker = `KMUX_PROFILE_BURST_END:${token}`;
+      const beginObserved = session.reader.waitFor(
+        beginMarker,
+        burst.completionTimeoutMs
+      );
+      const endObserved = session.reader
+        .waitFor(endMarker, burst.completionTimeoutMs)
+        .then(
+          (outputOffset) => ({ ok: true as const, outputOffset }),
+          (error: unknown) => ({
+            ok: false as const,
+            error: error instanceof Error ? error : new Error(String(error))
+          })
+        );
+      const outputBytesBefore = session.reader.outputBytes;
+      const mutationsBefore = session.reader.mutations;
+      const started = performance.now();
+      await sendProfileInput(session, `${burst.triggerPrefix}${token}\n`);
+      const beginOutputOffset = await beginObserved;
+
+      const echoLatencies: number[] = [];
+      const echoOutputOffsets: number[] = [];
+      for (let index = 0; index < burst.echoProbes; index += 1) {
+        const echoToken = `kmux-burst-echo-${token}-${index.toString().padStart(2, "0")}`;
+        const observed = session.reader.waitFor(
+          echoToken,
+          burst.completionTimeoutMs
+        );
+        const echoStarted = performance.now();
+        await sendProfileInput(session, `${echoToken}\n`);
+        echoOutputOffsets.push(await observed);
+        echoLatencies.push(performance.now() - echoStarted);
+      }
+
+      const endObservation = await endObserved;
+      if (!endObservation.ok) throw endObservation.error;
+      if (
+        echoOutputOffsets.some(
+          (offset) =>
+            offset <= beginOutputOffset || offset >= endObservation.outputOffset
+        )
+      ) {
+        throw new Error(
+          "profile burst echo did not pass through the active burst attachment"
+        );
+      }
+      return {
+        sessionId: session.resourceKey.sessionId,
+        completionMs: round(performance.now() - started),
+        outputBytes: session.reader.outputBytes - outputBytesBefore,
+        mutationCount: session.reader.mutations - mutationsBefore,
+        echoLatencyMs: summarize(echoLatencies),
+        echoesBeforeEnd: echoOutputOffsets.length === burst.echoProbes,
+        attachmentOpen: session.attachment.isOpen()
+      };
+    })
+  );
+  return {
+    attachedKeepers: keepers.length,
+    totalBytesEach: burst.totalBytes,
+    chunkBytes: burst.chunkBytes,
+    chunkIntervalMs: burst.chunkIntervalMs,
+    echoPauseMs: burst.echoPauseMs,
+    echoProbesEach: burst.echoProbes,
+    keepers
+  };
+}
+
+async function sendProfileInput(
+  session: SessionProfile,
+  input: string
+): Promise<void> {
+  if (!session.attachment) {
+    throw new Error("profile input requires an attached keeper");
+  }
+  session.nextInputSequence += 1n;
+  await session.attachment.sendInput(
+    uint64(session.nextInputSequence),
+    new TextEncoder().encode(input)
+  );
+}
+
+async function queryTerminalGeneratorStatus(
+  session: SessionProfile,
+  selectedManifest: PerformanceManifest
+): Promise<{ steadyOutputBytes: bigint; burstOutputBytes: bigint }> {
+  if (!session.reader) {
+    throw new Error("profile generator status requires a mutation reader");
+  }
+  const token = randomBytes(12).toString("hex");
+  const endMarker = `KMUX_PROFILE_STATUS_END:${token}`;
+  const observed = session.reader.waitFor(
+    endMarker,
+    selectedManifest.workload.terminalOutputGenerator.burst.completionTimeoutMs
+  );
+  await sendProfileInput(
+    session,
+    `${selectedManifest.workload.terminalOutputGenerator.statusRequestPrefix}${token}\n`
+  );
+  await observed;
+  const match = new RegExp(
+    `KMUX_PROFILE_STATUS:${token}:([0-9]+):([0-9]+)`,
+    "u"
+  ).exec(session.reader.tailText());
+  if (!match) {
+    throw new Error("profile generator emitted an invalid status response");
+  }
+  return {
+    steadyOutputBytes: BigInt(match[1]!),
+    burstOutputBytes: BigInt(match[2]!)
+  };
+}
+
+async function recordJournalAdmitted(
+  selectedRuntime: LinuxX64RemoteRuntime,
+  targetId: Id,
+  desktopInstallationId: Id,
+  journalAdmittedBySession: Map<Id, bigint>
+): Promise<void> {
+  const observation = await selectedRuntime.observe({
+    desktopInstallationId,
+    targetId
+  });
+  for (const keeper of observation.keepers) {
+    journalAdmittedBySession.set(
+      keeper.resourceKey.sessionId,
+      BigInt(keeper.storageStatus.journalAdmitted)
+    );
+  }
 }
 
 async function runGitLoad(
@@ -899,7 +1233,8 @@ async function sampleResources(
   endsAt: number,
   remoteHostRssSamples: number[],
   keeperRssSamples: Map<number, number[]>,
-  journalSyncSamples: number[]
+  journalSyncSamples: number[],
+  journalAdmittedBySession: Map<Id, bigint>
 ): Promise<void> {
   let nextAt = performance.now();
   while (performance.now() < endsAt) {
@@ -921,6 +1256,10 @@ async function sampleResources(
       keeperRssSamples.set(process.pid, samples);
     }
     for (const keeper of observation.keepers) {
+      journalAdmittedBySession.set(
+        keeper.resourceKey.sessionId,
+        BigInt(keeper.storageStatus.journalAdmitted)
+      );
       if (keeper.storageStatus?.lastSyncDurationMs !== undefined) {
         journalSyncSamples.push(keeper.storageStatus.lastSyncDurationMs);
       }
@@ -1153,6 +1492,34 @@ function evaluateReport(
     "terminal mutation continuity failed",
     failures
   );
+  const burst = selectedManifest.workload.terminalOutputGenerator.burst;
+  requireGate(
+    metrics.terminalBurst.attachedKeepers === burst.attachedKeepers &&
+      Array.isArray(metrics.terminalBurst.keepers) &&
+      metrics.terminalBurst.keepers.length === burst.attachedKeepers &&
+      metrics.terminalBurst.keepers.every(
+        (keeper: Record<string, unknown>) =>
+          keeper.attachmentOpen === true &&
+          Number.isSafeInteger(keeper.outputBytes) &&
+          Number(keeper.outputBytes) >= burst.totalBytes &&
+          Number.isSafeInteger(keeper.mutationCount) &&
+          Number(keeper.mutationCount) > 0 &&
+          keeper.echoesBeforeEnd === true &&
+          (keeper.echoLatencyMs as { count?: unknown } | undefined)?.count ===
+            burst.echoProbes
+      ),
+    "terminal burst did not remain contiguous on the existing attachment",
+    failures
+  );
+  requireGate(
+    terminalLoadGeneratorEvidencePassed(
+      workload.terminalLoad,
+      selectedManifest.workload.keepers.total,
+      selectedManifest.workload.terminalOutputGenerator.burst
+    ),
+    "one or more terminal generators did not sustain the versioned byte load",
+    failures
+  );
   requireGate(
     metrics.routeBaseline.acceptedAuthentications ===
       selectedManifest.gates.sshFeatureTransport
@@ -1174,6 +1541,18 @@ function evaluateReport(
   if (!context.normative) return failures;
 
   requireGate(
+    typeof context.expectedRuntimeSha256 === "string" &&
+      report.runtime.sha256 === context.expectedRuntimeSha256,
+    "runtime executable did not match the configured release artifact",
+    failures
+  );
+  requireGate(
+    report.workingTreeDirty === false,
+    "normative profile source worktree was dirty",
+    failures
+  );
+
+  requireGate(
     context.hardware.physicalCpuCores >=
       selectedManifest.referenceTargetMinimum.physicalCpuCores &&
       context.hardware.memoryBytes >=
@@ -1181,6 +1560,22 @@ function evaluateReport(
       context.hardware.stateStorage ===
         selectedManifest.referenceTargetMinimum.stateStorage,
     "reference target hardware minimum is not satisfied",
+    failures
+  );
+  requireGate(
+    workload.echoSamples >= workload.minimumEchoSamples,
+    "normative workload did not sustain its 10 Hz echo schedule",
+    failures
+  );
+  requireGate(
+    workload.gitRepetitions >= workload.minimumGitRepetitions,
+    "normative workload did not sustain its Git inspection schedule",
+    failures
+  );
+  requireGate(
+    metrics.terminalMutationContinuity.outputBytes >=
+      workload.minimumAttachedOutputBytes,
+    "attached terminal generators did not sustain the versioned byte rate",
     failures
   );
   requireGate(
@@ -1216,8 +1611,10 @@ function evaluateReport(
     failures
   );
   requireGate(
-    metrics.remoteHostProcessTreeRssBytes.max <=
-      selectedManifest.gates.remoteHostProcessTreeRssBytes.max,
+    metrics.remoteHostProcessTreeRssBytes.samples > 0 &&
+      metrics.remoteHostProcessTreeRssBytes.max > 0 &&
+      metrics.remoteHostProcessTreeRssBytes.max <=
+        selectedManifest.gates.remoteHostProcessTreeRssBytes.max,
     "remote-host process-tree RSS exceeded its gate",
     failures
   );
@@ -1243,6 +1640,65 @@ function requireGate(
   failures: string[]
 ): void {
   if (!condition) failures.push(message);
+}
+
+function minimumScheduledRepetitions(
+  durationMs: number,
+  repetitionsPerSecond: number
+): number {
+  return Math.floor((durationMs / 1_000) * repetitionsPerSecond);
+}
+
+function saturatingAddSafeInteger(value: number, increment: bigint): number {
+  const remaining = BigInt(Number.MAX_SAFE_INTEGER - value);
+  return increment >= remaining
+    ? Number.MAX_SAFE_INTEGER
+    : value + Number(increment);
+}
+
+function terminalLoadGeneratorEvidencePassed(
+  entries: unknown,
+  expectedSessions: number,
+  burst: PerformanceManifest["workload"]["terminalOutputGenerator"]["burst"]
+): boolean {
+  if (!Array.isArray(entries) || entries.length !== expectedSessions) {
+    return false;
+  }
+  let burstKeepers = 0;
+  const everyEntryPassed = entries.every((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return false;
+    }
+    const record = entry as Record<string, unknown>;
+    if (
+      typeof record.minimumGeneratedBytes !== "string" ||
+      !/^[0-9]+$/u.test(record.minimumGeneratedBytes) ||
+      typeof record.generatedSteadyBytes !== "string" ||
+      !/^[0-9]+$/u.test(record.generatedSteadyBytes) ||
+      typeof record.generatedBurstBytes !== "string" ||
+      !/^[0-9]+$/u.test(record.generatedBurstBytes) ||
+      typeof record.journalAdmitted !== "string" ||
+      !/^[0-9]+$/u.test(record.journalAdmitted)
+    ) {
+      return false;
+    }
+    const generatedBurstBytes = BigInt(record.generatedBurstBytes);
+    if (generatedBurstBytes > 0n) {
+      if (
+        record.attached !== true ||
+        generatedBurstBytes !== BigInt(burst.totalBytes)
+      ) {
+        return false;
+      }
+      burstKeepers += 1;
+    }
+    return (
+      BigInt(record.generatedSteadyBytes) >=
+        BigInt(record.minimumGeneratedBytes) &&
+      BigInt(record.journalAdmitted) > 0n
+    );
+  });
+  return everyEntryPassed && burstKeepers === burst.attachedKeepers;
 }
 
 async function writeProfileResult(report: unknown): Promise<string> {
@@ -1497,66 +1953,25 @@ function decodePerformanceManifest(value: unknown): PerformanceManifest {
     manifest.workload.keepers.attached !== 4 ||
     manifest.workload.keepers.detached !== 12 ||
     manifest.workload.minimumDurationMs !== 120_000 ||
-    manifest.workload.sftp.bytes !== 512 * 1024 * 1024
+    manifest.workload.sftp.bytes !== 512 * 1024 * 1024 ||
+    manifest.workload.terminalOutputGenerator.statusRequestPrefix !==
+      "KMUX_PROFILE_STATUS:" ||
+    manifest.workload.terminalOutputGenerator.steadyChunkBytes !== 4 * 1024 ||
+    manifest.workload.terminalOutputGenerator.burst.triggerPrefix !==
+      "KMUX_PROFILE_BURST:" ||
+    manifest.workload.terminalOutputGenerator.burst.attachedKeepers !== 1 ||
+    manifest.workload.terminalOutputGenerator.burst.totalBytes !==
+      4 * 1024 * 1024 ||
+    manifest.workload.terminalOutputGenerator.burst.chunkBytes !== 64 * 1024 ||
+    manifest.workload.terminalOutputGenerator.burst.chunkIntervalMs !== 20 ||
+    manifest.workload.terminalOutputGenerator.burst.echoPauseMs !== 100 ||
+    manifest.workload.terminalOutputGenerator.burst.echoProbes !== 20 ||
+    manifest.workload.terminalOutputGenerator.burst.completionTimeoutMs !==
+      30_000
   ) {
     throw new TypeError("remote performance manifest topology was weakened");
   }
   return structuredClone(manifest);
-}
-
-function decodeNativeProfileConfiguration(
-  value: unknown
-): NativeProfileConfiguration {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("SSH profile configuration must be an object");
-  }
-  const config = value as NativeProfileConfiguration;
-  const expectedKeys = [
-    "artifactTarget",
-    "auditSnapshot",
-    "configPath",
-    "controlRoot",
-    "environmentKind",
-    "hardware",
-    "host",
-    "network",
-    "resolvedRoutePhysicalTcpLegs",
-    "roots",
-    "runtimePath",
-    "schemaVersion",
-    "sftpPath",
-    "sharedHost",
-    "sshPath",
-    "targetId"
-  ];
-  const actualKeys = Object.keys(config).sort();
-  const acceptedKeys = expectedKeys.filter(
-    (key) => key !== "controlRoot" || config.controlRoot !== undefined
-  );
-  if (
-    config.schemaVersion !== 1 ||
-    config.environmentKind !== "controlled-native" ||
-    JSON.stringify(actualKeys) !== JSON.stringify(acceptedKeys)
-  ) {
-    throw new TypeError(
-      "SSH profile configuration has unknown or missing fields"
-    );
-  }
-  for (const path of [config.sshPath, config.sftpPath, config.configPath]) {
-    if (!isAbsolute(path))
-      throw new TypeError("profile local paths must be absolute");
-  }
-  for (const path of Object.values(config.roots)) {
-    if (!path.startsWith("/"))
-      throw new TypeError("profile remote roots must be absolute");
-  }
-  if (
-    !Number.isSafeInteger(config.resolvedRoutePhysicalTcpLegs) ||
-    config.resolvedRoutePhysicalTcpLegs < 1
-  ) {
-    throw new TypeError("resolved route physical leg count is invalid");
-  }
-  return structuredClone(config);
 }
 
 function summarize(values: number[]) {
@@ -1623,6 +2038,17 @@ function requireNonNegativeInteger(value: unknown, name: string): number {
     throw new TypeError(`${name} must be a non-negative safe integer`);
   }
   return value as number;
+}
+
+function requireOpenSshVersion(value: string, owner: string): string {
+  if (
+    !value.startsWith("OpenSSH_") ||
+    Buffer.byteLength(value, "utf8") > 1024 ||
+    /[\0\r\n]/u.test(value)
+  ) {
+    throw new Error(`profile ${owner} OpenSSH version is missing or invalid`);
+  }
+  return value;
 }
 
 async function delayUntil(deadline: number): Promise<void> {

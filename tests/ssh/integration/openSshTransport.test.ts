@@ -4093,6 +4093,16 @@ describe("real system OpenSSH transport spike", () => {
             "terminal-load",
             "--bytes-per-second",
             "65536",
+            "--steady-chunk-bytes",
+            "4096",
+            "--burst-bytes",
+            "4194304",
+            "--burst-chunk-bytes",
+            "65536",
+            "--burst-chunk-interval-ms",
+            "20",
+            "--burst-echo-pause-ms",
+            "100",
             "--seed",
             "0x4b4d555852454d31"
           ]
@@ -4122,6 +4132,36 @@ describe("real system OpenSSH transport spike", () => {
         new TextEncoder().encode(`${marker}\n`)
       );
       expect((await observed).text).toContain(marker);
+
+      const burstToken = `profile_burst_${suffix}`;
+      const burstEcho = `profile-burst-echo-${suffix}`;
+      const burstEnd = `KMUX_PROFILE_BURST_END:${burstToken}`;
+      const burstObserved = collectTerminalUntil(attachment, burstEnd);
+      await attachment.sendInput(
+        uint64(2n),
+        new TextEncoder().encode(`KMUX_PROFILE_BURST:${burstToken}\n`)
+      );
+      await attachment.sendInput(
+        uint64(3n),
+        new TextEncoder().encode(`${burstEcho}\n`)
+      );
+      const burstResult = await burstObserved;
+      expect(burstResult.text).toContain(burstEcho);
+      expect(burstResult.text).toContain(burstEnd);
+      expect(attachment.isOpen()).toBe(true);
+
+      const statusToken = `profile_status_${suffix}`;
+      const statusObserved = collectTerminalUntil(
+        attachment,
+        `KMUX_PROFILE_STATUS_END:${statusToken}`
+      );
+      await attachment.sendInput(
+        uint64(4n),
+        new TextEncoder().encode(`KMUX_PROFILE_STATUS:${statusToken}\n`)
+      );
+      expect((await statusObserved).text).toMatch(
+        new RegExp(`KMUX_PROFILE_STATUS:${statusToken}:[0-9]+:4194304`, "u")
+      );
 
       const terminatePayload: RemoteOperationPayloadDto = {
         kind: "session.terminate",

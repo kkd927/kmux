@@ -103,6 +103,12 @@ did not regress the established local surface output path.
 
 This procedure applies to every phase, not only Phase 3:
 
+The protected live-output path is `pty-host` ring/coalescing/credit → direct
+renderer `MessagePort` → singleton `TerminalStreamRouter` → existing
+scheduler/xterm. Review each phase at function level and reject any SSH change
+that inserts Main relay, remote selection, extra buffering, serialization, or
+instrumentation into this local path.
+
 1. Keep the immutable pre-SSH capture, the separately measured repeatability
    batch from that exact revision, and their raw source evidence in
    `local-terminal-regression-gates.v1.json`. For each metric, take the greater

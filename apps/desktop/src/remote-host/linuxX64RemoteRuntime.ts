@@ -1320,7 +1320,8 @@ export class RemoteTerminalAttachment {
               : `: ${this.stderrTail.toString("utf8").trim()}`
           }`,
           true
-        )
+        ),
+        true
       )
     );
     void writeChildStdin(
@@ -1466,6 +1467,15 @@ export class RemoteTerminalAttachment {
     message: Parameters<typeof encodeRemoteTerminalWireMessage>[0]
   ): Promise<void> {
     if (!this.isOpen()) {
+      if (this.closeError instanceof RemoteRuntimeError) throw this.closeError;
+      if (this.closeError) {
+        throw new RemoteRuntimeError(
+          "attachment-closed",
+          `remote terminal attachment is closed: ${this.closeError.message}`,
+          true,
+          { cause: this.closeError }
+        );
+      }
       throw new RemoteRuntimeError(
         "attachment-closed",
         "remote terminal attachment is closed",
@@ -1848,9 +1858,7 @@ export class RemoteTerminalAttachment {
     checkpoint.chunks.push(data);
   }
 
-  private onClose(error: unknown): void {
-    if (!this.open && this.closeError) return;
-    this.open = false;
+  private onClose(error: unknown, preferCloseDiagnosis = false): void {
     const closeError =
       error instanceof Error
         ? error
@@ -1859,6 +1867,19 @@ export class RemoteTerminalAttachment {
             "remote terminal attachment closed",
             true
           );
+    if (!this.open && this.closeError) {
+      if (
+        preferCloseDiagnosis &&
+        closeError instanceof RemoteRuntimeError &&
+        closeError.code === "attachment-closed" &&
+        (!(this.closeError instanceof RemoteRuntimeError) ||
+          this.closeError.code === "attachment-closed")
+      ) {
+        this.closeError = closeError;
+      }
+      return;
+    }
+    this.open = false;
     this.closeError = closeError;
     this.readyDeferred.reject(closeError);
     this.checkpointDeferred.reject(closeError);
