@@ -1,4 +1,8 @@
-import type { AppAction, AppState } from "@kmux/core";
+import {
+  encodeLocatedPathDto,
+  type AppAction,
+  type AppState
+} from "@kmux/core";
 import type {
   Id,
   SurfaceSnapshotOptions,
@@ -62,12 +66,35 @@ export function createTerminalBridge(
   const lastDispatchedTitleMetadata = new Map<string, string>();
 
   function surfaceSessionId(surfaceId: Id): Id | null {
-    const surface = options.getState().surfaces[surfaceId];
-    return surface ? surface.sessionId : null;
+    const state = options.getState();
+    const surface = state.surfaces[surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    return surface && workspace?.location.target.kind === "local"
+      ? surface.sessionId
+      : null;
+  }
+
+  function requireLocalSurfaceSession(surfaceId: Id): Id | null {
+    const state = options.getState();
+    const surface = state.surfaces[surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (workspace?.location.target.kind === "ssh") {
+      throw new Error("SSH terminal control requires a target provider");
+    }
+    return surface?.sessionId ?? null;
   }
 
   function isCurrentSurfaceSession(surfaceId: Id, sessionId: Id): boolean {
     return surfaceSessionId(surfaceId) === sessionId;
+  }
+
+  function isLocalProductSession(sessionId: Id): boolean {
+    const session = options.getState().sessions[sessionId];
+    return Boolean(
+      session && isCurrentSurfaceSession(session.surfaceId, session.id)
+    );
   }
 
   function titleMetadataKey(surfaceId: Id, sessionId: Id): string {
@@ -125,7 +152,7 @@ export function createTerminalBridge(
   }
 
   function sendText(surfaceId: Id, text: string): void {
-    const sessionId = surfaceSessionId(surfaceId);
+    const sessionId = requireLocalSurfaceSession(surfaceId);
     if (sessionId) {
       observeTextInput(surfaceId, text);
       options.getPtyHost()?.sendText(sessionId, text);
@@ -146,7 +173,7 @@ export function createTerminalBridge(
   }
 
   function sendKeyInput(surfaceId: Id, input: TerminalKeyInput): void {
-    const sessionId = surfaceSessionId(surfaceId);
+    const sessionId = requireLocalSurfaceSession(surfaceId);
     if (sessionId) {
       observeKeyInput(surfaceId, input);
       options.getPtyHost()?.sendKey(sessionId, input);
@@ -309,6 +336,7 @@ export function createTerminalBridge(
     if (!surface) {
       return null;
     }
+    requireLocalSurfaceSession(surfaceId);
     return (
       (await options
         .getPtyHost()
@@ -319,6 +347,9 @@ export function createTerminalBridge(
   function handlePtyEvent(event: PtyEvent): void {
     switch (event.type) {
       case "spawned":
+        if (!isLocalProductSession(event.sessionId)) {
+          return;
+        }
         options.dispatchAppAction({
           type: "session.started",
           sessionId: event.sessionId,
@@ -327,6 +358,9 @@ export function createTerminalBridge(
         });
         return;
       case "shell.ready":
+        if (!isLocalProductSession(event.sessionId)) {
+          return;
+        }
         options.dispatchAppAction({
           type: "session.shellReady",
           sessionId: event.sessionId
@@ -387,7 +421,7 @@ export function createTerminalBridge(
           });
           return;
         }
-        if (surface.sessionId !== event.sessionId) {
+        if (!isCurrentSurfaceSession(event.surfaceId, event.sessionId)) {
           logDiagnostics("main.terminal.notification.dropped", {
             reason: "stale-session",
             surfaceId: event.surfaceId,
@@ -407,7 +441,10 @@ export function createTerminalBridge(
           return;
         }
         const title = event.title ?? surface.title;
-        const message = event.message ?? surface.cwd ?? "Terminal notification";
+        const message =
+          event.message ??
+          encodeLocatedPathDto(surface.cwd).path ??
+          "Terminal notification";
         const codexAttentionMatch = matchCodexInputAttentionForVendor(
           vendor,
           title,
@@ -486,6 +523,14 @@ export function createTerminalBridge(
         return;
       }
       case "input.observed": {
+        if (
+          !isCurrentSurfaceSession(
+            event.session.surfaceId,
+            event.session.sessionId
+          )
+        ) {
+          return;
+        }
         const currentSession = options
           .getPtyHost()
           ?.sessionRef(event.session.surfaceId, event.session.sessionId);
@@ -512,6 +557,14 @@ export function createTerminalBridge(
         }
         return;
       case "exit":
+        if (
+          !isCurrentSurfaceSession(
+            event.payload.surfaceId,
+            event.payload.sessionId
+          )
+        ) {
+          return;
+        }
         flushPendingTitleMetadata(
           event.payload.surfaceId,
           event.payload.sessionId

@@ -1,7 +1,12 @@
-import type { TerminalDelta, TerminalOutputSegment } from "@kmux/proto";
+import type {
+  TerminalDelta,
+  TerminalOutputSegment,
+  Uint64
+} from "@kmux/proto";
 import {
   TERMINAL_DATA_PLANE_MAX_DELTA_RETAINED_BYTES,
-  TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS
+  TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS,
+  uint64
 } from "@kmux/proto";
 
 export const TERMINAL_WIRE_OUTPUT_MAX_BYTES = 16 * 1024;
@@ -29,7 +34,7 @@ export function terminalDeltaRetainedBytes(delta: TerminalDelta): number {
 /** Returns the retained output suffix after a wire-visible segment cursor. */
 export function sliceTerminalOutputAfterSequence(
   delta: TerminalDelta,
-  sequence: number
+  sequence: Uint64
 ): TerminalDelta | null {
   const segmentIndex = terminalOutputSegmentIndexAfter(delta, sequence);
   if (delta.type !== "output" || segmentIndex === null) {
@@ -50,7 +55,7 @@ export function sliceTerminalOutputAfterSequence(
 
 function terminalOutputSegmentIndexAfter(
   delta: TerminalDelta,
-  sequence: number
+  sequence: Uint64
 ): number | null {
   if (
     delta.type !== "output" ||
@@ -59,9 +64,9 @@ function terminalOutputSegmentIndexAfter(
   ) {
     return null;
   }
-  const segmentIndex = sequence - delta.fromSequence;
+  const segmentIndex = Number(sequence - delta.fromSequence);
   return delta.segments[segmentIndex - 1]?.sequence === sequence &&
-    delta.segments[segmentIndex]?.sequence === sequence + 1
+    delta.segments[segmentIndex]?.sequence === sequence + 1n
     ? segmentIndex
     : null;
 }
@@ -120,7 +125,7 @@ export function coalesceTerminalOutputForWire(
     }
     deltas.push({
       type: "output",
-      fromSequence: first.sequence - 1,
+      fromSequence: uint64(first.sequence - 1n),
       sequence: last.sequence,
       byteLength: pendingBytes,
       segments: pending

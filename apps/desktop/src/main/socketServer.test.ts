@@ -46,8 +46,10 @@ async function sendSocketMessage(
   });
 }
 
-function createTestSocketServer(socketPath: string): KmuxSocketServer {
-  const state = createInitialState("/bin/zsh");
+function createTestSocketServer(
+  socketPath: string,
+  state = createInitialState("/bin/zsh")
+): KmuxSocketServer {
   state.settings.socketMode = "allowAll";
   const activeWorkspaceId =
     state.windows[state.activeWindowId].activeWorkspaceId;
@@ -240,6 +242,59 @@ describe("kmux socket server startup", () => {
     }
   });
 
+  it("encodes opaque local and remote paths in socket response DTOs", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-path-dto-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const state = createInitialState("/bin/zsh");
+    const priorWorkspaceIds = new Set(Object.keys(state.workspaces));
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app",
+      name: "remote"
+    });
+    const remoteWorkspaceId = Object.keys(state.workspaces).find(
+      (workspaceId) => !priorWorkspaceIds.has(workspaceId)
+    )!;
+    const server = createTestSocketServer(socketPath, state);
+    await server.start();
+
+    try {
+      const workspaces = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "workspace_paths",
+        method: "workspace.list",
+        params: {}
+      });
+      expect(workspaces.result).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: remoteWorkspaceId,
+            location: {
+              target: { kind: "ssh", targetId: "target_1" },
+              defaultCwd: "/srv/app"
+            }
+          })
+        ])
+      );
+
+      const surfaces = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "surface_paths",
+        method: "surface.list",
+        params: { workspaceId: remoteWorkspaceId }
+      });
+      expect(surfaces.result).toEqual([
+        expect.objectContaining({
+          cwd: { kind: "ssh", targetId: "target_1", path: "/srv/app" }
+        })
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("does not replace a non-socket file at the socket path", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-file-"));
     tempDirs.push(tempDir);
@@ -267,6 +322,147 @@ describe("kmux socket server startup", () => {
       reason: "socket-path-too-long",
       socketPath
     });
+  });
+});
+
+describe("kmux socket server terminal controls", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for the PTY-boundary result and routes bounded capture responses", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-control-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const activeSurfaceId =
+      state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+        .activeSurfaceId;
+    let resolveAcknowledgement!: (value: unknown) => void;
+    const acknowledgement = new Promise<unknown>((resolve) => {
+      resolveAcknowledgement = resolve;
+    });
+    const sendSurfaceText = vi.fn(() => acknowledgement);
+    const sendSurfaceKey = vi.fn(async () => {
+      throw new Error("keeper writer lease changed");
+    });
+    const captureSurface = vi.fn(async () => ({
+      captureId: "capture_1",
+      mutationSequence: "17",
+      text: "bounded output",
+      lineCount: 1,
+      byteLength: 14
+    }));
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch: vi.fn(),
+      sendSurfaceText,
+      sendSurfaceKey,
+      captureSurface,
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId,
+        capabilities: []
+      })
+    });
+    await server.start();
+
+    try {
+      let textReplySettled = false;
+      const textReply = sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_send_text",
+        method: "surface.send_text",
+        params: {
+          surfaceId: activeSurfaceId,
+          text: "hello",
+          operationId: "operation_1"
+        }
+      });
+      void textReply.then(() => {
+        textReplySettled = true;
+      });
+      await vi.waitFor(() =>
+        expect(sendSurfaceText).toHaveBeenCalledWith(
+          activeSurfaceId,
+          "hello",
+          "operation_1"
+        )
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(textReplySettled).toBe(false);
+
+      resolveAcknowledgement({
+        operationId: "operation_1",
+        boundary: "pty-write"
+      });
+      await expect(textReply).resolves.toMatchObject({
+        id: "rpc_send_text",
+        result: {
+          operationId: "operation_1",
+          boundary: "pty-write"
+        }
+      });
+
+      await expect(
+        sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: "rpc_capture",
+          method: "surface.capture",
+          params: {
+            surfaceId: activeSurfaceId,
+            captureId: "capture_1",
+            lines: 20,
+            maxBytes: 4096
+          }
+        })
+      ).resolves.toMatchObject({
+        id: "rpc_capture",
+        result: {
+          captureId: "capture_1",
+          mutationSequence: "17",
+          text: "bounded output"
+        }
+      });
+      expect(captureSurface).toHaveBeenCalledWith({
+        surfaceId: activeSurfaceId,
+        captureId: "capture_1",
+        lines: 20,
+        maxBytes: 4096
+      });
+
+      await expect(
+        sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: "rpc_send_key",
+          method: "surface.send_key",
+          params: {
+            surfaceId: activeSurfaceId,
+            key: "Enter",
+            operationId: "operation_2"
+          }
+        })
+      ).resolves.toMatchObject({
+        id: "rpc_send_key",
+        error: {
+          code: -32603,
+          message: "keeper writer lease changed"
+        }
+      });
+    } finally {
+      await server.stop();
+    }
   });
 });
 

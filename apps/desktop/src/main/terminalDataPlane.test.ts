@@ -1,6 +1,6 @@
 import { MessageChannelMain } from "electron";
 import type { AppState } from "@kmux/core";
-import { createInitialState } from "@kmux/core";
+import { createInitialState, workspaceLocation } from "@kmux/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createTerminalDataPlaneController } from "./terminalDataPlane";
@@ -62,6 +62,30 @@ function mockChannel() {
 describe("terminal data-plane controller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("does not bind an SSH surface to the local PTY host", () => {
+    const state = visibleState();
+    const workspace =
+      state.workspaces[state.windows[state.activeWindowId].activeWorkspaceId];
+    workspace.location = workspaceLocation(
+      { kind: "ssh", targetId: "target_1" },
+      "/srv/app"
+    );
+    const surface = activeSurface(state);
+    const host = streamHost(state);
+    const controller = createTerminalDataPlaneController({
+      getState: () => state,
+      getPtyHost: () => host
+    });
+
+    expect(
+      controller.attach(rendererEvent().event, surface.id, surface.sessionId)
+    ).toEqual({
+      status: "retryable-not-ready",
+      reason: "runtime-not-ready"
+    });
+    expect(host.sessionRef).not.toHaveBeenCalled();
   });
 
   it("transfers one attach-scoped port to the utility host and invoking main frame", () => {
@@ -214,7 +238,7 @@ describe("terminal data-plane controller", () => {
     ).toEqual({ status: "denied", reason: "not-current-surface" });
     expect(host.sessionRef).not.toHaveBeenCalled();
 
-    state.sessions[surface.sessionId].runtimeState = "exited";
+    state.sessions[surface.sessionId].runtimeStatus.processState = "exited";
     mockChannel();
     expect(
       controller.attach(rendererEvent().event, surface.id, surface.sessionId)

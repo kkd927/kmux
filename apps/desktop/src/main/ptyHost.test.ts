@@ -775,6 +775,172 @@ describe("resolvePtyHostLaunchOptions", () => {
     expect(manager.sessionRef("surface_1", "session_1")).toBeNull();
   });
 
+  it("closes only the exact local session generation after its acknowledgement", async () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_conversion",
+        surfaceId: "surface_conversion",
+        runtimeEpoch: "epoch_conversion"
+      }
+    } as never);
+    const session = manager.sessionRef(
+      "surface_conversion",
+      "session_conversion"
+    );
+    if (!session) throw new Error("expected current local session generation");
+
+    postMessage.mockClear();
+    const closed = manager.closeSessionGeneration(session);
+    const closeRequest = postMessage.mock.calls[0]?.[0];
+    expect(closeRequest).toEqual({
+      type: "close",
+      requestId: expect.any(String),
+      sessionId: "session_conversion",
+      surfaceId: "surface_conversion",
+      expectedRuntimeEpoch: "epoch_conversion"
+    });
+    if (
+      !closeRequest ||
+      typeof closeRequest !== "object" ||
+      !("requestId" in closeRequest)
+    ) {
+      throw new Error("expected generation-fenced close request");
+    }
+    expect(
+      manager.sessionRef("surface_conversion", "session_conversion")
+    ).toEqual(session);
+
+    fakeChild.emit("message", {
+      type: "close.ack",
+      requestId: closeRequest.requestId,
+      sessionId: "session_conversion",
+      surfaceId: "surface_conversion",
+      runtimeEpoch: "epoch_conversion",
+      outcome: "terminated"
+    });
+
+    await expect(closed).resolves.toBe("terminated");
+    expect(
+      manager.sessionRef("surface_conversion", "session_conversion")
+    ).toBeNull();
+  });
+
+  it("rejects a generation-mismatched close acknowledgement without revoking the current capability", async () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_current",
+        surfaceId: "surface_current",
+        runtimeEpoch: "epoch_current"
+      }
+    } as never);
+    const session = manager.sessionRef("surface_current", "session_current");
+    if (!session) throw new Error("expected current local session generation");
+
+    postMessage.mockClear();
+    const closed = manager.closeSessionGeneration(session);
+    const closeRequest = postMessage.mock.calls[0]?.[0];
+    if (
+      !closeRequest ||
+      typeof closeRequest !== "object" ||
+      !("requestId" in closeRequest)
+    ) {
+      throw new Error("expected generation-fenced close request");
+    }
+    fakeChild.emit("message", {
+      type: "close.ack",
+      requestId: closeRequest.requestId,
+      sessionId: "session_current",
+      surfaceId: "surface_current",
+      runtimeEpoch: "epoch_replacement",
+      outcome: "generation-mismatch"
+    });
+
+    await expect(closed).rejects.toThrow(
+      "local session close acknowledgement generation differs"
+    );
+    expect(manager.sessionRef("surface_current", "session_current")).toEqual(
+      session
+    );
+  });
+
+  it("fails a generation-fenced close immediately when delivery or the host is lost", async () => {
+    const failingPostMessage = vi.fn((message: unknown) => {
+      if (
+        message &&
+        typeof message === "object" &&
+        "type" in message &&
+        message.type === "close"
+      ) {
+        throw new Error("utility channel closed");
+      }
+    });
+    const firstChild = createFakeUtilityProcess(failingPostMessage);
+    const secondPostMessage = vi.fn();
+    const secondChild = createFakeUtilityProcess(secondPostMessage);
+    const forkProcess = vi
+      .fn()
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(secondChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_delivery",
+        surfaceId: "surface_delivery",
+        runtimeEpoch: "epoch_delivery"
+      }
+    } as never);
+    const deliverySession = manager.sessionRef(
+      "surface_delivery",
+      "session_delivery"
+    );
+    if (!deliverySession) throw new Error("expected delivery session");
+    await expect(
+      manager.closeSessionGeneration(deliverySession)
+    ).rejects.toThrow("pty-host IPC send failed: utility channel closed");
+    expect(
+      manager.sessionRef("surface_delivery", "session_delivery")
+    ).toEqual(deliverySession);
+
+    firstChild.emit("exit", 1);
+    manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_host_loss",
+        surfaceId: "surface_host_loss",
+        runtimeEpoch: "epoch_host_loss"
+      }
+    } as never);
+    const hostLossSession = manager.sessionRef(
+      "surface_host_loss",
+      "session_host_loss"
+    );
+    if (!hostLossSession) throw new Error("expected host-loss session");
+    const pending = manager.closeSessionGeneration(hostLossSession);
+    secondChild.emit("exit", 1);
+
+    await expect(pending).rejects.toThrow(
+      "pty-host exited before local session close acknowledgement"
+    );
+  });
+
   it("forwards settled snapshot requests to the pty-host child", async () => {
     const send = vi.fn((message: unknown) => Boolean(message));
     const fakeChild = createFakeUtilityProcess(send);

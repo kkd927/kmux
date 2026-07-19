@@ -11,7 +11,9 @@ import {
   TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES,
   TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES,
   TERMINAL_DATA_PLANE_MAX_DELTA_BYTES,
-  TERMINAL_DATA_PLANE_PROTOCOL_VERSION
+  TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64,
+  type Uint64
 } from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
 
@@ -32,6 +34,10 @@ const session: TerminalSessionRef = {
   sessionId: "session_1",
   epoch: "epoch_1"
 };
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
+}
 
 class FakePort extends EventEmitter implements TerminalDataPortLike {
   readonly sent: TerminalDataPlaneHostMessage[] = [];
@@ -58,7 +64,9 @@ function createDeltaStore(
     maxTotalEvents: Math.max(4096, maxSessionEvents * 2),
     rangeOf: (delta) => ({
       fromSequence:
-        delta.type === "output" ? delta.fromSequence : delta.sequence - 1,
+        delta.type === "output"
+          ? delta.fromSequence
+          : uint64(delta.sequence - 1n),
       sequence: delta.sequence
     }),
     sizeOf: terminalDeltaRetainedBytes,
@@ -67,7 +75,7 @@ function createDeltaStore(
   });
 }
 
-function checkpoint(sequence = 0): TerminalCheckpoint {
+function checkpoint(sequence: Uint64 = u(0)): TerminalCheckpoint {
   return {
     format: "xterm-vt/1",
     session,
@@ -85,12 +93,12 @@ function outputDelta(
 ): TerminalDelta {
   return {
     type: "output",
-    fromSequence: sequence - 1,
-    sequence,
+    fromSequence: u(sequence - 1),
+    sequence: u(sequence),
     byteLength: Buffer.byteLength(data, "utf8"),
     segments: [
       {
-        sequence,
+        sequence: u(sequence),
         data,
         byteLength: Buffer.byteLength(data, "utf8"),
         ...(cwd === undefined ? {} : { cwd })
@@ -109,6 +117,7 @@ function clientEnvelope(attachId = "attach_1") {
 
 function createHarness(
   options: {
+    checkpointData?: string;
     maxSessionBytes?: number;
     maxSessionEvents?: number;
     telemetryNow?: () => number;
@@ -122,13 +131,14 @@ function createHarness(
   const writeBinary = vi.fn();
   const writeKey = vi.fn();
   const resize = vi.fn(async ({ cols, rows }) => ({
-    sequence: 1,
+    sequence: u(1),
     cols,
     rows
   }));
-  const createCheckpoint = vi.fn(async () =>
-    checkpoint(deltaStore.latestSequence(session.sessionId))
-  );
+  const createCheckpoint = vi.fn(async () => ({
+    ...checkpoint(deltaStore.latestSequence(session.sessionId)),
+    data: options.checkpointData ?? "snapshot"
+  }));
   const onClosed = vi.fn();
   const stream = new TerminalSessionStream({
     session,
@@ -156,16 +166,79 @@ function createHarness(
 
 async function attach(
   port: FakePort,
-  resumeFromSequence?: number
+  resumeFromSequence?: number,
+  creditBytes = TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES
 ): Promise<void> {
   port.receive({
     ...clientEnvelope(),
     type: "attach",
-    creditBytes: TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES,
-    ...(resumeFromSequence === undefined ? {} : { resumeFromSequence })
+    creditBytes,
+    ...(resumeFromSequence === undefined
+      ? {}
+      : { resumeFromSequence: u(resumeFromSequence) })
   });
   await vi.waitFor(() => {
-    expect(port.sent.some((message) => message.type === "attached")).toBe(true);
+    expect(
+      port.sent.some(
+        (message) =>
+          message.type === "attached" || message.type === "checkpoint:begin"
+      )
+    ).toBe(true);
+  });
+  if (port.sent.some((message) => message.type === "checkpoint:begin")) {
+    await completeCheckpointTransfer(port);
+  }
+}
+
+async function completeCheckpointTransfer(port: FakePort): Promise<void> {
+  const begin = port.sent.find(
+    (
+      message
+    ): message is Extract<
+      TerminalDataPlaneHostMessage,
+      { type: "checkpoint:begin" }
+    > => message.type === "checkpoint:begin"
+  );
+  if (!begin) {
+    throw new Error("checkpoint begin was not sent");
+  }
+  let nextOffset = 0;
+  while (nextOffset < begin.totalBytes) {
+    let chunk:
+      | Extract<TerminalDataPlaneHostMessage, { type: "checkpoint:chunk" }>
+      | undefined;
+    await vi.waitFor(() => {
+      chunk = port.sent.find(
+        (
+          message
+        ): message is Extract<
+          TerminalDataPlaneHostMessage,
+          { type: "checkpoint:chunk" }
+        > =>
+          message.type === "checkpoint:chunk" &&
+          message.checkpointId === begin.checkpointId &&
+          message.offset === nextOffset
+      );
+      expect(chunk).toBeDefined();
+    });
+    const byteLength = chunk!.data.byteLength;
+    nextOffset += byteLength;
+    port.receive({
+      ...clientEnvelope(),
+      type: "checkpoint:credit",
+      checkpointId: begin.checkpointId,
+      acknowledgedOffset: nextOffset,
+      bytes: byteLength
+    });
+  }
+  await vi.waitFor(() => {
+    expect(
+      port.sent.some(
+        (message) =>
+          message.type === "checkpoint:end" &&
+          message.checkpointId === begin.checkpointId
+      )
+    ).toBe(true);
   });
 }
 
@@ -179,9 +252,43 @@ describe("TerminalSessionStream", () => {
     stream.publish(outputDelta(1));
 
     expect(port.sent.map((message) => message.type)).toEqual([
-      "attached",
+      "checkpoint:begin",
+      "checkpoint:chunk",
+      "checkpoint:end",
       "delta"
     ]);
+  });
+
+  it("streams a Unicode checkpoint through one-byte credit without deadlocking", async () => {
+    const { stream } = createHarness({ checkpointData: "A😀B" });
+    const port = new FakePort();
+    stream.bind("attach_1", port);
+
+    await attach(port, undefined, 1);
+
+    const chunks = port.sent.filter(
+      (
+        message
+      ): message is Extract<
+        TerminalDataPlaneHostMessage,
+        { type: "checkpoint:chunk" }
+      > => message.type === "checkpoint:chunk"
+    );
+    expect(chunks.map((message) => message.data.byteLength)).toEqual([
+      1, 1, 1, 1, 1, 1
+    ]);
+    expect(chunks.map((message) => message.offset)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        Uint8Array.from(
+          chunks.flatMap((message) => [...new Uint8Array(message.data)])
+        )
+      )
+    ).toBe("A😀B");
+    expect(chunks.every((message) => message.data instanceof ArrayBuffer)).toBe(
+      true
+    );
+    expect(stream.stats().creditBoundViolationCount).toBe(0);
   });
 
   it("keeps committed state current without any renderer subscriber", () => {
@@ -190,7 +297,7 @@ describe("TerminalSessionStream", () => {
     stream.publish(outputDelta(1, "headless"));
 
     expect(stream.attachmentCount).toBe(0);
-    expect(deltaStore.latestSequence(session.sessionId)).toBe(1);
+    expect(deltaStore.latestSequence(session.sessionId)).toBe(u(1));
     expect(deltaStore.stats()).toMatchObject({ events: 1 });
   });
 
@@ -201,7 +308,7 @@ describe("TerminalSessionStream", () => {
 
     stream.publish(outputDelta(1, "late output"));
 
-    expect(deltaStore.latestSequence(session.sessionId)).toBe(0);
+    expect(deltaStore.latestSequence(session.sessionId)).toBe(u(0));
     expect(deltaStore.stats()).toMatchObject({ sessions: 0, events: 0 });
   });
 
@@ -215,17 +322,19 @@ describe("TerminalSessionStream", () => {
     await attach(port);
 
     expect(port.sent.map((message) => message.type)).toEqual([
-      "attached",
+      "checkpoint:begin",
+      "checkpoint:chunk",
+      "checkpoint:end",
       "exit"
     ]);
     expect(port.sent[0]).toMatchObject({
-      type: "attached",
-      mode: "checkpoint",
-      checkpoint: { sequence: 1 }
+      type: "checkpoint:begin",
+      purpose: { kind: "attach" },
+      metadata: { sequence: u(1) }
     });
-    expect(port.sent[1]).toMatchObject({
+    expect(port.sent.at(-1)).toMatchObject({
       type: "exit",
-      afterSequence: 1,
+      sequence: u(2),
       exitCode: 7
     });
   });
@@ -242,7 +351,7 @@ describe("TerminalSessionStream", () => {
     expect(() => stream.publish(oversized)).toThrow(
       `terminal output delta exceeds ${TERMINAL_DATA_PLANE_MAX_DELTA_BYTES} bytes`
     );
-    expect(deltaStore.latestSequence(session.sessionId)).toBe(0);
+    expect(deltaStore.latestSequence(session.sessionId)).toBe(u(0));
   });
 
   it("holds live deltas until the initial checkpoint attach is atomic", async () => {
@@ -259,7 +368,7 @@ describe("TerminalSessionStream", () => {
       writeText: vi.fn(),
       writeBinary: vi.fn(),
       writeKey: vi.fn(),
-      resize: vi.fn(async () => ({ sequence: 0, cols: 80, rows: 24 }))
+      resize: vi.fn(async () => ({ sequence: u(0), cols: 80, rows: 24 }))
     });
     const port = new FakePort();
     stream.bind("attach_1", port);
@@ -273,10 +382,18 @@ describe("TerminalSessionStream", () => {
     stream.publish(outputDelta(1, "after snapshot barrier"));
     expect(port.sent).toEqual([]);
 
-    resolveCheckpoint(checkpoint(0));
+    resolveCheckpoint(checkpoint());
+    await vi.waitFor(() =>
+      expect(
+        port.sent.some((message) => message.type === "checkpoint:begin")
+      ).toBe(true)
+    );
+    await completeCheckpointTransfer(port);
     await vi.waitFor(() =>
       expect(port.sent.map((message) => message.type)).toEqual([
-        "attached",
+        "checkpoint:begin",
+        "checkpoint:chunk",
+        "checkpoint:end",
         "delta"
       ])
     );
@@ -294,7 +411,7 @@ describe("TerminalSessionStream", () => {
       writeText: vi.fn(),
       writeBinary: vi.fn(),
       writeKey: vi.fn(),
-      resize: vi.fn(async () => ({ sequence: 0, cols: 80, rows: 24 }))
+      resize: vi.fn(async () => ({ sequence: u(0), cols: 80, rows: 24 }))
     });
     const port = new FakePort();
     stream.bind("attach_1", port);
@@ -326,16 +443,13 @@ describe("TerminalSessionStream", () => {
     const { stream } = createHarness();
     const port = new FakePort();
     stream.bind("attach_1", port);
-    port.receive({
-      ...clientEnvelope(),
-      type: "attach",
-      creditBytes: 5
-    });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(1));
+    await attach(port, undefined, 5);
 
     stream.publish(outputDelta(1, "hello"));
     stream.publish(outputDelta(2, "world"));
-    expect(port.sent).toHaveLength(2);
+    expect(
+      port.sent.filter((message) => message.type === "delta")
+    ).toHaveLength(1);
     expect(stream.stats()).toEqual({
       maxCreditBytes: TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES,
       maxOutstandingOutputEvents: 32,
@@ -359,13 +473,17 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 5
     });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(3));
-    expect(port.sent[2]).toMatchObject({
+    await vi.waitFor(() =>
+      expect(
+        port.sent.filter((message) => message.type === "delta")
+      ).toHaveLength(2)
+    );
+    expect(port.sent.at(-1)).toMatchObject({
       type: "delta",
-      delta: { sequence: 2 }
+      delta: { sequence: u(2) }
     });
     expect(stream.stats()).toMatchObject({
       creditBytes: 0,
@@ -383,47 +501,50 @@ describe("TerminalSessionStream", () => {
     const { stream, createCheckpoint } = createHarness();
     const port = new FakePort();
     stream.bind("attach_1", port);
-    port.receive({
-      ...clientEnvelope(),
-      type: "attach",
-      creditBytes: 3
-    });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(1));
+    await attach(port, undefined, 3);
 
     stream.publish({
       type: "output",
-      fromSequence: 0,
-      sequence: 2,
+      fromSequence: u(0),
+      sequence: u(2),
       byteLength: 6,
       segments: [
-        { sequence: 1, data: "one", byteLength: 3 },
-        { sequence: 2, data: "two", byteLength: 3 }
+        { sequence: u(1), data: "one", byteLength: 3 },
+        { sequence: u(2), data: "two", byteLength: 3 }
       ]
     });
     expect(port.sent.at(-1)).toMatchObject({
       type: "delta",
-      delta: { fromSequence: 0, sequence: 1, byteLength: 3 }
+      delta: { fromSequence: u(0), sequence: u(1), byteLength: 3 }
     });
 
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 3
     });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(3));
+    await vi.waitFor(() =>
+      expect(
+        port.sent.filter((message) => message.type === "delta")
+      ).toHaveLength(2)
+    );
 
     expect(port.sent.at(-1)).toMatchObject({
       type: "delta",
       delta: {
-        fromSequence: 1,
-        sequence: 2,
+        fromSequence: u(1),
+        sequence: u(2),
         byteLength: 3,
-        segments: [{ sequence: 2, data: "two" }]
+        segments: [{ sequence: u(2), data: "two" }]
       }
     });
     expect(
-      port.sent.filter((message) => message.type === "resync-required")
+      port.sent.filter(
+        (message) =>
+          message.type === "checkpoint:begin" &&
+          message.purpose.kind === "resync"
+      )
     ).toHaveLength(0);
     expect(createCheckpoint).toHaveBeenCalledOnce();
   });
@@ -433,12 +554,7 @@ describe("TerminalSessionStream", () => {
     const replayAfter = vi.spyOn(deltaStore, "replayAfter");
     const port = new FakePort();
     stream.bind("attach_1", port);
-    port.receive({
-      ...clientEnvelope(),
-      type: "attach",
-      creditBytes: 5
-    });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(1));
+    await attach(port, undefined, 5);
 
     stream.publish(outputDelta(1, "hello"));
     stream.publish(outputDelta(2, "world"));
@@ -456,7 +572,7 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 5
     });
     await vi.waitFor(() =>
@@ -496,7 +612,7 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 1024
     });
     await vi.waitFor(() =>
@@ -530,7 +646,7 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 1024
     });
     await vi.waitFor(() =>
@@ -572,8 +688,8 @@ describe("TerminalSessionStream", () => {
         )
         .map((message) => message.delta)
     ).toMatchObject([
-      { type: "output", sequence: 16, byteLength: 16 * 1024 },
-      { type: "output", sequence: 20, byteLength: 4 * 1024 }
+      { type: "output", sequence: u(16), byteLength: 16 * 1024 },
+      { type: "output", sequence: u(20), byteLength: 4 * 1024 }
     ]);
   });
 
@@ -605,8 +721,8 @@ describe("TerminalSessionStream", () => {
     expect(replayed).toHaveLength(1);
     expect(replayed[0]?.delta).toMatchObject({
       type: "output",
-      fromSequence: 0,
-      sequence: 3,
+      fromSequence: u(0),
+      sequence: u(3),
       byteLength: 3
     });
     expect(stream.stats()).toMatchObject({
@@ -637,12 +753,12 @@ describe("TerminalSessionStream", () => {
 
     stream.publish(outputDelta(1, "one"));
     const first = port.sent.at(-1);
-    expect(first).toMatchObject({ type: "delta", delta: { sequence: 1 } });
+    expect(first).toMatchObject({ type: "delta", delta: { sequence: u(1) } });
     expect(first).not.toHaveProperty("telemetry");
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 3
     });
 
@@ -650,7 +766,7 @@ describe("TerminalSessionStream", () => {
     stream.publish(outputDelta(2, "two"));
     expect(port.sent.at(-1)).toMatchObject({
       type: "delta",
-      delta: { sequence: 2 },
+      delta: { sequence: u(2) },
       telemetry: { portSentAt: 2_000 }
     });
     expect(stream.stats()).toMatchObject({
@@ -669,7 +785,7 @@ describe("TerminalSessionStream", () => {
     const credit: TerminalDataPlaneClientMessage = {
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 5
     };
     port.receive(credit);
@@ -745,7 +861,7 @@ describe("TerminalSessionStream", () => {
     const sentDeltas = port.sent.filter((message) => message.type === "delta");
     expect(sentDeltas).toHaveLength(2_049);
     expect(sentDeltas.at(-1)).toMatchObject({
-      delta: { fromSequence: 2_048, sequence: 3_000, byteLength: 952 }
+      delta: { fromSequence: u(2_048), sequence: u(3_000), byteLength: 952 }
     });
     expect(
       port.sent.filter((message) => message.type === "error")
@@ -780,25 +896,25 @@ describe("TerminalSessionStream", () => {
     await attach(port);
     stream.publish({
       type: "output",
-      fromSequence: 0,
-      sequence: 2,
+      fromSequence: u(0),
+      sequence: u(2),
       byteLength: 2,
       segments: [
-        { sequence: 1, data: "a", byteLength: 1 },
-        { sequence: 2, data: "b", byteLength: 1 }
+        { sequence: u(1), data: "a", byteLength: 1 },
+        { sequence: u(2), data: "b", byteLength: 1 }
       ]
     });
 
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 1
     });
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 2,
+      acknowledgedSequence: u(2),
       bytes: 1
     });
 
@@ -813,7 +929,7 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 2,
+      acknowledgedSequence: u(2),
       bytes: 2
     });
     expect(stream.stats()).toMatchObject({
@@ -850,24 +966,17 @@ describe("TerminalSessionStream", () => {
     deltaStore.append(session.sessionId, outputDelta(2, "67890"));
     const port = new FakePort();
     stream.bind("attach_1", port);
-    port.receive({
-      ...clientEnvelope(),
-      type: "attach",
-      creditBytes: TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES,
-      resumeFromSequence: 0
-    });
-    await vi.waitFor(() =>
-      expect(
-        port.sent.some((message) => message.type === "resync-required")
-      ).toBe(true)
-    );
+    await attach(port, 0);
 
     expect(createCheckpoint).toHaveBeenCalledOnce();
     expect(port.sent[0]).toMatchObject({
-      type: "resync-required",
-      missingFromSequence: 1,
-      retainedFromSequence: 2,
-      checkpoint: { sequence: 2 }
+      type: "checkpoint:begin",
+      purpose: {
+        kind: "resync",
+        missingFromSequence: u(1),
+        retainedFromSequence: u(2)
+      },
+      metadata: { sequence: u(2) }
     });
   });
 
@@ -897,7 +1006,7 @@ describe("TerminalSessionStream", () => {
     );
     expect(writeText).toHaveBeenCalledWith("a");
     expect(resize).toHaveBeenCalledWith({
-      protocol: 2,
+      protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
       attachId: "attach_1",
       session,
       type: "resize",
@@ -927,19 +1036,17 @@ describe("TerminalSessionStream", () => {
     const { stream, onClosed } = createHarness();
     const port = new FakePort();
     stream.bind("attach_1", port);
-    port.receive({
-      ...clientEnvelope(),
-      type: "attach",
-      creditBytes: 5
-    });
-    await vi.waitFor(() => expect(port.sent).toHaveLength(1));
+    await attach(port, undefined, 5);
 
     stream.publish(outputDelta(1, "hello"));
     stream.publish(outputDelta(2, "world"));
     stream.exit(0);
 
     expect(port.sent.map((message) => message.type)).toEqual([
-      "attached",
+      "checkpoint:begin",
+      "checkpoint:chunk",
+      "checkpoint:chunk",
+      "checkpoint:end",
       "delta"
     ]);
     expect(onClosed).not.toHaveBeenCalled();
@@ -947,13 +1054,16 @@ describe("TerminalSessionStream", () => {
     port.receive({
       ...clientEnvelope(),
       type: "credit",
-      acknowledgedSequence: 1,
+      acknowledgedSequence: u(1),
       bytes: 5
     });
 
     await vi.waitFor(() =>
       expect(port.sent.map((message) => message.type)).toEqual([
-        "attached",
+        "checkpoint:begin",
+        "checkpoint:chunk",
+        "checkpoint:chunk",
+        "checkpoint:end",
         "delta",
         "delta",
         "exit"
@@ -961,7 +1071,7 @@ describe("TerminalSessionStream", () => {
     );
     expect(port.sent.at(-1)).toMatchObject({
       type: "exit",
-      afterSequence: 2,
+      sequence: u(3),
       exitCode: 0
     });
     expect(onClosed).toHaveBeenCalledOnce();

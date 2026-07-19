@@ -16,6 +16,12 @@ asarUnpack:
 extraResources:
   - from: ../../packages/cli/dist
     to: cli
+  - from: ../../remote/kmuxd/dist
+    to: remote-runtime
+    filter:
+      - "**/kmuxd"
+      - "**/manifest.json"
+      - "index.json"
   - from: build/icon.png
     to: notificationIcon.png
 artifactBuildCompleted: ./build/artifact-build-completed.cjs

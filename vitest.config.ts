@@ -1,13 +1,21 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   resolve: {
     alias: {
+      "@kmux/core/main/path-access": resolve(
+        currentDir,
+        "packages/core/src/main/pathAccess.ts"
+      ),
+      "@kmux/core/main": resolve(
+        currentDir,
+        "packages/core/src/main/index.ts"
+      ),
       "@kmux/core": resolve(currentDir, "packages/core/src/index.ts"),
       "@kmux/proto": resolve(currentDir, "packages/proto/src/index.ts"),
       "@kmux/persistence": resolve(
@@ -21,6 +29,11 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    exclude: [
+      ...configDefaults.exclude,
+      "tests/ssh/integration/**",
+      "tests/ssh/profile/**"
+    ],
     include: [
       "packages/**/*.test.ts",
       "packages/**/*.test.tsx",

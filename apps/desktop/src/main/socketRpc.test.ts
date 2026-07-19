@@ -75,6 +75,74 @@ describe("socket rpc parsing", () => {
     ).toThrow(ZodError);
   });
 
+  it("uses the remote byte and identifier bounds for terminal controls", () => {
+    expect(
+      parseSocketRequest(
+        "surface.send_text",
+        {
+          surfaceId: "surface_1",
+          text: "안녕",
+          operationId: "operation_1"
+        },
+        "rpc_terminal_input"
+      )
+    ).toMatchObject({
+      method: "surface.send_text",
+      params: { text: "안녕", operationId: "operation_1" }
+    });
+
+    expect(() =>
+      parseSocketRequest("surface.send_text", {
+        text: "가".repeat(22_000)
+      })
+    ).toThrow(ZodError);
+    expect(() =>
+      parseSocketRequest("surface.send_key", {
+        key: "가".repeat(1_400)
+      })
+    ).toThrow(ZodError);
+    expect(() =>
+      parseSocketRequest("surface.send_text", {
+        text: "ok",
+        operationId: "operation\ninvalid"
+      })
+    ).toThrow(ZodError);
+  });
+
+  it("coerces bounded surface capture limits and rejects overflow", () => {
+    expect(
+      parseSocketRequest(
+        "surface.capture",
+        {
+          surfaceId: "surface_1",
+          captureId: "capture_1",
+          lines: "400",
+          maxBytes: "8192"
+        },
+        "rpc_capture"
+      )
+    ).toMatchObject({
+      method: "surface.capture",
+      params: {
+        captureId: "capture_1",
+        lines: 400,
+        maxBytes: 8192
+      }
+    });
+    expect(() =>
+      parseSocketRequest("surface.capture", {
+        lines: 65_537,
+        maxBytes: 1024
+      })
+    ).toThrow(ZodError);
+    expect(() =>
+      parseSocketRequest("surface.capture", {
+        lines: 1,
+        maxBytes: 1024 * 1024 + 1
+      })
+    ).toThrow(ZodError);
+  });
+
   it("accepts surface-scoped split params so moved sessions can resolve their current pane", () => {
     expect(
       parseSocketRequest(

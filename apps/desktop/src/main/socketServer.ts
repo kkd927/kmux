@@ -3,6 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
+  encodeAppStateDto,
   type AppAction,
   type AppState,
   listWorkspaceSurfaceIds
@@ -298,6 +299,21 @@ function isReplySocketWritable(socket: Socket): boolean {
   return !socket.destroyed && socket.writable && !socket.writableEnded;
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function mapTerminalControlResult(value: unknown): unknown {
+  if (isPromiseLike(value)) {
+    return Promise.resolve(value).then((resolved) => resolved ?? { ok: true });
+  }
+  return value ?? { ok: true };
+}
+
 function resolveLivePaneIdForStableTarget(
   state: AppState,
   params: SurfaceScopedPaneParams,
@@ -328,8 +344,22 @@ interface SocketServerOptions {
   socketPath: string;
   getState?: () => AppState;
   dispatch?: (action: AppAction) => void;
-  sendSurfaceText?: (surfaceId: string, text: string) => void;
-  sendSurfaceKey?: (surfaceId: string, key: string) => void;
+  sendSurfaceText?: (
+    surfaceId: string,
+    text: string,
+    operationId?: string
+  ) => unknown | Promise<unknown>;
+  sendSurfaceKey?: (
+    surfaceId: string,
+    key: string,
+    operationId?: string
+  ) => unknown | Promise<unknown>;
+  captureSurface?: (request: {
+    surfaceId: string;
+    captureId?: string;
+    lines: number;
+    maxBytes: number;
+  }) => unknown | Promise<unknown>;
   identify?: () => ShellIdentity;
   isSurfaceVisibleToUser?: (surfaceId: string) => boolean;
   onAgentHook?: (hook: {
@@ -342,8 +372,22 @@ interface SocketServerOptions {
 interface SocketServerRuntime {
   getState: () => AppState;
   dispatch: (action: AppAction) => void;
-  sendSurfaceText: (surfaceId: string, text: string) => void;
-  sendSurfaceKey: (surfaceId: string, key: string) => void;
+  sendSurfaceText: (
+    surfaceId: string,
+    text: string,
+    operationId?: string
+  ) => unknown | Promise<unknown>;
+  sendSurfaceKey: (
+    surfaceId: string,
+    key: string,
+    operationId?: string
+  ) => unknown | Promise<unknown>;
+  captureSurface?: (request: {
+    surfaceId: string;
+    captureId?: string;
+    lines: number;
+    maxBytes: number;
+  }) => unknown | Promise<unknown>;
   identify: () => ShellIdentity;
   isSurfaceVisibleToUser?: (surfaceId: string) => boolean;
   onAgentHook?: (hook: {
@@ -378,6 +422,7 @@ function extractRuntime(
     dispatch: options.dispatch,
     sendSurfaceText: options.sendSurfaceText,
     sendSurfaceKey: options.sendSurfaceKey,
+    captureSurface: options.captureSurface,
     identify: options.identify,
     isSurfaceVisibleToUser: options.isSurfaceVisibleToUser,
     onAgentHook: options.onAgentHook
@@ -473,7 +518,19 @@ export class KmuxSocketServer {
         parsedEnvelope.authToken
       );
       const result = this.route(request, runtime);
-      this.reply(socket, request.id, result);
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result).then(
+          (resolved) => this.reply(socket, request.id, resolved),
+          (error: unknown) =>
+            this.reply(socket, request.id, undefined, {
+              code: -32603,
+              message:
+                error instanceof Error ? error.message : "Unknown server error"
+            })
+        );
+      } else {
+        this.reply(socket, request.id, result);
+      }
     } catch (error) {
       if (error instanceof SocketServerStartingError) {
         this.reply(socket, envelope?.id, undefined, {
@@ -523,8 +580,9 @@ export class KmuxSocketServer {
 
     switch (request.method) {
       case "workspace.list":
-        return state.windows[state.activeWindowId].workspaceOrder.map(
-          (workspaceId) => state.workspaces[workspaceId]
+        return encodeWorkspaceSocketDtos(
+          state,
+          state.windows[state.activeWindowId].workspaceOrder
         );
       case "workspace.create":
         runtime.dispatch({
@@ -540,7 +598,7 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "workspace.current":
-        return activeWorkspace;
+        return encodeWorkspaceSocketDtos(state, [activeWorkspaceId])[0];
       case "workspace.close":
         runtime.dispatch({
           type: "workspace.close",
@@ -549,8 +607,9 @@ export class KmuxSocketServer {
         return { ok: true };
       case "surface.list": {
         const workspaceId = request.params.workspaceId ?? activeWorkspaceId;
-        return listWorkspaceSurfaceIds(state, workspaceId).map(
-          (surfaceId) => state.surfaces[surfaceId]
+        return encodeSurfaceSocketDtos(
+          state,
+          listWorkspaceSurfaceIds(state, workspaceId)
         );
       }
       case "surface.split":
@@ -574,17 +633,28 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "surface.send_text":
-        runtime.sendSurfaceText(
+        return mapTerminalControlResult(runtime.sendSurfaceText(
           request.params.surfaceId ?? activeSurfaceId,
-          request.params.text
-        );
-        return { ok: true };
+          request.params.text,
+          request.params.operationId
+        ));
       case "surface.send_key":
-        runtime.sendSurfaceKey(
+        return mapTerminalControlResult(runtime.sendSurfaceKey(
           request.params.surfaceId ?? activeSurfaceId,
-          request.params.key
-        );
-        return { ok: true };
+          request.params.key,
+          request.params.operationId
+        ));
+      case "surface.capture": {
+        if (!runtime.captureSurface) {
+          throw new Error("surface capture is unavailable");
+        }
+        return runtime.captureSurface({
+          surfaceId: request.params.surfaceId ?? activeSurfaceId,
+          captureId: request.params.captureId,
+          lines: request.params.lines,
+          maxBytes: request.params.maxBytes
+        });
+      }
       case "notification.create":
         runtime.dispatch({
           type: "notification.create",
@@ -708,7 +778,7 @@ export class KmuxSocketServer {
         return { ok: true };
       case "sidebar.state":
       case "sidebar_state":
-        return activeWorkspace;
+        return encodeWorkspaceSocketDtos(state, [activeWorkspaceId])[0];
       case "system.ping":
         return { pong: true, id: makeId("pong") };
       case "system.capabilities":
@@ -819,6 +889,34 @@ export class KmuxSocketServer {
     });
     return { ok: true };
   }
+}
+
+function encodeWorkspaceSocketDtos(
+  state: AppState,
+  workspaceIds: string[]
+): unknown[] {
+  const snapshot = encodeAppStateDto(state);
+  const workspaces = readDtoRecord(snapshot.workspaces);
+  return workspaceIds.flatMap((workspaceId) =>
+    workspaces[workspaceId] === undefined ? [] : [workspaces[workspaceId]]
+  );
+}
+
+function encodeSurfaceSocketDtos(
+  state: AppState,
+  surfaceIds: string[]
+): unknown[] {
+  const snapshot = encodeAppStateDto(state);
+  const surfaces = readDtoRecord(snapshot.surfaces);
+  return surfaceIds.flatMap((surfaceId) =>
+    surfaces[surfaceId] === undefined ? [] : [surfaces[surfaceId]]
+  );
+}
+
+function readDtoRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function logAgentEvent(

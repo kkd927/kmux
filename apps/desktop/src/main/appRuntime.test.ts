@@ -4,8 +4,11 @@ import { join } from "node:path";
 
 import {
   applyAction,
+  cloneState,
   createDefaultSettings,
-  createInitialState
+  createInitialState,
+  encodeLocatedPathDto,
+  locatedPathForTarget
 } from "@kmux/core";
 import { LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
 import { vi } from "vitest";
@@ -16,6 +19,7 @@ import type {
   KmuxSettings,
   ShellPatch
 } from "@kmux/proto";
+import { uint64 } from "@kmux/proto";
 import type { PersistedWindowState } from "@kmux/persistence";
 
 const { beep, browserWindows, showNotification, showNotificationFailure } =
@@ -53,6 +57,14 @@ vi.mock("electron", () => ({
 }));
 
 import { AppStore } from "./store";
+
+function localPath(value: string) {
+  return locatedPathForTarget({ kind: "local" }, value);
+}
+
+function rawPath(value: ReturnType<typeof localPath>): string {
+  return encodeLocatedPathDto(value).path;
+}
 import {
   createAppRuntime,
   shouldUseNativeShellBeep,
@@ -63,6 +75,7 @@ import { DIAGNOSTICS_LOG_PATH_ENV } from "../shared/diagnostics";
 function createRuntime(
   notificationSound: boolean,
   options: {
+    initialState?: AppState;
     snapshotRecord?: {
       snapshot: AppState;
       cleanShutdown: boolean;
@@ -72,7 +85,7 @@ function createRuntime(
     windowState?: PersistedWindowState | null;
   } & Partial<AppRuntimeOptions> = {}
 ) {
-  const initialState = createInitialState("/bin/zsh");
+  const initialState = options.initialState ?? createInitialState("/bin/zsh");
   initialState.settings.notificationSound = notificationSound;
   const snapshotSave = vi.fn();
   const runtime = createAppRuntime({
@@ -109,7 +122,8 @@ function createRuntime(
               restoreOnLaunch: options.snapshotRecord.restoreOnLaunch === true
             }
           : null,
-      save: snapshotSave
+      save: snapshotSave,
+      saveDurable: snapshotSave
     },
     windowStateStore: {
       path: "/tmp/kmux-window.json",
@@ -128,7 +142,15 @@ function createRuntime(
     profileRecorder: options.profileRecorder,
     externalSessionIndexer: options.externalSessionIndexer,
     nativeNotificationIdentity: options.nativeNotificationIdentity,
-    playBellSound: options.playBellSound
+    playBellSound: options.playBellSound,
+    resolveLocalPath:
+      options.resolveLocalPath ??
+      ((path) => {
+        if (path.kind !== "local") {
+          throw new Error("test local provider rejected an SSH path");
+        }
+        return encodeLocatedPathDto(path).path;
+      })
   });
 
   runtime.setStore(new AppStore(initialState));
@@ -139,6 +161,116 @@ function createRuntime(
     }
   });
 }
+
+describe("app runtime Main fact projection", () => {
+  it("persists and broadcasts authority-bearing remote facts", () => {
+    vi.useFakeTimers();
+    const targetId = "target-main-fact";
+    const initialState = createInitialState("/bin/zsh");
+    applyAction(initialState, {
+      type: "workspace.create",
+      name: "remote",
+      target: { kind: "ssh", targetId }
+    });
+    const workspaceId =
+      initialState.windows[initialState.activeWindowId].activeWorkspaceId;
+    const workspace = initialState.workspaces[workspaceId];
+    const pane = initialState.panes[workspace.activePaneId];
+    const surface = initialState.surfaces[pane.activeSurfaceId];
+    const session = initialState.sessions[surface.sessionId];
+    const runtime = createRuntime(false, { initialState });
+    const window = createMockWindow();
+    browserWindows.push(window);
+    runtime.__test__.snapshotSave.mockClear();
+
+    try {
+      runtime.dispatchMainFact({
+        type: "remote-session.observed",
+        resourceKey: {
+          desktopInstallationId: "desktop-main-fact",
+          targetId,
+          workspaceId,
+          sessionId: session.id
+        },
+        processState: "running",
+        observedAt: "2026-07-17T00:00:00.000Z",
+        keeperGeneration: "keeper-main-fact",
+        remoteResourceRevision: uint64(1n),
+        storageStatus: {
+          state: "normal",
+          journalAdmitted: uint64(1n),
+          journalSynced: uint64(1n),
+          emergencyBytes: 0
+        }
+      });
+
+      expect(runtime.getState().sessions[session.id].remoteRuntime).toEqual({
+        keeperGeneration: "keeper-main-fact",
+        remoteResourceRevision: 1n,
+        storageStatus: {
+          state: "normal",
+          journalAdmitted: 1n,
+          journalSynced: 1n,
+          emergencyBytes: 0
+        }
+      });
+      expect(getLastShellPatch(window)).toMatchObject({
+        activeWorkspacePaneTree: expect.any(Object)
+      });
+      vi.advanceTimersByTime(300);
+      expect(runtime.__test__.snapshotSave).toHaveBeenCalledWith(
+        runtime.getState(),
+        { cleanShutdown: false }
+      );
+    } finally {
+      runtime.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("installs a live durable conversion snapshot without startup readiness reset", () => {
+    const targetId = "target-live-install";
+    const initialState = createInitialState("/bin/zsh");
+    applyAction(initialState, {
+      type: "workspace.create",
+      name: "remote",
+      target: { kind: "ssh", targetId }
+    });
+    const workspaceId =
+      initialState.windows[initialState.activeWindowId].activeWorkspaceId;
+    const workspace = initialState.workspaces[workspaceId];
+    const pane = initialState.panes[workspace.activePaneId];
+    const sessionId = initialState.surfaces[pane.activeSurfaceId].sessionId;
+    const runtime = createRuntime(false, { initialState });
+    const window = createMockWindow();
+    browserWindows.push(window);
+    const decided = cloneState(runtime.getState());
+    decided.sessions[sessionId].runtimeStatus = {
+      processState: "running",
+      observationState: "observed",
+      attachmentState: "detached"
+    };
+    decided.sessions[sessionId].shellInputReady = true;
+
+    try {
+      runtime.installDurableState(decided);
+
+      expect(runtime.getState().sessions[sessionId]).toMatchObject({
+        runtimeStatus: {
+          processState: "running",
+          observationState: "observed",
+          attachmentState: "detached"
+        },
+        shellInputReady: true
+      });
+      expect(getLastShellPatch(window)).toMatchObject({
+        activeWorkspacePaneTree: expect.any(Object)
+      });
+    } finally {
+      runtime.shutdown();
+    }
+  });
+});
 
 function createMockWindow(): (typeof browserWindows)[number] {
   return {
@@ -215,11 +347,15 @@ describe("app runtime bell sound effects", () => {
         workspaceId: "workspace-1",
         surfaceId: "surface-1",
         pid: 123,
-        cwd: "/tmp/kmux"
-      } as never
+        cwd: localPath("/tmp/kmux")
+      }
     ]);
 
-    expect(refreshMetadata).toHaveBeenCalledWith("surface-1", "/tmp/kmux", 123);
+    expect(refreshMetadata).toHaveBeenCalledWith(
+      "surface-1",
+      localPath("/tmp/kmux"),
+      123
+    );
   });
 
   it("plays a bell sound when enabled", () => {
@@ -355,12 +491,13 @@ describe("app runtime bell sound effects", () => {
 });
 
 describe("app runtime external sessions", () => {
-  it("lists and resumes an external agent session in a new workspace", () => {
+  it("lists and resumes an external agent session in a new workspace", async () => {
     const externalSnapshot: ExternalAgentSessionsSnapshot = {
       updatedAt: "2026-04-26T12:00:00.000Z",
       sessions: [
         {
           key: "codex:codex-session",
+          target: { kind: "local" },
           vendor: "codex",
           vendorLabel: "CODEX",
           title: "Fix terminal focus",
@@ -379,6 +516,7 @@ describe("app runtime external sessions", () => {
           key === "codex:codex-session"
             ? {
                 key,
+                target: { kind: "local" },
                 vendor: "codex",
                 agentSessionRef: {
                   vendor: "codex",
@@ -397,7 +535,9 @@ describe("app runtime external sessions", () => {
       }
     });
 
-    expect(runtime.getExternalAgentSessions()).toBe(externalSnapshot);
+    await expect(runtime.getExternalAgentSessions()).resolves.toBe(
+      externalSnapshot
+    );
     const result = runtime.resumeExternalAgentSession("codex:codex-session");
     const state = runtime.getState();
     const workspace = state.workspaces[result.workspaceId];
@@ -408,16 +548,18 @@ describe("app runtime external sessions", () => {
     expect(workspace.name).toBe("Fix terminal focus");
     expect(pane.activeSurfaceId).toBe(result.surfaceId);
     expect(session.launch).toMatchObject({
-      cwd: "/tmp/project",
       shell: "/bin/zsh",
       initialInput: "codex resume codex-session\r",
       title: "Fix terminal focus"
     });
+    expect(rawPath(session.launch.cwd)).toBe("/tmp/project");
     expect(session.launch.args).toBeUndefined();
     expect(session.agentSessionRef).toEqual({
       vendor: "codex",
       externalKey: "codex:codex-session",
-      sessionId: "codex-session"
+      id: "codex-session",
+      targetId: "local",
+      cwd: session.launch.cwd
     });
   });
 
@@ -432,6 +574,7 @@ describe("app runtime external sessions", () => {
           key === "antigravity:agy-session"
             ? {
                 key,
+                target: { kind: "local" },
                 vendor: "antigravity",
                 agentSessionRef: {
                   vendor: "antigravity",
@@ -496,6 +639,7 @@ describe("app runtime external sessions", () => {
           key === "claude:claude-session"
             ? {
                 key,
+                target: { kind: "local" },
                 vendor: "claude",
                 agentSessionRef: {
                   vendor: "claude",
@@ -540,7 +684,7 @@ describe("app runtime external sessions", () => {
     expect(state.surfaces[firstResult.surfaceId]).toBeTruthy();
     expect(
       state.sessions[state.surfaces[firstResult.surfaceId].sessionId]
-        .runtimeState
+        .runtimeStatus.processState
     ).toBe("exited");
   });
 });
@@ -646,7 +790,7 @@ describe("app runtime restore", () => {
   it("restores a clean-shutdown snapshot when restore-on-launch is set", () => {
     const snapshot = createInitialState("/bin/zsh");
     const exitedSessionId = Object.keys(snapshot.sessions)[0]!;
-    snapshot.sessions[exitedSessionId].runtimeState = "exited";
+    snapshot.sessions[exitedSessionId].runtimeStatus.processState = "exited";
     snapshot.sessions[exitedSessionId].exitCode = 137;
 
     applyAction(snapshot, {
@@ -669,7 +813,7 @@ describe("app runtime restore", () => {
 
     expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
     for (const session of Object.values(restored.sessions)) {
-      expect(session.runtimeState).toBe("pending");
+      expect(session.runtimeStatus.processState).toBe("pending");
       expect(session.shellInputReady).toBe(false);
       expect("pid" in session).toBe(false);
       expect("exitCode" in session).toBe(false);
@@ -683,7 +827,7 @@ describe("app runtime restore", () => {
       name: "restored project"
     });
     for (const session of Object.values(snapshot.sessions)) {
-      session.runtimeState = "exited";
+      session.runtimeStatus.processState = "exited";
       session.shellInputReady = false;
       session.pid = 42;
       session.exitCode = 1;
@@ -702,7 +846,11 @@ describe("app runtime restore", () => {
     );
     for (const sessionId of restoredSessionIds) {
       expect(restored.sessions[sessionId]).toMatchObject({
-        runtimeState: "pending",
+        runtimeStatus: {
+          processState: "pending",
+          observationState: "unknown",
+          attachmentState: "detached"
+        },
         shellInputReady: false
       });
       expect(restored.sessions[sessionId]).not.toHaveProperty("pid");
@@ -724,6 +872,59 @@ describe("app runtime restore", () => {
     for (const message of spawnMessages) {
       expect(message.spec.runtimeEpoch).toMatch(/^epoch_/);
     }
+  });
+
+  it("restores remote liveness as unknown and never replacement-spawns it locally", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const existing = new Set(Object.keys(snapshot.workspaces));
+    applyAction(snapshot, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app"
+    });
+    const remoteWorkspaceId = Object.keys(snapshot.workspaces).find(
+      (id) => !existing.has(id)
+    )!;
+    const remotePane =
+      snapshot.panes[snapshot.workspaces[remoteWorkspaceId].activePaneId];
+    const remoteSessionId =
+      snapshot.surfaces[remotePane.activeSurfaceId].sessionId;
+    snapshot.sessions[remoteSessionId].runtimeStatus = {
+      processState: "running",
+      observationState: "observed",
+      attachmentState: "attached"
+    };
+    snapshot.sessions[remoteSessionId].shellInputReady = true;
+    snapshot.sessions[remoteSessionId].pid = 4242;
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      }
+    });
+
+    const restored = runtime.restoreInitialState();
+    expect(restored.sessions[remoteSessionId]).toMatchObject({
+      runtimeStatus: {
+        processState: "running",
+        observationState: "unknown",
+        attachmentState: "detached"
+      },
+      shellInputReady: false
+    });
+    expect(restored.sessions[remoteSessionId]).not.toHaveProperty("pid");
+
+    const ptyHost = { send: vi.fn() };
+    runtime.setStore(new AppStore(restored));
+    runtime.setPtyHost(ptyHost as never);
+    runtime.respawnRestoredSessions();
+
+    const spawnedSessionIds = ptyHost.send.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "spawn")
+      .map((message) => message.spec.sessionId);
+    expect(spawnedSessionIds).not.toContain(remoteSessionId);
   });
 
   it("restores window chrome state separately from clean-shutdown workspace snapshots", () => {
@@ -783,7 +984,7 @@ describe("app runtime restore", () => {
     });
 
     for (const [index, session] of Object.values(snapshot.sessions).entries()) {
-      session.runtimeState = "running";
+      session.runtimeStatus.processState = "running";
       session.shellInputReady = true;
       session.pid = 10_000 + index;
       session.exitCode = 99;
@@ -801,7 +1002,7 @@ describe("app runtime restore", () => {
     expect(Object.keys(restored.panes)).toHaveLength(3);
     expect(Object.keys(restored.surfaces)).toHaveLength(4);
     for (const session of Object.values(restored.sessions)) {
-      expect(session.runtimeState).toBe("pending");
+      expect(session.runtimeStatus.processState).toBe("pending");
       expect(session.shellInputReady).toBe(false);
       expect("pid" in session).toBe(false);
       expect("exitCode" in session).toBe(false);
@@ -811,17 +1012,20 @@ describe("app runtime restore", () => {
   it("replaces restored agent session launches with resume launches before respawn", () => {
     const snapshot = createInitialState("/bin/zsh");
     const sessionId = Object.keys(snapshot.sessions)[0]!;
-    snapshot.sessions[sessionId].runtimeState = "exited";
+    snapshot.sessions[sessionId].runtimeStatus.processState = "exited";
     snapshot.sessions[sessionId].exitCode = 137;
     snapshot.sessions[sessionId].agentSessionRef = {
       vendor: "codex",
       externalKey: "codex:codex-session",
-      sessionId: "codex-session"
+      id: "codex-session",
+      targetId: "local",
+      cwd: snapshot.sessions[sessionId].launch.cwd
     };
     const resolveExternalAgentSession = vi.fn((key: string) =>
       key === "codex:codex-session"
         ? {
             key,
+            target: { kind: "local" as const },
             vendor: "codex" as const,
             agentSessionRef: {
               vendor: "codex" as const,
@@ -884,15 +1088,17 @@ describe("app runtime restore", () => {
   it("keeps restored agent session launches when resume resolution fails", () => {
     const snapshot = createInitialState("/bin/zsh");
     const sessionId = Object.keys(snapshot.sessions)[0]!;
-    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].runtimeStatus.processState = "running";
     snapshot.sessions[sessionId].launch = {
-      cwd: "/tmp/original",
+      cwd: localPath("/tmp/original"),
       shell: "/bin/zsh"
     };
     snapshot.sessions[sessionId].agentSessionRef = {
       vendor: "codex",
       externalKey: "codex:missing",
-      sessionId: "missing"
+      id: "missing",
+      targetId: "local",
+      cwd: snapshot.sessions[sessionId].launch.cwd
     };
     const runtime = createRuntime(false, {
       snapshotRecord: {
@@ -1001,6 +1207,30 @@ describe("app runtime restore", () => {
       savedSnapshot.windows[savedSnapshot.activeWindowId]?.workspaceOrder
     ).toHaveLength(1);
     expect(savedSnapshot.workspaces[initialWorkspaceId]).toBeUndefined();
+  });
+
+  it("preserves the current layout for one restart when remote retention evidence is incomplete", () => {
+    const runtime = createRuntime(false);
+    const state = runtime.getState();
+    state.settings.restoreWorkspacesAfterQuit = false;
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app",
+      name: "remote"
+    });
+    const workspaceIds = Object.keys(state.workspaces).sort();
+
+    runtime.shutdown({ preserveWorkspaceLayout: true });
+
+    const [savedSnapshot, saveOptions] =
+      runtime.__test__.snapshotSave.mock.lastCall ?? [];
+    expect(saveOptions).toEqual({
+      cleanShutdown: true,
+      restoreOnLaunch: true
+    });
+    expect(Object.keys(savedSnapshot.workspaces).sort()).toEqual(workspaceIds);
+    expect(savedSnapshot.settings.restoreWorkspacesAfterQuit).toBe(false);
   });
 
   it("saves the current workspace snapshot on clean shutdown when restore is enabled", () => {
@@ -1401,7 +1631,7 @@ describe("app runtime shell patches", () => {
         sessionId: "session_1",
         surfaceId: "surface_1",
         workspaceId: "workspace_1",
-        launch: {},
+        launch: { cwd: localPath("/tmp") },
         initialSize: {
           cols: 120,
           rows: 30
@@ -1426,6 +1656,7 @@ describe("app runtime shell patches", () => {
         surfaceId: "surface_1",
         workspaceId: "workspace_1",
         launch: {
+          cwd: localPath("/tmp"),
           shell: "/bin/zsh"
         },
         initialSize: {

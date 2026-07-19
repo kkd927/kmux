@@ -4,6 +4,7 @@ import {
   INTELLIJ_ISLANDS_TERMINAL_THEME_PROFILE_ID,
   LINUX_DEFAULT_SHORTCUTS
 } from "@kmux/ui";
+import { uint64 } from "@kmux/proto";
 
 import {
   applyAction,
@@ -13,11 +14,15 @@ import {
   cloneState,
   createDefaultSettings,
   createInitialState,
+  decodeAppStateDto,
+  encodeLocatedPathDto,
+  encodeAppStateDto,
   CURRENT_SETTINGS_VERSION,
   DEFAULT_TERMINAL_TEXT_FONT_FAMILY,
   JETBRAINS_MONO_NERD_FONT_MONO_FAMILY,
   KMUX_BUILTIN_SYMBOL_FONT_FAMILY,
   listPaneIds,
+  locatedPathForTarget,
   MAX_SIDEBAR_WIDTH,
   mergeSettings,
   MIN_SIDEBAR_WIDTH,
@@ -32,11 +37,51 @@ function expectedHomeDirectory(): string {
   return homeDirectory?.trim() || "~";
 }
 
+function localPath(value: string) {
+  return locatedPathForTarget({ kind: "local" }, value);
+}
+
+function rawPath(value: ReturnType<typeof localPath>): string {
+  return encodeLocatedPathDto(value).path;
+}
+
 describe("core reducer", () => {
   const legacyRendererSettingKey = ["terminalUse", "Web", "gl"].join("");
   const legacyTerminalTextFontFamily =
     'ui-monospace, Menlo, Monaco, Consolas, "SFMono-Regular", monospace';
   const previousBundledTerminalTextFontFamily = `"kmux JetBrainsMono Nerd Font Mono", ${JETBRAINS_MONO_NERD_FONT_MONO_FAMILY}, ${legacyTerminalTextFontFamily}`;
+
+  it("migrates a missing legacy location as local but fails closed on a corrupt SSH location", () => {
+    const legacy = encodeAppStateDto(createInitialState());
+    const legacyWorkspace = Object.values(
+      legacy.workspaces as Record<string, Record<string, unknown>>
+    )[0]!;
+    delete legacyWorkspace.location;
+    expect(
+      Object.values(decodeAppStateDto(legacy).workspaces)[0]?.location.target
+    ).toEqual({ kind: "local" });
+
+    const remote = createInitialState();
+    const existing = new Set(Object.keys(remote.workspaces));
+    applyAction(remote, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app"
+    });
+    const remoteWorkspaceId = Object.keys(remote.workspaces).find(
+      (id) => !existing.has(id)
+    )!;
+    const encoded = encodeAppStateDto(remote);
+    const encodedWorkspace = (
+      encoded.workspaces as Record<string, Record<string, unknown>>
+    )[remoteWorkspaceId]!;
+    encodedWorkspace.location = {
+      target: { kind: "ssh", targetId: "" },
+      defaultCwd: "/srv/app"
+    };
+
+    expect(() => decodeAppStateDto(encoded)).toThrow(/id must be a non-empty/);
+  });
 
   it("reports sidebar mutations as workspace row and active workspace activity only", () => {
     const state = createInitialState();
@@ -81,6 +126,35 @@ describe("core reducer", () => {
         patch: { warnBeforeQuit: false }
       }).mutation
     ).toEqual({ settings: true });
+  });
+
+  it("projects remote storage durability status into the active surface VM", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0]!;
+    const session = state.sessions[state.surfaces[surfaceId]!.sessionId]!;
+    session.remoteRuntime = {
+      keeperGeneration: "keeper_1",
+      remoteResourceRevision: uint64(7n),
+      storageStatus: {
+        state: "backpressured",
+        journalAdmitted: uint64(42n),
+        journalSynced: uint64(41n),
+        emergencyBytes: 4 * 1024 * 1024,
+        lastSyncDurationMs: 2000
+      }
+    };
+
+    expect(
+      buildViewModel(state).activeWorkspace.surfaces[surfaceId]
+    ).toMatchObject({
+      storageStatus: {
+        state: "backpressured",
+        journalAdmitted: "42",
+        journalSynced: "41",
+        emergencyBytes: 4 * 1024 * 1024,
+        lastSyncDurationMs: 2000
+      }
+    });
   });
 
   it("creates and selects a new workspace", () => {
@@ -133,7 +207,7 @@ describe("core reducer", () => {
       branch: "kmux/kmux-20260512-1430"
     });
     expect(activeSurfaceId).not.toBe(originalSurfaceId);
-    expect(state.surfaces[activeSurfaceId].cwd).toBe(
+    expect(rawPath(state.surfaces[activeSurfaceId].cwd)).toBe(
       "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430"
     );
   });
@@ -146,7 +220,7 @@ describe("core reducer", () => {
     const repoPath = "/Users/test/kmux";
     const worktreePath = "/Users/test/.kmux/worktrees/kmux/kmux-20260512-1430";
 
-    state.surfaces[originalSurfaceId].cwd = repoPath;
+    state.surfaces[originalSurfaceId].cwd = localPath(repoPath);
     applyAction(state, {
       type: "workspace.worktree.convert",
       workspaceId,
@@ -168,8 +242,8 @@ describe("core reducer", () => {
     const createdSurfaceId = state.panes[paneId].activeSurfaceId;
     const createdSession =
       state.sessions[state.surfaces[createdSurfaceId].sessionId];
-    expect(state.surfaces[createdSurfaceId].cwd).toBe(worktreePath);
-    expect(createdSession.launch.cwd).toBe(worktreePath);
+    expect(rawPath(state.surfaces[createdSurfaceId].cwd)).toBe(worktreePath);
+    expect(rawPath(createdSession.launch.cwd)).toBe(worktreePath);
 
     applyAction(state, { type: "surface.focus", surfaceId: originalSurfaceId });
     applyAction(state, { type: "pane.split", paneId, direction: "right" });
@@ -178,8 +252,63 @@ describe("core reducer", () => {
     const splitSurfaceId = state.panes[splitPaneId].activeSurfaceId;
     const splitSession =
       state.sessions[state.surfaces[splitSurfaceId].sessionId];
-    expect(state.surfaces[splitSurfaceId].cwd).toBe(worktreePath);
-    expect(splitSession.launch.cwd).toBe(worktreePath);
+    expect(rawPath(state.surfaces[splitSurfaceId].cwd)).toBe(worktreePath);
+    expect(rawPath(splitSession.launch.cwd)).toBe(worktreePath);
+  });
+
+  it("persists the launch-surface marker only for the exact worktree path", () => {
+    const state = createInitialState("/bin/zsh");
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const worktree = {
+      name: "kmux-remote",
+      path: "/tmp/kmux-remote",
+      repoRoot: "/tmp/kmux",
+      commonGitDir: "/tmp/kmux/.git",
+      baseRef: "main",
+      branch: "kmux/remote",
+      createdByKmux: true
+    };
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree,
+      createSurface: false
+    });
+
+    applyAction(state, {
+      type: "workspace.worktree.launchSurfaceCreated",
+      workspaceId,
+      path: "/tmp/another-worktree"
+    });
+    expect(
+      state.workspaces[workspaceId].worktree?.launchSurfaceCreated
+    ).toBeUndefined();
+
+    applyAction(state, {
+      type: "workspace.worktree.launchSurfaceCreated",
+      workspaceId,
+      path: worktree.path
+    });
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree,
+      createSurface: false
+    });
+
+    expect(
+      cloneState(state).workspaces[workspaceId].worktree?.launchSurfaceCreated
+    ).toBe(true);
+
+    applyAction(state, {
+      type: "workspace.worktree.convert",
+      workspaceId,
+      worktree: { ...worktree, path: "/tmp/kmux-new" },
+      createSurface: false
+    });
+    expect(
+      state.workspaces[workspaceId].worktree?.launchSurfaceCreated
+    ).toBeUndefined();
   });
 
   it("shows inactive linked worktree detection as an attention status", () => {
@@ -241,9 +370,11 @@ describe("core reducer", () => {
     const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
 
     expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(homeDirectory);
-    expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
+    expect(rawPath(state.surfaces[createdSurfaceId].cwd)).toBe(homeDirectory);
     expect(
-      state.sessions[state.surfaces[createdSurfaceId].sessionId].launch.cwd
+      rawPath(
+        state.sessions[state.surfaces[createdSurfaceId].sessionId].launch.cwd
+      )
     ).toBe(homeDirectory);
   });
 
@@ -280,8 +411,8 @@ describe("core reducer", () => {
       state.sessions[state.surfaces[createdSurfaceId].sessionId];
 
     expect(state.workspaces[createdWorkspaceId].cwdSummary).toBe(homeDirectory);
-    expect(state.surfaces[createdSurfaceId].cwd).toBe(homeDirectory);
-    expect(createdSession.launch.cwd).toBe(homeDirectory);
+    expect(rawPath(state.surfaces[createdSurfaceId].cwd)).toBe(homeDirectory);
+    expect(rawPath(createdSession.launch.cwd)).toBe(homeDirectory);
     expect(createdSession.launch.shell).toBe("codex");
   });
 
@@ -309,11 +440,11 @@ describe("core reducer", () => {
 
     expect(surface.title).toBe("Resume Codex session");
     expect(session.launch).toMatchObject({
-      cwd: "/Users/test/project",
       shell: "codex",
       args: ["resume", "session-123"],
       title: "Resume Codex session"
     });
+    expect(rawPath(session.launch.cwd)).toBe("/Users/test/project");
     expect(effects).toContainEqual(
       expect.objectContaining({
         type: "session.spawn",
@@ -360,8 +491,8 @@ describe("core reducer", () => {
     expect(state.workspaces[workspaceId].cwdSummary).toBe(
       "/Users/test/project"
     );
-    expect(state.surfaces[surfaceId].cwd).toBe("/Users/test/project");
-    expect(session.launch.cwd).toBe("/Users/test/project");
+    expect(rawPath(state.surfaces[surfaceId].cwd)).toBe("/Users/test/project");
+    expect(rawPath(session.launch.cwd)).toBe("/Users/test/project");
   });
 
   it("uses the configured shell path as the default session shell", () => {
@@ -404,8 +535,10 @@ describe("core reducer", () => {
     const createdSurfaceId = state.panes[paneId].activeSurfaceId;
     const session = state.sessions[state.surfaces[createdSurfaceId].sessionId];
 
-    expect(state.surfaces[createdSurfaceId].cwd).toBe("/tmp/kmux-moved");
-    expect(session.launch.cwd).toBe("/tmp/kmux-moved");
+    expect(rawPath(state.surfaces[createdSurfaceId].cwd)).toBe(
+      "/tmp/kmux-moved"
+    );
+    expect(rawPath(session.launch.cwd)).toBe("/tmp/kmux-moved");
   });
 
   it("inherits the active surface cwd when splitting within the same workspace", () => {
@@ -429,8 +562,10 @@ describe("core reducer", () => {
     const createdSurfaceId = state.panes[createdPaneId].activeSurfaceId;
     const session = state.sessions[state.surfaces[createdSurfaceId].sessionId];
 
-    expect(state.surfaces[createdSurfaceId].cwd).toBe("/tmp/kmux-moved");
-    expect(session.launch.cwd).toBe("/tmp/kmux-moved");
+    expect(rawPath(state.surfaces[createdSurfaceId].cwd)).toBe(
+      "/tmp/kmux-moved"
+    );
+    expect(rawPath(session.launch.cwd)).toBe("/tmp/kmux-moved");
   });
 
   it("moves a surface into a right split without recreating its session", () => {
@@ -1227,7 +1362,9 @@ describe("core reducer", () => {
     expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
       vendor: "codex",
       externalKey: "codex:codex-vendor-session",
-      sessionId: "codex-vendor-session"
+      id: "codex-vendor-session",
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     });
     expect(state.workspaces[workspaceId].statusEntries).toEqual({});
   });
@@ -1254,7 +1391,9 @@ describe("core reducer", () => {
     expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
       vendor: "antigravity",
       externalKey: `antigravity:${conversationId}`,
-      sessionId: conversationId
+      id: conversationId,
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     });
   });
 
@@ -1284,7 +1423,9 @@ describe("core reducer", () => {
     state.sessions[kmuxSessionId].agentSessionRef = {
       vendor: "codex",
       externalKey: "codex:trusted-session",
-      sessionId: "trusted-session"
+      id: "trusted-session",
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     };
 
     applyAction(state, {
@@ -1307,7 +1448,9 @@ describe("core reducer", () => {
     expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
       vendor: "codex",
       externalKey: "codex:trusted-session",
-      sessionId: "trusted-session"
+      id: "trusted-session",
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     });
   });
 
@@ -1319,7 +1462,9 @@ describe("core reducer", () => {
     state.sessions[kmuxSessionId].agentSessionRef = {
       vendor: "codex",
       externalKey: "codex:trusted-session",
-      sessionId: "trusted-session"
+      id: "trusted-session",
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     };
 
     applyAction(state, {
@@ -1337,7 +1482,9 @@ describe("core reducer", () => {
     expect(state.sessions[kmuxSessionId].agentSessionRef).toEqual({
       vendor: "codex",
       externalKey: "codex:trusted-session",
-      sessionId: "trusted-session"
+      id: "trusted-session",
+      targetId: "local",
+      cwd: state.surfaces[surfaceId].cwd
     });
   });
 
@@ -1945,7 +2092,7 @@ describe("core reducer", () => {
 
   it("migrates legacy terminal font settings into terminal typography", () => {
     const state = createInitialState();
-    const legacyState = structuredClone(state) as typeof state & {
+    const legacyState = cloneState(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
@@ -1970,7 +2117,7 @@ describe("core reducer", () => {
 
   it("drops legacy terminal renderer settings during restore", () => {
     const state = createInitialState();
-    const legacyState = structuredClone(state) as typeof state & {
+    const legacyState = cloneState(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
@@ -1986,7 +2133,7 @@ describe("core reducer", () => {
 
   it("migrates missing quit preference settings to the defaults", () => {
     const state = createInitialState();
-    const legacyState = structuredClone(state) as typeof state & {
+    const legacyState = cloneState(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
@@ -2003,7 +2150,7 @@ describe("core reducer", () => {
 
   it("drops legacy startup restore settings during state restore", () => {
     const state = createInitialState();
-    const legacyState = structuredClone(state) as typeof state & {
+    const legacyState = cloneState(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
@@ -2033,7 +2180,7 @@ describe("core reducer", () => {
     const workspaceId = Object.keys(state.workspaces)[0];
     const surfaceId = Object.keys(state.surfaces)[0];
     const sessionId = state.surfaces[surfaceId].sessionId;
-    const legacyState = structuredClone(state);
+    const legacyState = cloneState(state);
 
     (
       legacyState.sessions[sessionId] as { agentSessionRef?: unknown }
@@ -2173,7 +2320,7 @@ describe("core reducer", () => {
 
   it("migrates missing terminal theme settings into the built-in profile", () => {
     const state = createInitialState();
-    const legacyState = structuredClone(state) as typeof state & {
+    const legacyState = cloneState(state) as typeof state & {
       settings: Record<string, unknown>;
     };
 
@@ -2247,7 +2394,11 @@ describe("core reducer", () => {
     expect(state.sessions[nextSessionId]).toMatchObject({
       id: nextSessionId,
       surfaceId,
-      runtimeState: "pending",
+      runtimeStatus: {
+        processState: "pending",
+        observationState: "unknown",
+        attachmentState: "detached"
+      },
       shellInputReady: false
     });
     expect(effects).toEqual([
@@ -2266,7 +2417,9 @@ describe("core reducer", () => {
       sessionId: oldSessionId,
       exitCode: 0
     });
-    expect(state.sessions[nextSessionId].runtimeState).toBe("pending");
+    expect(state.sessions[nextSessionId].runtimeStatus.processState).toBe(
+      "pending"
+    );
   });
 
   it("does not restart pending sessions", () => {
@@ -2471,7 +2624,7 @@ describe("core reducer", () => {
         expect.objectContaining({
           type: "metadata.refresh",
           surfaceId,
-          cwd: "/tmp/kmux"
+          cwd: localPath("/tmp/kmux")
         })
       ])
     );
@@ -2648,7 +2801,9 @@ describe("core reducer", () => {
       shellInputReady: true
     });
 
-    expect(state.sessions[sessionId].runtimeState).toBe("running");
+    expect(state.sessions[sessionId].runtimeStatus.processState).toBe(
+      "running"
+    );
     expect(state.sessions[sessionId].pid).toBe(4242);
     expect(effects).toEqual(
       expect.arrayContaining([
@@ -2673,7 +2828,9 @@ describe("core reducer", () => {
       shellInputReady: false
     });
 
-    expect(state.sessions[sessionId].runtimeState).toBe("running");
+    expect(state.sessions[sessionId].runtimeStatus.processState).toBe(
+      "running"
+    );
     expect(state.sessions[sessionId].shellInputReady).toBe(false);
 
     let paneTree = buildActiveWorkspacePaneTreeVm(state);
@@ -2713,7 +2870,7 @@ describe("core reducer", () => {
     const sessionId = Object.keys(state.sessions)[0];
     const surfaceId = state.sessions[sessionId].surfaceId;
     const snapshot = cloneState(state);
-    snapshot.sessions[sessionId].runtimeState = "running";
+    snapshot.sessions[sessionId].runtimeStatus.processState = "running";
     snapshot.sessions[sessionId].shellInputReady = true;
     snapshot.sessions[sessionId].pid = 4242;
 
@@ -2722,7 +2879,9 @@ describe("core reducer", () => {
       snapshot
     });
 
-    expect(state.sessions[sessionId].runtimeState).toBe("running");
+    expect(state.sessions[sessionId].runtimeStatus.processState).toBe(
+      "running"
+    );
     expect(state.sessions[sessionId].shellInputReady).toBe(false);
     expect(
       buildActiveWorkspacePaneTreeVm(state).surfaces[surfaceId].shellInputReady
@@ -3124,5 +3283,73 @@ describe("core reducer", () => {
       "alpha",
       "gamma"
     ]);
+  });
+});
+
+describe("remote event product receipt", () => {
+  it("applies a product action and its sequence receipt atomically and once", () => {
+    const state = createInitialState();
+    const window = state.windows[state.activeWindowId];
+    const workspace = state.workspaces[window.activeWorkspaceId];
+    const pane = state.panes[workspace.activePaneId];
+    const surface = state.surfaces[pane.activeSurfaceId];
+    const action = {
+      type: "remote.event.apply" as const,
+      targetId: "target_1",
+      sequence: uint64(1n),
+      eventId: "event_1",
+      productAction: {
+        type: "notification.create" as const,
+        workspaceId: workspace.id,
+        paneId: pane.id,
+        surfaceId: surface.id,
+        title: "Done",
+        message: "Ready",
+        source: "agent" as const
+      }
+    };
+
+    expect(applyAction(state, action).map((effect) => effect.type)).toEqual([
+      "notify.desktop",
+      "persist"
+    ]);
+    expect(state.notifications).toHaveLength(1);
+    expect(state.remoteEventReceipts.target_1).toEqual({
+      throughSequence: 1n,
+      recentEventIds: ["event_1"]
+    });
+
+    expect(applyAction(state, action)).toEqual([]);
+    expect(state.notifications).toHaveLength(1);
+    const restored = cloneState(state);
+    expect(applyAction(restored, action)).toEqual([]);
+    expect(restored.notifications).toHaveLength(1);
+  });
+
+  it("records intentionally discarded stale and duplicate-ID events without reapplying them", () => {
+    const state = createInitialState();
+    applyAction(state, {
+      type: "remote.event.apply",
+      targetId: "target_1",
+      sequence: uint64(1n),
+      eventId: "event_1"
+    });
+    expect(state.remoteEventReceipts.target_1?.throughSequence).toBe(1n);
+    expect(
+      applyAction(state, {
+        type: "remote.event.apply",
+        targetId: "target_1",
+        sequence: uint64(2n),
+        eventId: "event_1",
+        productAction: {
+          type: "notification.create",
+          workspaceId: Object.keys(state.workspaces)[0]!,
+          title: "duplicate",
+          message: "must not apply"
+        }
+      })
+    ).toEqual([{ type: "persist" }]);
+    expect(state.remoteEventReceipts.target_1?.throughSequence).toBe(2n);
+    expect(state.notifications).toHaveLength(0);
   });
 });

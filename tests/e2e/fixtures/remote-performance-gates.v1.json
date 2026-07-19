@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "contract": "docs/adr/0005-ssh-remote-workspaces.md#normative-performance-and-resource-gates",
+  "changeControl": "Loosening a limit, reducing this workload, or changing its topology requires an explicit ADR amendment with benchmark evidence.",
+  "referenceTargetMinimum": {
+    "physicalCpuCores": 4,
+    "memoryBytes": 8589934592,
+    "stateStorage": "ssd-backed"
+  },
+  "network": {
+    "roundTripLatencyMs": 20,
+    "maximumInjectedJitterMs": 1,
+    "phase1Shaper": {
+      "implementation": "Toxiproxy 2.9.0",
+      "image": "ghcr.io/shopify/toxiproxy:2.9.0@sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8",
+      "upstreamLatencyMs": 10,
+      "downstreamLatencyMs": 10,
+      "jitterMs": 0
+    }
+  },
+  "ssh": {
+    "client": "host system OpenSSH ssh/sftp",
+    "controlMastersPerTarget": 1,
+    "controlPersist": false,
+    "featureDirectFallback": false,
+    "phase1HostVersion": "OpenSSH_10.2p1, LibreSSL 3.3.6",
+    "phase1TargetVersion": "OpenSSH_9.2, OpenSSL 3.0.20 7 Apr 2026"
+  },
+  "workload": {
+    "minimumDurationMs": 120000,
+    "keepers": {
+      "total": 16,
+      "attached": 4,
+      "detached": 12,
+      "attachedOutputBytesPerSecondEach": 262144,
+      "detachedOutputBytesPerSecondEach": 65536
+    },
+    "keyEcho": {
+      "probesPerSecond": 10,
+      "generator": "monotonic probe index plus fixed 16-byte ASCII suffix"
+    },
+    "sftp": {
+      "bytes": 536870912,
+      "generator": "all-zero byte stream",
+      "sha256": "9acca8e8c22201155389f65abbf6bc9723edc7384ead80503839f49dcc56d767"
+    },
+    "git": {
+      "repositoryPath": "/opt/kmux-fixtures/repository",
+      "repositoryCommit": "8408912c3abac9be93ece7e8f360dac4eadf4507",
+      "operations": ["git status --porcelain=v2", "git diff --no-ext-diff"],
+      "repetitionsPerSecond": 1
+    },
+    "terminalOutputGenerator": {
+      "encoding": "binary",
+      "pattern": "seeded xorshift64 byte stream",
+      "seed": "0x4b4d555852454d31",
+      "chunkBytes": 65536
+    },
+    "journal": {
+      "mustCrossGroupCommit": true,
+      "maximumGroupIntervalMs": 50,
+      "maximumGroupBytes": 1048576
+    },
+    "checkpoint": {
+      "minimumCompletedPerKeeper": 1,
+      "maximumBytes": 16777216,
+      "maximumChunkBytes": 262144
+    }
+  },
+  "gates": {
+    "addedKeyEchoLatencyMs": { "p95Max": 8, "p99Max": 20 },
+    "remoteHostEventLoopDelayMs": { "p99Max": 10, "singleStallMax": 100 },
+    "terminalMutationContinuity": {
+      "missing": 0,
+      "duplicate": 0,
+      "reordered": 0
+    },
+    "keeperRssBytes": { "p95Max": 33554432 },
+    "remoteHostProcessTreeRssBytes": { "max": 201326592 },
+    "journalGroupSyncMs": {
+      "p99Max": 250,
+      "storageDegradedAtOrAbove": 2000
+    },
+    "sshFeatureTransport": {
+      "targetAuthenticatedMasterRoutes": 1,
+      "physicalTcpLegs": "resolved-route-baseline",
+      "featureAuthenticationAttempts": 0
+    },
+    "loadedSftpThroughput": { "minimumDirectBaselineRatio": 0.8 }
+  },
+  "phase1MeasuredBaseline": {
+    "measuredAt": "2026-07-17T06:12:18.940Z",
+    "sourceRevision": "3205d162af04fd9d147f33a1afe4b7066fcb4cee",
+    "workingTreeDirty": true,
+    "runtimeArtifactSha256": "9ec1bbc1311df37472b1f182166c27338fcf1218287917524840576854d404f0",
+    "environmentKind": "docker-desktop-functional-baseline",
+    "normative": false,
+    "limitations": [
+      "Docker Desktop virtualization is functional evidence only.",
+      "The fixture target exposed 4 logical CPUs, 6065596 KiB RAM, and overlayfs, so it does not meet the native 8 GiB/SSD reference-target requirement."
+    ],
+    "network": {
+      "upstreamLatencyMs": 10,
+      "downstreamLatencyMs": 10,
+      "injectedRoundTripLatencyMs": 20,
+      "jitterMs": 0
+    },
+    "host": {
+      "platform": "darwin",
+      "arch": "x64",
+      "productVersion": "26.5.2",
+      "physicalCpuCores": 6,
+      "memoryBytes": 34359738368,
+      "solidStateStorage": true,
+      "openSsh": "OpenSSH_10.2p1, LibreSSL 3.3.6",
+      "dockerClientServer": "26.1.3/27.4.0"
+    },
+    "target": {
+      "platform": "linux",
+      "arch": "x86_64",
+      "logicalCpus": 4,
+      "memoryKiB": 6065596,
+      "stateFilesystem": "overlayfs",
+      "repositoryCommit": "8408912c3abac9be93ece7e8f360dac4eadf4507",
+      "openSsh": "OpenSSH_9.2, OpenSSL 3.0.20 7 Apr 2026"
+    },
+    "directMuxedOpenSsh": {
+      "echoSamples": 200,
+      "echoIntervalMs": 100,
+      "echoLatencyMs": {
+        "min": 38.448,
+        "p50": 46.777,
+        "p95": 90.155,
+        "p99": 90.755,
+        "max": 91.911
+      },
+      "sftpBytes": 536870912,
+      "sftpSeconds": 43.632,
+      "sftpMiBPerSecond": 11.735,
+      "sftpSha256": "9acca8e8c22201155389f65abbf6bc9723edc7384ead80503839f49dcc56d767",
+      "routeBaseline": {
+        "acceptedTcpConnections": 1,
+        "authenticationAttempts": 1,
+        "acceptedAuthentications": 1,
+        "closedConnections": 0,
+        "liveTcpConnections": 1
+      },
+      "featureDelta": {
+        "acceptedTcpConnections": 0,
+        "authenticationAttempts": 0,
+        "acceptedAuthentications": 0,
+        "closedConnections": 0,
+        "liveTcpConnections": 0
+      }
+    }
+  }
+}

@@ -1,4 +1,9 @@
-import type { Id, TerminalDataPlaneErrorCode } from "@kmux/proto";
+import {
+  UINT64_MAX,
+  type Id,
+  type TerminalDataPlaneErrorCode,
+  type Uint64
+} from "@kmux/proto";
 
 const MAX_ID_LENGTH = 512;
 const MAX_ERROR_MESSAGE_LENGTH = 4 * 1024;
@@ -12,6 +17,7 @@ const TERMINAL_DATA_PLANE_ERROR_CODES: Record<
   "stale-attach": true,
   "runtime-lost": true,
   "checkpoint-too-large": true,
+  "checkpoint-invalid": true,
   internal: true
 };
 
@@ -22,8 +28,8 @@ export type TerminalStreamError =
     }
   | {
       kind: "sequence-gap";
-      expectedSequence: number;
-      receivedSequence: number;
+      expectedSequence: Uint64;
+      receivedSequence: Uint64;
       message: string;
     }
   | {
@@ -127,8 +133,8 @@ function isValidId(value: unknown): value is Id {
   );
 }
 
-function isSequence(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+function isSequence(value: unknown): value is Uint64 {
+  return typeof value === "bigint" && value >= 0n && value <= UINT64_MAX;
 }
 
 function isTerminalDataPlaneErrorCode(

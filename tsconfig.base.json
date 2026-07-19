@@ -12,6 +12,10 @@
     "baseUrl": ".",
     "paths": {
       "@kmux/core": ["packages/core/src/index.ts"],
+      "@kmux/core/main/path-access": [
+        "packages/core/src/main/pathAccess.ts"
+      ],
+      "@kmux/core/main": ["packages/core/src/main/index.ts"],
       "@kmux/proto": ["packages/proto/src/index.ts"],
       "@kmux/persistence": ["packages/persistence/src/index.ts"],
       "@kmux/metadata": ["packages/metadata/src/index.ts"],

@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -9,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createInitialState } from "@kmux/core";
+import { createInitialState, encodeAppStateDto } from "@kmux/core";
 
 import {
   AppPathResolutionError,
@@ -48,10 +49,10 @@ describe("file-store persistence", () => {
       restoreOnLaunch: false
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 1,
+      version: 2,
       cleanShutdown: false,
       restoreOnLaunch: false,
-      snapshot: state
+      snapshot: encodeAppStateDto(state)
     });
   });
 
@@ -69,11 +70,26 @@ describe("file-store persistence", () => {
       restoreOnLaunch: false
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 1,
+      version: 2,
       cleanShutdown: true,
       restoreOnLaunch: false,
-      snapshot: state
+      snapshot: encodeAppStateDto(state)
     });
+  });
+
+  it("force-writes a private replacement snapshot for conversion recovery", () => {
+    const statePath = join(sandboxDir, "state-durable.json");
+    const store = createSnapshotStore(statePath);
+    const state = createInitialState("/bin/zsh");
+
+    store.saveDurable(state, { cleanShutdown: false });
+
+    expect(store.load()).toEqual(state);
+    expect(lstatSync(statePath).isFile()).toBe(true);
+    expect(lstatSync(statePath).mode & 0o077).toBe(0);
+    expect(
+      readFileSync(statePath, "utf8").includes(".snapshot.tmp")
+    ).toBe(false);
   });
 
   it("persists normal quit restore metadata on the final snapshot save", () => {
@@ -89,10 +105,10 @@ describe("file-store persistence", () => {
       restoreOnLaunch: true
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 1,
+      version: 2,
       cleanShutdown: true,
       restoreOnLaunch: true,
-      snapshot: state
+      snapshot: encodeAppStateDto(state)
     });
   });
 
@@ -224,14 +240,14 @@ describe("file-store persistence", () => {
     writeFileSync(
       statePath,
       JSON.stringify({
-        version: 2,
+        version: 99,
         snapshot: createInitialState("/bin/zsh")
       })
     );
 
     expect(createSnapshotStore(statePath).load()).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("unsupported version 2")
+      expect.stringContaining("unsupported version 99")
     );
   });
 
@@ -246,10 +262,10 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(secondState);
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 1,
+      version: 2,
       cleanShutdown: false,
       restoreOnLaunch: false,
-      snapshot: secondState
+      snapshot: encodeAppStateDto(secondState)
     });
   });
 
@@ -522,6 +538,22 @@ describe("resolveAppPaths", () => {
     expect(paths.socketPath).toBe("/run/user/1000/kmux/control.sock");
     expect(paths.statePath).toBe("/xdg/state/kmux/state.json");
     expect(paths.usageHistoryPath).toBe("/xdg/state/kmux/usage-history.json");
+    expect(paths.desktopInstallationIdentityPath).toBe(
+      "/xdg/state/kmux/remote/desktop-installation.json"
+    );
+    expect(paths.sshProfilesPath).toBe(
+      "/xdg/config/kmux/ssh-connections.json"
+    );
+    expect(paths.remoteTargetBindingsPath).toBe(
+      "/xdg/state/kmux/remote/target-bindings.json"
+    );
+    expect(paths.remoteOperationRoot).toBe("/xdg/state/kmux/remote/operations");
+    expect(paths.conversionWalRoot).toBe(
+      "/xdg/state/kmux/remote/conversions"
+    );
+    expect(paths.retainedSessionInventoryPath).toBe(
+      "/xdg/state/kmux/remote/retained-sessions.json"
+    );
     expect(paths.captureRoot).toBe("/xdg/state/kmux/captures");
     expect(paths.attachmentRoot).toBe("/xdg/data/kmux/attachments");
     expect(paths.nativeCacheRoot).toBe("/xdg/cache/kmux/native");
@@ -656,6 +688,15 @@ describe("resolveAppPaths", () => {
     expect(paths.shellEnvCachePath).toBe("/profiles/kmux/state/shell-env.json");
     expect(paths.antigravitySessionsPath).toBe(
       "/profiles/kmux/state/antigravity-sessions.json"
+    );
+    expect(paths.desktopInstallationIdentityPath).toBe(
+      "/profiles/kmux/state/remote/desktop-installation.json"
+    );
+    expect(paths.remoteTargetBindingsPath).toBe(
+      "/profiles/kmux/state/remote/target-bindings.json"
+    );
+    expect(paths.remoteOperationRoot).toBe(
+      "/profiles/kmux/state/remote/operations"
     );
     expect(paths.captureRoot).toBe("/profiles/kmux/state/captures");
     expect(paths.rawOutputRoot).toBe("/profiles/kmux/state/pty-raw");
@@ -830,6 +871,11 @@ describe("resolveAppPaths", () => {
       paths.usageHistoryPath,
       paths.shellEnvCachePath,
       paths.antigravitySessionsPath,
+      paths.desktopInstallationIdentityPath,
+      paths.remoteTargetBindingsPath,
+      paths.remoteOperationRoot,
+      paths.conversionWalRoot,
+      paths.retainedSessionInventoryPath,
       paths.captureRoot,
       paths.attachmentRoot,
       paths.rawOutputRoot,
@@ -861,6 +907,11 @@ describe("resolveAppPaths", () => {
       paths.usageHistoryPath,
       paths.shellEnvCachePath,
       paths.antigravitySessionsPath,
+      paths.desktopInstallationIdentityPath,
+      paths.remoteTargetBindingsPath,
+      paths.remoteOperationRoot,
+      paths.conversionWalRoot,
+      paths.retainedSessionInventoryPath,
       paths.captureRoot,
       paths.attachmentRoot,
       paths.rawOutputRoot,

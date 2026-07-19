@@ -3,11 +3,15 @@ import { isDeepStrictEqual } from "node:util";
 import { BrowserWindow, shell } from "electron";
 
 import {
+  type AgentSessionRef,
   type AppAction,
   type AppEffect,
   type AppMutationSummary,
   type AppState,
+  type LocatedPath,
   type SessionSpawnEffect,
+  type StoredSessionLaunchConfig,
+  type WorkspaceTarget,
   buildActiveWorkspaceActivityVm,
   buildActiveWorkspacePaneTreeVm,
   buildNotificationsVm,
@@ -20,6 +24,8 @@ import {
   mergeSettings,
   migrateShortcutDefaultsForPlatform
 } from "@kmux/core";
+import type { MainFact } from "@kmux/core/main";
+import { locatedPathForTarget } from "@kmux/core";
 import type {
   ExternalAgentSessionRef,
   ExternalAgentSessionResumeResult,
@@ -55,6 +61,7 @@ import {
   showNativeNotification,
   type NativeNotificationIdentity
 } from "./nativeNotifications";
+import { type LocalPathResolver } from "./targets/targetServiceRegistry";
 
 export interface AppRuntimeOptions {
   paths: {
@@ -67,17 +74,20 @@ export interface AppRuntimeOptions {
   settingsStore: SettingsFileStore;
   defaultShellPath: string;
   shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
-  refreshMetadata: (surfaceId: Id, cwd?: string, pid?: number) => void;
+  refreshMetadata: (surfaceId: Id, cwd?: LocatedPath, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
   nativeNotificationIdentity?: NativeNotificationIdentity;
   playBellSound?: () => void;
+  resolveLocalPath: LocalPathResolver;
 }
 
 export interface ExternalSessionIndexerRuntime {
-  listExternalAgentSessions: () => ExternalAgentSessionsSnapshot;
+  listExternalAgentSessions: () =>
+    | ExternalAgentSessionsSnapshot
+    | Promise<ExternalAgentSessionsSnapshot>;
   resolveExternalAgentSession: (
     key: string
   ) => ExternalSessionResumeSpec | null;
@@ -90,6 +100,8 @@ export interface AppRuntime {
   getState(): AppState;
   getShellState(): ShellStoreSnapshot;
   dispatchAppAction(action: AppAction): void;
+  dispatchMainFact(fact: MainFact): void;
+  installDurableState(state: AppState): void;
   runEffects(effects: AppEffect[]): void;
   syncWindowTitles(): void;
   restoreInitialState(): AppState;
@@ -99,10 +111,10 @@ export interface AppRuntime {
     settings: TerminalTypographySettings
   ): Promise<ResolvedTerminalTypographyVm>;
   reportTerminalTypographyProbe(report: TerminalTypographyProbeReport): void;
-  getExternalAgentSessions(): ExternalAgentSessionsSnapshot;
+  getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
   resumeExternalAgentSession(key: string): ExternalAgentSessionResumeResult;
   respawnRestoredSessions(): void;
-  shutdown(): void;
+  shutdown(options?: { preserveWorkspaceLayout?: boolean }): void;
 }
 
 export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
@@ -112,6 +124,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let persistTimer: NodeJS.Timeout | null = null;
   let shellState: ShellStoreSnapshot | null = null;
   let suppressTerminalTypographyPatch = 0;
+  const resolveLocalPath = options.resolveLocalPath;
   const terminalTypographyController = new TerminalTypographyController({
     initialSettings: createRuntimeDefaultSettings().terminalTypography,
     onDidChange: () => {
@@ -400,11 +413,22 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     for (const effect of effects) {
       switch (effect.type) {
         case "session.spawn":
-          ptyHost?.send({
-            type: "spawn",
-            spec: buildPtySessionSpec(effect),
-            shellLaunchPolicy: options.createShellLaunchPolicy(effect.launch)
-          });
+          if (effect.launch.cwd.kind !== "local") {
+            throw new Error(
+              "SSH session creation must enter RemoteOperationCoordinator"
+            );
+          }
+          {
+            const localLaunch = toLocalLaunchDto(
+              effect.launch,
+              resolveLocalPath
+            );
+            ptyHost?.send({
+              type: "spawn",
+              spec: buildPtySessionSpec(effect, localLaunch),
+              shellLaunchPolicy: options.createShellLaunchPolicy(localLaunch)
+            });
+          }
           break;
         case "session.close":
           ptyHost?.send({
@@ -544,6 +568,57 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     );
   }
 
+  function dispatchMainFact(fact: MainFact): void {
+    if (!store) {
+      throw new Error("Store not ready");
+    }
+    const previousSurfaceIds = Object.keys(store.getState().surfaces);
+    const result = store.dispatchMainFact(fact);
+    const currentState = store.getState();
+    const removedSurfaceIds = previousSurfaceIds.filter(
+      (surfaceId) => !currentState.surfaces[surfaceId]
+    );
+    runEffects(result.effects);
+    emitShellPatch(
+      shellGroupsFromMutation(result.mutation),
+      {},
+      removedSurfaceIds
+    );
+  }
+
+  function installDurableState(state: AppState): void {
+    if (!store) {
+      throw new Error("Store not ready");
+    }
+    const previousSurfaceIds = Object.keys(store.getState().surfaces);
+    store.installDurableState(state);
+    suppressTerminalTypographyPatch += 1;
+    try {
+      terminalTypographyController.setSettings(
+        store.getState().settings.terminalTypography
+      );
+    } finally {
+      suppressTerminalTypographyPatch -= 1;
+    }
+    const removedSurfaceIds = previousSurfaceIds.filter(
+      (surfaceId) => !store!.getState().surfaces[surfaceId]
+    );
+    runEffects([{ type: "persist" }]);
+    emitShellPatch(
+      new Set<ShellGroup>([
+        "window",
+        "workspaceRows",
+        "activeWorkspace",
+        "activeWorkspacePaneTree",
+        "notifications",
+        "settings",
+        "terminalTypography"
+      ]),
+      {},
+      removedSurfaceIds
+    );
+  }
+
   function restoreInitialState(): AppState {
     const snapshotRecord = options.snapshotStore.loadRecord();
     const snapshot = snapshotRecord?.snapshot ?? null;
@@ -595,6 +670,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       "surface.focus",
       "surface.send_text",
       "surface.send_key",
+      "surface.capture",
       "notification.create",
       "notification.list",
       "notification.clear",
@@ -640,13 +716,11 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     terminalTypographyController.reportProbe(report);
   }
 
-  function getExternalAgentSessions(): ExternalAgentSessionsSnapshot {
-    return (
-      options.externalSessionIndexer?.listExternalAgentSessions() ?? {
-        sessions: [],
-        updatedAt: new Date().toISOString()
-      }
-    );
+  async function getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot> {
+    return await (options.externalSessionIndexer?.listExternalAgentSessions() ?? {
+      sessions: [],
+      updatedAt: new Date().toISOString()
+    });
   }
 
   function resumeExternalAgentSession(
@@ -669,6 +743,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       type: "workspace.create",
       name: spec.title,
       cwd: spec.cwd,
+      target: spec.target,
       launch: spec.launch,
       agentSessionRef: spec.agentSessionRef
     });
@@ -685,7 +760,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   ): ExternalAgentSessionResumeResult | null {
     const state = getState();
     for (const session of Object.values(state.sessions)) {
-      if (session.runtimeState === "exited") {
+      if (session.runtimeStatus.processState === "exited") {
         continue;
       }
       const agentSessionRefMatches = externalAgentSessionRefsMatch(
@@ -706,6 +781,13 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       if (!pane) {
         continue;
       }
+      const workspace = state.workspaces[pane.workspaceId];
+      if (
+        !workspace ||
+        !sameWorkspaceTarget(workspace.location.target, spec.target)
+      ) {
+        continue;
+      }
       return {
         workspaceId: pane.workspaceId,
         surfaceId: surface.id
@@ -715,7 +797,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function launchCommandsMatch(
-    left: SessionLaunchConfig,
+    left: StoredSessionLaunchConfig,
     right: SessionLaunchConfig
   ): boolean {
     const defaultShell = getState().settings.shell || options.defaultShellPath;
@@ -728,7 +810,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function effectiveLaunchShell(
-    launch: SessionLaunchConfig,
+    launch: { shell?: string },
     defaultShell: string
   ): string | undefined {
     return launch.shell ?? defaultShell;
@@ -747,9 +829,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function resolveRestoredAgentSession(
-    agentSessionRef: ExternalAgentSessionRef | undefined
+    agentSessionRef: AgentSessionRef | undefined
   ): ExternalSessionResumeSpec | null {
-    if (!agentSessionRef) {
+    if (!agentSessionRef?.externalKey) {
       return null;
     }
     const spec = options.externalSessionIndexer?.resolveExternalAgentSession(
@@ -757,7 +839,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     );
     if (
       !spec ||
-      !externalAgentSessionRefsMatch(spec.agentSessionRef, agentSessionRef)
+      !externalAgentSessionRefsMatch(agentSessionRef, spec.agentSessionRef) ||
+      !agentSessionTargetMatches(agentSessionRef, spec.target)
     ) {
       return null;
     }
@@ -768,15 +851,30 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     const state = getState();
     let replacedLaunch = false;
     for (const session of Object.values(state.sessions)) {
-      if (session.runtimeState !== "exited") {
-        const resumeSpec = resolveRestoredAgentSession(session.agentSessionRef);
-        if (resumeSpec) {
-          session.launch = resumeSpec.launch;
-          session.agentSessionRef = resumeSpec.agentSessionRef;
-          replacedLaunch = true;
-        }
+      if (session.runtimeStatus.processState !== "exited") {
         const surface = state.surfaces[session.surfaceId];
         const pane = surface ? state.panes[surface.paneId] : undefined;
+        const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+        if (workspace?.location.target.kind === "ssh") {
+          // Remote keepers are reconciled from durable intent and authoritative
+          // inventory. Desktop restore must never replacement-spawn them into
+          // the local PTY host.
+          continue;
+        }
+        const resumeSpec = resolveRestoredAgentSession(session.agentSessionRef);
+        if (resumeSpec && surface && workspace) {
+          session.launch = storedLaunchFromDto(
+            resumeSpec.launch,
+            workspace.location.target,
+            surface.cwd
+          );
+          session.agentSessionRef = agentSessionRefFromExternal(
+            resumeSpec.agentSessionRef,
+            workspace.location.target,
+            session.launch.cwd
+          );
+          replacedLaunch = true;
+        }
         const workspaceId = pane?.workspaceId;
         if (!surface || !pane || !workspaceId) {
           continue;
@@ -812,7 +910,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
   }
 
-  function shutdown(): void {
+  function shutdown(
+    shutdownOptions: { preserveWorkspaceLayout?: boolean } = {}
+  ): void {
     if (persistTimer) {
       clearTimeout(persistTimer);
     }
@@ -821,7 +921,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
     if (store) {
       const currentState = store.getState();
-      const restoreOnLaunch = currentState.settings.restoreWorkspacesAfterQuit;
+      const restoreOnLaunch =
+        currentState.settings.restoreWorkspacesAfterQuit ||
+        shutdownOptions.preserveWorkspaceLayout === true;
       const shutdownSnapshot = restoreOnLaunch
         ? currentState
         : createCleanShutdownSnapshot(currentState, options.defaultShellPath);
@@ -858,6 +960,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     getState,
     getShellState,
     dispatchAppAction,
+    dispatchMainFact,
+    installDurableState,
     runEffects,
     syncWindowTitles,
     restoreInitialState,
@@ -870,6 +974,26 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     respawnRestoredSessions,
     shutdown
   };
+}
+
+function sameWorkspaceTarget(
+  left: WorkspaceTarget,
+  right: WorkspaceTarget
+): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === "local" ||
+      (right.kind === "ssh" && left.targetId === right.targetId))
+  );
+}
+
+function agentSessionTargetMatches(
+  session: AgentSessionRef,
+  target: WorkspaceTarget
+): boolean {
+  return (
+    session.targetId === (target.kind === "local" ? "local" : target.targetId)
+  );
 }
 
 export function shouldUseNativeShellBeep(
@@ -892,16 +1016,61 @@ function playBellSound(playBellSoundOverride?: () => void): void {
   shell.beep();
 }
 
-function buildPtySessionSpec(effect: SessionSpawnEffect): PtySessionSpec {
+function buildPtySessionSpec(
+  effect: SessionSpawnEffect,
+  launch: SessionLaunchConfig
+): PtySessionSpec {
   return {
     sessionId: effect.sessionId,
     surfaceId: effect.surfaceId,
     runtimeEpoch: makeId("epoch"),
     workspaceId: effect.workspaceId,
-    launch: effect.launch,
+    launch,
     cols: effect.initialSize.cols,
     rows: effect.initialSize.rows,
     env: effect.sessionEnv
+  };
+}
+
+function toLocalLaunchDto(
+  launch: StoredSessionLaunchConfig,
+  resolveLocalPath: LocalPathResolver
+): SessionLaunchConfig {
+  return {
+    ...launch,
+    cwd: resolveLocalPath(launch.cwd),
+    args: launch.args ? [...launch.args] : undefined,
+    env: launch.env ? { ...launch.env } : undefined
+  };
+}
+
+function storedLaunchFromDto(
+  launch: SessionLaunchConfig,
+  target: WorkspaceTarget,
+  fallbackCwd: LocatedPath
+): StoredSessionLaunchConfig {
+  return {
+    ...launch,
+    cwd:
+      launch.cwd === undefined
+        ? fallbackCwd
+        : locatedPathForTarget(target, launch.cwd),
+    args: launch.args ? [...launch.args] : undefined,
+    env: launch.env ? { ...launch.env } : undefined
+  };
+}
+
+function agentSessionRefFromExternal(
+  ref: ExternalAgentSessionRef,
+  target: WorkspaceTarget,
+  cwd: LocatedPath
+): AgentSessionRef {
+  return {
+    vendor: ref.vendor,
+    id: ref.sessionId,
+    targetId: target.kind === "ssh" ? target.targetId : "local",
+    cwd,
+    externalKey: ref.externalKey
   };
 }
 
@@ -919,9 +1088,25 @@ function resetRestoredSessions(state: AppState): void {
     if (!surface || surface.sessionId !== session.id) {
       continue;
     }
+    const pane = state.panes[surface.paneId];
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (workspace?.location.target.kind === "ssh") {
+      session.runtimeStatus = {
+        ...session.runtimeStatus,
+        observationState: "unknown",
+        attachmentState: "detached"
+      };
+      session.shellInputReady = false;
+      delete session.pid;
+      continue;
+    }
     // An exited runtime is meaningful only within the process that observed
     // it. A persisted surface starts a fresh runtime epoch on the next launch.
-    session.runtimeState = "pending";
+    session.runtimeStatus = {
+      processState: "pending",
+      observationState: "unknown",
+      attachmentState: "detached"
+    };
     session.shellInputReady = false;
     delete session.pid;
     delete session.exitCode;
@@ -929,7 +1114,7 @@ function resetRestoredSessions(state: AppState): void {
 }
 
 function externalAgentSessionRefsMatch(
-  left: ExternalAgentSessionRef | undefined,
+  left: AgentSessionRef | undefined,
   right: ExternalAgentSessionRef | undefined
 ): boolean {
   return Boolean(
@@ -937,7 +1122,7 @@ function externalAgentSessionRefsMatch(
     right &&
     left.vendor === right.vendor &&
     left.externalKey === right.externalKey &&
-    left.sessionId === right.sessionId
+    left.id === right.sessionId
   );
 }
 

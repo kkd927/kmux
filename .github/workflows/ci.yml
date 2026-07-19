@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -32,3 +33,62 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+
+  ssh-integration-linux:
+    name: SSH integration (Linux x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.0
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+      - run: cargo fmt --manifest-path remote/kmuxd/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path remote/kmuxd/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path remote/kmuxd/Cargo.toml --workspace --locked
+      - run: npm run test:ssh:integration
+
+  ssh-native-parity:
+    name: SSH native parity (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - target: darwin-x64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+          - target: linux-x64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.0
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Rust toolchain and native target
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add --toolchain 1.97.0 "${{ matrix.rust_target }}"
+      - name: Install native musl linker
+        if: startsWith(matrix.target, 'linux-')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Run actual matching-target runtime parity
+        run: npm run gate:ssh:native

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { uint64 } from "@kmux/proto";
+
+import { stringifyJson } from "./json";
 
 import {
   resolveDefaultShellArgs,
@@ -168,7 +171,7 @@ describe("desktop pty protocol", () => {
         payload: {
           surfaceId: "surface_1",
           sessionId: "session_1",
-          sequence: 12,
+          sequence: uint64(12n),
           vt: "hello",
           cols: 120,
           rows: 30,
@@ -196,6 +199,9 @@ describe("desktop pty protocol", () => {
       }
     ];
 
-    expect(JSON.parse(JSON.stringify(events))).toEqual(events);
+    expect(JSON.parse(stringifyJson(events))).toMatchObject([
+      { type: "snapshot", payload: { sequence: "12" } },
+      { type: "terminal.notification" }
+    ]);
   });
 });

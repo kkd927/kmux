@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 
+import { stringifyJson } from "./json";
+
 export const DIAGNOSTICS_LOG_PATH_ENV = "KMUX_DEBUG_LOG_PATH";
 export const PTY_STDOUT_LOGS_ENV = "KMUX_PTY_STDOUT_LOGS";
 export const DEFAULT_DIAGNOSTICS_LOG_FILE_NAME = "kmux-debug.log";
@@ -55,13 +57,13 @@ export function formatDiagnosticsRecord(
   };
   return `${(options.now ?? new Date()).toISOString()} pid=${
     options.pid ?? process.pid
-  } ${JSON.stringify(record)}\n`;
+  } ${stringifyJson(record)}\n`;
 }
 
 export function formatStructuredDiagnosticsRecord(
   record: DiagnosticsRecord
 ): string {
-  return `${record.at} pid=${record.pid} ${JSON.stringify({
+  return `${record.at} pid=${record.pid} ${stringifyJson({
     scope: record.scope,
     ...record.details
   })}\n`;
@@ -109,7 +111,7 @@ function recordDiagnostics(
   };
 
   try {
-    JSON.stringify({ scope, ...details });
+    stringifyJson({ scope, ...details });
   } catch {
     return false;
   }

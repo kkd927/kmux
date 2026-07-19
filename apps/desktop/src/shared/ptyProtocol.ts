@@ -73,7 +73,13 @@ export type PtyRequest =
       attachId: Id;
       session: TerminalSessionRef;
     }
-  | { type: "close"; sessionId: Id }
+  | {
+      type: "close";
+      sessionId: Id;
+      surfaceId?: Id;
+      expectedRuntimeEpoch?: Id;
+      requestId?: Id;
+    }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
   | {
@@ -120,6 +126,14 @@ export type PtyEvent =
         | { type: "key"; input: TerminalKeyInput };
     }
   | { type: "runtime.lost"; sessions: TerminalSessionRef[] }
+  | {
+      type: "close.ack";
+      requestId: Id;
+      sessionId: Id;
+      surfaceId?: Id;
+      runtimeEpoch?: Id;
+      outcome: "terminated" | "already-exited" | "generation-mismatch";
+    }
   | { type: "metadata"; payload: SurfaceMetadataPayload }
   | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }
   | {

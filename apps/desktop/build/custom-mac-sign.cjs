@@ -1,7 +1,14 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const { signApp, walkAsync } = require("@electron/osx-sign");
+
+const DARWIN_REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64"];
+const REMOTE_RUNTIME_CONTRACT_PATH = path.resolve(
+  __dirname,
+  "../../../scripts/remote-runtime-artifact-contract.mjs"
+);
 
 const MACH_O_MAGIC = new Set([
   "feedface",
@@ -73,7 +80,10 @@ function countSharedTrailingSegments(leftPath, rightPath) {
 }
 
 function scoreCanonicalPath(targetPath, resolvedPath) {
-  const trailingMatchCount = countSharedTrailingSegments(targetPath, resolvedPath);
+  const trailingMatchCount = countSharedTrailingSegments(
+    targetPath,
+    resolvedPath
+  );
 
   if (targetPath === resolvedPath) {
     return [0, 0, -trailingMatchCount, targetPath.length, targetPath];
@@ -149,8 +159,63 @@ async function buildIgnoreSet(appPath) {
     walkedCount: walkedPaths.length,
     skippedNonCode,
     duplicateAliases,
-    finalSignTargets: walkedPaths.length - skippedNonCode.size - duplicateAliases.size
+    finalSignTargets:
+      walkedPaths.length - skippedNonCode.size - duplicateAliases.size
   };
+}
+
+function bundledRemoteRuntimeRoot(appPath) {
+  return path.join(appPath, "Contents", "Resources", "remote-runtime");
+}
+
+function createRootOnlyIgnore(appPath) {
+  return (filePath) => filePath !== appPath;
+}
+
+async function loadRemoteRuntimeArtifactContract() {
+  return import(pathToFileURL(REMOTE_RUNTIME_CONTRACT_PATH).href);
+}
+
+async function refreshBundledRemoteRuntimeMetadata(appPath, artifactContract) {
+  const contract =
+    artifactContract ?? (await loadRemoteRuntimeArtifactContract());
+  const distributionRoot = bundledRemoteRuntimeRoot(appPath);
+  const refreshed = [];
+
+  for (const target of DARWIN_REMOTE_RUNTIME_TARGETS) {
+    refreshed.push(
+      await contract.refreshSignedRemoteRuntimeArtifactManifest(
+        distributionRoot,
+        target,
+        { allowPackagedApplicationPermissions: true }
+      )
+    );
+  }
+  const index = await contract.writeRemoteRuntimeIndex(distributionRoot, {
+    allowPackagedApplicationPermissions: true
+  });
+  return { distributionRoot, refreshed, index };
+}
+
+async function signWithFinalRemoteRuntimeMetadata(
+  opts,
+  firstPassIgnore,
+  dependencies = {}
+) {
+  const signApplication = dependencies.signApplication ?? signApp;
+  const refreshRemoteRuntime =
+    dependencies.refreshRemoteRuntime ?? refreshBundledRemoteRuntimeMetadata;
+
+  await signApplication({
+    ...opts,
+    ignore: firstPassIgnore
+  });
+  await refreshRemoteRuntime(opts.app);
+  await signApplication({
+    ...opts,
+    preEmbedProvisioningProfile: false,
+    ignore: createRootOnlyIgnore(opts.app)
+  });
 }
 
 async function customMacSign(opts) {
@@ -162,29 +227,24 @@ async function customMacSign(opts) {
   }
 
   const originalIgnore = opts.ignore;
-  const {
-    walkedCount,
-    skippedNonCode,
-    duplicateAliases,
-    finalSignTargets
-  } = await buildIgnoreSet(opts.app);
+  const { walkedCount, skippedNonCode, duplicateAliases, finalSignTargets } =
+    await buildIgnoreSet(opts.app);
 
   console.log(
     `[custom-mac-sign] Walked ${walkedCount} paths; skipped ${skippedNonCode.size} non-code entries; filtered ${duplicateAliases.size} duplicate aliases; signing ${finalSignTargets}.`
   );
 
-  await signApp({
-    ...opts,
-    ignore(filePath) {
-      return (
-        matchesOriginalIgnore(originalIgnore, filePath) ||
-        skippedNonCode.has(filePath) ||
-        duplicateAliases.has(filePath)
-      );
-    }
+  await signWithFinalRemoteRuntimeMetadata(opts, (filePath) => {
+    return (
+      matchesOriginalIgnore(originalIgnore, filePath) ||
+      skippedNonCode.has(filePath) ||
+      duplicateAliases.has(filePath)
+    );
   });
 
-  console.log("[custom-mac-sign] Signing completed.");
+  console.log(
+    "[custom-mac-sign] Signing completed with final remote-runtime manifests."
+  );
 }
 
 module.exports = customMacSign;
@@ -200,5 +260,9 @@ module.exports._test = {
   scoreCanonicalPath,
   chooseCanonicalPath,
   matchesOriginalIgnore,
-  buildIgnoreSet
+  buildIgnoreSet,
+  bundledRemoteRuntimeRoot,
+  createRootOnlyIgnore,
+  refreshBundledRemoteRuntimeMetadata,
+  signWithFinalRemoteRuntimeMetadata
 };

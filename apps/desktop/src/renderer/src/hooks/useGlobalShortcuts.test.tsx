@@ -67,7 +67,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -79,6 +81,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -129,7 +133,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -141,6 +147,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal,
         setNotificationsOpen: vi.fn(),
@@ -217,7 +225,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -229,6 +239,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -292,7 +304,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: true
+        worktreeDialogOpen: true,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -304,6 +318,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -364,7 +380,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -376,6 +394,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -442,7 +462,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -454,6 +476,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -521,7 +545,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -533,6 +559,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),
@@ -632,7 +660,9 @@ describe("useGlobalShortcuts", () => {
         workspaceContextMenuOpen: false,
         workspaceCloseConfirmOpen: false,
         surfaceRestartConfirmOpen: false,
-        worktreeDialogOpen: false
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false
       });
 
       useGlobalShortcuts({
@@ -644,6 +674,8 @@ describe("useGlobalShortcuts", () => {
         closeWorkspaceCloseConfirm: vi.fn(),
         closeSurfaceRestartConfirm: vi.fn(),
         closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
         setSearchSurfaceId: vi.fn(),
         closeSettingsModal: vi.fn(),
         setNotificationsOpen: vi.fn(),

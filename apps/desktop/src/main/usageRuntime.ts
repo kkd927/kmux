@@ -1,7 +1,13 @@
 import { basename, dirname } from "node:path";
 import { BrowserWindow } from "electron";
 
-import type { AppAction, AppState } from "@kmux/core";
+import {
+  encodeLocatedPathDto,
+  type AppAction,
+  type AppState,
+  type LocatedPath,
+  type WorkspaceTarget
+} from "@kmux/core";
 import type { Id } from "@kmux/proto";
 import {
   createEmptyUsageViewSnapshot,
@@ -12,6 +18,8 @@ import {
   type UsageDailyActivityVm,
   type UsageAttributionState,
   type UsagePricingCoverageVm,
+  type UsageTargetIdentityVm,
+  type UsageUnavailableTargetVm,
   type UsageTokenCostBreakdownVm,
   type UsageTokenBreakdownVm,
   type UsageVendor,
@@ -50,6 +58,11 @@ import {
   createUsageScanWorkerClient,
   type UsageScanService
 } from "./usageScanWorkerClient";
+import type { LocalPathResolver } from "./targets/targetServiceRegistry";
+import type {
+  TargetServiceRegistry,
+  TargetUsageRecord
+} from "./targets/contracts";
 
 const ACTIVE_REFRESH_MS = 10_000;
 const DASHBOARD_REFRESH_MS = 15_000;
@@ -86,7 +99,7 @@ type SurfaceBinding = {
   kmuxSessionId: Id;
   vendorSessionId?: string;
   vendorProcessId?: number;
-  cwd?: string;
+  cwd?: LocatedPath;
   boundAtMs: number;
   lastAgentEventAtMs: number;
 };
@@ -119,6 +132,7 @@ type DerivedWorkspace = {
 };
 
 type DerivedDirectory = {
+  target: UsageTargetIdentityVm;
   directoryPath: string;
   todayCostUsd: number;
   todayTokens: number;
@@ -126,6 +140,22 @@ type DerivedDirectory = {
   reportedCostUsd: number;
   estimatedCostUsd: number;
   unknownCostTokens: number;
+};
+
+type DerivedTarget = {
+  target: UsageTargetIdentityVm;
+  todayCostUsd: number;
+  todayTokens: number;
+  costSource: UsageCostSource;
+  reportedCostUsd: number;
+  estimatedCostUsd: number;
+  unknownCostTokens: number;
+  truncated: boolean;
+};
+
+type ScopedUsageEventSample = UsageEventSample & {
+  usageTarget: WorkspaceTarget;
+  principal?: { uid: number; accountName: string };
 };
 
 type DerivedVendor = {
@@ -251,6 +281,9 @@ interface UsageRuntimeOptions {
   subscriptionAuthDetectors?: Partial<
     Record<SubscriptionProvider, SubscriptionProviderAuthDetector>
   >;
+  resolveLocalPath: LocalPathResolver;
+  targetServices?: () => TargetServiceRegistry | undefined;
+  reportTargetUsageError?: (target: WorkspaceTarget, error: Error) => void;
 }
 
 export interface UsageRuntime {
@@ -267,15 +300,17 @@ export interface UsageRuntime {
 export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   const adapters = options.adapters ?? [];
   const scanService =
-    options.scanService ??
-    (options.adapters === undefined
-      ? createUsageScanWorkerClient({
-          env: options.env,
-          homeDir: options.homeDir,
-          agentStorageRoots: options.agentStorageRoots,
-          platform: options.platform
-        })
-      : null);
+    options.targetServices === undefined
+      ? (options.scanService ??
+        (options.adapters === undefined
+          ? createUsageScanWorkerClient({
+              env: options.env,
+              homeDir: options.homeDir,
+              agentStorageRoots: options.agentStorageRoots,
+              platform: options.platform
+            })
+          : null))
+      : null;
   const emitSnapshot =
     options.emitSnapshot ??
     ((snapshot: UsageViewSnapshot) => {
@@ -320,7 +355,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   let subscriptionRefreshInFlight: Promise<void> | null = null;
   let authVisibilityRefreshInFlight: Promise<void> | null = null;
   let watchCleanup: (() => void) | null = null;
-  let daySamples: UsageEventSample[] = [];
+  let daySamples: ScopedUsageEventSample[] = [];
+  const targetUsageScans = new Map<
+    string,
+    {
+      target: WorkspaceTarget;
+      principal?: { uid: number; accountName: string };
+      truncated: boolean;
+      records: ScopedUsageEventSample[];
+    }
+  >();
+  const initializedUsageTargets = new Set<string>();
+  let unavailableUsageTargets: UsageUnavailableTargetVm[] = [];
   let dayKey = dayKeyFor(now());
   let historyDays = normalizeHistoryDays(options.historyStore?.load() ?? []);
   let historyBackfillPromise: Promise<void> | null = null;
@@ -364,11 +410,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       }
       void refreshNow();
     };
-    const cleanups = scanService
-      ? [scanService.watch(handleUsageSourceChange)]
-      : adapters.map((adapter) =>
-          adapter.watch(() => handleUsageSourceChange(adapter.vendor))
-        );
+    const registry = options.targetServices?.();
+    const targetLocalUsage = registry?.resolveLocated({ kind: "local" }).usage;
+    const cleanups = targetLocalUsage?.watch
+      ? [targetLocalUsage.watch(handleUsageSourceChange)]
+      : scanService
+        ? [scanService.watch(handleUsageSourceChange)]
+        : adapters.map((adapter) =>
+            adapter.watch(() => handleUsageSourceChange(adapter.vendor))
+          );
     watchCleanup = () => {
       for (const cleanup of cleanups) {
         cleanup();
@@ -400,6 +450,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       adapter.close();
     }
     scanService?.close();
+    options
+      .targetServices?.()
+      ?.resolveLocated({ kind: "local" })
+      .usage.close?.();
   }
 
   function getSnapshot(): UsageViewSnapshot {
@@ -673,9 +727,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (!isSubscriptionProvider(binding.vendor)) {
         continue;
       }
+      if (
+        options.getState().workspaces[binding.workspaceId]?.location.target
+          .kind !== "local"
+      ) {
+        continue;
+      }
       const surface = state.surfaces[binding.surfaceId];
       const session = surface ? state.sessions[surface.sessionId] : undefined;
-      if (!surface || session?.runtimeState === "exited") {
+      if (!surface || session?.runtimeStatus.processState === "exited") {
         continue;
       }
       visibleProviders.set(binding.vendor, "live");
@@ -683,6 +743,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     for (const sample of daySamples) {
       if (
+        sample.usageTarget.kind !== "local" ||
         sample.vendor === "unknown" ||
         !isSubscriptionProvider(sample.vendor)
       ) {
@@ -792,6 +853,13 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       daySamples = [];
       daySampleIndexes.clear();
       initialScanComplete = false;
+      targetUsageScans.clear();
+      initializedUsageTargets.clear();
+    }
+
+    if (options.targetServices !== undefined) {
+      await refreshTargetUsageProviders();
+      return;
     }
 
     const startOfDayMs = startOfLocalDay(now());
@@ -821,7 +889,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             ? {
                 message: error.message,
                 stack:
-                  "workerStack" in error ? String(error.workerStack) : error.stack,
+                  "workerStack" in error
+                    ? String(error.workerStack)
+                    : error.stack,
                 context:
                   "workerContext" in error
                     ? String(error.workerContext)
@@ -852,13 +922,95 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         continue;
       }
       for (const sample of read.samples) {
-        upsertDaySample(sample);
+        upsertDaySample({ ...sample, usageTarget: { kind: "local" } });
       }
     }
   }
 
-  function upsertDaySample(sample: UsageEventSample): void {
-    const identity = usageSampleIdentity(sample);
+  async function refreshTargetUsageProviders(): Promise<void> {
+    const registry = options.targetServices?.();
+    if (!registry) {
+      return;
+    }
+    const targets = currentUsageTargets(options.getState());
+    const failures: UsageUnavailableTargetVm[] = [];
+    const historyRange = workerHistoryBackfillComplete
+      ? undefined
+      : resolveHistoryBackfillRange();
+    await Promise.all(
+      targets.map(async (target) => {
+        const key = usageTargetKey(target);
+        try {
+          const provider = registry.resolveLocated(target).usage;
+          const scan = await provider.refresh({
+            startAtUnixMs: startOfLocalDay(now()),
+            initial: !initializedUsageTargets.has(key),
+            maxRecords: target.kind === "local" ? 4_096 : 64,
+            ...(target.kind === "local" && historyRange ? { historyRange } : {})
+          });
+          const incoming = scan.records.map((record) =>
+            scopedUsageSample(target, scan.principal, record)
+          );
+          const previous = targetUsageScans.get(key)?.records ?? [];
+          targetUsageScans.set(key, {
+            target: { ...target },
+            ...(scan.principal === undefined
+              ? {}
+              : { principal: { ...scan.principal } }),
+            truncated: scan.truncated,
+            records:
+              target.kind === "ssh"
+                ? incoming
+                : mergeScopedUsageSamples(previous, incoming)
+          });
+          initializedUsageTargets.add(key);
+          if (target.kind === "local" && scan.historyDays) {
+            historyDays = normalizeHistoryDays(scan.historyDays);
+            options.historyStore?.save(historyDays);
+            workerHistoryBackfillComplete = true;
+          }
+        } catch (error) {
+          const failure =
+            error instanceof Error ? error : new Error(String(error));
+          options.reportTargetUsageError?.(target, failure);
+          failures.push(
+            target.kind === "local"
+              ? { kind: "local", message: failure.message }
+              : {
+                  kind: "ssh",
+                  targetId: target.targetId,
+                  message: failure.message
+                }
+          );
+        }
+      })
+    );
+    const currentKeys = new Set(
+      currentUsageTargets(options.getState()).map(usageTargetKey)
+    );
+    for (const key of targetUsageScans.keys()) {
+      if (!currentKeys.has(key)) targetUsageScans.delete(key);
+    }
+    for (const key of initializedUsageTargets) {
+      if (!currentKeys.has(key)) initializedUsageTargets.delete(key);
+    }
+    unavailableUsageTargets = failures
+      .filter((target) => currentKeys.has(usageUnavailableTargetKey(target)))
+      .sort((left, right) =>
+        usageUnavailableTargetKey(left).localeCompare(
+          usageUnavailableTargetKey(right)
+        )
+      );
+    daySamples = [];
+    daySampleIndexes.clear();
+    for (const scan of targetUsageScans.values()) {
+      for (const sample of scan.records) upsertDaySample(sample);
+    }
+    initialScanComplete = initializedUsageTargets.has("local");
+  }
+
+  function upsertDaySample(sample: ScopedUsageEventSample): void {
+    const identity = `${usageTargetKey(sample.usageTarget)}\0${usageSampleIdentity(sample)}`;
     const existingIndex = daySampleIndexes.get(identity);
     if (existingIndex !== undefined) {
       const existingSample = daySamples[existingIndex];
@@ -1217,7 +1369,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         continue;
       }
       const session = state.sessions[surface.sessionId];
-      if (!session || session.runtimeState === "exited") {
+      if (!session || session.runtimeStatus.processState === "exited") {
         if (binding.source === "manual_cli") {
           bindings.delete(surfaceId);
         }
@@ -1241,6 +1393,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       DerivedVendor
     >();
     const modelTotals = new Map<string, DerivedModel>();
+    const targetTotals = new Map<string, DerivedTarget>();
     const unboundSurfacePathIndex = buildUnboundSurfacePathIndex(
       state,
       bindings
@@ -1335,6 +1488,22 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       applyCostBreakdown(vendorTotal, sample, sampleCostSource);
       vendorTotals.set(sample.vendor, vendorTotal);
 
+      const sampleTargetKey = usageTargetKey(sample.usageTarget);
+      const targetTotal = targetTotals.get(sampleTargetKey) ?? {
+        target: usageTargetIdentity(sample.usageTarget, sample.principal),
+        todayCostUsd: 0,
+        todayTokens: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0,
+        truncated: targetUsageScans.get(sampleTargetKey)?.truncated ?? false
+      };
+      targetTotal.todayCostUsd += sampleCostUsd;
+      targetTotal.todayTokens += sample.totalTokens;
+      applyCostBreakdown(targetTotal, sample, sampleCostSource);
+      targetTotals.set(sampleTargetKey, targetTotal);
+
       const modelIdentity = resolveModelUsageIdentity(sample);
       if (modelIdentity) {
         const modelKey = `${sample.vendor}:${modelIdentity.modelId}`;
@@ -1363,6 +1532,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
       const sampleMatch = matchSampleToSurface(
         sample,
+        state,
         bindings,
         unboundSurfacePathIndex
       );
@@ -1374,10 +1544,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         : undefined;
       const directoryPath = resolveDirectoryHotspotPath(
         sample,
-        matchedBinding?.cwd ?? fallbackSurfaceCwd
+        rawUsagePath(
+          sample.usageTarget,
+          matchedBinding?.cwd ?? fallbackSurfaceCwd
+        )
       );
       if (directoryPath) {
-        const directoryTotal = directoryTotals.get(directoryPath) ?? {
+        const directoryKey = `${sampleTargetKey}\0${directoryPath}`;
+        const directoryTotal = directoryTotals.get(directoryKey) ?? {
+          target: usageTargetIdentity(sample.usageTarget, sample.principal),
           directoryPath,
           todayCostUsd: 0,
           todayTokens: 0,
@@ -1389,7 +1564,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         directoryTotal.todayCostUsd += sampleCostUsd;
         directoryTotal.todayTokens += sample.totalTokens;
         applyCostBreakdown(directoryTotal, sample, sampleCostSource);
-        directoryTotals.set(directoryPath, directoryTotal);
+        directoryTotals.set(directoryKey, directoryTotal);
       }
       if (!sampleMatch) {
         unattributedTodayCostUsd += sampleCostUsd;
@@ -1487,6 +1662,20 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       vendorTotals.set(binding.vendor, vendorTotal);
     }
 
+    for (const [key, scan] of targetUsageScans) {
+      if (targetTotals.has(key)) continue;
+      targetTotals.set(key, {
+        target: usageTargetIdentity(scan.target, scan.principal),
+        todayCostUsd: 0,
+        todayTokens: 0,
+        costSource: "reported",
+        reportedCostUsd: 0,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0,
+        truncated: scan.truncated
+      });
+    }
+
     for (const surface of derivedSurfaces.values()) {
       surface.costSource = resolveCostSource(surface);
     }
@@ -1498,6 +1687,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
     for (const vendor of vendorTotals.values()) {
       vendor.costSource = resolveCostSource(vendor);
+    }
+    for (const target of targetTotals.values()) {
+      target.costSource = resolveCostSource(target);
     }
 
     const todayHistory = buildTodayHistoryRecord(
@@ -1546,6 +1738,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             return [
               surface.surfaceId,
               {
+                target: usageTargetIdentity(
+                  currentWorkspace.location.target,
+                  targetUsageScans.get(
+                    usageTargetKey(currentWorkspace.location.target)
+                  )?.principal
+                ),
                 surfaceId: surface.surfaceId,
                 workspaceId: surface.workspaceId,
                 surfaceTitle: currentSurface.title,
@@ -1572,6 +1770,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           }
           return [
             {
+              target: usageTargetIdentity(
+                workspace.location.target,
+                targetUsageScans.get(usageTargetKey(workspace.location.target))
+                  ?.principal
+              ),
               workspaceId: workspace.id,
               workspaceName: workspace.name,
               todayCostUsd: roundUsd(workspaceTotal.todayCostUsd),
@@ -1584,6 +1787,25 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       directoryHotspots: buildDirectoryHotspots(
         Array.from(directoryTotals.values())
       ),
+      targets: Array.from(targetTotals.values())
+        .map((target) => ({
+          target: target.target,
+          todayCostUsd: roundUsd(target.todayCostUsd),
+          todayTokens: Math.round(target.todayTokens),
+          costSource: target.costSource,
+          truncated: target.truncated
+        }))
+        .sort(
+          (left, right) =>
+            right.todayCostUsd - left.todayCostUsd ||
+            right.todayTokens - left.todayTokens ||
+            usageTargetIdentityKey(left.target).localeCompare(
+              usageTargetIdentityKey(right.target)
+            )
+        ),
+      unavailableTargets: unavailableUsageTargets.map((target) => ({
+        ...target
+      })),
       vendors: Array.from(vendorTotals.values())
         .filter(
           (vendorTotal) =>
@@ -1603,6 +1825,14 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           const currentSurface = state.surfaces[surface.surfaceId];
           const currentWorkspace = state.workspaces[surface.workspaceId];
           return {
+            target: usageTargetIdentity(
+              currentWorkspace?.location.target ?? { kind: "local" },
+              currentWorkspace
+                ? targetUsageScans.get(
+                    usageTargetKey(currentWorkspace.location.target)
+                  )?.principal
+                : undefined
+            ),
             surfaceId: surface.surfaceId,
             workspaceId: surface.workspaceId,
             surfaceTitle: currentSurface?.title ?? surface.surfaceId,
@@ -1732,6 +1962,13 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     vendor: Exclude<UsageVendor, "unknown">,
     dirtyOptions?: Parameters<NonNullable<UsageAdapter["markDirty"]>>[0]
   ): void {
+    const targetLocalUsage = options
+      .targetServices?.()
+      ?.resolveLocated({ kind: "local" }).usage;
+    if (targetLocalUsage?.markDirty) {
+      targetLocalUsage.markDirty(vendor, dirtyOptions);
+      return;
+    }
     if (scanService) {
       scanService.markDirty(vendor, dirtyOptions);
       return;
@@ -1861,13 +2098,145 @@ function resolveSurfaceId(
   return null;
 }
 
+function currentUsageTargets(state: AppState): WorkspaceTarget[] {
+  const targets: WorkspaceTarget[] = [{ kind: "local" }];
+  const seen = new Set<string>();
+  for (const workspace of Object.values(state.workspaces)) {
+    const target = workspace.location.target;
+    if (target.kind !== "ssh" || seen.has(target.targetId)) continue;
+    seen.add(target.targetId);
+    targets.push({ kind: "ssh", targetId: target.targetId });
+  }
+  return targets;
+}
+
+function usageTargetKey(target: WorkspaceTarget): string {
+  return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
+}
+
+function sameUsageTarget(
+  left: WorkspaceTarget | undefined,
+  right: WorkspaceTarget
+): boolean {
+  return (
+    left?.kind === right.kind &&
+    (left.kind === "local" ||
+      (right.kind === "ssh" && left.targetId === right.targetId))
+  );
+}
+
+function usageTargetIdentity(
+  target: WorkspaceTarget,
+  principal?: { uid: number; accountName: string }
+): UsageTargetIdentityVm {
+  return target.kind === "local"
+    ? { kind: "local" }
+    : {
+        kind: "ssh",
+        targetId: target.targetId,
+        ...(principal === undefined ? {} : { principal: { ...principal } })
+      };
+}
+
+function usageTargetIdentityKey(target: UsageTargetIdentityVm): string {
+  return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
+}
+
+function usageUnavailableTargetKey(target: UsageUnavailableTargetVm): string {
+  return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
+}
+
+function scopedUsageSample(
+  target: WorkspaceTarget,
+  principal: { uid: number; accountName: string } | undefined,
+  record: TargetUsageRecord<LocatedPath>
+): ScopedUsageEventSample {
+  const cwd = rawUsagePath(target, record.cwd);
+  const projectPath = rawUsagePath(target, record.projectPath);
+  return {
+    usageTarget: { ...target },
+    ...(principal === undefined ? {} : { principal: { ...principal } }),
+    vendor: record.vendor,
+    timestampMs: record.timestampUnixMs,
+    sourcePath: `kmux-usage://${encodeURIComponent(usageTargetKey(target))}/${encodeURIComponent(record.sampleId)}`,
+    sourceType: "jsonl",
+    ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+    ...(record.threadId === undefined ? {} : { threadId: record.threadId }),
+    ...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+    eventId: record.eventId ?? record.sampleId,
+    ...(record.model === undefined ? {} : { model: record.model }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(projectPath === undefined ? {} : { projectPath }),
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    ...(record.thinkingTokens === undefined
+      ? {}
+      : { thinkingTokens: record.thinkingTokens }),
+    ...(record.cacheReadTokens === undefined
+      ? {}
+      : { cacheReadTokens: record.cacheReadTokens }),
+    ...(record.cacheWriteTokens === undefined
+      ? {}
+      : { cacheWriteTokens: record.cacheWriteTokens }),
+    ...(record.cacheWriteTokensKnown === undefined
+      ? {}
+      : { cacheWriteTokensKnown: record.cacheWriteTokensKnown }),
+    cacheTokens: record.cacheTokens,
+    totalTokens: record.totalTokens,
+    estimatedCostUsd: record.estimatedCostUsd,
+    ...(record.costSource === undefined
+      ? {}
+      : { costSource: record.costSource })
+  };
+}
+
+function rawUsagePath(
+  target: WorkspaceTarget,
+  path: LocatedPath | undefined
+): string | undefined {
+  if (!path) return undefined;
+  const encoded = encodeLocatedPathDto(path);
+  if (
+    (target.kind === "local" && encoded.kind !== "local") ||
+    (target.kind === "ssh" &&
+      (encoded.kind !== "ssh" || encoded.targetId !== target.targetId))
+  ) {
+    throw new Error("target usage path crossed its provider target");
+  }
+  return encoded.path;
+}
+
+function mergeScopedUsageSamples(
+  previous: ScopedUsageEventSample[],
+  incoming: ScopedUsageEventSample[]
+): ScopedUsageEventSample[] {
+  const merged = new Map<string, ScopedUsageEventSample>();
+  for (const sample of previous) {
+    merged.set(usageSampleIdentity(sample), sample);
+  }
+  for (const sample of incoming) {
+    const identity = usageSampleIdentity(sample);
+    const existing = merged.get(identity);
+    if (!existing || shouldReplaceUsageSample(existing, sample)) {
+      merged.set(identity, sample);
+    }
+  }
+  return [...merged.values()];
+}
+
 function matchSampleToSurface(
-  sample: UsageEventSample,
+  sample: ScopedUsageEventSample,
+  state: AppState,
   bindings: Map<Id, SurfaceBinding>,
   unboundSurfacePathIndex: Map<string, Id | null>
 ): UsageSampleMatch | null {
   const vendorBindings = Array.from(bindings.values()).filter(
-    (binding) => binding.vendor === sample.vendor
+    (binding) =>
+      binding.vendor === sample.vendor &&
+      sameUsageTarget(
+        state.workspaces[binding.workspaceId]?.location.target,
+        sample.usageTarget
+      )
   );
 
   const sessionKey = sample.threadId ?? sample.sessionId;
@@ -1894,7 +2263,9 @@ function matchSampleToSurface(
     return null;
   }
   const byPath = vendorBindings.filter(
-    (binding) => normalizeComparablePath(binding.cwd) === pathKey
+    (binding) =>
+      normalizeComparablePath(rawUsagePath(sample.usageTarget, binding.cwd)) ===
+      pathKey
   );
   if (byPath.length === 1) {
     return {
@@ -1904,7 +2275,9 @@ function matchSampleToSurface(
     };
   }
 
-  const inferredSurfaceId = unboundSurfacePathIndex.get(pathKey);
+  const inferredSurfaceId = unboundSurfacePathIndex.get(
+    `${usageTargetKey(sample.usageTarget)}\0${pathKey}`
+  );
   if (!inferredSurfaceId) {
     return null;
   }
@@ -1939,7 +2312,16 @@ function buildUnboundSurfacePathIndex(
     if (bindings.has(surface.id)) {
       continue;
     }
-    const pathKey = normalizeComparablePath(surface.cwd);
+    const pane = state.panes[surface.paneId];
+    const target = pane
+      ? state.workspaces[pane.workspaceId]?.location.target
+      : undefined;
+    if (!target) continue;
+    const rawPath = rawUsagePath(target, surface.cwd);
+    const comparablePath = normalizeComparablePath(rawPath);
+    const pathKey = comparablePath
+      ? `${usageTargetKey(target)}\0${comparablePath}`
+      : null;
     if (!pathKey) {
       continue;
     }
@@ -2198,6 +2580,7 @@ function buildDirectoryHotspots(
       (directory) => directory.todayCostUsd > 0 || directory.todayTokens > 0
     )
     .map((directory) => ({
+      target: directory.target,
       directoryPath: directory.directoryPath,
       directoryLabel: buildDirectoryHotspotLabel(
         directory.directoryPath,

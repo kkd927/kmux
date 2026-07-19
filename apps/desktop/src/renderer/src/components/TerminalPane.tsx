@@ -310,7 +310,7 @@ function cwdAtDataOffset(
   return delta.segments.at(-1)?.cwd;
 }
 
-function openExternalTerminalLink(rawUrl: string): void {
+function openExternalTerminalLink(surfaceId: string, rawUrl: string): void {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -322,15 +322,17 @@ function openExternalTerminalLink(rawUrl: string): void {
     console.warn("Ignoring unsupported terminal link protocol", url.protocol);
     return;
   }
-  void window.kmux.openExternalUrl(url.toString()).catch((error) => {
+  void window.kmux.openExternalUrl(surfaceId, url.toString()).catch((error) => {
     console.warn("Failed to open terminal link", error);
   });
 }
 
-const terminalLinkHandler: ILinkHandler = {
-  allowNonHttpProtocols: false,
-  activate: (_event, text) => openExternalTerminalLink(text)
-};
+function terminalLinkHandler(surfaceId: string): ILinkHandler {
+  return {
+    allowNonHttpProtocols: false,
+    activate: (_event, text) => openExternalTerminalLink(surfaceId, text)
+  };
+}
 
 export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const activeSurface =
@@ -370,6 +372,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
   const terminalStreamEligible = activeSurface.sessionState !== "pending";
+  const storageStatusMessage = remoteStorageStatusMessage(
+    activeSurface.storageStatus
+  );
   const previousActiveSurfaceIdRef = useRef(activeSurface.id);
   const copyModeRef = useRef(copyMode);
   const queryRef = useRef(query);
@@ -637,9 +642,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           scrollback: TERMINAL_LIVE_SCROLLBACK_LINES,
           minimumContrastRatio: props.terminalTheme.minimumContrastRatio,
           theme: terminalTheme,
-          linkHandler: terminalLinkHandler
+          linkHandler: terminalLinkHandler(surfaceId)
         }),
-      onWebLink: openExternalTerminalLink,
+      onWebLink: (url) => openExternalTerminalLink(surfaceId, url),
       registerBufferTrimListener: registerTerminalBufferTrimHandler,
       registerFileLinks: (terminal, lineCwds) => {
         const openTerminalFilePath = window.kmux
@@ -2690,17 +2695,27 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
 
     const checkpointSink: TerminalStreamSink = {
-      async applyCheckpoint(checkpoint) {
-        const result = await checkpointController.applyCheckpoint(checkpoint);
-        const currentTerminal = checkpointController.currentBundle.terminal;
-        surfaceResizeDimensionsRef.current.set(surfaceId, {
-          cols: checkpoint.cols,
-          rows: checkpoint.rows
-        });
-        updateTerminalDiagnostics(surfaceId, currentTerminal, {
-          attachAvailableSequence: checkpoint.sequence
-        });
-        return result;
+      beginCheckpoint(metadata, totalBytes) {
+        const hydration = checkpointController.beginCheckpoint(
+          metadata,
+          totalBytes
+        );
+        return {
+          writeChunk: (data) => hydration.writeChunk(data),
+          cancel: (reason) => hydration.cancel(reason),
+          async commit(digest) {
+            const result = await hydration.commit(digest);
+            const currentTerminal = checkpointController.currentBundle.terminal;
+            surfaceResizeDimensionsRef.current.set(surfaceId, {
+              cols: metadata.cols,
+              rows: metadata.rows
+            });
+            updateTerminalDiagnostics(surfaceId, currentTerminal, {
+              attachAvailableSequence: metadata.sequence
+            });
+            return result;
+          }
+        };
       },
       applyResume(resume) {
         const bundle = checkpointController.currentBundle;
@@ -3558,6 +3573,16 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
             {attachmentStatus}
           </div>
         ) : null}
+        {storageStatusMessage ? (
+          <div
+            className={styles.storageStatus}
+            data-storage-state={activeSurface.storageStatus?.state}
+            role="status"
+            aria-live="polite"
+          >
+            {storageStatusMessage}
+          </div>
+        ) : null}
         {tabs.map((surface) => {
           const selected = surface.id === activeSurface.id;
           return (
@@ -3575,6 +3600,19 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       </div>
     </div>
   );
+}
+
+function remoteStorageStatusMessage(
+  status: SurfaceVm["storageStatus"]
+): string | null {
+  if (!status || status.state === "normal") {
+    return null;
+  }
+  if (status.state === "backpressured") {
+    return "Remote storage is unavailable or too slow. Terminal output is paused until durable journaling recovers.";
+  }
+  const bufferedMiB = (status.emergencyBytes / (1024 * 1024)).toFixed(2);
+  return `Remote storage is degraded. ${bufferedMiB} MiB of the 4 MiB emergency buffer is awaiting durable journal admission.`;
 }
 
 function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {

@@ -7,12 +7,16 @@ import {
   type MenuItemConstructorOptions
 } from "electron";
 import { buildDefaultShortcuts } from "@kmux/ui";
+import type { RemoteOperationCommandResult } from "@kmux/core";
 
 import type {
   CreateImageAttachmentsResult,
   CreateImageAttachmentPayload,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
+  RetainedRemoteSessionResourceKey,
+  RetainedRemoteSessionsSnapshot,
+  SshAskpassResponseRequest,
   SurfaceCapturePayload,
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolveResult
@@ -68,7 +72,7 @@ function registerTestHandlers(options: {
     expectedSessionId: string
   ) => TerminalStreamAttachResult;
   reportTerminalStreamError?: (report: TerminalStreamErrorReport) => void;
-  openExternalUrl?: (url: string) => Promise<void>;
+  openExternalUrl?: (surfaceId: string, url: string) => Promise<void>;
   openTerminalFilePath?: (
     surfaceId: string,
     rawPath: string,
@@ -80,6 +84,24 @@ function registerTestHandlers(options: {
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
   isSurfaceDiagnosticsEnabled?: () => boolean;
   clearDiagnosticLog?: () => boolean;
+  dispatchRendererAction?: (action: unknown) => void | Promise<void>;
+  getRetainedRemoteSessions?: () => RetainedRemoteSessionsSnapshot;
+  terminateRetainedRemoteSession?: (
+    resourceKey: RetainedRemoteSessionResourceKey
+  ) => Promise<RemoteOperationCommandResult>;
+  respondSshAskpass?: (request: SshAskpassResponseRequest) => void;
+  cleanSshRuntime?: (profileId: string) => Promise<{
+    inspected: number;
+    removed: string[];
+    live: string[];
+    incompleteOrCorrupt: string[];
+  }>;
+  resetSshRuntime?: (profileId: string) => Promise<{
+    generation: string;
+    status: "reset" | "already-absent";
+  }>;
+  closeWorkspaceSafely?: (workspaceId: string) => void | Promise<void>;
+  closeOtherWorkspacesSafely?: (workspaceId: string) => void | Promise<void>;
   captureSurfaceDiagnostics?: (
     surfaceId: string
   ) => Promise<SurfaceCapturePayload>;
@@ -103,7 +125,65 @@ function registerTestHandlers(options: {
     getWorkspaceContextView: vi.fn(),
     getUsageView: vi.fn(),
     getUpdaterState: vi.fn(),
-    dispatchAppAction: vi.fn(),
+    dispatchRendererAction: options.dispatchRendererAction ?? vi.fn(),
+    getRetainedRemoteSessions:
+      options.getRetainedRemoteSessions ??
+      vi.fn(() => ({
+        sessions: [],
+        updatedAt: "2026-07-18T00:00:00.000Z"
+      })),
+    terminateRetainedRemoteSession:
+      options.terminateRetainedRemoteSession ??
+      vi.fn(async () => ({
+        operationId: "retained_termination_test",
+        outcome: { status: "pending" as const, reason: "offline" as const }
+      })),
+    getSshConnections: vi.fn(async () => ({
+      profiles: [],
+      updatedAt: "2026-07-19T00:00:00.000Z"
+    })),
+    listSshConfigAliases: vi.fn(() => []),
+    importSshConfigAliases: vi.fn(async () => ({
+      profiles: [],
+      updatedAt: "2026-07-19T00:00:00.000Z"
+    })),
+    saveSshProfile: vi.fn(),
+    duplicateSshProfile: vi.fn(),
+    deleteSshProfile: vi.fn(),
+    testSshProfile: vi.fn(async () => ({
+      profiles: [],
+      updatedAt: "2026-07-19T00:00:00.000Z"
+    })),
+    rebindSshProfile: vi.fn(async () => ({
+      profiles: [],
+      updatedAt: "2026-07-19T00:00:00.000Z"
+    })),
+    cleanSshRuntime:
+      options.cleanSshRuntime ??
+      vi.fn(async () => ({
+        inspected: 0,
+        removed: [],
+        live: [],
+        incompleteOrCorrupt: []
+      })),
+    resetSshRuntime:
+      options.resetSshRuntime ??
+      vi.fn(async () => ({
+        generation: `1+${"c".repeat(64)}`,
+        status: "reset" as const
+      })),
+    prepareSshWorkspace: vi.fn(async () => ({
+      preparationId: "preparation_test"
+    })),
+    commitSshWorkspace: vi.fn(async () => ({
+      workspaceId: "workspace_1",
+      targetId: "target_test",
+      continuation: "convert" as const
+    })),
+    cancelSshWorkspacePreparation: vi.fn(),
+    respondSshAskpass: options.respondSshAskpass ?? vi.fn(),
+    closeWorkspaceSafely: options.closeWorkspaceSafely ?? vi.fn(),
+    closeOtherWorkspacesSafely: options.closeOtherWorkspacesSafely ?? vi.fn(),
     attachTerminalStream: options.attachTerminalStream ?? vi.fn(),
     reportTerminalStreamError: options.reportTerminalStreamError ?? vi.fn(),
     snapshotSurface: vi.fn(),
@@ -178,6 +258,294 @@ function registerTestHandlers(options: {
 }
 
 describe("ipc handlers", () => {
+  it("accepts renderer dispatch only from the trusted main frame", async () => {
+    const dispatchRendererAction = vi.fn(async () => undefined);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      dispatchRendererAction
+    });
+    const handler = handlers.get("kmux:dispatch")!;
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const action = { type: "surface.close", surfaceId: "surface_1" };
+
+    await expect(
+      Promise.resolve(handler(event, action))
+    ).resolves.toBeUndefined();
+    expect(dispatchRendererAction).toHaveBeenCalledWith(action);
+    expect(() =>
+      handler(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        action
+      )
+    ).toThrow(/trusted main frame/u);
+    expect(handlers.has("kmux:remote-operation")).toBe(false);
+  });
+
+  it("lists and terminates retained sessions only through the trusted main frame", async () => {
+    const retainedSnapshot: RetainedRemoteSessionsSnapshot = {
+      sessions: [],
+      updatedAt: "2026-07-18T00:00:00.000Z"
+    };
+    const terminateRetainedRemoteSession = vi.fn(async () => ({
+      operationId: "retained_termination_1",
+      outcome: { status: "pending" as const, reason: "offline" as const }
+    }));
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      getRetainedRemoteSessions: () => retainedSnapshot,
+      terminateRetainedRemoteSession
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const resourceKey: RetainedRemoteSessionResourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: "workspace_1",
+      sessionId: "session_1"
+    };
+
+    expect(handlers.get("kmux:remote-retained-sessions:get")!(event)).toBe(
+      retainedSnapshot
+    );
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:remote-retained-sessions:terminate")!(
+          event,
+          resourceKey
+        )
+      )
+    ).resolves.toMatchObject({ operationId: "retained_termination_1" });
+    expect(terminateRetainedRemoteSession).toHaveBeenCalledWith(resourceKey);
+
+    expect(() =>
+      handlers.get("kmux:remote-retained-sessions:get")!({
+        senderFrame: { ...mainFrame },
+        sender: { mainFrame }
+      } as unknown as IpcMainInvokeEvent)
+    ).toThrow(/trusted main frame/u);
+  });
+
+  it("routes profile-backed SSH workspace preparation, commit, and cancellation through trusted boundaries", async () => {
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      }
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const request = {
+      requestId: "request_1",
+      sourceWorkspaceId: "workspace_1",
+      profileId: "profile_1",
+      continuation: "convert"
+    };
+
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-workspace:prepare")!(event, request)
+      )
+    ).resolves.toEqual({ preparationId: "preparation_test" });
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-workspace:commit")!(event, {
+          preparationId: "preparation_test"
+        })
+      )
+    ).resolves.toEqual({
+      workspaceId: "workspace_1",
+      targetId: "target_test",
+      continuation: "convert"
+    });
+    expect(
+      handlers.get("kmux:ssh-workspace:cancel")!(event, {
+        requestId: "request_1"
+      })
+    ).toBeUndefined();
+    expect(() =>
+      handlers.get("kmux:ssh-workspace:prepare")!({
+        senderFrame: { ...mainFrame },
+        sender: { mainFrame }
+      } as unknown as IpcMainInvokeEvent)
+    ).toThrow(/trusted main frame/u);
+  });
+
+  it("routes runtime clean and reset only through the trusted main frame", async () => {
+    const cleanReport = {
+      inspected: 3,
+      removed: [`1+${"a".repeat(64)}`],
+      live: [`1+${"b".repeat(64)}`],
+      incompleteOrCorrupt: []
+    };
+    const resetReport = {
+      generation: `1+${"b".repeat(64)}`,
+      status: "reset" as const
+    };
+    const cleanSshRuntime = vi.fn(async () => cleanReport);
+    const resetSshRuntime = vi.fn(async () => resetReport);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      cleanSshRuntime,
+      resetSshRuntime
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const trustedEvent = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-connections:runtime-clean")!(
+          trustedEvent,
+          "profile_1"
+        )
+      )
+    ).resolves.toEqual(cleanReport);
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-connections:runtime-reset")!(
+          trustedEvent,
+          "profile_1"
+        )
+      )
+    ).resolves.toEqual(resetReport);
+    expect(cleanSshRuntime).toHaveBeenCalledWith("profile_1");
+    expect(resetSshRuntime).toHaveBeenCalledWith("profile_1");
+
+    expect(() =>
+      handlers.get("kmux:ssh-connections:runtime-reset")!(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        "profile_1"
+      )
+    ).toThrow(/trusted main frame/u);
+  });
+
+  it("accepts SSH askpass responses only from the trusted renderer", () => {
+    const respondSshAskpass = vi.fn();
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      respondSshAskpass
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const response: SshAskpassResponseRequest = {
+      requestId: "prompt_1",
+      cancelled: false,
+      response: "one-time-secret"
+    };
+
+    expect(
+      handlers.get("kmux:ssh-askpass:respond")!(event, response)
+    ).toBeUndefined();
+    expect(respondSshAskpass).toHaveBeenCalledWith(response);
+    expect(() =>
+      handlers.get("kmux:ssh-askpass:respond")!(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        response
+      )
+    ).toThrow(/trusted main frame/u);
+  });
+
+  it("routes workspace close and close-others through Main-owned lifecycle checks", async () => {
+    const closeWorkspaceSafely = vi.fn();
+    const closeOtherWorkspacesSafely = vi.fn();
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      closeWorkspaceSafely,
+      closeOtherWorkspacesSafely
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+
+    handlers.get("kmux:workspace:close-safely")!(event, "workspace_1");
+    handlers.get("kmux:workspace:close-others-safely")!(event, "workspace_1");
+    expect(closeWorkspaceSafely).toHaveBeenCalledWith("workspace_1");
+    expect(closeOtherWorkspacesSafely).toHaveBeenCalledWith("workspace_1");
+  });
+
   it("registers a dedicated renderer platform descriptor handler", async () => {
     registerTestHandlers({
       snapshot: {
@@ -570,8 +938,13 @@ describe("ipc handlers", () => {
     const sender = { send: vi.fn() };
 
     expect(handler).toBeTypeOf("function");
-    await Promise.resolve(handler?.({ sender }, "https://example.com/path"));
-    expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/path");
+    await Promise.resolve(
+      handler?.({ sender }, "surface_1", "https://example.com/path")
+    );
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "surface_1",
+      "https://example.com/path"
+    );
     expect(sender.send).toHaveBeenCalledWith(
       "kmux:external-url:opened",
       "https://example.com/path"

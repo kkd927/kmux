@@ -1,0 +1,22 @@
+FROM rust:1.97.0-slim-bookworm@sha256:6d220bf85c74e842a79da63997af8d2e74455c0b8847d8bb3a5888572334991d AS build
+
+ARG RUST_TARGET
+
+RUN test -n "$RUST_TARGET" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends file musl-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add "$RUST_TARGET"
+
+WORKDIR /source
+COPY . .
+
+RUN --mount=type=cache,id=kmux-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=kmux-target-linux-musl,target=/source/target,sharing=locked \
+    cargo build --locked --release --target "$RUST_TARGET" \
+    && mkdir -p /artifact \
+    && cp "target/$RUST_TARGET/release/kmuxd" /artifact/kmuxd \
+    && file /artifact/kmuxd | grep -E '(static-pie linked|statically linked)'
+
+FROM scratch AS artifact
+COPY --from=build /artifact/kmuxd /kmuxd

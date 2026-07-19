@@ -17,11 +17,13 @@ import type {
   SurfaceCaptureSnapshotAttempt,
   SurfaceCaptureSnapshotAttemptKind,
   SurfaceCaptureSnapshotDiagnostics,
-  SurfaceSnapshotPayload
+  SurfaceSnapshotPayload,
+  Uint64
 } from "@kmux/proto";
-import { isoNow } from "@kmux/proto";
+import { formatUint64Decimal, isoNow } from "@kmux/proto";
 
 import { assessContentConsistency } from "./surfaceCaptureConsistency";
+import { stringifyJson } from "../shared/json";
 
 const DEFAULT_CAPTURE_TIMEOUT_MS = 3000;
 const IMMEDIATE_SNAPSHOT_TIMEOUT_MS = 1000;
@@ -142,7 +144,7 @@ export function createSurfaceCaptureService(
       writeFileSync(rawOutputTailPath, snapshot?.rawOutputTail ?? "", "utf8");
     }
     writeFileSync(textPath, formatCaptureText(payload), "utf8");
-    writeFileSync(jsonPath, JSON.stringify(payload, null, 2), "utf8");
+    writeFileSync(jsonPath, stringifyJson(payload, 2), "utf8");
 
     return payload;
   }
@@ -331,7 +333,7 @@ function normalizeDuration(value: number | undefined, fallback: number): number 
 async function captureRenderer(
   window: BrowserWindow | null,
   surfaceId: Id,
-  targetSequence: number | null,
+  targetSequence: Uint64 | null,
   timeoutMs: number | undefined
 ): Promise<SurfaceCaptureRendererPayload> {
   if (!window || window.isDestroyed()) {
@@ -379,12 +381,16 @@ async function captureScreenshot(
 
 function createRendererCaptureScript(
   surfaceId: Id,
-  targetSequence: number | null,
+  targetSequence: Uint64 | null,
   timeoutMs: number | undefined
 ): string {
+  const targetSequenceExpression =
+    targetSequence === null
+      ? "null"
+      : `BigInt(${JSON.stringify(formatUint64Decimal(targetSequence))})`;
   return `(async () => {
     const surfaceId = ${JSON.stringify(surfaceId)};
-    const targetSequence = ${JSON.stringify(targetSequence)};
+    const targetSequence = ${targetSequenceExpression};
     const timeoutMs = ${JSON.stringify(timeoutMs ?? 1000)};
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const nextPaint = () => new Promise((resolve) => {
@@ -398,7 +404,7 @@ function createRendererCaptureScript(
       height: rect.height
     });
     const readSequenceValue = (value) =>
-      typeof value === 'number' && Number.isFinite(value) ? value : null;
+      typeof value === 'bigint' && value >= 0n ? value : null;
     const readStringValue = (value) =>
       typeof value === 'string' ? value : null;
     const readAttrSequence = (attr) => {
@@ -407,8 +413,14 @@ function createRendererCaptureScript(
       if (attr === null || attr === undefined || attr === '') {
         return null;
       }
-      const parsed = Number(attr);
-      return Number.isFinite(parsed) ? parsed : null;
+      if (!/^(?:0|[1-9][0-9]*)$/.test(attr)) {
+        return null;
+      }
+      try {
+        return BigInt(attr);
+      } catch {
+        return null;
+      }
     };
     const findTerminalHost = (root) =>
       Array.from(root.children).find((child) => child.__kmuxTerminal);
@@ -455,7 +467,7 @@ function createRendererCaptureScript(
       if (next === null) {
         return current;
       }
-      return current === null ? next : Math.max(current, next);
+      return current === null || next > current ? next : current;
     };
     // Sequences are monotonic per session, so the freshest source wins; a
     // stale element copy must not mask progress the store has recorded.
@@ -497,7 +509,7 @@ function createRendererCaptureScript(
     const waitStartedAt = performance.now();
     const deadline = waitStartedAt + Math.max(0, timeoutMs);
     let waitTimedOut = false;
-    if (typeof targetSequence === 'number') {
+    if (typeof targetSequence === 'bigint') {
       while (performance.now() < deadline) {
         const diagnostics = readDiagnostics(root);
         if (
@@ -721,7 +733,7 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     `renderer.waitTimedOutReason=${formatWaitTimedOutReason(payload)}`,
     `renderer.waitDurationMs=${diagnostics?.waitDurationMs ?? ""}`,
     `renderer.diagnosticsSources=${
-      diagnostics ? JSON.stringify(diagnostics.sources) : ""
+      diagnostics ? stringifyJson(diagnostics.sources) : ""
     }`,
     `renderer.documentHasFocus=${payload.renderer.dom?.documentHasFocus ?? ""}`,
     `renderer.visibilityState=${interaction?.visibilityState ?? ""}`,

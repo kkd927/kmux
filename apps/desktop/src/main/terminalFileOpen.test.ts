@@ -4,7 +4,11 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AppState } from "@kmux/core";
+import {
+  encodeLocatedPathDto,
+  locatedPathForTarget,
+  type AppState
+} from "@kmux/core";
 
 const { openPath } = vi.hoisted(() => ({
   openPath: vi.fn(async () => "")
@@ -17,9 +21,45 @@ vi.mock("electron", () => ({
 }));
 
 import {
-  openTerminalFilePath,
-  resolveTerminalFileLinks
+  openTerminalFilePath as openTerminalFilePathImpl,
+  resolveTerminalFileLinks as resolveTerminalFileLinksImpl
 } from "./terminalFileOpen";
+
+type OpenTerminalFilePathOptions = Parameters<
+  typeof openTerminalFilePathImpl
+>[0];
+type ResolveTerminalFileLinksOptions = Parameters<
+  typeof resolveTerminalFileLinksImpl
+>[0];
+
+function resolveTestLocalPath(
+  path: Parameters<OpenTerminalFilePathOptions["resolveLocalPath"]>[0]
+): string {
+  if (path.kind !== "local") {
+    throw new Error("test local provider rejected an SSH path");
+  }
+  return encodeLocatedPathDto(path).path;
+}
+
+function openTerminalFilePath(
+  options: Omit<OpenTerminalFilePathOptions, "resolveLocalPath"> &
+    Partial<Pick<OpenTerminalFilePathOptions, "resolveLocalPath">>
+) {
+  return openTerminalFilePathImpl({
+    resolveLocalPath: resolveTestLocalPath,
+    ...options
+  });
+}
+
+function resolveTerminalFileLinks(
+  options: Omit<ResolveTerminalFileLinksOptions, "resolveLocalPath"> &
+    Partial<Pick<ResolveTerminalFileLinksOptions, "resolveLocalPath">>
+) {
+  return resolveTerminalFileLinksImpl({
+    resolveLocalPath: resolveTestLocalPath,
+    ...options
+  });
+}
 
 describe("openTerminalFilePath", () => {
   let tempDir: string;
@@ -356,7 +396,9 @@ function stateWithSurface(surfaceId: string, cwd?: string): AppState {
     surfaces: {
       [surfaceId]: {
         id: surfaceId,
-        cwd
+        ...(cwd
+          ? { cwd: locatedPathForTarget({ kind: "local" }, cwd) }
+          : {})
       }
     }
   } as unknown as AppState;

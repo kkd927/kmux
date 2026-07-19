@@ -2,7 +2,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { TerminalCheckpoint } from "@kmux/proto";
+import {
+  IncrementalSha256,
+  uint64,
+  type TerminalCheckpoint
+} from "@kmux/proto";
 import type { Terminal } from "@xterm/xterm";
 
 import { SurfaceTerminalCheckpointController } from "./terminalCheckpointController";
@@ -16,7 +20,7 @@ function checkpoint(data = "new output"): TerminalCheckpoint {
       sessionId: "session_1",
       epoch: "epoch_1"
     },
-    sequence: 7,
+    sequence: uint64(7n),
     data,
     cols: 100,
     rows: 30
@@ -111,8 +115,9 @@ function frameHarness() {
 }
 
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 function beginTestCooperativeWrite(
@@ -199,6 +204,95 @@ describe("SurfaceTerminalCheckpointController", () => {
     expect(wrapper.firstChild).toBe(stagedBundle.host);
     expect(stagedBundle.host.style.visibility).toBe("");
     expect(oldBundle.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("decodes split Unicode chunks and swaps only after digest-verified commit", async () => {
+    const oldBundle = fakeBundle({ text: "old output" });
+    const stagedBundle = fakeBundle({ text: "" });
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(oldBundle.host);
+    let current: TerminalBundle = oldBundle;
+    const frames = frameHarness();
+    const controller = new SurfaceTerminalCheckpointController({
+      getCurrentBundle: () => current,
+      beginCooperativeWrite: beginTestCooperativeWrite,
+      disposeBundle: (bundle) => {
+        bundle.terminal.dispose();
+        bundle.host.remove();
+      },
+      requestAnimationFrame: frames.request,
+      cancelAnimationFrame: frames.cancel
+    });
+    controller.bind({
+      createBundle: () => stagedBundle,
+      getWrapper: () => wrapper,
+      commitBundle(expected, replacement) {
+        wrapper.replaceChild(replacement.host, expected.host);
+        current = replacement;
+        return true;
+      }
+    });
+    const { data, ...metadata } = checkpoint("A😀B");
+    const bytes = new TextEncoder().encode(data);
+    const hydration = controller.beginCheckpoint(metadata, bytes.byteLength);
+
+    await hydration.writeChunk(bytes.slice(0, 2).buffer);
+    await hydration.writeChunk(bytes.slice(2, 4).buffer);
+    await hydration.writeChunk(bytes.slice(4).buffer);
+
+    expect(stagedBundle.text).toBe("A😀B");
+    expect(current).toBe(oldBundle);
+    expect(oldBundle.dispose).not.toHaveBeenCalled();
+
+    const commit = hydration.commit(
+      new IncrementalSha256().update(bytes).digestHex()
+    );
+    await flushMicrotasks();
+    frames.runNext();
+    await flushMicrotasks();
+    frames.runNext();
+    await expect(commit).resolves.toEqual({ swapGeneration: 1 });
+
+    expect(current).toBe(stagedBundle);
+    expect(oldBundle.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a digest mismatch without replacing the authoritative terminal", async () => {
+    const oldBundle = fakeBundle({ text: "authoritative" });
+    const stagedBundle = fakeBundle({ text: "" });
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(oldBundle.host);
+    let current: TerminalBundle = oldBundle;
+    const controller = new SurfaceTerminalCheckpointController({
+      getCurrentBundle: () => current,
+      beginCooperativeWrite: beginTestCooperativeWrite,
+      disposeBundle: (bundle) => {
+        bundle.terminal.dispose();
+        bundle.host.remove();
+      }
+    });
+    controller.bind({
+      createBundle: () => stagedBundle,
+      getWrapper: () => wrapper,
+      commitBundle(_expected, replacement) {
+        current = replacement;
+        return true;
+      }
+    });
+    const { data, ...metadata } = checkpoint("untrusted");
+    const bytes = new TextEncoder().encode(data);
+    const hydration = controller.beginCheckpoint(metadata, bytes.byteLength);
+    await hydration.writeChunk(bytes.buffer);
+
+    await expect(hydration.commit("0".repeat(64))).rejects.toThrow(
+      "terminal checkpoint digest mismatch"
+    );
+    hydration.cancel();
+
+    expect(current).toBe(oldBundle);
+    expect(oldBundle.dispose).not.toHaveBeenCalled();
+    expect(stagedBundle.dispose).toHaveBeenCalledOnce();
+    expect(wrapper.firstChild).toBe(oldBundle.host);
   });
 
   it("does not roll back a committed replacement when old-widget cleanup throws", async () => {

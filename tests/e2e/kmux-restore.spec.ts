@@ -3,7 +3,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
-import { applyAction, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  locatedPathForTarget
+} from "@kmux/core";
 
 import {
   closeKmuxApp,
@@ -39,16 +43,22 @@ function seedPriorReleaseSnapshot(sandbox: KmuxSandbox) {
   snapshot.settings.restoreWorkspacesAfterQuit = true;
   snapshot.settings.warnBeforeQuit = false;
   for (const surface of Object.values(snapshot.surfaces)) {
-    surface.cwd = sandbox.shellHomeDir;
+    surface.cwd = locatedPathForTarget(
+      { kind: "local" },
+      sandbox.shellHomeDir
+    );
   }
   for (const session of Object.values(snapshot.sessions)) {
-    session.launch = { cwd: sandbox.shellHomeDir, shell };
-    session.runtimeState = "running";
+    session.launch = {
+      cwd: locatedPathForTarget({ kind: "local" }, sandbox.shellHomeDir),
+      shell
+    };
+    session.runtimeStatus.processState = "running";
     session.shellInputReady = true;
     session.pid = 42_000;
   }
   const exitedSession = Object.values(snapshot.sessions)[0];
-  exitedSession.runtimeState = "exited";
+  exitedSession.runtimeStatus.processState = "exited";
   exitedSession.shellInputReady = false;
   delete exitedSession.pid;
   exitedSession.exitCode = 137;

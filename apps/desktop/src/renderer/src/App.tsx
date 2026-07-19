@@ -8,6 +8,8 @@ import type {
   KmuxSettings,
   ResolvedTerminalTypographyVm,
   ShellStoreSnapshot,
+  SshAskpassPrompt,
+  SshConnectionsSnapshot,
   TerminalThemeProfile,
   TerminalThemeVariant,
   WorktreeConversionPreview,
@@ -83,6 +85,8 @@ type DismissibleUiState = {
   workspaceCloseConfirmOpen: boolean;
   surfaceRestartConfirmOpen: boolean;
   worktreeDialogOpen: boolean;
+  sshWorkspaceDialogOpen: boolean;
+  sshAskpassPromptOpen: boolean;
 };
 
 type PendingWorkspaceClose = {
@@ -124,6 +128,21 @@ type WorktreeConversionDialog =
       busy?: boolean;
     };
 
+type SshWorkspaceDialog = {
+  workspaceId: string;
+  sourceTargetKind: "local" | "ssh";
+  connections: SshConnectionsSnapshot | null;
+  selectedProfileId: string | null;
+  continuation: "convert" | "create";
+  phase: "idle" | "preparing" | "committing";
+  requestId?: string;
+  error?: string | null;
+};
+
+type SshAskpassDialog = SshAskpassPrompt & {
+  response: string;
+};
+
 const EMPTY_WORKSPACE_ROWS: ShellStoreSnapshot["workspaceRows"] = [];
 const EMPTY_NOTIFICATIONS: ShellStoreSnapshot["notifications"] = [];
 const forgetTerminalStreamSurface = (surfaceId: string): void => {
@@ -133,6 +152,10 @@ const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" }
 ] as const;
+
+function createRendererRequestId(prefix: string): string {
+  return `${prefix}_${globalThis.crypto.randomUUID()}`;
+}
 
 export function App(): JSX.Element {
   const shellReady = useShellSelector((snapshot) => snapshot !== null);
@@ -175,6 +198,9 @@ export function App(): JSX.Element {
   const [activeRightPanel, setActiveRightPanel] =
     useState<RightPanelKind>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialCategory, setSettingsInitialCategory] = useState<
+    "general" | "ssh" | "terminal" | "notifications" | "shortcuts"
+  >("general");
   const [searchSurfaceId, setSearchSurfaceId] = useState<string | null>(null);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
     null
@@ -215,6 +241,15 @@ export function App(): JSX.Element {
     useState<PendingSurfaceRestart | null>(null);
   const [worktreeDialog, setWorktreeDialog] =
     useState<WorktreeConversionDialog | null>(null);
+  const [sshWorkspaceDialog, setSshWorkspaceDialog] =
+    useState<SshWorkspaceDialog | null>(null);
+  const [sshAskpassPrompts, setSshAskpassPrompts] = useState<
+    SshAskpassDialog[]
+  >([]);
+  const sshWorkspaceRequestRef = useRef<{
+    requestId: string;
+    cancelled: boolean;
+  } | null>(null);
   const usageDashboardOpen = activeRightPanel === "usage";
   const rightPanelOpen = activeRightPanel !== null;
   const viewRef = useShellSnapshotRef();
@@ -228,7 +263,9 @@ export function App(): JSX.Element {
     workspaceContextMenuOpen: false,
     workspaceCloseConfirmOpen: false,
     surfaceRestartConfirmOpen: false,
-    worktreeDialogOpen: false
+    worktreeDialogOpen: false,
+    sshWorkspaceDialogOpen: false,
+    sshAskpassPromptOpen: false
   });
   useEffect(() => {
     void window.kmux.setUsageDashboardOpen(usageDashboardOpen);
@@ -256,6 +293,30 @@ export function App(): JSX.Element {
       setPendingWorkspaceClose(null);
     }
   }, [pendingWorkspaceClose, shellReady, workspaceRows]);
+
+  useEffect(() => {
+    return window.kmux.subscribeSshWorkspaceOpenRequest((workspaceId) => {
+      void openSshWorkspaceDialog(workspaceId);
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.kmux.subscribeSshAskpassPrompt((prompt) => {
+      setSshAskpassPrompts((current) => {
+        if (current.some((candidate) => candidate.requestId === prompt.requestId)) {
+          return current;
+        }
+        if (current.length >= 16) {
+          void window.kmux.respondSshAskpass({
+            requestId: prompt.requestId,
+            cancelled: true
+          });
+          return current;
+        }
+        return [...current, { ...prompt, response: "" }];
+      });
+    });
+  }, []);
 
   useEffect(() => {
     return window.kmux.subscribeWorkspaceWorktreeConvertRequest(
@@ -467,7 +528,9 @@ export function App(): JSX.Element {
     workspaceContextMenuOpen: Boolean(workspaceContextMenu),
     workspaceCloseConfirmOpen: Boolean(pendingWorkspaceClose),
     surfaceRestartConfirmOpen: Boolean(pendingSurfaceRestart),
-    worktreeDialogOpen: Boolean(worktreeDialog)
+    worktreeDialogOpen: Boolean(worktreeDialog),
+    sshWorkspaceDialogOpen: Boolean(sshWorkspaceDialog),
+    sshAskpassPromptOpen: sshAskpassPrompts.length > 0
   };
 
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
@@ -486,6 +549,8 @@ export function App(): JSX.Element {
     closeWorkspaceContextMenu,
     closeWorkspaceCloseConfirm: () => setPendingWorkspaceClose(null),
     closeWorktreeDialog,
+    closeSshWorkspaceDialog,
+    closeSshAskpassPrompt: () => void respondToSshAskpass(true),
     setSearchSurfaceId,
     closeSettingsModal,
     setNotificationsOpen,
@@ -514,6 +579,15 @@ export function App(): JSX.Element {
         label: "New workspace",
         subtitle: "Create another workspace",
         run: () => void dispatch({ type: "workspace.create" })
+      },
+      {
+        id: "ssh-workspace",
+        label: "Convert to SSH Workspace...",
+        subtitle: "Convert this workspace or create a separate remote one",
+        run: () =>
+          void withLatestView((latestView) =>
+            openSshWorkspaceDialog(latestView.activeWorkspace.id)
+          )
       },
       {
         id: "rename-workspace",
@@ -1163,7 +1237,35 @@ export function App(): JSX.Element {
           )
         }
         onConfirmWorktreeDialog={() => void confirmWorktreeDialog()}
+        sshWorkspaceDialog={sshWorkspaceDialog}
+        sshAskpassPrompt={sshAskpassPrompts[0] ?? null}
+        onChangeSshAskpassResponse={(response) =>
+          setSshAskpassPrompts((current) =>
+            current.map((prompt, index) =>
+              index === 0 ? { ...prompt, response } : prompt
+            )
+          )
+        }
+        onCancelSshAskpass={() => void respondToSshAskpass(true)}
+        onSubmitSshAskpass={() => void respondToSshAskpass(false)}
+        onCloseSshWorkspaceDialog={closeSshWorkspaceDialog}
+        onSelectSshProfile={(profileId) =>
+          setSshWorkspaceDialog((current) =>
+            current ? { ...current, selectedProfileId: profileId, error: null } : current
+          )
+        }
+        onSelectSshContinuation={(continuation) =>
+          setSshWorkspaceDialog((current) =>
+            current ? { ...current, continuation, error: null } : current
+          )
+        }
+        onConfirmSshWorkspace={() => void confirmSshWorkspaceDialog()}
+        onManageSshConnections={() => {
+          setSshWorkspaceDialog(null);
+          openSettingsModal("ssh");
+        }}
         settingsOpen={settingsOpen}
+        settingsInitialCategory={settingsInitialCategory}
         settingsDraft={settingsDraft}
         setSettingsDraft={setSettingsDraft}
         settingsThemeNotice={settingsThemeNotice}
@@ -1237,7 +1339,10 @@ export function App(): JSX.Element {
     setPaletteOpen(true);
   }
 
-  function openSettingsModal(): void {
+  function openSettingsModal(
+    category: "general" | "ssh" | "terminal" | "notifications" | "shortcuts" =
+      "general"
+  ): void {
     if (!settings) {
       return;
     }
@@ -1247,6 +1352,7 @@ export function App(): JSX.Element {
     });
     setSettingsThemeNotice(null);
     setSettingsTerminalTypographyPreview(null);
+    setSettingsInitialCategory(category);
     requestAnimationFrame(() => {
       setSettingsOpen(true);
     });
@@ -1357,7 +1463,7 @@ export function App(): JSX.Element {
       return;
     }
     if (!row.worktree) {
-      await dispatch({ type: "workspace.close", workspaceId });
+      await window.kmux.closeWorkspaceSafely(workspaceId);
       return;
     }
     setPendingWorkspaceClose({
@@ -1393,7 +1499,7 @@ export function App(): JSX.Element {
         worktree: entry.worktree
       }));
     if (!worktrees.length) {
-      await dispatch({ type: "workspace.closeOthers", workspaceId });
+      await window.kmux.closeOtherWorkspacesSafely(workspaceId);
       return;
     }
     setPendingWorkspaceClose({
@@ -1478,10 +1584,9 @@ export function App(): JSX.Element {
           (row) => row.workspaceId === nextPendingWorkspaceClose.workspaceId
         )
       ) {
-        await dispatch({
-          type: "workspace.closeOthers",
-          workspaceId: nextPendingWorkspaceClose.workspaceId
-        });
+        await window.kmux.closeOtherWorkspacesSafely(
+          nextPendingWorkspaceClose.workspaceId
+        );
       }
       return;
     }
@@ -1497,10 +1602,9 @@ export function App(): JSX.Element {
       await dispatch({ type: "workspace.create" });
     }
 
-    await dispatch({
-      type: "workspace.close",
-      workspaceId: nextPendingWorkspaceClose.workspaceId
-    });
+    await window.kmux.closeWorkspaceSafely(
+      nextPendingWorkspaceClose.workspaceId
+    );
   }
 
   async function withLatestActiveShortcutContext(
@@ -1540,6 +1644,7 @@ export function App(): JSX.Element {
       action,
       resolveWorkspaceContext,
       {
+        openSshWorkspace: openSshWorkspaceDialog,
         rename: async (targetWorkspaceId) => {
           const latestShellState = await window.kmux.getShellState();
           beginWorkspaceRename(
@@ -1553,6 +1658,134 @@ export function App(): JSX.Element {
         dispatch
       }
     );
+  }
+
+  async function openSshWorkspaceDialog(workspaceId: string): Promise<void> {
+    const latest = await window.kmux.getShellState();
+    const row = latest.workspaceRows.find(
+      (candidate) => candidate.workspaceId === workspaceId
+    );
+    if (!row) return;
+    const initialContinuation =
+      row.targetKind === "local" ? "convert" : "create";
+    setSshWorkspaceDialog({
+      workspaceId,
+      sourceTargetKind: row.targetKind,
+      connections: null,
+      selectedProfileId: null,
+      continuation: initialContinuation,
+      phase: "idle"
+    });
+    try {
+      const connections = await window.kmux.getSshConnections(true);
+      setSshWorkspaceDialog((current) =>
+        current?.workspaceId === workspaceId
+          ? {
+              ...current,
+              connections,
+              selectedProfileId:
+                current.selectedProfileId ?? connections.profiles[0]?.id ?? null
+            }
+          : current
+      );
+    } catch (error) {
+      setSshWorkspaceDialog((current) =>
+        current?.workspaceId === workspaceId
+          ? { ...current, error: describeError(error) }
+          : current
+      );
+    }
+  }
+
+  async function confirmSshWorkspaceDialog(): Promise<void> {
+    const dialog = sshWorkspaceDialog;
+    if (
+      !dialog ||
+      !dialog.selectedProfileId ||
+      dialog.phase !== "idle"
+    ) {
+      return;
+    }
+    const requestId = createRendererRequestId("ssh_workspace");
+    const requestState = { requestId, cancelled: false };
+    sshWorkspaceRequestRef.current = requestState;
+    setSshWorkspaceDialog({
+      ...dialog,
+      phase: "preparing",
+      requestId,
+      error: null
+    });
+    try {
+      const prepared = await window.kmux.prepareSshWorkspace({
+        requestId,
+        sourceWorkspaceId: dialog.workspaceId,
+        profileId: dialog.selectedProfileId,
+        continuation: dialog.continuation
+      });
+      if (requestState.cancelled) {
+        return;
+      }
+      setSshWorkspaceDialog((current) =>
+        current?.requestId === requestId
+          ? { ...current, phase: "committing" }
+          : current
+      );
+      await window.kmux.commitSshWorkspace(prepared);
+      if (!requestState.cancelled) {
+        setSshWorkspaceDialog((current) =>
+          current?.requestId === requestId ? null : current
+        );
+      }
+    } catch (error) {
+      if (requestState.cancelled) return;
+      setSshWorkspaceDialog((current) =>
+        current?.requestId === requestId
+          ? {
+              ...current,
+              phase: "idle",
+              requestId: undefined,
+              error: describeError(error)
+            }
+          : current
+      );
+    } finally {
+      if (sshWorkspaceRequestRef.current === requestState) {
+        sshWorkspaceRequestRef.current = null;
+      }
+    }
+  }
+
+  function closeSshWorkspaceDialog(): void {
+    const dialog = sshWorkspaceDialog;
+    if (!dialog || dialog.phase === "committing") return;
+    const requestState = sshWorkspaceRequestRef.current;
+    if (
+      dialog.phase === "preparing" &&
+      dialog.requestId &&
+      requestState?.requestId === dialog.requestId
+    ) {
+      requestState.cancelled = true;
+      void window.kmux
+        .cancelSshWorkspacePreparation({ requestId: dialog.requestId })
+        .catch(() => undefined);
+      setSshAskpassPrompts((current) =>
+        current.filter((prompt) => prompt.profileId !== dialog.selectedProfileId)
+      );
+    }
+    setSshWorkspaceDialog(null);
+  }
+
+  async function respondToSshAskpass(cancelled: boolean): Promise<void> {
+    const prompt = sshAskpassPrompts[0];
+    if (!prompt || (!cancelled && !prompt.response)) return;
+    setSshAskpassPrompts((current) => current.slice(1));
+    await window.kmux
+      .respondSshAskpass({
+        requestId: prompt.requestId,
+        cancelled,
+        ...(cancelled ? {} : { response: prompt.response })
+      })
+      .catch(() => undefined);
   }
 
   async function openWorktreeConversionDialog(

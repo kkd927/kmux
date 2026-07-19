@@ -3,7 +3,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { IDisposable, Terminal } from "@xterm/xterm";
-import type { TerminalInputDiagnosticKind } from "@kmux/proto";
+import type { TerminalInputDiagnosticKind, Uint64 } from "@kmux/proto";
 
 import {
   createTerminalLineCwdTracker,
@@ -12,9 +12,9 @@ import {
 import { SupervisorTerminalQueryAuthorityAddon } from "./supervisorTerminalQueryAuthority";
 
 export interface TerminalDiagnosticMetadata {
-  hydratedSequence: number | null;
-  renderedSequence: number | null;
-  attachAvailableSequence: number | null;
+  hydratedSequence: Uint64 | null;
+  renderedSequence: Uint64 | null;
+  attachAvailableSequence: Uint64 | null;
   renderGeneration: number;
   /** All *At fields below use high-resolution Unix epoch milliseconds. */
   lastOnRenderAt: number | null;

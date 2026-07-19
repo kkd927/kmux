@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import type { RemoteOperationCommandResult } from "@kmux/core";
 
-import type { AppAction } from "@kmux/core";
 import type {
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
@@ -10,8 +10,21 @@ import type {
   Id,
   ImportedTerminalThemePalette,
   ResolvedTerminalTypographyVm,
+  RetainedRemoteSessionResourceKey,
+  RetainedRemoteSessionsSnapshot,
   ShellIdentity,
   ShellStoreSnapshot,
+  SshConnectionsSnapshot,
+  SshAskpassResponseRequest,
+  SshProfileDto,
+  SshProfileSaveRequest,
+  SshRuntimeCleanReport,
+  SshRuntimeResetReport,
+  SshWorkspaceCancelRequest,
+  SshWorkspaceCommitRequest,
+  SshWorkspaceOpenResult,
+  SshWorkspacePrepareRequest,
+  SshWorkspacePrepareResult,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
@@ -52,14 +65,44 @@ interface IpcHandlersOptions {
   getShellState: () => ShellStoreSnapshot;
   getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
-  getExternalAgentSessions: () => ExternalAgentSessionsSnapshot;
+  getExternalAgentSessions: () =>
+    | ExternalAgentSessionsSnapshot
+    | Promise<ExternalAgentSessionsSnapshot>;
   resumeExternalAgentSession: (key: string) => ExternalAgentSessionResumeResult;
   createImageAttachments: (
     surfaceId: Id,
     payloads: CreateImageAttachmentPayload[]
   ) => Promise<CreateImageAttachmentsResult>;
   getUpdaterState: () => UpdaterState;
-  dispatchAppAction: (action: AppAction) => void;
+  dispatchRendererAction: (action: unknown) => void | Promise<void>;
+  getRetainedRemoteSessions: () => RetainedRemoteSessionsSnapshot;
+  terminateRetainedRemoteSession: (
+    resourceKey: RetainedRemoteSessionResourceKey
+  ) => Promise<RemoteOperationCommandResult>;
+  getSshConnections: (
+    resolveEffective: boolean
+  ) => Promise<SshConnectionsSnapshot>;
+  listSshConfigAliases: () => string[] | Promise<string[]>;
+  importSshConfigAliases: (
+    aliases: string[]
+  ) => Promise<SshConnectionsSnapshot>;
+  saveSshProfile: (request: SshProfileSaveRequest) => SshProfileDto;
+  duplicateSshProfile: (profileId: Id) => SshProfileDto;
+  deleteSshProfile: (profileId: Id) => void;
+  testSshProfile: (profileId: Id) => Promise<SshConnectionsSnapshot>;
+  rebindSshProfile: (profileId: Id) => Promise<SshConnectionsSnapshot>;
+  cleanSshRuntime: (profileId: Id) => Promise<SshRuntimeCleanReport>;
+  resetSshRuntime: (profileId: Id) => Promise<SshRuntimeResetReport>;
+  prepareSshWorkspace: (
+    request: SshWorkspacePrepareRequest
+  ) => Promise<SshWorkspacePrepareResult>;
+  commitSshWorkspace: (
+    request: SshWorkspaceCommitRequest
+  ) => Promise<SshWorkspaceOpenResult>;
+  cancelSshWorkspacePreparation: (request: SshWorkspaceCancelRequest) => void;
+  respondSshAskpass: (request: SshAskpassResponseRequest) => void;
+  closeWorkspaceSafely: (workspaceId: Id) => void | Promise<void>;
+  closeOtherWorkspacesSafely: (workspaceId: Id) => void | Promise<void>;
   attachTerminalStream: (
     event: IpcMainInvokeEvent,
     surfaceId: Id,
@@ -72,7 +115,7 @@ interface IpcHandlersOptions {
   ) => Promise<SurfaceSnapshotPayload | null>;
   sendText: (surfaceId: Id, text: string) => void;
   sendKeyInput: (surfaceId: Id, input: TerminalKeyInput) => void;
-  openExternalUrl: (url: string) => Promise<void>;
+  openExternalUrl: (surfaceId: Id, url: string) => Promise<void>;
   openTerminalFilePath: (
     surfaceId: Id,
     rawPath: string,
@@ -155,9 +198,112 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     clipboardService.hasPasteableContent()
   );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
-  ipcMain.handle("kmux:dispatch", (_event, action: AppAction) => {
-    options.dispatchAppAction(action);
+  ipcMain.handle("kmux:dispatch", (event, action: unknown) => {
+    assertTrustedMainFrame(event, "renderer dispatch");
+    return options.dispatchRendererAction(action);
   });
+  ipcMain.handle("kmux:remote-retained-sessions:get", (event) => {
+    assertTrustedMainFrame(event, "retained-session inventory");
+    return options.getRetainedRemoteSessions();
+  });
+  ipcMain.handle(
+    "kmux:remote-retained-sessions:terminate",
+    (event, resourceKey: RetainedRemoteSessionResourceKey) => {
+      assertTrustedMainFrame(event, "retained-session termination");
+      return options.terminateRetainedRemoteSession(resourceKey);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-connections:get",
+    (event, resolveEffective: boolean) => {
+      assertTrustedMainFrame(event, "SSH connection listing");
+      return options.getSshConnections(resolveEffective === true);
+    }
+  );
+  ipcMain.handle("kmux:ssh-connections:aliases", (event) => {
+    assertTrustedMainFrame(event, "OpenSSH alias listing");
+    return options.listSshConfigAliases();
+  });
+  ipcMain.handle(
+    "kmux:ssh-connections:import-aliases",
+    (event, aliases: string[]) => {
+      assertTrustedMainFrame(event, "OpenSSH alias import");
+      return options.importSshConfigAliases(aliases);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-connections:save",
+    (event, request: SshProfileSaveRequest) => {
+      assertTrustedMainFrame(event, "SSH connection save");
+      return options.saveSshProfile(request);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-connections:duplicate",
+    (event, profileId: Id) => {
+      assertTrustedMainFrame(event, "SSH connection duplicate");
+      return options.duplicateSshProfile(profileId);
+    }
+  );
+  ipcMain.handle("kmux:ssh-connections:delete", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH connection delete");
+    options.deleteSshProfile(profileId);
+  });
+  ipcMain.handle("kmux:ssh-connections:test", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH connection test");
+    return options.testSshProfile(profileId);
+  });
+  ipcMain.handle("kmux:ssh-connections:rebind", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH connection rebind");
+    return options.rebindSshProfile(profileId);
+  });
+  ipcMain.handle("kmux:ssh-connections:runtime-clean", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH runtime clean");
+    return options.cleanSshRuntime(profileId);
+  });
+  ipcMain.handle("kmux:ssh-connections:runtime-reset", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH runtime reset");
+    return options.resetSshRuntime(profileId);
+  });
+  ipcMain.handle(
+    "kmux:ssh-workspace:prepare",
+    (event, request: SshWorkspacePrepareRequest) => {
+      assertTrustedMainFrame(event, "SSH workspace prepare");
+      return options.prepareSshWorkspace(request);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-workspace:commit",
+    (event, request: SshWorkspaceCommitRequest) => {
+      assertTrustedMainFrame(event, "SSH workspace commit");
+      return options.commitSshWorkspace(request);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-workspace:cancel",
+    (event, request: SshWorkspaceCancelRequest) => {
+      assertTrustedMainFrame(event, "SSH workspace cancel");
+      options.cancelSshWorkspacePreparation(request);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-askpass:respond",
+    (event, request: SshAskpassResponseRequest) => {
+      assertTrustedMainFrame(event, "SSH askpass response");
+      options.respondSshAskpass(request);
+    }
+  );
+  ipcMain.handle("kmux:workspace:close-safely", (event, workspaceId: Id) => {
+    assertTrustedMainFrame(event, "workspace close");
+    return options.closeWorkspaceSafely(workspaceId);
+  });
+  ipcMain.handle(
+    "kmux:workspace:close-others-safely",
+    (event, workspaceId: Id) => {
+      assertTrustedMainFrame(event, "workspace close-others");
+      return options.closeOtherWorkspacesSafely(workspaceId);
+    }
+  );
   ipcMain.handle("kmux:usage:dashboard-open", (_event, open: boolean) => {
     options.setUsageDashboardOpen(Boolean(open));
   });
@@ -214,10 +360,13 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       options.sendKeyInput(surfaceId, input);
     }
   );
-  ipcMain.handle("kmux:external-url:open", async (event, url: string) => {
-    await options.openExternalUrl(url);
-    event.sender.send("kmux:external-url:opened", url);
-  });
+  ipcMain.handle(
+    "kmux:external-url:open",
+    async (event, surfaceId: Id, url: string) => {
+      await options.openExternalUrl(surfaceId, url);
+      event.sender.send("kmux:external-url:opened", url);
+    }
+  );
   ipcMain.handle(
     "kmux:terminal-file:open",
     (_event, surfaceId: Id, rawPath: string, baseCwd?: string) =>
@@ -371,6 +520,9 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         workspaceId: payload.workspaceId,
         getContextView: options.getWorkspaceContextView,
         reservedSystemChords: keyboardPolicy.reservedSystemChords,
+        openSshWorkspace: (workspaceId) => {
+          event.sender.send("kmux:ssh-workspace-open-request", workspaceId);
+        },
         convertToWorktree: (workspaceId) => {
           event.sender.send(
             "kmux:workspace-worktree-convert-request",
@@ -386,7 +538,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         rename: (workspaceId) => {
           event.sender.send("kmux:workspace-rename-request", workspaceId);
         },
-        dispatch: options.dispatchAppAction
+        dispatch: options.dispatchRendererAction
       });
       if (!window || !menu) {
         return false;
@@ -401,4 +553,19 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     }
   );
   ipcMain.handle("kmux:identify", (): ShellIdentity => options.identify());
+}
+
+function assertTrustedMainFrame(
+  event: IpcMainInvokeEvent,
+  operation: string
+): void {
+  const frame = event.senderFrame;
+  if (
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    frame.detached ||
+    frame.isDestroyed()
+  ) {
+    throw new Error(`${operation} requires the trusted main frame`);
+  }
 }

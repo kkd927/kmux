@@ -1,4 +1,8 @@
-import type { TerminalSessionRef } from "@kmux/proto";
+import {
+  formatUint64Decimal,
+  type TerminalSessionRef,
+  type Uint64
+} from "@kmux/proto";
 
 import {
   KMUX_TERMINAL_PORT_WINDOW_MESSAGE,
@@ -149,7 +153,7 @@ interface PendingResumeSettle {
 
 interface ResumableCursor {
   session: TerminalSessionRef;
-  sequence: number;
+  sequence: Uint64;
 }
 
 export interface AttachTerminalStreamOptions {
@@ -157,7 +161,7 @@ export interface AttachTerminalStreamOptions {
   expectedSessionId: string;
   sink: TerminalStreamSink;
   /** Read lazily after an in-flight hidden detach has reached its parser barrier. */
-  resumeFromSequence?: number | (() => number | undefined);
+  resumeFromSequence?: Uint64 | (() => Uint64 | undefined);
   shouldWriteImmediately?: () => boolean;
   writeScheduler?: RegisterTerminalStreamOptions["writeScheduler"];
   invalidateResume?: () => void;
@@ -663,7 +667,9 @@ export class TerminalStreamClient {
             epoch: active.stream.grant.session.epoch,
             outcome: result.kind,
             sequence:
-              result.kind === "resumable" ? result.cursor.sequence : null,
+              result.kind === "resumable"
+                ? formatUint64Decimal(result.cursor.sequence)
+                : null,
             durationMs: performance.now() - startedAt
           }
         );

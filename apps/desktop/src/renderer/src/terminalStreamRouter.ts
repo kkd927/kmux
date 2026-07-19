@@ -1,5 +1,6 @@
 import type {
-  TerminalCheckpoint,
+  TerminalCheckpointMetadata,
+  TerminalCheckpointPurpose,
   TerminalDataPlaneClientMessage,
   TerminalDataPlaneDetachReason,
   TerminalDataPlaneHostMessage,
@@ -7,12 +8,16 @@ import type {
   TerminalInputDiagnosticKind,
   TerminalKeyInput,
   TerminalOutputDiagnosticKind,
-  TerminalSessionRef
+  TerminalSessionRef,
+  Uint64
 } from "@kmux/proto";
 import {
   TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES,
   TERMINAL_DATA_PLANE_MAX_INPUT_BYTES,
   TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  formatUint64Decimal,
+  incrementUint64,
+  uint64,
   validateTerminalDataPlaneClientMessage,
   validateTerminalDataPlaneHostMessage
 } from "@kmux/proto";
@@ -51,15 +56,15 @@ export interface TerminalStreamPort {
 }
 
 export interface TerminalStreamResume {
-  resumedFromSequence: number;
-  availableSequence: number;
+  resumedFromSequence: Uint64;
+  availableSequence: Uint64;
   cols: number;
   rows: number;
 }
 
 export interface TerminalResumeCursor {
   session: TerminalSessionRef;
-  sequence: number;
+  sequence: Uint64;
 }
 
 export type TerminalDetachOutcome =
@@ -77,6 +82,12 @@ export interface TerminalCheckpointApplyResult {
   swapGeneration?: number;
 }
 
+export interface TerminalCheckpointHydration {
+  writeChunk(data: ArrayBuffer): Promise<void>;
+  commit(digest: string): Promise<void | TerminalCheckpointApplyResult>;
+  cancel(reason?: Error): void;
+}
+
 export type TerminalStreamRouterError = TerminalStreamError;
 
 /**
@@ -85,9 +96,10 @@ export type TerminalStreamRouterError = TerminalStreamError;
  * byte credit to the PTY supervisor.
  */
 export interface TerminalStreamSink {
-  applyCheckpoint(
-    checkpoint: TerminalCheckpoint
-  ): MaybePromise<void | TerminalCheckpointApplyResult>;
+  beginCheckpoint(
+    metadata: TerminalCheckpointMetadata,
+    totalBytes: number
+  ): MaybePromise<TerminalCheckpointHydration>;
   applyResume(resume: TerminalStreamResume): MaybePromise<void>;
   write(
     data: string,
@@ -130,7 +142,7 @@ export interface RegisterTerminalStreamOptions {
   attachId: string;
   session: TerminalSessionRef;
   sink: TerminalStreamSink;
-  resumeFromSequence?: number;
+  resumeFromSequence?: Uint64;
   initialCreditBytes?: number;
   /** Supplying this object enables adaptive visible-output pacing. */
   writeScheduler?: TerminalStreamWriteSchedulerOptions;
@@ -156,7 +168,7 @@ export interface CooperativeTerminalWriteTask {
 export interface TerminalStreamRegistration {
   readonly attachId: string;
   readonly session: TerminalSessionRef;
-  readonly sequence: number | null;
+  readonly sequence: Uint64 | null;
   readonly closed: boolean;
   /**
    * False while received output is queued, scheduled, or still being parsed by
@@ -189,7 +201,7 @@ interface Attachment {
   readonly attachId: string;
   readonly session: TerminalSessionRef;
   sink: TerminalStreamSink;
-  readonly requestedResumeSequence: number | undefined;
+  readonly requestedResumeSequence: Uint64 | undefined;
   shouldWriteImmediately: (() => boolean) | undefined;
   readonly classifier: ConservativeTerminalOutputClassifier;
   readonly messages: TerminalDataPlaneHostMessage[];
@@ -212,17 +224,18 @@ interface Attachment {
   draining: boolean;
   presentationImmediate: boolean;
   /** Last wire mutation validated and admitted to the presentation pipeline. */
-  acceptedSequence: number | null;
+  acceptedSequence: Uint64 | null;
   /** Last mutation whose xterm callback (or ordered sink barrier) completed. */
-  sequence: number | null;
+  sequence: Uint64 | null;
   /** Mutations at or below this sequence predate the current live attach. */
-  preAttachSequence: number | null;
+  preAttachSequence: Uint64 | null;
+  checkpoint: ActiveCheckpointHydration | null;
   /** True only after the renderer has parsed the attach-time replay cursor. */
   liveCaughtUp: boolean;
   metrics: TerminalStreamMetricsRecorder | undefined;
   metricsSampleEvery: number;
   outputMetricOrdinal: number;
-  readonly outputMetrics: Map<number, TerminalOutputMetricTrace>;
+  readonly outputMetrics: Map<Uint64, TerminalOutputMetricTrace>;
   readonly pendingRenderMetrics: TerminalOutputMetricTrace[];
   renderMetricOverflowCount: number;
   lastOnRenderAt: number | null;
@@ -269,7 +282,7 @@ interface OutputBarrierWaiter {
 }
 
 interface TerminalOutputMetricTrace {
-  sequence: number;
+  sequence: Uint64;
   byteLength: number;
   ptyReadAt?: number;
   headlessCommitAt?: number;
@@ -283,9 +296,19 @@ interface TerminalOutputMetricTrace {
   immediateReason?: "control" | "forced" | "terminal-state" | "replay";
   visibleAtPtyRead?: boolean;
   inputAcceptedAt?: number;
-  inputSequence?: number;
+  inputSequence?: Uint64;
   inputKind?: TerminalInputDiagnosticKind;
   outputKinds?: TerminalOutputDiagnosticKind[];
+}
+
+interface ActiveCheckpointHydration {
+  readonly checkpointId: string;
+  readonly purpose: TerminalCheckpointPurpose;
+  readonly metadata: TerminalCheckpointMetadata;
+  readonly totalBytes: number;
+  readonly hydration: TerminalCheckpointHydration;
+  readonly startedAt: number | undefined;
+  nextOffset: number;
 }
 
 /** Routes every live surface port without one global IPC listener per pane. */
@@ -495,6 +518,7 @@ export class TerminalStreamRouter {
       acceptedSequence: null,
       sequence: null,
       preAttachSequence: null,
+      checkpoint: null,
       liveCaughtUp: false,
       metrics: options.metrics,
       metricsSampleEvery: Math.max(
@@ -666,16 +690,15 @@ export class TerminalStreamRouter {
       return;
     }
     if (validation.value.type === "attached") {
-      attachment.preAttachSequence =
-        validation.value.mode === "checkpoint"
-          ? validation.value.checkpoint.sequence
-          : validation.value.sequence;
+      attachment.preAttachSequence = validation.value.sequence;
       attachment.liveCaughtUp = false;
-    } else if (validation.value.type === "resync-required") {
-      attachment.preAttachSequence = Math.max(
-        attachment.preAttachSequence ?? 0,
-        validation.value.checkpoint.sequence
-      );
+    } else if (validation.value.type === "checkpoint:begin") {
+      const checkpointSequence = validation.value.metadata.sequence;
+      attachment.preAttachSequence =
+        attachment.preAttachSequence === null ||
+        checkpointSequence > attachment.preAttachSequence
+          ? checkpointSequence
+          : attachment.preAttachSequence;
       attachment.liveCaughtUp = false;
     }
     if (
@@ -740,10 +763,14 @@ export class TerminalStreamRouter {
     switch (message.type) {
       case "attached":
         return this.applyAttached(attachment, message);
+      case "checkpoint:begin":
+        return this.applyCheckpointBegin(attachment, message);
+      case "checkpoint:chunk":
+        return this.applyCheckpointChunk(attachment, message);
+      case "checkpoint:end":
+        return this.applyCheckpointEnd(attachment, message);
       case "delta":
         return this.applyDelta(attachment, message.delta);
-      case "resync-required":
-        return this.applyResync(attachment, message);
       case "resize:ack":
         return this.applyResizeAcknowledgement(attachment, message);
       case "exit":
@@ -768,46 +795,133 @@ export class TerminalStreamRouter {
     }
   }
 
-  private async applyResync(
+  private async applyCheckpointBegin(
     attachment: Attachment,
-    message: Extract<TerminalDataPlaneHostMessage, { type: "resync-required" }>
+    message: Extract<TerminalDataPlaneHostMessage, { type: "checkpoint:begin" }>
   ): Promise<void> {
+    if (attachment.checkpoint) {
+      throw new Error("terminal stream received overlapping checkpoints");
+    }
     await this.waitForPendingOutputs(attachment);
     if (attachment.closed) {
       return;
     }
     if (
       attachment.sequence !== null &&
-      message.checkpoint.sequence < attachment.sequence
+      message.metadata.sequence < attachment.sequence
     ) {
       this.failSequenceGap(
         attachment,
         attachment.sequence,
-        message.checkpoint.sequence,
+        message.metadata.sequence,
         "resync checkpoint precedes the renderer sequence"
       );
       return;
     }
-    const startedAt = attachment.metrics?.now();
-    const result = await this.applyCheckpoint(attachment, message.checkpoint);
-    const committedAt = attachment.metrics?.now();
+    attachment.scheduler?.flush();
+    attachment.classifier.reset();
+    attachment.outputMetrics.clear();
+    attachment.pendingRenderMetrics.length = 0;
+    const hydration = await attachment.sink.beginCheckpoint(
+      message.metadata,
+      message.totalBytes
+    );
+    if (attachment.closed) {
+      hydration.cancel(
+        new Error("terminal checkpoint attachment closed before hydration")
+      );
+      return;
+    }
+    attachment.checkpoint = {
+      checkpointId: message.checkpointId,
+      purpose: message.purpose,
+      metadata: message.metadata,
+      totalBytes: message.totalBytes,
+      hydration,
+      startedAt:
+        message.purpose.kind === "resync"
+          ? attachment.metrics?.now()
+          : undefined,
+      nextOffset: 0
+    };
+  }
+
+  private async applyCheckpointChunk(
+    attachment: Attachment,
+    message: Extract<TerminalDataPlaneHostMessage, { type: "checkpoint:chunk" }>
+  ): Promise<void> {
+    const checkpoint = attachment.checkpoint;
     if (
+      !checkpoint ||
+      checkpoint.checkpointId !== message.checkpointId ||
+      message.offset !== checkpoint.nextOffset ||
+      message.offset + message.data.byteLength > checkpoint.totalBytes
+    ) {
+      throw new Error(
+        "terminal checkpoint chunk is outside the active transfer"
+      );
+    }
+    await checkpoint.hydration.writeChunk(message.data);
+    if (attachment.closed || attachment.checkpoint !== checkpoint) {
+      return;
+    }
+    checkpoint.nextOffset += message.data.byteLength;
+    this.postClientMessage(attachment, {
+      ...this.envelope(attachment),
+      type: "checkpoint:credit",
+      checkpointId: checkpoint.checkpointId,
+      acknowledgedOffset: checkpoint.nextOffset,
+      bytes: message.data.byteLength
+    });
+  }
+
+  private async applyCheckpointEnd(
+    attachment: Attachment,
+    message: Extract<TerminalDataPlaneHostMessage, { type: "checkpoint:end" }>
+  ): Promise<void> {
+    const checkpoint = attachment.checkpoint;
+    if (
+      !checkpoint ||
+      checkpoint.checkpointId !== message.checkpointId ||
+      checkpoint.nextOffset !== checkpoint.totalBytes
+    ) {
+      throw new Error("terminal checkpoint ended outside the active transfer");
+    }
+    const result = await checkpoint.hydration.commit(message.digest);
+    if (attachment.closed || attachment.checkpoint !== checkpoint) {
+      return;
+    }
+    attachment.checkpoint = null;
+    attachment.attached = true;
+    attachment.acceptedSequence = checkpoint.metadata.sequence;
+    attachment.sequence = checkpoint.metadata.sequence;
+    attachment.liveCaughtUp = true;
+
+    const committedAt =
+      checkpoint.purpose.kind === "resync"
+        ? attachment.metrics?.now()
+        : undefined;
+    if (
+      checkpoint.purpose.kind === "resync" &&
       attachment.metrics &&
-      startedAt !== undefined &&
-      committedAt !== undefined &&
-      !attachment.closed
+      checkpoint.startedAt !== undefined &&
+      committedAt !== undefined
     ) {
       attachment.metrics.record("terminal.data-plane.resync", {
         surfaceId: attachment.session.surfaceId,
         sessionId: attachment.session.sessionId,
         epoch: attachment.session.epoch,
         attachId: attachment.attachId,
-        checkpointSequence: message.checkpoint.sequence,
-        missingFromSequence: message.missingFromSequence,
-        retainedFromSequence: message.retainedFromSequence,
-        startedAt,
+        checkpointSequence: formatUint64Decimal(checkpoint.metadata.sequence),
+        missingFromSequence: formatUint64Decimal(
+          checkpoint.purpose.missingFromSequence
+        ),
+        retainedFromSequence: formatUint64Decimal(
+          checkpoint.purpose.retainedFromSequence
+        ),
+        startedAt: checkpoint.startedAt,
         committedAt,
-        durationMs: nonNegativeDurationMs(startedAt, committedAt),
+        durationMs: nonNegativeDurationMs(checkpoint.startedAt, committedAt),
         swapGeneration: result?.swapGeneration
       });
     }
@@ -832,10 +946,6 @@ export class TerminalStreamRouter {
         "terminal stream received more than one attached message"
       );
     }
-    if (message.mode === "checkpoint") {
-      await this.applyCheckpoint(attachment, message.checkpoint);
-      return;
-    }
     if (
       attachment.requestedResumeSequence === undefined ||
       message.resumedFromSequence !== attachment.requestedResumeSequence
@@ -856,25 +966,6 @@ export class TerminalStreamRouter {
     attachment.acceptedSequence = message.resumedFromSequence;
     attachment.sequence = message.resumedFromSequence;
     attachment.liveCaughtUp = message.resumedFromSequence >= message.sequence;
-  }
-
-  private async applyCheckpoint(
-    attachment: Attachment,
-    checkpoint: TerminalCheckpoint
-  ): Promise<void | TerminalCheckpointApplyResult> {
-    attachment.scheduler?.flush();
-    attachment.classifier.reset();
-    attachment.outputMetrics.clear();
-    attachment.pendingRenderMetrics.length = 0;
-    const result = await attachment.sink.applyCheckpoint(checkpoint);
-    if (attachment.closed) {
-      return;
-    }
-    attachment.attached = true;
-    attachment.acceptedSequence = checkpoint.sequence;
-    attachment.sequence = checkpoint.sequence;
-    attachment.liveCaughtUp = true;
-    return result;
   }
 
   private applyDelta(
@@ -899,13 +990,13 @@ export class TerminalStreamRouter {
       if (delta.fromSequence !== acceptedSequence) {
         this.failSequenceGap(
           attachment,
-          acceptedSequence + 1,
+          incrementUint64(acceptedSequence),
           delta.segments[0]?.sequence ?? delta.sequence,
           `output delta starts after sequence ${delta.fromSequence}`
         );
         return;
       }
-      let expectedSequence = acceptedSequence + 1;
+      let expectedSequence = incrementUint64(acceptedSequence);
       for (const segment of delta.segments) {
         if (segment.sequence !== expectedSequence) {
           this.failSequenceGap(
@@ -916,7 +1007,7 @@ export class TerminalStreamRouter {
           );
           return;
         }
-        expectedSequence += 1;
+        expectedSequence = incrementUint64(expectedSequence);
       }
       // Admit consecutive output without waiting for each xterm callback. This
       // lets the visible scheduler see the actual MessagePort backlog and
@@ -927,10 +1018,10 @@ export class TerminalStreamRouter {
       return;
     }
 
-    if (delta.sequence !== acceptedSequence + 1) {
+    if (delta.sequence !== incrementUint64(acceptedSequence)) {
       this.failSequenceGap(
         attachment,
-        acceptedSequence + 1,
+        incrementUint64(acceptedSequence),
         delta.sequence,
         "resize delta is not the next terminal mutation"
       );
@@ -1261,7 +1352,7 @@ export class TerminalStreamRouter {
       ) {
         this.failSequenceGap(
           attachment,
-          (currentSequence ?? 0) + 1,
+          incrementUint64(currentSequence ?? uint64(0n)),
           output.delta.segments[0]?.sequence ?? output.delta.sequence,
           "parsed output completed outside mutation order"
         );
@@ -1309,16 +1400,18 @@ export class TerminalStreamRouter {
     if (attachment.closed) {
       return;
     }
-    const currentSequence = attachment.sequence ?? 0;
-    if (message.afterSequence !== currentSequence) {
+    const currentSequence = attachment.sequence ?? uint64(0n);
+    const expectedSequence = incrementUint64(currentSequence);
+    if (message.sequence !== expectedSequence) {
       this.failSequenceGap(
         attachment,
-        currentSequence,
-        message.afterSequence,
+        expectedSequence,
+        message.sequence,
         "terminal exited at a sequence the renderer has not applied"
       );
       return;
     }
+    attachment.sequence = message.sequence;
     await attachment.sink.exit(message);
     this.closeAttachment(attachment, "surface-closed", false);
   }
@@ -1415,7 +1508,7 @@ export class TerminalStreamRouter {
     );
   }
 
-  private recordOutputParsed(attachment: Attachment, sequence: number): void {
+  private recordOutputParsed(attachment: Attachment, sequence: Uint64): void {
     const metrics = attachment.metrics;
     const trace = attachment.outputMetrics.get(sequence);
     if (!metrics || !trace) {
@@ -1510,13 +1603,16 @@ export class TerminalStreamRouter {
       sessionId: attachment.session.sessionId,
       epoch: attachment.session.epoch,
       attachId: attachment.attachId,
-      sequence: trace.sequence,
+      sequence: formatUint64Decimal(trace.sequence),
       byteLength: trace.byteLength,
       presentation: trace.presentation,
       immediateReason: trace.immediateReason,
       visibleAtPtyRead: trace.visibleAtPtyRead,
       inputAcceptedAt: trace.inputAcceptedAt,
-      inputSequence: trace.inputSequence,
+      inputSequence:
+        trace.inputSequence === undefined
+          ? undefined
+          : formatUint64Decimal(trace.inputSequence),
       inputKind: trace.inputKind,
       outputKinds: trace.outputKinds,
       ptyReadAt: trace.ptyReadAt,
@@ -1595,8 +1691,8 @@ export class TerminalStreamRouter {
 
   private failSequenceGap(
     attachment: Attachment,
-    expectedSequence: number,
-    receivedSequence: number,
+    expectedSequence: Uint64,
+    receivedSequence: Uint64,
     message: string
   ): void {
     this.failAttachment(attachment, {
@@ -1634,6 +1730,7 @@ export class TerminalStreamRouter {
       attachment.attached &&
       !attachment.sealed &&
       !attachment.closed &&
+      attachment.checkpoint === null &&
       attachment.acceptedSequence === attachment.sequence &&
       attachment.pendingOutputs.length === 0 &&
       attachment.schedulerContexts.length === 0 &&
@@ -1701,7 +1798,11 @@ export class TerminalStreamRouter {
     }
     // A checkpoint that has not committed does not describe the cached xterm.
     // Cancel it instead of pairing an old widget with the new runtime epoch.
-    if (!attachment.attached || attachment.sequence === null) {
+    if (
+      attachment.checkpoint !== null ||
+      !attachment.attached ||
+      attachment.sequence === null
+    ) {
       this.closeAttachment(attachment, reason, false);
       return promise;
     }
@@ -1741,6 +1842,17 @@ export class TerminalStreamRouter {
 
     const reason = attachment.detachReason ?? "hidden";
     attachment.closed = true;
+    const checkpoint = attachment.checkpoint;
+    attachment.checkpoint = null;
+    try {
+      checkpoint?.hydration.cancel(
+        new Error(
+          `terminal checkpoint cancelled while stream closed (${reason})`
+        )
+      );
+    } catch {
+      // A staged widget cancellation cannot block capability teardown.
+    }
     try {
       attachment.sink.detached?.(reason);
     } catch {

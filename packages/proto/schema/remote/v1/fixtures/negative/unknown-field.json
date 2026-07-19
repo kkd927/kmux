@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request_1",
+  "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "roots": {
+    "installRoot": "/home/user/.local/share/kmux",
+    "authorityRoot": "/home/user/.local/state/kmux/authority",
+    "stateRoot": "/home/user/.local/state/kmux",
+    "runtimeRoot": "/run/user/1000/kmux"
+  },
+  "request": { "type": "hello", "fallback": true }
+}

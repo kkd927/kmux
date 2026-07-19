@@ -3,9 +3,14 @@
 import type {
   TerminalCheckpoint,
   TerminalDataPlaneHostMessage,
-  TerminalSessionRef
+  TerminalSessionRef,
+  Uint64
 } from "@kmux/proto";
-import { TERMINAL_DATA_PLANE_PROTOCOL_VERSION } from "@kmux/proto";
+import {
+  IncrementalSha256,
+  TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64
+} from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -120,26 +125,55 @@ function checkpoint(
   return {
     format: "xterm-vt/1",
     session: checkpointSession,
-    sequence,
+    sequence: u(sequence),
     data: "snapshot",
     cols: 80,
     rows: 24
   };
 }
 
-function attachedCheckpoint(
+function sendCheckpoint(
+  port: FakePort,
   attachId: string,
   checkpointSession = session,
   sequence = 0
-): TerminalDataPlaneHostMessage {
-  return {
+): void {
+  const materialized = checkpoint(sequence, checkpointSession);
+  const { data, ...metadata } = materialized;
+  const bytes = new TextEncoder().encode(data);
+  const chunk = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(chunk).set(bytes);
+  const checkpointId = `checkpoint-${sequence}`;
+  const checkpointEnvelope = {
     protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
     attachId,
-    session: checkpointSession,
-    type: "attached",
-    mode: "checkpoint",
-    checkpoint: checkpoint(sequence, checkpointSession)
+    session: checkpointSession
   };
+  port.receive({
+    ...checkpointEnvelope,
+    type: "checkpoint:begin",
+    checkpointId,
+    purpose: { kind: "attach" },
+    metadata,
+    totalBytes: bytes.byteLength
+  });
+  port.receive({
+    ...checkpointEnvelope,
+    type: "checkpoint:chunk",
+    checkpointId,
+    offset: 0,
+    data: chunk
+  });
+  port.receive({
+    ...checkpointEnvelope,
+    type: "checkpoint:end",
+    checkpointId,
+    digest: new IncrementalSha256().update(bytes).digestHex()
+  });
+}
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
 }
 
 function output(
@@ -155,12 +189,12 @@ function output(
     type: "delta",
     delta: {
       type: "output",
-      fromSequence,
-      sequence: fromSequence + 1,
+      fromSequence: u(fromSequence),
+      sequence: u(fromSequence + 1),
       byteLength: data.length,
       segments: [
         {
-          sequence: fromSequence + 1,
+          sequence: u(fromSequence + 1),
           data,
           byteLength: data.length
         }
@@ -171,7 +205,13 @@ function output(
 
 function sink(): TerminalStreamSink {
   return {
-    applyCheckpoint() {},
+    beginCheckpoint() {
+      return {
+        async writeChunk() {},
+        async commit() {},
+        cancel() {}
+      };
+    },
     applyResume() {},
     write(_data, parsed) {
       parsed();
@@ -239,15 +279,8 @@ describe("TerminalStreamClient", () => {
       expectedSessionId: session.sessionId,
       sink: sink()
     });
-    ports[0]!.receive({
-      protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
-      attachId: "attach_1",
-      session,
-      type: "attached",
-      mode: "checkpoint",
-      checkpoint: checkpoint(7)
-    });
-    await vi.waitFor(() => expect(first?.registration.sequence).toBe(7));
+    sendCheckpoint(ports[0]!, "attach_1", session, 7);
+    await vi.waitFor(() => expect(first?.registration.sequence).toBe(u(7)));
     client.detach(first!);
     await Promise.resolve();
 
@@ -255,11 +288,11 @@ describe("TerminalStreamClient", () => {
       surfaceId: session.surfaceId,
       expectedSessionId: session.sessionId,
       sink: sink(),
-      resumeFromSequence: 7
+      resumeFromSequence: u(7)
     });
     expect(ports[1]!.sent[0]).toMatchObject({
       type: "attach",
-      resumeFromSequence: 7
+      resumeFromSequence: u(7)
     });
     client.detach(resumed!);
     await Promise.resolve();
@@ -268,7 +301,7 @@ describe("TerminalStreamClient", () => {
       surfaceId: session.surfaceId,
       expectedSessionId: session.sessionId,
       sink: sink(),
-      resumeFromSequence: 7
+      resumeFromSequence: u(7)
     });
     expect(ports[2]!.sent[0]).not.toHaveProperty("resumeFromSequence");
     client.dispose();
@@ -315,7 +348,7 @@ describe("TerminalStreamClient", () => {
     });
     target.requestGrant = requestGrant;
     let completeWrite: (() => void) | null = null;
-    let hydratedSequence = 0;
+    let hydratedSequence = u(0);
     const invalidateResume = vi.fn();
     const first = await client.attach({
       surfaceId: session.surfaceId,
@@ -324,14 +357,14 @@ describe("TerminalStreamClient", () => {
         ...sink(),
         write(_data, parsed) {
           completeWrite = () => {
-            hydratedSequence = 1;
+            hydratedSequence = u(1);
             parsed();
           };
         }
       },
       invalidateResume
     });
-    ports[0]!.receive(attachedCheckpoint("attach_settling"));
+    sendCheckpoint(ports[0]!, "attach_settling");
     await vi.waitFor(() => expect(first?.registration.resumeSafe).toBe(true));
     ports[0]!.receive(output("attach_settling", 0, "pending"));
     await vi.waitFor(() => expect(completeWrite).not.toBeNull());
@@ -357,7 +390,7 @@ describe("TerminalStreamClient", () => {
     expect(requestGrant).toHaveBeenCalledTimes(2);
     expect(ports[1]!.sent[0]).toMatchObject({
       type: "attach",
-      resumeFromSequence: 1
+      resumeFromSequence: u(1)
     });
     expect(invalidateResume).not.toHaveBeenCalled();
     client.dispose();
@@ -383,7 +416,7 @@ describe("TerminalStreamClient", () => {
       sink: sink(),
       invalidateResume
     });
-    port.receive(attachedCheckpoint(streamGrant.attachId, session, 4));
+    sendCheckpoint(port, streamGrant.attachId, session, 4);
     await vi.waitFor(() =>
       expect(attached?.registration.resumeSafe).toBe(true)
     );
@@ -420,8 +453,8 @@ describe("TerminalStreamClient", () => {
       },
       invalidateResume: firstInvalidation
     });
-    port.receive(attachedCheckpoint(streamGrant.attachId));
-    await vi.waitFor(() => expect(first?.registration.sequence).toBe(0));
+    sendCheckpoint(port, streamGrant.attachId);
+    await vi.waitFor(() => expect(first?.registration.sequence).toBe(u(0)));
     port.receive(output(streamGrant.attachId, 0, "moving"));
     await vi.waitFor(() => expect(completeWrite).not.toBeNull());
 
@@ -744,8 +777,8 @@ describe("TerminalStreamClient", () => {
       expectedSessionId: session.sessionId,
       sink: sink()
     });
-    port.receive(attachedCheckpoint(streamGrant.attachId));
-    await vi.waitFor(() => expect(attached?.registration.sequence).toBe(0));
+    sendCheckpoint(port, streamGrant.attachId);
+    await vi.waitFor(() => expect(attached?.registration.sequence).toBe(u(0)));
 
     client.forgetSurface(session.surfaceId);
     expect(port.sent.at(-1)).toMatchObject({

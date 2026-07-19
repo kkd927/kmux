@@ -9,6 +9,8 @@ import {
   TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES,
   TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS,
   TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64,
+  type Uint64,
   validateTerminalDataPlaneHostMessage
 } from "@kmux/proto";
 import { describe, expect, it } from "vitest";
@@ -22,7 +24,11 @@ import {
 } from "./terminalWireCoalescing";
 
 function segment(sequence: number, byteLength: number): TerminalOutputSegment {
-  return { sequence, byteLength, data: "x".repeat(byteLength) };
+  return { sequence: u(sequence), byteLength, data: "x".repeat(byteLength) };
+}
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
 }
 
 describe("coalesceTerminalOutputForWire", () => {
@@ -48,8 +54,8 @@ describe("coalesceTerminalOutputForWire", () => {
         byteLength
       }))
     ).toEqual([
-      { fromSequence: 0, sequence: 2, byteLength: 8 },
-      { fromSequence: 2, sequence: 3, byteLength: 4 }
+      { fromSequence: u(0), sequence: u(2), byteLength: 8 },
+      { fromSequence: u(2), sequence: u(3), byteLength: 4 }
     ]);
   });
 
@@ -61,25 +67,25 @@ describe("coalesceTerminalOutputForWire", () => {
 
     expect(deltas).toHaveLength(2);
     expect(deltas[0]).toMatchObject({
-      fromSequence: 0,
-      sequence: 1,
+      fromSequence: u(0),
+      sequence: u(1),
       byteLength: 20,
-      segments: [{ sequence: 1 }]
+      segments: [{ sequence: u(1) }]
     });
     expect(deltas[1]).toMatchObject({
-      fromSequence: 1,
-      sequence: 2,
+      fromSequence: u(1),
+      sequence: u(2),
       byteLength: 2
     });
   });
 
   it("accounts retained cwd UTF-8 bytes separately from output credit", () => {
-    const delta: TerminalDelta = {
+    const delta: Extract<TerminalDelta, { type: "output" }> = {
       type: "output",
-      fromSequence: 0,
-      sequence: 1,
+      fromSequence: u(0),
+      sequence: u(1),
       byteLength: 1,
-      segments: [{ sequence: 1, data: "x", byteLength: 1, cwd: "/한" }]
+      segments: [{ sequence: u(1), data: "x", byteLength: 1, cwd: "/한" }]
     };
 
     expect(terminalDeltaRetainedBytes(delta)).toBe(5);
@@ -87,35 +93,35 @@ describe("coalesceTerminalOutputForWire", () => {
   });
 
   it("slices a retained output after an internal segment cursor", () => {
-    const output: TerminalDelta = {
+    const output: Extract<TerminalDelta, { type: "output" }> = {
       type: "output",
-      fromSequence: 10,
-      sequence: 13,
+      fromSequence: u(10),
+      sequence: u(13),
       byteLength: 12,
       segments: [segment(11, 3), segment(12, 4), segment(13, 5)]
     };
     output.segments[2]!.cwd = "/workspace";
 
-    expect(sliceTerminalOutputAfterSequence(output, 12)).toEqual({
+    expect(sliceTerminalOutputAfterSequence(output, u(12))).toEqual({
       type: "output",
-      fromSequence: 12,
-      sequence: 13,
+      fromSequence: u(12),
+      sequence: u(13),
       byteLength: 5,
       segments: [
         {
-          sequence: 13,
+          sequence: u(13),
           data: "xxxxx",
           byteLength: 5,
           cwd: "/workspace"
         }
       ]
     });
-    expect(sliceTerminalOutputAfterSequence(output, 10)).toBeNull();
-    expect(sliceTerminalOutputAfterSequence(output, 13)).toBeNull();
+    expect(sliceTerminalOutputAfterSequence(output, u(10))).toBeNull();
+    expect(sliceTerminalOutputAfterSequence(output, u(13))).toBeNull();
     expect(
       sliceTerminalOutputAfterSequence(
-        { type: "resize", sequence: 13, cols: 80, rows: 24 },
-        12
+        { type: "resize", sequence: u(13), cols: 80, rows: 24 },
+        u(12)
       )
     ).toBeNull();
   });
@@ -126,7 +132,7 @@ describe("coalesceTerminalOutputForWire", () => {
       ptyReadAt: 20,
       headlessCommitAt: 21,
       inputAcceptedAt: 19,
-      inputSequence: 1
+      inputSequence: u(1)
     };
 
     const deltas = coalesceTerminalOutputForWire(
@@ -135,9 +141,9 @@ describe("coalesceTerminalOutputForWire", () => {
     );
 
     expect(deltas).toMatchObject([
-      { fromSequence: 0, sequence: 1, byteLength: 4 },
-      { fromSequence: 1, sequence: 2, byteLength: 4 },
-      { fromSequence: 2, sequence: 3, byteLength: 4 }
+      { fromSequence: u(0), sequence: u(1), byteLength: 4 },
+      { fromSequence: u(1), sequence: u(2), byteLength: 4 },
+      { fromSequence: u(2), sequence: u(3), byteLength: 4 }
     ]);
   });
 
@@ -157,14 +163,14 @@ describe("coalesceTerminalOutputForWire", () => {
       }))
     ).toEqual([
       {
-        fromSequence: 0,
-        sequence: TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS,
+        fromSequence: u(0),
+        sequence: u(TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS),
         byteLength: TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS,
         segments: TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS
       },
       {
-        fromSequence: TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS,
-        sequence: TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS + 1,
+        fromSequence: u(TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS),
+        sequence: u(TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS + 1),
         byteLength: 1,
         segments: 1
       }
@@ -234,8 +240,8 @@ describe("coalesceTerminalOutputForWire", () => {
         type: "delta",
         delta: {
           type: "output",
-          fromSequence: 0,
-          sequence: 5,
+          fromSequence: u(0),
+          sequence: u(5),
           byteLength: 5,
           segments: cwdSegments
         }
@@ -243,7 +249,7 @@ describe("coalesceTerminalOutputForWire", () => {
     ).toMatchObject({ ok: false });
 
     const largeSource = {
-      sequence: 1,
+      sequence: u(1),
       data: "x".repeat(TERMINAL_DATA_PLANE_MAX_DELTA_BYTES),
       byteLength: TERMINAL_DATA_PLANE_MAX_DELTA_BYTES,
       cwd
@@ -267,8 +273,8 @@ describe("coalesceTerminalOutputForWire", () => {
   it("coalesces ring replay output without crossing resize barriers", () => {
     const output = (sequence: number): TerminalDelta => ({
       type: "output",
-      fromSequence: sequence - 1,
-      sequence,
+      fromSequence: u(sequence - 1),
+      sequence: u(sequence),
       byteLength: 4,
       segments: [segment(sequence, 4)]
     });
@@ -276,16 +282,16 @@ describe("coalesceTerminalOutputForWire", () => {
       [
         output(1),
         output(2),
-        { type: "resize", sequence: 3, cols: 100, rows: 30 },
+        { type: "resize", sequence: u(3), cols: 100, rows: 30 },
         output(4)
       ],
       16
     );
 
     expect(deltas).toMatchObject([
-      { type: "output", fromSequence: 0, sequence: 2, byteLength: 8 },
-      { type: "resize", sequence: 3, cols: 100, rows: 30 },
-      { type: "output", fromSequence: 3, sequence: 4, byteLength: 4 }
+      { type: "output", fromSequence: u(0), sequence: u(2), byteLength: 8 },
+      { type: "resize", sequence: u(3), cols: 100, rows: 30 },
+      { type: "output", fromSequence: u(3), sequence: u(4), byteLength: 4 }
     ]);
   });
 });

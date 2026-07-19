@@ -26,6 +26,7 @@ function createSnapshot(count = 31): ExternalAgentSessionsSnapshot {
       const sessionNumber = index + 1;
       return {
         key: `${vendor.vendor}:session-${sessionNumber}`,
+        target: { kind: "local" as const },
         vendor: vendor.vendor,
         vendorLabel: vendor.vendorLabel,
         title:
@@ -129,6 +130,57 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).toContain("Session 31");
   });
 
+  it("shows immutable target identity and target-local degradation", () => {
+    act(() => {
+      root.render(
+        <ExternalSessionsPanel
+          snapshot={{
+            updatedAt: "2026-07-18T00:00:00.000Z",
+            sessions: [
+              {
+                key: "ssh:target_1:codex:session-1",
+                target: {
+                  kind: "ssh",
+                  targetId: "target_1",
+                  principal: { uid: 1_000, accountName: "kmux" }
+                },
+                vendor: "codex",
+                vendorLabel: "CODEX",
+                title: "Remote session",
+                relativeTimeLabel: "1m",
+                canResume: true,
+                resumeCommandPreview: "codex resume session-1"
+              }
+            ],
+            unavailableTargets: [
+              {
+                kind: "ssh",
+                targetId: "target_2",
+                message: "metadata channel unavailable"
+              }
+            ]
+          }}
+          loading={false}
+          error={null}
+          onRefresh={() => undefined}
+          onResume={() => undefined}
+        />
+      );
+    });
+
+    expect(container.textContent).toContain("kmux@target_1");
+    expect(
+      container
+        .querySelector("[data-testid='external-session-row']")
+        ?.getAttribute("aria-label")
+    ).toContain("on kmux@target_1");
+    expect(
+      container.querySelector(
+        "[data-testid='external-sessions-target-unavailable']"
+      )?.textContent
+    ).toContain("SSH target_2 history unavailable");
+  });
+
   it("filters sessions by agent and resets paging", () => {
     act(() => {
       root.render(
@@ -215,6 +267,7 @@ describe("ExternalSessionsPanel", () => {
             sessions: [
               {
                 key: "codex:session-1",
+                target: { kind: "local" },
                 vendor: "codex",
                 vendorLabel: "CODEX",
                 title: "Codex session",
@@ -226,6 +279,7 @@ describe("ExternalSessionsPanel", () => {
               },
               {
                 key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
+                target: { kind: "local" },
                 vendor: "antigravity",
                 vendorLabel: "AGY",
                 title: "Antigravity 9a8b7c6",

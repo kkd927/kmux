@@ -43,8 +43,62 @@ jobs:
       - run: npm run lint
       - run: npm run test
 
-  package-macos:
+  remote-runtime-artifacts:
+    name: Remote runtime (${{ matrix.target }})
     needs: release-metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - target: darwin-x64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+          - target: linux-x64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.0
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Rust toolchain and native target
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup target add --toolchain 1.97.0 "${{ matrix.rust_target }}"
+      - name: Install native musl linker
+        if: startsWith(matrix.target, 'linux-')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build and validate matching remote runtime
+        run: npm run gate:ssh:native
+      - name: Preserve remote runtime permissions
+        run: |
+          tar -C remote/kmuxd/dist \
+            -cf "$RUNNER_TEMP/remote-runtime-${{ matrix.target }}.tar" \
+            "${{ matrix.target }}"
+      - name: Upload remote runtime artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/remote-runtime-${{ matrix.target }}.tar
+          if-no-files-found: error
+          compression-level: 0
+
+  package-macos:
+    needs:
+      - release-metadata
+      - remote-runtime-artifacts
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +143,21 @@ jobs:
             echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Download remote runtime artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: remote-runtime-*
+          path: ${{ runner.temp }}/remote-runtime-artifacts
+          merge-multiple: true
+      - name: Restore remote runtime artifacts
+        run: |
+          mkdir -p remote/kmuxd/dist
+          for target in darwin-arm64 darwin-x64 linux-arm64-musl linux-x64-musl; do
+            archive="$RUNNER_TEMP/remote-runtime-artifacts/remote-runtime-$target.tar"
+            test -f "$archive"
+            tar -xf "$archive" -C remote/kmuxd/dist
+          done
+      - run: npm run verify:remote:artifacts
       - run: npm run build
       - run: npm run rebuild:electron
       - name: Package macOS release assets
@@ -130,7 +199,9 @@ jobs:
           compression-level: 0
 
   package-linux:
-    needs: release-metadata
+    needs:
+      - release-metadata
+      - remote-runtime-artifacts
     strategy:
       fail-fast: false
       matrix:
@@ -147,6 +218,21 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Download remote runtime artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: remote-runtime-*
+          path: ${{ runner.temp }}/remote-runtime-artifacts
+          merge-multiple: true
+      - name: Restore remote runtime artifacts
+        run: |
+          mkdir -p remote/kmuxd/dist
+          for target in darwin-arm64 darwin-x64 linux-arm64-musl linux-x64-musl; do
+            archive="$RUNNER_TEMP/remote-runtime-artifacts/remote-runtime-$target.tar"
+            test -f "$archive"
+            tar -xf "$archive" -C remote/kmuxd/dist
+          done
+      - run: npm run verify:remote:artifacts:cross-host
       - run: npm run build
       - run: npm run rebuild:electron
       - name: Package Linux release assets

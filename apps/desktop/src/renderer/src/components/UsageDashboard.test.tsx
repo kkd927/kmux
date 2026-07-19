@@ -141,6 +141,7 @@ describe("UsageDashboard", () => {
       totalTodayTokens: 31,
       directoryHotspots: [
         {
+          target: { kind: "local" },
           directoryPath: "/tmp/kmux-unpriced",
           directoryLabel: "kmux-unpriced",
           todayCostUsd: 0,
@@ -164,6 +165,75 @@ describe("UsageDashboard", () => {
     );
     expect(row?.textContent).toContain("31");
     expect(cost?.textContent).toBe("—");
+  });
+
+  it("keeps identical directory paths distinct by target and exposes degradation", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-07-18", "2026-07-18T02:00:00.000Z"),
+      totalTodayTokens: 30,
+      directoryHotspots: [
+        {
+          target: { kind: "local" },
+          directoryPath: "/srv/repo",
+          directoryLabel: "repo",
+          todayCostUsd: 0,
+          todayTokens: 10
+        },
+        {
+          target: {
+            kind: "ssh",
+            targetId: "target_1",
+            principal: { uid: 1_000, accountName: "kmux" }
+          },
+          directoryPath: "/srv/repo",
+          directoryLabel: "repo",
+          todayCostUsd: 0,
+          todayTokens: 20
+        }
+      ],
+      targets: [
+        {
+          target: {
+            kind: "ssh",
+            targetId: "target_1",
+            principal: { uid: 1_000, accountName: "kmux" }
+          },
+          todayCostUsd: 0,
+          todayTokens: 20,
+          truncated: true
+        }
+      ],
+      unavailableTargets: [
+        {
+          kind: "ssh",
+          targetId: "target_2",
+          message: "usage channel unavailable"
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const rows = container.querySelectorAll(
+      "[data-testid^='directory-hotspot-row-']"
+    );
+    expect(rows).toHaveLength(2);
+    const rowText = Array.from(rows, (row) => row.textContent ?? "");
+    expect(rowText).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("repo · Local"),
+        expect.stringContaining("repo · kmux@target_1")
+      ])
+    );
+    const status = container.querySelector(
+      "[data-testid='usage-target-status']"
+    );
+    expect(status?.textContent).toContain("SSH target_2 usage unavailable");
+    expect(status?.textContent).toContain("kmux@target_1 usage is truncated");
   });
 
   it("renders unlimited Codex credits as a full percentage meter", () => {

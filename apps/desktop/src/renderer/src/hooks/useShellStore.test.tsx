@@ -38,6 +38,7 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
     workspaceRows: [
       {
         workspaceId: "workspace_1",
+        targetKind: "local",
         name: "alpha",
         nameLocked: true,
         summary: "repo / shell",

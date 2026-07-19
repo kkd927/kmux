@@ -1118,7 +1118,8 @@
 
 .palette input,
 .settings input,
-.settings select {
+.settings select,
+.settings textarea {
   width: 100%;
   border-radius: 4px;
   border: 1px solid var(--input-border);
@@ -1133,7 +1134,8 @@
 
 .palette input:focus,
 .settings input:focus,
-.settings select:focus {
+.settings select:focus,
+.settings textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
@@ -4086,5 +4088,107 @@
 
   .usageSessionVendor {
     display: none;
+  }
+}
+
+.sshConnectionLayout {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(280px, 1.4fr);
+  gap: 14px;
+  min-height: 260px;
+}
+
+.sshConnectionList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: auto;
+}
+
+.sshConnectionList button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.sshConnectionList button[data-selected="true"] {
+  background: var(--button-hover);
+  border-color: var(--accent);
+}
+
+.sshConnectionList button span,
+.sshRetainedList small {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.sshConnectionDetails {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: auto;
+}
+
+.sshConnectionFacts,
+.sshProfileEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sshConnectionFacts > div,
+.sshProfileEditor > label {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.55fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.sshConnectionFacts code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sshProfileEditor textarea {
+  resize: vertical;
+  font-family: var(--kmux-terminal-font-family);
+}
+
+.sshRetainedList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sshRetainedList > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.sshRetainedList span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+@media (max-width: 760px) {
+  .sshConnectionLayout {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

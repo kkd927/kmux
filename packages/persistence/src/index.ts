@@ -1,20 +1,31 @@
 import {
+  closeSync,
+  constants,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
+  writeSync,
   writeFileSync
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
-import { sanitizeSettings, type AppState } from "@kmux/core";
+import {
+  decodeAppStateDto,
+  encodeAppStateDto,
+  sanitizeSettings,
+  type AppState,
+  type AppStateDto
+} from "@kmux/core";
 import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
-const SNAPSHOT_STORE_VERSION = 1;
+const SNAPSHOT_STORE_VERSION = 2;
 const WINDOW_STATE_STORE_VERSION = 1;
 const USAGE_HISTORY_STORE_VERSION = 1;
 const DEFAULT_SOCKET_FILE_NAME = "control.sock";
@@ -48,6 +59,13 @@ export interface AppPaths {
   usageHistoryPath: string;
   shellEnvCachePath: string;
   antigravitySessionsPath: string;
+  desktopInstallationIdentityPath: string;
+  sshProfilesPath: string;
+  remoteTargetBindingsPath: string;
+  remoteOperationRoot: string;
+  remoteEventReceiptRoot: string;
+  conversionWalRoot: string;
+  retainedSessionInventoryPath: string;
   captureRoot: string;
   attachmentRoot: string;
   rawOutputRoot: string;
@@ -103,7 +121,7 @@ interface SnapshotEnvelope {
   version: number;
   cleanShutdown?: boolean;
   restoreOnLaunch?: boolean;
-  snapshot: AppState;
+  snapshot: AppStateDto;
 }
 
 export interface SnapshotRecord {
@@ -134,6 +152,7 @@ export interface SnapshotFileStore {
   load(): AppState | null;
   loadRecord(): SnapshotRecord | null;
   save(snapshot: AppState, options?: SnapshotSaveOptions): void;
+  saveDurable(snapshot: AppState, options?: SnapshotSaveOptions): void;
 }
 
 export interface WindowStateFileStore {
@@ -249,13 +268,74 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
+function durableAtomicWrite(filePath: string, content: string): void {
+  const parent = dirname(filePath);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const parentStats = lstatSync(parent);
+  if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+    throw new Error("durable snapshot parent must be a real directory");
+  }
+  if (existsSync(filePath)) {
+    const targetStats = lstatSync(filePath);
+    if (targetStats.isSymbolicLink() || !targetStats.isFile()) {
+      throw new Error("durable snapshot target must be a regular file");
+    }
+  }
+  const temporaryPath = join(parent, `.${randomUUID()}.snapshot.tmp`);
+  const bytes = new TextEncoder().encode(content);
+  let fileDescriptor: number | undefined;
+  let directoryDescriptor: number | undefined;
+  let renamed = false;
+  try {
+    fileDescriptor = openSync(
+      temporaryPath,
+      constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_WRONLY |
+        (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = writeSync(
+        fileDescriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset
+      );
+      if (!Number.isInteger(written) || written <= 0) {
+        throw new Error("durable snapshot write made no progress");
+      }
+      offset += written;
+    }
+    fsyncSync(fileDescriptor);
+    closeSync(fileDescriptor);
+    fileDescriptor = undefined;
+    renameSync(temporaryPath, filePath);
+    renamed = true;
+    directoryDescriptor = openSync(
+      parent,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0)
+    );
+    fsyncSync(directoryDescriptor);
+    closeSync(directoryDescriptor);
+    directoryDescriptor = undefined;
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+    if (!renamed && existsSync(temporaryPath)) {
+      rmSync(temporaryPath, { force: true });
+    }
+  }
+}
+
 export function createSnapshotStore(statePath: string): SnapshotFileStore {
   const loadRecord = (): SnapshotRecord | null => {
     const envelope = readJsonFile<Partial<SnapshotEnvelope>>(statePath);
     if (!envelope) {
       return null;
     }
-    if (envelope.version !== SNAPSHOT_STORE_VERSION) {
+    if (envelope.version !== 1 && envelope.version !== SNAPSHOT_STORE_VERSION) {
       warnInvalidFile(
         statePath,
         `unsupported version ${String(envelope.version)}`
@@ -266,12 +346,31 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
       warnInvalidFile(statePath, "missing snapshot payload");
       return null;
     }
-    return {
-      snapshot: envelope.snapshot,
-      cleanShutdown: envelope.cleanShutdown === true,
-      restoreOnLaunch: envelope.restoreOnLaunch === true
-    };
+    try {
+      return {
+        snapshot: decodeAppStateDto(envelope.snapshot),
+        cleanShutdown: envelope.cleanShutdown === true,
+        restoreOnLaunch: envelope.restoreOnLaunch === true
+      };
+    } catch (error) {
+      warnInvalidFile(
+        statePath,
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    }
   };
+
+  const encodeSnapshot = (
+    snapshot: AppState,
+    options: SnapshotSaveOptions
+  ): string =>
+    JSON.stringify({
+      version: SNAPSHOT_STORE_VERSION,
+      cleanShutdown: options.cleanShutdown === true,
+      restoreOnLaunch: options.restoreOnLaunch === true,
+      snapshot: encodeAppStateDto(snapshot)
+    } satisfies SnapshotEnvelope);
 
   return {
     path: statePath,
@@ -280,15 +379,10 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
     },
     loadRecord,
     save(snapshot, options = {}) {
-      atomicWrite(
-        statePath,
-        JSON.stringify({
-          version: SNAPSHOT_STORE_VERSION,
-          cleanShutdown: options.cleanShutdown === true,
-          restoreOnLaunch: options.restoreOnLaunch === true,
-          snapshot
-        } satisfies SnapshotEnvelope)
-      );
+      atomicWrite(statePath, encodeSnapshot(snapshot, options));
+    },
+    saveDurable(snapshot, options = {}) {
+      durableAtomicWrite(statePath, encodeSnapshot(snapshot, options));
     }
   };
 }
@@ -751,6 +845,25 @@ export function resolveAppPaths(options: ResolveAppPathsOptions): AppPaths {
     usageHistoryPath: join(stateDir.path, "usage-history.json"),
     shellEnvCachePath: join(stateDir.path, "shell-env.json"),
     antigravitySessionsPath: join(stateDir.path, "antigravity-sessions.json"),
+    desktopInstallationIdentityPath: join(
+      stateDir.path,
+      "remote",
+      "desktop-installation.json"
+    ),
+    sshProfilesPath: join(configDir.path, "ssh-connections.json"),
+    remoteTargetBindingsPath: join(
+      stateDir.path,
+      "remote",
+      "target-bindings.json"
+    ),
+    remoteOperationRoot: join(stateDir.path, "remote", "operations"),
+    remoteEventReceiptRoot: join(stateDir.path, "remote", "event-receipts"),
+    conversionWalRoot: join(stateDir.path, "remote", "conversions"),
+    retainedSessionInventoryPath: join(
+      stateDir.path,
+      "remote",
+      "retained-sessions.json"
+    ),
     captureRoot: join(
       isLinux ? stateDir.path : effectiveRuntimeDir,
       "captures"

@@ -1,4 +1,9 @@
-import { applyAction, createInitialState, type AppAction } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  encodeLocatedPathDto,
+  type AppAction
+} from "@kmux/core";
 import { afterEach, vi } from "vitest";
 
 import { createTerminalBridge } from "./terminalBridge";
@@ -7,6 +12,71 @@ describe("terminal bridge", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("fails closed instead of sending an SSH session to the local PTY host", async () => {
+    const state = createInitialState();
+    const existing = new Set(Object.keys(state.workspaces));
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app"
+    });
+    const workspaceId = Object.keys(state.workspaces).find(
+      (id) => !existing.has(id)
+    )!;
+    const pane = state.panes[state.workspaces[workspaceId].activePaneId];
+    const surfaceId = pane.activeSurfaceId;
+    const sessionId = state.surfaces[surfaceId].sessionId;
+    const onSurfaceInputText = vi.fn();
+    const ptyHost = {
+      sendText: vi.fn(),
+      sendKey: vi.fn(),
+      snapshot: vi.fn(),
+      sessionRef: vi.fn(() => ({ surfaceId, sessionId, epoch: "epoch_local" }))
+    };
+    const dispatchAppAction = vi.fn();
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => ptyHost as never,
+      onSurfaceInputText
+    });
+
+    expect(bridge.surfaceSessionId(surfaceId)).toBeNull();
+    expect(() => bridge.sendText(surfaceId, "whoami\n")).toThrow(
+      /target provider/
+    );
+    expect(() => bridge.sendKeyInput(surfaceId, { key: "Enter" })).toThrow(
+      /target provider/
+    );
+    await expect(bridge.snapshotSurface(surfaceId)).rejects.toThrow(
+      /target provider/
+    );
+    bridge.handlePtyEvent({
+      type: "spawned",
+      sessionId,
+      pid: 1234,
+      shellInputReady: true
+    });
+    bridge.handlePtyEvent({
+      type: "exit",
+      payload: {
+        surfaceId,
+        sessionId,
+        exitCode: 0
+      }
+    });
+    bridge.handlePtyEvent({
+      type: "input.observed",
+      session: { surfaceId, sessionId, epoch: "epoch_local" },
+      input: { type: "text", text: "local leakage" }
+    });
+    expect(ptyHost.sendText).not.toHaveBeenCalled();
+    expect(ptyHost.sendKey).not.toHaveBeenCalled();
+    expect(ptyHost.snapshot).not.toHaveBeenCalled();
+    expect(onSurfaceInputText).not.toHaveBeenCalled();
+    expect(dispatchAppAction).not.toHaveBeenCalled();
   });
 
   it("routes BEL events to the terminal bell action", () => {
@@ -139,7 +209,9 @@ describe("terminal bridge", () => {
       type: "session.exited",
       sessionId: surface.sessionId
     });
-    expect(state.sessions[surface.sessionId].runtimeState).toBe("exited");
+    expect(state.sessions[surface.sessionId].runtimeStatus.processState).toBe(
+      "exited"
+    );
   });
 
   it("coalesces frequent title metadata per surface", () => {
@@ -420,7 +492,7 @@ describe("terminal bridge", () => {
       paneId: surface.paneId,
       surfaceId,
       title: surface.title,
-      message: surface.cwd ?? "Terminal notification",
+      message: encodeLocatedPathDto(surface.cwd).path,
       source: "terminal"
     });
   });
@@ -804,10 +876,14 @@ describe("terminal bridge", () => {
       timeoutMs: 5000
     });
 
-    expect(ptyHost.snapshot).toHaveBeenCalledWith(surface.sessionId, surfaceId, {
-      settleForMs: 300,
-      timeoutMs: 5000
-    });
+    expect(ptyHost.snapshot).toHaveBeenCalledWith(
+      surface.sessionId,
+      surfaceId,
+      {
+        settleForMs: 300,
+        timeoutMs: 5000
+      }
+    );
   });
 
   it("notifies usage runtime listeners when terminal input text is sent", () => {

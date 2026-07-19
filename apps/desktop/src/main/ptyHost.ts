@@ -85,6 +85,13 @@ interface PendingStop {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface PendingSessionClose {
+  session: TerminalSessionRef;
+  resolve: (outcome: "terminated" | "already-exited") => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 export class PtyHostManager extends EventEmitter {
   private child: UtilityProcess | null = null;
   private intentionallyStopped = false;
@@ -112,6 +119,7 @@ export class PtyHostManager extends EventEmitter {
       timeout: ReturnType<typeof setTimeout>;
     }
   >();
+  private readonly pendingSessionCloses = new Map<Id, PendingSessionClose>();
   constructor(private readonly forkProcess: ForkPtyHostProcess) {
     super();
   }
@@ -193,6 +201,27 @@ export class PtyHostManager extends EventEmitter {
       }
       if (event.type === "snapshot") {
         this.resolvePendingSnapshot(event.requestId, event.payload);
+        return;
+      }
+      if (event.type === "close.ack") {
+        const pending = this.pendingSessionCloses.get(event.requestId);
+        if (!pending) return;
+        this.pendingSessionCloses.delete(event.requestId);
+        clearTimeout(pending.timeout);
+        if (
+          event.sessionId !== pending.session.sessionId ||
+          event.surfaceId !== pending.session.surfaceId ||
+          event.runtimeEpoch !== pending.session.epoch ||
+          event.outcome === "generation-mismatch"
+        ) {
+          pending.reject(
+            new Error("local session close acknowledgement generation differs")
+          );
+          return;
+        }
+        this.sessionRefs.delete(event.sessionId);
+        this.exitedSessions.delete(event.sessionId);
+        pending.resolve(event.outcome);
         return;
       }
       if (event.type === "spawned") {
@@ -412,6 +441,13 @@ export class PtyHostManager extends EventEmitter {
       pending.resolve(false);
     }
     this.pendingDiagnosticsConfigurations.clear();
+    for (const pending of this.pendingSessionCloses.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(
+        new Error("pty-host exited before local session close acknowledgement")
+      );
+    }
+    this.pendingSessionCloses.clear();
     this.flushPendingSnapshots();
   }
 
@@ -443,7 +479,10 @@ export class PtyHostManager extends EventEmitter {
           sessionId: message.spec.sessionId,
           epoch: message.spec.runtimeEpoch
         });
-      } else if (message.type === "close") {
+      } else if (
+        message.type === "close" &&
+        message.expectedRuntimeEpoch === undefined
+      ) {
         this.sessionRefs.delete(message.sessionId);
         this.exitedSessions.delete(message.sessionId);
       }
@@ -451,7 +490,10 @@ export class PtyHostManager extends EventEmitter {
       if (message.type === "spawn") {
         this.sessionRefs.delete(message.spec.sessionId);
         this.exitedSessions.delete(message.spec.sessionId);
-      } else if (message.type === "close") {
+      } else if (
+        message.type === "close" &&
+        message.expectedRuntimeEpoch === undefined
+      ) {
         this.sessionRefs.delete(message.sessionId);
         this.exitedSessions.delete(message.sessionId);
       }
@@ -468,6 +510,14 @@ export class PtyHostManager extends EventEmitter {
     request: PtyRequest,
     message: string
   ): void {
+    if (request.type === "close" && request.requestId) {
+      const pending = this.pendingSessionCloses.get(request.requestId);
+      if (pending) {
+        this.pendingSessionCloses.delete(request.requestId);
+        clearTimeout(pending.timeout);
+        pending.reject(new Error(message));
+      }
+    }
     const sessionId = requestSessionId(request);
     this.emit("event", {
       type: "error",
@@ -497,6 +547,40 @@ export class PtyHostManager extends EventEmitter {
       return null;
     }
     return { ...session };
+  }
+
+  closeSessionGeneration(
+    session: TerminalSessionRef,
+    timeoutMs = 10_000
+  ): Promise<"terminated" | "already-exited"> {
+    const current = this.sessionRef(session.surfaceId, session.sessionId);
+    if (!current) return Promise.resolve("already-exited");
+    if (current.epoch !== session.epoch) {
+      return Promise.reject(
+        new Error("local session generation changed before conversion cleanup")
+      );
+    }
+    const requestId = makeId("pty-close");
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (this.pendingSessionCloses.delete(requestId)) {
+          reject(new Error("local session close acknowledgement timed out"));
+        }
+      }, timeoutMs);
+      this.pendingSessionCloses.set(requestId, {
+        session: { ...session },
+        resolve,
+        reject,
+        timeout
+      });
+      this.send({
+        type: "close",
+        requestId,
+        sessionId: session.sessionId,
+        surfaceId: session.surfaceId,
+        expectedRuntimeEpoch: session.epoch
+      });
+    });
   }
 
   bindTerminalStream(

@@ -1,4 +1,9 @@
-import { applyAction, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  encodeLocatedPathDto,
+  locatedPathForTarget
+} from "@kmux/core";
 import { vi } from "vitest";
 
 const { resolveGitBranch, resolveGitRepository, resolveListeningPorts } =
@@ -22,7 +27,28 @@ vi.mock("node:fs", () => ({
   watch
 }));
 
-import { createMetadataRuntime } from "./metadataRuntime";
+import { createMetadataRuntime as createMetadataRuntimeImpl } from "./metadataRuntime";
+
+function localPath(value: string) {
+  return locatedPathForTarget({ kind: "local" }, value);
+}
+
+type MetadataRuntimeOptions = Parameters<typeof createMetadataRuntimeImpl>[0];
+
+function createMetadataRuntime(
+  options: Omit<MetadataRuntimeOptions, "resolveLocalPath"> &
+    Partial<Pick<MetadataRuntimeOptions, "resolveLocalPath">>
+) {
+  return createMetadataRuntimeImpl({
+    resolveLocalPath: (path) => {
+      if (path.kind !== "local") {
+        throw new Error("test local provider rejected an SSH path");
+      }
+      return encodeLocatedPathDto(path).path;
+    },
+    ...options
+  });
+}
 
 async function flushMetadataRuntime(): Promise<void> {
   await Promise.resolve();
@@ -44,7 +70,7 @@ describe("metadata runtime", () => {
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
     const session = state.sessions[surface.sessionId];
-    surface.cwd = "/tmp/kmux";
+    surface.cwd = localPath("/tmp/kmux");
     session.pid = 123;
     const dispatchAppAction = vi.fn();
     const env = { PATH: "/usr/bin:/bin" };
@@ -145,7 +171,7 @@ describe("metadata runtime", () => {
   it("closes the repo watcher when a tracked surface is removed", async () => {
     const state = createInitialState("/bin/zsh");
     const surfaceId = Object.keys(state.surfaces)[0];
-    state.surfaces[surfaceId].cwd = "/tmp/kmux";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux");
     const watcher = { close: vi.fn(), on: vi.fn() };
     watch.mockReturnValue(watcher);
     resolveGitRepository.mockResolvedValue({
@@ -179,7 +205,7 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const firstSurfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[firstSurfaceId].cwd = "/tmp/repo-a/first";
+    state.surfaces[firstSurfaceId].cwd = localPath("/tmp/repo-a/first");
     applyAction(state, {
       type: "surface.create",
       paneId,
@@ -219,7 +245,7 @@ describe("metadata runtime", () => {
       dispatchAppAction.mockClear();
       resolveGitBranch.mockClear();
       resolveGitBranch.mockResolvedValueOnce("repo-a-updated");
-      state.surfaces[firstSurfaceId].cwd = "/tmp/repo-b";
+      state.surfaces[firstSurfaceId].cwd = localPath("/tmp/repo-b");
       runtime.handleAppAction({
         type: "surface.metadata",
         surfaceId: firstSurfaceId,
@@ -254,7 +280,7 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/repo-wt";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     const watcher = { close: vi.fn(), on: vi.fn() };
     watch.mockReturnValue(watcher);
@@ -286,9 +312,11 @@ describe("metadata runtime", () => {
           branch: "feature/wt"
         })
       });
-      expect(state.workspaces[workspaceId].detectedWorktree?.path).toBe(
-        "/tmp/repo-wt"
-      );
+      expect(
+        encodeLocatedPathDto(
+          state.workspaces[workspaceId].detectedWorktree!.path
+        ).path
+      ).toBe("/tmp/repo-wt");
     } finally {
       runtime.dispose();
     }
@@ -300,7 +328,7 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/repo-wt";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     let headListener:
       | ((eventType: string, filename: string | Buffer | null) => void)

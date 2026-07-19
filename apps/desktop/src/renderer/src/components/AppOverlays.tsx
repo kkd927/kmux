@@ -13,6 +13,8 @@ import type {
   NotificationItem,
   ResolvedTerminalThemeVm,
   ResolvedTerminalTypographyVm,
+  SshAskpassPrompt,
+  SshConnectionsSnapshot,
   WorktreeConversionPreview,
   WorktreeDirtyEntryGroup,
   WorkspaceRowVm,
@@ -42,6 +44,7 @@ import {
   describeTerminalTypographySupportLines
 } from "../terminalTypography";
 import { NotificationsPanel } from "./NotificationsPanel";
+import { SshConnectionsSettings } from "./SshConnectionsSettings";
 import { WorkspaceContextMenu } from "./WorkspaceContextMenu";
 
 interface AppOverlaysProps {
@@ -121,7 +124,27 @@ interface AppOverlaysProps {
   onDismissDetectedWorktree: () => void;
   onChangeWorktreeName: (name: string) => void;
   onConfirmWorktreeDialog: () => void;
+  sshAskpassPrompt: (SshAskpassPrompt & { response: string }) | null;
+  onChangeSshAskpassResponse: (response: string) => void;
+  onCancelSshAskpass: () => void;
+  onSubmitSshAskpass: () => void;
+  sshWorkspaceDialog: {
+    workspaceId: string;
+    sourceTargetKind: "local" | "ssh";
+    connections: SshConnectionsSnapshot | null;
+    selectedProfileId: string | null;
+    continuation: "convert" | "create";
+    phase: "idle" | "preparing" | "committing";
+    requestId?: string;
+    error?: string | null;
+  } | null;
+  onCloseSshWorkspaceDialog: () => void;
+  onSelectSshProfile: (profileId: string) => void;
+  onSelectSshContinuation: (continuation: "convert" | "create") => void;
+  onConfirmSshWorkspace: () => void;
+  onManageSshConnections: () => void;
   settingsOpen: boolean;
+  settingsInitialCategory: "general" | "ssh" | "terminal" | "notifications" | "shortcuts";
   settingsDraft: KmuxSettings | undefined;
   setSettingsDraft: Dispatch<SetStateAction<KmuxSettings | undefined>>;
   settingsThemeNotice: string | null;
@@ -149,6 +172,7 @@ type SettingsDraftPatch = Partial<
 
 type SettingsCategoryId =
   | "general"
+  | "ssh"
   | "terminal"
   | "notifications"
   | "shortcuts";
@@ -162,6 +186,11 @@ const SETTINGS_CATEGORIES: Array<{
     id: "general",
     label: "General",
     description: "App behavior"
+  },
+  {
+    id: "ssh",
+    label: "SSH Connections",
+    description: "Remote profiles"
   },
   {
     id: "terminal",
@@ -414,11 +443,11 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
   useEffect(() => {
     setDiagnosticLogClearStatus("idle");
     if (props.settingsOpen) {
-      setActiveSettingsCategory("general");
+      setActiveSettingsCategory(props.settingsInitialCategory);
     } else {
       setRecordingShortcutCommand(null);
     }
-  }, [props.settingsOpen]);
+  }, [props.settingsInitialCategory, props.settingsOpen]);
 
   useEffect(() => {
     setRecordingShortcutCommand(null);
@@ -809,6 +838,228 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           onConfirm={props.onConfirmWorktreeDialog}
         />
       ) : null}
+      {props.sshAskpassPrompt ? (
+        <div
+          className={`${styles.overlay} ${styles.settingsOverlay}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              props.onCancelSshAskpass();
+            }
+          }}
+        >
+          <form
+            className={styles.workspaceCloseConfirm}
+            role="dialog"
+            aria-modal="true"
+            aria-label="SSH Authentication"
+            data-testid="ssh-askpass-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              props.onSubmitSshAskpass();
+            }}
+          >
+            <div className={styles.modalHeader}>
+              <h2>SSH Authentication</h2>
+              <button
+                type="button"
+                aria-label="Cancel SSH authentication"
+                onClick={props.onCancelSshAskpass}
+              >
+                ×
+              </button>
+            </div>
+            <p className={styles.confirmBody}>
+              <strong>{props.sshAskpassPrompt.profileName}</strong>
+              <br />
+              {props.sshAskpassPrompt.prompt}
+            </p>
+            <label className={styles.settingsRow}>
+              <span className={styles.settingsRowCopy}>
+                <span className={styles.settingsRowTitle}>
+                  Password or passphrase
+                </span>
+                <span className={styles.settingsRowDescription}>
+                  Used once by system OpenSSH and never saved in kmux settings.
+                </span>
+              </span>
+              <input
+                autoFocus
+                type="password"
+                autoComplete="current-password"
+                aria-label="SSH password or passphrase"
+                value={props.sshAskpassPrompt.response}
+                onChange={(event) =>
+                  props.onChangeSshAskpassResponse(event.currentTarget.value)
+                }
+              />
+            </label>
+            <div className={styles.modalActions}>
+              <button type="button" onClick={props.onCancelSshAskpass}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!props.sshAskpassPrompt.response}
+              >
+                Continue
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {props.sshWorkspaceDialog ? (
+        <div
+          className={`${styles.overlay} ${styles.settingsOverlay}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              props.onCloseSshWorkspaceDialog();
+            }
+          }}
+        >
+          <div
+            className={styles.workspaceCloseConfirm}
+            role="dialog"
+            aria-modal="true"
+            aria-label="SSH Workspace"
+            data-testid="ssh-workspace-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={styles.modalHeader}>
+              <h2>SSH Workspace</h2>
+              <button
+                type="button"
+                aria-label="Close SSH workspace dialog"
+                onClick={props.onCloseSshWorkspaceDialog}
+                disabled={props.sshWorkspaceDialog.phase === "committing"}
+              >
+                ×
+              </button>
+            </div>
+            <div className={styles.settingsSection}>
+              <label className={styles.settingsRow}>
+                <span className={styles.settingsRowCopy}>
+                  <span className={styles.settingsRowTitle}>
+                    SSH connection
+                  </span>
+                  <span className={styles.settingsRowDescription}>
+                    Saved profiles are resolved by your system OpenSSH.
+                  </span>
+                </span>
+                <select
+                  aria-label="SSH connection"
+                  value={props.sshWorkspaceDialog.selectedProfileId ?? ""}
+                  disabled={
+                    props.sshWorkspaceDialog.phase !== "idle" ||
+                    !props.sshWorkspaceDialog.connections?.profiles.length
+                  }
+                  onChange={(event) =>
+                    props.onSelectSshProfile(event.currentTarget.value)
+                  }
+                >
+                  {!props.sshWorkspaceDialog.connections ? (
+                    <option value="">Loading connections…</option>
+                  ) : props.sshWorkspaceDialog.connections.profiles.length ? (
+                    props.sshWorkspaceDialog.connections.profiles.map(
+                      (profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </option>
+                      )
+                    )
+                  ) : (
+                    <option value="">No saved SSH connections</option>
+                  )}
+                </select>
+              </label>
+              <button
+                type="button"
+                className={styles.settingsRowButton}
+                onClick={props.onManageSshConnections}
+                disabled={props.sshWorkspaceDialog.phase !== "idle"}
+              >
+                {props.sshWorkspaceDialog.connections?.profiles.length
+                  ? "Manage SSH Connections…"
+                  : "New SSH Connection…"}
+              </button>
+            </div>
+            <fieldset className={styles.settingsSection}>
+              <legend>How would you like to continue?</legend>
+              <label className={styles.checkboxRow}>
+                <input
+                  type="radio"
+                  name="ssh-workspace-continuation"
+                  checked={
+                    props.sshWorkspaceDialog.continuation === "convert"
+                  }
+                  disabled={
+                    props.sshWorkspaceDialog.phase !== "idle" ||
+                    props.sshWorkspaceDialog.sourceTargetKind !== "local"
+                  }
+                  onChange={() => props.onSelectSshContinuation("convert")}
+                />
+                <span>
+                  <strong>Convert current workspace</strong>
+                  <br />
+                  Replaces its local session and pane content only after the SSH
+                  workspace is ready.
+                </span>
+              </label>
+              <label className={styles.checkboxRow}>
+                <input
+                  type="radio"
+                  name="ssh-workspace-continuation"
+                  checked={props.sshWorkspaceDialog.continuation === "create"}
+                  disabled={props.sshWorkspaceDialog.phase !== "idle"}
+                  onChange={() => props.onSelectSshContinuation("create")}
+                />
+                <span>
+                  <strong>Create new SSH workspace</strong>
+                  <br />
+                  Keeps the current workspace and every running session
+                  unchanged.
+                </span>
+              </label>
+            </fieldset>
+            {props.sshWorkspaceDialog.phase === "preparing" ? (
+              <p className={styles.confirmBody} role="status">
+                Verifying host, authentication, authority, and runtime… You can
+                cancel without changing this workspace.
+              </p>
+            ) : null}
+            {props.sshWorkspaceDialog.phase === "committing" ? (
+              <p className={styles.confirmBody} role="status">
+                Creating and committing the remote workspace…
+              </p>
+            ) : null}
+            {props.sshWorkspaceDialog.error ? (
+              <div className={styles.worktreeError} role="alert">
+                {props.sshWorkspaceDialog.error}
+              </div>
+            ) : null}
+            <div className={styles.modalActions}>
+              <button
+                type="button"
+                onClick={props.onCloseSshWorkspaceDialog}
+                disabled={props.sshWorkspaceDialog.phase === "committing"}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={props.onConfirmSshWorkspace}
+                disabled={
+                  props.sshWorkspaceDialog.phase !== "idle" ||
+                  !props.sshWorkspaceDialog.selectedProfileId
+                }
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {props.settingsOpen && props.settingsDraft ? (
         <div
           className={`${styles.overlay} ${styles.settingsOverlay}`}
@@ -1077,6 +1328,9 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                       </div>
                     </div>
                   </div>
+                ) : null}
+                {activeSettingsCategory === "ssh" ? (
+                  <SshConnectionsSettings />
                 ) : null}
                 {activeSettingsCategory === "terminal" ? (
                   <div className={styles.settingsCategory}>

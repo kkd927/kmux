@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { uint64, type Uint64 } from "@kmux/proto";
 
 import { createTerminalCwdRangeSnapshotWindow } from "./terminalCwdRanges";
 import {
@@ -10,7 +11,7 @@ import {
 function cacheRequest(
   serialize: (scrollbackLines: number) => string,
   overrides: Partial<{
-    sequence: number;
+    sequence: Uint64;
     cols: number;
     rows: number;
     requestedScrollbackLines: number;
@@ -18,7 +19,7 @@ function cacheRequest(
   }> = {}
 ) {
   return {
-    sequence: overrides.sequence ?? 1,
+    sequence: overrides.sequence ?? uint64(1n),
     cols: overrides.cols ?? 80,
     rows: overrides.rows ?? 24,
     requestedScrollbackLines: overrides.requestedScrollbackLines ?? 8_000,
@@ -51,15 +52,19 @@ describe("SnapshotCache", () => {
       .mockReturnValueOnce("released");
 
     cache.get(cacheRequest(serialize));
-    expect(cache.get(cacheRequest(serialize, { sequence: 2 })).vt).toBe(
+    expect(cache.get(cacheRequest(serialize, { sequence: uint64(2n) })).vt).toBe(
       "sequence"
     );
     expect(
-      cache.get(cacheRequest(serialize, { sequence: 2, cols: 120 })).vt
+      cache.get(
+        cacheRequest(serialize, { sequence: uint64(2n), cols: 120 })
+      ).vt
     ).toBe("dimensions");
     cache.invalidate();
     expect(
-      cache.get(cacheRequest(serialize, { sequence: 2, cols: 120 })).vt
+      cache.get(
+        cacheRequest(serialize, { sequence: uint64(2n), cols: 120 })
+      ).vt
     ).toBe("released");
     expect(serialize).toHaveBeenCalledTimes(4);
   });

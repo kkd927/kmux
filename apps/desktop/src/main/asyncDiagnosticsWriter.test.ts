@@ -9,8 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FileHandle } from "node:fs/promises";
-import { open } from "node:fs/promises";
+import type { FileHandle, open } from "node:fs/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 

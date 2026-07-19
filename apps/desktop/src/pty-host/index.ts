@@ -17,9 +17,15 @@ import type {
   TerminalDelta,
   TerminalInputDiagnosticKind,
   TerminalOutputDiagnosticKind,
-  TerminalSessionRef
+  TerminalSessionRef,
+  Uint64
 } from "@kmux/proto";
-import { TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES } from "@kmux/proto";
+import {
+  formatUint64Decimal,
+  incrementUint64,
+  TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES,
+  uint64
+} from "@kmux/proto";
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
@@ -150,10 +156,10 @@ interface SessionRuntime {
   stream: TerminalSessionStream;
   pendingDirectInputs: Array<string | Buffer>;
   pendingDirectInputBytes: number;
-  inputTelemetrySequence: number;
+  inputTelemetrySequence: Uint64;
   pendingInputTelemetry?: {
     inputAcceptedAt: number;
-    inputSequence: number;
+    inputSequence: Uint64;
     inputKind: TerminalInputDiagnosticKind;
   };
   lastDiagnosticOutputAt?: number;
@@ -169,8 +175,8 @@ interface SessionRuntime {
   rawOutputLogChunks: number;
   inFlightOutputRuns: number;
   disposeTerminalWhenIdle: boolean;
-  sequence: number;
-  parsedSequence: number;
+  sequence: Uint64;
+  parsedSequence: Uint64;
   cols: number;
   rows: number;
   lastPtyResizeCommit?: PtyResizeCommitContext & {
@@ -190,6 +196,10 @@ interface SessionRuntime {
   }>;
   settledSnapshotTimer: NodeJS.Timeout | null;
   closing: boolean;
+  pendingCloseAcks: Array<{
+    requestId: Id;
+    outcome: "terminated" | "already-exited";
+  }>;
   exited: boolean;
   exitCode?: number;
 }
@@ -202,7 +212,7 @@ interface QueuedOutputSegment {
     visibleAtPtyRead: boolean;
     outputKind: TerminalOutputDiagnosticKind;
     inputAcceptedAt?: number;
-    inputSequence?: number;
+    inputSequence?: Uint64;
     inputKind?: TerminalInputDiagnosticKind;
   };
 }
@@ -278,7 +288,9 @@ const deltaStore = new TerminalDeltaStore<TerminalDelta>({
   maxTotalEvents: SUPERVISOR_DELTA_RING_EVENTS,
   rangeOf: (delta) => ({
     fromSequence:
-      delta.type === "output" ? delta.fromSequence : delta.sequence - 1,
+      delta.type === "output"
+        ? delta.fromSequence
+        : uint64(delta.sequence - 1n),
     sequence: delta.sequence
   }),
   sizeOf: terminalDeltaRetainedBytes,
@@ -537,7 +549,7 @@ function createRawOutputHistory(
 function appendRawOutputHistory(
   record: SessionRuntime,
   chunk: string,
-  chunkSequence: number,
+  chunkSequence: Uint64,
   telemetry: QueuedOutputSegment["telemetry"]
 ): void {
   if (!record.rawOutputLogPath || !record.rawOutputIndexPath) {
@@ -555,7 +567,7 @@ function appendRawOutputHistory(
     appendFileSync(
       record.rawOutputIndexPath,
       `${JSON.stringify({
-        sequence: chunkSequence,
+        sequence: formatUint64Decimal(chunkSequence),
         byteStart,
         byteEnd: record.rawOutputLogBytes,
         charStart,
@@ -568,7 +580,10 @@ function appendRawOutputHistory(
         ptyReadAt: telemetry?.ptyReadAt,
         outputKind: telemetry?.outputKind,
         visibleAtPtyRead: telemetry?.visibleAtPtyRead,
-        inputSequence: telemetry?.inputSequence,
+        inputSequence:
+          telemetry?.inputSequence === undefined
+            ? undefined
+            : formatUint64Decimal(telemetry.inputSequence),
         inputKind: telemetry?.inputKind
       })}\n`,
       "utf8"
@@ -577,7 +592,7 @@ function appendRawOutputHistory(
     logDiagnostics("pty-host.raw-output-history.append.failed", {
       surfaceId: record.surfaceId,
       sessionId: record.sessionId,
-      sequence: chunkSequence,
+      sequence: formatUint64Decimal(chunkSequence),
       error: error instanceof Error ? error.message : String(error)
     });
     record.rawOutputLogPath = undefined;
@@ -634,7 +649,7 @@ async function writeTerminalOutputRun(
       };
 
       for (const segment of segments) {
-        record.sequence += 1;
+        record.sequence = incrementUint64(record.sequence);
         const chunkSequence = record.sequence;
         const byteLength = Buffer.byteLength(segment.chunk, "utf8");
         appendRawOutputHistory(
@@ -663,10 +678,9 @@ async function writeTerminalOutputRun(
                   cwd: chunkCwd
                 });
               }
-              record.parsedSequence = Math.max(
-                record.parsedSequence,
-                chunkSequence
-              );
+              if (chunkSequence > record.parsedSequence) {
+                record.parsedSequence = chunkSequence;
+              }
               committedSegments.push({
                 sequence: chunkSequence,
                 data: segment.chunk,
@@ -974,7 +988,7 @@ function requestDirectResize(
     gestureActive?: boolean;
     requestId?: string;
   }
-): Promise<{ sequence: number; cols: number; rows: number }> {
+): Promise<{ sequence: Uint64; cols: number; rows: number }> {
   return enqueueTerminalBarrier(record, () =>
     applyTerminalResizeMutation(record, request)
   );
@@ -988,7 +1002,7 @@ function applyTerminalResizeMutation(
     gestureActive?: boolean;
     requestId?: string;
   }
-): { sequence: number; cols: number; rows: number } {
+): { sequence: Uint64; cols: number; rows: number } {
   if (request.cols <= 0 || request.rows <= 0) {
     return {
       sequence: record.parsedSequence,
@@ -1007,7 +1021,7 @@ function applyTerminalResizeMutation(
     requestId: diagnosticsEnabled ? request.requestId : undefined
   });
   record.snapshotCache.invalidate();
-  record.sequence += 1;
+  record.sequence = incrementUint64(record.sequence);
   record.parsedSequence = record.sequence;
   if (diagnosticsEnabled) {
     logTerminalDiagnostics("terminal.resize.supervisor-request", {
@@ -1197,7 +1211,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
               ? classifyTerminalBinaryInput(message.data)
               : "key";
       if (inputAcceptedAt !== undefined && inputKind !== undefined) {
-        record.inputTelemetrySequence += 1;
+        record.inputTelemetrySequence = incrementUint64(
+          record.inputTelemetrySequence
+        );
         record.pendingInputTelemetry = {
           inputAcceptedAt,
           inputSequence: record.inputTelemetrySequence,
@@ -1221,7 +1237,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           inputKind,
           bytes: inputBytes,
           inputAcceptedAt,
-          inputSequence: record.inputTelemetrySequence,
+          inputSequence: formatUint64Decimal(record.inputTelemetrySequence),
           shellInputReady: record.shellInputReady,
           pendingDirectInputBytes: record.pendingDirectInputBytes,
           queue: record.mutationQueue.stats(),
@@ -1326,7 +1342,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     stream,
     pendingDirectInputs: [],
     pendingDirectInputBytes: 0,
-    inputTelemetrySequence: 0,
+    inputTelemetrySequence: uint64(0n),
     outputDiagnosticClassifier: terminalMetricsProfile.enabled
       ? createTerminalOutputDiagnosticClassifier()
       : undefined,
@@ -1341,8 +1357,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     rawOutputLogChunks: 0,
     inFlightOutputRuns: 0,
     disposeTerminalWhenIdle: false,
-    sequence: 0,
-    parsedSequence: 0,
+    sequence: uint64(0n),
+    parsedSequence: uint64(0n),
     cols: request.spec.cols,
     rows: request.spec.rows,
     osc99State: {},
@@ -1355,6 +1371,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     pendingSettledSnapshots: [],
     settledSnapshotTimer: null,
     closing: false,
+    pendingCloseAcks: [],
     exited: false
   };
   sessions.set(record.sessionId, record);
@@ -1572,12 +1589,16 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           sessionId: record.sessionId,
           gapMs,
           ptyReadAt,
-          nextSequence: record.sequence + 1,
+          nextSequence: formatUint64Decimal(
+            incrementUint64(record.sequence)
+          ),
           chunkBytes: Buffer.byteLength(chunk, "utf8"),
           outputKind,
           ...(record.pendingInputTelemetry
             ? {
-                inputSequence: record.pendingInputTelemetry.inputSequence,
+                inputSequence: formatUint64Decimal(
+                  record.pendingInputTelemetry.inputSequence
+                ),
                 inputKind: record.pendingInputTelemetry.inputKind,
                 inputToOutputMs:
                   ptyReadAt - record.pendingInputTelemetry.inputAcceptedAt
@@ -1739,9 +1760,48 @@ function handlePtyRequest(
     case "close":
       {
         const record = sessions.get(request.sessionId);
-        if (!record || record.closing) {
+        if (!record) {
+          if (request.requestId) {
+            send({
+              type: "close.ack",
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              ...(request.surfaceId === undefined
+                ? {}
+                : { surfaceId: request.surfaceId }),
+              ...(request.expectedRuntimeEpoch === undefined
+                ? {}
+                : { runtimeEpoch: request.expectedRuntimeEpoch }),
+              outcome: "already-exited"
+            });
+          }
           break;
         }
+        if (
+          (request.surfaceId !== undefined &&
+            request.surfaceId !== record.surfaceId) ||
+          (request.expectedRuntimeEpoch !== undefined &&
+            request.expectedRuntimeEpoch !== record.runtimeEpoch)
+        ) {
+          if (request.requestId) {
+            send({
+              type: "close.ack",
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              surfaceId: record.surfaceId,
+              runtimeEpoch: record.runtimeEpoch,
+              outcome: "generation-mismatch"
+            });
+          }
+          break;
+        }
+        if (request.requestId) {
+          record.pendingCloseAcks.push({
+            requestId: request.requestId,
+            outcome: record.exited ? "already-exited" : "terminated"
+          });
+        }
+        if (record.closing) break;
         record.closing = true;
         if (record.exited) {
           disposeSession(record, false);
@@ -1872,6 +1932,16 @@ function disposeSession(record: SessionRuntime, killPty: boolean): void {
   // Fence asynchronous headless-write callbacks before releasing the ring or
   // allowing the same logical session id to spawn with a new runtime epoch.
   sessions.delete(record.sessionId);
+  for (const acknowledgement of record.pendingCloseAcks.splice(0)) {
+    send({
+      type: "close.ack",
+      requestId: acknowledgement.requestId,
+      sessionId: record.sessionId,
+      surfaceId: record.surfaceId,
+      runtimeEpoch: record.runtimeEpoch,
+      outcome: acknowledgement.outcome
+    });
+  }
   disposeSettledSnapshotState(record);
   disposeShellReadyFallback(record);
   record.stream.dispose();

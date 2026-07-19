@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
+import { stringifyJson } from "./json";
+
 import {
   DEFAULT_SMOOTHNESS_PROFILE_FILENAME,
   KMUX_PROFILE_LOG_PATH_ENV,
@@ -28,7 +30,7 @@ export function createNodeSmoothnessProfileRecorder(
       mkdirSync(dirname(logPath), { recursive: true });
       appendFileSync(
         logPath,
-        `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+        `${events.map((event) => stringifyJson(event)).join("\n")}\n`,
         "utf8"
       );
     } catch {

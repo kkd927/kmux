@@ -11,12 +11,13 @@ import { Script } from "node:vm";
 
 import type { BrowserWindow } from "electron";
 
-import type { AppState } from "@kmux/core";
+import { locatedPathForTarget, workspaceLocation, type AppState } from "@kmux/core";
 import type {
   SurfaceCaptureOptions,
   SurfaceCaptureRendererDom,
   SurfaceSnapshotPayload
 } from "@kmux/proto";
+import { uint64 } from "@kmux/proto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createSurfaceCaptureService } from "./surfaceCapture";
@@ -77,7 +78,7 @@ describe("surface capture diagnostics", () => {
     const snapshot: SurfaceSnapshotPayload = {
       surfaceId,
       sessionId,
-      sequence: 42,
+      sequence: uint64(42n),
       vt: "headless snapshot marker",
       cols: 80,
       rows: 24,
@@ -121,7 +122,7 @@ describe("surface capture diagnostics", () => {
     expect(capture.snapshotDiagnostics.selected).toBe("immediate");
     expect(capture.snapshotDiagnostics.attempts).toMatchObject([
       { kind: "settled", status: "unavailable" },
-      { kind: "immediate", status: "ok", sequence: 42 }
+      { kind: "immediate", status: "ok", sequence: uint64(42n) }
     ]);
     expect(capture.files.rawOutputTail).toBe(
       join(capture.outDir, "pty-raw-tail.txt")
@@ -211,7 +212,7 @@ function createSnapshot(
   return {
     surfaceId,
     sessionId,
-    sequence: 42,
+    sequence: uint64(42n),
     vt: "",
     cols: 80,
     rows: 24,
@@ -399,7 +400,7 @@ describe("surface capture renderer formatting", () => {
       terminalDiagnostics: {
         hydratedSequence: null,
         renderedSequence: null,
-        targetSequence: 42,
+        targetSequence: uint64(42n),
         waitTimedOut: true,
         waitDurationMs: 3000,
         sources: {
@@ -446,9 +447,9 @@ describe("surface capture renderer formatting", () => {
     });
     const dom = createRendererDom({
       terminalDiagnostics: {
-        hydratedSequence: 1,
-        renderedSequence: 10,
-        targetSequence: 42,
+        hydratedSequence: uint64(1n),
+        renderedSequence: uint64(10n),
+        targetSequence: uint64(42n),
         waitTimedOut: true,
         waitDurationMs: 3000,
         sources: {
@@ -525,6 +526,7 @@ function createState(): AppState {
         id: workspaceId,
         windowId: "window_test",
         name: "Test",
+        location: workspaceLocation({ kind: "local" }, "/tmp"),
         rootNodeId: paneId,
         nodeMap: {
           [paneId]: {
@@ -555,12 +557,15 @@ function createState(): AppState {
         sessionId,
         title: "Test",
         titleLocked: false,
+        cwd: locatedPathForTarget({ kind: "local" }, "/tmp"),
         ports: [],
         unreadCount: 0,
         attention: false
       }
     },
     sessions: {},
+    remoteOperations: {},
+    remoteEventReceipts: {},
     notifications: [],
     settings: {} as never,
     activeWindowId: "window_test"
