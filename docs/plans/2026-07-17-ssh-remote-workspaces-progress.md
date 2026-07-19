@@ -789,6 +789,16 @@ unchanged.
   16–28 ms in the pre-SSH batches; the remaining failures occur in frame/render
   tail outliers rather than a new SSH branch in the local delta path. Neither
   failed invocation is replaced or used to change the fixed gate.
+- One final invocation used a declared quiescence condition before measurement:
+  the existing idle workspace stayed selected for three minutes with no local
+  build/test, 1-minute load around 2.0–2.4 on six physical cores, and the
+  installed renderer/GPU around 0.5% each. Ten of eleven fixed numeric
+  contracts plus every functional and bound check passed. Warm-switch max was
+  the sole failure, with a five-run median of 73.5 ms against 66.5 ms; report
+  SHA-256 is
+  `405b6c7e35908642d30a8f7c8352258fb8196b9275140fc6fbeef43e7d5494a4`.
+  Per the predeclared rule this result was retained without another retry or a
+  baseline/tolerance/aggregation change. LPERF-03 remains open.
 - Exercising the built Phase 6 CLI against the live app exposed an Important
   option-mapping defect: `kmux surface list --workspace <id>` forwarded
   Commander's `workspace` option directly while the strict RPC schema requires
@@ -827,14 +837,32 @@ unchanged.
   and Linux arm64
   `e1b227225aa1b98d47edcbbf9b83e0f3219eed5c9cea547e439919994eebf364`.
   The manual dispatch skipped `publish-release`, so it created no release.
+- After the CLI fix, final-code CI/native run
+  [29689474027](https://github.com/kkd927/kmux/actions/runs/29689474027)
+  passed all seven jobs at
+  `93a7ec1daefebafbafe83977b96d6c856ecb4fb0`: verify-mac,
+  verify-linux, real-SSH Linux integration, and all four actual matching-target
+  parity jobs. The four runtime byte hashes are exactly the values recorded
+  above, every runner reported `translated: false`, and every parity contract
+  passed. Final-code Release Desktop run
+  [29689474042](https://github.com/kkd927/kmux/actions/runs/29689474042)
+  passed all four runtime artifact and all four package/sign/notarize/smoke
+  jobs at the same commit. Release-asset artifact digests were macOS x64
+  `1a90487d68f99bea61f177d45f6c5c5dbf23faf822993cbf93c74a868e9e6a1e`,
+  macOS arm64
+  `c9218780ffdcf32a47695092c9aabd5766463088d45f44f6aa932549d7eb8dba`,
+  Linux x64
+  `e9ad93af9e2c9f3a1cab0ee423389894525316a5f96dc85fca92e1d86326926d`,
+  and Linux arm64
+  `db718ce26e584742dd6dcbbb4da9add0f6d7e16141319fe47d51d5845344eb9b`.
+  Manual dispatch again skipped `publish-release`; no release was created.
 - Phase 8 is not yet passed. The four-target functional native matrix and
   desktop packaging records above prove the final remote/profile source at
-  `9b3decc...`, but the subsequent CLI option fix changes the desktop bundle.
-  The next committed branch head therefore needs a fresh matching-target native
-  matrix and package verification. The unchanged controlled-native performance
-  workload also needs one non-shared result per artifact, and IM-04/IM-05 still
-  need actual NFS/unsuitable-socket and native sleep/wake evidence. LPERF-03
-  remains open on the retained numeric failures. No absolute
+  `9b3decc...`; the final-code reruns above also prove the subsequent CLI change
+  at `93a7ec1...`. The unchanged controlled-native performance workload still
+  needs one non-shared result per artifact, and IM-04/IM-05 still need actual
+  NFS/unsuitable-socket and native sleep/wake evidence. LPERF-03 remains open on
+  the retained numeric failures. No absolute
   `KMUX_SSH_PROFILE_CONFIG` for those controlled targets is available in this
   workspace; a final `npm run profile:ssh` audit therefore stopped before any
   target mutation with the explicit missing-configuration error. Docker and
