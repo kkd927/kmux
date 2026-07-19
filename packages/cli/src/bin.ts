@@ -181,7 +181,13 @@ const surface = program.command("surface");
 surface
   .command("list")
   .option("--workspace <workspaceId>")
-  .action(async (options) => print(await sendRpc("surface.list", options)));
+  .action(async (options: { workspace?: Id }) =>
+    print(
+      await sendRpc("surface.list", {
+        workspaceId: options.workspace
+      })
+    )
+  );
 surface
   .command("split")
   .option("--pane <paneId>")

@@ -412,7 +412,7 @@ describe("kmux cli agent hook forwarding", () => {
   );
 
   it(
-    "forwards stable input IDs and numeric capture bounds",
+    "maps scoped CLI IDs and preserves active-workspace list defaults",
     async () => {
       const socketDir = mkdtempSync(join(tmpdir(), "kmux-cli-control-test-"));
       tempDirs.push(socketDir);
@@ -440,7 +440,9 @@ describe("kmux cli agent hook forwarding", () => {
                 result:
                   request.method === "surface.capture"
                     ? { captureId: "capture_1", text: "captured" }
-                    : { operationId: "operation_1", boundary: "pty-write" }
+                    : request.method === "surface.list"
+                      ? []
+                      : { operationId: "operation_1", boundary: "pty-write" }
               })}\n`
             );
             socket.end();
@@ -483,6 +485,12 @@ describe("kmux cli agent hook forwarding", () => {
       try {
         expect(
           JSON.parse(
+            await runCli(["surface", "list", "--workspace", "workspace_1"])
+          )
+        ).toEqual([]);
+        expect(JSON.parse(await runCli(["surface", "list"]))).toEqual([]);
+        expect(
+          JSON.parse(
             await runCli([
               "surface",
               "send-text",
@@ -512,6 +520,18 @@ describe("kmux cli agent hook forwarding", () => {
           )
         ).toEqual({ captureId: "capture_1", text: "captured" });
         expect(requests).toEqual([
+          expect.objectContaining({
+            method: "surface.list",
+            params: expect.objectContaining({
+              workspaceId: "workspace_1"
+            })
+          }),
+          expect.objectContaining({
+            method: "surface.list",
+            params: expect.not.objectContaining({
+              workspaceId: expect.anything()
+            })
+          }),
           expect.objectContaining({
             method: "surface.send_text",
             params: expect.objectContaining({

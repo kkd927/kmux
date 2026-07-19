@@ -774,13 +774,67 @@ unchanged.
   replaced by the earlier pass. LPERF-03 therefore remains open; the active
   working kmux stays running and is not treated as something the gate may
   terminate.
+- Two further final-source invocations kept the active kmux process and Codex
+  PTY alive while reducing its visible renderer load. Merely minimizing the
+  installed app still failed render p99 and scheduler max; report SHA-256 is
+  `c9961040ac1c9c55ca862cc18b403fc435acc24e2a793a240433a099a353b2cb`.
+  Selecting an existing idle workspace reduced the installed renderer from
+  roughly 47% CPU to 0.6% and the GPU process from roughly 13% to 1.3%, but
+  the five complete samples still failed render p99 and warm switch; report
+  SHA-256 is
+  `1027d65301775f969bca3fa9febbd6d8e55430d7ff9dccac02009c226677bee8`.
+  Every functional, continuity, and bound check passed in both invocations.
+  Preserved pre-SSH raw profiles show current shell patch/selector durations
+  unchanged and current cache-to-pane medians around 15–17 ms versus roughly
+  16–28 ms in the pre-SSH batches; the remaining failures occur in frame/render
+  tail outliers rather than a new SSH branch in the local delta path. Neither
+  failed invocation is replaced or used to change the fixed gate.
+- Exercising the built Phase 6 CLI against the live app exposed an Important
+  option-mapping defect: `kmux surface list --workspace <id>` forwarded
+  Commander's `workspace` option directly while the strict RPC schema requires
+  `workspaceId`. The CLI now maps the stable ID explicitly and a spawned-CLI
+  regression covers both scoped and active-workspace list behavior. The real
+  live-app command succeeds, the focused file passes 8 tests with its existing
+  Linux-only skip, and the full suite passes 191 files / 1,801 tests with one
+  skip. Typecheck, lint, production build, changed-file Prettier, and
+  `git diff --check` also pass. Review found no remaining Critical or Important
+  issue in this change.
+- Final-source CI/native run
+  [29688072565](https://github.com/kkd927/kmux/actions/runs/29688072565)
+  passed at commit `9b3decc35889c3c77ef3faf8e71030c51fb374b9` after rerunning
+  two infrastructure-transient failures. `verify-mac`, `verify-linux`, the
+  real-SSH Linux job, and all four actual matching-target native parity jobs
+  passed. Every target reported un-translated execution and all eight parity
+  contracts true. Runtime SHA-256 values were Darwin x64
+  `7c0d0c60058d6a5c98c8b05b62dec9eddb79f8107ff764c5398b2c45283ddaf4`,
+  Darwin arm64
+  `bf28c67dc68823888955150ecd14e9f3c8f1e66e90983e63687ac82d141aedbc`,
+  Linux x64-musl
+  `3aa18ea7cca13d7507f5d2580a46933bd8bd8245acc394f4378fc744f4f4d18b`,
+  and Linux arm64-musl
+  `ec0d95343297c755b4d9dab5c4358e9d4e5aa77b729053ee9c1167fd3c59ff6c`.
+- Final-source Release Desktop run
+  [29688078948](https://github.com/kkd927/kmux/actions/runs/29688078948)
+  also passed at `9b3decc35889c3c77ef3faf8e71030c51fb374b9`: all four
+  runtime artifact jobs and Linux/macOS x64/arm64 package, signature,
+  notarization where applicable, and packaged-app smoke jobs succeeded. The
+  uploaded release-asset digests were macOS x64
+  `b3cd38d3d5d00165c11fcee729196b6d2ac2bf95323e9746095b87dd78181edf`,
+  macOS arm64
+  `88fccf04a86b218e804a127ffe7d8c09984ab55812b917e99d3064e509a2602e`,
+  Linux x64
+  `77289a44add0f10b85c9c6d88cc0229f224a805c712180244d1f545d6fd38980`,
+  and Linux arm64
+  `e1b227225aa1b98d47edcbbf9b83e0f3219eed5c9cea547e439919994eebf364`.
+  The manual dispatch skipped `publish-release`, so it created no release.
 - Phase 8 is not yet passed. The four-target functional native matrix and
-  desktop packaging records remain valid evidence for commit `c95840a7...`, but
-  the bounded profile reader changed the final runtime artifact afterward. The
-  final committed branch therefore still needs a fresh matching-target native
+  desktop packaging records above prove the final remote/profile source at
+  `9b3decc...`, but the subsequent CLI option fix changes the desktop bundle.
+  The next committed branch head therefore needs a fresh matching-target native
   matrix and package verification. The unchanged controlled-native performance
   workload also needs one non-shared result per artifact, and IM-04/IM-05 still
-  need actual NFS/unsuitable-socket and native sleep/wake evidence. No absolute
+  need actual NFS/unsuitable-socket and native sleep/wake evidence. LPERF-03
+  remains open on the retained numeric failures. No absolute
   `KMUX_SSH_PROFILE_CONFIG` for those controlled targets is available in this
   workspace; a final `npm run profile:ssh` audit therefore stopped before any
   target mutation with the explicit missing-configuration error. Docker and
