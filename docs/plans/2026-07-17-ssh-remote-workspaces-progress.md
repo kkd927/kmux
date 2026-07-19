@@ -10,17 +10,17 @@ recorded below without marking deferred evidence as passed.
 
 ## Phase status
 
-| Phase | State       | Validation                                                       | Important+ findings  | Blockers                                   |
-| ----- | ----------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------ |
-| 0     | passed      | 26 AC, 6 IM, and 10 PERF rows audited; repo tests green          | none open            | none                                       |
-| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                       |
-| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                       |
-| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                       |
-| 4     | passed      | 4/4 actual matching-target native parity records                 | all fixed; none open | none                                       |
-| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                       |
-| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                       |
-| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                       |
-| 8     | in progress | 1,776 TS + 122 Rust + 24 real-SSH + 4/4 native + local gate      | all fixed; none open | native manual/performance evidence pending |
+| Phase | State       | Validation                                                          | Important+ findings  | Blockers                                    |
+| ----- | ----------- | ------------------------------------------------------------------- | -------------------- | ------------------------------------------- |
+| 0     | passed      | 26 AC, 6 IM, and 10 PERF rows audited; repo tests green             | none open            | none                                        |
+| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline                | all fixed; none open | none                                        |
+| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                     | all fixed; none open | none                                        |
+| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate    | all fixed; none open | none                                        |
+| 4     | passed      | 4/4 actual matching-target native parity records                    | all fixed; none open | none                                        |
+| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green                  | all fixed; none open | none                                        |
+| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                        |
+| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate           | all fixed; none open | none                                        |
+| 8     | in progress | 1,776 TS + 122 Rust + 24 real-SSH + 4/4 native/package + local gate | all fixed; none open | NFS/sleep-wake/performance evidence pending |
 
 ## Required automated-contract traceability
 
@@ -635,6 +635,25 @@ unchanged.
   keeper cohort shutdown. AC-24, IM-01, and the deferred Phase 4 gate are now
   complete. As declared by each record, shared GitHub Actions runners provide
   functional native evidence only, not controlled performance evidence.
+- Release Desktop run
+  [29680878278](https://github.com/kkd927/kmux/actions/runs/29680878278)
+  passed at commit `c95840a7f8a49abf2b3cc5f9c7cab0d679b3282d` with
+  root and desktop package version `1.0.0`. Every macOS and Linux package job
+  restored and verified all four matching native runtime artifacts before the
+  desktop build. Darwin arm64 and x64 then passed nested signing, app signing,
+  Apple notarization/stapling validation, and packaged-DMG smoke; Linux arm64
+  and x64 passed AppImage asset validation and direct Xvfb smoke. The uploaded
+  release-asset artifacts were macOS x64
+  `e9309d729f5f2367fe2615ce3641bf0c78a3159f37a79b4120d022059b5eec9b`
+  (296,785,768 bytes), macOS arm64
+  `716dfa9a608227f05317d161261ab560ab0e4c7b6ee51220c0b1e1f8833e7f84`
+  (289,445,011 bytes), Linux x64
+  `c0c7105ab256da488a0bf704db5368808dc37fe3654a8bc2041b84879e28f998`
+  (144,308,815 bytes), and Linux arm64
+  `c8ee6a531104e12bb2e59f940f6743b54f46559933cf24d7bc9fb8c0f6745417`
+  (141,990,323 bytes). This was a manual `workflow_dispatch`; the push-only
+  `publish-release` job was skipped, so no GitHub release was created or
+  published.
 - A Phase 8 audit found that the original fixed envelope self-evaluated green,
   but a separately retained five-run measurement of the exact same pre-SSH
   revision would fail echo p99 (`50.4 ms` > `38.1 ms`) and warm switch
@@ -716,6 +735,12 @@ unchanged.
   emulation remain invalid substitutes. The GitHub Actions records explicitly
   identify shared CI and therefore satisfy functional native parity only; they
   cannot satisfy any controlled or normative performance measurement.
+- Manual Release Desktop run
+  [29680878278](https://github.com/kkd927/kmux/actions/runs/29680878278)
+  completed the required four-target desktop packaging, signing/notarization,
+  and packaged-app smoke evidence for version `1.0.0`. Because it was a
+  `workflow_dispatch`, the push-only publish job was skipped and this evidence
+  run did not create a release.
 - The remaining external prerequisites are recorded rather than bypassed.
   IM-04 requires an actual unsuitable NFS/runtime-socket target and IM-05 an
   actual native sleep/wake cycle. IM-06 and PERF-01 through PERF-08 require a
