@@ -10,17 +10,17 @@ recorded below without marking deferred evidence as passed.
 
 ## Phase status
 
-| Phase | State       | Validation                                                       | Important+ findings  | Blockers                                               |
-| ----- | ----------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
-| 0     | passed      | 26 AC, 6 IM, and 11 PERF rows audited; repo tests green          | none open            | none                                                   |
-| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                                   |
-| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                                   |
-| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                                   |
-| 4     | passed      | 4/4 actual matching-target native parity records                 | all fixed; none open | none                                                   |
-| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                                   |
-| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                                   |
-| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                                   |
-| 8     | in progress | 1,801 TS + 125 Rust + 24 real-SSH + functional profile           | all fixed; none open | local numeric/final-native/NFS/sleep-wake/perf pending |
+| Phase | State       | Validation                                                       | Important+ findings  | Blockers                                         |
+| ----- | ----------- | ---------------------------------------------------------------- | -------------------- | ------------------------------------------------ |
+| 0     | passed      | 26 AC, 6 IM, and 11 PERF rows audited; repo tests green          | none open            | none                                             |
+| 1     | passed      | Rust/TS/build + 10-case real SSH + measured baseline             | all fixed; none open | none                                             |
+| 2     | passed      | 1,506 TS + 25 Rust tests; lint/type/build green                  | all fixed; none open | none                                             |
+| 3     | passed      | 1,549 TS + 44 Rust + 11 real-SSH; build/lint/clippy + local gate | all fixed; none open | none                                             |
+| 4     | passed      | 4/4 actual matching-target native parity records                 | all fixed; none open | none                                             |
+| 5     | passed      | TS/Rust/real-SSH + fixed-baseline local gate green               | all fixed; none open | none                                             |
+| 6     | passed      | 1,639 TS + 76 Rust + 13 real-SSH + fixed-baseline local gate     | all fixed; none open | none                                             |
+| 7     | passed      | 1,683 TS + Rust + 14 real-SSH + fixed-baseline local gate        | all fixed; none open | none                                             |
+| 8     | in progress | 1,801 TS + 125 Rust + 24 real-SSH + functional profile           | all fixed; none open | local numeric/sleep-wake/controlled perf pending |
 
 ## Required automated-contract traceability
 
@@ -60,7 +60,7 @@ recorded below without marking deferred evidence as passed.
 | IM-01 | PTY, reconnect, bridge update, and keeper isolation on actual Darwin arm64/x64 and Linux arm64/x64-musl targets                                        | native runtime matrix / 4, 8     | `npm run gate:ssh:native` with four matching target records             | passed  |
 | IM-02 | OpenSSH `Include`, `Match`, ProxyJump, ProxyCommand, agent, certificate, protected key, custom port, cancellation, first-use, and changed-key recovery | OpenSSH harness / 1, 8           | `npm run test:ssh:integration`; selected native trust checks            | passed  |
 | IM-03 | Known/unknown bootstrap shells, override behavior, and account-shell preservation                                                                      | bootstrap + keeper / 1, 3, 8     | real-SSH shell fixture matrix                                           | passed  |
-| IM-04 | Read-only/noexec/shared paths, NFS socket rejection, verified overrides, install race, read-back hash, and generation GC                               | doctor + installer / 1, 4, 8     | mounted real-SSH target fixtures and native filesystem checks           | partial |
+| IM-04 | Read-only/noexec/shared paths, NFS socket rejection, verified overrides, install race, read-back hash, and generation GC                               | doctor + installer / 1, 4, 8     | mounted real-SSH target fixtures and native filesystem checks           | passed  |
 | IM-05 | Quit/reopen, sleep/wake, process crashes, hook replay, files, Git/worktrees, port remap, and retained inventory                                        | desktop E2E + providers / 3, 5–8 | `npm run test:ssh:e2e` on the shared SSH fixture plus native sleep/wake | partial |
 | IM-06 | Normative transport workload passes unchanged on every actual artifact                                                                                 | release profiling / 8            | `npm run profile:ssh` with four signed target results                   | pending |
 
@@ -856,20 +856,29 @@ unchanged.
   and Linux arm64
   `db718ce26e584742dd6dcbbb4da9add0f6d7e16141319fe47d51d5845344eb9b`.
   Manual dispatch again skipped `publish-release`; no release was created.
+- Actual NFS validation used the final `linux-x64-musl` runtime artifact
+  SHA-256
+  `3aa18ea7cca13d7507f5d2580a46933bd8bd8245acc394f4378fc744f4f4d18b`
+  on a one-off mounted NFSv4 fixture. The target reported filesystem magic
+  `0x6969`; `kmuxd doctor` rejected each of install, authority, state, and
+  runtime roots as non-host-local before creating an authority record. No
+  permanent privileged-container option, external NFS service, or extra SSH
+  harness branch was retained for this manual environment check. Together with
+  the existing read-only/noexec, shared-home, verified-override, install-race,
+  read-back-hash, and generation-GC evidence, this closes IM-04.
 - Phase 8 is not yet passed. The four-target functional native matrix and
   desktop packaging records above prove the final remote/profile source at
   `9b3decc...`; the final-code reruns above also prove the subsequent CLI change
   at `93a7ec1...`. The unchanged controlled-native performance workload still
-  needs one non-shared result per artifact, and IM-04/IM-05 still need actual
-  NFS/unsuitable-socket and native sleep/wake evidence. LPERF-03 remains open on
+  needs one non-shared result per artifact, and IM-05 still needs native
+  sleep/wake evidence. LPERF-03 remains open on
   the retained numeric failures. No absolute
   `KMUX_SSH_PROFILE_CONFIG` for those controlled targets is available in this
   workspace; a final `npm run profile:ssh` audit therefore stopped before any
   target mutation with the explicit missing-configuration error. Docker and
-  shared CI remain invalid substitutes. On the current Intel Mac, `nfsd` is
-  enabled but not running, no NFS mount exists, and passwordless administrative
-  access is unavailable; an actual sleep/wake cycle would suspend the user's
-  active machine and was not performed without explicit coordination.
+  shared CI remain invalid substitutes. An actual sleep/wake cycle would
+  suspend the user's active machine and was not performed without explicit
+  coordination.
 
 ## Material decisions, deviations, and blockers
 
@@ -907,12 +916,11 @@ unchanged.
   `workflow_dispatch`, the push-only publish job was skipped and this evidence
   run did not create a release.
 - The remaining external prerequisites are recorded rather than bypassed.
-  IM-04 requires an actual unsuitable NFS/runtime-socket target and IM-05 an
-  actual native sleep/wake cycle. IM-06 and PERF-01 through PERF-08 require a
-  non-CI, non-shared controlled target for each artifact, matching the committed
-  hardware/network manifest, plus an absolute `KMUX_SSH_PROFILE_CONFIG` whose
-  audit command reports the physical TCP/authentication baseline. Resume each
-  performance record with
+  IM-05 requires an actual native sleep/wake cycle. IM-06 and PERF-01 through
+  PERF-08 each require a non-CI, non-shared controlled target matching the
+  committed hardware/network manifest, plus an absolute
+  `KMUX_SSH_PROFILE_CONFIG` whose audit command reports the physical
+  TCP/authentication baseline. Resume each performance record with
   `KMUX_SSH_PROFILE_CONFIG=/absolute/path/to/config.json npm run profile:ssh`;
   `npm run profile:ssh:functional` remains diagnostic Docker evidence only.
 - Agent Team is not implemented by this project. Phase 6 delivers hook, CLI,
