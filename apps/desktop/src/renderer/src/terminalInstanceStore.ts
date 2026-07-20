@@ -1,11 +1,12 @@
 import type { Terminal } from "@xterm/xterm";
+import type { Uint64 } from "@kmux/proto";
 
 import type { SurfaceTerminalCheckpointController } from "./terminalCheckpointController";
 import { disposeTerminalBundle, type TerminalBundle } from "./terminalBundle";
 
 export interface TerminalInstance extends TerminalBundle {
   lastHydratedSurfaceId: string | null;
-  lastHydratedSurfaceSequence: number | null;
+  lastHydratedSurfaceSequence: Uint64 | null;
   // Active stream attachment cleanup. The terminal widget is cached by surface,
   // and the IPC attachment is scoped to the live surface session rather than a
   // particular TerminalPane render.
@@ -51,7 +52,7 @@ let warmBoundViolationCount = 0;
 
 export interface TerminalStoreDiagnostics {
   lastHydratedSurfaceId: string | null;
-  lastHydratedSurfaceSequence: number | null;
+  lastHydratedSurfaceSequence: Uint64 | null;
   attachmentSessionId: string | null;
   readyAttachId: string | null;
   hasAttachment: boolean;
@@ -554,14 +555,14 @@ export function getLastHydratedSurfaceId(key: string): string | null {
   return store.get(key)?.lastHydratedSurfaceId ?? null;
 }
 
-export function getLastHydratedSurfaceSequence(key: string): number | null {
+export function getLastHydratedSurfaceSequence(key: string): Uint64 | null {
   return store.get(key)?.lastHydratedSurfaceSequence ?? null;
 }
 
 export function markSurfaceHydrated(
   key: string,
   surfaceId: string,
-  sequence: number | null = null
+  sequence: Uint64 | null = null
 ): void {
   const instance = store.get(key);
   if (instance) {
@@ -587,7 +588,7 @@ export function invalidateHydration(key: string): void {
 export function restoreHydrationState(
   key: string,
   surfaceId: string | null,
-  sequence: number | null
+  sequence: Uint64 | null
 ): void {
   const instance = store.get(key);
   if (!instance) {
@@ -598,27 +599,27 @@ export function restoreHydrationState(
 }
 
 function maxSequence(
-  current: number | null,
-  next: number | null
-): number | null {
+  current: Uint64 | null,
+  next: Uint64 | null
+): Uint64 | null {
   if (next === null) {
     return current;
   }
   if (current === null) {
     return next;
   }
-  return Math.max(current, next);
+  return current >= next ? current : next;
 }
 
 export function markSurfaceRendered(
   key: string,
   surfaceId: string,
-  sequence: number
+  sequence: Uint64
 ): void {
   const instance = store.get(key);
   if (instance?.lastHydratedSurfaceId === surfaceId) {
-    instance.lastHydratedSurfaceSequence = Math.max(
-      instance.lastHydratedSurfaceSequence ?? 0,
+    instance.lastHydratedSurfaceSequence = maxSequence(
+      instance.lastHydratedSurfaceSequence,
       sequence
     );
   }

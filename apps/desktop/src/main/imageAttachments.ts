@@ -28,6 +28,12 @@ interface ImageAttachmentServiceOptions {
   getSurfaceVendor(surfaceId: Id): UsageVendor;
   now?: () => Date;
   randomId?: () => string;
+  storeAttachment?: (request: {
+    surfaceId: Id;
+    sessionId: Id;
+    bytes: Uint8Array;
+    displayName: string;
+  }) => Promise<{ terminalReference: string }>;
 }
 
 export interface ImageAttachmentService {
@@ -168,7 +174,9 @@ export function createImageAttachmentService(
         (() => Math.random().toString(36).slice(2, 10) || "attachment");
       const safeSurfaceId = createSafePathSegment(surfaceId);
       const surfaceAttachmentRoot = join(options.attachmentRoot, safeSurfaceId);
-      await mkdir(surfaceAttachmentRoot, { recursive: true, mode: 0o700 });
+      if (!options.storeAttachment) {
+        await mkdir(surfaceAttachmentRoot, { recursive: true, mode: 0o700 });
+      }
 
       for (const payload of payloads) {
         const bytes = normalizeAttachmentBytes(payload.bytes);
@@ -190,8 +198,19 @@ export function createImageAttachmentService(
           id,
           timestamp: createdAt
         });
-        const absolutePath = join(surfaceAttachmentRoot, displayName);
-        await writeFile(absolutePath, bytes, { mode: 0o600 });
+        const absolutePath = options.storeAttachment
+          ? (
+              await options.storeAttachment({
+                surfaceId,
+                sessionId,
+                bytes,
+                displayName
+              })
+            ).terminalReference
+          : join(surfaceAttachmentRoot, displayName);
+        if (!options.storeAttachment) {
+          await writeFile(absolutePath, bytes, { mode: 0o600 });
+        }
         attachments.push({
           id,
           surfaceId,

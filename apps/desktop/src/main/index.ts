@@ -7,7 +7,7 @@ import {
   utilityProcess
 } from "electron";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
@@ -17,7 +17,12 @@ import {
   USAGE_PRICING_REVISION
 } from "@kmux/metadata";
 
-import { resolveSurfaceDiagnosticCaptureEnabled } from "@kmux/core";
+import {
+  resolveSurfaceDiagnosticCaptureEnabled,
+  type AppState,
+  type LocalPath,
+  type RemotePath
+} from "@kmux/core";
 
 import {
   createSettingsStore,
@@ -33,11 +38,14 @@ import { createMainClipboardService } from "./clipboard";
 import { createExternalSessionIndexer } from "./externalSessions";
 import {
   createImageAttachmentService,
-  IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS
+  IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  IMAGE_ATTACHMENT_MAX_TOTAL_BYTES,
+  IMAGE_ATTACHMENT_RETENTION_MS
 } from "./imageAttachments";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
 import { PtyHostManager } from "./ptyHost";
+import { RemoteHostManager } from "./remoteHost";
 import {
   buildShellLaunchPolicy,
   cancelShellEnvironmentRefresh,
@@ -51,12 +59,13 @@ import { buildApplicationMenuTemplate } from "./appMenu";
 import { createTerminalBridge } from "./terminalBridge";
 import { createTerminalDataPlaneController } from "./terminalDataPlane";
 import {
-  openTerminalFilePath as openTerminalFilePathFromTerminal,
-  resolveTerminalFileLinks as resolveTerminalFileLinksFromTerminal
+  openTargetTerminalFilePath,
+  resolveTargetTerminalFileLinks
 } from "./terminalFileOpen";
 import { createUpdaterController } from "./updater";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
+import { createUsageScanWorkerClient } from "./usageScanWorkerClient";
 import { createWorktreeRuntime } from "./worktreeRuntime";
 import {
   createNativeUpdaterDialogs,
@@ -125,12 +134,61 @@ import {
   resolveNotificationIconPath
 } from "./nativeNotifications";
 import { configureElectronUserDataDir } from "./electronUserData";
+import {
+  authorizeRendererAppAction,
+  routeRendererAppAction
+} from "./remote/rendererCommandAuthorization";
+import { loadOrCreateDesktopInstallationId } from "./remote/desktopInstallationIdentity";
+import { createDurableRemoteOperationStore } from "./remote/durableRemoteOperationStore";
+import { createConversionWalStore } from "./remote/conversionWal";
+import { createRetainedSessionInventoryStore } from "./remote/retainedSessionInventory";
+import { createRemoteEventReceiptStore } from "./remote/remoteEventReceiptStore";
+import { RemoteLifecycleRuntime } from "./remote/remoteLifecycleRuntime";
+import { createRemoteTargetBindingStore } from "./remote/remoteTargetBindingStore";
+import { createSshConnectionRuntime } from "./remote/sshConnectionRuntime";
+import { listOpenSshAliases } from "./remote/openSshAliasCatalog";
+import { createSshProfileConnectionResolver } from "./remote/sshProfileConnection";
+import { createSshProfileStore } from "./remote/sshProfileStore";
+import {
+  collectSshStartupTargetIds,
+  restoreSshStartupTargets
+} from "./remote/sshStartupRestore";
+import { createSshWorkspaceRuntime } from "./remote/sshWorkspaceRuntime";
+import { createSshAskpassBroker } from "./remote/sshAskpassBroker";
+import {
+  createLocalPathResolver,
+  createTargetServiceRegistry
+} from "./targets/targetServiceRegistry";
+import type { TargetServiceRegistry } from "./targets/contracts";
+import {
+  createLocalAttachmentProvider,
+  createLocalFileProvider,
+  createLocalGitProvider
+} from "./targets/localTargetProviders";
+import { createRemoteGitProvider } from "./targets/remoteGitProvider";
+import { createRemoteFileProviders } from "./targets/remoteFileProvider";
+import { createRemoteHistoryProvider } from "./targets/remoteHistoryProvider";
+import { createLocalUsageProvider } from "./targets/localUsageProvider";
+import { createRemoteUsageProvider } from "./targets/remoteUsageProvider";
+import { createRemoteMetadataProvider } from "./targets/remoteMetadataProvider";
+import {
+  createRemoteForwardQueue,
+  createRemotePortProvider
+} from "./targets/remotePortProvider";
+import type { TargetServiceSet } from "./targets/contracts";
+import {
+  createLocalHistoryProvider,
+  createTargetHistoryRuntime,
+  type TargetHistoryRuntime
+} from "./targetHistoryRuntime";
 
 const paths = defaultAppPaths(homedir(), process.env);
 configureElectronUserDataDir({ app });
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const { autoUpdater } = electronUpdater;
 let ptyHost: PtyHostManager | null = null;
+let remoteHost: RemoteHostManager | null = null;
+let remoteLifecycle: RemoteLifecycleRuntime | null = null;
 let socketServer: KmuxSocketServer | null = null;
 
 function ignoreExpectedPipeClose(error: NodeJS.ErrnoException): void {
@@ -150,6 +208,7 @@ async function bootstrap(): Promise<void> {
     isPackaged: app.isPackaged,
     env: process.env
   });
+  const resolveLocalPath = createLocalPathResolver();
   const notificationIconPath = resolveNotificationIconPath({
     currentDir,
     resourcesPath: (process as NodeJS.Process & { resourcesPath?: string })
@@ -342,6 +401,14 @@ async function bootstrap(): Promise<void> {
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
   let usageRuntime!: ReturnType<typeof createUsageRuntime>;
   let worktreeRuntime!: ReturnType<typeof createWorktreeRuntime>;
+  let targetServices: TargetServiceRegistry | undefined;
+  let targetHistoryRuntime: TargetHistoryRuntime | undefined;
+  const localExternalSessionIndexer = createExternalSessionIndexer({
+    homeDir: userHomeDir,
+    env: resolvedShellEnv.baseEnv,
+    agentStorageRoots,
+    antigravitySessionIndexPath: paths.antigravitySessionsPath
+  });
 
   const runtime = createAppRuntime({
     paths: {
@@ -366,7 +433,27 @@ async function bootstrap(): Promise<void> {
       }),
     defaultShellPath: resolvedShellEnv.shellPath,
     shortcutDefaultsPlatform: platformRuntime.platformId,
-    refreshMetadata: (...args) => metadataRuntime.refreshMetadata(...args),
+    refreshMetadata: (surfaceId, cwd, pid) => {
+      const state = runtime.getState();
+      const surface = state.surfaces[surfaceId];
+      const pane = surface ? state.panes[surface.paneId] : undefined;
+      const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+      if (!workspace || !targetServices) return;
+      try {
+        targetServices
+          .resolveLocated(workspace.location.target)
+          .metadata.refresh({
+            surfaceId,
+            ...(cwd === undefined ? {} : { cwd }),
+            ...(pid === undefined ? {} : { pid })
+          });
+      } catch (error) {
+        logDiagnostics("main.target-metadata.refresh-failed", {
+          surfaceId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    },
     onDidDispatchAppAction: (action, state) => {
       const settings = state.settings;
       if (
@@ -376,14 +463,23 @@ async function bootstrap(): Promise<void> {
       }
       metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
+      if (
+        action.type === "state.restore" ||
+        action.type === "workspace.worktree.convert"
+      ) {
+        void worktreeRuntime?.reconcileManagedSurfaces();
+      }
     },
-    externalSessionIndexer: createExternalSessionIndexer({
-      homeDir: userHomeDir,
-      env: resolvedShellEnv.baseEnv,
-      agentStorageRoots,
-      antigravitySessionIndexPath: paths.antigravitySessionsPath
-    }),
+    externalSessionIndexer: {
+      listExternalAgentSessions: () =>
+        targetHistoryRuntime?.listExternalAgentSessions() ??
+        localExternalSessionIndexer.listExternalAgentSessions(),
+      resolveExternalAgentSession: (key) =>
+        targetHistoryRuntime?.resolveExternalAgentSession(key) ??
+        localExternalSessionIndexer.resolveExternalAgentSession(key)
+    },
     nativeNotificationIdentity,
+    resolveLocalPath,
     profileRecorder: smoothnessProfile,
     persistWindowState: (window) => {
       persistWindowState({
@@ -404,9 +500,18 @@ async function bootstrap(): Promise<void> {
   metadataRuntime = createMetadataRuntime({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
-    env: resolvedShellEnv.baseEnv
+    env: resolvedShellEnv.baseEnv,
+    resolveLocalPath
   });
 
+  const localUsageProvider = createLocalUsageProvider({
+    scanService: createUsageScanWorkerClient({
+      env: resolvedShellEnv.baseEnv,
+      homeDir: userHomeDir,
+      agentStorageRoots,
+      platform: platformRuntime.platformId
+    })
+  });
   usageRuntime = createUsageRuntime({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
@@ -414,14 +519,14 @@ async function bootstrap(): Promise<void> {
     historyStore: usageHistoryStore,
     homeDir: userHomeDir,
     agentStorageRoots,
-    platform: platformRuntime.platformId
-  });
-
-  worktreeRuntime = createWorktreeRuntime({
-    getState: runtime.getState,
-    dispatchAppAction: runtime.dispatchAppAction,
-    env: resolvedShellEnv.baseEnv,
-    homeDir: userHomeDir
+    platform: platformRuntime.platformId,
+    resolveLocalPath,
+    targetServices: () => targetServices,
+    reportTargetUsageError: (target, error) =>
+      logDiagnostics("main.target-usage.refresh-failed", {
+        target: target.kind === "local" ? "local" : `ssh:${target.targetId}`,
+        message: error.message
+      })
   });
 
   const isSurfaceVisibleToUser = (surfaceId: string): boolean => {
@@ -437,12 +542,405 @@ async function bootstrap(): Promise<void> {
 
   const initial = runtime.restoreInitialState();
   runtime.setStore(new AppStore(initial));
+  const desktopInstallationId = loadOrCreateDesktopInstallationId(
+    paths.desktopInstallationIdentityPath
+  );
+  const remoteTargetBindings = createRemoteTargetBindingStore(
+    paths.remoteTargetBindingsPath
+  );
+  const sshProfiles = createSshProfileStore(paths.sshProfilesPath);
+  const remoteOperationStore = createDurableRemoteOperationStore(
+    paths.remoteOperationRoot
+  );
+  const remoteEventReceiptStore = createRemoteEventReceiptStore(
+    paths.remoteEventReceiptRoot
+  );
+  const conversionWal = createConversionWalStore(paths.conversionWalRoot);
+  const retainedSessionInventory = createRetainedSessionInventoryStore(
+    paths.retainedSessionInventoryPath
+  );
   let updater!: ReturnType<typeof createUpdaterController>;
   let lifecycle!: ReturnType<typeof createMainLifecycleController>;
+
+  const sshAskpass = createSshAskpassBroker({
+    electronPath: process.execPath,
+    clientPath: join(currentDir, "askpassClient.js"),
+    publishPrompt: (prompt) => {
+      const windows = BrowserWindow.getAllWindows().filter(
+        (window) => !window.isDestroyed()
+      );
+      if (windows.length === 0) {
+        throw new Error("no renderer is available for SSH authentication");
+      }
+      for (const window of windows) {
+        window.webContents.send("kmux:ssh-askpass-prompt", prompt);
+      }
+    }
+  });
+  await sshAskpass.start();
 
   ptyHost = new PtyHostManager((modulePath, args, options) =>
     utilityProcess.fork(modulePath, args, options)
   );
+  remoteHost = new RemoteHostManager(
+    (modulePath, args, options) =>
+      utilityProcess.fork(modulePath, args, options),
+    {
+      runtimeArtifactRoot: app.isPackaged
+        ? join(process.resourcesPath, "remote-runtime")
+        : join(
+            dirname(fileURLToPath(import.meta.url)),
+            "../../../../remote/kmuxd/dist"
+          ),
+      transferRoot: join(paths.cacheDir, "remote-transfers")
+    }
+  );
+  remoteHost.on("error", (error: Error) => {
+    logDiagnostics("main.remote-host.error", { message: error.message });
+  });
+  remoteHost.on("runtime-lost", () => {
+    logDiagnostics("main.remote-host.runtime-lost", {});
+  });
+  remoteLifecycle = new RemoteLifecycleRuntime({
+    desktopInstallationId,
+    operationStore: remoteOperationStore,
+    host: remoteHost,
+    hostEnv: resolvedShellEnv.baseEnv,
+    getState: runtime.getState,
+    getTargetBinding: remoteTargetBindings.get,
+    replaceTargetBinding: remoteTargetBindings.replace,
+    dispatchFact: (fact) => {
+      runtime.dispatchMainFact(fact);
+      if (fact.type === "remote-operation.succeeded") {
+        void worktreeRuntime?.reconcileManagedSurfaces();
+      }
+    },
+    dispatchAppAction: runtime.dispatchAppAction,
+    eventReceiptStore: remoteEventReceiptStore,
+    retainedInventory: retainedSessionInventory,
+    persistDurableProductSnapshot: (state) => {
+      snapshotStore.saveDurable(state, { cleanShutdown: false });
+    },
+    closeWorkspaceProduct: (workspaceId) => {
+      runtime.dispatchAppAction({ type: "workspace.close", workspaceId });
+    },
+    conversion: {
+      wal: conversionWal,
+      getLocalRuntimeEpoch: (surfaceId, sessionId) =>
+        ptyHost?.sessionRef(surfaceId, sessionId)?.epoch ?? null,
+      forceDesktopSnapshot: (state, expectedSnapshotHash) => {
+        snapshotStore.saveDurable(state, { cleanShutdown: false });
+        return expectedSnapshotHash;
+      },
+      installDesktopState: (state) => {
+        runtime.installDurableState(state);
+      },
+      terminateLocalSession: async (target) => {
+        if (target.runtimeEpoch === undefined) {
+          return { ...target, outcome: "already-exited" };
+        }
+        const host = ptyHost;
+        if (!host) {
+          throw new Error(
+            "local PTY host is unavailable during conversion cleanup"
+          );
+        }
+        const outcome = await host.closeSessionGeneration({
+          surfaceId: target.surfaceId,
+          sessionId: target.sessionId,
+          epoch: target.runtimeEpoch
+        });
+        return { ...target, outcome };
+      }
+    },
+    reportError: (error) => {
+      logDiagnostics("main.remote-lifecycle.error", {
+        message: error.message
+      });
+    }
+  });
+  remoteLifecycle.recover();
+  const providerRemoteHost = remoteHost;
+  const providerRemoteLifecycle = remoteLifecycle;
+  const sshConnections = createSshConnectionRuntime({
+    desktopInstallationId,
+    profiles: sshProfiles,
+    bindings: remoteTargetBindings,
+    resolver: createSshProfileConnectionResolver({
+      homeDir: userHomeDir,
+      configRoot: join(paths.cacheDir, "ssh-config"),
+      env: resolvedShellEnv.baseEnv,
+      resolveEffective: async ({ sshPath, configPath, host }) => {
+        providerRemoteHost.start(resolvedShellEnv.baseEnv);
+        if (!providerRemoteHost.isRunning()) {
+          throw new Error("remote-host failed to start for OpenSSH resolution");
+        }
+        return await providerRemoteHost.resolveSshConfig({
+          sshPath,
+          configPath,
+          host
+        });
+      }
+    }),
+    host: providerRemoteHost,
+    lifecycle: providerRemoteLifecycle,
+    hostEnv: resolvedShellEnv.baseEnv,
+    askpassBroker: sshAskpass,
+    isTargetReferenced: (targetId) => {
+      if (
+        Object.values(runtime.getState().workspaces).some(
+          (workspace) =>
+            workspace.location.target.kind === "ssh" &&
+            workspace.location.target.targetId === targetId
+        )
+      ) {
+        return true;
+      }
+      if (
+        retainedSessionInventory
+          .loadAll()
+          .some((entry) => entry.resourceKey.targetId === targetId)
+      ) {
+        return true;
+      }
+      if (
+        conversionWal
+          .loadAll()
+          .some(
+            (record) =>
+              record.workspaceResourceKey.targetId === targetId &&
+              record.state !== "cleanup-complete"
+          )
+      ) {
+        return true;
+      }
+      return remoteOperationStore
+        .loadAll()
+        .some(
+          (record) =>
+            record.intent.resourceKey.targetId === targetId &&
+            record.result === undefined
+        );
+    }
+  });
+  const sshWorkspaces = createSshWorkspaceRuntime({
+    connections: sshConnections,
+    lifecycle: providerRemoteLifecycle,
+    getState: runtime.getState
+  });
+
+  const localTargetServices: TargetServiceSet<LocalPath> = {
+    terminal: {
+      async create(request) {
+        const cwd = resolveLocalPath({
+          kind: "local",
+          path: request.launch.cwd
+        });
+        runtime.dispatchAppAction({
+          type: "surface.create",
+          paneId: request.paneId,
+          cwd,
+          launch: {
+            ...request.launch,
+            cwd
+          }
+        });
+      },
+      async terminate(request) {
+        const surfaceId =
+          runtime.getState().sessions[request.sessionId]?.surfaceId;
+        if (surfaceId) {
+          runtime.dispatchAppAction({ type: "surface.close", surfaceId });
+        }
+      },
+      async sendText(sessionId, text) {
+        ptyHost?.sendText(sessionId, text);
+      },
+      async sendKey(sessionId, input) {
+        ptyHost?.sendKey(sessionId, input);
+      }
+    },
+    git: createLocalGitProvider({
+      resolveLocalPath,
+      managedRoot: join(userHomeDir, ".kmux", "worktrees"),
+      env: resolvedShellEnv.baseEnv
+    }),
+    files: createLocalFileProvider({ resolveLocalPath, homeDir: userHomeDir }),
+    metadata: {
+      refresh(request) {
+        metadataRuntime.refreshMetadata(
+          request.surfaceId,
+          request.cwd === undefined
+            ? undefined
+            : resolveLocalPath({ kind: "local", path: request.cwd }),
+          request.pid
+        );
+      }
+    },
+    history: createLocalHistoryProvider({
+      indexer: localExternalSessionIndexer,
+      refreshUsage: usageRuntime.refreshNow
+    }),
+    usage: localUsageProvider,
+    ports: {
+      async list(sessionId) {
+        const state = runtime.getState();
+        const surfaceId = state.sessions[sessionId]?.surfaceId;
+        return surfaceId ? [...(state.surfaces[surfaceId]?.ports ?? [])] : [];
+      },
+      async remapBrowserUrl({ url }) {
+        return { url };
+      },
+      async closeWorkspace() {}
+    },
+    attachments: createLocalAttachmentProvider({
+      attachmentRoot: paths.attachmentRoot
+    })
+  };
+  const remoteForwardQueue = createRemoteForwardQueue();
+  targetServices = createTargetServiceRegistry({
+    local: localTargetServices,
+    remote: (targetId, resolveRemotePath, decodeRemotePath) => {
+      const roots = providerRemoteLifecycle.getTargetRuntimeRoots(targetId);
+      if (!roots) return undefined;
+      const fileProviders = createRemoteFileProviders({
+        host: providerRemoteHost,
+        targetId,
+        transferRoot: join(paths.cacheDir, "remote-transfers"),
+        remoteStateRoot: roots.stateRoot,
+        ...(deriveRemoteHome(roots) === undefined
+          ? {}
+          : { remoteHomeDir: deriveRemoteHome(roots) }),
+        resolveRemotePath,
+        decodeRemotePath
+      });
+      const gitProvider = createRemoteGitProvider({
+        desktopInstallationId,
+        targetId,
+        host: providerRemoteHost,
+        lifecycle: providerRemoteLifecycle,
+        getState: runtime.getState,
+        resolveRemotePath,
+        decodeRemotePath,
+        managedRoot: `${roots.stateRoot}/worktrees`
+      });
+      const portProvider = createRemotePortProvider({
+        desktopInstallationId,
+        targetId,
+        host: providerRemoteHost,
+        lifecycle: providerRemoteLifecycle,
+        getState: runtime.getState,
+        queue: remoteForwardQueue
+      });
+      const remoteServices: TargetServiceSet<RemotePath> = {
+        terminal: {
+          async create(request) {
+            requireRemoteWorkspaceScope(
+              runtime.getState(),
+              targetId,
+              request.workspaceId,
+              request.paneId
+            );
+            const cwd = resolveRemotePath(request.launch.cwd);
+            await providerRemoteLifecycle.executeRendererLifecycleAction({
+              type: "surface.create",
+              paneId: request.paneId,
+              cwd,
+              launch: { ...request.launch, cwd }
+            });
+          },
+          async terminate(request) {
+            const state = runtime.getState();
+            const session = state.sessions[request.sessionId];
+            if (!session) return;
+            const surface = state.surfaces[session.surfaceId];
+            const pane = surface ? state.panes[surface.paneId] : undefined;
+            const workspace = pane
+              ? state.workspaces[pane.workspaceId]
+              : undefined;
+            if (
+              !workspace ||
+              workspace.location.target.kind !== "ssh" ||
+              workspace.location.target.targetId !== targetId
+            ) {
+              throw new Error("remote session termination target changed");
+            }
+            await providerRemoteLifecycle.executeRendererLifecycleAction({
+              type: "surface.close",
+              surfaceId: surface.id
+            });
+          },
+          async sendText(sessionId, text) {
+            const surfaceId = requireRemoteSessionSurface(
+              runtime.getState(),
+              targetId,
+              sessionId
+            );
+            await providerRemoteLifecycle.sendSurfaceText(surfaceId, text);
+          },
+          async sendKey(sessionId, input) {
+            const surfaceId = requireRemoteSessionSurface(
+              runtime.getState(),
+              targetId,
+              sessionId
+            );
+            await providerRemoteLifecycle.sendSurfaceKey(surfaceId, input);
+          }
+        },
+        git: gitProvider,
+        files: fileProviders.files,
+        metadata: createRemoteMetadataProvider({
+          targetId,
+          git: gitProvider,
+          ports: portProvider,
+          getState: runtime.getState,
+          dispatchAppAction: runtime.dispatchAppAction,
+          resolveRemotePath,
+          reportError: (error) =>
+            logDiagnostics("main.remote-metadata.refresh-failed", {
+              targetId,
+              message: error.message
+            })
+        }),
+        history: createRemoteHistoryProvider({
+          desktopInstallationId,
+          targetId,
+          host: providerRemoteHost,
+          decodeRemotePath
+        }),
+        usage: createRemoteUsageProvider({
+          desktopInstallationId,
+          targetId,
+          host: providerRemoteHost,
+          decodeRemotePath
+        }),
+        ports: portProvider,
+        attachments: fileProviders.attachments
+      };
+      return remoteServices;
+    }
+  });
+  targetHistoryRuntime = createTargetHistoryRuntime({
+    targetServices,
+    getState: runtime.getState,
+    localIndexer: localExternalSessionIndexer,
+    reportError: (target, error) =>
+      logDiagnostics("main.target-history.refresh-failed", {
+        target: target.kind === "local" ? "local" : `ssh:${target.targetId}`,
+        message: error.message
+      })
+  });
+  worktreeRuntime = createWorktreeRuntime({
+    getState: runtime.getState,
+    dispatchAppAction: runtime.dispatchAppAction,
+    targetServices,
+    reportError: (error) =>
+      logDiagnostics("main.worktree.surface-reconciliation-failed", {
+        message: error.message
+      })
+  });
+  void worktreeRuntime.reconcileManagedSurfaces();
+
   ptyHost.on("diagnostics", (records: DiagnosticsRecord[]) => {
     if (!diagnosticsWriter) {
       return;
@@ -465,7 +963,9 @@ async function bootstrap(): Promise<void> {
   });
   const terminalDataPlane = createTerminalDataPlaneController({
     getState: runtime.getState,
-    getPtyHost: () => ptyHost
+    getPtyHost: () => ptyHost,
+    getRemoteTerminal: (surfaceId, sessionId) =>
+      remoteLifecycle?.getRemoteTerminal(surfaceId, sessionId) ?? null
   });
   const surfaceCaptureService = createSurfaceCaptureService({
     captureRoot: paths.captureRoot,
@@ -498,25 +998,76 @@ async function bootstrap(): Promise<void> {
   const imageAttachmentService = createImageAttachmentService({
     attachmentRoot: paths.attachmentRoot,
     getSurfaceSessionId: terminalBridge.surfaceSessionId,
-    getSurfaceVendor: usageRuntime.getSurfaceVendor
+    getSurfaceVendor: usageRuntime.getSurfaceVendor,
+    async storeAttachment(request) {
+      const state = runtime.getState();
+      const surface = state.surfaces[request.surfaceId];
+      const session = state.sessions[request.sessionId];
+      const pane = surface ? state.panes[surface.paneId] : undefined;
+      const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+      if (
+        !surface ||
+        !session ||
+        !workspace ||
+        surface.sessionId !== request.sessionId ||
+        session.surfaceId !== request.surfaceId
+      ) {
+        throw new Error("attachment surface identity changed before staging");
+      }
+      const stored = await targetServices
+        .resolveLocated(workspace.location.target)
+        .attachments.store({
+          workspaceId: workspace.id,
+          sessionId: session.id,
+          cwd: surface.cwd,
+          bytes: request.bytes,
+          name: request.displayName
+        });
+      return { terminalReference: stored.terminalReference };
+    }
   });
   const runImageAttachmentCleanup = (): void => {
-    void imageAttachmentService
-      .cleanupImageAttachments()
-      .then((result) => {
-        if (result.deletedCount > 0) {
-          logDiagnostics("main.image-attachments.cleanup", {
-            deletedCount: result.deletedCount,
-            deletedBytes: result.deletedBytes,
-            remainingBytes: result.remainingBytes
-          });
-        }
-      })
-      .catch((error: unknown) => {
-        logDiagnostics("main.image-attachments.cleanup-error", {
-          message: error instanceof Error ? error.message : String(error)
-        });
+    void (async () => {
+      const local = await imageAttachmentService.cleanupImageAttachments();
+      const remoteResults = await Promise.all(
+        remoteTargetBindings.list().map(async (binding) => {
+          const roots = providerRemoteLifecycle.getTargetRuntimeRoots(
+            binding.id
+          );
+          if (!roots) return null;
+          try {
+            return await providerRemoteHost.pruneRemoteAttachments({
+              targetId: binding.id,
+              remoteDirectory: posix.join(roots.stateRoot, "attachments"),
+              nowUnixMs: Date.now(),
+              maxAgeMs: IMAGE_ATTACHMENT_RETENTION_MS,
+              maxTotalBytes: IMAGE_ATTACHMENT_MAX_TOTAL_BYTES
+            });
+          } catch (error) {
+            logDiagnostics("main.image-attachments.remote-cleanup-error", {
+              targetId: binding.id,
+              message: error instanceof Error ? error.message : String(error)
+            });
+            return null;
+          }
+        })
+      );
+      const totals = remoteResults.reduce<typeof local>(
+        (result, current) => ({
+          deletedCount: result.deletedCount + (current?.deletedCount ?? 0),
+          deletedBytes: result.deletedBytes + (current?.deletedBytes ?? 0),
+          remainingBytes: result.remainingBytes + (current?.remainingBytes ?? 0)
+        }),
+        local
+      );
+      if (totals.deletedCount > 0) {
+        logDiagnostics("main.image-attachments.cleanup", { ...totals });
+      }
+    })().catch((error: unknown) => {
+      logDiagnostics("main.image-attachments.cleanup-error", {
+        message: error instanceof Error ? error.message : String(error)
       });
+    });
   };
   runImageAttachmentCleanup();
   const imageAttachmentCleanupTimer = setInterval(
@@ -538,11 +1089,78 @@ async function bootstrap(): Promise<void> {
     [KMUX_RAW_OUTPUT_ROOT_ENV]: paths.rawOutputRoot,
     [KMUX_NATIVE_CACHE_ROOT_ENV]: paths.nativeCacheRoot
   });
+  const requireSurfaceWorkspaceTarget = (surfaceId: string) => {
+    const state = runtime.getState();
+    const surface = state.surfaces[surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (!surface || !pane || !workspace) {
+      throw new Error("surface is unavailable");
+    }
+    return workspace.location.target;
+  };
   socketServer.setRuntime({
     getState: runtime.getState,
-    dispatch: runtime.dispatchAppAction,
-    sendSurfaceText: terminalBridge.sendText,
-    sendSurfaceKey: terminalBridge.sendKey,
+    dispatch: (action) =>
+      runtime.dispatchAppAction(
+        authorizeRendererAppAction(action, runtime.getState())
+      ),
+    sendSurfaceText: async (surfaceId, text, operationId) => {
+      const target = requireSurfaceWorkspaceTarget(surfaceId);
+      if (target.kind === "local") {
+        terminalBridge.sendText(surfaceId, text);
+        return { ok: true, boundary: "local-pty-dispatch" };
+      }
+      const control = remoteLifecycle;
+      if (!control) {
+        throw new Error("remote lifecycle is unavailable");
+      }
+      const acknowledgement = await control.sendSurfaceText(
+        surfaceId,
+        text,
+        operationId
+      );
+      usageRuntime.handleTerminalInput(surfaceId, text);
+      return { ok: true, acknowledgement };
+    },
+    sendSurfaceKey: async (surfaceId, key, operationId) => {
+      const target = requireSurfaceWorkspaceTarget(surfaceId);
+      if (target.kind === "local") {
+        terminalBridge.sendKey(surfaceId, key);
+        return { ok: true, boundary: "local-pty-dispatch" };
+      }
+      const control = remoteLifecycle;
+      if (!control) {
+        throw new Error("remote lifecycle is unavailable");
+      }
+      const acknowledgement = await control.sendSurfaceKey(
+        surfaceId,
+        { key },
+        operationId
+      );
+      return { ok: true, acknowledgement };
+    },
+    captureSurface: async ({ surfaceId, captureId, lines, maxBytes }) => {
+      const target = requireSurfaceWorkspaceTarget(surfaceId);
+      if (target.kind !== "ssh") {
+        throw new Error(
+          "bounded surface.capture is available for SSH surfaces"
+        );
+      }
+      const control = remoteLifecycle;
+      if (!control) {
+        throw new Error("remote lifecycle is unavailable");
+      }
+      const capture = await control.captureSurface(surfaceId, {
+        captureId,
+        lineLimit: lines,
+        maxBytes
+      });
+      return {
+        ...capture,
+        mutationSequence: capture.mutationSequence.toString(10)
+      };
+    },
     identify: runtime.identify,
     isSurfaceVisibleToUser,
     onAgentHook: ({ agent, payload }) => {
@@ -575,7 +1193,128 @@ async function bootstrap(): Promise<void> {
     resumeExternalAgentSession: runtime.resumeExternalAgentSession,
     createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
-    dispatchAppAction: runtime.dispatchAppAction,
+    dispatchRendererAction: (action) => {
+      const route = routeRendererAppAction(action, runtime.getState());
+      if (route.kind === "local") {
+        runtime.dispatchAppAction(route.action);
+        return;
+      }
+      const control = remoteLifecycle;
+      if (!control) {
+        throw new Error("remote lifecycle is unavailable");
+      }
+      return control.executeRendererLifecycleAction(route.action);
+    },
+    getRetainedRemoteSessions: () => {
+      const control = remoteLifecycle;
+      if (!control) {
+        throw new Error("remote lifecycle is unavailable");
+      }
+      return control.getRetainedSessionsSnapshot();
+    },
+    terminateRetainedRemoteSession: (resourceKey) => {
+      const control = remoteLifecycle;
+      if (!control) {
+        return Promise.reject(new Error("remote lifecycle is unavailable"));
+      }
+      return control.terminateRetainedSession(resourceKey);
+    },
+    getSshConnections: (resolveEffective) =>
+      sshConnections.getSnapshot({ resolveEffective }),
+    listSshConfigAliases: () =>
+      listOpenSshAliases({
+        homeDir: userHomeDir,
+        env: resolvedShellEnv.baseEnv
+      }),
+    importSshConfigAliases: async (aliases) => {
+      const available = new Set(
+        await listOpenSshAliases({
+          homeDir: userHomeDir,
+          env: resolvedShellEnv.baseEnv
+        })
+      );
+      if (
+        !Array.isArray(aliases) ||
+        aliases.length > 128 ||
+        aliases.some(
+          (alias) => typeof alias !== "string" || !available.has(alias)
+        )
+      ) {
+        throw new TypeError("SSH alias import selection is invalid");
+      }
+      const existing = await sshConnections.getSnapshot();
+      const imported = new Set(
+        existing.profiles
+          .map((profile) => profile.sshConfigHost)
+          .filter((alias): alias is string => alias !== undefined)
+      );
+      for (const alias of [...new Set(aliases)].sort()) {
+        if (!imported.has(alias)) {
+          sshConnections.saveProfile(undefined, {
+            name: alias,
+            sshConfigHost: alias,
+            forwardAgent: false
+          });
+        }
+      }
+      return sshConnections.getSnapshot({ resolveEffective: true });
+    },
+    saveSshProfile: (request) =>
+      sshConnections.saveProfile(request.id, request.profile),
+    duplicateSshProfile: (profileId) =>
+      sshConnections.duplicateProfile(profileId),
+    deleteSshProfile: (profileId) => sshConnections.deleteProfile(profileId),
+    testSshProfile: async (profileId) => {
+      await sshConnections.connectProfile(profileId);
+      return sshConnections.getSnapshot({ resolveEffective: true });
+    },
+    rebindSshProfile: async (profileId) => {
+      await sshConnections.rebindProfile(profileId);
+      return sshConnections.getSnapshot({ resolveEffective: true });
+    },
+    cleanSshRuntime: (profileId) =>
+      sshConnections.cleanRemoteRuntime(profileId),
+    resetSshRuntime: (profileId) =>
+      sshConnections.resetRemoteRuntime(profileId),
+    prepareSshWorkspace: (request) => sshWorkspaces.prepare(request),
+    commitSshWorkspace: (request) => sshWorkspaces.commit(request),
+    cancelSshWorkspacePreparation: (request) => sshWorkspaces.cancel(request),
+    respondSshAskpass: (request) => sshAskpass.respond(request),
+    closeWorkspaceSafely: (workspaceId) => {
+      const workspace = runtime.getState().workspaces[workspaceId];
+      if (!workspace) return;
+      if (workspace.location.target.kind === "ssh") {
+        const control = remoteLifecycle;
+        if (!control) {
+          throw new Error("remote lifecycle is unavailable");
+        }
+        control.closeWorkspaceRetained(workspaceId);
+        return;
+      }
+      runtime.dispatchAppAction({ type: "workspace.close", workspaceId });
+    },
+    closeOtherWorkspacesSafely: (workspaceId) => {
+      const state = runtime.getState();
+      const workspace = state.workspaces[workspaceId];
+      if (!workspace) return;
+      const activeWindow = state.windows[state.activeWindowId];
+      const hasRemoteOthers = activeWindow?.workspaceOrder.some(
+        (candidateId) =>
+          candidateId !== workspaceId &&
+          state.workspaces[candidateId]?.location.target.kind === "ssh"
+      );
+      if (hasRemoteOthers) {
+        const control = remoteLifecycle;
+        if (!control) {
+          throw new Error("remote lifecycle is unavailable");
+        }
+        control.closeOtherWorkspacesRetained(workspaceId);
+      }
+      runtime.dispatchAppAction({
+        type: "workspace.closeOthers",
+        workspaceId
+      });
+    },
     attachTerminalStream: terminalDataPlane.attach,
     reportTerminalStreamError: ({ surfaceId, sessionId, error }) => {
       logDiagnostics("main.terminal-stream.error", {
@@ -588,28 +1327,44 @@ async function bootstrap(): Promise<void> {
     snapshotSurface: terminalBridge.snapshotSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,
-    openExternalUrl: async (rawUrl) => {
+    openExternalUrl: async (surfaceId, rawUrl) => {
       const url = new URL(rawUrl);
       if (!["http:", "https:"].includes(url.protocol)) {
         throw new Error(`Unsupported external URL protocol: ${url.protocol}`);
       }
+      const state = runtime.getState();
+      const surface = state.surfaces[surfaceId];
+      const pane = surface ? state.panes[surface.paneId] : undefined;
+      const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+      if (!surface || !workspace) {
+        throw new Error("external terminal URL surface is unavailable");
+      }
+      const remapped = await targetServices
+        .resolveLocated(workspace.location.target)
+        .ports.remapBrowserUrl({ workspaceId: workspace.id, url });
+      if (remapped.mapping?.status === "pending") {
+        throw new Error("SSH port forward is not ready yet");
+      }
       if (process.env.NODE_ENV === "test") {
         return;
       }
-      await shell.openExternal(url.toString());
+      await shell.openExternal(remapped.url.toString());
     },
     openTerminalFilePath: (surfaceId, rawPath, baseCwd) =>
-      openTerminalFilePathFromTerminal({
+      openTargetTerminalFilePath({
         surfaceId,
         rawPath,
         baseCwd,
-        getState: runtime.getState
+        getState: runtime.getState,
+        targetServices,
+        resolveLocalPath
       }),
     resolveTerminalFileLinks: (surfaceId, candidates) =>
-      resolveTerminalFileLinksFromTerminal({
+      resolveTargetTerminalFileLinks({
         surfaceId,
         candidates,
-        getState: runtime.getState
+        getState: runtime.getState,
+        targetServices
       }),
     identify: runtime.identify,
     previewTerminalTypography: runtime.previewTerminalTypography,
@@ -722,6 +1477,9 @@ async function bootstrap(): Promise<void> {
     currentMainWindow = window;
     runtime.setMainWindow(window);
     window.webContents.once("did-finish-load", () => {
+      // The scan worker forks a Node helper. Starting it while Chromium is
+      // establishing renderer/utility IPC can starve macOS Electron startup.
+      usageRuntime.start();
       if (process.env.KMUX_DEV_SMOKE === "1") {
         console.log("[main:window] did-finish-load");
       }
@@ -785,7 +1543,20 @@ async function bootstrap(): Promise<void> {
         unsubscribeUpdater();
         updater.dispose();
         cancelShellEnvironmentRefresh();
-        runtime.shutdown();
+        let preserveRemoteWorkspaceLayout = false;
+        if (!runtime.getState().settings.restoreWorkspacesAfterQuit) {
+          const retention = remoteLifecycle?.retainOwnedForRestoreDisabled();
+          if (retention && retention.missingDescriptorKeys.length > 0) {
+            preserveRemoteWorkspaceLayout = true;
+            logDiagnostics("main.remote-retention.descriptor-missing", {
+              count: retention.missingDescriptorKeys.length,
+              resourceKeys: retention.missingDescriptorKeys.slice(0, 32)
+            });
+          }
+        }
+        runtime.shutdown({
+          preserveWorkspaceLayout: preserveRemoteWorkspaceLayout
+        });
         metadataRuntime.dispose();
         usageRuntime.shutdown();
 
@@ -794,11 +1565,17 @@ async function bootstrap(): Promise<void> {
         socketServer = null;
         const host = ptyHost;
         ptyHost = null;
+        const remote = remoteHost;
+        remoteHost = null;
+        const remoteControl = remoteLifecycle;
+        remoteLifecycle = null;
 
         const socketStop = server?.stop();
         const hostStop = host?.stop();
+        const remoteStop = remoteControl?.stop() ?? remote?.stop();
+        const askpassStop = sshAskpass.stop();
         try {
-          await Promise.all([socketStop, hostStop]);
+          await Promise.all([socketStop, hostStop, remoteStop, askpassStop]);
           await diagnosticsWriter?.close();
           diagnosticsWriter = null;
           applyDiagnosticsLogPath(process.env, undefined);
@@ -848,6 +1625,30 @@ async function bootstrap(): Promise<void> {
       }),
     shutdown
   });
+  const startupSshTargetIds = collectSshStartupTargetIds({
+    state: runtime.getState(),
+    retained: retainedSessionInventory.loadAll(),
+    conversions: conversionWal.loadAll(),
+    operations: remoteOperationStore.loadAll()
+  });
+  void restoreSshStartupTargets({
+    targetIds: startupSshTargetIds,
+    restoreTarget: (targetId) => sshConnections.restoreTarget(targetId),
+    onConnected: () => worktreeRuntime?.reconcileManagedSurfaces(),
+    onFailure: (targetId, error) => {
+      logDiagnostics("main.ssh-target.restore-failed", {
+        targetId,
+        message: error.message
+      });
+    }
+  }).then((result) => {
+    if (startupSshTargetIds.length === 0) return;
+    logDiagnostics("main.ssh-target.restore-complete", {
+      requested: startupSshTargetIds.length,
+      connected: result.connected.length,
+      failed: result.failed.length
+    });
+  });
   openMainWindow("initial");
   const pendingInstall = evaluatePendingInstall(
     app.getVersion(),
@@ -892,7 +1693,6 @@ async function bootstrap(): Promise<void> {
   updateApplicationMenu();
   broadcastUpdaterState();
   runtime.syncWindowTitles();
-  usageRuntime.start();
   runtime.respawnRestoredSessions();
   app.on("before-quit", (event) => {
     logDiagnostics("main.before-quit", {});
@@ -904,6 +1704,63 @@ async function bootstrap(): Promise<void> {
   app.on("window-all-closed", () => {
     lifecycle.handleWindowAllClosed();
   });
+}
+
+function requireRemoteWorkspaceScope(
+  state: AppState,
+  targetId: string,
+  workspaceId: string,
+  paneId: string
+): void {
+  const workspace = state.workspaces[workspaceId];
+  const pane = state.panes[paneId];
+  if (
+    !workspace ||
+    !pane ||
+    pane.workspaceId !== workspaceId ||
+    workspace.location.target.kind !== "ssh" ||
+    workspace.location.target.targetId !== targetId
+  ) {
+    throw new Error("remote provider request is outside its workspace target");
+  }
+}
+
+function requireRemoteSessionSurface(
+  state: AppState,
+  targetId: string,
+  sessionId: string
+): string {
+  const session = state.sessions[sessionId];
+  const surface = session ? state.surfaces[session.surfaceId] : undefined;
+  const pane = surface ? state.panes[surface.paneId] : undefined;
+  const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+  if (
+    !session ||
+    !surface ||
+    !workspace ||
+    workspace.location.target.kind !== "ssh" ||
+    workspace.location.target.targetId !== targetId
+  ) {
+    throw new Error("remote session is outside its provider target");
+  }
+  return surface.id;
+}
+
+function deriveRemoteHome(roots: {
+  installRoot: string;
+  stateRoot: string;
+}): string | undefined {
+  const candidates = [
+    [roots.installRoot, "/.local/share/kmux"],
+    [roots.stateRoot, "/.local/state/kmux"]
+  ] as const;
+  for (const [root, suffix] of candidates) {
+    if (root.endsWith(suffix)) {
+      const home = root.slice(0, -suffix.length);
+      if (posix.isAbsolute(home) && home !== "/") return home;
+    }
+  }
+  return undefined;
 }
 
 app

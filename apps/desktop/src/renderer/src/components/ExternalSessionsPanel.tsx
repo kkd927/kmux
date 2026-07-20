@@ -248,13 +248,25 @@ export function ExternalSessionsPanel(
         <div className={styles.externalSessionsNotice}>{props.error}</div>
       ) : null}
 
+      {(props.snapshot.unavailableTargets ?? []).map((target) => (
+        <div
+          key={target.kind === "local" ? "local" : `ssh:${target.targetId}`}
+          className={styles.externalSessionsNotice}
+          data-testid="external-sessions-target-unavailable"
+        >
+          {target.kind === "local"
+            ? `Local history unavailable: ${target.message}`
+            : `SSH ${target.targetId} history unavailable: ${target.message}`}
+        </div>
+      ))}
+
       {props.loading && sessions.length === 0 ? (
         <div className={styles.externalSessionsEmpty}>Loading sessions...</div>
       ) : null}
 
       {!props.loading && !hasAnySessions ? (
         <div className={styles.externalSessionsEmpty}>
-          No local agent sessions found.
+          No agent sessions found.
         </div>
       ) : null}
 
@@ -312,7 +324,7 @@ function ExternalSessionRow(props: {
       tabIndex={canResume ? 0 : -1}
       aria-disabled={!canResume}
       title={props.session.resumeCommandPreview}
-      aria-label={`Resume ${props.session.vendorLabel} session ${props.session.title}`}
+      aria-label={`Resume ${props.session.vendorLabel} session ${props.session.title} on ${externalSessionTargetLabel(props.session)}`}
       onClick={resume}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -339,6 +351,13 @@ function ExternalSessionRow(props: {
         <span className={styles.externalSessionVendor}>
           {props.session.vendorLabel}
         </span>
+        <span aria-hidden="true">·</span>
+        <span
+          className={styles.externalSessionModel}
+          title={externalSessionTargetLabel(props.session)}
+        >
+          {externalSessionTargetLabel(props.session)}
+        </span>
         {props.session.model ? (
           <>
             <span aria-hidden="true">·</span>
@@ -356,6 +375,12 @@ function ExternalSessionRow(props: {
       </span>
     </button>
   );
+}
+
+function externalSessionTargetLabel(session: ExternalAgentSessionVm): string {
+  return session.target.kind === "local"
+    ? "Local"
+    : `${session.target.principal.accountName}@${session.target.targetId}`;
 }
 
 function describeSessionCount(

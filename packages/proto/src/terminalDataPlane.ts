@@ -1,21 +1,17 @@
 import type { Id, TerminalKeyInput } from "./index";
+import { UINT64_MAX, type Uint64 } from "./uint64";
 
-export const TERMINAL_DATA_PLANE_PROTOCOL_VERSION = 2 as const;
+export const TERMINAL_DATA_PLANE_PROTOCOL_VERSION = 3 as const;
 export const TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES = 128 * 1024;
-// Credit is a fixed sliding window. A client may start with less, but it may
-// never grow the host's outstanding-output allowance beyond the initial cap.
 export const TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES =
   TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES;
 export const TERMINAL_DATA_PLANE_MAX_INPUT_BYTES = 64 * 1024;
-// PTY reads are split before sequencing so every committed delta fits inside
-// the fixed 128 KiB initial credit window.
 export const TERMINAL_DATA_PLANE_MAX_DELTA_BYTES = 64 * 1024;
-export const TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024;
+export const TERMINAL_DATA_PLANE_MAX_CHECKPOINT_CHUNK_BYTES = 64 * 1024;
+export const TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
 export const TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS = 2_048;
 export const TERMINAL_DATA_PLANE_MAX_CWD_RANGES = 32_768;
 export const TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES = 64 * 1024;
-// Includes output data and repeated per-segment cwd metadata. Telemetry and
-// fixed structured-clone overhead remain intentionally outside this estimate.
 export const TERMINAL_DATA_PLANE_MAX_DELTA_RETAINED_BYTES = 256 * 1024;
 
 const MAX_ID_LENGTH = 512;
@@ -62,9 +58,8 @@ export interface TerminalOutputTelemetry {
   outputKind?: TerminalOutputDiagnosticKind;
   /** True only when a renderer attachment existed at the PTY read boundary. */
   visibleAtPtyRead?: boolean;
-  /** Correlates the first PTY read after an accepted input without its data. */
   inputAcceptedAt?: number;
-  inputSequence?: number;
+  inputSequence?: Uint64;
   inputKind?: TerminalInputDiagnosticKind;
 }
 
@@ -73,18 +68,17 @@ export interface TerminalDataPlaneHostTelemetry {
 }
 
 export interface TerminalOutputSegment {
-  sequence: number;
+  sequence: Uint64;
   data: string;
   byteLength: number;
   cwd?: string;
   telemetry?: TerminalOutputTelemetry;
 }
 
-export interface TerminalCheckpoint {
+export interface TerminalCheckpointMetadata {
   format: "xterm-vt/1";
   session: TerminalSessionRef;
-  sequence: number;
-  data: string;
+  sequence: Uint64;
   cols: number;
   rows: number;
   cwd?: string;
@@ -92,17 +86,22 @@ export interface TerminalCheckpoint {
   cwdRanges?: TerminalCwdRange[];
 }
 
+/** Runtime-owner materialization. This shape is never sent over MessagePort. */
+export interface TerminalCheckpoint extends TerminalCheckpointMetadata {
+  data: string;
+}
+
 export type TerminalDelta =
   | {
       type: "output";
-      fromSequence: number;
-      sequence: number;
+      fromSequence: Uint64;
+      sequence: Uint64;
       byteLength: number;
       segments: TerminalOutputSegment[];
     }
   | {
       type: "resize";
-      sequence: number;
+      sequence: Uint64;
       cols: number;
       rows: number;
     };
@@ -127,12 +126,18 @@ export type TerminalDataPlaneDetachReason =
 export type TerminalDataPlaneClientMessage =
   | (TerminalDataPlaneEnvelope & {
       type: "attach";
-      resumeFromSequence?: number;
+      resumeFromSequence?: Uint64;
       creditBytes: number;
     })
   | (TerminalDataPlaneEnvelope & {
       type: "credit";
-      acknowledgedSequence: number;
+      acknowledgedSequence: Uint64;
+      bytes: number;
+    })
+  | (TerminalDataPlaneEnvelope & {
+      type: "checkpoint:credit";
+      checkpointId: Id;
+      acknowledgedOffset: number;
       bytes: number;
     })
   | (TerminalDataPlaneEnvelope & {
@@ -166,42 +171,58 @@ export type TerminalDataPlaneErrorCode =
   | "stale-attach"
   | "runtime-lost"
   | "checkpoint-too-large"
+  | "checkpoint-invalid"
   | "internal";
+
+export type TerminalCheckpointPurpose =
+  | { kind: "attach" }
+  | {
+      kind: "resync";
+      missingFromSequence: Uint64;
+      retainedFromSequence: Uint64;
+    };
 
 export type TerminalDataPlaneHostMessage =
   | (TerminalDataPlaneHostEnvelope & {
       type: "attached";
-      mode: "checkpoint";
-      checkpoint: TerminalCheckpoint;
-    })
-  | (TerminalDataPlaneHostEnvelope & {
-      type: "attached";
       mode: "resume";
-      resumedFromSequence: number;
-      sequence: number;
+      resumedFromSequence: Uint64;
+      sequence: Uint64;
       cols: number;
       rows: number;
+    })
+  | (TerminalDataPlaneHostEnvelope & {
+      type: "checkpoint:begin";
+      checkpointId: Id;
+      purpose: TerminalCheckpointPurpose;
+      metadata: TerminalCheckpointMetadata;
+      totalBytes: number;
+    })
+  | (TerminalDataPlaneHostEnvelope & {
+      type: "checkpoint:chunk";
+      checkpointId: Id;
+      offset: number;
+      data: ArrayBuffer;
+    })
+  | (TerminalDataPlaneHostEnvelope & {
+      type: "checkpoint:end";
+      checkpointId: Id;
+      digest: string;
     })
   | (TerminalDataPlaneHostEnvelope & {
       type: "delta";
       delta: TerminalDelta;
     })
   | (TerminalDataPlaneHostEnvelope & {
-      type: "resync-required";
-      missingFromSequence: number;
-      retainedFromSequence: number;
-      checkpoint: TerminalCheckpoint;
-    })
-  | (TerminalDataPlaneHostEnvelope & {
       type: "resize:ack";
       requestId: Id;
-      sequence: number;
+      sequence: Uint64;
       cols: number;
       rows: number;
     })
   | (TerminalDataPlaneHostEnvelope & {
       type: "exit";
-      afterSequence: number;
+      sequence: Uint64;
       exitCode?: number;
     })
   | (TerminalDataPlaneHostEnvelope & {
@@ -228,78 +249,95 @@ export function validateTerminalDataPlaneClientMessage(
   if (envelopeError) {
     return invalid(envelopeError);
   }
-
   const message = value as Record<string, unknown>;
   switch (message.type) {
     case "attach": {
+      const shapeError = validateMessageShape(message, [
+        "resumeFromSequence",
+        "creditBytes"
+      ]);
+      if (shapeError) return invalid(shapeError);
       const sequenceError = validateOptionalSequence(
         message.resumeFromSequence,
         "resumeFromSequence"
       );
-      if (sequenceError) {
-        return invalid(sequenceError);
-      }
-      if (!isPositiveInteger(message.creditBytes)) {
-        return invalid("creditBytes must be a positive integer");
-      }
-      if (message.creditBytes > TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES) {
-        return invalid(
-          `creditBytes exceeds ${TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES} bytes`
-        );
+      const creditError = validateCredit(message.creditBytes, "creditBytes");
+      if (sequenceError || creditError) {
+        return invalid(sequenceError ?? creditError ?? "");
       }
       break;
     }
     case "credit": {
+      const shapeError = validateMessageShape(message, [
+        "acknowledgedSequence",
+        "bytes"
+      ]);
+      if (shapeError) return invalid(shapeError);
       const sequenceError = validateSequence(
         message.acknowledgedSequence,
         "acknowledgedSequence"
       );
-      if (sequenceError) {
-        return invalid(sequenceError);
+      const creditError = validateCredit(message.bytes, "bytes");
+      if (sequenceError || creditError) {
+        return invalid(sequenceError ?? creditError ?? "");
       }
-      if (!isPositiveInteger(message.bytes)) {
-        return invalid("bytes must be a positive integer");
-      }
-      if (message.bytes > TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES) {
-        return invalid(
-          `bytes exceeds ${TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES} bytes`
-        );
+      break;
+    }
+    case "checkpoint:credit": {
+      const shapeError = validateMessageShape(message, [
+        "checkpointId",
+        "acknowledgedOffset",
+        "bytes"
+      ]);
+      if (shapeError) return invalid(shapeError);
+      const idError = validateId(message.checkpointId, "checkpointId");
+      const offsetError = validateBoundedOffset(
+        message.acknowledgedOffset,
+        "acknowledgedOffset"
+      );
+      const creditError = validateCredit(message.bytes, "bytes");
+      if (idError || offsetError || creditError) {
+        return invalid(idError ?? offsetError ?? creditError ?? "");
       }
       break;
     }
     case "input:text": {
+      const shapeError = validateMessageShape(message, ["text"]);
+      if (shapeError) return invalid(shapeError);
       const error = validateBoundedString(
         message.text,
         "text",
         TERMINAL_DATA_PLANE_MAX_INPUT_BYTES
       );
-      if (error) {
-        return invalid(error);
-      }
+      if (error) return invalid(error);
       break;
     }
     case "input:binary": {
+      const shapeError = validateMessageShape(message, ["data"]);
+      if (shapeError) return invalid(shapeError);
       const error = validateBinaryString(message.data);
-      if (error) {
-        return invalid(error);
-      }
+      if (error) return invalid(error);
       break;
     }
     case "input:key": {
+      const shapeError = validateMessageShape(message, ["input"]);
+      if (shapeError) return invalid(shapeError);
       const error = validateTerminalKeyInput(message.input);
-      if (error) {
-        return invalid(error);
-      }
+      if (error) return invalid(error);
       break;
     }
     case "resize": {
+      const shapeError = validateMessageShape(message, [
+        "cols",
+        "rows",
+        "requestId",
+        "gestureActive"
+      ]);
+      if (shapeError) return invalid(shapeError);
       const dimensionError = validateDimensions(message.cols, message.rows);
-      if (dimensionError) {
-        return invalid(dimensionError);
-      }
       const requestIdError = validateOptionalId(message.requestId, "requestId");
-      if (requestIdError) {
-        return invalid(requestIdError);
+      if (dimensionError || requestIdError) {
+        return invalid(dimensionError ?? requestIdError ?? "");
       }
       if (
         message.gestureActive !== undefined &&
@@ -309,15 +347,17 @@ export function validateTerminalDataPlaneClientMessage(
       }
       break;
     }
-    case "detach":
+    case "detach": {
+      const shapeError = validateMessageShape(message, ["reason"]);
+      if (shapeError) return invalid(shapeError);
       if (!isDetachReason(message.reason)) {
         return invalid("reason is not a supported detach reason");
       }
       break;
+    }
     default:
       return invalid("type is not a supported client message type");
   }
-
   return valid(value as TerminalDataPlaneClientMessage);
 }
 
@@ -326,89 +366,125 @@ export function validateTerminalDataPlaneHostMessage(
   context: TerminalDataPlaneValidationContext = {}
 ): TerminalDataPlaneValidationResult<TerminalDataPlaneHostMessage> {
   const envelopeError = validateEnvelope(value, context);
-  if (envelopeError) {
-    return invalid(envelopeError);
-  }
-
+  if (envelopeError) return invalid(envelopeError);
   const message = value as Record<string, unknown>;
   const telemetryError = validateHostTelemetry(message.telemetry);
-  if (telemetryError) {
-    return invalid(telemetryError);
-  }
+  if (telemetryError) return invalid(telemetryError);
   const envelopeSession = message.session as TerminalSessionRef;
+
   switch (message.type) {
     case "attached": {
-      if (message.mode === "checkpoint") {
-        const checkpointError = validateTerminalCheckpoint(
-          message.checkpoint,
-          envelopeSession
-        );
-        if (checkpointError) {
-          return invalid(checkpointError);
-        }
-        break;
+      const shapeError = validateMessageShape(
+        message,
+        ["mode", "resumedFromSequence", "sequence", "cols", "rows"],
+        true
+      );
+      if (shapeError) return invalid(shapeError);
+      if (message.mode !== "resume") {
+        return invalid("attached mode must be resume");
       }
-      if (message.mode === "resume") {
-        const resumedError = validateSequence(
-          message.resumedFromSequence,
-          "resumedFromSequence"
-        );
-        const sequenceError = validateSequence(message.sequence, "sequence");
-        const dimensionError = validateDimensions(message.cols, message.rows);
-        if (resumedError || sequenceError || dimensionError) {
-          return invalid(resumedError ?? sequenceError ?? dimensionError ?? "");
-        }
-        if (
-          (message.resumedFromSequence as number) > (message.sequence as number)
-        ) {
-          return invalid("resumedFromSequence must not exceed sequence");
-        }
-        break;
+      const resumedError = validateSequence(
+        message.resumedFromSequence,
+        "resumedFromSequence"
+      );
+      const sequenceError = validateSequence(message.sequence, "sequence");
+      const dimensionError = validateDimensions(message.cols, message.rows);
+      if (resumedError || sequenceError || dimensionError) {
+        return invalid(resumedError ?? sequenceError ?? dimensionError ?? "");
       }
-      return invalid("attached mode must be checkpoint or resume");
-    }
-    case "delta": {
-      const error = validateTerminalDelta(message.delta);
-      if (error) {
-        return invalid(error);
+      if (
+        (message.resumedFromSequence as bigint) > (message.sequence as bigint)
+      ) {
+        return invalid("resumedFromSequence must not exceed sequence");
       }
       break;
     }
-    case "resync-required": {
-      const missingError = validateSequence(
-        message.missingFromSequence,
-        "missingFromSequence"
+    case "checkpoint:begin": {
+      const shapeError = validateMessageShape(
+        message,
+        ["checkpointId", "purpose", "metadata", "totalBytes"],
+        true
       );
-      const retainedError = validateSequence(
-        message.retainedFromSequence,
-        "retainedFromSequence"
-      );
-      const checkpointError = validateTerminalCheckpoint(
-        message.checkpoint,
+      if (shapeError) return invalid(shapeError);
+      const idError = validateId(message.checkpointId, "checkpointId");
+      const metadataError = validateTerminalCheckpointMetadata(
+        message.metadata,
         envelopeSession
       );
-      if (missingError || retainedError || checkpointError) {
-        return invalid(missingError ?? retainedError ?? checkpointError ?? "");
+      const totalError = validateCheckpointTotal(message.totalBytes);
+      const purposeError = validateCheckpointPurpose(
+        message.purpose,
+        message.metadata
+      );
+      if (idError || metadataError || totalError || purposeError) {
+        return invalid(
+          idError ?? metadataError ?? totalError ?? purposeError ?? ""
+        );
+      }
+      break;
+    }
+    case "checkpoint:chunk": {
+      const shapeError = validateMessageShape(
+        message,
+        ["checkpointId", "offset", "data"],
+        true
+      );
+      if (shapeError) return invalid(shapeError);
+      const idError = validateId(message.checkpointId, "checkpointId");
+      const offsetError = validateBoundedOffset(message.offset, "offset", true);
+      if (idError || offsetError) {
+        return invalid(idError ?? offsetError ?? "");
+      }
+      if (!(message.data instanceof ArrayBuffer)) {
+        return invalid("checkpoint chunk data must be an ArrayBuffer");
       }
       if (
-        (message.missingFromSequence as number) >=
-        (message.retainedFromSequence as number)
+        message.data.byteLength === 0 ||
+        message.data.byteLength > TERMINAL_DATA_PLANE_MAX_CHECKPOINT_CHUNK_BYTES
       ) {
         return invalid(
-          "retainedFromSequence must be newer than missingFromSequence"
+          `checkpoint chunk data must contain between 1 and ${TERMINAL_DATA_PLANE_MAX_CHECKPOINT_CHUNK_BYTES} bytes`
         );
       }
       if (
-        (message.retainedFromSequence as number) >
-        (message.checkpoint as TerminalCheckpoint).sequence + 1
+        (message.offset as number) + message.data.byteLength >
+        TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES
       ) {
-        return invalid(
-          "checkpoint.sequence must not precede retainedFromSequence"
-        );
+        return invalid("checkpoint chunk exceeds the checkpoint byte limit");
       }
+      break;
+    }
+    case "checkpoint:end": {
+      const shapeError = validateMessageShape(
+        message,
+        ["checkpointId", "digest"],
+        true
+      );
+      if (shapeError) return invalid(shapeError);
+      const idError = validateId(message.checkpointId, "checkpointId");
+      if (idError) return invalid(idError);
+      if (
+        typeof message.digest !== "string" ||
+        !/^[a-f0-9]{64}$/.test(message.digest)
+      ) {
+        return invalid("checkpoint digest must be a SHA-256 hex digest");
+      }
+      break;
+    }
+    case "delta": {
+      const shapeError = validateMessageShape(message, ["delta"], true);
+      if (shapeError) return invalid(shapeError);
+      const error = validateTerminalDelta(message.delta);
+      if (error) return invalid(error);
       break;
     }
     case "resize:ack": {
+      const shapeError = validateMessageShape(
+        message,
+        ["requestId", "sequence", "cols", "rows"],
+        true
+      );
+      if (shapeError) return invalid(shapeError);
       const requestIdError = validateId(message.requestId, "requestId");
       const sequenceError = validateSequence(message.sequence, "sequence");
       const dimensionError = validateDimensions(message.cols, message.rows);
@@ -418,13 +494,14 @@ export function validateTerminalDataPlaneHostMessage(
       break;
     }
     case "exit": {
-      const sequenceError = validateSequence(
-        message.afterSequence,
-        "afterSequence"
+      const shapeError = validateMessageShape(
+        message,
+        ["sequence", "exitCode"],
+        true
       );
-      if (sequenceError) {
-        return invalid(sequenceError);
-      }
+      if (shapeError) return invalid(shapeError);
+      const sequenceError = validateSequence(message.sequence, "sequence");
+      if (sequenceError) return invalid(sequenceError);
       if (
         message.exitCode !== undefined &&
         !Number.isSafeInteger(message.exitCode)
@@ -433,28 +510,30 @@ export function validateTerminalDataPlaneHostMessage(
       }
       break;
     }
-    case "error":
+    case "error": {
+      const shapeError = validateMessageShape(
+        message,
+        ["code", "message", "recoverable"],
+        true
+      );
+      if (shapeError) return invalid(shapeError);
       if (!isErrorCode(message.code)) {
         return invalid("code is not a supported terminal data plane error");
       }
-      {
-        const messageError = validateBoundedString(
-          message.message,
-          "message",
-          MAX_ERROR_MESSAGE_BYTES
-        );
-        if (messageError) {
-          return invalid(messageError);
-        }
-      }
+      const messageError = validateBoundedString(
+        message.message,
+        "message",
+        MAX_ERROR_MESSAGE_BYTES
+      );
+      if (messageError) return invalid(messageError);
       if (typeof message.recoverable !== "boolean") {
         return invalid("recoverable must be a boolean");
       }
       break;
+    }
     default:
       return invalid("type is not a supported host message type");
   }
-
   return valid(value as TerminalDataPlaneHostMessage);
 }
 
@@ -476,20 +555,14 @@ function validateEnvelope(
   value: unknown,
   context: TerminalDataPlaneValidationContext
 ): string | null {
-  if (!isRecord(value)) {
-    return "message must be an object";
-  }
+  if (!isRecord(value)) return "message must be an object";
   if (value.protocol !== TERMINAL_DATA_PLANE_PROTOCOL_VERSION) {
     return `protocol must be ${TERMINAL_DATA_PLANE_PROTOCOL_VERSION}`;
   }
   const attachIdError = validateId(value.attachId, "attachId");
-  if (attachIdError) {
-    return attachIdError;
-  }
+  if (attachIdError) return attachIdError;
   const sessionError = validateSessionRef(value.session);
-  if (sessionError) {
-    return sessionError;
-  }
+  if (sessionError) return sessionError;
   if (context.attachId !== undefined && value.attachId !== context.attachId) {
     return "attachId does not match the port capability";
   }
@@ -503,9 +576,13 @@ function validateEnvelope(
 }
 
 function validateSessionRef(value: unknown): string | null {
-  if (!isRecord(value)) {
-    return "session must be an object";
-  }
+  if (!isRecord(value)) return "session must be an object";
+  const shapeError = validateExactKeys(
+    value,
+    ["surfaceId", "sessionId", "epoch"],
+    "session"
+  );
+  if (shapeError) return shapeError;
   return (
     validateId(value.surfaceId, "session.surfaceId") ??
     validateId(value.sessionId, "session.sessionId") ??
@@ -513,49 +590,46 @@ function validateSessionRef(value: unknown): string | null {
   );
 }
 
-function validateTerminalCheckpoint(
+function validateTerminalCheckpointMetadata(
   value: unknown,
   expectedSession: TerminalSessionRef
 ): string | null {
-  if (!isRecord(value)) {
-    return "checkpoint must be an object";
-  }
+  if (!isRecord(value)) return "checkpoint metadata must be an object";
+  const shapeError = validateExactKeys(
+    value,
+    [
+      "format",
+      "session",
+      "sequence",
+      "cols",
+      "rows",
+      "cwd",
+      "title",
+      "cwdRanges"
+    ],
+    "checkpoint metadata"
+  );
+  if (shapeError) return shapeError;
   if (value.format !== "xterm-vt/1") {
-    return 'checkpoint.format must be "xterm-vt/1"';
+    return 'checkpoint metadata format must be "xterm-vt/1"';
   }
   const sessionError = validateSessionRef(value.session);
-  if (sessionError) {
-    return sessionError;
-  }
+  if (sessionError) return sessionError;
   if (!sameSessionRef(value.session as TerminalSessionRef, expectedSession)) {
-    return "checkpoint.session does not match the message session";
+    return "checkpoint session does not match the message session";
   }
   const sequenceError = validateSequence(value.sequence, "checkpoint.sequence");
-  if (sequenceError) {
-    return sequenceError;
-  }
-  const dataError = validateStringWithinBytes(
-    value.data,
-    "checkpoint.data",
-    TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES
-  );
-  if (dataError) {
-    return dataError;
-  }
+  if (sequenceError) return sequenceError;
   const dimensionError = validateDimensions(value.cols, value.rows);
-  if (dimensionError) {
-    return `checkpoint.${dimensionError}`;
-  }
+  if (dimensionError) return `checkpoint.${dimensionError}`;
   for (const field of ["cwd", "title"] as const) {
     if (value[field] !== undefined) {
-      const metadataError = validateStringWithinBytes(
+      const error = validateStringWithinBytes(
         value[field],
         `checkpoint.${field}`,
         TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES
       );
-      if (metadataError) {
-        return metadataError;
-      }
+      if (error) return error;
     }
   }
   if (value.cwdRanges !== undefined) {
@@ -567,19 +641,23 @@ function validateTerminalCheckpoint(
     }
     for (let index = 0; index < value.cwdRanges.length; index += 1) {
       const range = value.cwdRanges[index];
-      if (!isRecord(range)) {
-        return `checkpoint.cwdRanges[${index}] must be an object`;
-      }
-      const rangeInvalid =
+      if (
+        !isRecord(range) ||
         !isNonNegativeInteger(range.startLine) ||
         !isNonNegativeInteger(range.endLine) ||
         (range.endLine as number) < (range.startLine as number) ||
-        typeof range.cwd !== "string";
-      if (rangeInvalid) {
+        typeof range.cwd !== "string"
+      ) {
         return `checkpoint.cwdRanges[${index}] is invalid`;
       }
+      const rangeShapeError = validateExactKeys(
+        range,
+        ["startLine", "endLine", "cwd"],
+        `checkpoint.cwdRanges[${index}]`
+      );
+      if (rangeShapeError) return rangeShapeError;
       if (
-        utf8ByteLength(range.cwd as string) >
+        utf8ByteLength(range.cwd) >
         TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES
       ) {
         return `checkpoint.cwdRanges[${index}].cwd exceeds ${TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES} bytes`;
@@ -589,25 +667,73 @@ function validateTerminalCheckpoint(
   return null;
 }
 
-function validateTerminalDelta(value: unknown): string | null {
-  if (!isRecord(value)) {
-    return "delta must be an object";
+function validateCheckpointPurpose(
+  value: unknown,
+  metadata: unknown
+): string | null {
+  if (!isRecord(value)) return "checkpoint purpose must be an object";
+  if (value.kind === "attach") {
+    return validateExactKeys(value, ["kind"], "checkpoint purpose");
   }
+  if (value.kind !== "resync") {
+    return "checkpoint purpose kind must be attach or resync";
+  }
+  const shapeError = validateExactKeys(
+    value,
+    ["kind", "missingFromSequence", "retainedFromSequence"],
+    "checkpoint purpose"
+  );
+  if (shapeError) return shapeError;
+  const missingError = validateSequence(
+    value.missingFromSequence,
+    "missingFromSequence"
+  );
+  const retainedError = validateSequence(
+    value.retainedFromSequence,
+    "retainedFromSequence"
+  );
+  if (missingError || retainedError) return missingError ?? retainedError;
+  if (
+    (value.missingFromSequence as bigint) >=
+    (value.retainedFromSequence as bigint)
+  ) {
+    return "retainedFromSequence must be newer than missingFromSequence";
+  }
+  if (
+    isRecord(metadata) &&
+    typeof metadata.sequence === "bigint" &&
+    (value.retainedFromSequence as bigint) > metadata.sequence + 1n
+  ) {
+    return "checkpoint sequence must not precede retainedFromSequence";
+  }
+  return null;
+}
+
+function validateTerminalDelta(value: unknown): string | null {
+  if (!isRecord(value)) return "delta must be an object";
   if (value.type === "resize") {
+    const shapeError = validateExactKeys(
+      value,
+      ["type", "sequence", "cols", "rows"],
+      "delta"
+    );
+    if (shapeError) return shapeError;
     return (
       validateSequence(value.sequence, "delta.sequence") ??
       validateDimensions(value.cols, value.rows)
     );
   }
-  if (value.type !== "output") {
-    return "delta.type must be output or resize";
-  }
+  if (value.type !== "output") return "delta.type must be output or resize";
+  const shapeError = validateExactKeys(
+    value,
+    ["type", "fromSequence", "sequence", "byteLength", "segments"],
+    "delta"
+  );
+  if (shapeError) return shapeError;
   const fromError = validateSequence(value.fromSequence, "delta.fromSequence");
   const sequenceError = validateSequence(value.sequence, "delta.sequence");
-  if (fromError || sequenceError) {
-    return fromError ?? sequenceError;
-  }
-  if ((value.sequence as number) <= (value.fromSequence as number)) {
+  if (fromError || sequenceError) return fromError ?? sequenceError;
+  if ((value.sequence as bigint) <= (value.fromSequence as bigint)) {
     return "delta.sequence must be newer than delta.fromSequence";
   }
   if (
@@ -623,8 +749,7 @@ function validateTerminalDelta(value: unknown): string | null {
   ) {
     return `delta.segments must contain between 1 and ${TERMINAL_DATA_PLANE_MAX_OUTPUT_SEGMENTS} entries`;
   }
-
-  let previousSequence = value.fromSequence as number;
+  let previousSequence = value.fromSequence as bigint;
   let declaredBytes = 0;
   let retainedBytes = 0;
   for (let index = 0; index < value.segments.length; index += 1) {
@@ -632,15 +757,19 @@ function validateTerminalDelta(value: unknown): string | null {
     if (!isRecord(segment)) {
       return `delta.segments[${index}] must be an object`;
     }
+    const segmentShapeError = validateExactKeys(
+      segment,
+      ["sequence", "data", "byteLength", "cwd", "telemetry"],
+      `delta.segments[${index}]`
+    );
+    if (segmentShapeError) return segmentShapeError;
     const segmentSequenceError = validateSequence(
       segment.sequence,
       `delta.segments[${index}].sequence`
     );
-    if (segmentSequenceError) {
-      return segmentSequenceError;
-    }
-    if ((segment.sequence as number) <= previousSequence) {
-      return "delta segment sequences must be strictly increasing";
+    if (segmentSequenceError) return segmentSequenceError;
+    if ((segment.sequence as bigint) !== previousSequence + 1n) {
+      return "delta segment sequences must be contiguous";
     }
     if (typeof segment.data !== "string" || segment.data.length === 0) {
       return `delta.segments[${index}].data must be a non-empty string`;
@@ -660,12 +789,10 @@ function validateTerminalDelta(value: unknown): string | null {
         `delta.segments[${index}].cwd`,
         TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES
       );
-      if (cwdError) {
-        return cwdError;
-      }
+      if (cwdError) return cwdError;
     }
     retainedBytes +=
-      (segment.byteLength as number) +
+      segment.byteLength +
       (typeof segment.cwd === "string" ? utf8ByteLength(segment.cwd) : 0);
     if (retainedBytes > TERMINAL_DATA_PLANE_MAX_DELTA_RETAINED_BYTES) {
       return `delta retained bytes exceed ${TERMINAL_DATA_PLANE_MAX_DELTA_RETAINED_BYTES}`;
@@ -674,11 +801,9 @@ function validateTerminalDelta(value: unknown): string | null {
       segment.telemetry,
       `delta.segments[${index}].telemetry`
     );
-    if (telemetryError) {
-      return telemetryError;
-    }
-    previousSequence = segment.sequence as number;
-    declaredBytes += segment.byteLength as number;
+    if (telemetryError) return telemetryError;
+    previousSequence = segment.sequence as bigint;
+    declaredBytes += segment.byteLength;
     if (declaredBytes > TERMINAL_DATA_PLANE_MAX_DELTA_BYTES) {
       return `delta segment bytes exceed ${TERMINAL_DATA_PLANE_MAX_DELTA_BYTES}`;
     }
@@ -693,30 +818,36 @@ function validateTerminalDelta(value: unknown): string | null {
 }
 
 function validateHostTelemetry(value: unknown): string | null {
-  if (value === undefined) {
-    return null;
-  }
-  if (!isRecord(value)) {
-    return "telemetry must be an object when provided";
-  }
+  if (value === undefined) return null;
+  if (!isRecord(value)) return "telemetry must be an object when provided";
+  const shapeError = validateExactKeys(value, ["portSentAt"], "telemetry");
+  if (shapeError) return shapeError;
   return validateTimestamp(value.portSentAt, "telemetry.portSentAt");
 }
 
 function validateOutputTelemetry(value: unknown, path: string): string | null {
-  if (value === undefined) {
-    return null;
-  }
-  if (!isRecord(value)) {
-    return `${path} must be an object when provided`;
-  }
+  if (value === undefined) return null;
+  if (!isRecord(value)) return `${path} must be an object when provided`;
+  const shapeError = validateExactKeys(
+    value,
+    [
+      "ptyReadAt",
+      "headlessCommitAt",
+      "outputKind",
+      "visibleAtPtyRead",
+      "inputAcceptedAt",
+      "inputSequence",
+      "inputKind"
+    ],
+    path
+  );
+  if (shapeError) return shapeError;
   const readError = validateTimestamp(value.ptyReadAt, `${path}.ptyReadAt`);
   const commitError = validateTimestamp(
     value.headlessCommitAt,
     `${path}.headlessCommitAt`
   );
-  if (readError || commitError) {
-    return readError ?? commitError;
-  }
+  if (readError || commitError) return readError ?? commitError;
   if ((value.headlessCommitAt as number) < (value.ptyReadAt as number)) {
     return `${path}.headlessCommitAt must not precede ptyReadAt`;
   }
@@ -742,16 +873,12 @@ function validateOutputTelemetry(value: unknown, path: string): string | null {
       value.inputAcceptedAt,
       `${path}.inputAcceptedAt`
     );
-    if (acceptedError) {
-      return acceptedError;
-    }
-    if (
-      typeof value.inputSequence !== "number" ||
-      !Number.isSafeInteger(value.inputSequence) ||
-      value.inputSequence < 0
-    ) {
-      return `${path}.inputSequence must be a non-negative safe integer`;
-    }
+    if (acceptedError) return acceptedError;
+    const inputSequenceError = validateSequence(
+      value.inputSequence,
+      `${path}.inputSequence`
+    );
+    if (inputSequenceError) return inputSequenceError;
     if ((value.inputAcceptedAt as number) > (value.ptyReadAt as number)) {
       return `${path}.inputAcceptedAt must not follow ptyReadAt`;
     }
@@ -803,23 +930,25 @@ function validateTerminalKeyInput(value: unknown): string | null {
   if (!isRecord(value) || typeof value.key !== "string") {
     return "input must contain a string key";
   }
+  const shapeError = validateExactKeys(
+    value,
+    ["key", "text", "altKey", "ctrlKey", "metaKey", "shiftKey"],
+    "input"
+  );
+  if (shapeError) return shapeError;
   const keyError = validateBoundedString(
     value.key,
     "input.key",
     TERMINAL_DATA_PLANE_MAX_INPUT_BYTES
   );
-  if (keyError) {
-    return keyError;
-  }
+  if (keyError) return keyError;
   if (value.text !== undefined) {
     const textError = validateBoundedString(
       value.text,
       "input.text",
       TERMINAL_DATA_PLANE_MAX_INPUT_BYTES
     );
-    if (textError) {
-      return textError;
-    }
+    if (textError) return textError;
   }
   const combinedBytes =
     utf8ByteLength(value.key) +
@@ -836,12 +965,8 @@ function validateTerminalKeyInput(value: unknown): string | null {
 }
 
 function validateBinaryString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return "data must be a string";
-  }
-  if (value.length === 0) {
-    return "data must not be empty";
-  }
+  if (typeof value !== "string") return "data must be a string";
+  if (value.length === 0) return "data must not be empty";
   if (value.length > TERMINAL_DATA_PLANE_MAX_INPUT_BYTES) {
     return `data exceeds ${TERMINAL_DATA_PLANE_MAX_INPUT_BYTES} bytes`;
   }
@@ -863,21 +988,43 @@ function validateDimensions(cols: unknown, rows: unknown): string | null {
   return null;
 }
 
+function validateCredit(value: unknown, field: string): string | null {
+  if (!isPositiveInteger(value)) return `${field} must be a positive integer`;
+  if (value > TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES) {
+    return `${field} exceeds ${TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES} bytes`;
+  }
+  return null;
+}
+
+function validateCheckpointTotal(value: unknown): string | null {
+  return isNonNegativeInteger(value) &&
+    value <= TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES
+    ? null
+    : `totalBytes must be between 0 and ${TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES}`;
+}
+
+function validateBoundedOffset(
+  value: unknown,
+  field: string,
+  allowZero = false
+): string | null {
+  return Number.isSafeInteger(value) &&
+    (allowZero ? (value as number) >= 0 : (value as number) > 0) &&
+    (value as number) <= TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES
+    ? null
+    : `${field} is outside the checkpoint byte range`;
+}
+
 function validateBoundedString(
   value: unknown,
   field: string,
   maxBytes: number
 ): string | null {
-  if (typeof value !== "string") {
-    return `${field} must be a string`;
-  }
-  if (value.length === 0) {
-    return `${field} must not be empty`;
-  }
-  if (utf8ByteLength(value) > maxBytes) {
-    return `${field} exceeds ${maxBytes} bytes`;
-  }
-  return null;
+  if (typeof value !== "string") return `${field} must be a string`;
+  if (value.length === 0) return `${field} must not be empty`;
+  return utf8ByteLength(value) > maxBytes
+    ? `${field} exceeds ${maxBytes} bytes`
+    : null;
 }
 
 function validateStringWithinBytes(
@@ -885,13 +1032,10 @@ function validateStringWithinBytes(
   field: string,
   maxBytes: number
 ): string | null {
-  if (typeof value !== "string") {
-    return `${field} must be a string`;
-  }
-  if (utf8ByteLength(value) > maxBytes) {
-    return `${field} exceeds ${maxBytes} bytes`;
-  }
-  return null;
+  if (typeof value !== "string") return `${field} must be a string`;
+  return utf8ByteLength(value) > maxBytes
+    ? `${field} exceeds ${maxBytes} bytes`
+    : null;
 }
 
 function validateOptionalSequence(
@@ -902,9 +1046,9 @@ function validateOptionalSequence(
 }
 
 function validateSequence(value: unknown, field: string): string | null {
-  return isNonNegativeInteger(value)
+  return typeof value === "bigint" && value >= 0n && value <= UINT64_MAX
     ? null
-    : `${field} must be a non-negative safe integer`;
+    : `${field} must be a uint64 bigint`;
 }
 
 function validateOptionalId(value: unknown, field: string): string | null {
@@ -939,6 +1083,7 @@ function isErrorCode(value: unknown): value is TerminalDataPlaneErrorCode {
     value === "stale-attach" ||
     value === "runtime-lost" ||
     value === "checkpoint-too-large" ||
+    value === "checkpoint-invalid" ||
     value === "internal"
   );
 }
@@ -955,7 +1100,42 @@ function sameSessionRef(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validateMessageShape(
+  message: Record<string, unknown>,
+  fields: readonly string[],
+  host = false
+): string | null {
+  return validateExactKeys(
+    message,
+    [
+      "protocol",
+      "attachId",
+      "session",
+      "type",
+      ...(host ? ["telemetry"] : []),
+      ...fields
+    ],
+    "message"
+  );
+}
+
+function validateExactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  field: string
+): string | null {
+  const allowedSet = new Set(allowed);
+  const unexpected = Object.keys(value).find((key) => !allowedSet.has(key));
+  return unexpected === undefined
+    ? null
+    : `${field} contains unexpected field ${unexpected}`;
 }
 
 function isPositiveInteger(value: unknown): value is number {

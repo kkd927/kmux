@@ -1,0 +1,35 @@
+AddressFamily any
+ListenAddress 0.0.0.0
+Port 22
+
+HostKey /run/kmux-ssh/ssh_host_ed25519_key
+PidFile /run/kmux-ssh/sshd.pid
+
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+AuthenticationMethods any
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM no
+
+AllowUsers kmux kmux-alt
+AllowAgentForwarding yes
+AllowTcpForwarding yes
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+
+ClientAliveInterval 0
+LoginGraceTime 30
+MaxAuthTries 6
+MaxSessions 64
+StrictModes yes
+UseDNS no
+
+LogLevel VERBOSE
+PrintMotd no
+PrintLastLog no
+StreamLocalBindUnlink yes
+AcceptEnv KMUX_*

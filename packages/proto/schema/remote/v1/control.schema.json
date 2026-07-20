@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kmux.dev/schema/remote/v1/control.schema.json",
+  "title": "kmux remote control protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/bridgeRequest" },
+    { "$ref": "#/$defs/bridgeResponse" },
+    { "$ref": "#/$defs/keeperAttach" },
+    { "$ref": "#/$defs/keeperControl" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "uint64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installRoot", "authorityRoot", "stateRoot", "runtimeRoot"],
+      "properties": {
+        "installRoot": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "authorityRoot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "stateRoot": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "runtimeRoot": { "type": "string", "minLength": 1, "maxLength": 32768 }
+      }
+    },
+    "resourceKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["desktopInstallationId", "targetId", "workspaceId"],
+      "properties": {
+        "desktopInstallationId": { "$ref": "#/$defs/id" },
+        "targetId": { "$ref": "#/$defs/id" },
+        "workspaceId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "sessionResourceKey": {
+      "allOf": [
+        { "$ref": "#/$defs/resourceKey" },
+        { "required": ["sessionId"] }
+      ]
+    },
+    "conversionLaunch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cwd"],
+      "properties": {
+        "cwd": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "shell": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "args": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "maxLength": 32768 }
+        },
+        "env": {
+          "type": "object",
+          "maxProperties": 256,
+          "additionalProperties": { "type": "string", "maxLength": 32768 }
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "bridgeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "requestId", "token", "roots", "request"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "requestId": { "$ref": "#/$defs/id" },
+        "token": { "type": "string", "pattern": "^[a-f0-9]{64,128}$" },
+        "roots": { "$ref": "#/$defs/roots" },
+        "request": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "hello" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "intent", "payload"],
+              "properties": {
+                "type": { "const": "operation.execute" },
+                "intent": { "type": "object" },
+                "payload": { "type": "object" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "desktopInstallationId", "targetId"],
+              "properties": {
+                "type": { "const": "observe" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "desktopInstallationId",
+                "targetId",
+                "cwd",
+                "dirtyLimit"
+              ],
+              "properties": {
+                "type": { "const": "git.inspect" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" },
+                "cwd": { "type": "string", "minLength": 1, "maxLength": 32768 },
+                "dirtyLimit": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 256
+                },
+                "branch": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32768
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "desktopInstallationId", "targetId"],
+              "properties": {
+                "type": { "const": "forwards.observe" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "resourceKey", "access"],
+              "properties": {
+                "type": { "const": "attach.authorize" },
+                "resourceKey": { "$ref": "#/$defs/resourceKey" },
+                "expectedKeeperGeneration": { "$ref": "#/$defs/id" },
+                "access": { "enum": ["read", "write"] }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "resourceKey",
+                "expectedKeeperGeneration",
+                "operationId",
+                "payloadHash",
+                "input"
+              ],
+              "properties": {
+                "type": { "const": "terminal.inject" },
+                "resourceKey": { "$ref": "#/$defs/sessionResourceKey" },
+                "expectedKeeperGeneration": { "$ref": "#/$defs/id" },
+                "operationId": { "$ref": "#/$defs/id" },
+                "payloadHash": { "$ref": "#/$defs/sha256" },
+                "input": { "type": "string", "maxLength": 65536 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "resourceKey",
+                "expectedKeeperGeneration",
+                "captureId",
+                "lineLimit",
+                "maxBytes"
+              ],
+              "properties": {
+                "type": { "const": "surface.capture" },
+                "resourceKey": { "$ref": "#/$defs/sessionResourceKey" },
+                "expectedKeeperGeneration": { "$ref": "#/$defs/id" },
+                "captureId": { "$ref": "#/$defs/id" },
+                "lineLimit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65536
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1048576
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "desktopInstallationId",
+                "targetId",
+                "afterSequence"
+              ],
+              "properties": {
+                "type": { "const": "events.replay" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" },
+                "afterSequence": { "$ref": "#/$defs/uint64" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "desktopInstallationId",
+                "targetId",
+                "throughSequence"
+              ],
+              "properties": {
+                "type": { "const": "events.ack" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" },
+                "throughSequence": { "$ref": "#/$defs/uint64" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "transactionId",
+                "workspaceCreateOperationId",
+                "sessionCreateOperationId",
+                "workspaceResourceKey",
+                "sessionResourceKey",
+                "sourceWorkspaceRevision",
+                "remoteSnapshot",
+                "remoteSnapshotHash",
+                "launch",
+                "preparedAt"
+              ],
+              "properties": {
+                "type": { "const": "conversion.prepare" },
+                "transactionId": { "$ref": "#/$defs/id" },
+                "workspaceCreateOperationId": { "$ref": "#/$defs/id" },
+                "sessionCreateOperationId": { "$ref": "#/$defs/id" },
+                "workspaceResourceKey": { "$ref": "#/$defs/resourceKey" },
+                "sessionResourceKey": {
+                  "$ref": "#/$defs/sessionResourceKey"
+                },
+                "sourceWorkspaceRevision": { "$ref": "#/$defs/sha256" },
+                "remoteSnapshot": {
+                  "type": "string",
+                  "maxLength": 1048576
+                },
+                "remoteSnapshotHash": { "$ref": "#/$defs/sha256" },
+                "launch": { "$ref": "#/$defs/conversionLaunch" },
+                "preparedAt": {
+                  "type": "string",
+                  "minLength": 24,
+                  "maxLength": 64
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "transactionId",
+                "workspaceCreateOperationId",
+                "sessionCreateOperationId",
+                "workspaceResourceKey",
+                "sessionResourceKey",
+                "remoteSnapshotHash"
+              ],
+              "properties": {
+                "type": { "const": "conversion.promote" },
+                "transactionId": { "$ref": "#/$defs/id" },
+                "workspaceCreateOperationId": { "$ref": "#/$defs/id" },
+                "sessionCreateOperationId": { "$ref": "#/$defs/id" },
+                "workspaceResourceKey": { "$ref": "#/$defs/resourceKey" },
+                "sessionResourceKey": {
+                  "$ref": "#/$defs/sessionResourceKey"
+                },
+                "remoteSnapshotHash": { "$ref": "#/$defs/sha256" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "desktopInstallationId",
+                "targetId",
+                "protectedTransactionIds",
+                "now"
+              ],
+              "properties": {
+                "type": { "const": "provisional.reclaim" },
+                "desktopInstallationId": { "$ref": "#/$defs/id" },
+                "targetId": { "$ref": "#/$defs/id" },
+                "protectedTransactionIds": {
+                  "type": "array",
+                  "maxItems": 4096,
+                  "uniqueItems": true,
+                  "items": { "$ref": "#/$defs/id" }
+                },
+                "now": {
+                  "type": "string",
+                  "minLength": 24,
+                  "maxLength": 64
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "bridgeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "requestId", "status"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "requestId": { "$ref": "#/$defs/id" },
+        "status": { "enum": ["ok", "error"] },
+        "body": { "type": "object" },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "$ref": "#/$defs/id" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "keeperAttach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "protocolVersion",
+        "roots",
+        "resourceKey",
+        "keeperGeneration",
+        "attachCapability",
+        "attachmentId",
+        "access"
+      ],
+      "properties": {
+        "type": { "const": "keeper.attach" },
+        "protocolVersion": { "const": 1 },
+        "roots": { "$ref": "#/$defs/roots" },
+        "resourceKey": { "$ref": "#/$defs/resourceKey" },
+        "keeperGeneration": { "$ref": "#/$defs/id" },
+        "attachCapability": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64,128}$"
+        },
+        "attachmentId": { "$ref": "#/$defs/id" },
+        "access": { "enum": ["read", "write"] },
+        "lastReceivedSequence": { "$ref": "#/$defs/uint64" }
+      }
+    },
+    "keeperControl": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "type": "string" } }
+    }
+  }
+}

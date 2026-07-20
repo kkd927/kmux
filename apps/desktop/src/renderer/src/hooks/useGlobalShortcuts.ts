@@ -31,6 +31,8 @@ interface DismissibleUiState {
   workspaceCloseConfirmOpen: boolean;
   surfaceRestartConfirmOpen: boolean;
   worktreeDialogOpen: boolean;
+  sshWorkspaceDialogOpen: boolean;
+  sshAskpassPromptOpen: boolean;
 }
 
 interface ActiveShortcutContext {
@@ -48,6 +50,8 @@ interface UseGlobalShortcutsOptions {
   closeWorkspaceCloseConfirm: () => void;
   closeSurfaceRestartConfirm: () => void;
   closeWorktreeDialog: () => void;
+  closeSshWorkspaceDialog: () => void;
+  closeSshAskpassPrompt: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
   closeSettingsModal: () => void;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
@@ -105,7 +109,9 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         workspaceContextMenuOpen: currentWorkspaceContextMenuOpen,
         workspaceCloseConfirmOpen: currentWorkspaceCloseConfirmOpen,
         surfaceRestartConfirmOpen: currentSurfaceRestartConfirmOpen,
-        worktreeDialogOpen: currentWorktreeDialogOpen
+        worktreeDialogOpen: currentWorktreeDialogOpen,
+        sshWorkspaceDialogOpen: currentSshWorkspaceDialogOpen,
+        sshAskpassPromptOpen: currentSshAskpassPromptOpen
       } = currentOptions.dismissibleUiStateRef.current;
       const target = event.target;
       const isShortcutRecorder =
@@ -120,6 +126,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
       }
 
       if (event.key === "Escape") {
+        if (currentSshAskpassPromptOpen) {
+          event.preventDefault();
+          currentOptions.closeSshAskpassPrompt();
+          return;
+        }
         if (currentWorkspaceCloseConfirmOpen) {
           event.preventDefault();
           currentOptions.closeWorkspaceCloseConfirm();
@@ -133,6 +144,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         if (currentWorktreeDialogOpen) {
           event.preventDefault();
           currentOptions.closeWorktreeDialog();
+          return;
+        }
+        if (currentSshWorkspaceDialogOpen) {
+          event.preventDefault();
+          currentOptions.closeSshWorkspaceDialog();
           return;
         }
         if (currentWorkspaceContextMenuOpen) {
@@ -166,7 +182,9 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         currentWorkspaceContextMenuOpen ||
         currentWorkspaceCloseConfirmOpen ||
         currentSurfaceRestartConfirmOpen ||
-        currentWorktreeDialogOpen
+        currentWorktreeDialogOpen ||
+        currentSshWorkspaceDialogOpen ||
+        currentSshAskpassPromptOpen
       ) {
         return;
       }

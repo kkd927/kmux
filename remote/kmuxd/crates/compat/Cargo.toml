@@ -1,0 +1,17 @@
+[package]
+name = "kmux-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Native parity tests build one pinned generation with another keeper-local
+# major. It is never enabled for a shipped artifact.
+fixture-keeper-local-protocol-2 = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

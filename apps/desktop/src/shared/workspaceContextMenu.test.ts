@@ -66,7 +66,9 @@ describe("workspace context menu helpers", () => {
     const context = findWorkspaceContext(view, workspaceId);
     const entries = buildWorkspaceContextMenuEntries(context!);
 
-    expect(entries[0]).toMatchObject({
+    expect(
+      entries.find((entry) => entry.id === "convert-worktree")
+    ).toMatchObject({
       id: "convert-worktree",
       label: "Convert to Worktree Workspace"
     });

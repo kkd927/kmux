@@ -1,4 +1,4 @@
-import type { AppAction } from "@kmux/core";
+import type { AppAction, RemoteOperationCommandResult } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type { TerminalStreamErrorReport } from "../../shared/terminalStreamDiagnostics";
@@ -14,9 +14,23 @@ import type {
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
+  RetainedRemoteSessionResourceKey,
+  RetainedRemoteSessionsSnapshot,
   ShellPatch,
   ShellIdentity,
   ShellStoreSnapshot,
+  SshConnectionsSnapshot,
+  SshAskpassPrompt,
+  SshAskpassResponseRequest,
+  SshProfileDto,
+  SshProfileSaveRequest,
+  SshRuntimeCleanReport,
+  SshRuntimeResetReport,
+  SshWorkspaceCancelRequest,
+  SshWorkspaceCommitRequest,
+  SshWorkspaceOpenResult,
+  SshWorkspacePrepareRequest,
+  SshWorkspacePrepareResult,
   UsageViewSnapshot,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
@@ -48,11 +62,44 @@ declare global {
       ): Promise<ExternalAgentSessionResumeResult>;
       getUpdaterState(): Promise<UpdaterState>;
       dispatch(action: AppAction): Promise<void>;
+      getRetainedRemoteSessions(): Promise<RetainedRemoteSessionsSnapshot>;
+      terminateRetainedRemoteSession(
+        resourceKey: RetainedRemoteSessionResourceKey
+      ): Promise<RemoteOperationCommandResult>;
+      getSshConnections(
+        resolveEffective?: boolean
+      ): Promise<SshConnectionsSnapshot>;
+      listSshConfigAliases(): Promise<string[]>;
+      importSshConfigAliases(
+        aliases: string[]
+      ): Promise<SshConnectionsSnapshot>;
+      saveSshProfile(request: SshProfileSaveRequest): Promise<SshProfileDto>;
+      duplicateSshProfile(profileId: string): Promise<SshProfileDto>;
+      deleteSshProfile(profileId: string): Promise<void>;
+      testSshProfile(profileId: string): Promise<SshConnectionsSnapshot>;
+      rebindSshProfile(profileId: string): Promise<SshConnectionsSnapshot>;
+      cleanSshRuntime(profileId: string): Promise<SshRuntimeCleanReport>;
+      resetSshRuntime(profileId: string): Promise<SshRuntimeResetReport>;
+      prepareSshWorkspace(
+        request: SshWorkspacePrepareRequest
+      ): Promise<SshWorkspacePrepareResult>;
+      commitSshWorkspace(
+        request: SshWorkspaceCommitRequest
+      ): Promise<SshWorkspaceOpenResult>;
+      cancelSshWorkspacePreparation(
+        request: SshWorkspaceCancelRequest
+      ): Promise<void>;
+      respondSshAskpass(request: SshAskpassResponseRequest): Promise<void>;
+      closeWorkspaceSafely(workspaceId: string): Promise<void>;
+      closeOtherWorkspacesSafely(workspaceId: string): Promise<void>;
       subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void;
       subscribeUsage(
         listener: (snapshot: UsageViewSnapshot) => void
       ): () => void;
       subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
+      subscribeSshAskpassPrompt(
+        listener: (prompt: SshAskpassPrompt) => void
+      ): () => void;
       attachTerminalStream(
         surfaceId: string,
         expectedSessionId: string
@@ -62,7 +109,7 @@ declare global {
       ): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
-      openExternalUrl(url: string): Promise<void>;
+      openExternalUrl(surfaceId: string, url: string): Promise<void>;
       openTerminalFilePath(
         surfaceId: string,
         rawPath: string,
@@ -117,6 +164,9 @@ declare global {
         }) => void
       ): () => void;
       subscribeWorkspaceRenameRequest(
+        listener: (workspaceId: string) => void
+      ): () => void;
+      subscribeSshWorkspaceOpenRequest(
         listener: (workspaceId: string) => void
       ): () => void;
       subscribeWorkspaceCloseRequest(

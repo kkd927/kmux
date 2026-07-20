@@ -412,6 +412,152 @@ describe("kmux cli agent hook forwarding", () => {
   );
 
   it(
+    "maps scoped CLI IDs and preserves active-workspace list defaults",
+    async () => {
+      const socketDir = mkdtempSync(join(tmpdir(), "kmux-cli-control-test-"));
+      tempDirs.push(socketDir);
+      const socketPath = join(socketDir, "control.sock");
+      const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const requests: Array<{
+        id?: string;
+        method?: string;
+        params?: Record<string, unknown>;
+      }> = [];
+      const server = createServer((socket) => {
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk.toString("utf8");
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const request = JSON.parse(line) as (typeof requests)[number];
+            requests.push(request);
+            socket.write(
+              `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: request.id,
+                result:
+                  request.method === "surface.capture"
+                    ? { captureId: "capture_1", text: "captured" }
+                    : request.method === "surface.list"
+                      ? []
+                      : { operationId: "operation_1", boundary: "pty-write" }
+              })}\n`
+            );
+            socket.end();
+          }
+        });
+        socket.on("error", () => {});
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+
+      const runCli = async (args: string[]): Promise<string> => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", cliEntry, ...args],
+          {
+            cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+            env: { ...process.env, KMUX_SOCKET_PATH: socketPath },
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString("utf8");
+        });
+        const [exitCode] = (await once(child, "close")) as [number | null];
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe("");
+        return stdout.trim();
+      };
+
+      try {
+        expect(
+          JSON.parse(
+            await runCli(["surface", "list", "--workspace", "workspace_1"])
+          )
+        ).toEqual([]);
+        expect(JSON.parse(await runCli(["surface", "list"]))).toEqual([]);
+        expect(
+          JSON.parse(
+            await runCli([
+              "surface",
+              "send-text",
+              "--surface",
+              "surface_1",
+              "--text",
+              "hello",
+              "--operation-id",
+              "operation_1"
+            ])
+          )
+        ).toEqual({ operationId: "operation_1", boundary: "pty-write" });
+        expect(
+          JSON.parse(
+            await runCli([
+              "surface",
+              "capture",
+              "--surface",
+              "surface_1",
+              "--capture-id",
+              "capture_1",
+              "--lines",
+              "321",
+              "--max-bytes",
+              "8192"
+            ])
+          )
+        ).toEqual({ captureId: "capture_1", text: "captured" });
+        expect(requests).toEqual([
+          expect.objectContaining({
+            method: "surface.list",
+            params: expect.objectContaining({
+              workspaceId: "workspace_1"
+            })
+          }),
+          expect.objectContaining({
+            method: "surface.list",
+            params: expect.not.objectContaining({
+              workspaceId: expect.anything()
+            })
+          }),
+          expect.objectContaining({
+            method: "surface.send_text",
+            params: expect.objectContaining({
+              surfaceId: "surface_1",
+              text: "hello",
+              operationId: "operation_1"
+            })
+          }),
+          expect.objectContaining({
+            method: "surface.capture",
+            params: expect.objectContaining({
+              surfaceId: "surface_1",
+              captureId: "capture_1",
+              lines: 321,
+              maxBytes: 8192
+            })
+          })
+        ]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    SPAWNED_CLI_TEST_TIMEOUT_MS
+  );
+
+  it(
     "emits Antigravity-compatible hook JSON for gating events",
     async () => {
       const socketDir = mkdtempSync(join(tmpdir(), "kmux-cli-agy-hook-test-"));

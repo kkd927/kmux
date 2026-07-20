@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
-import type { AppAction } from "@kmux/core";
+import type { AppAction, RemoteOperationCommandResult } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import {
   KMUX_TERMINAL_PORT_CHANNEL,
@@ -30,9 +30,23 @@ import type {
   ImportedTerminalThemePalette,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
+  RetainedRemoteSessionResourceKey,
+  RetainedRemoteSessionsSnapshot,
   ShellPatch,
   ShellIdentity,
   ShellStoreSnapshot,
+  SshConnectionsSnapshot,
+  SshAskpassPrompt,
+  SshAskpassResponseRequest,
+  SshProfileDto,
+  SshProfileSaveRequest,
+  SshRuntimeCleanReport,
+  SshRuntimeResetReport,
+  SshWorkspaceCancelRequest,
+  SshWorkspaceCommitRequest,
+  SshWorkspaceOpenResult,
+  SshWorkspacePrepareRequest,
+  SshWorkspacePrepareResult,
   UsageViewSnapshot,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
@@ -105,6 +119,77 @@ const api = {
   dispatch(action: AppAction): Promise<void> {
     return ipcRenderer.invoke("kmux:dispatch", action);
   },
+  getRetainedRemoteSessions(): Promise<RetainedRemoteSessionsSnapshot> {
+    return ipcRenderer.invoke("kmux:remote-retained-sessions:get");
+  },
+  terminateRetainedRemoteSession(
+    resourceKey: RetainedRemoteSessionResourceKey
+  ): Promise<RemoteOperationCommandResult> {
+    return ipcRenderer.invoke(
+      "kmux:remote-retained-sessions:terminate",
+      resourceKey
+    );
+  },
+  getSshConnections(resolveEffective = false): Promise<SshConnectionsSnapshot> {
+    return ipcRenderer.invoke(
+      "kmux:ssh-connections:get",
+      resolveEffective === true
+    );
+  },
+  listSshConfigAliases(): Promise<string[]> {
+    return ipcRenderer.invoke("kmux:ssh-connections:aliases");
+  },
+  importSshConfigAliases(aliases: string[]): Promise<SshConnectionsSnapshot> {
+    return ipcRenderer.invoke("kmux:ssh-connections:import-aliases", aliases);
+  },
+  saveSshProfile(request: SshProfileSaveRequest): Promise<SshProfileDto> {
+    return ipcRenderer.invoke("kmux:ssh-connections:save", request);
+  },
+  duplicateSshProfile(profileId: string): Promise<SshProfileDto> {
+    return ipcRenderer.invoke("kmux:ssh-connections:duplicate", profileId);
+  },
+  deleteSshProfile(profileId: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:ssh-connections:delete", profileId);
+  },
+  testSshProfile(profileId: string): Promise<SshConnectionsSnapshot> {
+    return ipcRenderer.invoke("kmux:ssh-connections:test", profileId);
+  },
+  rebindSshProfile(profileId: string): Promise<SshConnectionsSnapshot> {
+    return ipcRenderer.invoke("kmux:ssh-connections:rebind", profileId);
+  },
+  cleanSshRuntime(profileId: string): Promise<SshRuntimeCleanReport> {
+    return ipcRenderer.invoke("kmux:ssh-connections:runtime-clean", profileId);
+  },
+  resetSshRuntime(profileId: string): Promise<SshRuntimeResetReport> {
+    return ipcRenderer.invoke("kmux:ssh-connections:runtime-reset", profileId);
+  },
+  prepareSshWorkspace(
+    request: SshWorkspacePrepareRequest
+  ): Promise<SshWorkspacePrepareResult> {
+    return ipcRenderer.invoke("kmux:ssh-workspace:prepare", request);
+  },
+  commitSshWorkspace(
+    request: SshWorkspaceCommitRequest
+  ): Promise<SshWorkspaceOpenResult> {
+    return ipcRenderer.invoke("kmux:ssh-workspace:commit", request);
+  },
+  cancelSshWorkspacePreparation(
+    request: SshWorkspaceCancelRequest
+  ): Promise<void> {
+    return ipcRenderer.invoke("kmux:ssh-workspace:cancel", request);
+  },
+  respondSshAskpass(request: SshAskpassResponseRequest): Promise<void> {
+    return ipcRenderer.invoke("kmux:ssh-askpass:respond", request);
+  },
+  closeWorkspaceSafely(workspaceId: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:workspace:close-safely", workspaceId);
+  },
+  closeOtherWorkspacesSafely(workspaceId: string): Promise<void> {
+    return ipcRenderer.invoke(
+      "kmux:workspace:close-others-safely",
+      workspaceId
+    );
+  },
   subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void {
     const handler = (_event: Electron.IpcRendererEvent, patch: ShellPatch) =>
       listener(patch);
@@ -125,6 +210,16 @@ const api = {
     ipcRenderer.on("kmux:updater", handler);
     return () => ipcRenderer.off("kmux:updater", handler);
   },
+  subscribeSshAskpassPrompt(
+    listener: (prompt: SshAskpassPrompt) => void
+  ): () => void {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      prompt: SshAskpassPrompt
+    ) => listener(prompt);
+    ipcRenderer.on("kmux:ssh-askpass-prompt", handler);
+    return () => ipcRenderer.off("kmux:ssh-askpass-prompt", handler);
+  },
   attachTerminalStream(
     surfaceId: string,
     expectedSessionId: string
@@ -144,8 +239,8 @@ const api = {
   sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:key", surfaceId, input);
   },
-  openExternalUrl(url: string): Promise<void> {
-    return ipcRenderer.invoke("kmux:external-url:open", url);
+  openExternalUrl(surfaceId: string, url: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:external-url:open", surfaceId, url);
   },
   openTerminalFilePath(
     surfaceId: string,
@@ -272,6 +367,15 @@ const api = {
       listener(workspaceId);
     ipcRenderer.on("kmux:workspace-rename-request", handler);
     return () => ipcRenderer.off("kmux:workspace-rename-request", handler);
+  },
+  subscribeSshWorkspaceOpenRequest(
+    listener: (workspaceId: string) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
+      listener(workspaceId);
+    ipcRenderer.on("kmux:ssh-workspace-open-request", handler);
+    return () =>
+      ipcRenderer.off("kmux:ssh-workspace-open-request", handler);
   },
   subscribeWorkspaceCloseRequest(
     listener: (workspaceId: string) => void

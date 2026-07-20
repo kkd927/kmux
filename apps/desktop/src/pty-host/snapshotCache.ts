@@ -1,4 +1,7 @@
-import { TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES } from "@kmux/proto";
+import {
+  TERMINAL_DATA_PLANE_MAX_CHECKPOINT_BYTES,
+  type Uint64
+} from "@kmux/proto";
 
 export interface TerminalSnapshotMaterialization {
   vt: string;
@@ -6,7 +9,7 @@ export interface TerminalSnapshotMaterialization {
 }
 
 interface SnapshotCacheRequest {
-  sequence: number;
+  sequence: Uint64;
   cols: number;
   rows: number;
   requestedScrollbackLines: number;
@@ -15,7 +18,7 @@ interface SnapshotCacheRequest {
 }
 
 interface SnapshotCacheEntry extends TerminalSnapshotMaterialization {
-  sequence: number;
+  sequence: Uint64;
   cols: number;
   rows: number;
   requestedScrollbackLines: number;

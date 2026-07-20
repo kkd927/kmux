@@ -181,7 +181,13 @@ const surface = program.command("surface");
 surface
   .command("list")
   .option("--workspace <workspaceId>")
-  .action(async (options) => print(await sendRpc("surface.list", options)));
+  .action(async (options: { workspace?: Id }) =>
+    print(
+      await sendRpc("surface.list", {
+        workspaceId: options.workspace
+      })
+    )
+  );
 surface
   .command("split")
   .option("--pane <paneId>")
@@ -226,11 +232,13 @@ surface
   .command("send-text")
   .requiredOption("--surface <surfaceId>")
   .requiredOption("--text <text>")
+  .option("--operation-id <operationId>")
   .action(async (options) =>
     print(
       await sendRpc("surface.send_text", {
         surfaceId: options.surface,
-        text: options.text
+        text: options.text,
+        operationId: options.operationId
       })
     )
   );
@@ -238,11 +246,29 @@ surface
   .command("send-key")
   .requiredOption("--surface <surfaceId>")
   .requiredOption("--key <key>")
+  .option("--operation-id <operationId>")
   .action(async (options) =>
     print(
       await sendRpc("surface.send_key", {
         surfaceId: options.surface,
-        key: options.key
+        key: options.key,
+        operationId: options.operationId
+      })
+    )
+  );
+surface
+  .command("capture")
+  .requiredOption("--surface <surfaceId>")
+  .option("--capture-id <captureId>")
+  .option("--lines <lineCount>", "number of tail lines", "200")
+  .option("--max-bytes <byteCount>", "maximum UTF-8 bytes", "1048576")
+  .action(async (options) =>
+    print(
+      await sendRpc("surface.capture", {
+        surfaceId: options.surface,
+        captureId: options.captureId,
+        lines: Number(options.lines),
+        maxBytes: Number(options.maxBytes)
       })
     )
   );

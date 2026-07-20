@@ -78,6 +78,11 @@ describe("electron builder config", () => {
       from: "build/icon.png",
       to: "notificationIcon.png"
     });
+    expect(extraResources).toContainEqual({
+      from: "../../remote/kmuxd/dist",
+      to: "remote-runtime",
+      filter: ["**/kmuxd", "**/manifest.json", "index.json"]
+    });
     expect(linux).toMatchObject({
       syncDesktopName: true,
       category: "Development;TerminalEmulator;Utility;",

@@ -1,5 +1,11 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,13 +125,18 @@ export function createSandbox(prefix: string): KmuxSandbox {
   const xdgConfigHome = path.join(shellHomeDir, ".config");
   const fishConfigDir = path.join(xdgConfigHome, "fish");
   const shellHistoryPath = path.join(shellHomeDir, ".zsh_history");
-  mkdirSync(configDir, { recursive: true });
-  mkdirSync(runtimeDir, { recursive: true });
-  mkdirSync(stateDir, { recursive: true });
-  mkdirSync(dataDir, { recursive: true });
-  mkdirSync(cacheDir, { recursive: true });
-  mkdirSync(shellHomeDir, { recursive: true });
-  mkdirSync(fishConfigDir, { recursive: true });
+  for (const directory of [
+    configDir,
+    runtimeDir,
+    stateDir,
+    dataDir,
+    cacheDir,
+    shellHomeDir,
+    fishConfigDir
+  ]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+  }
   for (const relativePath of [
     ".zshenv",
     ".zprofile",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { uint64 } from "@kmux/proto";
 
 import { normalizeTerminalStreamErrorReport } from "./terminalStreamDiagnostics";
 
@@ -11,8 +12,8 @@ describe("terminal stream diagnostics", () => {
         ignored: "outside-contract",
         error: {
           kind: "sequence-gap",
-          expectedSequence: 41,
-          receivedSequence: 43,
+          expectedSequence: uint64(41n),
+          receivedSequence: uint64(43n),
           message: "expected sequence 41, received 43",
           ignored: "outside-contract"
         }
@@ -22,8 +23,8 @@ describe("terminal stream diagnostics", () => {
       sessionId: "session_1",
       error: {
         kind: "sequence-gap",
-        expectedSequence: 41,
-        receivedSequence: 43,
+        expectedSequence: uint64(41n),
+        receivedSequence: uint64(43n),
         message: "expected sequence 41, received 43"
       }
     });

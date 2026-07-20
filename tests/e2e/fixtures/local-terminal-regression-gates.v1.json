@@ -1,0 +1,1737 @@
+{
+  "schemaVersion": 1,
+  "contract": "docs/adr/0005-ssh-remote-workspaces.md#local-surface-versioned-baseline-regression-gate",
+  "changeControl": "Changing the workload, pre-SSH baseline, repeat count, aggregation, or tolerance requires new immutable baseline evidence and an ADR 0005 review.",
+  "command": "npm run gate:terminal-data-plane",
+  "candidatePreparation": {
+    "commands": ["npm run smoke:dev", "npm run build"],
+    "execution": "run once before the five measured samples; no build, typecheck, smoke check, or other preparation may run between measured samples"
+  },
+  "sampleCommand": "npm run profile:terminal-data-plane:sample",
+  "workload": {
+    "source": "tests/e2e/kmux-terminal-data-plane-performance.spec.ts",
+    "buildMode": "production",
+    "scenarios": [
+      "16 sessions / 4 visible stay bounded and responsive",
+      "4 MiB burst preserves input echo and catches up within two seconds",
+      "ring gap swaps a complete alternate-screen checkpoint without a blank frame"
+    ]
+  },
+  "measurement": {
+    "measuredRuns": 5,
+    "aggregation": "median of five candidate runs compared with the fixed repeatability-calibrated pre-SSH baseline envelope for each metric",
+    "execution": "prepare the immutable phase candidate once, then run only its unchanged measurement workload on the same host, OS, architecture, Electron and Node versions, build mode, terminal geometry, profiler settings, and documented background-load policy used by the baseline; do not rebuild between measured samples",
+    "invalidRunPolicy": "retain and report every run; only an infrastructure failure that prevents metric emission may be replaced, while functional failures, bound failures, and emitted latency outliers remain part of the candidate evidence",
+    "finalVerification": "Phase 8 may retain adjacent immutable pre-SSH/candidate pairs as diagnostic environment-drift evidence only; pair ordering cannot gate acceptance or recalibrate this fixed envelope"
+  },
+  "candidateGate": {
+    "measuredRuns": 5,
+    "baselineSource": "the greater batch median from preSshBaseline.samples and preSshBaseline.repeatabilityBatchMedians",
+    "functional": {
+      "allRunsMustPass": true,
+      "blankOrStalledSurfaces": 0,
+      "missingMutations": 0,
+      "duplicateMutations": 0,
+      "reorderedMutations": 0
+    },
+    "bounds": {
+      "boundViolations": 0,
+      "fixedQueueAndCacheCapsMayIncrease": false
+    },
+    "numeric": {
+      "maximumRelativeIncrease": 0.05,
+      "baselineFormula": "baselineCenter = max(median(preSshBaseline.samples[metric]), ...preSshBaseline.repeatabilityBatchMedians[*].metrics[metric]); limit = baselineCenter + max(abs(baselineCenter) * maximumRelativeIncrease, absoluteNoiseAllowance[metric])",
+      "comparison": "the median of the five candidate samples must be less than or equal to the fixed baseline limit",
+      "absoluteNoiseAllowance": {
+        "echoP95Ms": 2,
+        "echoP99Ms": 2,
+        "renderP95Ms": 2,
+        "renderP99Ms": 3,
+        "paintP95Ms": 1,
+        "schedulerMaxMs": 0.5,
+        "eventLoopP95Ms": 2,
+        "warmSwitchMaxMs": 5,
+        "burstEchoP95Ms": 2,
+        "burstEchoP99Ms": 2,
+        "burstCatchUpElapsedMs": 100
+      }
+    }
+  },
+  "legacyPerRunAbsoluteThresholds": {
+    "status": "diagnostic-only",
+    "reason": "The immutable pre-SSH source itself produced isolated absolute-threshold failures on a busy host; phase acceptance uses the repeated fixed-baseline envelope instead of treating one noisy run as a code regression."
+  },
+  "historicalPairedGate": {
+    "status": "historical-and-diagnostic-only",
+    "reason": "Phase 3/4 evidence is retained, but paired ordering is not a current acceptance gate and never recalibrates candidateGate.",
+    "functional": {
+      "newOrWorsenedFailures": 0,
+      "blankOrStalledSurfaces": 0,
+      "missingMutations": 0,
+      "duplicateMutations": 0,
+      "reorderedMutations": 0,
+      "previouslyPassingAssertionsMayFail": false
+    },
+    "bounds": {
+      "newBoundViolations": 0,
+      "fixedQueueAndCacheCapsMayIncrease": false
+    },
+    "numeric": {
+      "maximumRelativeIncrease": 0.05,
+      "perPairFormula": "margin = candidate - entry - max(abs(entry) * maximumRelativeIncrease, absoluteNoiseAllowance[metric])",
+      "comparison": "the median of the five per-pair margins must be less than or equal to zero; independently sorted entry/candidate medians must not be compared",
+      "absoluteNoiseAllowance": {
+        "echoP95Ms": 2,
+        "echoP99Ms": 2,
+        "renderP95Ms": 2,
+        "renderP99Ms": 3,
+        "paintP95Ms": 1,
+        "schedulerMaxMs": 0.5,
+        "eventLoopP95Ms": 2,
+        "warmSwitchMaxMs": 5,
+        "burstEchoP95Ms": 2,
+        "burstEchoP99Ms": 2,
+        "burstCatchUpElapsedMs": 100
+      }
+    }
+  },
+  "preSshBaseline": {
+    "sourceRevision": "3205d162af04fd9d147f33a1afe4b7066fcb4cee",
+    "sourceIsolation": "git archive HEAD extracted into an isolated temporary directory",
+    "measuredAt": "2026-07-17T12:56:00Z/2026-07-17T13:08:30Z",
+    "environment": {
+      "platform": "darwin",
+      "architecture": "x86_64",
+      "productVersion": "26.5.2",
+      "physicalCpuCores": 6,
+      "memoryBytes": 34359738368,
+      "node": "22.16.0",
+      "npm": "11.6.2",
+      "electron": "42.5.0"
+    },
+    "buildNote": "The archived full build stopped on pre-existing CLI type errors under the current dependency toolchain. The terminal-relevant pty-host and desktop production bundles built successfully and the unchanged Playwright workload ran against those artifacts.",
+    "repeatabilityBatchMedians": [
+      {
+        "batchId": "phase3-entry-repeat",
+        "sourceRevision": "3205d162af04fd9d147f33a1afe4b7066fcb4cee",
+        "source": "phase3Exit.samples[*].entry",
+        "measuredAt": "2026-07-17T22:08:00Z/2026-07-17T22:21:18Z",
+        "reason": "A separately built and measured immutable copy of the exact pre-SSH revision is retained as a repeatability calibration batch. Its raw five samples, legacy absolute failures, continuity results, and bound results remain in phase3Exit; no post-SSH candidate value participates in this envelope.",
+        "metrics": {
+          "echoP95Ms": 25.799999982118607,
+          "echoP99Ms": 50.400000005960464,
+          "renderP95Ms": 19.83740234375,
+          "renderP99Ms": 22.67724609375,
+          "paintP95Ms": 17.2998046875,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.271615,
+          "warmSwitchMaxMs": 61.5,
+          "burstEchoP95Ms": 22.700000017881393,
+          "burstEchoP99Ms": 23.299999982118607,
+          "burstCatchUpElapsedMs": 483
+        }
+      }
+    ],
+    "samples": [
+      {
+        "pairId": 1,
+        "steady": {
+          "echoP95Ms": 28.100000023841858,
+          "echoP99Ms": 32.89999997615814,
+          "renderP95Ms": 20.821044921875,
+          "renderP99Ms": 28.98388671875,
+          "paintP95Ms": 17.800048828125,
+          "schedulerMaxMs": 0.400146484375,
+          "eventLoopP95Ms": 12.328959,
+          "warmSwitchMaxMs": 48.80000001192093,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 28.80000001192093,
+          "echoP99Ms": 30.200000017881393,
+          "catchUpElapsedMs": 460
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 2,
+        "steady": {
+          "echoP95Ms": 27.80000001192093,
+          "echoP99Ms": 36.099999994039536,
+          "renderP95Ms": 20.4736328125,
+          "renderP99Ms": 23.6640625,
+          "paintP95Ms": 17.800048828125,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.189695,
+          "warmSwitchMaxMs": 47,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.19999998807907,
+          "echoP99Ms": 22.400000005960464,
+          "catchUpElapsedMs": 458
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 3,
+        "steady": {
+          "echoP95Ms": 26.900000005960464,
+          "echoP99Ms": 29.69999998807907,
+          "renderP95Ms": 19.84423828125,
+          "renderP99Ms": 21.371826171875,
+          "paintP95Ms": 17.5,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 11.542527,
+          "warmSwitchMaxMs": 43.39999997615814,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.5,
+          "echoP99Ms": 24,
+          "catchUpElapsedMs": 381
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 4,
+        "steady": {
+          "echoP95Ms": 22,
+          "echoP99Ms": 178,
+          "renderP95Ms": 19.035400390625,
+          "renderP99Ms": 20.57763671875,
+          "paintP95Ms": 16.599853515625,
+          "schedulerMaxMs": 0.2001953125,
+          "eventLoopP95Ms": 11.173887,
+          "warmSwitchMaxMs": 34.5,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.80000001192093,
+          "echoP99Ms": 23.599999994039536,
+          "catchUpElapsedMs": 342
+        },
+        "result": "steady legacy absolute echo-p99 assertion failed; burst and ring-gap passed; continuity and bounds passed"
+      },
+      {
+        "pairId": 5,
+        "steady": {
+          "echoP95Ms": 23.899999976158142,
+          "echoP99Ms": 45.60000002384186,
+          "renderP95Ms": 19.9228515625,
+          "renderP99Ms": 21.348876953125,
+          "paintP95Ms": 17.2998046875,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.165119,
+          "warmSwitchMaxMs": 48.900000005960464,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.5,
+          "echoP99Ms": 23.5,
+          "catchUpElapsedMs": 392
+        },
+        "result": "3 passed"
+      }
+    ]
+  },
+  "phase3CheckpointCandidate": {
+    "source": "Phase 3 working tree after the MessagePortMain checkpoint fix and before final Phase 3 lifecycle composition",
+    "status": "provisional; rerun at the Phase 3 exit boundary",
+    "samples": [
+      {
+        "pairId": 1,
+        "steady": {
+          "echoP95Ms": 34,
+          "echoP99Ms": 46.30000001192093,
+          "renderP95Ms": 20.24267578125,
+          "renderP99Ms": 30.003173828125,
+          "paintP95Ms": 17.900146484375,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.509183,
+          "warmSwitchMaxMs": 62.5,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 20.599999994039536,
+          "echoP99Ms": 22.5,
+          "catchUpElapsedMs": 400
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 2,
+        "steady": {
+          "echoP95Ms": 23.5,
+          "echoP99Ms": 36.79999998211861,
+          "renderP95Ms": 20.21728515625,
+          "renderP99Ms": 71.549072265625,
+          "paintP95Ms": 17.400146484375,
+          "schedulerMaxMs": 4.599853515625,
+          "eventLoopP95Ms": 11.452415,
+          "warmSwitchMaxMs": 42.599999994039536,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 21.80000001192093,
+          "echoP99Ms": 22.19999998807907,
+          "catchUpElapsedMs": 369
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 3,
+        "steady": {
+          "echoP95Ms": 22.200000017881393,
+          "echoP99Ms": 37.900000005960464,
+          "renderP95Ms": 19.246826171875,
+          "renderP99Ms": 21.040283203125,
+          "paintP95Ms": 16.2001953125,
+          "schedulerMaxMs": 0.39990234375,
+          "eventLoopP95Ms": 11.403263,
+          "warmSwitchMaxMs": 42.89999997615814,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.599999994039536,
+          "echoP99Ms": 29.80000001192093,
+          "catchUpElapsedMs": 390
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 4,
+        "steady": {
+          "echoP95Ms": 21.69999998807907,
+          "echoP99Ms": 26,
+          "renderP95Ms": 18.827392578125,
+          "renderP99Ms": 19.873779296875,
+          "paintP95Ms": 16.400146484375,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 11.354111,
+          "warmSwitchMaxMs": 35,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.5,
+          "echoP99Ms": 24.400000005960464,
+          "catchUpElapsedMs": 384
+        },
+        "result": "3 passed"
+      },
+      {
+        "pairId": 5,
+        "steady": {
+          "echoP95Ms": 22.599999994039536,
+          "echoP99Ms": 38,
+          "renderP95Ms": 19.8564453125,
+          "renderP99Ms": 48.2099609375,
+          "paintP95Ms": 17.5,
+          "schedulerMaxMs": 2.10009765625,
+          "eventLoopP95Ms": 11.984895,
+          "warmSwitchMaxMs": 61.5,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.900000005960464,
+          "echoP99Ms": 23,
+          "catchUpElapsedMs": 545
+        },
+        "result": "3 passed"
+      }
+    ],
+    "pairedEvaluation": {
+      "functional": "passed: no new blank/stall, loss, duplicate, reorder, failed continuity assertion, or bound violation",
+      "numeric": {
+        "echoP95Ms": {
+          "medianPairedDelta": -1.2999999821186066,
+          "medianRegressionMargin": -3.2999999821186066
+        },
+        "echoP99Ms": {
+          "medianPairedDelta": 0.699999988079071,
+          "medianRegressionMargin": -1.300000011920929
+        },
+        "renderP95Ms": {
+          "medianPairedDelta": -0.25634765625,
+          "medianRegressionMargin": -2.25634765625
+        },
+        "renderP99Ms": {
+          "medianPairedDelta": 1.019287109375,
+          "medianRegressionMargin": -1.980712890625
+        },
+        "paintP95Ms": {
+          "medianPairedDelta": -0.19970703125,
+          "medianRegressionMargin": -1.19970703125
+        },
+        "schedulerMaxMs": {
+          "medianPairedDelta": 0.099853515625,
+          "medianRegressionMargin": -0.400146484375
+        },
+        "eventLoopP95Ms": {
+          "medianPairedDelta": -0.13926399999999894,
+          "medianRegressionMargin": -2.139263999999999
+        },
+        "warmSwitchMaxMs": {
+          "medianPairedDelta": 0.5,
+          "medianRegressionMargin": -4.5
+        },
+        "burstEchoP95Ms": {
+          "medianPairedDelta": 0.09999999403953552,
+          "medianRegressionMargin": -1.9000000059604645
+        },
+        "burstEchoP99Ms": {
+          "medianPairedDelta": -0.20000001788139343,
+          "medianRegressionMargin": -2.2000000178813934
+        },
+        "burstCatchUpElapsedMs": {
+          "medianPairedDelta": 9,
+          "medianRegressionMargin": -91
+        }
+      },
+      "result": "provisional pass; every median paired regression margin is less than or equal to zero"
+    }
+  },
+  "phase3Exit": {
+    "entrySource": {
+      "revision": "3205d162af04fd9d147f33a1afe4b7066fcb4cee",
+      "archive": "/tmp/kmux-local-baseline.9tJNHf"
+    },
+    "candidateSource": "Phase 3 exit working tree after production lifecycle, reconnect, launch-input fencing, and review fixes",
+    "measuredAt": "2026-07-17T22:08:00Z/2026-07-17T22:21:18Z",
+    "rawEvidenceRoot": "/tmp/kmux-phase3-exit-local.gGko1a",
+    "executionNote": "Both immutable production bundles were built before measurement. Because the archived entry has the already-recorded unrelated CLI typecheck failure under this dependency toolchain, each adjacent pair invoked the fixed Playwright workload directly with /Users/user/.nvm/versions/node/v22.16.0/bin/node; every pair directory retains its steady and ring-gap raw profile.jsonl files.",
+    "infrastructureInvalidAttempts": [
+      {
+        "pairId": 1,
+        "side": "entry",
+        "count": 2,
+        "reason": "npx/npm exec selected system Node 18.16.1, below Playwright's ESM loader requirement; the workload did not start and the valid pair was rerun with the manifest's Node 22.16.0 binary"
+      }
+    ],
+    "samples": [
+      {
+        "pairId": 1,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 22.400000005960464,
+            "echoP99Ms": 23.700000017881393,
+            "renderP95Ms": 19.386474609375,
+            "renderP99Ms": 20.779052734375,
+            "paintP95Ms": 17.10009765625,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.271615,
+            "warmSwitchMaxMs": 32.79999998211861,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 23.099999994039536,
+            "echoP99Ms": 23.099999994039536,
+            "catchUpElapsedMs": 335
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 24.399999976158142,
+            "echoP99Ms": 28,
+            "renderP95Ms": 20.318115234375,
+            "renderP99Ms": 21.733642578125,
+            "paintP95Ms": 17.199951171875,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.574719,
+            "warmSwitchMaxMs": 38.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 24.5,
+            "echoP99Ms": 24.599999994039536,
+            "catchUpElapsedMs": 328
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 2,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 25,
+            "echoP99Ms": 50.400000005960464,
+            "renderP95Ms": 19.83740234375,
+            "renderP99Ms": 199.607421875,
+            "paintP95Ms": 17.2998046875,
+            "schedulerMaxMs": 1.699951171875,
+            "eventLoopP95Ms": 11.436031,
+            "warmSwitchMaxMs": 61.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.099999994039536,
+            "echoP99Ms": 22.400000005960464,
+            "catchUpElapsedMs": 358
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 24.400000005960464,
+            "echoP99Ms": 25.5,
+            "renderP95Ms": 19.703369140625,
+            "renderP99Ms": 27.0732421875,
+            "paintP95Ms": 17.5,
+            "schedulerMaxMs": 0.400146484375,
+            "eventLoopP95Ms": 11.476991,
+            "warmSwitchMaxMs": 47.599999994039536,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22,
+            "echoP99Ms": 22.19999998807907,
+            "catchUpElapsedMs": 480
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 3,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 25.799999982118607,
+            "echoP99Ms": 28.599999994039536,
+            "renderP95Ms": 19.77099609375,
+            "renderP99Ms": 21.11572265625,
+            "paintP95Ms": 17.199951171875,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 11.509759,
+            "warmSwitchMaxMs": 46.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.700000017881393,
+            "echoP99Ms": 23.599999994039536,
+            "catchUpElapsedMs": 677
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 23.899999976158142,
+            "echoP99Ms": 25.700000017881393,
+            "renderP95Ms": 19.294189453125,
+            "renderP99Ms": 21.3212890625,
+            "paintP95Ms": 17.5,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 11.452415,
+            "warmSwitchMaxMs": 44.29999998211861,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.700000017881393,
+            "echoP99Ms": 22,
+            "catchUpElapsedMs": 399
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 4,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 185.40000000596046,
+            "echoP99Ms": 327,
+            "renderP95Ms": 200.173095703125,
+            "renderP99Ms": 264.282470703125,
+            "paintP95Ms": 26.89990234375,
+            "schedulerMaxMs": 269.599853515625,
+            "eventLoopP95Ms": 15.687679,
+            "warmSwitchMaxMs": 260.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 32,
+            "echoP99Ms": 36.599999994039536,
+            "catchUpElapsedMs": 889
+          },
+          "result": "steady legacy absolute echo-p95 assertion failed; emitted echo-p99/render-p95/render-p99/scheduler/warm-switch metrics also exceeded their legacy absolutes; burst and ring-gap passed; continuity and bounds passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 38.10000002384186,
+            "echoP99Ms": 47.80000001192093,
+            "renderP95Ms": 27.447509765625,
+            "renderP99Ms": 42.1865234375,
+            "paintP95Ms": 19.60009765625,
+            "schedulerMaxMs": 0.60009765625,
+            "eventLoopP95Ms": 12.681215,
+            "warmSwitchMaxMs": 67.59999999403954,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 25.799999982118607,
+            "echoP99Ms": 28,
+            "catchUpElapsedMs": 645
+          },
+          "result": "3 passed; the entry absolute failures were removed, not worsened"
+        }
+      },
+      {
+        "pairId": 5,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 27.599999994039536,
+            "echoP99Ms": 59.80000001192093,
+            "renderP95Ms": 21.016845703125,
+            "renderP99Ms": 22.67724609375,
+            "paintP95Ms": 18.300048828125,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.828671,
+            "warmSwitchMaxMs": 159.90000000596046,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.700000017881393,
+            "echoP99Ms": 23.299999982118607,
+            "catchUpElapsedMs": 483
+          },
+          "result": "steady legacy absolute warm-switch assertion failed; burst and ring-gap passed; continuity and bounds passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 25.5,
+            "echoP99Ms": 26.400000005960464,
+            "renderP95Ms": 20.130126953125,
+            "renderP99Ms": 23.03125,
+            "paintP95Ms": 17.800048828125,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.107775,
+            "warmSwitchMaxMs": 51.79999998211861,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 25.600000023841858,
+            "echoP99Ms": 30,
+            "catchUpElapsedMs": 439
+          },
+          "result": "3 passed; the entry absolute failure was removed, not worsened"
+        }
+      }
+    ],
+    "pairedEvaluation": {
+      "functional": "passed: every candidate run passed all three scenarios with no blank/stall, loss, duplicate, reorder, failed continuity assertion, or bound violation; the two entry absolute failures were removed rather than added or worsened",
+      "numeric": {
+        "echoP95Ms": {
+          "medianPairedDelta": -1.9000000059604645,
+          "medianRegressionMargin": -3.9000000059604645
+        },
+        "echoP99Ms": {
+          "medianPairedDelta": -24.900000005960464,
+          "medianRegressionMargin": -27.420000006258487
+        },
+        "renderP95Ms": {
+          "medianPairedDelta": -0.476806640625,
+          "medianRegressionMargin": -2.476806640625
+        },
+        "renderP99Ms": {
+          "medianPairedDelta": 0.20556640625,
+          "medianRegressionMargin": -2.79443359375
+        },
+        "paintP95Ms": {
+          "medianPairedDelta": 0.099853515625,
+          "medianRegressionMargin": -0.900146484375
+        },
+        "schedulerMaxMs": {
+          "medianPairedDelta": 0,
+          "medianRegressionMargin": -0.5
+        },
+        "eventLoopP95Ms": {
+          "medianPairedDelta": -0.057344000000000506,
+          "medianRegressionMargin": -2.0573440000000005
+        },
+        "warmSwitchMaxMs": {
+          "medianPairedDelta": -13.900000005960464,
+          "medianRegressionMargin": -18.900000005960464
+        },
+        "burstEchoP95Ms": {
+          "medianPairedDelta": -0.09999999403953552,
+          "medianRegressionMargin": -2.0999999940395355
+        },
+        "burstEchoP99Ms": {
+          "medianPairedDelta": -0.20000001788139343,
+          "medianRegressionMargin": -2.2000000178813934
+        },
+        "burstCatchUpElapsedMs": {
+          "medianPairedDelta": -44,
+          "medianRegressionMargin": -144
+        }
+      },
+      "result": "passed; every median paired regression margin is less than or equal to zero"
+    }
+  },
+  "phase4Exit": {
+    "entrySource": {
+      "description": "Exact Phase 4 entry reconstructed by chronological replay of successful Phase 0-3 patches and formatter actions up to 2026-07-17T22:28:35Z",
+      "baseRevision": "3205d162af04fd9d147f33a1afe4b7066fcb4cee",
+      "reconstructionProof": "/private/tmp/kmux-phase4-entry-replayed.NNkDjU.reconstruction.json",
+      "reconstruction": {
+        "phase4TouchedPaths": 33,
+        "phase4AddedPathsRemoved": 7,
+        "replayPaths": 25,
+        "replayedPatchChanges": 154,
+        "replayedPrettierActions": 30,
+        "replayedRustfmtActions": 28,
+        "directHunkFallbacks": 6,
+        "reverseOnlyPaths": ["package.json"]
+      },
+      "manifest": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/entry-source-manifest.json",
+      "manifestSha256": "0c8c3a2d00335a4f75cafea8f4f7fd491367f09b827572d147251339187a960f",
+      "archive": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/phase4-entry-source.tar.gz",
+      "archiveSha256": "904e9ec319dca246baab7f1710fb22eb988f59d209af2d13cb393970e085bcb7"
+    },
+    "candidateSource": {
+      "description": "Phase 4 candidate after fixing the runtime-parity nullable-narrowing Important finding, before official measurements",
+      "manifest": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/candidate-final-source-manifest.json",
+      "manifestSha256": "d80d131fcaf1d5aab6b649c4369bdaf2bf0ed917f1b8046ae1b25d683f2915fd",
+      "archive": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/phase4-candidate-final-source.tar.gz",
+      "archiveSha256": "5c45696328fd4da4aedad2ccba70abca71bd3b1a4caa082074b93ca77d57f46b"
+    },
+    "measuredAt": "2026-07-18T01:55:48.733Z/2026-07-18T02:15:04.159Z",
+    "environment": {
+      "platform": "darwin",
+      "architecture": "x86_64",
+      "productVersion": "26.5.2",
+      "buildVersion": "25F84",
+      "physicalCpuCores": 6,
+      "logicalCpuCores": 12,
+      "memoryBytes": 34359738368,
+      "node": "22.16.0",
+      "npm": "11.6.2",
+      "electron": "42.5.0"
+    },
+    "evidenceFile": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/phase4-paired-local-gate.json",
+    "execution": {
+      "ordering": "entry1/candidate1 through entry5/candidate5; each pair adjacent and interleaved",
+      "immutableBuilds": true,
+      "validRuns": 10,
+      "scenariosPassedPerRun": 3,
+      "rawEvidenceRoot": "/private/tmp/kmux-phase4-paired-gate.nccOqu/evidence/raw",
+      "infrastructureInvalidAttempts": [
+        {
+          "pairId": 1,
+          "side": "entry",
+          "candidateRunStarted": false,
+          "reason": "The initial TMPDIR made KMUX_RUNTIME_DIR exceed the Unix-domain socket path limit; the smoke check failed before the performance workload. The invalid entry work copy was reset from immutable source and the whole pair was rerun with a short TMPDIR."
+        }
+      ],
+      "findingsFixedBeforeOfficialRuns": [
+        {
+          "severity": "Important",
+          "status": "fixed",
+          "finding": "The first candidate build exposed an unsafe nullable mutation narrowing in tests/ssh/native/runtimeParity.ts; the official candidate snapshot was rebuilt after an explicit null guard and typecheck/lint verification."
+        }
+      ]
+    },
+    "samples": [
+      {
+        "pairId": 1,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 26.900000005960464,
+            "echoP99Ms": 48.20000001788139,
+            "renderP95Ms": 19.87548828125,
+            "renderP99Ms": 21.76953125,
+            "paintP95Ms": 17.699951171875,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.206079,
+            "warmSwitchMaxMs": 47.900000005960464,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.900000005960464,
+            "echoP99Ms": 25.19999998807907,
+            "catchUpElapsedMs": 500
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 27.30000001192093,
+            "echoP99Ms": 40.80000001192093,
+            "renderP95Ms": 20.3076171875,
+            "renderP99Ms": 22.09228515625,
+            "paintP95Ms": 17.39990234375,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.001279,
+            "warmSwitchMaxMs": 53.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.5,
+            "echoP99Ms": 21.900000005960464,
+            "catchUpElapsedMs": 429
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 2,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 27.19999998807907,
+            "echoP99Ms": 28.799999982118607,
+            "renderP95Ms": 20.845947265625,
+            "renderP99Ms": 22.51953125,
+            "paintP95Ms": 18.5,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.247039,
+            "warmSwitchMaxMs": 54.30000001192093,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.099999994039536,
+            "echoP99Ms": 25.100000023841858,
+            "catchUpElapsedMs": 531
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 26.700000017881393,
+            "echoP99Ms": 34.19999998807907,
+            "renderP95Ms": 20.0673828125,
+            "renderP99Ms": 21.608154296875,
+            "paintP95Ms": 18,
+            "schedulerMaxMs": 0.39990234375,
+            "eventLoopP95Ms": 12.214271,
+            "warmSwitchMaxMs": 51.29999998211861,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.30000001192093,
+            "echoP99Ms": 24.799999982118607,
+            "catchUpElapsedMs": 491
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 3,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 37.69999998807907,
+            "echoP99Ms": 149.90000000596046,
+            "renderP95Ms": 21.713623046875,
+            "renderP99Ms": 85.763427734375,
+            "paintP95Ms": 18.300048828125,
+            "schedulerMaxMs": 9.89990234375,
+            "eventLoopP95Ms": 11.976703,
+            "warmSwitchMaxMs": 61.099999994039536,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 27.400000005960464,
+            "echoP99Ms": 29.099999994039536,
+            "catchUpElapsedMs": 613
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 26.80000001192093,
+            "echoP99Ms": 37.20000001788139,
+            "renderP95Ms": 19.886474609375,
+            "renderP99Ms": 22.0703125,
+            "paintP95Ms": 17.5,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.189695,
+            "warmSwitchMaxMs": 48.19999998807907,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.200000017881393,
+            "echoP99Ms": 22.700000017881393,
+            "catchUpElapsedMs": 475
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 4,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 25.900000005960464,
+            "echoP99Ms": 35.19999998807907,
+            "renderP95Ms": 20.177734375,
+            "renderP99Ms": 23.125,
+            "paintP95Ms": 17.699951171875,
+            "schedulerMaxMs": 0.400146484375,
+            "eventLoopP95Ms": 12.091391,
+            "warmSwitchMaxMs": 49.70000001788139,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 21.5,
+            "echoP99Ms": 22.900000005960464,
+            "catchUpElapsedMs": 420
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 24.900000005960464,
+            "echoP99Ms": 26.099999994039536,
+            "renderP95Ms": 19.96240234375,
+            "renderP99Ms": 20.781005859375,
+            "paintP95Ms": 17.7998046875,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 12.165119,
+            "warmSwitchMaxMs": 49.30000001192093,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.200000017881393,
+            "echoP99Ms": 23.299999982118607,
+            "catchUpElapsedMs": 396
+          },
+          "result": "3 passed"
+        }
+      },
+      {
+        "pairId": 5,
+        "entry": {
+          "steady": {
+            "echoP95Ms": 23.19999998807907,
+            "echoP99Ms": 26.599999994039536,
+            "renderP95Ms": 20.118896484375,
+            "renderP99Ms": 21.51611328125,
+            "paintP95Ms": 17.89990234375,
+            "schedulerMaxMs": 0.5,
+            "eventLoopP95Ms": 12.075007,
+            "warmSwitchMaxMs": 77.5,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22.5,
+            "echoP99Ms": 23.80000001192093,
+            "catchUpElapsedMs": 657
+          },
+          "result": "3 passed"
+        },
+        "candidate": {
+          "steady": {
+            "echoP95Ms": 23.599999994039536,
+            "echoP99Ms": 28.400000005960464,
+            "renderP95Ms": 20.74658203125,
+            "renderP99Ms": 22.3876953125,
+            "paintP95Ms": 17.800048828125,
+            "schedulerMaxMs": 0.300048828125,
+            "eventLoopP95Ms": 11.862015,
+            "warmSwitchMaxMs": 48.70000001788139,
+            "cacheBoundViolations": 0,
+            "supervisorBoundViolations": 0
+          },
+          "burst": {
+            "echoP95Ms": 22,
+            "echoP99Ms": 22.900000005960464,
+            "catchUpElapsedMs": 505
+          },
+          "result": "3 passed"
+        }
+      }
+    ],
+    "pairedEvaluation": {
+      "functional": "passed: all ten valid runs passed all three scenarios with no blank/stall, missing/duplicate/reordered mutation, or new/worsened absolute failure",
+      "bounds": "passed: every steady run reported zero cache and supervisor bound violations",
+      "numeric": {
+        "echoP95Ms": {
+          "medianPairedDelta": -0.4999999701976776,
+          "medianRegressionMargin": -2.4999999701976776
+        },
+        "echoP99Ms": {
+          "medianPairedDelta": -7.4000000059604645,
+          "medianRegressionMargin": -9.810000006854533
+        },
+        "renderP95Ms": {
+          "medianPairedDelta": -0.21533203125,
+          "medianRegressionMargin": -2.21533203125
+        },
+        "renderP99Ms": {
+          "medianPairedDelta": -0.911376953125,
+          "medianRegressionMargin": -3.911376953125
+        },
+        "paintP95Ms": {
+          "medianPairedDelta": -0.300048828125,
+          "medianRegressionMargin": -1.300048828125
+        },
+        "schedulerMaxMs": {
+          "medianPairedDelta": -0.10009765625,
+          "medianRegressionMargin": -0.60009765625
+        },
+        "eventLoopP95Ms": {
+          "medianPairedDelta": -0.03276799999999902,
+          "medianRegressionMargin": -2.032767999999999
+        },
+        "warmSwitchMaxMs": {
+          "medianPairedDelta": -3.0000000298023224,
+          "medianRegressionMargin": -8.000000029802322
+        },
+        "burstEchoP95Ms": {
+          "medianPairedDelta": -0.5,
+          "medianRegressionMargin": -2.5
+        },
+        "burstEchoP99Ms": {
+          "medianPairedDelta": -0.9000000059604645,
+          "medianRegressionMargin": -2.9000000059604645
+        },
+        "burstCatchUpElapsedMs": {
+          "medianPairedDelta": -71,
+          "medianRegressionMargin": -171
+        }
+      },
+      "result": "passed; every median paired regression margin is less than or equal to zero"
+    }
+  },
+  "phase5Exit": {
+    "methodology": "five candidate-only runs against the fixed versioned pre-SSH median envelope; any Phase 8 paired run is diagnostic-only",
+    "entrySource": {
+      "manifest": "/private/tmp/kmux-phase5-entry.X9GZKO/source-manifest.json",
+      "manifestSha256": "7fbc47bb51a83917662192a2621e1f62ee6d5a6df10d5ae64daa33cc4df73724",
+      "archive": "/private/tmp/kmux-phase5-entry.X9GZKO/source.tar.gz",
+      "archiveSha256": "998b1d3c4833e803ee7e2ad909da03837e78487c9bb0e89392685effaf187d54"
+    },
+    "candidateSource": {
+      "manifest": "/private/tmp/kmux-phase5-paired-gate.SoxFle/evidence/candidate-exit-source-manifest.json",
+      "manifestSha256": "6064981c7aa27d6b7db0487564f8d2094a9bb0391c22372707fca3ed10c3efed",
+      "archive": "/private/tmp/kmux-phase5-paired-gate.SoxFle/evidence/phase5-candidate-exit-source.tar.gz",
+      "archiveSha256": "82b1ad380b8324facf513f8abd301aa965372d90741727f4812b9032ad0e4edb"
+    },
+    "measuredAt": "2026-07-18T09:58:59.076Z/2026-07-18T10:07:51.974Z",
+    "evidenceFile": "/private/tmp/kmux-phase5-paired-gate.SoxFle/evidence/candidate-exit-gate/local-terminal-regression-gate.json",
+    "evidenceSha256": "03f1d75d5af6693232528f494cf115fcb72ed38313ca7942a4b06fac54c95e73",
+    "hotPathAudit": {
+      "file": "/private/tmp/kmux-phase5-paired-gate.SoxFle/evidence/phase5-local-hot-path-audit.json",
+      "sha256": "d17d72035362ef05f1267430cf607592e01e3cf284e5ed0df65292e19e42b9c5"
+    },
+    "samples": [
+      {
+        "runId": 1,
+        "steady": {
+          "echoP95Ms": 25.19999998807907,
+          "echoP99Ms": 35.19999998807907,
+          "renderP95Ms": 18.72265625,
+          "renderP99Ms": 20.90087890625,
+          "paintP95Ms": 17,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 11.288575,
+          "warmSwitchMaxMs": 44.30000001192093,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 20.200000017881393,
+          "echoP99Ms": 20.200000017881393,
+          "catchUpElapsedMs": 320
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 2,
+        "steady": {
+          "echoP95Ms": 22.700000017881393,
+          "echoP99Ms": 35.29999998211861,
+          "renderP95Ms": 19.548583984375,
+          "renderP99Ms": 21.35546875,
+          "paintP95Ms": 17,
+          "schedulerMaxMs": 0.2001953125,
+          "eventLoopP95Ms": 11.796479,
+          "warmSwitchMaxMs": 39.19999998807907,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.799999982118607,
+          "echoP99Ms": 25.80000001192093,
+          "catchUpElapsedMs": 332
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 3,
+        "steady": {
+          "echoP95Ms": 24.700000017881393,
+          "echoP99Ms": 26.69999998807907,
+          "renderP95Ms": 20.477783203125,
+          "renderP99Ms": 21.62939453125,
+          "paintP95Ms": 17.5,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.173311,
+          "warmSwitchMaxMs": 45.69999998807907,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.30000001192093,
+          "echoP99Ms": 24.19999998807907,
+          "catchUpElapsedMs": 414
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 4,
+        "steady": {
+          "echoP95Ms": 40.900000005960464,
+          "echoP99Ms": 53.099999994039536,
+          "renderP95Ms": 19.7607421875,
+          "renderP99Ms": 20.968017578125,
+          "paintP95Ms": 16.60009765625,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 11.886591,
+          "warmSwitchMaxMs": 39.69999998807907,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.399999976158142,
+          "echoP99Ms": 22.80000001192093,
+          "catchUpElapsedMs": 411
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 5,
+        "steady": {
+          "echoP95Ms": 27.599999994039536,
+          "echoP99Ms": 36.400000005960464,
+          "renderP95Ms": 19.915283203125,
+          "renderP99Ms": 21.25830078125,
+          "paintP95Ms": 16.800048828125,
+          "schedulerMaxMs": 0.39990234375,
+          "eventLoopP95Ms": 11.517951,
+          "warmSwitchMaxMs": 43.5,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.19999998807907,
+          "echoP99Ms": 23.599999994039536,
+          "catchUpElapsedMs": 310
+        },
+        "result": "3 passed"
+      }
+    ],
+    "evaluation": {
+      "functional": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "bounds": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "numeric": {
+        "echoP95Ms": {
+          "baselineMedian": 26.900000005960464,
+          "tolerance": 2,
+          "limit": 28.900000005960464,
+          "candidateMedian": 25.19999998807907,
+          "regressionMargin": -3.7000000178813934,
+          "passed": true
+        },
+        "echoP99Ms": {
+          "baselineMedian": 36.099999994039536,
+          "tolerance": 2,
+          "limit": 38.099999994039536,
+          "candidateMedian": 35.29999998211861,
+          "regressionMargin": -2.800000011920929,
+          "passed": true
+        },
+        "renderP95Ms": {
+          "baselineMedian": 19.9228515625,
+          "tolerance": 2,
+          "limit": 21.9228515625,
+          "candidateMedian": 19.7607421875,
+          "regressionMargin": -2.162109375,
+          "passed": true
+        },
+        "renderP99Ms": {
+          "baselineMedian": 21.371826171875,
+          "tolerance": 3,
+          "limit": 24.371826171875,
+          "candidateMedian": 21.25830078125,
+          "regressionMargin": -3.113525390625,
+          "passed": true
+        },
+        "paintP95Ms": {
+          "baselineMedian": 17.5,
+          "tolerance": 1,
+          "limit": 18.5,
+          "candidateMedian": 17,
+          "regressionMargin": -1.5,
+          "passed": true
+        },
+        "schedulerMaxMs": {
+          "baselineMedian": 0.300048828125,
+          "tolerance": 0.5,
+          "limit": 0.800048828125,
+          "candidateMedian": 0.300048828125,
+          "regressionMargin": -0.5,
+          "passed": true
+        },
+        "eventLoopP95Ms": {
+          "baselineMedian": 12.165119,
+          "tolerance": 2,
+          "limit": 14.165119,
+          "candidateMedian": 11.796479,
+          "regressionMargin": -2.368640000000001,
+          "passed": true
+        },
+        "warmSwitchMaxMs": {
+          "baselineMedian": 47,
+          "tolerance": 5,
+          "limit": 52,
+          "candidateMedian": 43.5,
+          "regressionMargin": -8.5,
+          "passed": true
+        },
+        "burstEchoP95Ms": {
+          "baselineMedian": 22.80000001192093,
+          "tolerance": 2,
+          "limit": 24.80000001192093,
+          "candidateMedian": 23.19999998807907,
+          "regressionMargin": -1.600000023841858,
+          "passed": true
+        },
+        "burstEchoP99Ms": {
+          "baselineMedian": 23.599999994039536,
+          "tolerance": 2,
+          "limit": 25.599999994039536,
+          "candidateMedian": 23.599999994039536,
+          "regressionMargin": -2,
+          "passed": true
+        },
+        "burstCatchUpElapsedMs": {
+          "baselineMedian": 392,
+          "tolerance": 100,
+          "limit": 492,
+          "candidateMedian": 332,
+          "regressionMargin": -160,
+          "passed": true
+        }
+      },
+      "numericFailures": []
+    },
+    "result": "passed"
+  },
+  "phase6Exit": {
+    "methodology": "five candidate-only runs against the fixed versioned pre-SSH median envelope after one candidate preparation; any Phase 8 paired run is diagnostic-only",
+    "candidatePreparation": {
+      "commands": ["npm run smoke:dev", "npm run build"],
+      "execution": "once before all measured samples"
+    },
+    "candidateSource": {
+      "manifest": "/private/tmp/kmux-phase6-gate-final.IklDlI/evidence/candidate-source-manifest.json",
+      "manifestSha256": "e47743b19c6c88cd923b3fc74663fdfa7d6b7c9e56fb4dbb2612ef8a75b26fb2",
+      "files": 527,
+      "archive": "/private/tmp/kmux-phase6-gate-final.IklDlI/evidence/phase6-candidate-source.tar.gz",
+      "archiveSha256": "f098a59d2c0b4e320ed7eb8239e245477f2ae4ceb6d23bc255333d7a61c0969b"
+    },
+    "measuredAt": "2026-07-18T13:15:53.652Z/2026-07-18T13:21:32.633Z",
+    "evidenceFile": "/private/tmp/kmux-phase6-gate-final.IklDlI/evidence/local-terminal-regression-gate.json",
+    "evidenceSha256": "fb9757d63f20a628758bfb83458d8c2578a24eb7adc86213c10c81b905fe94f6",
+    "hotPathAudit": {
+      "file": "/private/tmp/kmux-phase6-gate-final.IklDlI/evidence/phase6-local-hot-path-audit.json",
+      "sha256": "8174785b8851655ba2cf62ce2b9607e43fa183cdf40a194651ef7c1debe2a0c5"
+    },
+    "measurementCorrection": {
+      "reason": "the first Phase 6 invocation rebuilt and typechecked before every sample even though the versioned pre-SSH baseline built immutable bundles once before measurement",
+      "unchanged": [
+        "pre-SSH samples and source revision",
+        "workload and build mode",
+        "five measured runs",
+        "median aggregation",
+        "relative and absolute allowances",
+        "functional and resource-bound contracts"
+      ],
+      "retainedAttempts": [
+        {
+          "kind": "pre-correction failed invocation",
+          "evidenceFile": "/private/tmp/kmux-phase6-gate.15cUoY/evidence/local-terminal-regression-gate.json",
+          "evidenceSha256": "53616e25a76f1a1e074da13719609057788ebd29108fb2b26a9cec2c3074ced5",
+          "result": "functional and bounds passed; nine numeric metrics failed under repeated preparation load"
+        },
+        {
+          "kind": "post-correction noisy invocation",
+          "evidenceFile": "/private/tmp/kmux-phase6-gate-fixed.e91b5L/evidence/local-terminal-regression-gate.json",
+          "evidenceSha256": "3f2011f51a56b181844a729ca83a739a41d7d17e4d0b619d32b3befe092550ce",
+          "result": "functional, bounds, and ten numeric metrics passed; warmSwitchMaxMs median 54 ms exceeded the 52 ms limit"
+        }
+      ],
+      "diagnostic": {
+        "phase5SameHost": {
+          "renderP95Ms": 19.696533203125,
+          "schedulerMaxMs": 0.300048828125,
+          "warmSwitchMaxMs": 39
+        },
+        "phase6SameHost": {
+          "renderP95Ms": 18.747802734375,
+          "schedulerMaxMs": 0.2001953125,
+          "warmSwitchMaxMs": 39.400000005960464
+        },
+        "result": "no code regression reproduced after the host settled; both candidates used byte-identical local live-output files and renderer bundle"
+      }
+    },
+    "samples": [
+      {
+        "runId": 1,
+        "steady": {
+          "echoP95Ms": 25.5,
+          "echoP99Ms": 49.19999998807907,
+          "renderP95Ms": 20.063232421875,
+          "renderP99Ms": 43.677001953125,
+          "paintP95Ms": 16.599853515625,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.099583,
+          "warmSwitchMaxMs": 35.69999998807907,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 24.30000001192093,
+          "echoP99Ms": 25.299999982118607,
+          "catchUpElapsedMs": 429
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 2,
+        "steady": {
+          "echoP95Ms": 25.099999994039536,
+          "echoP99Ms": 31.30000001192093,
+          "renderP95Ms": 19.869873046875,
+          "renderP99Ms": 62.78564453125,
+          "paintP95Ms": 17.199951171875,
+          "schedulerMaxMs": 0.599853515625,
+          "eventLoopP95Ms": 12.140543,
+          "warmSwitchMaxMs": 44.29999998211861,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.80000001192093,
+          "echoP99Ms": 23.69999998807907,
+          "catchUpElapsedMs": 395
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 3,
+        "steady": {
+          "echoP95Ms": 22.400000005960464,
+          "echoP99Ms": 24.100000023841858,
+          "renderP95Ms": 19.54931640625,
+          "renderP99Ms": 20.796630859375,
+          "paintP95Ms": 17.300048828125,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.132351,
+          "warmSwitchMaxMs": 37.79999998211861,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.399999976158142,
+          "echoP99Ms": 23.80000001192093,
+          "catchUpElapsedMs": 537
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 4,
+        "steady": {
+          "echoP95Ms": 29.299999982118607,
+          "echoP99Ms": 40.900000005960464,
+          "renderP95Ms": 19.2734375,
+          "renderP99Ms": 21.098388671875,
+          "paintP95Ms": 17.300048828125,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.066815,
+          "warmSwitchMaxMs": 64.69999998807907,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.400000005960464,
+          "echoP99Ms": 24.599999994039536,
+          "catchUpElapsedMs": 311
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 5,
+        "steady": {
+          "echoP95Ms": 22,
+          "echoP99Ms": 27,
+          "renderP95Ms": 19.17333984375,
+          "renderP99Ms": 20.18798828125,
+          "paintP95Ms": 17.199951171875,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.034047,
+          "warmSwitchMaxMs": 36.10000002384186,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.799999982118607,
+          "echoP99Ms": 23.900000005960464,
+          "catchUpElapsedMs": 441
+        },
+        "result": "3 passed"
+      }
+    ],
+    "evaluation": {
+      "functional": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "bounds": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "numeric": {
+        "echoP95Ms": {
+          "limit": 28.900000005960464,
+          "candidateMedian": 25.099999994039536,
+          "regressionMargin": -3.800000011920929,
+          "passed": true
+        },
+        "echoP99Ms": {
+          "limit": 38.099999994039536,
+          "candidateMedian": 31.30000001192093,
+          "regressionMargin": -6.799999982118607,
+          "passed": true
+        },
+        "renderP95Ms": {
+          "limit": 21.9228515625,
+          "candidateMedian": 19.54931640625,
+          "regressionMargin": -2.37353515625,
+          "passed": true
+        },
+        "renderP99Ms": {
+          "limit": 24.371826171875,
+          "candidateMedian": 21.098388671875,
+          "regressionMargin": -3.2734375,
+          "passed": true
+        },
+        "paintP95Ms": {
+          "limit": 18.5,
+          "candidateMedian": 17.199951171875,
+          "regressionMargin": -1.300048828125,
+          "passed": true
+        },
+        "schedulerMaxMs": {
+          "limit": 0.800048828125,
+          "candidateMedian": 0.300048828125,
+          "regressionMargin": -0.5,
+          "passed": true
+        },
+        "eventLoopP95Ms": {
+          "limit": 14.165119,
+          "candidateMedian": 12.099583,
+          "regressionMargin": -2.065536,
+          "passed": true
+        },
+        "warmSwitchMaxMs": {
+          "limit": 52,
+          "candidateMedian": 37.79999998211861,
+          "regressionMargin": -14.200000017881393,
+          "passed": true
+        },
+        "burstEchoP95Ms": {
+          "limit": 24.80000001192093,
+          "candidateMedian": 23.399999976158142,
+          "regressionMargin": -1.4000000357627869,
+          "passed": true
+        },
+        "burstEchoP99Ms": {
+          "limit": 25.599999994039536,
+          "candidateMedian": 23.900000005960464,
+          "regressionMargin": -1.699999988079071,
+          "passed": true
+        },
+        "burstCatchUpElapsedMs": {
+          "limit": 492,
+          "candidateMedian": 429,
+          "regressionMargin": -63,
+          "passed": true
+        }
+      },
+      "numericFailures": []
+    },
+    "result": "passed"
+  },
+  "phase7Exit": {
+    "methodology": "five candidate-only runs against the fixed versioned pre-SSH median envelope after one candidate preparation; a complete noisy failed invocation is retained rather than omitted",
+    "candidatePreparation": {
+      "commands": ["npm run smoke:dev", "npm run build"],
+      "execution": "once before all measured samples"
+    },
+    "candidateSource": {
+      "manifest": "/tmp/kmux-phase7-local-retry.UYlHYV/candidate-source-manifest.json",
+      "manifestSha256": "a717c3b5eb2685a47a770ab8c1e8e3fbe25afdca2121d758449b76829c98b836",
+      "files": 547,
+      "archive": "/tmp/kmux-phase7-local-retry.UYlHYV/phase7-candidate-source.tar.gz",
+      "archiveSha256": "11ca973ee65161bcaa9987dad73af39b4d08906f335349c1f06031d0eba37fab"
+    },
+    "measuredAt": "2026-07-18T17:27:42.107Z/2026-07-18T17:33:09.367Z",
+    "environment": {
+      "platform": "darwin",
+      "architecture": "x64",
+      "cpuModel": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+      "logicalCpuCores": 12,
+      "memoryBytes": 34359738368,
+      "node": "22.16.0",
+      "electron": "42.5.0"
+    },
+    "evidenceFile": "/tmp/kmux-phase7-local-retry.UYlHYV/local-terminal-regression-gate.json",
+    "evidenceSha256": "c8f3a565519b875279b00e27112049692ed33af11108e99b98765ac953a73ae0",
+    "hotPathAudit": {
+      "file": "/tmp/kmux-phase7-local-retry.UYlHYV/phase7-local-hot-path-audit.json",
+      "sha256": "05603f93ebcb4431f06dc4c0fd8028b1f0f8fad07ffb775fb0af2f208a5e71c4",
+      "result": "nine of ten local live-output owners are byte-identical to Phase 6; TerminalPane changes only target-scoped external-link authorization outside the per-delta output path"
+    },
+    "retainedAttempts": [
+      {
+        "kind": "complete host-noisy failed invocation",
+        "measuredAt": "2026-07-18T17:17:05.022Z/2026-07-18T17:22:35.596Z",
+        "evidenceFile": "/tmp/kmux-phase7-local.vPrGle/local-terminal-regression-gate.json",
+        "evidenceSha256": "98b7c67573d907c7d3a2b2448d32cc9db73ad2addaf038d8f8075d4fb4765a6d",
+        "result": "functional, bounds, and ten numeric metrics passed; echoP99Ms median 42.8 ms exceeded the fixed 38.1 ms limit",
+        "diagnostic": {
+          "installedRendererCpuPercentObservedAfterRun": 55.8,
+          "systemLoadAveragesObservedAfterRun": [3.76, 13.14, 23.57],
+          "broadStallEvidence": "run 1 simultaneously recorded scheduler max 47.1 ms, render p99 202.742 ms, and warm switch 115.4 ms; the failure did not reproduce in the retained unchanged candidate"
+        }
+      }
+    ],
+    "samples": [
+      {
+        "runId": 1,
+        "steady": {
+          "echoP95Ms": 24.799999982118607,
+          "echoP99Ms": 55.5,
+          "renderP95Ms": 20.14501953125,
+          "renderP99Ms": 48.9541015625,
+          "paintP95Ms": 17.699951171875,
+          "schedulerMaxMs": 0.699951171875,
+          "eventLoopP95Ms": 12.435455,
+          "warmSwitchMaxMs": 49.5,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.80000001192093,
+          "echoP99Ms": 24.100000023841858,
+          "catchUpElapsedMs": 368
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 2,
+        "steady": {
+          "echoP95Ms": 23.19999998807907,
+          "echoP99Ms": 45.19999998807907,
+          "renderP95Ms": 19.20751953125,
+          "renderP99Ms": 20.2080078125,
+          "paintP95Ms": 17.300048828125,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 11.739135,
+          "warmSwitchMaxMs": 36.39999997615814,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.200000017881393,
+          "echoP99Ms": 23,
+          "catchUpElapsedMs": 365
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 3,
+        "steady": {
+          "echoP95Ms": 23.899999976158142,
+          "echoP99Ms": 25.599999994039536,
+          "renderP95Ms": 20.110107421875,
+          "renderP99Ms": 21.335205078125,
+          "paintP95Ms": 17.5,
+          "schedulerMaxMs": 0.300048828125,
+          "eventLoopP95Ms": 12.189695,
+          "warmSwitchMaxMs": 36.099999994039536,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.599999994039536,
+          "echoP99Ms": 24.69999998807907,
+          "catchUpElapsedMs": 412
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 4,
+        "steady": {
+          "echoP95Ms": 23.30000001192093,
+          "echoP99Ms": 28.599999994039536,
+          "renderP95Ms": 19.47607421875,
+          "renderP99Ms": 115.3671875,
+          "paintP95Ms": 17.300048828125,
+          "schedulerMaxMs": 1,
+          "eventLoopP95Ms": 11.935743,
+          "warmSwitchMaxMs": 122.40000000596046,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 23.399999976158142,
+          "echoP99Ms": 23.80000001192093,
+          "catchUpElapsedMs": 284
+        },
+        "result": "3 passed"
+      },
+      {
+        "runId": 5,
+        "steady": {
+          "echoP95Ms": 22.400000005960464,
+          "echoP99Ms": 23.600000023841858,
+          "renderP95Ms": 19.10205078125,
+          "renderP99Ms": 19.7626953125,
+          "paintP95Ms": 16.7998046875,
+          "schedulerMaxMs": 0.2998046875,
+          "eventLoopP95Ms": 11.763711,
+          "warmSwitchMaxMs": 34.900000005960464,
+          "cacheBoundViolations": 0,
+          "supervisorBoundViolations": 0
+        },
+        "burst": {
+          "echoP95Ms": 22.5,
+          "echoP99Ms": 24,
+          "catchUpElapsedMs": 313
+        },
+        "result": "3 passed"
+      }
+    ],
+    "evaluation": {
+      "functional": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "bounds": {
+        "passed": true,
+        "failedRuns": []
+      },
+      "numeric": {
+        "echoP95Ms": {
+          "limit": 28.900000005960464,
+          "candidateMedian": 23.30000001192093,
+          "regressionMargin": -5.5999999940395355,
+          "passed": true
+        },
+        "echoP99Ms": {
+          "limit": 38.099999994039536,
+          "candidateMedian": 28.599999994039536,
+          "regressionMargin": -9.5,
+          "passed": true
+        },
+        "renderP95Ms": {
+          "limit": 21.9228515625,
+          "candidateMedian": 19.47607421875,
+          "regressionMargin": -2.44677734375,
+          "passed": true
+        },
+        "renderP99Ms": {
+          "limit": 24.371826171875,
+          "candidateMedian": 21.335205078125,
+          "regressionMargin": -3.03662109375,
+          "passed": true
+        },
+        "paintP95Ms": {
+          "limit": 18.5,
+          "candidateMedian": 17.300048828125,
+          "regressionMargin": -1.199951171875,
+          "passed": true
+        },
+        "schedulerMaxMs": {
+          "limit": 0.800048828125,
+          "candidateMedian": 0.300048828125,
+          "regressionMargin": -0.5,
+          "passed": true
+        },
+        "eventLoopP95Ms": {
+          "limit": 14.165119,
+          "candidateMedian": 11.935743,
+          "regressionMargin": -2.2293760000000002,
+          "passed": true
+        },
+        "warmSwitchMaxMs": {
+          "limit": 52,
+          "candidateMedian": 36.39999997615814,
+          "regressionMargin": -15.600000023841858,
+          "passed": true
+        },
+        "burstEchoP95Ms": {
+          "limit": 24.80000001192093,
+          "candidateMedian": 22.80000001192093,
+          "regressionMargin": -2,
+          "passed": true
+        },
+        "burstEchoP99Ms": {
+          "limit": 25.599999994039536,
+          "candidateMedian": 24,
+          "regressionMargin": -1.5999999940395355,
+          "passed": true
+        },
+        "burstCatchUpElapsedMs": {
+          "limit": 492,
+          "candidateMedian": 365,
+          "regressionMargin": -127,
+          "passed": true
+        }
+      },
+      "numericFailures": []
+    },
+    "result": "passed"
+  },
+  "aggregationDiagnostic": {
+    "reason": "An additional adjacent pair under elevated background load demonstrated why independent medians are invalid for this workload.",
+    "entryRenderP99Ms": 44.600341796875,
+    "candidateRenderP99Ms": 20.436279296875,
+    "pairedDeltaMs": -24.1640625,
+    "functionalResult": "both sides passed all three scenarios with zero bound violations"
+  }
+}

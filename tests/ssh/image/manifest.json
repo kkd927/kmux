@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "baseImage": "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
+  "toxiproxyImage": "ghcr.io/shopify/toxiproxy:2.9.0@sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8",
+  "runtimeBuilderImage": "rust:1.97.0-slim-bookworm@sha256:b07b1bc9cb80ea8f48f304fe469feb759f54cfd30c6ec545a1b0ec3af822daf0",
+  "runtimeArtifact": "linux-x64-musl",
+  "users": [
+    { "name": "kmux", "uid": 1000 },
+    { "name": "kmux-alt", "uid": 1001 }
+  ],
+  "sshdPort": 22,
+  "echoFixturePort": 18080,
+  "repositoryCommit": "8408912c3abac9be93ece7e8f360dac4eadf4507",
+  "sftp": "internal-sftp",
+  "pid1": "tini"
+}

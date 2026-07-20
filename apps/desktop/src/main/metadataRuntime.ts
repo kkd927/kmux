@@ -10,11 +10,13 @@ import {
 
 import type { AppAction, AppState } from "@kmux/core";
 import { isoNow, type Id } from "@kmux/proto";
+import type { LocalPathResolver } from "./targets/targetServiceRegistry";
 
 interface MetadataRuntimeOptions {
   getState: () => AppState;
   dispatchAppAction: (action: AppAction) => void;
   env?: NodeJS.ProcessEnv;
+  resolveLocalPath: LocalPathResolver;
 }
 
 export const GIT_HEAD_METADATA_REFRESH_DEBOUNCE_MS = 100;
@@ -28,6 +30,7 @@ export interface MetadataRuntime {
 export function createMetadataRuntime(
   options: MetadataRuntimeOptions
 ): MetadataRuntime {
+  const resolveLocalPath = options.resolveLocalPath;
   const surfaceGitDirs = new Map<Id, string>();
   const surfaceGitCwds = new Map<Id, string>();
   const gitHeadWatchers = new Map<
@@ -58,8 +61,14 @@ export function createMetadataRuntime(
       }
 
       const session = currentState.sessions[surface.sessionId];
-      if (cwd !== undefined && surface.cwd !== cwd) {
-        return;
+      if (cwd !== undefined) {
+        try {
+          if (resolveLocalPath(surface.cwd) !== cwd) {
+            return;
+          }
+        } catch {
+          return;
+        }
       }
       if (pid !== undefined && session?.pid !== pid) {
         return;
@@ -234,8 +243,14 @@ export function createMetadataRuntime(
           surfaceGitDirs.get(surfaceId) === gitDir &&
           Boolean(currentState.surfaces[surfaceId]?.cwd)
       );
-      const cwd = currentState.surfaces[liveSurfaceIds[0]]?.cwd;
-      if (!cwd) {
+      const locatedCwd = currentState.surfaces[liveSurfaceIds[0]]?.cwd;
+      if (!locatedCwd) {
+        return;
+      }
+      let cwd: string;
+      try {
+        cwd = resolveLocalPath(locatedCwd);
+      } catch {
         return;
       }
       const branch = await resolveGitBranch(cwd, options.env, {
@@ -249,9 +264,11 @@ export function createMetadataRuntime(
         }
         const repository = surface.gitRepository
           ? {
-              root: surface.gitRepository.root,
-              gitDir: surface.gitRepository.gitDir,
-              commonGitDir: surface.gitRepository.commonGitDir
+              root: resolveLocalPath(surface.gitRepository.root),
+              gitDir: resolveLocalPath(surface.gitRepository.gitDir),
+              commonGitDir: resolveLocalPath(
+                surface.gitRepository.commonGitDir
+              )
             }
           : null;
         options.dispatchAppAction({
@@ -268,7 +285,13 @@ export function createMetadataRuntime(
     const state = options.getState();
     for (const surfaceId of [...surfaceGitDirs.keys()]) {
       const surface = state.surfaces[surfaceId];
-      if (!surface || surface.cwd !== surfaceGitCwds.get(surfaceId)) {
+      let cwd: string | undefined;
+      try {
+        cwd = surface ? resolveLocalPath(surface.cwd) : undefined;
+      } catch {
+        cwd = undefined;
+      }
+      if (!surface || cwd !== surfaceGitCwds.get(surfaceId)) {
         untrackSurfaceRepository(surfaceId);
       }
     }

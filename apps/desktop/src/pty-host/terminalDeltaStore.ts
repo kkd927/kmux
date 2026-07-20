@@ -1,6 +1,8 @@
+import { uint64, type Uint64 } from "@kmux/proto";
+
 export interface TerminalDeltaRange {
-  fromSequence: number;
-  sequence: number;
+  fromSequence: Uint64;
+  sequence: Uint64;
 }
 
 export interface TerminalDeltaStoreOptions<T> {
@@ -14,7 +16,7 @@ export interface TerminalDeltaStoreOptions<T> {
   /** Optional wire-flow accounting used for bounded replay windows. */
   replaySizeOf?: (delta: T) => number;
   /** Rebuilds the replayable suffix after a cursor inside one retained delta. */
-  sliceAfterInternalCursor?: (delta: T, sequence: number) => T | null;
+  sliceAfterInternalCursor?: (delta: T, sequence: Uint64) => T | null;
 }
 
 export interface TerminalDeltaReplayWindow {
@@ -28,11 +30,11 @@ export interface TerminalDeltaReplayWindow {
 }
 
 export type TerminalDeltaReplay<T> =
-  | { status: "ok"; latestSequence: number; deltas: T[] }
+  | { status: "ok"; latestSequence: Uint64; deltas: T[] }
   | {
       status: "gap";
-      latestSequence: number;
-      retainedFromSequence: number;
+      latestSequence: Uint64;
+      retainedFromSequence: Uint64;
     };
 
 export interface TerminalDeltaStoreStats {
@@ -61,8 +63,8 @@ export interface TerminalDeltaSessionStats {
   maxEvents: number;
   peakBytes: number;
   peakEvents: number;
-  latestSequence: number;
-  retainedFromSequence: number;
+  latestSequence: Uint64;
+  retainedFromSequence: Uint64;
 }
 
 interface StoredDelta<T> {
@@ -79,7 +81,7 @@ interface SessionRing<T> {
   entries: Array<StoredDelta<T> | undefined>;
   head: number;
   bytes: number;
-  latestSequence: number;
+  latestSequence: Uint64;
   peakBytes: number;
   peakEvents: number;
 }
@@ -103,7 +105,7 @@ export class TerminalDeltaStore<T> {
   private replayLookupMissCount = 0;
   private internalCursorMissCount = 0;
   private internalCursorMissEpisodeCount = 0;
-  private readonly lastInternalCursorMissBySession = new Map<string, number>();
+  private readonly lastInternalCursorMissBySession = new Map<string, Uint64>();
 
   constructor(private readonly options: TerminalDeltaStoreOptions<T>) {
     requirePositiveInteger(options.maxSessionBytes, "maxSessionBytes");
@@ -176,19 +178,20 @@ export class TerminalDeltaStore<T> {
 
   replayAfter(
     sessionId: string,
-    sequence: number,
+    sequence: Uint64,
     window: TerminalDeltaReplayWindow = {}
   ): TerminalDeltaReplay<T> {
-    if (!Number.isSafeInteger(sequence) || sequence < 0) {
-      throw new RangeError("sequence must be a non-negative safe integer");
-    }
     const maxBytes = normalizeReplayLimit(window.maxBytes, "maxBytes");
     const maxEvents = normalizeReplayLimit(window.maxEvents, "maxEvents");
     const ring = this.rings.get(sessionId);
     if (!ring) {
-      return sequence === 0
-        ? { status: "ok", latestSequence: 0, deltas: [] }
-        : { status: "gap", latestSequence: 0, retainedFromSequence: 1 };
+      return sequence === 0n
+        ? { status: "ok", latestSequence: uint64(0n), deltas: [] }
+        : {
+            status: "gap",
+            latestSequence: uint64(0n),
+            retainedFromSequence: uint64(1n)
+          };
     }
     if (sequence === ring.latestSequence) {
       return { status: "ok", latestSequence: ring.latestSequence, deltas: [] };
@@ -197,9 +200,10 @@ export class TerminalDeltaStore<T> {
       return {
         status: "gap",
         latestSequence: ring.latestSequence,
-        retainedFromSequence:
+        retainedFromSequence: uint64(
           (ring.entries[ring.head]?.range.fromSequence ?? ring.latestSequence) +
-          1
+            1n
+        )
       };
     }
 
@@ -257,8 +261,8 @@ export class TerminalDeltaStore<T> {
           latestSequence: ring.latestSequence,
           retainedFromSequence:
             first === undefined
-              ? ring.latestSequence + 1
-              : first.range.fromSequence + 1
+              ? uint64(ring.latestSequence + 1n)
+              : uint64(first.range.fromSequence + 1n)
         };
       }
     }
@@ -309,8 +313,8 @@ export class TerminalDeltaStore<T> {
     return { status: "ok", latestSequence: ring.latestSequence, deltas };
   }
 
-  latestSequence(sessionId: string): number {
-    return this.rings.get(sessionId)?.latestSequence ?? 0;
+  latestSequence(sessionId: string): Uint64 {
+    return this.rings.get(sessionId)?.latestSequence ?? uint64(0n);
   }
 
   removeSession(sessionId: string): void {
@@ -361,8 +365,8 @@ export class TerminalDeltaStore<T> {
         maxEvents: this.options.maxSessionEvents,
         peakBytes: 0,
         peakEvents: 0,
-        latestSequence: 0,
-        retainedFromSequence: 1
+        latestSequence: uint64(0n),
+        retainedFromSequence: uint64(1n)
       };
     }
     return {
@@ -374,7 +378,10 @@ export class TerminalDeltaStore<T> {
       peakEvents: ring.peakEvents,
       latestSequence: ring.latestSequence,
       retainedFromSequence:
-        (ring.entries[ring.head]?.range.fromSequence ?? ring.latestSequence) + 1
+        uint64(
+          (ring.entries[ring.head]?.range.fromSequence ?? ring.latestSequence) +
+            1n
+        )
     };
   }
 
@@ -383,7 +390,7 @@ export class TerminalDeltaStore<T> {
       entries: [],
       head: 0,
       bytes: 0,
-      latestSequence: 0,
+      latestSequence: uint64(0n),
       peakBytes: 0,
       peakEvents: 0
     };
@@ -460,7 +467,7 @@ export class TerminalDeltaStore<T> {
     return oldestRing;
   }
 
-  private findReplayIndex(ring: SessionRing<T>, sequence: number): number {
+  private findReplayIndex(ring: SessionRing<T>, sequence: Uint64): number {
     let low = ring.head;
     let high = ring.entries.length - 1;
     while (low <= high) {
@@ -485,7 +492,7 @@ export class TerminalDeltaStore<T> {
 
   private findContainingReplayIndex(
     ring: SessionRing<T>,
-    sequence: number
+    sequence: Uint64
   ): number {
     let low = ring.head;
     let high = ring.entries.length - 1;
@@ -525,9 +532,9 @@ function normalizeReplayLimit(value: number | undefined, name: string): number {
 
 function validateRange(range: TerminalDeltaRange): void {
   if (
-    !Number.isSafeInteger(range.fromSequence) ||
-    !Number.isSafeInteger(range.sequence) ||
-    range.fromSequence < 0 ||
+    typeof range.fromSequence !== "bigint" ||
+    typeof range.sequence !== "bigint" ||
+    range.fromSequence < 0n ||
     range.sequence <= range.fromSequence
   ) {
     throw new RangeError("delta sequence range is invalid");

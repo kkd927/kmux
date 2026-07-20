@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { basename, delimiter, dirname, join } from "node:path";
 
+import type { WorkspaceTarget } from "@kmux/core";
+
 import type {
   ExternalAgentSessionRef,
   ExternalAgentSessionVendor,
@@ -43,6 +45,7 @@ export interface ExternalSessionResumeSpec {
   vendor: ExternalAgentSessionVendor;
   agentSessionRef: ExternalAgentSessionRef;
   title: string;
+  target: WorkspaceTarget;
   cwd?: string;
   launch: SessionLaunchConfig;
 }
@@ -708,6 +711,7 @@ function toViewModel(
 ): ExternalAgentSessionVm {
   return {
     key: record.key,
+    target: { kind: "local" },
     vendor: record.vendor,
     vendorLabel: vendorLabelFor(record.vendor),
     title: record.title,
@@ -735,6 +739,7 @@ function toResumeSpec(
       sessionId: record.sessionId
     },
     title: record.title,
+    target: { kind: "local" },
     cwd: record.cwd,
     launch
   };

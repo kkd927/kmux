@@ -16,6 +16,30 @@ const agentEventSchema = z.enum([
   "idle",
   "session_end"
 ]);
+const remoteControlIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine(
+    (value) =>
+      Buffer.byteLength(value, "utf8") <= 256 && !/\p{Cc}/u.test(value),
+    "Expected a control-safe ID no larger than 256 UTF-8 bytes"
+  );
+const terminalTextSchema = z
+  .string()
+  .max(64 * 1024)
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 64 * 1024,
+    "Expected terminal input no larger than 64 KiB"
+  );
+const terminalKeySchema = z
+  .string()
+  .min(1)
+  .max(4 * 1024)
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 4 * 1024,
+    "Expected a key no larger than 4 KiB"
+  );
 
 const socketEnvelopeSchema = z.object({
   jsonrpc: z.literal("2.0"),
@@ -68,13 +92,28 @@ const socketParamSchemas = {
   "surface.send_text": z
     .object({
       surfaceId: z.string().min(1).optional(),
-      text: z.string()
+      text: terminalTextSchema,
+      operationId: remoteControlIdSchema.optional()
     })
     .strict(),
   "surface.send_key": z
     .object({
       surfaceId: z.string().min(1).optional(),
-      key: z.string().min(1)
+      key: terminalKeySchema,
+      operationId: remoteControlIdSchema.optional()
+    })
+    .strict(),
+  "surface.capture": z
+    .object({
+      surfaceId: z.string().min(1).optional(),
+      captureId: remoteControlIdSchema.optional(),
+      lines: z.coerce.number().int().min(1).max(65_536).default(200),
+      maxBytes: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(1024 * 1024)
+        .default(1024 * 1024)
     })
     .strict(),
   "notification.create": z

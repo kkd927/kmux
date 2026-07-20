@@ -14,15 +14,16 @@ import {
   type ExternalAgentSessionRef,
   type ExternalAgentSessionVendor,
   type Id,
+  formatUint64Decimal,
   isoNow,
   type KmuxSettings,
   type ResolvedTerminalTypographyVm,
   makeId,
+  parseUint64Decimal,
   type NotificationItem,
   type PaneTreeNode,
   type TerminalTypographySettings,
-  type SessionLaunchConfig,
-  type SessionRuntimeState,
+  type SessionLaunchConfig as SessionLaunchConfigDto,
   type ShellViewModel,
   type SidebarLogEntry,
   type SidebarProgress,
@@ -32,12 +33,108 @@ import {
   type SplitDirection,
   type SurfaceDiagnosticCaptureMode,
   type SurfaceVm,
-  type WorkspaceDetectedWorktreeMetadata,
-  type WorkspaceGitRepositoryMetadata,
+  type WorkspaceDetectedWorktreeMetadata as WorkspaceDetectedWorktreeMetadataDto,
+  type WorkspaceGitRepositoryMetadata as WorkspaceGitRepositoryMetadataDto,
   type WorkspaceRowVm,
-  type WorkspaceWorktreeMetadata,
-  type TerminalThemeSettings
+  type WorkspaceWorktreeMetadata as WorkspaceWorktreeMetadataDto,
+  type TerminalThemeSettings,
+  type Uint64
 } from "@kmux/proto";
+import {
+  type AgentSessionRef,
+  type LocatedPath,
+  type LocatedWorkspaceDetectedWorktreeMetadata,
+  type LocatedWorkspaceGitRepositoryMetadata,
+  type LocatedWorkspaceWorktreeMetadata,
+  type SessionRuntimeStatus,
+  type RemoteSessionRuntimeState,
+  type RemoteSessionStorageStatus,
+  type StoredSessionLaunchConfig,
+  type WorkspaceLocation,
+  type WorkspaceTarget,
+  assertLocatedPathTarget,
+  decodeLocatedPathDto,
+  decodeWorkspaceLocationDto,
+  encodeLocatedPathDto,
+  encodeWorkspaceLocationDto,
+  locatedPathForTarget,
+  sameLocatedPath,
+  workspaceLocation
+} from "./domain";
+import {
+  decodeRemoteOperationProjectionDto,
+  encodeRemoteOperationProjectionDto,
+  type RemoteOperationProjection
+} from "./remoteOperation";
+
+export {
+  LocalPath,
+  RemotePath,
+  assertLocatedPathTarget,
+  decodeLocalPath,
+  decodeLocatedPathDto,
+  decodeRemotePath,
+  decodeWorkspaceLocationDto,
+  decodeWorkspaceTarget,
+  encodeLocatedPathDto,
+  encodeWorkspaceLocationDto,
+  localLocatedPath,
+  locatedPathForTarget,
+  remoteLocatedPath,
+  sameLocatedPath,
+  sameWorkspaceTarget,
+  targetOfLocatedPath,
+  validateRemoteTargetBinding,
+  workspaceLocation
+} from "./domain";
+export type {
+  AgentSessionRef,
+  LocatedPath,
+  LocatedPathDto,
+  LocatedWorkspaceDetectedWorktreeMetadata,
+  LocatedWorkspaceGitRepositoryMetadata,
+  LocatedWorkspaceWorktreeMetadata,
+  RemoteAuthenticatedPrincipal,
+  RemoteAuthorityIdentity,
+  RemoteResourceKey,
+  RemoteTargetBinding,
+  RemoteTargetLocator,
+  RemoteTargetObservation,
+  RemoteSessionRuntimeState,
+  RemoteSessionStorageStatus,
+  SessionLaunchConfig,
+  SessionRuntimeStatus,
+  SshProfile,
+  StoredSessionLaunchConfig,
+  WorkspaceLocation,
+  WorkspaceLocationDto,
+  WorkspaceTarget
+} from "./domain";
+export {
+  canonicalizeRemoteOperationPayload,
+  createRemotePendingProductProjection,
+  decodeRemoteOperationIntentDto,
+  decodeRemoteOperationPayload,
+  decodeRemoteOperationProjectionDto,
+  encodeRemoteOperationIntentDto,
+  encodeRemoteOperationProjectionDto,
+  payloadFromRemotePendingProductProjection
+} from "./remoteOperation";
+export type {
+  RemoteOperationIntent,
+  RemoteOperationIntentDto,
+  RemoteOperationAdmissionCommand,
+  RemoteOperationCommandResult,
+  RemoteOperationExecutionOutcome,
+  RemoteOperationKind,
+  RemoteOperationPayloadDto,
+  RemotePendingProductProjection,
+  RemoteOperationProjection,
+  RemoteOperationProjectionDto,
+  RemoteOperationProjectionState,
+  RemoteSessionLaunchPayloadDto,
+  RemoteWorktreeProductMetadata
+} from "./remoteOperation";
 
 export interface WindowState {
   id: Id;
@@ -52,9 +149,10 @@ export interface WorkspaceState {
   windowId: Id;
   name: string;
   nameLocked?: boolean;
-  worktree?: WorkspaceWorktreeMetadata;
-  detectedWorktree?: WorkspaceDetectedWorktreeMetadata;
-  dismissedWorktreePaths?: string[];
+  location: WorkspaceLocation;
+  worktree?: LocatedWorkspaceWorktreeMetadata;
+  detectedWorktree?: LocatedWorkspaceDetectedWorktreeMetadata;
+  dismissedWorktreePaths?: LocatedPath[];
   rootNodeId: Id;
   nodeMap: Record<Id, PaneTreeNode>;
   activePaneId: Id;
@@ -66,6 +164,8 @@ export interface WorkspaceState {
   statusEntries: Record<string, SidebarStatusEntry>;
   progress?: SidebarProgress;
   logs: SidebarLogEntry[];
+  /** Last authoritative revision of the remote workspace descriptor. */
+  remoteResourceRevision?: Uint64;
 }
 
 export interface PaneState {
@@ -81,9 +181,9 @@ export interface SurfaceState {
   sessionId: Id;
   title: string;
   titleLocked: boolean;
-  cwd?: string;
+  cwd: LocatedPath;
   branch?: string;
-  gitRepository?: WorkspaceGitRepositoryMetadata;
+  gitRepository?: LocatedWorkspaceGitRepositoryMetadata;
   ports: number[];
   unreadCount: number;
   attention: boolean;
@@ -92,13 +192,19 @@ export interface SurfaceState {
 export interface SessionState {
   id: Id;
   surfaceId: Id;
-  launch: SessionLaunchConfig;
-  agentSessionRef?: ExternalAgentSessionRef;
+  launch: StoredSessionLaunchConfig;
+  agentSessionRef?: AgentSessionRef;
   authToken: string;
-  runtimeState: SessionRuntimeState;
+  runtimeStatus: SessionRuntimeStatus;
+  remoteRuntime?: RemoteSessionRuntimeState;
   shellInputReady: boolean;
   pid?: number;
   exitCode?: number;
+}
+
+export interface RemoteEventReceiptState {
+  throughSequence: Uint64;
+  recentEventIds: Id[];
 }
 
 export interface AppState {
@@ -107,6 +213,8 @@ export interface AppState {
   panes: Record<Id, PaneState>;
   surfaces: Record<Id, SurfaceState>;
   sessions: Record<Id, SessionState>;
+  remoteOperations: Record<Id, RemoteOperationProjection>;
+  remoteEventReceipts: Record<Id, RemoteEventReceiptState>;
   notifications: NotificationItem[];
   settings: KmuxSettings;
   activeWindowId: Id;
@@ -148,7 +256,7 @@ export interface SessionSpawnEffect {
   sessionId: Id;
   surfaceId: Id;
   workspaceId: Id;
-  launch: SessionLaunchConfig;
+  launch: StoredSessionLaunchConfig;
   initialSize: {
     cols: number;
     rows: number;
@@ -164,6 +272,18 @@ function defaultHomeDirectory(): string {
   return homeDirectory?.trim() || "~";
 }
 
+function defaultLocalCwd(): LocatedPath {
+  return locatedPathForTarget({ kind: "local" }, defaultHomeDirectory());
+}
+
+function pendingSessionRuntimeStatus(): SessionRuntimeStatus {
+  return {
+    processState: "pending",
+    observationState: "unknown",
+    attachmentState: "detached"
+  };
+}
+
 export type AppEffect =
   | SessionSpawnEffect
   | {
@@ -175,7 +295,7 @@ export type AppEffect =
       workspaceId: Id;
       surfaceId?: Id;
       pid?: number;
-      cwd?: string;
+      cwd?: LocatedPath;
     }
   | {
       type: "persist";
@@ -195,12 +315,38 @@ export type SettingsPatch = Partial<
   terminalThemes?: Partial<TerminalThemeSettings>;
 };
 
+export type RemoteEventProductAction =
+  | {
+      type: "notification.create";
+      workspaceId: Id;
+      paneId?: Id;
+      surfaceId?: Id;
+      title: string;
+      message: string;
+      source?: NotificationItem["source"];
+      kind?: NotificationItem["kind"];
+      agent?: NotificationItem["agent"];
+    }
+  | {
+      type: "agent.event";
+      workspaceId: Id;
+      paneId?: Id;
+      surfaceId?: Id;
+      sessionId?: Id;
+      agent: string;
+      event: AgentEventName;
+      title?: string;
+      message?: string;
+      details?: Record<string, unknown>;
+    };
+
 export type AppAction =
   | {
       type: "workspace.create";
       name?: string;
       cwd?: string;
-      launch?: SessionLaunchConfig;
+      target?: WorkspaceTarget;
+      launch?: SessionLaunchConfigDto;
       agentSessionRef?: ExternalAgentSessionRef;
     }
   | { type: "workspace.select"; workspaceId: Id }
@@ -214,14 +360,19 @@ export type AppAction =
   | {
       type: "workspace.worktree.convert";
       workspaceId: Id;
-      worktree: WorkspaceWorktreeMetadata;
+      worktree: WorkspaceWorktreeMetadataDto;
       createSurface?: boolean;
       focus?: boolean;
     }
   | {
       type: "workspace.worktree.detected";
       workspaceId: Id;
-      detectedWorktree: WorkspaceDetectedWorktreeMetadata;
+      detectedWorktree: WorkspaceDetectedWorktreeMetadataDto;
+    }
+  | {
+      type: "workspace.worktree.launchSurfaceCreated";
+      workspaceId: Id;
+      path: string;
     }
   | {
       type: "workspace.worktree.dismissDetected";
@@ -247,7 +398,7 @@ export type AppAction =
       paneId: Id;
       title?: string;
       cwd?: string;
-      launch?: SessionLaunchConfig;
+      launch?: SessionLaunchConfigDto;
     }
   | { type: "surface.focus"; surfaceId: Id }
   | {
@@ -269,7 +420,7 @@ export type AppAction =
       title?: string;
       branch?: string | null;
       ports?: number[];
-      gitRepository?: WorkspaceGitRepositoryMetadata | null;
+      gitRepository?: WorkspaceGitRepositoryMetadataDto | null;
       attention?: boolean;
       unreadDelta?: number;
     }
@@ -314,6 +465,13 @@ export type AppAction =
       title?: string;
       message?: string;
       details?: Record<string, unknown>;
+    }
+  | {
+      type: "remote.event.apply";
+      targetId: Id;
+      sequence: Uint64;
+      eventId: Id;
+      productAction?: RemoteEventProductAction;
     }
   | { type: "agent.attention.clear"; surfaceId: Id }
   | { type: "notification.clear"; notificationId?: Id }
@@ -604,6 +762,7 @@ export function createInitialState(
         id: workspaceId,
         windowId,
         name: "new workspace",
+        location: workspaceLocation({ kind: "local" }, defaultHomeDirectory()),
         rootNodeId: nodeId,
         nodeMap: {
           [nodeId]: {
@@ -635,7 +794,7 @@ export function createInitialState(
         sessionId,
         title: "new workspace",
         titleLocked: false,
-        cwd: defaultHomeDirectory(),
+        cwd: defaultLocalCwd(),
         ports: [],
         unreadCount: 0,
         attention: false
@@ -646,14 +805,16 @@ export function createInitialState(
         id: sessionId,
         surfaceId,
         launch: {
-          cwd: defaultHomeDirectory(),
+          cwd: defaultLocalCwd(),
           shell: shellPath
         },
         authToken: makeId("auth"),
-        runtimeState: "pending",
+        runtimeStatus: pendingSessionRuntimeStatus(),
         shellInputReady: false
       }
     },
+    remoteOperations: {},
+    remoteEventReceipts: {},
     notifications: [],
     settings: createDefaultSettings("kmuxOnly", shellPath),
     activeWindowId: windowId
@@ -662,8 +823,136 @@ export function createInitialState(
   return state;
 }
 
+export type AppStateDto = Record<string, unknown>;
+
+/** Encodes opaque domain values into the versioned persistence/IPC schema. */
+export function encodeAppStateDto(snapshot: AppState): AppStateDto {
+  return {
+    windows: structuredClone(snapshot.windows),
+    workspaces: Object.fromEntries(
+      Object.entries(snapshot.workspaces).map(([id, workspace]) => [
+        id,
+        {
+          ...workspace,
+          location: encodeWorkspaceLocationDto(workspace.location),
+          remoteResourceRevision:
+            workspace.remoteResourceRevision === undefined
+              ? undefined
+              : formatUint64Decimal(workspace.remoteResourceRevision),
+          worktree: workspace.worktree
+            ? encodePersistedWorkspaceWorktree(workspace.worktree)
+            : undefined,
+          detectedWorktree: workspace.detectedWorktree
+            ? encodePersistedDetectedWorkspaceWorktree(
+                workspace.detectedWorktree
+              )
+            : undefined,
+          dismissedWorktreePaths:
+            workspace.dismissedWorktreePaths?.map(encodeLocatedPathDto),
+          nodeMap: structuredClone(workspace.nodeMap),
+          statusEntries: structuredClone(workspace.statusEntries),
+          logs: structuredClone(workspace.logs)
+        }
+      ])
+    ),
+    panes: structuredClone(snapshot.panes),
+    surfaces: Object.fromEntries(
+      Object.entries(snapshot.surfaces).map(([id, surface]) => [
+        id,
+        {
+          ...surface,
+          cwd: encodeLocatedPathDto(surface.cwd),
+          gitRepository: surface.gitRepository
+            ? encodePersistedWorkspaceGitRepository(surface.gitRepository)
+            : undefined
+        }
+      ])
+    ),
+    sessions: Object.fromEntries(
+      Object.entries(snapshot.sessions).map(([id, session]) => [
+        id,
+        {
+          ...session,
+          launch: {
+            ...session.launch,
+            cwd: encodeLocatedPathDto(session.launch.cwd)
+          },
+          agentSessionRef: session.agentSessionRef
+            ? {
+                ...session.agentSessionRef,
+                cwd: session.agentSessionRef.cwd
+                  ? encodeLocatedPathDto(session.agentSessionRef.cwd)
+                  : undefined
+              }
+            : undefined,
+          remoteRuntime: session.remoteRuntime
+            ? {
+                keeperGeneration: session.remoteRuntime.keeperGeneration,
+                remoteResourceRevision: formatUint64Decimal(
+                  session.remoteRuntime.remoteResourceRevision
+                ),
+                ...(session.remoteRuntime.lastAcknowledgedMutationSequence ===
+                undefined
+                  ? {}
+                  : {
+                      lastAcknowledgedMutationSequence: formatUint64Decimal(
+                        session.remoteRuntime.lastAcknowledgedMutationSequence
+                      )
+                    }),
+                ...(session.remoteRuntime.storageStatus === undefined
+                  ? {}
+                  : {
+                      storageStatus: {
+                        ...session.remoteRuntime.storageStatus,
+                        journalAdmitted: formatUint64Decimal(
+                          session.remoteRuntime.storageStatus.journalAdmitted
+                        ),
+                        journalSynced: formatUint64Decimal(
+                          session.remoteRuntime.storageStatus.journalSynced
+                        )
+                      }
+                    })
+              }
+            : undefined
+        }
+      ])
+    ),
+    remoteOperations: Object.fromEntries(
+      Object.entries(snapshot.remoteOperations).map(([id, operation]) => [
+        id,
+        {
+          ...encodeRemoteOperationProjectionDto(operation)
+        }
+      ])
+    ),
+    remoteEventReceipts: Object.fromEntries(
+      Object.entries(snapshot.remoteEventReceipts).map(
+        ([targetId, receipt]) => [
+          targetId,
+          {
+            throughSequence: formatUint64Decimal(receipt.throughSequence),
+            recentEventIds: [...receipt.recentEventIds]
+          }
+        ]
+      )
+    ),
+    notifications: structuredClone(snapshot.notifications),
+    settings: structuredClone(snapshot.settings),
+    activeWindowId: snapshot.activeWindowId
+  };
+}
+
+/** Decodes both the current DTO and the pre-located-path local snapshot. */
+export function decodeAppStateDto(value: unknown): AppState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("app state snapshot must be an object");
+  }
+  const cloned = structuredClone(value) as AppState;
+  return sanitizeState(cloned);
+}
+
 export function cloneState(snapshot: AppState): AppState {
-  return sanitizeState(structuredClone(snapshot));
+  return decodeAppStateDto(encodeAppStateDto(snapshot));
 }
 
 export interface AppMutationSummary {
@@ -710,6 +999,7 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
         state,
         action.name ?? "new workspace",
         action.cwd,
+        action.target,
         !!action.name,
         action.launch,
         action.agentSessionRef
@@ -739,6 +1029,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return convertWorkspaceToWorktree(state, action);
     case "workspace.worktree.detected":
       return setDetectedWorkspaceWorktree(state, action);
+    case "workspace.worktree.launchSurfaceCreated":
+      return markWorktreeLaunchSurfaceCreated(state, action);
     case "workspace.worktree.dismissDetected":
       return dismissDetectedWorkspaceWorktree(state, action);
     case "workspace.worktree.clearDetected":
@@ -843,6 +1135,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return createNotification(state, action);
     case "agent.event":
       return applyAgentEvent(state, action);
+    case "remote.event.apply":
+      return applyRemoteEvent(state, action);
     case "agent.attention.clear":
       return clearSurfaceAgentAttention(state, action.surfaceId);
     case "notification.clear":
@@ -858,7 +1152,11 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
     case "session.started":
       if (state.sessions[action.sessionId]) {
         const session = state.sessions[action.sessionId];
-        session.runtimeState = "running";
+        session.runtimeStatus = {
+          processState: "running",
+          observationState: "observed",
+          attachmentState: "attached"
+        };
         session.shellInputReady = action.shellInputReady;
         session.pid = action.pid;
         const surface = state.surfaces[session.surfaceId];
@@ -885,7 +1183,11 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return [];
     case "session.exited":
       if (state.sessions[action.sessionId]) {
-        state.sessions[action.sessionId].runtimeState = "exited";
+        state.sessions[action.sessionId].runtimeStatus = {
+          ...state.sessions[action.sessionId].runtimeStatus,
+          processState: "exited",
+          observationState: "observed"
+        };
         state.sessions[action.sessionId].shellInputReady = false;
         state.sessions[action.sessionId].exitCode = action.exitCode;
       }
@@ -897,7 +1199,7 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
 
 function resetRestoredShellInputReadiness(state: AppState): void {
   for (const session of Object.values(state.sessions)) {
-    if (session.runtimeState !== "exited") {
+    if (session.runtimeStatus.processState !== "exited") {
       session.shellInputReady = false;
     }
   }
@@ -940,6 +1242,8 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
     case "workspace.pin.toggle":
     case "workspace.move":
       return { workspaceRows: true };
+    case "workspace.worktree.launchSurfaceCreated":
+      return {};
     case "workspace.worktree.detected":
     case "workspace.worktree.dismissDetected":
     case "workspace.worktree.clearDetected":
@@ -965,6 +1269,7 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
         notifications: true
       };
     case "agent.event":
+    case "remote.event.apply":
       return {
         window: true,
         workspaceRows: true,
@@ -1060,12 +1365,18 @@ function createWorkspace(
   state: AppState,
   name: string,
   cwd?: string,
+  requestedTarget: WorkspaceTarget = { kind: "local" },
   nameLocked = false,
-  launch?: SessionLaunchConfig,
+  launch?: SessionLaunchConfigDto,
   agentSessionRef?: ExternalAgentSessionRef
 ): AppEffect[] {
   const window = state.windows[state.activeWindowId];
   const workspaceCwd = cwd ?? launch?.cwd ?? defaultHomeDirectory();
+  const target: WorkspaceTarget =
+    requestedTarget.kind === "local"
+      ? { kind: "local" }
+      : { kind: "ssh", targetId: requestedTarget.targetId };
+  const locatedWorkspaceCwd = locatedPathForTarget(target, workspaceCwd);
   const workspaceId = makeId("workspace");
   const paneId = makeId("pane");
   const surfaceId = makeId("surface");
@@ -1074,24 +1385,32 @@ function createWorkspace(
   const workspaceName =
     name.trim() || `workspace ${window.workspaceOrder.length + 1}`;
   const explicitLaunchTitle = launch?.title?.trim();
-  const sessionLaunch = sanitizeSessionLaunchConfig(
+  const defaultShell =
+    target.kind === "local"
+      ? state.settings.shell || process.env.SHELL
+      : undefined;
+  const sessionLaunch = sanitizeStoredSessionLaunchConfig(
     {
-      shell: state.settings.shell || process.env.SHELL,
+      ...(defaultShell === undefined ? {} : { shell: defaultShell }),
       ...launch,
-      cwd: launch?.cwd ?? workspaceCwd,
+      cwd: locatedPathForTarget(target, launch?.cwd ?? workspaceCwd),
       ...(explicitLaunchTitle ? { title: explicitLaunchTitle } : {})
     },
-    state.settings.shell || process.env.SHELL
+    defaultShell
   );
   const surfaceTitle = explicitLaunchTitle || workspaceName;
-  const sanitizedAgentSessionRef =
-    sanitizeExternalAgentSessionRef(agentSessionRef);
+  const sanitizedAgentSessionRef = sanitizeAgentSessionRef(
+    agentSessionRef,
+    target,
+    sessionLaunch.cwd
+  );
 
   state.workspaces[workspaceId] = {
     id: workspaceId,
     windowId: window.id,
     name: workspaceName,
     nameLocked,
+    location: workspaceLocation(target, workspaceCwd),
     rootNodeId: nodeId,
     nodeMap: {
       [nodeId]: {
@@ -1119,7 +1438,7 @@ function createWorkspace(
     sessionId,
     title: surfaceTitle,
     titleLocked: Boolean(explicitLaunchTitle),
-    cwd: sessionLaunch.cwd ?? workspaceCwd,
+    cwd: sessionLaunch.cwd ?? locatedWorkspaceCwd,
     ports: [],
     unreadCount: 0,
     attention: false
@@ -1132,7 +1451,7 @@ function createWorkspace(
       ? { agentSessionRef: sanitizedAgentSessionRef }
       : {}),
     authToken: makeId("auth"),
-    runtimeState: "pending",
+    runtimeStatus: pendingSessionRuntimeStatus(),
     shellInputReady: false
   };
   window.workspaceOrder.push(workspaceId);
@@ -1241,9 +1560,19 @@ function convertWorkspaceToWorktree(
 
   const window =
     state.windows[workspace.windowId] ?? state.windows[state.activeWindowId];
-  workspace.worktree = {
-    ...action.worktree
-  };
+  const previousWorktree = workspace.worktree;
+  const nextWorktree = decodeWorkspaceWorktree(
+    action.worktree,
+    workspace.location.target
+  );
+  if (
+    previousWorktree?.launchSurfaceCreated === true &&
+    encodedLocatedPath(previousWorktree.path) ===
+      encodedLocatedPath(nextWorktree.path)
+  ) {
+    nextWorktree.launchSurfaceCreated = true;
+  }
+  workspace.worktree = nextWorktree;
   workspace.detectedWorktree = undefined;
   workspace.name = action.worktree.name;
   workspace.nameLocked = true;
@@ -1270,6 +1599,24 @@ function convertWorkspaceToWorktree(
   return effects.length > 0 ? effects : [{ type: "persist" }];
 }
 
+function markWorktreeLaunchSurfaceCreated(
+  state: AppState,
+  action: Extract<
+    AppAction,
+    { type: "workspace.worktree.launchSurfaceCreated" }
+  >
+): AppEffect[] {
+  const worktree = state.workspaces[action.workspaceId]?.worktree;
+  if (!worktree || encodedLocatedPath(worktree.path) !== action.path) {
+    return [];
+  }
+  if (worktree.launchSurfaceCreated === true) {
+    return [];
+  }
+  worktree.launchSurfaceCreated = true;
+  return [{ type: "persist" }];
+}
+
 function setDetectedWorkspaceWorktree(
   state: AppState,
   action: Extract<AppAction, { type: "workspace.worktree.detected" }>
@@ -1279,20 +1626,36 @@ function setDetectedWorkspaceWorktree(
     return [];
   }
   if (
-    workspace.dismissedWorktreePaths?.includes(action.detectedWorktree.path)
+    workspace.dismissedWorktreePaths?.some((path) =>
+      sameLocatedPath(
+        path,
+        locatedPathForTarget(
+          workspace.location.target,
+          action.detectedWorktree.path
+        )
+      )
+    )
   ) {
     return [];
   }
   if (
-    workspace.detectedWorktree?.path === action.detectedWorktree.path &&
+    workspace.detectedWorktree &&
+    sameLocatedPath(
+      workspace.detectedWorktree.path,
+      locatedPathForTarget(
+        workspace.location.target,
+        action.detectedWorktree.path
+      )
+    ) &&
     workspace.detectedWorktree.branch === action.detectedWorktree.branch &&
     workspace.detectedWorktree.baseRef === action.detectedWorktree.baseRef
   ) {
     return [];
   }
-  workspace.detectedWorktree = {
-    ...action.detectedWorktree
-  };
+  workspace.detectedWorktree = decodeDetectedWorkspaceWorktree(
+    action.detectedWorktree,
+    workspace.location.target
+  );
   return [{ type: "persist" }];
 }
 
@@ -1304,10 +1667,18 @@ function dismissDetectedWorkspaceWorktree(
   if (!workspace) {
     return [];
   }
-  const dismissed = new Set(workspace.dismissedWorktreePaths ?? []);
-  dismissed.add(action.path);
-  workspace.dismissedWorktreePaths = [...dismissed].slice(-32);
-  if (workspace.detectedWorktree?.path === action.path) {
+  const dismissedPath = locatedPathForTarget(
+    workspace.location.target,
+    action.path
+  );
+  const dismissed = (workspace.dismissedWorktreePaths ?? []).filter(
+    (path) => !sameLocatedPath(path, dismissedPath)
+  );
+  workspace.dismissedWorktreePaths = [...dismissed, dismissedPath].slice(-32);
+  if (
+    workspace.detectedWorktree &&
+    sameLocatedPath(workspace.detectedWorktree.path, dismissedPath)
+  ) {
     workspace.detectedWorktree = undefined;
   }
   return [{ type: "persist" }];
@@ -1463,7 +1834,7 @@ function splitPane(
       shell: state.settings.shell || process.env.SHELL
     },
     authToken: makeId("auth"),
-    runtimeState: "pending",
+    runtimeStatus: pendingSessionRuntimeStatus(),
     shellInputReady: false
   };
   workspace.activePaneId = newPaneId;
@@ -1667,7 +2038,7 @@ function createSurface(
   paneId: Id,
   title?: string,
   cwd?: string,
-  launch?: SessionLaunchConfig
+  launch?: SessionLaunchConfigDto
 ): AppEffect[] {
   const pane = state.panes[paneId];
   if (!pane) {
@@ -1678,14 +2049,21 @@ function createSurface(
   const sessionId = makeId("session");
   const launchCwd = defaultNewSurfaceCwd(state, paneId, cwd);
   const defaultTitle = title?.trim() || `tab ${pane.surfaceIds.length + 1}`;
-  const sessionLaunch = sanitizeSessionLaunchConfig(
+  const defaultShell =
+    workspace.location.target.kind === "local"
+      ? state.settings.shell || process.env.SHELL
+      : undefined;
+  const sessionLaunch = sanitizeStoredSessionLaunchConfig(
     {
-      shell: state.settings.shell || process.env.SHELL,
+      ...(defaultShell === undefined ? {} : { shell: defaultShell }),
       title,
       ...launch,
-      cwd: launch?.cwd ?? launchCwd
+      cwd:
+        launch?.cwd === undefined
+          ? launchCwd
+          : locatedPathForTarget(workspace.location.target, launch.cwd)
     },
-    state.settings.shell || process.env.SHELL
+    defaultShell
   );
   const surfaceTitle = sessionLaunch.title?.trim() || defaultTitle;
 
@@ -1695,7 +2073,7 @@ function createSurface(
     sessionId,
     title: surfaceTitle,
     titleLocked: Boolean(sessionLaunch.title?.trim()),
-    cwd: sessionLaunch.cwd ?? launchCwd,
+    cwd: sessionLaunch.cwd,
     ports: [],
     unreadCount: 0,
     attention: false
@@ -1705,7 +2083,7 @@ function createSurface(
     surfaceId,
     launch: sessionLaunch,
     authToken: makeId("auth"),
-    runtimeState: "pending",
+    runtimeStatus: pendingSessionRuntimeStatus(),
     shellInputReady: false
   };
   pane.surfaceIds.push(surfaceId);
@@ -1806,17 +2184,21 @@ function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
   }
   const workspace = state.workspaces[pane.workspaceId];
   const oldSession = state.sessions[surface.sessionId];
-  if (!oldSession || oldSession.runtimeState === "pending") {
+  if (!oldSession || oldSession.runtimeStatus.processState === "pending") {
     return [];
   }
 
   const newSessionId = makeId("session");
-  const launch = sanitizeSessionLaunchConfig(
+  const defaultShell =
+    workspace.location.target.kind === "local"
+      ? state.settings.shell || process.env.SHELL
+      : undefined;
+  const launch = sanitizeStoredSessionLaunchConfig(
     {
       ...oldSession.launch,
-      cwd: oldSession.launch.cwd ?? surface.cwd
+      cwd: oldSession.launch.cwd
     },
-    state.settings.shell || process.env.SHELL
+    defaultShell
   );
 
   delete state.sessions[oldSession.id];
@@ -1825,7 +2207,7 @@ function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
     surfaceId,
     launch,
     authToken: makeId("auth"),
-    runtimeState: "pending",
+    runtimeStatus: pendingSessionRuntimeStatus(),
     shellInputReady: false
   };
   surface.sessionId = newSessionId;
@@ -1849,11 +2231,16 @@ function updateSurfaceMetadata(
   if (!surface) {
     return [];
   }
+  const workspaceId = state.panes[surface.paneId].workspaceId;
+  const workspace = state.workspaces[workspaceId];
   let shouldRefreshDerivedMetadata = false;
 
-  if (action.cwd !== undefined && action.cwd !== surface.cwd) {
-    surface.cwd = action.cwd;
-    shouldRefreshDerivedMetadata = true;
+  if (action.cwd !== undefined) {
+    const nextCwd = locatedPathForTarget(workspace.location.target, action.cwd);
+    if (!sameLocatedPath(nextCwd, surface.cwd)) {
+      surface.cwd = nextCwd;
+      shouldRefreshDerivedMetadata = true;
+    }
   }
   if (action.title !== undefined) {
     if (!surface.titleLocked) {
@@ -1864,7 +2251,12 @@ function updateSurfaceMetadata(
     surface.branch = action.branch ?? undefined;
   }
   if ("gitRepository" in action) {
-    surface.gitRepository = action.gitRepository ?? undefined;
+    surface.gitRepository = action.gitRepository
+      ? decodeWorkspaceGitRepository(
+          action.gitRepository,
+          workspace.location.target
+        )
+      : undefined;
   }
   if (action.ports !== undefined) {
     surface.ports = action.ports.slice(0, 3);
@@ -1875,7 +2267,6 @@ function updateSurfaceMetadata(
   if (action.unreadDelta) {
     surface.unreadCount = Math.max(0, surface.unreadCount + action.unreadDelta);
   }
-  const workspaceId = state.panes[surface.paneId].workspaceId;
   const session = state.sessions[surface.sessionId];
   if (shouldRefreshDerivedMetadata) {
     return [
@@ -2165,6 +2556,7 @@ function backfillAgentSessionRef(
       : normalizeOptionalText(action.sessionId, 512);
   if (
     !session ||
+    !target.workspace ||
     !vendor ||
     !vendorSessionId ||
     vendorSessionId === session.id ||
@@ -2175,13 +2567,25 @@ function backfillAgentSessionRef(
 
   const agentSessionRef = {
     vendor,
-    externalKey: externalAgentSessionKey(vendor, vendorSessionId),
-    sessionId: vendorSessionId
-  } satisfies ExternalAgentSessionRef;
+    id: vendorSessionId,
+    targetId:
+      target.workspace.location.target.kind === "ssh"
+        ? target.workspace.location.target.targetId
+        : "local",
+    cwd:
+      surface?.cwd ??
+      locatedPathForTarget(
+        target.workspace.location.target,
+        encodeWorkspaceDefaultCwd(target.workspace.location)
+      ),
+    externalKey: externalAgentSessionKey(vendor, vendorSessionId)
+  } satisfies AgentSessionRef;
   if (
     session.agentSessionRef?.vendor === agentSessionRef.vendor &&
     session.agentSessionRef.externalKey === agentSessionRef.externalKey &&
-    session.agentSessionRef.sessionId === agentSessionRef.sessionId
+    session.agentSessionRef.id === agentSessionRef.id &&
+    session.agentSessionRef.targetId === agentSessionRef.targetId &&
+    sameLocatedPath(session.agentSessionRef.cwd, agentSessionRef.cwd)
   ) {
     return false;
   }
@@ -2253,10 +2657,11 @@ function normalizeStatusText(text: string | undefined): string {
 }
 
 function normalizeOptionalText(
-  text: string | undefined,
+  text: unknown,
   maxLength: number
 ): string | undefined {
-  const normalized = text?.trim().slice(0, maxLength);
+  const normalized =
+    typeof text === "string" ? text.trim().slice(0, maxLength) : undefined;
   return normalized || undefined;
 }
 
@@ -2398,6 +2803,39 @@ function purgeSurfaceReferences(state: AppState, surfaceId: Id): boolean {
   }
 
   return changed;
+}
+
+const MAX_RECENT_REMOTE_EVENT_IDS = 512;
+
+function applyRemoteEvent(
+  state: AppState,
+  action: Extract<AppAction, { type: "remote.event.apply" }>
+): AppEffect[] {
+  const receipt = state.remoteEventReceipts[action.targetId];
+  if (receipt && action.sequence <= receipt.throughSequence) {
+    return [];
+  }
+  if (receipt?.recentEventIds.includes(action.eventId)) {
+    state.remoteEventReceipts[action.targetId] = {
+      throughSequence: action.sequence,
+      recentEventIds: receipt.recentEventIds
+    };
+    return [{ type: "persist" }];
+  }
+  const effects = action.productAction
+    ? applyActionEffects(state, action.productAction)
+    : [];
+  const recentEventIds = [
+    ...(receipt?.recentEventIds ?? []),
+    action.eventId
+  ].slice(-MAX_RECENT_REMOTE_EVENT_IDS);
+  state.remoteEventReceipts[action.targetId] = {
+    throughSequence: action.sequence,
+    recentEventIds
+  };
+  return effects.some((effect) => effect.type === "persist")
+    ? effects
+    : [...effects, { type: "persist" }];
 }
 
 function resolveAgentTarget(
@@ -2831,13 +3269,23 @@ function defaultNewSurfaceCwd(
   state: AppState,
   paneId: Id,
   explicitCwd?: string
-): string | undefined {
-  if (explicitCwd !== undefined) {
-    return explicitCwd;
-  }
+): LocatedPath {
   const pane = state.panes[paneId];
   const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
-  return workspace?.worktree?.path ?? activeSurface(state, paneId)?.cwd;
+  if (!workspace) {
+    return defaultLocalCwd();
+  }
+  if (explicitCwd !== undefined) {
+    return locatedPathForTarget(workspace.location.target, explicitCwd);
+  }
+  return (
+    workspace.worktree?.path ??
+    activeSurface(state, paneId)?.cwd ??
+    locatedPathForTarget(
+      workspace.location.target,
+      encodeWorkspaceDefaultCwd(workspace.location)
+    )
+  );
 }
 
 function buildSessionSpawnEffect(
@@ -2999,18 +3447,25 @@ export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
         : baseStatusEntries;
     return {
       workspaceId,
+      targetKind: entry.location.target.kind,
       name: worktree?.name ?? entry.name,
       nameLocked: Boolean(entry.nameLocked || worktree),
       summary: worktree
         ? `worktree · ${worktree.branch}`
         : workspaceSummary(representativeSurface),
-      cwd: worktree?.path ?? representativeSurface?.cwd ?? entry.cwdSummary,
+      cwd:
+        (worktree ? encodedLocatedPath(worktree.path) : undefined) ??
+        (representativeSurface
+          ? encodedLocatedPath(representativeSurface.cwd)
+          : entry.cwdSummary),
       branch,
       gitRepository: representativeSurface?.gitRepository
-        ? { ...representativeSurface.gitRepository }
+        ? encodeWorkspaceGitRepository(representativeSurface.gitRepository)
         : undefined,
-      worktree: worktree ? { ...worktree } : undefined,
-      detectedWorktree: detectedWorktree ? { ...detectedWorktree } : undefined,
+      worktree: worktree ? encodeWorkspaceWorktree(worktree) : undefined,
+      detectedWorktree: detectedWorktree
+        ? encodeDetectedWorkspaceWorktree(detectedWorktree)
+        : undefined,
       ports: aggregateWorkspacePorts(
         surfaces,
         state.panes[entry.activePaneId]?.activeSurfaceId
@@ -3098,25 +3553,43 @@ export function buildWorkspacePaneTreeVm(
     surfaces: Object.fromEntries(
       workspaceSurfaceIds.map((surfaceId) => {
         const surface = state.surfaces[surfaceId];
+        const storageStatus =
+          state.sessions[surface.sessionId]?.remoteRuntime?.storageStatus;
         return [
           surface.id,
           {
             id: surface.id,
             sessionId: surface.sessionId,
             title: surface.title,
-            cwd: surface.cwd,
+            cwd: encodedLocatedPath(surface.cwd),
             branch: surface.branch,
             gitRepository: surface.gitRepository
-              ? { ...surface.gitRepository }
+              ? encodeWorkspaceGitRepository(surface.gitRepository)
               : undefined,
             ports: [...surface.ports],
             unreadCount: surface.unreadCount,
             attention: surface.attention,
             sessionState:
-              state.sessions[surface.sessionId]?.runtimeState ?? "pending",
+              state.sessions[surface.sessionId]?.runtimeStatus.processState ??
+              "pending",
             shellInputReady:
               state.sessions[surface.sessionId]?.shellInputReady === true,
-            exitCode: state.sessions[surface.sessionId]?.exitCode
+            exitCode: state.sessions[surface.sessionId]?.exitCode,
+            ...(storageStatus === undefined
+              ? {}
+              : {
+                  storageStatus: {
+                    state: storageStatus.state,
+                    journalAdmitted: storageStatus.journalAdmitted.toString(10),
+                    journalSynced: storageStatus.journalSynced.toString(10),
+                    emergencyBytes: storageStatus.emergencyBytes,
+                    ...(storageStatus.lastSyncDurationMs === undefined
+                      ? {}
+                      : {
+                          lastSyncDurationMs: storageStatus.lastSyncDurationMs
+                        })
+                  }
+                })
           } satisfies SurfaceVm
         ];
       })
@@ -3288,6 +3761,70 @@ function aggregateWorkspacePorts(
 }
 
 function sanitizeState(state: AppState): AppState {
+  const rawRemoteEventReceipts = (
+    state as AppState & { remoteEventReceipts?: unknown }
+  ).remoteEventReceipts;
+  state.remoteEventReceipts =
+    rawRemoteEventReceipts &&
+    typeof rawRemoteEventReceipts === "object" &&
+    !Array.isArray(rawRemoteEventReceipts)
+      ? Object.fromEntries(
+          Object.entries(rawRemoteEventReceipts)
+            .slice(0, 256)
+            .flatMap(([targetId, value]) => {
+              if (
+                !targetId ||
+                targetId.length > 512 ||
+                !value ||
+                typeof value !== "object" ||
+                Array.isArray(value)
+              ) {
+                return [];
+              }
+              const record = value as unknown as Record<string, unknown>;
+              if (
+                !Array.isArray(record.recentEventIds) ||
+                record.recentEventIds.length > MAX_RECENT_REMOTE_EVENT_IDS ||
+                !record.recentEventIds.every(
+                  (eventId) =>
+                    typeof eventId === "string" &&
+                    eventId.length > 0 &&
+                    eventId.length <= 512
+                )
+              ) {
+                return [];
+              }
+              try {
+                const throughSequence =
+                  typeof record.throughSequence === "bigint"
+                    ? parseUint64Decimal(record.throughSequence.toString(10))
+                    : parseUint64Decimal(record.throughSequence);
+                const recentEventIds = [...new Set(record.recentEventIds)];
+                return [[targetId, { throughSequence, recentEventIds }]];
+              } catch {
+                return [];
+              }
+            })
+        )
+      : {};
+  const rawRemoteOperations = (
+    state as AppState & { remoteOperations?: unknown }
+  ).remoteOperations;
+  state.remoteOperations =
+    rawRemoteOperations &&
+    typeof rawRemoteOperations === "object" &&
+    !Array.isArray(rawRemoteOperations)
+      ? Object.fromEntries(
+          Object.entries(rawRemoteOperations).flatMap(([id, operation]) => {
+            try {
+              const decoded = decodeRemoteOperationProjectionDto(operation);
+              return decoded.operationId === id ? [[id, decoded]] : [];
+            } catch {
+              return [];
+            }
+          })
+        )
+      : {};
   const firstWindowId = Object.keys(state.windows)[0];
   if (!state.windows[state.activeWindowId] && firstWindowId) {
     state.activeWindowId = firstWindowId;
@@ -3330,19 +3867,54 @@ function sanitizeState(state: AppState): AppState {
   }
 
   for (const workspace of Object.values(state.workspaces)) {
+    const rawLocation = (workspace as WorkspaceState & { location?: unknown })
+      .location;
+    workspace.location =
+      rawLocation === undefined
+        ? workspaceLocation(
+            { kind: "local" },
+            normalizeOptionalText(workspace.cwdSummary, 32 * 1024) ??
+              defaultHomeDirectory()
+          )
+        : decodeWorkspaceLocationDto(rawLocation);
+    const rawRemoteResourceRevision = (
+      workspace as WorkspaceState & { remoteResourceRevision?: unknown }
+    ).remoteResourceRevision;
+    if (
+      workspace.location.target.kind === "ssh" &&
+      rawRemoteResourceRevision !== undefined
+    ) {
+      try {
+        workspace.remoteResourceRevision =
+          typeof rawRemoteResourceRevision === "bigint"
+            ? parseUint64Decimal(rawRemoteResourceRevision.toString(10))
+            : parseUint64Decimal(rawRemoteResourceRevision);
+      } catch {
+        delete workspace.remoteResourceRevision;
+      }
+    } else {
+      delete workspace.remoteResourceRevision;
+    }
     sanitizeWorkspaceStatusEntries(workspace);
-    workspace.worktree = sanitizeWorkspaceWorktree(workspace.worktree);
+    workspace.worktree = sanitizeWorkspaceWorktree(
+      workspace.worktree,
+      workspace.location.target
+    );
     workspace.detectedWorktree = sanitizeDetectedWorkspaceWorktree(
-      workspace.detectedWorktree
+      workspace.detectedWorktree,
+      workspace.location.target
     );
     workspace.dismissedWorktreePaths = Array.isArray(
       workspace.dismissedWorktreePaths
     )
       ? workspace.dismissedWorktreePaths
-          .filter(
-            (path): path is string =>
-              typeof path === "string" && path.length > 0
-          )
+          .flatMap((path) => {
+            try {
+              return [decodeFeaturePath(path, workspace.location.target)];
+            } catch {
+              return [];
+            }
+          })
           .slice(-32)
       : undefined;
     const paneIds = listPaneIds(workspace).filter(
@@ -3370,100 +3942,251 @@ function sanitizeState(state: AppState): AppState {
       })
     : [];
 
-  for (const session of Object.values(state.sessions)) {
-    session.launch = sanitizeSessionLaunchConfig(
-      session.launch,
-      state.settings.shell
+  for (const surface of Object.values(state.surfaces)) {
+    const pane = state.panes[surface.paneId];
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    const target = workspace?.location.target ?? ({ kind: "local" } as const);
+    const fallbackCwd = workspace
+      ? locatedPathForTarget(
+          target,
+          encodeWorkspaceDefaultCwd(workspace.location)
+        )
+      : defaultLocalCwd();
+    try {
+      surface.cwd = decodeFeaturePath(
+        (surface as SurfaceState & { cwd?: unknown }).cwd,
+        target,
+        fallbackCwd
+      );
+    } catch {
+      surface.cwd = fallbackCwd;
+    }
+    surface.gitRepository = sanitizeWorkspaceGitRepository(
+      surface.gitRepository,
+      target
     );
-    session.agentSessionRef = sanitizeExternalAgentSessionRef(
-      (session as SessionState & { agentSessionRef?: unknown }).agentSessionRef
+    syncSurfaceNotificationState(state, surface.id);
+  }
+
+  for (const session of Object.values(state.sessions)) {
+    const surface = state.surfaces[session.surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    const target = workspace?.location.target ?? ({ kind: "local" } as const);
+    const fallbackCwd = surface?.cwd ?? defaultLocalCwd();
+    const rawLaunch = session.launch as unknown as Record<string, unknown>;
+    let launchCwd = fallbackCwd;
+    try {
+      launchCwd = decodeFeaturePath(rawLaunch?.cwd, target, fallbackCwd);
+    } catch {
+      // Keep the target-checked surface cwd when an old launch cwd is invalid.
+    }
+    session.launch = sanitizeStoredSessionLaunchConfig(
+      { ...rawLaunch, cwd: launchCwd },
+      target.kind === "local" ? state.settings.shell : undefined
+    );
+    session.agentSessionRef = sanitizeAgentSessionRef(
+      (session as SessionState & { agentSessionRef?: unknown }).agentSessionRef,
+      target,
+      launchCwd
     );
     if (!session.agentSessionRef) {
       delete session.agentSessionRef;
     }
-    session.shellInputReady =
-      session.runtimeState === "running" && session.shellInputReady === true;
-  }
-
-  for (const surface of Object.values(state.surfaces)) {
-    surface.gitRepository = sanitizeWorkspaceGitRepository(
-      surface.gitRepository
+    session.runtimeStatus = sanitizeSessionRuntimeStatus(
+      (
+        session as SessionState & {
+          runtimeStatus?: unknown;
+          runtimeState?: unknown;
+        }
+      ).runtimeStatus,
+      (session as SessionState & { runtimeState?: unknown }).runtimeState
     );
-    syncSurfaceNotificationState(state, surface.id);
+    delete (session as SessionState & { runtimeState?: unknown }).runtimeState;
+    session.remoteRuntime = sanitizeRemoteSessionRuntimeState(
+      (session as SessionState & { remoteRuntime?: unknown }).remoteRuntime,
+      target
+    );
+    if (!session.remoteRuntime) delete session.remoteRuntime;
+    session.shellInputReady =
+      session.runtimeStatus.processState === "running" &&
+      session.shellInputReady === true;
   }
 
   return state;
 }
 
+function sanitizeRemoteSessionRuntimeState(
+  value: unknown,
+  target: WorkspaceTarget
+): RemoteSessionRuntimeState | undefined {
+  if (target.kind !== "ssh" || !value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.keeperGeneration !== "string" ||
+    record.keeperGeneration.length === 0
+  ) {
+    return undefined;
+  }
+  try {
+    const remoteResourceRevision =
+      typeof record.remoteResourceRevision === "bigint"
+        ? parseUint64Decimal(record.remoteResourceRevision.toString(10))
+        : parseUint64Decimal(record.remoteResourceRevision);
+    const lastAcknowledgedMutationSequence =
+      record.lastAcknowledgedMutationSequence === undefined
+        ? undefined
+        : typeof record.lastAcknowledgedMutationSequence === "bigint"
+          ? parseUint64Decimal(
+              record.lastAcknowledgedMutationSequence.toString(10)
+            )
+          : parseUint64Decimal(record.lastAcknowledgedMutationSequence);
+    const storageStatus = sanitizeRemoteSessionStorageStatus(
+      record.storageStatus
+    );
+    return {
+      keeperGeneration: record.keeperGeneration,
+      remoteResourceRevision,
+      ...(lastAcknowledgedMutationSequence === undefined
+        ? {}
+        : { lastAcknowledgedMutationSequence }),
+      ...(storageStatus === undefined ? {} : { storageStatus })
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeRemoteSessionStorageStatus(
+  value: unknown
+): RemoteSessionStorageStatus | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.state !== "normal" &&
+    record.state !== "degraded" &&
+    record.state !== "backpressured"
+  ) {
+    return undefined;
+  }
+  if (
+    typeof record.emergencyBytes !== "number" ||
+    !Number.isSafeInteger(record.emergencyBytes) ||
+    record.emergencyBytes < 0 ||
+    record.emergencyBytes > 4 * 1024 * 1024 ||
+    (record.lastSyncDurationMs !== undefined &&
+      (typeof record.lastSyncDurationMs !== "number" ||
+        !Number.isSafeInteger(record.lastSyncDurationMs) ||
+        record.lastSyncDurationMs < 0))
+  ) {
+    return undefined;
+  }
+  try {
+    const journalAdmitted =
+      typeof record.journalAdmitted === "bigint"
+        ? parseUint64Decimal(record.journalAdmitted.toString(10))
+        : parseUint64Decimal(record.journalAdmitted);
+    const journalSynced =
+      typeof record.journalSynced === "bigint"
+        ? parseUint64Decimal(record.journalSynced.toString(10))
+        : parseUint64Decimal(record.journalSynced);
+    if (journalSynced > journalAdmitted) return undefined;
+    return {
+      state: record.state,
+      journalAdmitted,
+      journalSynced,
+      emergencyBytes: record.emergencyBytes,
+      ...(record.lastSyncDurationMs === undefined
+        ? {}
+        : { lastSyncDurationMs: record.lastSyncDurationMs })
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function sanitizeWorkspaceGitRepository(
-  repository: WorkspaceGitRepositoryMetadata | undefined
-): WorkspaceGitRepositoryMetadata | undefined {
+  repository: unknown,
+  target: WorkspaceTarget
+): LocatedWorkspaceGitRepositoryMetadata | undefined {
   if (!repository || typeof repository !== "object") {
     return undefined;
   }
-  const root = normalizeOptionalText(repository.root, 4096);
-  const gitDir = normalizeOptionalText(repository.gitDir, 4096);
-  const commonGitDir = normalizeOptionalText(repository.commonGitDir, 4096);
-  if (!root || !gitDir || !commonGitDir) {
+  const record = repository as Record<string, unknown>;
+  try {
+    return {
+      root: decodeFeaturePath(record.root, target),
+      gitDir: decodeFeaturePath(record.gitDir, target),
+      commonGitDir: decodeFeaturePath(record.commonGitDir, target),
+      linkedWorktree: record.linkedWorktree === true
+    };
+  } catch {
     return undefined;
   }
-  return {
-    root,
-    gitDir,
-    commonGitDir,
-    linkedWorktree: repository.linkedWorktree === true
-  };
 }
 
 function sanitizeWorkspaceWorktree(
-  worktree: WorkspaceWorktreeMetadata | undefined
-): WorkspaceWorktreeMetadata | undefined {
+  worktree: unknown,
+  target: WorkspaceTarget
+): LocatedWorkspaceWorktreeMetadata | undefined {
   if (!worktree || typeof worktree !== "object") {
     return undefined;
   }
-  const name = normalizeOptionalText(worktree.name, 128);
-  const path = normalizeOptionalText(worktree.path, 4096);
-  const repoRoot = normalizeOptionalText(worktree.repoRoot, 4096);
-  const commonGitDir = normalizeOptionalText(worktree.commonGitDir, 4096);
-  const baseRef = normalizeOptionalText(worktree.baseRef, 256);
-  const branch = normalizeOptionalText(worktree.branch, 256);
-  if (!name || !path || !repoRoot || !commonGitDir || !baseRef || !branch) {
+  const record = worktree as Record<string, unknown>;
+  const name = normalizeOptionalText(record.name, 128);
+  const baseRef = normalizeOptionalText(record.baseRef, 256);
+  const branch = normalizeOptionalText(record.branch, 256);
+  if (!name || !baseRef || !branch) {
     return undefined;
   }
-  return {
-    name,
-    path,
-    repoRoot,
-    commonGitDir,
-    baseRef,
-    branch,
-    createdByKmux: worktree.createdByKmux === true
-  };
+  try {
+    return {
+      name,
+      path: decodeFeaturePath(record.path, target),
+      repoRoot: decodeFeaturePath(record.repoRoot, target),
+      commonGitDir: decodeFeaturePath(record.commonGitDir, target),
+      baseRef,
+      branch,
+      createdByKmux: record.createdByKmux === true,
+      ...(record.launchSurfaceCreated === true
+        ? { launchSurfaceCreated: true }
+        : {})
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function sanitizeDetectedWorkspaceWorktree(
-  worktree: WorkspaceDetectedWorktreeMetadata | undefined
-): WorkspaceDetectedWorktreeMetadata | undefined {
+  worktree: unknown,
+  target: WorkspaceTarget
+): LocatedWorkspaceDetectedWorktreeMetadata | undefined {
   if (!worktree || typeof worktree !== "object") {
     return undefined;
   }
-  const path = normalizeOptionalText(worktree.path, 4096);
-  const repoRoot = normalizeOptionalText(worktree.repoRoot, 4096);
-  const commonGitDir = normalizeOptionalText(worktree.commonGitDir, 4096);
-  const baseRef = normalizeOptionalText(worktree.baseRef, 256);
-  const branch = normalizeOptionalText(worktree.branch, 256);
-  const detectedAt = normalizeOptionalText(worktree.detectedAt, 64);
-  if (!path || !repoRoot || !commonGitDir || !baseRef || !branch) {
+  const record = worktree as Record<string, unknown>;
+  const baseRef = normalizeOptionalText(record.baseRef, 256);
+  const branch = normalizeOptionalText(record.branch, 256);
+  const detectedAt = normalizeOptionalText(record.detectedAt, 64);
+  if (!baseRef || !branch) {
     return undefined;
   }
-  return {
-    path,
-    repoRoot,
-    commonGitDir,
-    baseRef,
-    branch,
-    detectedAt: detectedAt ?? isoNow()
-  };
+  try {
+    return {
+      path: decodeFeaturePath(record.path, target),
+      repoRoot: decodeFeaturePath(record.repoRoot, target),
+      commonGitDir: decodeFeaturePath(record.commonGitDir, target),
+      baseRef,
+      branch,
+      detectedAt: detectedAt ?? isoNow()
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function sanitizeWorkspaceStatusEntries(workspace: WorkspaceState): void {
@@ -3515,32 +4238,59 @@ function sanitizeWorkspaceStatusEntries(workspace: WorkspaceState): void {
   pruneWorkspaceStatusEntries(workspace);
 }
 
-function sanitizeSessionLaunchConfig(
-  launch: SessionLaunchConfig | undefined,
+function sanitizeStoredSessionLaunchConfig(
+  launch: Record<string, unknown> & { cwd: LocatedPath },
   fallbackShell: string | undefined
-): SessionLaunchConfig {
-  const nextLaunch: SessionLaunchConfig = {
-    ...(launch ?? {})
+): StoredSessionLaunchConfig {
+  // This also proves the value came from a path codec rather than a cast.
+  encodeLocatedPathDto(launch.cwd);
+  const shell = normalizeOptionalText(launch.shell, 32 * 1024) ?? fallbackShell;
+  const title = normalizeOptionalText(launch.title, 4 * 1024);
+  const args = Array.isArray(launch.args)
+    ? launch.args
+        .filter((arg): arg is string => typeof arg === "string")
+        .slice(0, 256)
+        .map((arg) => arg.slice(0, 32 * 1024))
+    : [];
+  const initialInput =
+    typeof launch.initialInput === "string" && launch.initialInput.length > 0
+      ? launch.initialInput.slice(0, 64 * 1024)
+      : undefined;
+  const env = sanitizeLaunchEnvironment(launch.env);
+  return {
+    cwd: launch.cwd,
+    ...(shell ? { shell } : {}),
+    ...(args.length > 0 ? { args } : {}),
+    ...(initialInput ? { initialInput } : {}),
+    ...(env ? { env } : {}),
+    ...(title ? { title } : {})
   };
-
-  if (!Array.isArray(nextLaunch.args) || nextLaunch.args.length === 0) {
-    delete nextLaunch.args;
-  }
-
-  if (typeof nextLaunch.initialInput !== "string" || !nextLaunch.initialInput) {
-    delete nextLaunch.initialInput;
-  }
-
-  if (!nextLaunch.shell && fallbackShell) {
-    nextLaunch.shell = fallbackShell;
-  }
-
-  return nextLaunch;
 }
 
-function sanitizeExternalAgentSessionRef(
+function sanitizeLaunchEnvironment(
   value: unknown
-): ExternalAgentSessionRef | undefined {
+): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value)
+    .filter(
+      (entry): entry is [string, string] =>
+        entry[0].length > 0 &&
+        entry[0].length <= 512 &&
+        !entry[0].includes("\0") &&
+        typeof entry[1] === "string"
+    )
+    .slice(0, 256)
+    .map(([key, entryValue]) => [key, entryValue.slice(0, 32 * 1024)]);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function sanitizeAgentSessionRef(
+  value: unknown,
+  target: WorkspaceTarget,
+  fallbackCwd: LocatedPath
+): AgentSessionRef | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }
@@ -3548,15 +4298,15 @@ function sanitizeExternalAgentSessionRef(
     vendor?: unknown;
     externalKey?: unknown;
     sessionId?: unknown;
+    id?: unknown;
+    targetId?: unknown;
+    cwd?: unknown;
   };
   const vendor =
     typeof record.vendor === "string"
       ? normalizeExternalAgentSessionVendor(record.vendor)
       : null;
-  const sessionId =
-    typeof record.sessionId === "string"
-      ? normalizeOptionalText(record.sessionId, 512)
-      : undefined;
+  const sessionId = normalizeOptionalText(record.id ?? record.sessionId, 512);
   const externalKey =
     typeof record.externalKey === "string"
       ? normalizeOptionalText(record.externalKey, 512)
@@ -3565,10 +4315,197 @@ function sanitizeExternalAgentSessionRef(
   if (!vendor || !sessionId) {
     return undefined;
   }
+  const expectedTargetId = target.kind === "ssh" ? target.targetId : "local";
+  if (
+    record.targetId !== undefined &&
+    normalizeOptionalText(record.targetId, 512) !== expectedTargetId
+  ) {
+    return undefined;
+  }
+  let cwd = fallbackCwd;
+  if (record.cwd !== undefined) {
+    try {
+      cwd = decodeFeaturePath(record.cwd, target, fallbackCwd);
+    } catch {
+      return undefined;
+    }
+  }
   return {
     vendor,
-    externalKey: externalKey ?? externalAgentSessionKey(vendor, sessionId),
-    sessionId
+    id: sessionId,
+    targetId: expectedTargetId,
+    cwd,
+    externalKey: externalKey ?? externalAgentSessionKey(vendor, sessionId)
+  };
+}
+
+function sanitizeSessionRuntimeStatus(
+  value: unknown,
+  legacyProcessState: unknown
+): SessionRuntimeStatus {
+  const record =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const processState =
+    record?.processState === "pending" ||
+    record?.processState === "running" ||
+    record?.processState === "exited"
+      ? record.processState
+      : legacyProcessState === "running" || legacyProcessState === "exited"
+        ? legacyProcessState
+        : "pending";
+  const observationState =
+    record?.observationState === "observed" ? "observed" : "unknown";
+  const attachmentState =
+    record?.attachmentState === "connecting" ||
+    record?.attachmentState === "attached" ||
+    record?.attachmentState === "failed"
+      ? record.attachmentState
+      : "detached";
+  return { processState, observationState, attachmentState };
+}
+
+function decodeFeaturePath(
+  value: unknown,
+  target: WorkspaceTarget,
+  fallback?: LocatedPath
+): LocatedPath {
+  if (value === undefined || value === null) {
+    if (fallback) {
+      assertLocatedPathTarget(target, fallback);
+      return fallback;
+    }
+    throw new TypeError("path is required");
+  }
+  const path =
+    typeof value === "string"
+      ? locatedPathForTarget(target, value)
+      : decodeLocatedPathDto(value);
+  assertLocatedPathTarget(target, path);
+  return path;
+}
+
+function decodeWorkspaceGitRepository(
+  value: WorkspaceGitRepositoryMetadataDto,
+  target: WorkspaceTarget
+): LocatedWorkspaceGitRepositoryMetadata {
+  const decoded = sanitizeWorkspaceGitRepository(value, target);
+  if (!decoded) {
+    throw new TypeError("workspace Git repository metadata is invalid");
+  }
+  return decoded;
+}
+
+function decodeWorkspaceWorktree(
+  value: WorkspaceWorktreeMetadataDto,
+  target: WorkspaceTarget
+): LocatedWorkspaceWorktreeMetadata {
+  const decoded = sanitizeWorkspaceWorktree(value, target);
+  if (!decoded) {
+    throw new TypeError("workspace worktree metadata is invalid");
+  }
+  return decoded;
+}
+
+function decodeDetectedWorkspaceWorktree(
+  value: WorkspaceDetectedWorktreeMetadataDto,
+  target: WorkspaceTarget
+): LocatedWorkspaceDetectedWorktreeMetadata {
+  const decoded = sanitizeDetectedWorkspaceWorktree(value, target);
+  if (!decoded) {
+    throw new TypeError("detected worktree metadata is invalid");
+  }
+  return decoded;
+}
+
+function encodedLocatedPath(path: LocatedPath): string {
+  return encodeLocatedPathDto(path).path;
+}
+
+function encodeWorkspaceDefaultCwd(location: WorkspaceLocation): string {
+  return encodeWorkspaceLocationDto(location).defaultCwd;
+}
+
+function encodeWorkspaceGitRepository(
+  repository: LocatedWorkspaceGitRepositoryMetadata
+): WorkspaceGitRepositoryMetadataDto {
+  return {
+    root: encodedLocatedPath(repository.root),
+    gitDir: encodedLocatedPath(repository.gitDir),
+    commonGitDir: encodedLocatedPath(repository.commonGitDir),
+    linkedWorktree: repository.linkedWorktree
+  };
+}
+
+function encodeWorkspaceWorktree(
+  worktree: LocatedWorkspaceWorktreeMetadata
+): WorkspaceWorktreeMetadataDto {
+  return {
+    name: worktree.name,
+    path: encodedLocatedPath(worktree.path),
+    repoRoot: encodedLocatedPath(worktree.repoRoot),
+    commonGitDir: encodedLocatedPath(worktree.commonGitDir),
+    baseRef: worktree.baseRef,
+    branch: worktree.branch,
+    createdByKmux: worktree.createdByKmux,
+    ...(worktree.launchSurfaceCreated === true
+      ? { launchSurfaceCreated: true }
+      : {})
+  };
+}
+
+function encodeDetectedWorkspaceWorktree(
+  worktree: LocatedWorkspaceDetectedWorktreeMetadata
+): WorkspaceDetectedWorktreeMetadataDto {
+  return {
+    path: encodedLocatedPath(worktree.path),
+    repoRoot: encodedLocatedPath(worktree.repoRoot),
+    commonGitDir: encodedLocatedPath(worktree.commonGitDir),
+    baseRef: worktree.baseRef,
+    branch: worktree.branch,
+    detectedAt: worktree.detectedAt
+  };
+}
+
+function encodePersistedWorkspaceGitRepository(
+  repository: LocatedWorkspaceGitRepositoryMetadata
+): Record<string, unknown> {
+  return {
+    root: encodeLocatedPathDto(repository.root),
+    gitDir: encodeLocatedPathDto(repository.gitDir),
+    commonGitDir: encodeLocatedPathDto(repository.commonGitDir),
+    linkedWorktree: repository.linkedWorktree
+  };
+}
+
+function encodePersistedWorkspaceWorktree(
+  worktree: LocatedWorkspaceWorktreeMetadata
+): Record<string, unknown> {
+  return {
+    name: worktree.name,
+    path: encodeLocatedPathDto(worktree.path),
+    repoRoot: encodeLocatedPathDto(worktree.repoRoot),
+    commonGitDir: encodeLocatedPathDto(worktree.commonGitDir),
+    baseRef: worktree.baseRef,
+    branch: worktree.branch,
+    createdByKmux: worktree.createdByKmux,
+    ...(worktree.launchSurfaceCreated === true
+      ? { launchSurfaceCreated: true }
+      : {})
+  };
+}
+
+function encodePersistedDetectedWorkspaceWorktree(
+  worktree: LocatedWorkspaceDetectedWorktreeMetadata
+): Record<string, unknown> {
+  return {
+    path: encodeLocatedPathDto(worktree.path),
+    repoRoot: encodeLocatedPathDto(worktree.repoRoot),
+    commonGitDir: encodeLocatedPathDto(worktree.commonGitDir),
+    baseRef: worktree.baseRef,
+    branch: worktree.branch,
+    detectedAt: worktree.detectedAt
   };
 }
 

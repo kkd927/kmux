@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { uint64, type Uint64 } from "@kmux/proto";
 
 import { TerminalDeltaStore } from "./terminalDeltaStore";
 
 interface TestDelta {
   id: string;
-  fromSequence: number;
-  sequence: number;
+  fromSequence: Uint64;
+  sequence: Uint64;
   bytes: number;
+}
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
 }
 
 function createStore(
@@ -33,16 +38,30 @@ function delta(
   bytes = 5,
   fromSequence = sequence - 1
 ): TestDelta {
-  return { id, fromSequence, sequence, bytes };
+  return {
+    id,
+    fromSequence: u(fromSequence),
+    sequence: u(sequence),
+    bytes
+  };
+}
+
+function replayAfter(
+  store: TerminalDeltaStore<TestDelta>,
+  sessionId: string,
+  sequence: number,
+  options?: { maxBytes?: number; maxEvents?: number }
+) {
+  return store.replayAfter(sessionId, u(sequence), options);
 }
 
 describe("TerminalDeltaStore", () => {
   it("treats a new session at sequence zero as an empty contiguous stream", () => {
     const store = createStore();
 
-    expect(store.replayAfter("session_new", 0)).toEqual({
+    expect(replayAfter(store, "session_new", 0)).toEqual({
       status: "ok",
-      latestSequence: 0,
+      latestSequence: u(0),
       deltas: []
     });
   });
@@ -52,14 +71,14 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("one", 1));
     store.append("session_1", delta("two-three", 3, 5, 1));
 
-    expect(store.replayAfter("session_1", 1)).toEqual({
+    expect(replayAfter(store, "session_1", 1)).toEqual({
       status: "ok",
-      latestSequence: 3,
+      latestSequence: u(3),
       deltas: [delta("two-three", 3, 5, 1)]
     });
-    expect(store.replayAfter("session_1", 3)).toEqual({
+    expect(replayAfter(store, "session_1", 3)).toEqual({
       status: "ok",
-      latestSequence: 3,
+      latestSequence: u(3),
       deltas: []
     });
   });
@@ -77,32 +96,32 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("output", 4, 4));
 
     expect(
-      store.replayAfter("session_1", 0, { maxBytes: 5, maxEvents: 10 })
+      replayAfter(store, "session_1", 0, { maxBytes: 5, maxEvents: 10 })
     ).toEqual({
       status: "ok",
-      latestSequence: 4,
+      latestSequence: u(4),
       deltas: [delta("resize-1", 1, 0)]
     });
     expect(
-      store.replayAfter("session_1", 1, { maxBytes: 5, maxEvents: 10 })
+      replayAfter(store, "session_1", 1, { maxBytes: 5, maxEvents: 10 })
     ).toEqual({
       status: "ok",
-      latestSequence: 4,
+      latestSequence: u(4),
       // A first source delta larger than the window remains one item.
       deltas: [delta("large-output", 2, 6)]
     });
     expect(
-      store.replayAfter("session_1", 2, { maxBytes: 4, maxEvents: 10 })
+      replayAfter(store, "session_1", 2, { maxBytes: 4, maxEvents: 10 })
     ).toEqual({
       status: "ok",
-      latestSequence: 4,
+      latestSequence: u(4),
       deltas: [delta("resize-2", 3, 0), delta("output", 4, 4)]
     });
     expect(
-      store.replayAfter("session_1", 2, { maxBytes: 100, maxEvents: 1 })
+      replayAfter(store, "session_1", 2, { maxBytes: 100, maxEvents: 1 })
     ).toEqual({
       status: "ok",
-      latestSequence: 4,
+      latestSequence: u(4),
       deltas: [delta("resize-2", 3, 0)]
     });
   });
@@ -121,9 +140,9 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("two", 2, 1));
 
     expect(store.stats()).toMatchObject({ bytes: 80, events: 2 });
-    expect(store.replayAfter("session_1", 0, { maxBytes: 2 })).toEqual({
+    expect(replayAfter(store, "session_1", 0, { maxBytes: 2 })).toEqual({
       status: "ok",
-      latestSequence: 2,
+      latestSequence: u(2),
       deltas: [delta("one", 1, 1), delta("two", 2, 1)]
     });
   });
@@ -139,28 +158,28 @@ describe("TerminalDeltaStore", () => {
     for (let sequence = 1; sequence <= 4_096; sequence += 1) {
       const tracked = {
         id: `delta-${sequence}`,
-        sequence,
+        sequence: u(sequence),
         bytes: 1
       } as TestDelta;
       Object.defineProperty(tracked, "fromSequence", {
         enumerable: true,
         get() {
           rangeReads += 1;
-          return sequence - 1;
+          return u(sequence - 1);
         }
       });
       store.append("session_1", tracked);
     }
     rangeReads = 0;
 
-    const replay = store.replayAfter("session_1", 3_071, {
+    const replay = replayAfter(store, "session_1", 3_071, {
       maxBytes: 1,
       maxEvents: 1
     });
 
     expect(replay).toMatchObject({
       status: "ok",
-      latestSequence: 4_096,
+      latestSequence: u(4_096),
       deltas: [{ id: "delta-3072" }]
     });
     expect(rangeReads).toBeLessThanOrEqual(13);
@@ -171,14 +190,14 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("one", 1, 6));
     store.append("session_1", delta("two", 2, 6));
 
-    expect(store.replayAfter("session_1", 0)).toEqual({
+    expect(replayAfter(store, "session_1", 0)).toEqual({
       status: "gap",
-      latestSequence: 2,
-      retainedFromSequence: 2
+      latestSequence: u(2),
+      retainedFromSequence: u(2)
     });
-    expect(store.replayAfter("session_1", 1)).toMatchObject({
+    expect(replayAfter(store, "session_1", 1)).toMatchObject({
       status: "ok",
-      latestSequence: 2
+      latestSequence: u(2)
     });
   });
 
@@ -192,9 +211,9 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("two", 2, 1));
     store.append("session_1", delta("three", 3, 1));
 
-    expect(store.replayAfter("session_1", 0)).toMatchObject({
+    expect(replayAfter(store, "session_1", 0)).toMatchObject({
       status: "gap",
-      retainedFromSequence: 2
+      retainedFromSequence: u(2)
     });
     expect(store.stats()).toMatchObject({
       sessions: 1,
@@ -207,8 +226,8 @@ describe("TerminalDeltaStore", () => {
     expect(store.sessionStats("session_1")).toMatchObject({
       events: 2,
       bytes: 2,
-      latestSequence: 3,
-      retainedFromSequence: 2
+      latestSequence: u(3),
+      retainedFromSequence: u(2)
     });
     const ring = (
       store as unknown as {
@@ -231,8 +250,8 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("s1-one", 1, 6));
     store.append("session_2", delta("s2-one", 1, 6));
 
-    expect(store.replayAfter("session_1", 0)).toMatchObject({ status: "gap" });
-    expect(store.replayAfter("session_2", 0)).toMatchObject({
+    expect(replayAfter(store, "session_1", 0)).toMatchObject({ status: "gap" });
+    expect(replayAfter(store, "session_2", 0)).toMatchObject({
       status: "ok",
       deltas: [delta("s2-one", 1, 6)]
     });
@@ -250,11 +269,11 @@ describe("TerminalDeltaStore", () => {
     store.append("session_2", delta("s2-one", 1, 0));
     store.append("session_1", delta("s1-two", 2, 0));
 
-    expect(store.replayAfter("session_1", 0)).toMatchObject({
+    expect(replayAfter(store, "session_1", 0)).toMatchObject({
       status: "gap",
-      retainedFromSequence: 2
+      retainedFromSequence: u(2)
     });
-    expect(store.replayAfter("session_2", 0)).toMatchObject({
+    expect(replayAfter(store, "session_2", 0)).toMatchObject({
       status: "ok",
       deltas: [delta("s2-one", 1, 0)]
     });
@@ -272,11 +291,11 @@ describe("TerminalDeltaStore", () => {
     const store = createStore({ maxSessionBytes: 8 });
     store.append("session_1", delta("oversized", 1, 9));
 
-    expect(store.latestSequence("session_1")).toBe(1);
-    expect(store.replayAfter("session_1", 0)).toEqual({
+    expect(store.latestSequence("session_1")).toBe(u(1));
+    expect(replayAfter(store, "session_1", 0)).toEqual({
       status: "gap",
-      latestSequence: 1,
-      retainedFromSequence: 2
+      latestSequence: u(1),
+      retainedFromSequence: u(2)
     });
     expect(store.stats()).toMatchObject({
       sessions: 1,
@@ -299,10 +318,10 @@ describe("TerminalDeltaStore", () => {
     const store = createStore();
     store.append("session_1", delta("one-through-three", 3, 5, 0));
 
-    expect(store.replayAfter("session_1", 1)).toEqual({
+    expect(replayAfter(store, "session_1", 1)).toEqual({
       status: "gap",
-      latestSequence: 3,
-      retainedFromSequence: 1
+      latestSequence: u(3),
+      retainedFromSequence: u(1)
     });
   });
 
@@ -318,7 +337,7 @@ describe("TerminalDeltaStore", () => {
       replaySizeOf: (value) => value.bytes,
       sliceAfterInternalCursor: (value, sequence) => {
         slicerCalls += 1;
-        return sequence === 1
+        return sequence === u(1)
           ? {
               ...value,
               id: `${value.id}-after-${sequence}`,
@@ -331,7 +350,7 @@ describe("TerminalDeltaStore", () => {
     store.append("session_1", delta("one-through-three", 3, 5, 0));
     store.append("session_1", delta("resize-after-suffix", 4, 0));
 
-    expect(store.replayAfter("session_1", 0)).toMatchObject({ status: "ok" });
+    expect(replayAfter(store, "session_1", 0)).toMatchObject({ status: "ok" });
     expect(slicerCalls).toBe(0);
     expect(store.stats()).toMatchObject({
       replayLookupMissCount: 0,
@@ -339,21 +358,21 @@ describe("TerminalDeltaStore", () => {
       internalCursorMissEpisodeCount: 0
     });
 
-    expect(store.replayAfter("session_1", 1)).toEqual({
+    expect(replayAfter(store, "session_1", 1)).toEqual({
       status: "ok",
-      latestSequence: 4,
+      latestSequence: u(4),
       deltas: [
         {
           id: "one-through-three-after-1",
-          fromSequence: 1,
-          sequence: 3,
+          fromSequence: u(1),
+          sequence: u(3),
           bytes: 3
         },
         delta("resize-after-suffix", 4, 0)
       ]
     });
-    expect(store.replayAfter("session_1", 1)).toMatchObject({ status: "ok" });
-    expect(store.replayAfter("session_1", 2)).toMatchObject({ status: "gap" });
+    expect(replayAfter(store, "session_1", 1)).toMatchObject({ status: "ok" });
+    expect(replayAfter(store, "session_1", 2)).toMatchObject({ status: "gap" });
     expect(slicerCalls).toBe(3);
     expect(store.stats()).toMatchObject({
       replayLookupMissCount: 3,
@@ -366,9 +385,9 @@ describe("TerminalDeltaStore", () => {
     const store = createStore();
     store.append("session_1", delta("one", 1));
 
-    expect(store.replayAfter("session_1", 2)).toMatchObject({
+    expect(replayAfter(store, "session_1", 2)).toMatchObject({
       status: "gap",
-      latestSequence: 1
+      latestSequence: u(1)
     });
   });
 
@@ -381,8 +400,8 @@ describe("TerminalDeltaStore", () => {
     expect(store.sessionStats("session_1")).toMatchObject({
       events: 0,
       bytes: 0,
-      latestSequence: 0,
-      retainedFromSequence: 1
+      latestSequence: u(0),
+      retainedFromSequence: u(1)
     });
   });
 });

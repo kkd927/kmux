@@ -76,6 +76,7 @@ describe("native workspace context menu", () => {
       workspaceId: "workspace_1",
       getContextView: () => view,
       reservedSystemChords: policy.reservedSystemChords,
+      openSshWorkspace: vi.fn(),
       convertToWorktree: vi.fn(),
       closeWorkspace: vi.fn(),
       closeOtherWorkspaces: vi.fn(),
@@ -133,6 +134,7 @@ describe("native workspace context menu", () => {
 function createWorkspaceRow(workspaceId: string, isActive: boolean) {
   return {
     workspaceId,
+    targetKind: "local" as const,
     name: workspaceId,
     nameLocked: false,
     summary: "",

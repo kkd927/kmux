@@ -16,6 +16,8 @@ import {
 } from "./helpers";
 
 const shouldRun = process.env.KMUX_RUN_TERMINAL_DATA_PLANE_GATE === "1";
+const sampleForVersionedBaseline =
+  process.env.KMUX_LOCAL_REGRESSION_SAMPLE_ONLY === "1";
 test.skip(
   !shouldRun,
   "Set KMUX_RUN_TERMINAL_DATA_PLANE_GATE=1 to run the 16-session data-plane gate"
@@ -236,60 +238,6 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
     const terminalCache = await page.evaluate(() =>
       window.__kmuxTerminalCacheDiagnostics?.()
     );
-
-    expect(renderLatencies.length).toBeGreaterThan(100);
-    expect(echoLatencies.length).toBeGreaterThanOrEqual(45);
-    expect(parsedInputEvents.length).toBeGreaterThanOrEqual(45);
-    expect(plainSchedulerDelays.length).toBeGreaterThan(100);
-    expect(paintIntervals.length).toBeGreaterThan(100);
-    expect(droppedRenderEvents).toHaveLength(0);
-    expect(
-      Math.max(
-        0,
-        ...allRenderEvents.map((event) =>
-          Number(event.details.renderMetricOverflowCount ?? 0)
-        )
-      )
-    ).toBe(0);
-    expect(
-      percentile(echoLatencies, 95),
-      `steady echo latencies: ${echoLatencies.map((value) => value.toFixed(1)).join(", ")}`
-    ).toBeLessThanOrEqual(75);
-    expect(percentile(echoLatencies, 99)).toBeLessThanOrEqual(150);
-    expect(percentile(renderLatencies, 95)).toBeLessThanOrEqual(100);
-    expect(percentile(renderLatencies, 99)).toBeLessThanOrEqual(250);
-    expect(percentile(paintIntervals, 95)).toBeLessThanOrEqual(50);
-    expect(Math.max(0, ...plainSchedulerDelays)).toBeLessThanOrEqual(32);
-    expect(Math.max(...warmPaintLatencies)).toBeLessThanOrEqual(100);
-    expect(
-      percentile(detailValues(supervisor, "eventLoopDelayP95Ms"), 95)
-    ).toBeLessThanOrEqual(20);
-    assertSupervisorBounds(supervisor);
-    expect(terminalCache).toMatchObject({
-      boundViolationCount: 0,
-      maxWarmTerminals: 4,
-      maxWarmBufferCells: 4_000_000
-    });
-    expect(
-      terminalCache?.peakWarmTerminals ?? Number.POSITIVE_INFINITY
-    ).toBeLessThanOrEqual(terminalCache?.maxWarmTerminals ?? 0);
-    expect(
-      terminalCache?.peakWarmBufferCells ?? Number.POSITIVE_INFINITY
-    ).toBeLessThanOrEqual(terminalCache?.maxWarmBufferCells ?? 0);
-    expect(terminalCache?.visibleTerminals).toBe(4);
-    expect(
-      terminalCache?.totalTerminals ?? Number.POSITIVE_INFINITY
-    ).toBeLessThanOrEqual(MAX_TOTAL_CACHED_TERMINALS);
-    expect(
-      events.filter(
-        (event) => event.name === "terminal.data-plane.main-ingress"
-      )
-    ).toHaveLength(0);
-    expect(
-      events
-        .filter((event) => event.name === "terminal.ipc.bucket")
-        .reduce((total, event) => total + Number(event.details.bytes ?? 0), 0)
-    ).toBe(0);
     const metrics = {
       echoP95Ms: percentile(echoLatencies, 95),
       echoP99Ms: percentile(echoLatencies, 99),
@@ -316,6 +264,62 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
       contentType: "application/json"
     });
     console.log(`[kmux-steady-metrics] ${JSON.stringify(metrics)}`);
+
+    expect(renderLatencies.length).toBeGreaterThan(100);
+    expect(echoLatencies.length).toBeGreaterThanOrEqual(45);
+    expect(parsedInputEvents.length).toBeGreaterThanOrEqual(45);
+    expect(plainSchedulerDelays.length).toBeGreaterThan(100);
+    expect(paintIntervals.length).toBeGreaterThan(100);
+    expect(droppedRenderEvents).toHaveLength(0);
+    expect(
+      Math.max(
+        0,
+        ...allRenderEvents.map((event) =>
+          Number(event.details.renderMetricOverflowCount ?? 0)
+        )
+      )
+    ).toBe(0);
+    if (!sampleForVersionedBaseline) {
+      expect(
+        percentile(echoLatencies, 95),
+        `steady echo latencies: ${echoLatencies.map((value) => value.toFixed(1)).join(", ")}`
+      ).toBeLessThanOrEqual(75);
+      expect(percentile(echoLatencies, 99)).toBeLessThanOrEqual(150);
+      expect(percentile(renderLatencies, 95)).toBeLessThanOrEqual(100);
+      expect(percentile(renderLatencies, 99)).toBeLessThanOrEqual(250);
+      expect(percentile(paintIntervals, 95)).toBeLessThanOrEqual(50);
+      expect(Math.max(0, ...plainSchedulerDelays)).toBeLessThanOrEqual(32);
+      expect(Math.max(...warmPaintLatencies)).toBeLessThanOrEqual(100);
+      expect(
+        percentile(detailValues(supervisor, "eventLoopDelayP95Ms"), 95)
+      ).toBeLessThanOrEqual(20);
+    }
+    assertSupervisorBounds(supervisor);
+    expect(terminalCache).toMatchObject({
+      boundViolationCount: 0,
+      maxWarmTerminals: 4,
+      maxWarmBufferCells: 4_000_000
+    });
+    expect(
+      terminalCache?.peakWarmTerminals ?? Number.POSITIVE_INFINITY
+    ).toBeLessThanOrEqual(terminalCache?.maxWarmTerminals ?? 0);
+    expect(
+      terminalCache?.peakWarmBufferCells ?? Number.POSITIVE_INFINITY
+    ).toBeLessThanOrEqual(terminalCache?.maxWarmBufferCells ?? 0);
+    expect(terminalCache?.visibleTerminals).toBe(4);
+    expect(
+      terminalCache?.totalTerminals ?? Number.POSITIVE_INFINITY
+    ).toBeLessThanOrEqual(MAX_TOTAL_CACHED_TERMINALS);
+    expect(
+      events.filter(
+        (event) => event.name === "terminal.data-plane.main-ingress"
+      )
+    ).toHaveLength(0);
+    expect(
+      events
+        .filter((event) => event.name === "terminal.ipc.bucket")
+        .reduce((total, event) => total + Number(event.details.bytes ?? 0), 0)
+    ).toBe(0);
   } finally {
     await closeKmux(launched);
   }
@@ -394,14 +398,16 @@ test("4 MiB burst preserves input echo and catches up within two seconds", async
     }
     const echoP95Ms = percentile(echoLatencies, 95);
     const echoP99Ms = percentile(echoLatencies, 99);
-    expect(
-      echoP95Ms,
-      `burst echo latencies: ${echoLatencies.map((value) => value.toFixed(1)).join(", ")}`
-    ).toBeLessThanOrEqual(100);
+    if (!sampleForVersionedBaseline) {
+      expect(
+        echoP95Ms,
+        `burst echo latencies: ${echoLatencies.map((value) => value.toFixed(1)).join(", ")}`
+      ).toBeLessThanOrEqual(100);
+    }
 
     await waitForSurfaceSnapshotContains(page, surfaceId, marker, 60_000);
     const snapshot = await getSurfaceSnapshot(page, surfaceId);
-    expect(snapshot?.sequence).toEqual(expect.any(Number));
+    expect(typeof snapshot?.sequence).toBe("bigint");
     const producerFinishedAt = Number(
       snapshot?.vt.match(/\[kmux-burst-done:burst:(\d+)\]/)?.[1]
     );
@@ -410,7 +416,7 @@ test("4 MiB burst preserves input echo and catches up within two seconds", async
       page,
       surfaceId,
       2_000,
-      snapshot?.sequence ?? 0
+      snapshot?.sequence ?? 0n
     );
     const expectedTail = extractTailTokens(snapshot?.vt ?? "", "burst");
     expect(expectedTail).toHaveLength(64);
@@ -488,9 +494,7 @@ test("ring gap swaps a complete alternate-screen checkpoint without a blank fram
       targetSurfaceId
     );
     expect(warmDiagnostics?.lastHydratedSurfaceId).toBe(targetSurfaceId);
-    expect(warmDiagnostics?.lastHydratedSurfaceSequence).toEqual(
-      expect.any(Number)
-    );
+    expect(typeof warmDiagnostics?.lastHydratedSurfaceSequence).toBe("bigint");
 
     await waitForSurfaceSnapshotContains(
       page,
@@ -1071,15 +1075,23 @@ async function waitForTerminalEchoFrameMonitor(
       .filter((line) => line.includes("[kmux-echo"))
       .slice(-5);
     throw new Error(
-      `terminal echo marker was not painted before timeout: ${JSON.stringify({
-        ...diagnostics,
-        authoritativeSequence: authoritative?.sequence ?? null,
-        authoritativeMarker: authoritative?.vt.includes(expected) ?? false,
-        authoritativeEchoLines
-      })}`
+      `terminal echo marker was not painted before timeout: ${stringifyDiagnostics(
+        {
+          ...diagnostics,
+          authoritativeSequence: authoritative?.sequence.toString() ?? null,
+          authoritativeMarker: authoritative?.vt.includes(expected) ?? false,
+          authoritativeEchoLines
+        }
+      )}`
     );
   }
   return state.renderedAt - state.startedAt;
+}
+
+function stringifyDiagnostics(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === "bigint" ? nested.toString() : nested
+  );
 }
 
 interface TerminalFrameMonitorState {
@@ -1283,7 +1295,7 @@ async function waitForRenderedSequence(
   page: Page,
   surfaceId: string,
   timeout = 1_000,
-  expectedSequence?: number
+  expectedSequence?: bigint
 ): Promise<void> {
   await expect
     .poll(
@@ -1294,9 +1306,9 @@ async function waitForRenderedSequence(
         if (value === null) {
           return null;
         }
-        const sequence = Number(value);
+        const sequence = BigInt(value);
         return expectedSequence === undefined || sequence >= expectedSequence
-          ? sequence
+          ? sequence.toString()
           : null;
       },
       { timeout }

@@ -6,8 +6,10 @@ import {
   validateTerminalDataPlaneClientMessage,
   validateTerminalDataPlaneHostMessage
 } from "./terminalDataPlane";
+import { uint64, type Uint64 } from "./uint64";
 import type {
   TerminalCheckpoint,
+  TerminalCheckpointMetadata,
   TerminalDataPlaneClientMessage,
   TerminalDataPlaneHostMessage,
   TerminalSessionRef
@@ -25,13 +27,17 @@ const envelope = {
   session
 } as const;
 
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
+}
+
 function checkpoint(
   overrides: Partial<TerminalCheckpoint> = {}
 ): TerminalCheckpoint {
   return {
     format: "xterm-vt/1",
     session,
-    sequence: 4,
+    sequence: u(4),
     data: "prompt> ",
     cols: 120,
     rows: 40,
@@ -39,12 +45,19 @@ function checkpoint(
   };
 }
 
+function checkpointMetadata(
+  overrides: Partial<TerminalCheckpoint> = {}
+): TerminalCheckpointMetadata {
+  const { data: _data, ...metadata } = checkpoint(overrides);
+  return metadata;
+}
+
 describe("terminal data plane client validation", () => {
   it("accepts attach and validates the port capability", () => {
     const message: TerminalDataPlaneClientMessage = {
       ...envelope,
       type: "attach",
-      resumeFromSequence: 3,
+      resumeFromSequence: u(3),
       creditBytes: TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES
     };
 
@@ -70,7 +83,7 @@ describe("terminal data plane client validation", () => {
     const message: TerminalDataPlaneClientMessage = {
       ...envelope,
       type: "credit",
-      acknowledgedSequence: 10,
+      acknowledgedSequence: u(10),
       bytes: 1024
     };
 
@@ -139,19 +152,21 @@ describe("terminal data plane client validation", () => {
 });
 
 describe("terminal data plane host validation", () => {
-  it("accepts checkpoint and warm-resume attach results", () => {
+  it("accepts streamed checkpoint begin and warm-resume attach results", () => {
     const cold: TerminalDataPlaneHostMessage = {
       ...envelope,
-      type: "attached",
-      mode: "checkpoint",
-      checkpoint: checkpoint()
+      type: "checkpoint:begin",
+      checkpointId: "checkpoint-1",
+      purpose: { kind: "attach" },
+      metadata: checkpointMetadata(),
+      totalBytes: 8
     };
     const warm: TerminalDataPlaneHostMessage = {
       ...envelope,
       type: "attached",
       mode: "resume",
-      resumedFromSequence: 4,
-      sequence: 8,
+      resumedFromSequence: u(4),
+      sequence: u(8),
       cols: 120,
       rows: 40
     };
@@ -165,13 +180,73 @@ describe("terminal data plane host validation", () => {
       value: warm
     });
 
-    const emptyCheckpoint = {
+    const emptyCheckpoint: TerminalDataPlaneHostMessage = {
       ...cold,
-      checkpoint: checkpoint({ data: "", sequence: 0 })
+      metadata: checkpointMetadata({ data: "", sequence: u(0) }),
+      totalBytes: 0
     };
     expect(validateTerminalDataPlaneHostMessage(emptyCheckpoint)).toEqual({
       ok: true,
       value: emptyCheckpoint
+    });
+  });
+
+  it("requires bounded ArrayBuffer checkpoint chunks and a SHA-256 end digest", () => {
+    const bytes = new TextEncoder().encode("prompt> ");
+    const chunk: TerminalDataPlaneHostMessage = {
+      ...envelope,
+      type: "checkpoint:chunk",
+      checkpointId: "checkpoint-1",
+      offset: 0,
+      data: bytes.buffer
+    };
+    const end: TerminalDataPlaneHostMessage = {
+      ...envelope,
+      type: "checkpoint:end",
+      checkpointId: "checkpoint-1",
+      digest: "0".repeat(64)
+    };
+
+    expect(validateTerminalDataPlaneHostMessage(chunk)).toEqual({
+      ok: true,
+      value: chunk
+    });
+    expect(validateTerminalDataPlaneHostMessage(end)).toEqual({
+      ok: true,
+      value: end
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({ ...chunk, data: "cHJvbXB0PiA=" })
+    ).toEqual({
+      ok: false,
+      error: "checkpoint chunk data must be an ArrayBuffer"
+    });
+  });
+
+  it("rejects unknown fields at message and nested protocol boundaries", () => {
+    expect(
+      validateTerminalDataPlaneClientMessage({
+        ...envelope,
+        type: "input:text",
+        text: "hello",
+        unbounded: "not part of the protocol"
+      })
+    ).toEqual({
+      ok: false,
+      error: "message contains unexpected field unbounded"
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({
+        ...envelope,
+        type: "checkpoint:begin",
+        checkpointId: "checkpoint-1",
+        purpose: { kind: "attach" },
+        metadata: { ...checkpointMetadata(), unbounded: true },
+        totalBytes: 8
+      })
+    ).toEqual({
+      ok: false,
+      error: "checkpoint metadata contains unexpected field unbounded"
     });
   });
 
@@ -181,12 +256,12 @@ describe("terminal data plane host validation", () => {
       type: "delta",
       delta: {
         type: "output",
-        fromSequence: 4,
-        sequence: 6,
+        fromSequence: u(4),
+        sequence: u(6),
         byteLength: 12,
         segments: [
-          { sequence: 5, data: "hello ", byteLength: 6 },
-          { sequence: 6, data: "world\n", byteLength: 6, cwd: "/repo" }
+          { sequence: u(5), data: "hello ", byteLength: 6 },
+          { sequence: u(6), data: "world\n", byteLength: 6, cwd: "/repo" }
         ]
       }
     };
@@ -204,12 +279,12 @@ describe("terminal data plane host validation", () => {
       type: "delta",
       delta: {
         type: "output",
-        fromSequence: 4,
-        sequence: 5,
+        fromSequence: u(4),
+        sequence: u(5),
         byteLength: 5,
         segments: [
           {
-            sequence: 5,
+            sequence: u(5),
             data: "hello",
             byteLength: 5,
             telemetry: {
@@ -218,7 +293,7 @@ describe("terminal data plane host validation", () => {
               outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999.75,
-              inputSequence: 1,
+              inputSequence: u(1),
               inputKind: "mouse"
             }
           }
@@ -328,10 +403,10 @@ describe("terminal data plane host validation", () => {
       type: "delta",
       delta: {
         type: "output",
-        fromSequence: 4,
-        sequence: 6,
+        fromSequence: u(4),
+        sequence: u(6),
         byteLength: 6,
-        segments: [{ sequence: 5, data: "hello\n", byteLength: 6 }]
+        segments: [{ sequence: u(5), data: "hello\n", byteLength: 6 }]
       }
     };
 
@@ -342,7 +417,24 @@ describe("terminal data plane host validation", () => {
     expect(
       validateTerminalDataPlaneHostMessage({
         ...base,
-        delta: { ...base.delta, sequence: 5, byteLength: 7 }
+        delta: {
+          ...base.delta,
+          sequence: u(7),
+          byteLength: 7,
+          segments: [
+            { sequence: u(5), data: "hello\n", byteLength: 6 },
+            { sequence: u(7), data: ">", byteLength: 1 }
+          ]
+        }
+      })
+    ).toEqual({
+      ok: false,
+      error: "delta segment sequences must be contiguous"
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({
+        ...base,
+        delta: { ...base.delta, sequence: u(5), byteLength: 7 }
       })
     ).toEqual({
       ok: false,
@@ -354,9 +446,9 @@ describe("terminal data plane host validation", () => {
         ...base,
         delta: {
           ...base.delta,
-          sequence: 5,
+          sequence: u(5),
           byteLength: 1,
-          segments: [{ sequence: 5, data: "한", byteLength: 1 }]
+          segments: [{ sequence: u(5), data: "한", byteLength: 1 }]
         }
       })
     ).toEqual({
@@ -369,27 +461,37 @@ describe("terminal data plane host validation", () => {
     expect(
       validateTerminalDataPlaneHostMessage({
         ...envelope,
-        type: "resync-required",
-        missingFromSequence: 4,
-        retainedFromSequence: 8,
-        checkpoint: checkpoint({
+        type: "checkpoint:begin",
+        checkpointId: "checkpoint-stale",
+        purpose: {
+          kind: "resync",
+          missingFromSequence: u(4),
+          retainedFromSequence: u(8)
+        },
+        metadata: checkpointMetadata({
           session: { ...session, epoch: "epoch-stale" },
-          sequence: 8
-        })
+          sequence: u(8)
+        }),
+        totalBytes: 8
       })
     ).toEqual({
       ok: false,
-      error: "checkpoint.session does not match the message session"
+      error: "checkpoint session does not match the message session"
     });
   });
 
   it("accepts a checkpoint when no delta remains after the authoritative sequence", () => {
     const message: TerminalDataPlaneHostMessage = {
       ...envelope,
-      type: "resync-required",
-      missingFromSequence: 4,
-      retainedFromSequence: 9,
-      checkpoint: checkpoint({ sequence: 8 })
+      type: "checkpoint:begin",
+      checkpointId: "checkpoint-resync",
+      purpose: {
+        kind: "resync",
+        missingFromSequence: u(4),
+        retainedFromSequence: u(9)
+      },
+      metadata: checkpointMetadata({ sequence: u(8) }),
+      totalBytes: 8
     };
 
     expect(validateTerminalDataPlaneHostMessage(message)).toEqual({

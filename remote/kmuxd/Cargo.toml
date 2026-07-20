@@ -1,0 +1,74 @@
+[package]
+name = "kmuxd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[workspace]
+members = [
+  ".",
+  "crates/bridge",
+  "crates/cli",
+  "crates/compat",
+  "crates/doctor",
+  "crates/hook",
+  "crates/install",
+  "crates/journal",
+  "crates/keeper",
+  "crates/metadata",
+  "crates/platform",
+  "crates/terminal",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive"] }
+crossbeam-channel = "0.5.15"
+crc32fast = "1.5.0"
+hex = "0.4.3"
+libc = "0.2.182"
+nix = { version = "0.31.2", features = ["fs", "process", "signal", "term", "user"] }
+parking_lot = "0.12.5"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+tempfile = "3.26.0"
+thiserror = "2.0.18"
+uuid = { version = "1.21.0", features = ["v4", "serde"] }
+vt100 = "0.16.2"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+kmux-bridge = { path = "crates/bridge" }
+kmux-cli = { path = "crates/cli" }
+kmux-doctor = { path = "crates/doctor" }
+kmux-hook = { path = "crates/hook" }
+kmux-install = { path = "crates/install" }
+kmux-keeper = { path = "crates/keeper" }
+kmux-platform = { path = "crates/platform" }
+kmux-compat = { path = "crates/compat" }
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+default = []
+fixture-keeper-local-protocol-2 = [
+  "kmux-compat/fixture-keeper-local-protocol-2",
+]
+
+[profile.release]
+panic = "unwind"
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

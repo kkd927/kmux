@@ -9,9 +9,14 @@ import type {
   SurfaceVm,
   TerminalDataPlaneClientMessage,
   TerminalDataPlaneHostMessage,
-  TerminalFileLinkResolveCandidate
+  TerminalFileLinkResolveCandidate,
+  Uint64
 } from "@kmux/proto";
-import { TERMINAL_DATA_PLANE_PROTOCOL_VERSION } from "@kmux/proto";
+import {
+  IncrementalSha256,
+  TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64
+} from "@kmux/proto";
 import type { ColorTheme } from "@kmux/ui";
 import type { ILink, ILinkProvider } from "@xterm/xterm";
 import type {
@@ -426,22 +431,62 @@ function latestTerminalStreamAttach(
   throw new Error(`missing terminal stream attach for ${surfaceId}`);
 }
 
-function sendCheckpoint(attach: FakeTerminalStreamAttach, sequence = 0): void {
-  attach.port.receive({
+function sendCheckpoint(
+  attach: FakeTerminalStreamAttach,
+  sequence = 0,
+  overrides: {
+    data?: string;
+    cols?: number;
+    rows?: number;
+    cwdRanges?: Array<{ startLine: number; endLine: number; cwd: string }>;
+  } = {}
+): void {
+  const data = overrides.data ?? "";
+  const bytes = new TextEncoder().encode(data);
+  const chunk = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(chunk).set(bytes);
+  const checkpointId = `checkpoint-${sequence}`;
+  const checkpointEnvelope = {
     protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
     attachId: attach.grant.attachId,
-    session: attach.grant.session,
-    type: "attached",
-    mode: "checkpoint",
-    checkpoint: {
+    session: attach.grant.session
+  };
+  attach.port.receive({
+    ...checkpointEnvelope,
+    type: "checkpoint:begin",
+    checkpointId,
+    purpose: { kind: "attach" },
+    metadata: {
       format: "xterm-vt/1",
       session: attach.grant.session,
-      sequence,
-      data: "",
-      cols: 120,
-      rows: 40
-    }
+      sequence: u(sequence),
+      cols: overrides.cols ?? 120,
+      rows: overrides.rows ?? 40,
+      ...(overrides.cwdRanges === undefined
+        ? {}
+        : { cwdRanges: overrides.cwdRanges })
+    },
+    totalBytes: bytes.byteLength
   });
+  if (bytes.byteLength > 0) {
+    attach.port.receive({
+      ...checkpointEnvelope,
+      type: "checkpoint:chunk",
+      checkpointId,
+      offset: 0,
+      data: chunk
+    });
+  }
+  attach.port.receive({
+    ...checkpointEnvelope,
+    type: "checkpoint:end",
+    checkpointId,
+    digest: new IncrementalSha256().update(bytes).digestHex()
+  });
+}
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
 }
 
 function sendOutput(
@@ -459,10 +504,12 @@ function sendOutput(
     type: "delta",
     delta: {
       type: "output",
-      fromSequence,
-      sequence,
+      fromSequence: u(fromSequence),
+      sequence: u(sequence),
       byteLength,
-      segments: [{ sequence, data, byteLength, ...(cwd ? { cwd } : {}) }]
+      segments: [
+        { sequence: u(sequence), data, byteLength, ...(cwd ? { cwd } : {}) }
+      ]
     }
   });
 }
@@ -494,7 +541,7 @@ function acknowledgeResizeRequest(
     type: "delta",
     delta: {
       type: "resize",
-      sequence,
+      sequence: u(sequence),
       cols: request.cols,
       rows: request.rows
     }
@@ -505,7 +552,7 @@ function acknowledgeResizeRequest(
     session: attach.grant.session,
     type: "resize:ack",
     requestId: request.requestId,
-    sequence,
+    sequence: u(sequence),
     cols: request.cols,
     rows: request.rows
   });
@@ -724,21 +771,7 @@ describe("TerminalPane visibility cleanup", () => {
       .mockImplementation(() => {});
     try {
       await act(async () => {
-        port.receive({
-          protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
-          attachId: grant.attachId,
-          session: grant.session,
-          type: "attached",
-          mode: "checkpoint",
-          checkpoint: {
-            format: "xterm-vt/1",
-            session: grant.session,
-            sequence: 0,
-            data: "snapshot-v2",
-            cols: 120,
-            rows: 40
-          }
-        });
+        sendCheckpoint({ grant, port }, 0, { data: "snapshot-v2" });
         await flushMicrotasks();
       });
 
@@ -961,21 +994,9 @@ describe("TerminalPane visibility cleanup", () => {
       .mockImplementation(() => {});
     try {
       await act(async () => {
-        attach.port.receive({
-          protocol: TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
-          attachId: attach.grant.attachId,
-          session: attach.grant.session,
-          type: "attached",
-          mode: "checkpoint",
-          checkpoint: {
-            format: "xterm-vt/1",
-            session: attach.grant.session,
-            sequence: 0,
-            data: "src/App.tsx",
-            cols: 120,
-            rows: 40,
-            cwdRanges: [{ startLine: 0, endLine: 0, cwd: "/repo/snapshot" }]
-          }
+        sendCheckpoint(attach, 0, {
+          data: "src/App.tsx",
+          cwdRanges: [{ startLine: 0, endLine: 0, cwd: "/repo/snapshot" }]
         });
         await flushMicrotasks();
         frames.shift()?.(performance.now());
@@ -1088,6 +1109,56 @@ describe("TerminalPane visibility cleanup", () => {
     );
   });
 
+  it("shows remote journal degradation without replacing the direct terminal attachment", async () => {
+    const props = createProps("surface_1");
+    props.surfaces = [
+      {
+        ...props.surfaces[0],
+        storageStatus: {
+          state: "backpressured",
+          journalAdmitted: "42",
+          journalSynced: "41",
+          emergencyBytes: 4 * 1024 * 1024,
+          lastSyncDurationMs: 2000
+        }
+      }
+    ];
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    expect(
+      container.querySelector('[data-storage-state="backpressured"]')
+        ?.textContent
+    ).toContain("Terminal output is paused");
+    expect(window.kmux.attachTerminalStream).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.render(
+        <TerminalPane
+          {...props}
+          surfaces={[
+            {
+              ...props.surfaces[0],
+              storageStatus: {
+                state: "normal",
+                journalAdmitted: "42",
+                journalSynced: "42",
+                emergencyBytes: 0
+              }
+            }
+          ]}
+        />
+      );
+      await flushMicrotasks(10);
+    });
+
+    expect(container.querySelector("[data-storage-state]")).toBeNull();
+    expect(window.kmux.attachTerminalStream).toHaveBeenCalledOnce();
+  });
+
   it("can attach a surface that is first shown after its session exited", async () => {
     const props = createProps("surface_1");
     props.surfaces = [
@@ -1160,7 +1231,7 @@ describe("TerminalPane visibility cleanup", () => {
           attachId: attach.grant.attachId,
           session: attach.grant.session,
           type: "exit",
-          afterSequence: 1,
+          sequence: u(2),
           exitCode: 0
         });
         await flushMicrotasks(10);
@@ -1430,7 +1501,7 @@ describe("TerminalPane visibility cleanup", () => {
 
     expect(resumeAttach.port.sent[0]).toMatchObject({
       type: "attach",
-      resumeFromSequence: 0
+      resumeFromSequence: u(0)
     });
     expect({ cols: warmTerminal.cols, rows: warmTerminal.rows }).toEqual({
       cols: 120,
@@ -1446,8 +1517,8 @@ describe("TerminalPane visibility cleanup", () => {
         session: resumeAttach.grant.session,
         type: "attached",
         mode: "resume",
-        resumedFromSequence: 0,
-        sequence: 0,
+        resumedFromSequence: u(0),
+        sequence: u(0),
         cols: 120,
         rows: 40
       });

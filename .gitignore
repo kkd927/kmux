@@ -29,6 +29,8 @@ apps/desktop/release/
 apps/desktop/.vite/
 apps/desktop/.electron-vite/
 packages/cli/dist/
+remote/kmuxd/target/
+remote/kmuxd/dist/
 tsconfig.tsbuildinfo
 
 # Accidental local TypeScript emits

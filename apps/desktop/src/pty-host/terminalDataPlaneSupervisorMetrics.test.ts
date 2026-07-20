@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { uint64 } from "@kmux/proto";
 
 import {
   collectTerminalDataPlaneSupervisorDetails,
@@ -42,8 +43,8 @@ const ring = {
   maxEvents: 8,
   peakBytes: 384,
   peakEvents: 4,
-  latestSequence: 4,
-  retainedFromSequence: 3
+  latestSequence: uint64(4n),
+  retainedFromSequence: uint64(3n)
 };
 const ringStore = {
   sessions: 2,

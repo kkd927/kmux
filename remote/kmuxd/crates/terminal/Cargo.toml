@@ -1,0 +1,13 @@
+[package]
+name = "kmux-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+vt100.workspace = true

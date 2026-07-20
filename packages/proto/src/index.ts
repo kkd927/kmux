@@ -1,4 +1,66 @@
+import type { Uint64 } from "./uint64";
+
 export type Id = string;
+export type RemotePersistenceLevel =
+  | "ssh-disconnect"
+  | "user-logout"
+  | "host-reboot";
+
+export {
+  UINT64_MAX,
+  formatUint64Decimal,
+  incrementUint64,
+  parseUint64Decimal,
+  uint64,
+  uint64FromBytes,
+  uint64ToBytes
+} from "./uint64";
+export type { Uint64 } from "./uint64";
+export {
+  REMOTE_CHECKPOINT_CHUNK_HARD_MAX_BYTES,
+  REMOTE_CHECKPOINT_HARD_MAX_BYTES,
+  REMOTE_CHECKPOINT_HARD_MAX_CHUNKS,
+  REMOTE_CONTROL_HARD_MAX_BYTES,
+  REMOTE_FRAME_HARD_MAX_BYTES,
+  REMOTE_METADATA_CHUNK_HARD_MAX_BYTES,
+  REMOTE_TERMINAL_CHUNK_HARD_MAX_BYTES,
+  REMOTE_TERMINAL_INPUT_HARD_MAX_BYTES,
+  RemoteFrameDecoder,
+  decodeRemoteTerminalWireMessage,
+  encodeRemoteFrame,
+  encodeRemoteTerminalWireMessage
+} from "./remoteFrames";
+export type {
+  RemoteFrame,
+  RemoteFrameKind,
+  RemoteTerminalWireMessage
+} from "./remoteFrames";
+export {
+  REMOTE_PROTOCOL_VERSION,
+  decodeRemoteBridgeResponseBody,
+  decodeRemoteBridgeResponseEnvelope,
+  decodeRemoteKeeperControlMessage,
+  decodeRemoteSpoolEventDto,
+  encodeRemoteControlJson
+} from "./remoteControl";
+export type {
+  RemoteBridgeRequestBody,
+  RemoteBridgeRequestEnvelope,
+  RemoteBridgeResponseBody,
+  RemoteBridgeResponseEnvelope,
+  RemoteKeeperAttachRequest,
+  RemoteKeeperControlMessage,
+  RemoteConversionPrepareRequestDto,
+  RemoteConversionPromoteRequestDto,
+  RemoteConversionSessionLaunchDto,
+  RemoteProvisionalReclaimRequestDto,
+  RemoteResourceKeyDto,
+  RemoteRetentionPolicyDto,
+  RemoteRuntimeRootsDto,
+  RemoteSpoolEventDto,
+  RemoteSurfaceCaptureRequestDto,
+  RemoteTerminalInjectRequestDto
+} from "./remoteControl";
 
 export type SocketMode = "kmuxOnly" | "allowAll" | "off";
 export type SplitAxis = "horizontal" | "vertical";
@@ -63,6 +125,13 @@ export interface ExternalAgentSessionRef {
 
 export interface ExternalAgentSessionVm {
   key: string;
+  target:
+    | { kind: "local" }
+    | {
+        kind: "ssh";
+        targetId: Id;
+        principal: { uid: number; accountName: string };
+      };
   vendor: ExternalAgentSessionVendor;
   vendorLabel: "CODEX" | "CLAUDE" | "AGY";
   title: string;
@@ -79,11 +148,205 @@ export interface ExternalAgentSessionVm {
 export interface ExternalAgentSessionsSnapshot {
   sessions: ExternalAgentSessionVm[];
   updatedAt: string;
+  unavailableTargets?: Array<
+    | { kind: "local"; message: string }
+    | { kind: "ssh"; targetId: Id; message: string }
+  >;
 }
 
 export interface ExternalAgentSessionResumeResult {
   workspaceId: string;
   surfaceId: string;
+}
+
+export interface RetainedRemoteSessionResourceKey {
+  desktopInstallationId: Id;
+  targetId: Id;
+  workspaceId: Id;
+  sessionId: Id;
+}
+
+export interface RetainedRemoteSessionVm {
+  resourceKey: RetainedRemoteSessionResourceKey;
+  reason:
+    | "restore-disabled"
+    | "workspace-close"
+    | "unowned-observation"
+    | "termination-pending";
+  keeperGeneration: Id;
+  remoteResourceRevision: string;
+  processState: "running" | "exited";
+  persistenceLevel: RemotePersistenceLevel;
+  storageStatus: SurfaceStorageStatusVm;
+  checkpointAvailable: boolean;
+  retainedRangeTruncated: boolean;
+  exitCode?: number;
+  launch: {
+    cwd: string;
+    shell?: string;
+    args?: string[];
+    title?: string;
+  };
+  retainedAt: string;
+  lastObservedAt: string;
+  termination?: {
+    operationId: Id;
+    admittedAt: string;
+    state: "pending" | "awaiting-tombstone";
+  };
+  lastTerminationFailure?: {
+    operationId: Id;
+    code: string;
+    message: string;
+    completedAt: string;
+  };
+  canTerminate: boolean;
+}
+
+export interface RetainedRemoteSessionsSnapshot {
+  sessions: RetainedRemoteSessionVm[];
+  updatedAt: string;
+}
+
+export interface SshProfileDraftDto {
+  name: string;
+  sshConfigHost?: string;
+  host?: string;
+  user?: string;
+  port?: number;
+  identityFile?: string;
+  defaultRemoteCwd?: string;
+  shellOverride?: string;
+  bootstrapShellOverride?: string;
+  installPathOverride?: string;
+  authorityPathOverride?: string;
+  statePathOverride?: string;
+  runtimePathOverride?: string;
+  sessionRetentionQuotaMiB?: number;
+  targetRetentionQuotaMiB?: number;
+  env?: Record<string, string>;
+  forwardAgent?: boolean;
+}
+
+export interface SshProfileDto extends SshProfileDraftDto {
+  id: Id;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SshEffectiveConnectionVm {
+  hostName: string;
+  user: string;
+  port: number;
+  identityFiles: string[];
+  proxyJump?: string;
+  proxyCommand?: string;
+  policyHash: string;
+}
+
+export interface SshVerifiedTargetVm {
+  targetId: Id;
+  remoteInstallationId: Id;
+  executionNodeId: Id;
+  authenticatedPrincipal: {
+    uid: number;
+    accountName: string;
+  };
+  platform?: string;
+  arch?: string;
+  abi?: string;
+  runtimeVersion?: string;
+  capabilities?: string[];
+  persistenceLevel?: RemotePersistenceLevel;
+  sshHostKeyFingerprint?: string;
+  lastVerifiedAt: string;
+}
+
+export interface SshProfileVm extends SshProfileDto {
+  effectiveConnection?: SshEffectiveConnectionVm;
+  verifiedTarget?: SshVerifiedTargetVm;
+  lastError?: { at: string; message: string };
+}
+
+export interface SshConnectionsSnapshot {
+  profiles: SshProfileVm[];
+  updatedAt: string;
+}
+
+export interface SshRuntimeCleanReport {
+  inspected: number;
+  removed: string[];
+  live: string[];
+  incompleteOrCorrupt: string[];
+}
+
+export interface SshRuntimeResetReport {
+  generation: string;
+  status: "reset" | "already-absent";
+}
+
+export interface SshProfileSaveRequest {
+  id?: Id;
+  profile: SshProfileDraftDto;
+}
+
+export interface SshWorkspacePrepareRequest {
+  requestId: Id;
+  sourceWorkspaceId: Id;
+  profileId: Id;
+  continuation: "convert" | "create";
+}
+
+export interface SshWorkspacePrepareResult {
+  preparationId: Id;
+}
+
+export interface SshWorkspaceCommitRequest {
+  preparationId: Id;
+}
+
+export interface SshWorkspaceCancelRequest {
+  requestId: Id;
+}
+
+export interface SshWorkspaceOpenResult {
+  workspaceId: Id;
+  targetId: Id;
+  continuation: "convert" | "create";
+}
+
+export interface SshAskpassPrompt {
+  requestId: Id;
+  profileId: Id;
+  profileName: string;
+  prompt: string;
+}
+
+export interface SshAskpassResponseRequest {
+  requestId: Id;
+  cancelled: boolean;
+  response?: string;
+}
+
+export interface SshWorkspaceConversionRequest {
+  workspaceId: Id;
+  targetId: Id;
+  connectionName: string;
+  defaultCwd: string;
+  launch?: {
+    cwd?: string;
+    shell?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    title?: string;
+  };
+}
+
+export interface SshWorkspaceConversionResult {
+  transactionId: Id;
+  workspaceId: Id;
+  targetId: Id;
+  state: "cleanup-complete";
 }
 
 export interface CreateImageAttachmentPayload {
@@ -148,6 +411,7 @@ export interface WorkspaceWorktreeMetadata {
   baseRef: string;
   branch: string;
   createdByKmux: boolean;
+  launchSurfaceCreated?: boolean;
 }
 
 export interface WorkspaceDetectedWorktreeMetadata {
@@ -196,6 +460,7 @@ export interface UpdaterState {
 
 export interface WorkspaceRowVm {
   workspaceId: Id;
+  targetKind: "local" | "ssh";
   name: string;
   nameLocked: boolean;
   summary: string;
@@ -264,7 +529,7 @@ export const TERMINAL_SHIFT_ENTER_SEQUENCE = "\u001b[13;2u";
 export interface SurfaceSnapshotPayload {
   surfaceId: Id;
   sessionId: Id;
-  sequence: number;
+  sequence: Uint64;
   vt: string;
   cols: number;
   rows: number;
@@ -312,8 +577,8 @@ export interface SurfaceCaptureBufferRow {
 }
 
 export interface SurfaceCaptureDiagnosticSequences {
-  hydratedSequence: number | null;
-  renderedSequence: number | null;
+  hydratedSequence: Uint64 | null;
+  renderedSequence: Uint64 | null;
 }
 
 // The rendered/hydrated sequences live in several places (element props,
@@ -328,7 +593,7 @@ export interface SurfaceCaptureDiagnosticSources {
   wrapperDataset: SurfaceCaptureDiagnosticSequences | null;
   store: {
     lastHydratedSurfaceId: string | null;
-    lastHydratedSurfaceSequence: number | null;
+    lastHydratedSurfaceSequence: Uint64 | null;
   } | null;
 }
 
@@ -342,9 +607,9 @@ export interface SurfaceCaptureRendererDom {
     height: number;
   };
   terminalDiagnostics: {
-    hydratedSequence: number | null;
-    renderedSequence: number | null;
-    targetSequence: number | null;
+    hydratedSequence: Uint64 | null;
+    renderedSequence: Uint64 | null;
+    targetSequence: Uint64 | null;
     waitTimedOut: boolean;
     waitDurationMs: number;
     sources: SurfaceCaptureDiagnosticSources;
@@ -429,7 +694,7 @@ export interface SurfaceCaptureSnapshotAttempt {
   settleForMs: number;
   timeoutMs: number;
   status: SurfaceCaptureSnapshotAttemptStatus;
-  sequence?: number;
+  sequence?: Uint64;
   error?: string;
 }
 
@@ -632,6 +897,14 @@ export interface PaneSplitNode {
 
 export type PaneTreeNode = PaneLeafNode | PaneSplitNode;
 
+export interface SurfaceStorageStatusVm {
+  state: "normal" | "degraded" | "backpressured";
+  journalAdmitted: string;
+  journalSynced: string;
+  emergencyBytes: number;
+  lastSyncDurationMs?: number;
+}
+
 export interface SurfaceVm {
   id: Id;
   sessionId: Id;
@@ -645,6 +918,7 @@ export interface SurfaceVm {
   sessionState: SessionRuntimeState;
   shellInputReady: boolean;
   exitCode?: number;
+  storageStatus?: SurfaceStorageStatusVm;
 }
 
 export interface PaneVm {
@@ -687,6 +961,7 @@ export interface ActiveWorkspacePaneTreeVm {
 }
 
 export interface SurfaceUsageVm {
+  target: UsageTargetIdentityVm;
   surfaceId: Id;
   workspaceId: Id;
   surfaceTitle: string;
@@ -703,6 +978,7 @@ export interface SurfaceUsageVm {
 }
 
 export interface WorkspaceUsageVm {
+  target: UsageTargetIdentityVm;
   workspaceId: Id;
   workspaceName: string;
   todayCostUsd: number;
@@ -711,12 +987,33 @@ export interface WorkspaceUsageVm {
 }
 
 export interface DirectoryHotspotVm {
+  target: UsageTargetIdentityVm;
   directoryPath: string;
   directoryLabel: string;
   todayCostUsd: number;
   todayTokens: number;
   costSource?: UsageCostSource;
 }
+
+export type UsageTargetIdentityVm =
+  | { kind: "local" }
+  | {
+      kind: "ssh";
+      targetId: Id;
+      principal?: { uid: number; accountName: string };
+    };
+
+export interface UsageTargetSummaryVm {
+  target: UsageTargetIdentityVm;
+  todayCostUsd: number;
+  todayTokens: number;
+  costSource?: UsageCostSource;
+  truncated: boolean;
+}
+
+export type UsageUnavailableTargetVm =
+  | { kind: "local"; message: string }
+  | { kind: "ssh"; targetId: Id; message: string };
 
 export interface VendorUsageVm {
   vendor: UsageVendor;
@@ -823,6 +1120,8 @@ export interface UsageViewSnapshot {
   surfaces: Record<Id, SurfaceUsageVm>;
   workspaces: WorkspaceUsageVm[];
   directoryHotspots: DirectoryHotspotVm[];
+  targets: UsageTargetSummaryVm[];
+  unavailableTargets: UsageUnavailableTargetVm[];
   vendors: VendorUsageVm[];
   topSessions: SurfaceUsageVm[];
   models?: ModelUsageVm[];
@@ -902,6 +1201,8 @@ export function createEmptyUsageViewSnapshot(
     surfaces: {},
     workspaces: [],
     directoryHotspots: [],
+    targets: [],
+    unavailableTargets: [],
     vendors: [],
     topSessions: [],
     models: [],
@@ -964,3 +1265,5 @@ function createUuid(): string {
 
 export * from "./agentHooks";
 export * from "./terminalDataPlane";
+export * from "./uint64";
+export * from "./sha256";

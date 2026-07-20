@@ -4,12 +4,20 @@ import path from "node:path";
 
 import { shell } from "electron";
 
-import type { AppState } from "@kmux/core";
+import {
+  localLocatedPath,
+  locatedPathForTarget,
+  type AppState,
+  type LocatedPath,
+  type WorkspaceTarget
+} from "@kmux/core";
 import type {
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolved,
   TerminalFileLinkResolveResult
 } from "@kmux/proto";
+import type { LocalPathResolver } from "./targets/targetServiceRegistry";
+import type { TargetServiceRegistry } from "./targets/contracts";
 
 const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
@@ -43,6 +51,7 @@ interface OpenTerminalFilePathOptions {
   openPath?: (path: string) => Promise<string>;
   fileExists?: (path: string) => boolean;
   homeDir?: string;
+  resolveLocalPath: LocalPathResolver;
 }
 
 interface ResolveTerminalFileLinksOptions {
@@ -51,12 +60,99 @@ interface ResolveTerminalFileLinksOptions {
   getState: () => AppState;
   fileExists?: (path: string) => boolean;
   homeDir?: string;
+  resolveLocalPath: LocalPathResolver;
 }
 
 interface ResolvedTerminalFileLinkTarget {
   openRawPath: string;
   resolvedPath: string;
   trimmedCharacterCount: number;
+}
+
+const TERMINAL_FILE_OPEN_MAX_BYTES = 1024 ** 3;
+
+export async function openTargetTerminalFilePath(options: {
+  surfaceId: string;
+  rawPath: string;
+  baseCwd?: string;
+  getState: () => AppState;
+  targetServices: TargetServiceRegistry;
+  resolveLocalPath: LocalPathResolver;
+  openPath?: (path: string) => Promise<string>;
+}): Promise<void> {
+  const context = targetFileContext(
+    options.getState(),
+    options.surfaceId,
+    options.baseCwd
+  );
+  if (!context) {
+    throw new Error(
+      `Cannot open terminal file path for missing surface: ${options.surfaceId}`
+    );
+  }
+  const services = options.targetServices.resolveLocated(context.target);
+  const resolved = await services.files.resolveTerminalPath({
+    cwd: context.cwd,
+    rawPath: options.rawPath
+  });
+  if (!resolved) {
+    throw new Error(`Terminal file path does not exist: ${options.rawPath}`);
+  }
+  const staged = await services.files.stageForLocalOpen(resolved.path, {
+    maxBytes: TERMINAL_FILE_OPEN_MAX_BYTES
+  });
+  const localPath = options.resolveLocalPath(
+    localLocatedPath(staged.localPath)
+  );
+  const result = await (options.openPath ?? shell.openPath)(localPath);
+  if (result) {
+    throw new Error(`Failed to open terminal file path: ${result}`);
+  }
+}
+
+export async function resolveTargetTerminalFileLinks(options: {
+  surfaceId: string;
+  candidates: TerminalFileLinkResolveCandidate[];
+  getState: () => AppState;
+  targetServices: TargetServiceRegistry;
+}): Promise<TerminalFileLinkResolveResult> {
+  const context = targetFileContext(options.getState(), options.surfaceId);
+  if (!context || !Array.isArray(options.candidates)) return { links: [] };
+  const services = options.targetServices.resolveLocated(context.target);
+  const links: TerminalFileLinkResolved[] = [];
+  for (const candidate of options.candidates.slice(
+    0,
+    TERMINAL_FILE_LINK_MAX_CANDIDATES
+  )) {
+    if (!isValidTerminalFileLinkCandidate(candidate)) continue;
+    const cwd = resolveLocatedCwd(
+      context.target,
+      candidate.baseCwd,
+      context.cwd
+    );
+    for (const variant of buildTerminalFileLinkValidationVariants(candidate)) {
+      const resolved = await services.files.resolveTerminalPath({
+        cwd,
+        rawPath: variant.openRawPath
+      });
+      if (!resolved) continue;
+      const trimmedCharacterCount =
+        candidate.rawPath.length - variant.openRawPath.length;
+      links.push({
+        id: candidate.id,
+        openRawPath: variant.openRawPath,
+        resolvedPath: resolved.displayPath,
+        linkText: candidate.linkText.slice(
+          0,
+          candidate.linkText.length - trimmedCharacterCount
+        ),
+        startIndex: candidate.startIndex,
+        endIndex: candidate.endIndex - trimmedCharacterCount
+      });
+      break;
+    }
+  }
+  return { links };
 }
 
 export async function openTerminalFilePath({
@@ -66,7 +162,8 @@ export async function openTerminalFilePath({
   getState,
   openPath = (resolvedPath) => shell.openPath(resolvedPath),
   fileExists = existsSync,
-  homeDir = homedir()
+  homeDir = homedir(),
+  resolveLocalPath
 }: OpenTerminalFilePathOptions): Promise<void> {
   const state = getState();
   const surface = state.surfaces[surfaceId];
@@ -76,9 +173,13 @@ export async function openTerminalFilePath({
     );
   }
 
+  let cwd = baseCwd;
+  if (cwd === undefined && surface.cwd) {
+    cwd = resolveLocalPath(surface.cwd);
+  }
   const resolvedPath = resolveTerminalFilePath({
     rawPath,
-    cwd: baseCwd ?? surface.cwd,
+    cwd,
     homeDir,
     fileExists
   });
@@ -93,7 +194,8 @@ export function resolveTerminalFileLinks({
   candidates,
   getState,
   fileExists = existsSync,
-  homeDir = homedir()
+  homeDir = homedir(),
+  resolveLocalPath
 }: ResolveTerminalFileLinksOptions): TerminalFileLinkResolveResult {
   const surface = getState().surfaces[surfaceId];
   if (!surface || !Array.isArray(candidates)) {
@@ -109,7 +211,14 @@ export function resolveTerminalFileLinks({
     if (!isValidTerminalFileLinkCandidate(candidate)) {
       continue;
     }
-    const cwd = candidate.baseCwd ?? surface.cwd;
+    let cwd = candidate.baseCwd;
+    try {
+      if (cwd === undefined && surface.cwd) {
+        cwd = resolveLocalPath(surface.cwd);
+      }
+    } catch {
+      return { links: [] };
+    }
     const cacheKey = terminalFileLinkValidationCacheKey(candidate, cwd);
     let target = cache.get(cacheKey);
     if (target === undefined) {
@@ -336,4 +445,50 @@ function resolveSingleRawPath(
     throw new Error("Cannot open relative terminal file path without a cwd");
   }
   return path.resolve(cwd, rawPath);
+}
+
+function targetFileContext(
+  state: AppState,
+  surfaceId: string,
+  rawCwd?: string
+): { target: WorkspaceTarget; cwd?: LocatedPath } | null {
+  const surface = state.surfaces[surfaceId];
+  const pane = surface ? state.panes[surface.paneId] : undefined;
+  const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+  if (!surface || !workspace) return null;
+  const target = workspace.location.target;
+  const fallback = locatedPathMatchesTarget(surface.cwd, target)
+    ? surface.cwd
+    : undefined;
+  const cwd = resolveLocatedCwd(target, rawCwd, fallback);
+  return { target, ...(cwd === undefined ? {} : { cwd }) };
+}
+
+function resolveLocatedCwd(
+  target: WorkspaceTarget,
+  rawCwd: string | undefined,
+  fallback: LocatedPath | undefined
+): LocatedPath | undefined {
+  if (rawCwd === undefined) return fallback;
+  if (
+    rawCwd.length === 0 ||
+    Buffer.byteLength(rawCwd, "utf8") > 32 * 1024 ||
+    /[\0\r\n]/u.test(rawCwd)
+  ) {
+    return undefined;
+  }
+  try {
+    return locatedPathForTarget(target, rawCwd);
+  } catch {
+    return undefined;
+  }
+}
+
+function locatedPathMatchesTarget(
+  pathValue: LocatedPath,
+  target: WorkspaceTarget
+): boolean {
+  return target.kind === "local"
+    ? pathValue.kind === "local"
+    : pathValue.kind === "ssh" && pathValue.targetId === target.targetId;
 }

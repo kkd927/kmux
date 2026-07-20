@@ -1,12 +1,17 @@
 import type {
   TerminalCheckpoint,
+  TerminalCheckpointMetadata,
+  TerminalCheckpointPurpose,
   TerminalDataPlaneClientMessage,
   TerminalDataPlaneHostMessage,
-  TerminalSessionRef
+  TerminalSessionRef,
+  Uint64
 } from "@kmux/proto";
 import {
+  IncrementalSha256,
   TERMINAL_DATA_PLANE_MAX_INPUT_BYTES,
-  TERMINAL_DATA_PLANE_PROTOCOL_VERSION
+  TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64
 } from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
 
@@ -79,23 +84,43 @@ function createSink(options: { autoCheckpoint?: boolean } = {}) {
     context: TerminalStreamWriteContext;
   }> = [];
   const checkpoints: Array<{
-    checkpoint: TerminalCheckpoint;
+    checkpoint: TerminalCheckpointMetadata;
+    chunks: ArrayBuffer[];
     complete: (result?: TerminalCheckpointApplyResult) => void;
   }> = [];
   const errors: TerminalStreamRouterError[] = [];
   const events: string[] = [];
   const sink: TerminalStreamSink = {
-    applyCheckpoint(value) {
+    beginCheckpoint(value) {
       events.push(`checkpoint:${value.sequence}`);
-      return new Promise<void | TerminalCheckpointApplyResult>((resolve) => {
-        checkpoints.push({
-          checkpoint: value,
-          complete: (result) => resolve(result)
-        });
-        if (options.autoCheckpoint !== false) {
-          resolve(undefined);
+      let resolveCommit!: (result?: TerminalCheckpointApplyResult) => void;
+      const completion = new Promise<void | TerminalCheckpointApplyResult>(
+        (resolve) => {
+          resolveCommit = resolve;
         }
-      });
+      );
+      const entry = {
+        checkpoint: value,
+        chunks: [] as ArrayBuffer[],
+        complete: resolveCommit
+      };
+      checkpoints.push(entry);
+      if (options.autoCheckpoint !== false) {
+        resolveCommit(undefined);
+      }
+      return {
+        async writeChunk(data) {
+          entry.chunks.push(data);
+        },
+        commit() {
+          return completion;
+        },
+        cancel() {
+          if (options.autoCheckpoint === false) {
+            resolveCommit(undefined);
+          }
+        }
+      };
     },
     applyResume: vi.fn((resume) => {
       events.push(`resume:${resume.resumedFromSequence}`);
@@ -108,7 +133,7 @@ function createSink(options: { autoCheckpoint?: boolean } = {}) {
       events.push(`resize:${delta.sequence}`);
     }),
     exit: vi.fn((event) => {
-      events.push(`exit:${event.afterSequence}`);
+      events.push(`exit:${event.sequence}`);
     }),
     resizeAcknowledged: vi.fn(),
     reportError(error) {
@@ -138,7 +163,7 @@ function checkpoint(
   return {
     format: "xterm-vt/1",
     session,
-    sequence,
+    sequence: u(sequence),
     data: `checkpoint-${sequence}`,
     cols: 80,
     rows: 24,
@@ -146,21 +171,48 @@ function checkpoint(
   };
 }
 
-function attachedCheckpoint(
+function sendCheckpoint(
+  port: FakePort,
   sequence: number,
   overrides: {
     attachId?: string;
     session?: TerminalSessionRef;
-  } = {}
-): TerminalDataPlaneHostMessage {
-  return {
+  } = {},
+  purpose: TerminalCheckpointPurpose = { kind: "attach" }
+): void {
+  const materialized = checkpoint(sequence, {
+    session: overrides.session ?? session
+  });
+  const { data, ...metadata } = materialized;
+  const bytes = new TextEncoder().encode(data);
+  const checkpointId = `checkpoint-${sequence}`;
+  port.receive({
     ...envelope(overrides),
-    type: "attached",
-    mode: "checkpoint",
-    checkpoint: checkpoint(sequence, {
-      session: overrides.session ?? session
-    })
-  };
+    type: "checkpoint:begin",
+    checkpointId,
+    purpose,
+    metadata,
+    totalBytes: bytes.byteLength
+  });
+  if (bytes.byteLength > 0) {
+    port.receive({
+      ...envelope(overrides),
+      type: "checkpoint:chunk",
+      checkpointId,
+      offset: 0,
+      data: bytes.buffer
+    });
+  }
+  port.receive({
+    ...envelope(overrides),
+    type: "checkpoint:end",
+    checkpointId,
+    digest: new IncrementalSha256().update(bytes).digestHex()
+  });
+}
+
+function u(value: number): Uint64 {
+  return uint64(BigInt(value));
 }
 
 function output(
@@ -178,12 +230,12 @@ function output(
     type: "delta",
     delta: {
       type: "output",
-      fromSequence,
-      sequence,
+      fromSequence: u(fromSequence),
+      sequence: u(sequence),
       byteLength: new TextEncoder().encode(data).byteLength,
       segments: [
         {
-          sequence,
+          sequence: u(sequence),
           data,
           byteLength: new TextEncoder().encode(data).byteLength,
           ...(overrides.cwd === undefined ? {} : { cwd: overrides.cwd })
@@ -200,7 +252,7 @@ function register(
     sink?: ReturnType<typeof createSink>;
     session?: TerminalSessionRef;
     attachId?: string;
-    resumeFromSequence?: number;
+    resumeFromSequence?: number | Uint64;
     writeScheduler?: Parameters<
       TerminalStreamRouter["register"]
     >[0]["writeScheduler"];
@@ -216,7 +268,12 @@ function register(
     sink: sinkHarness.sink,
     ...(options.resumeFromSequence === undefined
       ? {}
-      : { resumeFromSequence: options.resumeFromSequence }),
+      : {
+          resumeFromSequence:
+            typeof options.resumeFromSequence === "number"
+              ? u(options.resumeFromSequence)
+              : options.resumeFromSequence
+        }),
     ...(options.writeScheduler === undefined
       ? {}
       : { writeScheduler: options.writeScheduler }),
@@ -229,8 +286,10 @@ async function waitForCheckpoint(
   harness: ReturnType<typeof register>,
   sequence: number
 ): Promise<void> {
-  harness.port.receive(attachedCheckpoint(sequence));
-  await vi.waitFor(() => expect(harness.registration.sequence).toBe(sequence));
+  sendCheckpoint(harness.port, sequence);
+  await vi.waitFor(() =>
+    expect(harness.registration.sequence).toBe(u(sequence))
+  );
 }
 
 describe("TerminalStreamRouter", () => {
@@ -278,8 +337,8 @@ describe("TerminalStreamRouter", () => {
   it("seals a hidden capability immediately and settles only admitted output without post-seal credit", async () => {
     const router = new TerminalStreamRouter();
     const harness = register(router);
-    harness.port.receive(attachedCheckpoint(0));
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(0));
+    sendCheckpoint(harness.port, 0);
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(0)));
     harness.port.receive(output(0, "admitted"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
 
@@ -305,7 +364,7 @@ describe("TerminalStreamRouter", () => {
     harness.writes[0]?.complete();
     await expect(outcomePromise).resolves.toEqual({
       kind: "resumable",
-      cursor: { session, sequence: 1 }
+      cursor: { session, sequence: u(1) }
     });
     expect(
       harness.port.sent.filter((message) => message.type === "credit")
@@ -336,17 +395,17 @@ describe("TerminalStreamRouter", () => {
       session
     });
 
-    harness.port.receive(attachedCheckpoint(4));
+    sendCheckpoint(harness.port, 4);
     harness.port.receive(output(4, "한"));
     harness.port.receive({
       ...envelope(),
       type: "delta",
-      delta: { type: "resize", sequence: 6, cols: 120, rows: 40 }
+      delta: { type: "resize", sequence: u(6), cols: 120, rows: 40 }
     });
     harness.port.receive({
       ...envelope(),
       type: "exit",
-      afterSequence: 6,
+      sequence: u(7),
       exitCode: 0
     });
 
@@ -356,23 +415,74 @@ describe("TerminalStreamRouter", () => {
 
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
     expect(harness.events).toEqual(["checkpoint:4", "write:5"]);
-    expect(harness.port.sent).toHaveLength(1);
+    expect(harness.port.sent).toHaveLength(2);
 
     harness.writes[0]?.complete();
     await vi.waitFor(() => expect(harness.port.close).toHaveBeenCalledOnce());
 
-    expect(harness.port.sent[1]).toMatchObject({
+    expect(harness.port.sent[2]).toMatchObject({
       type: "credit",
-      acknowledgedSequence: 5,
+      acknowledgedSequence: u(5),
       bytes: 3
     });
     expect(harness.events).toEqual([
       "checkpoint:4",
       "write:5",
       "resize:6",
-      "exit:6"
+      "exit:7"
     ]);
     expect(router.size).toBe(0);
+  });
+
+  it("returns checkpoint credit only after the staged parser boundary and commits the cursor at end", async () => {
+    const router = new TerminalStreamRouter();
+    const sinkHarness = createSink();
+    let releaseChunk!: () => void;
+    let releaseCommit!: () => void;
+    let chunkStarted = false;
+    let commitStarted = false;
+    sinkHarness.sink.beginCheckpoint = vi.fn(() => ({
+      writeChunk: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            chunkStarted = true;
+            releaseChunk = resolve;
+          })
+      ),
+      commit: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            commitStarted = true;
+            releaseCommit = resolve;
+          })
+      ),
+      cancel: vi.fn()
+    }));
+    const harness = register(router, { sink: sinkHarness });
+
+    sendCheckpoint(harness.port, 4);
+    await vi.waitFor(() => expect(chunkStarted).toBe(true));
+
+    expect(harness.registration.sequence).toBeNull();
+    expect(
+      harness.port.sent.filter(
+        (message) => message.type === "checkpoint:credit"
+      )
+    ).toHaveLength(0);
+
+    releaseChunk();
+    await vi.waitFor(() => expect(commitStarted).toBe(true));
+    expect(harness.port.sent[1]).toMatchObject({
+      type: "checkpoint:credit",
+      checkpointId: "checkpoint-4",
+      acknowledgedOffset: 12,
+      bytes: 12
+    });
+    expect(harness.registration.sequence).toBeNull();
+
+    releaseCommit();
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(4)));
+    router.dispose();
   });
 
   it("preserves source segment boundaries with one xterm parse in flight per surface", async () => {
@@ -384,23 +494,23 @@ describe("TerminalStreamRouter", () => {
       type: "delta",
       delta: {
         type: "output",
-        fromSequence: 0,
-        sequence: 3,
+        fromSequence: u(0),
+        sequence: u(3),
         byteLength: 4,
         segments: [
           {
-            sequence: 1,
+            sequence: u(1),
             data: "a",
             byteLength: 1,
             cwd: "/repo/a"
           },
           {
-            sequence: 2,
+            sequence: u(2),
             data: "b\n",
             byteLength: 2,
             cwd: "/repo/a"
           },
-          { sequence: 3, data: "c", byteLength: 1, cwd: "/repo/b" }
+          { sequence: u(3), data: "c", byteLength: 1, cwd: "/repo/b" }
         ]
       }
     });
@@ -410,16 +520,16 @@ describe("TerminalStreamRouter", () => {
       data: "ab\n",
       context: { dataOffset: 0, finalPart: false }
     });
-    expect(harness.registration.sequence).toBe(0);
+    expect(harness.registration.sequence).toBe(u(0));
     harness.writes[0]?.complete();
     await vi.waitFor(() => expect(harness.writes).toHaveLength(2));
     expect(harness.writes[1]).toMatchObject({
       data: "c",
       context: { dataOffset: 3, finalPart: true }
     });
-    expect(harness.registration.sequence).toBe(0);
+    expect(harness.registration.sequence).toBe(u(0));
     harness.writes[1]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(3));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(3)));
     router.dispose();
   });
 
@@ -432,19 +542,19 @@ describe("TerminalStreamRouter", () => {
     harness.port.receive(output(1, "second"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
     expect(harness.writes[0]?.data).toBe("firstsecond");
-    expect(harness.registration.sequence).toBe(0);
+    expect(harness.registration.sequence).toBe(u(0));
     expect(
       harness.port.sent.filter((message) => message.type === "credit")
     ).toHaveLength(0);
     harness.writes[0]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(2));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(2)));
     expect(
       harness.port.sent
         .filter((message) => message.type === "credit")
         .map((message) =>
           message.type === "credit" ? message.acknowledgedSequence : -1
         )
-    ).toEqual([1, 2]);
+    ).toEqual([u(1), u(2)]);
     router.dispose();
   });
 
@@ -468,7 +578,7 @@ describe("TerminalStreamRouter", () => {
       harness.writes.every((write) => write.data.length <= 16 * 1024)
     ).toBe(true);
     harness.writes[2]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(1));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(1)));
     router.dispose();
   });
 
@@ -640,7 +750,7 @@ describe("TerminalStreamRouter", () => {
     await vi.waitFor(() => expect(harness.writes).toHaveLength(4));
     expect(harness.writes[3]?.data).toBe("\u001b[31mred");
     harness.writes[3]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(5));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(5)));
     router.dispose();
   });
 
@@ -649,9 +759,9 @@ describe("TerminalStreamRouter", () => {
       name: string;
       details: Record<string, unknown>;
     }> = [];
-    // The checkpoint MessagePort callback consumes the first entry timestamp;
-    // output receive, parse, and render use the remaining values.
-    const timestamps = [900, 1_004, 1_005, 1_006, 1_008, 1_010];
+    // Checkpoint begin/chunk/end consume the first three entry timestamps;
+    // output receive, release, parse, and render use the remaining values.
+    const timestamps = [900, 901, 902, 1_004, 1_005, 1_006, 1_008, 1_010];
     const router = new TerminalStreamRouter();
     const harness = register(router, {
       metrics: {
@@ -666,12 +776,12 @@ describe("TerminalStreamRouter", () => {
       type: "delta",
       delta: {
         type: "output",
-        fromSequence: 0,
-        sequence: 1,
+        fromSequence: u(0),
+        sequence: u(1),
         byteLength: 5,
         segments: [
           {
-            sequence: 1,
+            sequence: u(1),
             data: "hello",
             byteLength: 5,
             telemetry: {
@@ -680,7 +790,7 @@ describe("TerminalStreamRouter", () => {
               outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999,
-              inputSequence: 7,
+              inputSequence: u(7),
               inputKind: "mouse"
             }
           }
@@ -700,11 +810,11 @@ describe("TerminalStreamRouter", () => {
     expect(records[1]?.details).toMatchObject({
       surfaceId: "surface_1",
       sessionId: "session_1",
-      sequence: 1,
+      sequence: "1",
       byteLength: 5,
       visibleAtPtyRead: true,
       inputAcceptedAt: 999,
-      inputSequence: 7,
+      inputSequence: "7",
       inputKind: "mouse",
       outputKinds: ["screen"],
       ptyReadToHeadlessCommitMs: 2,
@@ -733,7 +843,7 @@ describe("TerminalStreamRouter", () => {
     harness.port.receive(output(0, "before"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
     harness.writes[0]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(1));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(1)));
 
     router.configureMetrics(
       {
@@ -745,14 +855,14 @@ describe("TerminalStreamRouter", () => {
     harness.port.receive(output(1, "during"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(2));
     harness.writes[1]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(2));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(2)));
 
     router.configureMetrics(undefined);
     const recordCountAfterDisable = records.length;
     harness.port.receive(output(2, "after"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(3));
     harness.writes[2]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(3));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(3)));
 
     expect(records).toContain("terminal.data-plane.receive");
     expect(records).toContain("terminal.data-plane.parsed");
@@ -766,9 +876,9 @@ describe("TerminalStreamRouter", () => {
           bytes: message.type === "credit" ? message.bytes : -1
         }))
     ).toEqual([
-      { sequence: 1, bytes: 6 },
-      { sequence: 2, bytes: 6 },
-      { sequence: 3, bytes: 5 }
+      { sequence: u(1), bytes: 6 },
+      { sequence: u(2), bytes: 6 },
+      { sequence: u(3), bytes: 5 }
     ]);
     router.dispose();
   });
@@ -808,7 +918,7 @@ describe("TerminalStreamRouter", () => {
     let now = 1_000;
     const router = new TerminalStreamRouter();
     const harness = register(router, {
-      resumeFromSequence: 7,
+      resumeFromSequence: u(7),
       writeScheduler: {
         requestAnimationFrame: () => 1,
         cancelAnimationFrame() {},
@@ -825,12 +935,12 @@ describe("TerminalStreamRouter", () => {
       ...envelope(),
       type: "attached",
       mode: "resume",
-      resumedFromSequence: 7,
-      sequence: 9,
+      resumedFromSequence: u(7),
+      sequence: u(9),
       cols: 80,
       rows: 24
     });
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(7));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(7)));
 
     const sendOutput = (fromSequence: number): void => {
       const message = output(fromSequence, `output-${fromSequence}`);
@@ -850,7 +960,7 @@ describe("TerminalStreamRouter", () => {
     }
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
     harness.writes[0]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(9));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(9)));
     sendOutput(9);
     await vi.waitFor(() => expect(harness.writes).toHaveLength(2));
     harness.writes[1]?.complete();
@@ -902,7 +1012,8 @@ describe("TerminalStreamRouter", () => {
       (record) => record.name === "terminal.data-plane.render"
     );
     expect(renderRecords.map((record) => record.details.sequence)).toEqual([
-      1, 2
+      "1",
+      "2"
     ]);
     expect(renderRecords[0]?.details.onRenderAt).toBe(
       renderRecords[1]?.details.onRenderAt
@@ -919,12 +1030,12 @@ describe("TerminalStreamRouter", () => {
     duplicateHarness.port.receive(delta);
     await vi.waitFor(() => expect(duplicateHarness.writes).toHaveLength(1));
     duplicateHarness.writes[0]?.complete();
-    await vi.waitFor(() => expect(duplicateHarness.port.sent).toHaveLength(2));
+    await vi.waitFor(() => expect(duplicateHarness.port.sent).toHaveLength(3));
     duplicateHarness.port.receive(delta);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(duplicateHarness.writes).toHaveLength(1);
-    expect(duplicateHarness.port.sent).toHaveLength(2);
+    expect(duplicateHarness.port.sent).toHaveLength(3);
 
     duplicateHarness.port.receive(output(6, "gap"));
     await vi.waitFor(() =>
@@ -933,8 +1044,8 @@ describe("TerminalStreamRouter", () => {
     expect(duplicateHarness.errors).toEqual([
       expect.objectContaining({
         kind: "sequence-gap",
-        expectedSequence: 6,
-        receivedSequence: 7
+        expectedSequence: u(6),
+        receivedSequence: u(7)
       })
     ]);
   });
@@ -943,12 +1054,8 @@ describe("TerminalStreamRouter", () => {
     const router = new TerminalStreamRouter();
     const oldHarness = register(router);
 
-    oldHarness.port.receiveRaw({
-      ...attachedCheckpoint(0),
-      attachId: "attach_stale"
-    });
-    oldHarness.port.receiveRaw({
-      ...attachedCheckpoint(0),
+    sendCheckpoint(oldHarness.port, 0, { attachId: "attach_stale" });
+    sendCheckpoint(oldHarness.port, 0, {
       session: { ...session, epoch: "epoch_stale" }
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -973,66 +1080,72 @@ describe("TerminalStreamRouter", () => {
       reason: "replaced"
     });
     expect(oldHarness.port.close).toHaveBeenCalledOnce();
-    oldHarness.port.receive(attachedCheckpoint(1));
+    sendCheckpoint(oldHarness.port, 1);
     expect(oldHarness.checkpoints).toHaveLength(0);
 
-    nextPort.receive({
-      ...envelope({ attachId: "attach_2", session: nextSession }),
-      type: "attached",
-      mode: "checkpoint",
-      checkpoint: checkpoint(3, { session: nextSession })
+    sendCheckpoint(nextPort, 3, {
+      attachId: "attach_2",
+      session: nextSession
     });
-    await vi.waitFor(() => expect(nextHarness.registration.sequence).toBe(3));
+    await vi.waitFor(() =>
+      expect(nextHarness.registration.sequence).toBe(u(3))
+    );
     expect(router.size).toBe(1);
   });
 
   it("resumes from the renderer sequence and applies resync checkpoints atomically", async () => {
     const router = new TerminalStreamRouter();
-    const harness = register(router, { resumeFromSequence: 7 });
+    const harness = register(router, { resumeFromSequence: u(7) });
     expect(harness.port.sent[0]).toMatchObject({
       type: "attach",
-      resumeFromSequence: 7
+      resumeFromSequence: u(7)
     });
 
     harness.port.receive({
       ...envelope(),
       type: "attached",
       mode: "resume",
-      resumedFromSequence: 7,
-      sequence: 9,
+      resumedFromSequence: u(7),
+      sequence: u(9),
       cols: 100,
       rows: 30
     });
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(7));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(7)));
     expect(harness.sink.applyResume).toHaveBeenCalledWith({
-      resumedFromSequence: 7,
-      availableSequence: 9,
+      resumedFromSequence: u(7),
+      availableSequence: u(9),
       cols: 100,
       rows: 30
     });
 
-    harness.port.receive({
-      ...envelope(),
-      type: "resync-required",
-      missingFromSequence: 8,
-      retainedFromSequence: 9,
-      checkpoint: checkpoint(12)
-    });
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(12));
+    sendCheckpoint(
+      harness.port,
+      12,
+      {},
+      {
+        kind: "resync",
+        missingFromSequence: u(8),
+        retainedFromSequence: u(9)
+      }
+    );
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(12)));
     expect(harness.events).toEqual(["resume:7", "checkpoint:12"]);
 
-    harness.port.receive({
-      ...envelope(),
-      type: "resync-required",
-      missingFromSequence: 8,
-      retainedFromSequence: 9,
-      checkpoint: checkpoint(11)
-    });
+    sendCheckpoint(
+      harness.port,
+      11,
+      {},
+      {
+        kind: "resync",
+        missingFromSequence: u(8),
+        retainedFromSequence: u(9)
+      }
+    );
     await vi.waitFor(() => expect(harness.port.close).toHaveBeenCalledOnce());
     expect(harness.errors.at(-1)).toMatchObject({
       kind: "sequence-gap",
-      expectedSequence: 12,
-      receivedSequence: 11
+      expectedSequence: u(12),
+      receivedSequence: u(11)
     });
   });
 
@@ -1051,23 +1164,26 @@ describe("TerminalStreamRouter", () => {
         record: (name, details) => records.push({ name, details })
       }
     });
-    harness.port.receive(attachedCheckpoint(7));
+    sendCheckpoint(harness.port, 7);
     await vi.waitFor(() => expect(harness.checkpoints).toHaveLength(1));
     harness.checkpoints[0]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(7));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(7)));
 
-    harness.port.receive({
-      ...envelope(),
-      type: "resync-required",
-      missingFromSequence: 8,
-      retainedFromSequence: 9,
-      checkpoint: checkpoint(12)
-    });
+    sendCheckpoint(
+      harness.port,
+      12,
+      {},
+      {
+        kind: "resync",
+        missingFromSequence: u(8),
+        retainedFromSequence: u(9)
+      }
+    );
     harness.port.receive(output(12, "after-swap"));
 
     await vi.waitFor(() => expect(harness.checkpoints).toHaveLength(2));
     expect(harness.writes).toHaveLength(0);
-    expect(harness.registration.sequence).toBe(7);
+    expect(harness.registration.sequence).toBe(u(7));
     harness.checkpoints[1]?.complete({ swapGeneration: 4 });
 
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
@@ -1080,9 +1196,9 @@ describe("TerminalStreamRouter", () => {
       (record) => record.name === "terminal.data-plane.resync"
     );
     expect(resync?.details).toMatchObject({
-      checkpointSequence: 12,
-      missingFromSequence: 8,
-      retainedFromSequence: 9,
+      checkpointSequence: "12",
+      missingFromSequence: "8",
+      retainedFromSequence: "9",
       swapGeneration: 4
     });
     expect(resync?.details.durationMs).toEqual(expect.any(Number));
@@ -1185,16 +1301,16 @@ describe("TerminalStreamRouter", () => {
         dataOffset: write.context.dataOffset,
         finalPart: write.context.finalPart
       }))
-    ).toEqual([{ sequence: 3, dataOffset: 0, finalPart: true }]);
+    ).toEqual([{ sequence: u(3), dataOffset: 0, finalPart: true }]);
     harness.writes[0]?.complete();
-    await vi.waitFor(() => expect(harness.registration.sequence).toBe(3));
+    await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(3)));
     expect(
       harness.port.sent
         .filter((message) => message.type === "credit")
         .map((message) =>
           message.type === "credit" ? message.acknowledgedSequence : -1
         )
-    ).toEqual([1, 2, 3]);
+    ).toEqual([u(1), u(2), u(3)]);
   });
 
   it("holds resize and later output behind every preceding parse callback", async () => {
@@ -1207,7 +1323,7 @@ describe("TerminalStreamRouter", () => {
     harness.port.receive({
       ...envelope(),
       type: "delta",
-      delta: { type: "resize", sequence: 3, cols: 100, rows: 30 }
+      delta: { type: "resize", sequence: u(3), cols: 100, rows: 30 }
     });
     harness.port.receive(output(3, "after"));
     await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
@@ -1283,7 +1399,7 @@ describe("TerminalStreamRouter", () => {
         records.find(
           (record) =>
             record.name === "terminal.data-plane.parsed" &&
-            record.details.sequence === 2
+            record.details.sequence === "2"
         )?.details
       ).toMatchObject({
         schedulerDelayMs: 40,
@@ -1395,13 +1511,11 @@ describe("TerminalStreamRouter", () => {
       sink: peerSink
     });
     await waitForCheckpoint(target, 0);
-    peer.port.receive(
-      attachedCheckpoint(0, {
-        attachId: "attach_2",
-        session: peerSession
-      })
-    );
-    await vi.waitFor(() => expect(peer.registration.sequence).toBe(0));
+    sendCheckpoint(peer.port, 0, {
+      attachId: "attach_2",
+      session: peerSession
+    });
+    await vi.waitFor(() => expect(peer.registration.sequence).toBe(u(0)));
 
     target.registration.sendText("probe");
     peer.port.receive(
@@ -1428,16 +1542,16 @@ describe("TerminalStreamRouter", () => {
     expect(peer.events).toEqual(["checkpoint:0", "write:2"]);
 
     target.writes[0]?.complete();
-    expect(target.registration.sequence).toBe(1);
+    expect(target.registration.sequence).toBe(u(1));
     peer.writes[0]?.complete();
-    expect(peer.registration.sequence).toBe(2);
+    expect(peer.registration.sequence).toBe(u(2));
     expect(
       peer.port.sent
         .filter((message) => message.type === "credit")
         .map((message) =>
           message.type === "credit" ? message.acknowledgedSequence : -1
         )
-    ).toEqual([1, 2]);
+    ).toEqual([u(1), u(2)]);
     router.dispose();
   });
 

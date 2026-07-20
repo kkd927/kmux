@@ -49,6 +49,7 @@ import {
   type TerminalInstance
 } from "./terminalInstanceStore";
 import { Terminal } from "@xterm/xterm";
+import { uint64 } from "@kmux/proto";
 
 function makeInstance(
   dimensions: {
@@ -110,7 +111,7 @@ describe("replaceTerminalBundle", () => {
     const token = registerAttachment("surface-swap", "session-1", cleanup);
     expect(token).not.toBeNull();
     markAttachmentReady("surface-swap", "session-1", "attach-1", token!);
-    markSurfaceHydrated("surface-swap", "surface-swap", 9);
+    markSurfaceHydrated("surface-swap", "surface-swap", uint64(9n));
     const oldTerminal = instance.terminal;
     const replacement = makeInstance();
 
@@ -123,7 +124,7 @@ describe("replaceTerminalBundle", () => {
     expect(previous?.terminal).toBe(oldTerminal);
     expect(isCurrentTerminal("surface-swap", replacement.terminal)).toBe(true);
     expect(getReadyAttachId("surface-swap", "session-1")).toBe("attach-1");
-    expect(getLastHydratedSurfaceSequence("surface-swap")).toBe(9);
+    expect(getLastHydratedSurfaceSequence("surface-swap")).toBe(uint64(9n));
     expect(cleanup).not.toHaveBeenCalled();
 
     releaseVisibilityPin("surface-swap", visibilityPin);
@@ -570,7 +571,7 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
   it("clears line cwd state when hydration is invalidated", () => {
     const init = vi.fn(makeInstance);
     const { instance } = acquireVisible("pane-cwd", init);
-    markSurfaceHydrated("pane-cwd", "surface-abc", 12);
+    markSurfaceHydrated("pane-cwd", "surface-abc", uint64(12n));
 
     invalidateHydration("pane-cwd");
 
@@ -583,45 +584,49 @@ describe("getLastHydratedSurfaceId / markSurfaceHydrated", () => {
   it("tracks the rendered sequence for the hydrated surface", () => {
     const init = vi.fn(makeInstance);
     acquireVisible("pane-9", init);
-    markSurfaceHydrated("pane-9", "surface-abc", 12);
-    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(12);
+    markSurfaceHydrated("pane-9", "surface-abc", uint64(12n));
+    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(uint64(12n));
 
-    markSurfaceRendered("pane-9", "surface-abc", 13);
-    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(13);
+    markSurfaceRendered("pane-9", "surface-abc", uint64(13n));
+    expect(getLastHydratedSurfaceSequence("pane-9")).toBe(uint64(13n));
     release("pane-9");
   });
 
   it("does not move the rendered sequence backward for the same hydrated surface", () => {
     const init = vi.fn(makeInstance);
     acquireVisible("pane-11", init);
-    markSurfaceHydrated("pane-11", "surface-abc", 20);
+    markSurfaceHydrated("pane-11", "surface-abc", uint64(20n));
 
-    markSurfaceHydrated("pane-11", "surface-abc", 12);
+    markSurfaceHydrated("pane-11", "surface-abc", uint64(12n));
 
-    expect(getLastHydratedSurfaceSequence("pane-11")).toBe(20);
+    expect(getLastHydratedSurfaceSequence("pane-11")).toBe(uint64(20n));
     release("pane-11");
   });
 
   it("restores the exact cursor after a failed checkpoint transaction", () => {
     acquireVisible("pane-rollback", makeInstance);
-    markSurfaceHydrated("pane-rollback", "surface-current", 20);
-    markSurfaceHydrated("pane-rollback", "surface-current", 30);
+    markSurfaceHydrated("pane-rollback", "surface-current", uint64(20n));
+    markSurfaceHydrated("pane-rollback", "surface-current", uint64(30n));
 
-    restoreHydrationState("pane-rollback", "surface-current", 20);
+    restoreHydrationState(
+      "pane-rollback",
+      "surface-current",
+      uint64(20n)
+    );
 
     expect(getLastHydratedSurfaceId("pane-rollback")).toBe("surface-current");
-    expect(getLastHydratedSurfaceSequence("pane-rollback")).toBe(20);
+    expect(getLastHydratedSurfaceSequence("pane-rollback")).toBe(uint64(20n));
     release("pane-rollback");
   });
 
   it("ignores rendered sequence updates for stale surfaces", () => {
     const init = vi.fn(makeInstance);
     acquireVisible("pane-10", init);
-    markSurfaceHydrated("pane-10", "surface-current", 12);
+    markSurfaceHydrated("pane-10", "surface-current", uint64(12n));
 
-    markSurfaceRendered("pane-10", "surface-stale", 13);
+    markSurfaceRendered("pane-10", "surface-stale", uint64(13n));
 
-    expect(getLastHydratedSurfaceSequence("pane-10")).toBe(12);
+    expect(getLastHydratedSurfaceSequence("pane-10")).toBe(uint64(12n));
     release("pane-10");
   });
 });

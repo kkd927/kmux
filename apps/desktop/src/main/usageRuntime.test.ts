@@ -1,4 +1,9 @@
-import { applyAction, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  encodeLocatedPathDto,
+  locatedPathForTarget
+} from "@kmux/core";
 import { type AppAction } from "@kmux/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,8 +13,30 @@ import type {
   UsageEventSample
 } from "@kmux/metadata";
 import type { SubscriptionProviderUsageVm } from "@kmux/proto";
-import { createUsageRuntime } from "./usageRuntime";
+import { createUsageRuntime as createUsageRuntimeImpl } from "./usageRuntime";
 import type { UsageScanService } from "./usageScanWorkerClient";
+import type { TargetServiceRegistry } from "./targets/contracts";
+
+function localPath(value: string) {
+  return locatedPathForTarget({ kind: "local" }, value);
+}
+
+type UsageRuntimeOptions = Parameters<typeof createUsageRuntimeImpl>[0];
+
+function createUsageRuntime(
+  options: Omit<UsageRuntimeOptions, "resolveLocalPath"> &
+    Partial<Pick<UsageRuntimeOptions, "resolveLocalPath">>
+) {
+  return createUsageRuntimeImpl({
+    resolveLocalPath: (path) => {
+      if (path.kind !== "local") {
+        throw new Error("test local provider rejected an SSH path");
+      }
+      return encodeLocatedPathDto(path).path;
+    },
+    ...options
+  });
+}
 
 class FakeUsageAdapter implements UsageAdapter {
   readonly vendor;
@@ -49,6 +76,176 @@ describe("usage runtime", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("keeps identical usage samples target-scoped and retains unavailable target caches", async () => {
+    const state = createInitialState();
+    const localWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const localPaneId = state.workspaces[localWorkspaceId].activePaneId;
+    state.surfaces[state.panes[localPaneId].activeSurfaceId].cwd =
+      localPath("/tmp/local");
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/remote"
+    });
+    let failRemote = false;
+    let remoteTokens = 20;
+    let includeStaleRemoteRecord = true;
+    let removeRemoteDuringRefresh = false;
+    const localRefresh = vi.fn(async () => ({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex" as const,
+          sampleId: "same-sample",
+          timestampUnixMs: 1_000,
+          sessionId: "same-session",
+          cwd: localPath("/tmp/local"),
+          inputTokens: 10,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalTokens: 10,
+          estimatedCostUsd: 0,
+          costSource: "unavailable" as const
+        }
+      ]
+    }));
+    const remoteRefresh = vi.fn(async () => {
+      if (failRemote) throw new Error("remote usage unavailable");
+      if (removeRemoteDuringRefresh) {
+        const remoteWorkspace = Object.values(state.workspaces).find(
+          (workspace) => workspace.location.target.kind === "ssh"
+        );
+        if (remoteWorkspace) delete state.workspaces[remoteWorkspace.id];
+      }
+      return {
+        principal: { uid: 1_000, accountName: "kmux" },
+        truncated: false,
+        records: [
+          {
+            vendor: "codex" as const,
+            sampleId: "same-sample",
+            timestampUnixMs: 2_000,
+            sessionId: "same-session",
+            cwd: locatedPathForTarget(
+              { kind: "ssh", targetId: "target_1" },
+              "/srv/remote"
+            ),
+            inputTokens: remoteTokens,
+            outputTokens: 0,
+            cacheTokens: 0,
+            totalTokens: remoteTokens,
+            estimatedCostUsd: 0,
+            costSource: "unavailable" as const
+          },
+          ...(includeStaleRemoteRecord
+            ? [
+                {
+                  vendor: "codex" as const,
+                  sampleId: "stale-sample",
+                  timestampUnixMs: 1_500,
+                  sessionId: "stale-session",
+                  cwd: locatedPathForTarget(
+                    { kind: "ssh" as const, targetId: "target_1" },
+                    "/srv/remote"
+                  ),
+                  inputTokens: 7,
+                  outputTokens: 0,
+                  cacheTokens: 0,
+                  totalTokens: 7,
+                  estimatedCostUsd: 0,
+                  costSource: "unavailable" as const
+                }
+              ]
+            : [])
+        ]
+      };
+    });
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: (
+        target: Parameters<TargetServiceRegistry["resolveLocated"]>[0]
+      ) =>
+        ({
+          usage: {
+            refresh: target.kind === "local" ? localRefresh : remoteRefresh
+          }
+        }) as never
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      totalTodayTokens: 37,
+      targets: [
+        {
+          target: {
+            kind: "ssh",
+            targetId: "target_1",
+            principal: { uid: 1_000, accountName: "kmux" }
+          },
+          todayTokens: 27
+        },
+        { target: { kind: "local" }, todayTokens: 10 }
+      ],
+      unavailableTargets: []
+    });
+    expect(runtime.getSnapshot().directoryHotspots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: { kind: "local" },
+          directoryPath: "/tmp/local"
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            kind: "ssh",
+            targetId: "target_1"
+          }),
+          directoryPath: "/srv/remote"
+        })
+      ])
+    );
+
+    remoteTokens = 25;
+    includeStaleRemoteRecord = false;
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(35);
+    expect(
+      runtime.getSnapshot().targets.find((entry) => entry.target.kind === "ssh")
+        ?.todayTokens
+    ).toBe(25);
+
+    failRemote = true;
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(35);
+    expect(runtime.getSnapshot().unavailableTargets).toEqual([
+      {
+        kind: "ssh",
+        targetId: "target_1",
+        message: "remote usage unavailable"
+      }
+    ]);
+
+    failRemote = false;
+    removeRemoteDuringRefresh = true;
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(10);
+    expect(runtime.getSnapshot().targets).toEqual([
+      expect.objectContaining({ target: { kind: "local" }, todayTokens: 10 })
+    ]);
+    expect(runtime.getSnapshot().unavailableTargets).toEqual([]);
   });
 
   it("starts without awaiting the scan worker and recovers from a worker error", async () => {
@@ -300,7 +497,7 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-usage-before-rebind";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-usage-before-rebind");
     const emitSnapshot = vi.fn();
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -357,7 +554,7 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-project";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-project");
 
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -402,9 +599,9 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-codex-manual";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual");
     state.sessions[sessionId].pid = 4242;
-    state.sessions[sessionId].runtimeState = "running";
+    state.sessions[sessionId].runtimeStatus.processState = "running";
     const resolveAiCliProcesses = vi.fn(async () => {
       return new Map([
         [
@@ -477,9 +674,9 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-manual";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-manual");
     state.sessions[sessionId].pid = 4242;
-    state.sessions[sessionId].runtimeState = "running";
+    state.sessions[sessionId].runtimeStatus.processState = "running";
     const resolveAiCliProcesses = vi.fn(async () => {
       return new Map([
         [
@@ -536,7 +733,7 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-usage";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-usage");
     const adapter = new FakeUsageAdapter({
       vendor: "antigravity",
       initialReads: [
@@ -672,7 +869,7 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-antigravity-usage";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-usage");
     const timestampMs = new Date("2026-06-02T02:00:00.000Z").getTime();
     const baseSample = buildSample({
       vendor: "antigravity",
@@ -2117,7 +2314,7 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-external-refresh";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-external-refresh");
 
     const adapter = new FakeUsageAdapter({
       initialReads: [{ sourceCount: 0, samples: [] }],
@@ -2178,9 +2375,9 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-codex-manual-backoff";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual-backoff");
     state.sessions[sessionId].pid = 4242;
-    state.sessions[sessionId].runtimeState = "running";
+    state.sessions[sessionId].runtimeStatus.processState = "running";
 
     const resolveAiCliProcesses = vi
       .fn()
@@ -2244,9 +2441,11 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-codex-manual-ps-failure";
+    state.surfaces[surfaceId].cwd = localPath(
+      "/tmp/kmux-codex-manual-ps-failure"
+    );
     state.sessions[sessionId].pid = 4242;
-    state.sessions[sessionId].runtimeState = "running";
+    state.sessions[sessionId].runtimeStatus.processState = "running";
 
     const resolveAiCliProcesses = vi
       .fn()
@@ -2312,9 +2511,9 @@ describe("usage runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = "/tmp/kmux-codex-manual-catchup";
+    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual-catchup");
     state.sessions[sessionId].pid = 4242;
-    state.sessions[sessionId].runtimeState = "running";
+    state.sessions[sessionId].runtimeStatus.processState = "running";
 
     const adapter = new FakeUsageAdapter({
       vendor: "codex",

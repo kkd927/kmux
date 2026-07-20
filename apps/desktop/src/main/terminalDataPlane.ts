@@ -1,11 +1,12 @@
 import { MessageChannelMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
-import type { AppState } from "@kmux/core";
+import type { AppState, RemoteResourceKey } from "@kmux/core";
 import type { Id } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 
 import type { PtyHostManager } from "./ptyHost";
+import type { RemoteHostManager } from "./remoteHost";
 import {
   KMUX_TERMINAL_PORT_CHANNEL,
   type TerminalStreamAttachResult,
@@ -15,6 +16,14 @@ import {
 export interface TerminalDataPlaneControllerOptions {
   getState: () => AppState;
   getPtyHost: () => PtyHostManager | null;
+  getRemoteTerminal?: (
+    surfaceId: Id,
+    sessionId: Id
+  ) => {
+    host: RemoteHostManager;
+    resourceKey: RemoteResourceKey & { sessionId: Id };
+    keeperGeneration: Id;
+  } | null;
 }
 
 export interface TerminalDataPlaneController {
@@ -52,7 +61,6 @@ export function createTerminalDataPlaneController(
       ) {
         return { status: "denied", reason: "not-current-surface" };
       }
-
       const targetFrame = event.senderFrame;
       if (
         !targetFrame ||
@@ -63,9 +71,30 @@ export function createTerminalDataPlaneController(
         return { status: "denied", reason: "invalid-frame" };
       }
 
-      const host = options.getPtyHost();
-      const session = host?.sessionRef(surfaceId, expectedSessionId);
-      if (!host || !session) {
+      const remote =
+        workspace.location.target.kind === "ssh"
+          ? options.getRemoteTerminal?.(surfaceId, expectedSessionId)
+          : null;
+      const localHost =
+        workspace.location.target.kind === "local"
+          ? options.getPtyHost()
+          : null;
+      const session = remote
+        ? {
+            surfaceId,
+            sessionId: expectedSessionId,
+            epoch: remote.keeperGeneration
+          }
+        : localHost?.sessionRef(surfaceId, expectedSessionId);
+      if (
+        !session ||
+        (workspace.location.target.kind === "ssh" &&
+          (!remote ||
+            remote.resourceKey.targetId !==
+              workspace.location.target.targetId ||
+            remote.resourceKey.workspaceId !== workspace.id ||
+            remote.resourceKey.sessionId !== expectedSessionId))
+      ) {
         return { status: "retryable-not-ready", reason: "runtime-not-ready" };
       }
 
@@ -85,7 +114,19 @@ export function createTerminalDataPlaneController(
         };
       }
       const { port1, port2 } = channel;
-      if (!host.bindTerminalStream(attachId, session, port1)) {
+      const bound = remote
+        ? remote.host.bindTerminalStream(
+            {
+              targetId: remote.resourceKey.targetId,
+              attachId,
+              session,
+              resourceKey: remote.resourceKey,
+              expectedKeeperGeneration: remote.keeperGeneration
+            },
+            port1
+          )
+        : localHost?.bindTerminalStream(attachId, session, port1) === true;
+      if (!bound) {
         port1.close();
         port2.close();
         return {

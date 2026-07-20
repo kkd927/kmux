@@ -2,6 +2,7 @@ import type { AppAction } from "@kmux/core";
 import type { Id, KmuxSettings, WorkspaceRowVm } from "@kmux/proto";
 
 export type WorkspaceContextAction =
+  | "ssh-workspace"
   | "convert-worktree"
   | "rename"
   | "pin-toggle"
@@ -42,6 +43,7 @@ export interface WorkspaceContext {
 }
 
 export interface WorkspaceContextActionRunner {
+  openSshWorkspace?(workspaceId: Id): void | Promise<void>;
   convertToWorktree?(workspaceId: Id): void | Promise<void>;
   closeWorkspace?(workspaceId: Id): void | Promise<void>;
   closeOtherWorkspaces?(workspaceId: Id): void | Promise<void>;
@@ -86,6 +88,12 @@ export function buildWorkspaceContextMenuEntries(
   const canConvertToWorktree = Boolean(row.gitRepository && !row.worktree);
 
   return [
+    {
+      id: "ssh-workspace",
+      kind: "action",
+      label: "Convert to SSH Workspace…",
+      action: "ssh-workspace"
+    },
     ...(canConvertToWorktree
       ? [
           {
@@ -93,10 +101,10 @@ export function buildWorkspaceContextMenuEntries(
             kind: "action" as const,
             label: "Convert to Worktree Workspace",
             action: "convert-worktree" as const
-          },
-          { id: "separator-worktree", kind: "separator" as const }
+          }
         ]
       : []),
+    { id: "separator-conversions", kind: "separator" },
     {
       id: "rename",
       kind: "action",
@@ -167,6 +175,9 @@ export async function runWorkspaceContextAction(
   }
 
   switch (action) {
+    case "ssh-workspace":
+      await runner.openSshWorkspace?.(workspaceId);
+      return;
     case "convert-worktree":
       if (context.row.gitRepository && !context.row.worktree) {
         await runner.convertToWorktree?.(workspaceId);

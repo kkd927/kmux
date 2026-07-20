@@ -3,6 +3,7 @@ import {
   TERMINAL_DATA_PLANE_MAX_CWD_RANGES,
   TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES,
   TERMINAL_DATA_PLANE_PROTOCOL_VERSION,
+  uint64,
   validateTerminalDataPlaneHostMessage
 } from "@kmux/proto";
 
@@ -93,21 +94,22 @@ describe("terminal cwd ranges", () => {
           sessionId: "session_1",
           epoch: "epoch_1"
         },
-        type: "attached",
-        mode: "checkpoint",
-        checkpoint: {
+        type: "checkpoint:begin",
+        checkpointId: "checkpoint_1",
+        purpose: { kind: "attach" },
+        metadata: {
           format: "xterm-vt/1",
           session: {
             surfaceId: "surface_1",
             sessionId: "session_1",
             epoch: "epoch_1"
           },
-          sequence: 1,
-          data: "",
+          sequence: uint64(1n),
           cols: 80,
           rows: 24,
           cwdRanges: ranges
-        }
+        },
+        totalBytes: 0
       })
     ).toMatchObject({ ok: true });
   });
