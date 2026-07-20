@@ -790,7 +790,7 @@ describe("TerminalStreamRouter", () => {
               outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999,
-              inputSequence: u(7)
+              inputSequence: u(7),
               inputKind: "mouse"
             }
           }

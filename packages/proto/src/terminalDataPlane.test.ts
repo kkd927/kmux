@@ -293,7 +293,7 @@ describe("terminal data plane host validation", () => {
               outputKind: "screen",
               visibleAtPtyRead: true,
               inputAcceptedAt: 999.75,
-              inputSequence: u(1)
+              inputSequence: u(1),
               inputKind: "mouse"
             }
           }

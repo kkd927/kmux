@@ -18,11 +18,11 @@ export interface TerminalDiagnosticMetadata {
   renderGeneration: number;
   /** All *At fields below use high-resolution Unix epoch milliseconds. */
   lastOnRenderAt: number | null;
-  lastOnRenderSequence: number | null;
+  lastOnRenderSequence: Uint64 | null;
   lastWriteAt: number | null;
-  lastWriteSequence: number | null;
+  lastWriteSequence: Uint64 | null;
   lastParsedAt: number | null;
-  lastParsedSequence: number | null;
+  lastParsedSequence: Uint64 | null;
   lastInputAt: number | null;
   lastInputKind: TerminalInputDiagnosticKind | null;
   lastInputBytes: number | null;
