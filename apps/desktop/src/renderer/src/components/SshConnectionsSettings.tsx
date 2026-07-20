@@ -31,7 +31,7 @@ type EditorDraft = {
 };
 
 const EMPTY_EDITOR: EditorDraft = {
-  locatorKind: "alias",
+  locatorKind: "host",
   name: "",
   locator: "",
   user: "",
@@ -50,11 +50,22 @@ const EMPTY_EDITOR: EditorDraft = {
   forwardAgent: false
 };
 
-const TEXT_FIELDS: Array<{
+const CONNECTION_TEXT_FIELDS: Array<{
+  key: keyof Pick<EditorDraft, "user" | "identityFile">;
+  label: string;
+  placeholder: string;
+}> = [
+  { key: "user", label: "User", placeholder: "OpenSSH default" },
+  {
+    key: "identityFile",
+    label: "Identity file",
+    placeholder: "~/.ssh/id_ed25519"
+  }
+];
+
+const ADVANCED_TEXT_FIELDS: Array<{
   key: keyof Pick<
     EditorDraft,
-    | "user"
-    | "identityFile"
     | "defaultRemoteCwd"
     | "shellOverride"
     | "bootstrapShellOverride"
@@ -66,45 +77,39 @@ const TEXT_FIELDS: Array<{
   label: string;
   placeholder: string;
 }> = [
-  { key: "user", label: "User", placeholder: "OpenSSH default" },
-  {
-    key: "identityFile",
-    label: "Identity file",
-    placeholder: "/Users/me/.ssh/id_ed25519"
-  },
   {
     key: "defaultRemoteCwd",
-    label: "Default remote cwd",
-    placeholder: "/home/me/project"
+    label: "Default workspace folder",
+    placeholder: "Leave empty to start in the remote home folder"
   },
   {
     key: "shellOverride",
-    label: "Default shell override",
+    label: "Default shell",
     placeholder: "/bin/zsh"
   },
   {
     key: "bootstrapShellOverride",
-    label: "Bootstrap shell override",
+    label: "Bootstrap shell",
     placeholder: "Only for unknown login shells"
   },
   {
     key: "installPathOverride",
-    label: "Install root override",
+    label: "Install root",
     placeholder: "Host-local path"
   },
   {
     key: "authorityPathOverride",
-    label: "Authority root override",
+    label: "Authority root",
     placeholder: "Host-local path"
   },
   {
     key: "statePathOverride",
-    label: "State root override",
+    label: "State root",
     placeholder: "Host-local path"
   },
   {
     key: "runtimePathOverride",
-    label: "Runtime root override",
+    label: "Runtime root",
     placeholder: "Ephemeral host-local path"
   }
 ];
@@ -122,7 +127,8 @@ export function SshConnectionsSettings(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [runtimeResult, setRuntimeResult] = useState<string | null>(null);
   const selected = useMemo(
-    () => snapshot?.profiles.find((profile) => profile.id === selectedId) ?? null,
+    () =>
+      snapshot?.profiles.find((profile) => profile.id === selectedId) ?? null,
     [selectedId, snapshot]
   );
 
@@ -141,14 +147,11 @@ export function SshConnectionsSettings(): JSX.Element {
       setRetained(retainedSessions);
       setAvailableAliases(aliases);
       const nextId =
-        preferredId ??
-        selectedId ??
-        connections.profiles[0]?.id ??
-        null;
+        preferredId ?? selectedId ?? connections.profiles[0]?.id ?? null;
       setSelectedId(
         nextId && connections.profiles.some((profile) => profile.id === nextId)
           ? nextId
-          : connections.profiles[0]?.id ?? null
+          : (connections.profiles[0]?.id ?? null)
       );
       setError(null);
     } catch (cause) {
@@ -183,202 +186,292 @@ export function SshConnectionsSettings(): JSX.Element {
   }
 
   return (
-    <div className={styles.settingsCategory} data-testid="ssh-connections-settings">
-      <div className={styles.settingsCategoryHeader}>
+    <div
+      className={styles.settingsCategory}
+      data-testid="ssh-connections-settings"
+    >
+      <header className={styles.settingsCategoryHeader}>
         <h3>SSH Connections</h3>
         <p>
-          Saved locators use system OpenSSH. Passwords and private-key
-          passphrases are never stored in kmux settings.
+          Connect through your system OpenSSH setup. kmux never stores passwords
+          or private-key passphrases.
         </p>
-      </div>
-      <div className={styles.settingsSection}>
-        <div className={styles.settingsSectionHeader}>
-          <strong>Saved SSH Connections</strong>
-          <span className={styles.settingsSectionMeta}>
-            {snapshot ? snapshot.profiles.length : "Loading…"}
-          </span>
+      </header>
+
+      <section
+        className={`${styles.settingsSection} ${styles.sshConnectionsSection}`}
+      >
+        <div className={styles.sshConnectionsToolbar}>
+          <div>
+            <strong>Saved connections</strong>
+            <span>
+              {snapshot
+                ? `${snapshot.profiles.length} saved · ${snapshot.profiles.filter((profile) => profile.verifiedTarget).length} verified`
+                : "Loading connections…"}
+            </span>
+          </div>
+          <div className={styles.sshToolbarActions}>
+            <button
+              type="button"
+              className={styles.sshActionButton}
+              title="Import or update aliases from ~/.ssh/config"
+              disabled={!availableAliases?.length || Boolean(busy)}
+              onClick={() =>
+                availableAliases &&
+                void run("import", async () => {
+                  const imported =
+                    await window.kmux.importSshConfigAliases(availableAliases);
+                  setSnapshot(imported);
+                  setSelectedId(imported.profiles[0]?.id ?? null);
+                })
+              }
+            >
+              Sync SSH config
+            </button>
+            <button
+              type="button"
+              className={`${styles.sshActionButton} ${styles.sshPrimaryAction}`}
+              disabled={Boolean(busy)}
+              onClick={() => setEditor({ ...EMPTY_EDITOR })}
+            >
+              <span aria-hidden="true">＋</span>
+              New connection
+            </button>
+          </div>
         </div>
-        <div className={styles.sshConnectionLayout}>
-          <div className={styles.sshConnectionList} role="listbox">
-            {snapshot?.profiles.map((profile) => (
-              <button
-                key={profile.id}
-                type="button"
-                role="option"
-                aria-selected={profile.id === selectedId}
-                data-selected={profile.id === selectedId}
-                onClick={() => {
-                  setSelectedId(profile.id);
-                  setEditor(null);
-                }}
-              >
-                <strong>{profile.name}</strong>
-                <span>
-                  {profile.effectiveConnection
-                    ? `${profile.effectiveConnection.user}@${profile.effectiveConnection.hostName}:${profile.effectiveConnection.port}`
-                    : profile.sshConfigHost ?? profile.host}
-                </span>
-              </button>
-            ))}
-            {snapshot && snapshot.profiles.length === 0 ? (
-              <p>No saved SSH connections.</p>
+
+        {snapshot && snapshot.profiles.length === 0 && !editor ? (
+          <div className={styles.sshOnboarding}>
+            <strong>Add your first remote host</strong>
+            <span>
+              Use an alias from ~/.ssh/config or enter a host name directly.
+            </span>
+          </div>
+        ) : (
+          <div
+            className={styles.sshConnectionLayout}
+            data-single={snapshot?.profiles.length ? undefined : "true"}
+          >
+            {snapshot?.profiles.length ? (
+              <div className={styles.sshConnectionList} role="listbox">
+                {snapshot.profiles.map((profile) => (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    role="option"
+                    className={styles.sshConnectionListItem}
+                    aria-selected={profile.id === selectedId}
+                    data-selected={profile.id === selectedId}
+                    onClick={() => {
+                      setSelectedId(profile.id);
+                      setEditor(null);
+                    }}
+                  >
+                    <span className={styles.sshConnectionItemHeader}>
+                      <strong>{profile.name}</strong>
+                      <span
+                        className={styles.sshConnectionState}
+                        data-status={profileStatus(profile).status}
+                      >
+                        {profileStatus(profile).label}
+                      </span>
+                    </span>
+                    <span className={styles.sshConnectionEndpoint}>
+                      {profile.effectiveConnection
+                        ? `${profile.effectiveConnection.user}@${profile.effectiveConnection.hostName}:${profile.effectiveConnection.port}`
+                        : (profile.sshConfigHost ?? profile.host)}
+                    </span>
+                  </button>
+                ))}
+              </div>
             ) : null}
+            <div
+              className={styles.sshConnectionDetails}
+              data-mode={editor ? "editor" : "details"}
+            >
+              {editor ? (
+                <SshProfileEditor
+                  draft={editor}
+                  disabled={Boolean(busy)}
+                  onChange={setEditor}
+                  onCancel={() => setEditor(null)}
+                  onSave={() => void saveEditor()}
+                />
+              ) : selected ? (
+                <div className={styles.sshSelectedProfile}>
+                  <SshProfileDetails profile={selected} />
+                  <div className={styles.sshDetailsActions}>
+                    <button
+                      type="button"
+                      className={styles.sshActionButton}
+                      disabled={Boolean(busy)}
+                      onClick={() => setEditor(profileToEditor(selected))}
+                    >
+                      Edit profile
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.sshActionButton}
+                      disabled={Boolean(busy)}
+                      onClick={() =>
+                        void run("duplicate", async () => {
+                          const duplicate =
+                            await window.kmux.duplicateSshProfile(selected.id);
+                          await reload(true, duplicate.id);
+                        })
+                      }
+                    >
+                      Duplicate
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.sshActionButton} ${styles.sshPrimaryAction}`}
+                      disabled={Boolean(busy)}
+                      onClick={() =>
+                        void run("test", async () => {
+                          const tested = await window.kmux.testSshProfile(
+                            selected.id
+                          );
+                          setSnapshot(tested);
+                          setSelectedId(selected.id);
+                        })
+                      }
+                    >
+                      {busy === "test" ? "Testing…" : "Test connection"}
+                    </button>
+                  </div>
+
+                  <details className={styles.sshMaintenance}>
+                    <summary>
+                      <span>
+                        <strong>Advanced management</strong>
+                        <small>
+                          Authority binding and remote runtime tools
+                        </small>
+                      </span>
+                    </summary>
+                    <div className={styles.sshMaintenanceBody}>
+                      <p>
+                        These actions are only needed when the remote host
+                        identity or installed kmux runtime changes.
+                      </p>
+                      <div className={styles.sshMaintenanceActions}>
+                        <button
+                          type="button"
+                          className={styles.sshActionButton}
+                          disabled={!selected.verifiedTarget || Boolean(busy)}
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              `Rebind “${selected.name}” to the authority it reaches now?\n\nThis creates a new immutable target binding. Existing workspaces and retained sessions stay bound to target ${selected.verifiedTarget?.targetId ?? "unknown"} and are not moved or deleted.`
+                            );
+                            if (!confirmed) return;
+                            void run("rebind", async () => {
+                              const rebound =
+                                await window.kmux.rebindSshProfile(selected.id);
+                              setSnapshot(rebound);
+                              setSelectedId(selected.id);
+                            });
+                          }}
+                        >
+                          {busy === "rebind"
+                            ? "Rebinding…"
+                            : "Rebind authority…"}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.sshActionButton}
+                          disabled={!selected.verifiedTarget || Boolean(busy)}
+                          onClick={() => {
+                            void run("runtime-clean", async () => {
+                              const report = await window.kmux.cleanSshRuntime(
+                                selected.id
+                              );
+                              setRuntimeResult(
+                                `Runtime clean completed: removed ${report.removed.length}, live ${report.live.length}, repair required ${report.incompleteOrCorrupt.length}.`
+                              );
+                            });
+                          }}
+                        >
+                          {busy === "runtime-clean"
+                            ? "Cleaning…"
+                            : "Clean runtime"}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.sshActionButton}
+                          disabled={!selected.verifiedTarget || Boolean(busy)}
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              `Reset the installed kmux runtime for “${selected.name}”?\n\nThe next connection will reinstall it. Reset is refused while a workspace, retained session, live keeper, or another process still references this target. Session journals, worktrees, and remote authority are preserved.`
+                            );
+                            if (!confirmed) return;
+                            void run("runtime-reset", async () => {
+                              const report = await window.kmux.resetSshRuntime(
+                                selected.id
+                              );
+                              setRuntimeResult(
+                                report.status === "reset"
+                                  ? `Runtime generation ${report.generation} was reset.`
+                                  : `Runtime generation ${report.generation} was already absent.`
+                              );
+                              await reload(true, selected.id);
+                            });
+                          }}
+                        >
+                          {busy === "runtime-reset"
+                            ? "Resetting…"
+                            : "Reset runtime…"}
+                        </button>
+                        <button
+                          type="button"
+                          className={`${styles.sshActionButton} ${styles.sshDangerAction}`}
+                          disabled={Boolean(busy)}
+                          onClick={() =>
+                            void run("delete", async () => {
+                              await window.kmux.deleteSshProfile(selected.id);
+                              await reload(false);
+                            })
+                          }
+                        >
+                          Delete profile
+                        </button>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <div className={styles.sshDetailsEmpty}>
+                  <strong>Select a connection</strong>
+                  <span>
+                    Its route, verification, and runtime details appear here.
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-          <div className={styles.sshConnectionDetails}>
-            {editor ? (
-              <SshProfileEditor
-                draft={editor}
-                disabled={Boolean(busy)}
-                onChange={setEditor}
-                onCancel={() => setEditor(null)}
-                onSave={() => void saveEditor()}
-              />
-            ) : selected ? (
-              <SshProfileDetails profile={selected} />
-            ) : (
-              <p>Select a connection or add a new one.</p>
-            )}
-          </div>
-        </div>
-        <div className={styles.modalActions}>
-          <button
-            type="button"
-            disabled={Boolean(busy)}
-            onClick={() => setEditor({ ...EMPTY_EDITOR })}
-          >
-            Add
-          </button>
-          <button
-            type="button"
-            disabled={!selected || Boolean(busy)}
-            onClick={() => selected && setEditor(profileToEditor(selected))}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            disabled={!selected || Boolean(busy)}
-            onClick={() =>
-              selected &&
-              void run("duplicate", async () => {
-                const duplicate = await window.kmux.duplicateSshProfile(
-                  selected.id
-                );
-                await reload(true, duplicate.id);
-              })
-            }
-          >
-            Duplicate
-          </button>
-          <button
-            type="button"
-            disabled={!selected || Boolean(busy)}
-            onClick={() =>
-              selected &&
-              void run("test", async () => {
-                const tested = await window.kmux.testSshProfile(selected.id);
-                setSnapshot(tested);
-                setSelectedId(selected.id);
-              })
-            }
-          >
-            {busy === "test" ? "Testing…" : "Test Connection"}
-          </button>
-          <button
-            type="button"
-            disabled={!selected?.verifiedTarget || Boolean(busy)}
-            onClick={() => {
-              if (!selected) return;
-              const confirmed = window.confirm(
-                `Rebind “${selected.name}” to the authority it reaches now?\n\nThis creates a new immutable target binding. Existing workspaces and retained sessions stay bound to target ${selected.verifiedTarget?.targetId ?? "unknown"} and are not moved or deleted.`
-              );
-              if (!confirmed) return;
-              void run("rebind", async () => {
-                const rebound = await window.kmux.rebindSshProfile(selected.id);
-                setSnapshot(rebound);
-                setSelectedId(selected.id);
-              });
-            }}
-          >
-            {busy === "rebind" ? "Rebinding…" : "Rebind Authority…"}
-          </button>
-          <button
-            type="button"
-            disabled={!selected?.verifiedTarget || Boolean(busy)}
-            onClick={() => {
-              if (!selected) return;
-              void run("runtime-clean", async () => {
-                const report = await window.kmux.cleanSshRuntime(selected.id);
-                setRuntimeResult(
-                  `Runtime clean completed: removed ${report.removed.length}, live ${report.live.length}, repair required ${report.incompleteOrCorrupt.length}.`
-                );
-              });
-            }}
-          >
-            {busy === "runtime-clean" ? "Cleaning…" : "Clean Runtime"}
-          </button>
-          <button
-            type="button"
-            disabled={!selected?.verifiedTarget || Boolean(busy)}
-            onClick={() => {
-              if (!selected) return;
-              const confirmed = window.confirm(
-                `Reset the installed kmux runtime for “${selected.name}”?\n\nThe next connection will reinstall it. Reset is refused while a workspace, retained session, live keeper, or another process still references this target. Session journals, worktrees, and remote authority are preserved.`
-              );
-              if (!confirmed) return;
-              void run("runtime-reset", async () => {
-                const report = await window.kmux.resetSshRuntime(selected.id);
-                setRuntimeResult(
-                  report.status === "reset"
-                    ? `Runtime generation ${report.generation} was reset.`
-                    : `Runtime generation ${report.generation} was already absent.`
-                );
-                await reload(true, selected.id);
-              });
-            }}
-          >
-            {busy === "runtime-reset" ? "Resetting…" : "Reset Runtime…"}
-          </button>
-          <button
-            type="button"
-            disabled={!selected || Boolean(busy)}
-            onClick={() =>
-              selected &&
-              void run("delete", async () => {
-                await window.kmux.deleteSshProfile(selected.id);
-                await reload(false);
-              })
-            }
-          >
-            Delete
-          </button>
-          <button
-            type="button"
-            disabled={!availableAliases?.length || Boolean(busy)}
-            onClick={() =>
-              availableAliases &&
-              void run("import", async () => {
-                const imported = await window.kmux.importSshConfigAliases(
-                  availableAliases
-                );
-                setSnapshot(imported);
-                setSelectedId(imported.profiles[0]?.id ?? null);
-              })
-            }
-          >
-            Import/Sync OpenSSH Aliases
-          </button>
-        </div>
+        )}
         {error ? (
-          <div className={styles.worktreeError} role="alert">
+          <div className={styles.sshFeedback} data-tone="error" role="alert">
             {error}
           </div>
         ) : null}
-        {runtimeResult ? <div role="status">{runtimeResult}</div> : null}
-      </div>
-      <div className={styles.settingsSection}>
-        <div className={styles.settingsSectionHeader}>
-          <strong>Retained remote sessions</strong>
+        {runtimeResult ? (
+          <div className={styles.sshFeedback} data-tone="success" role="status">
+            {runtimeResult}
+          </div>
+        ) : null}
+      </section>
+
+      <section
+        className={`${styles.settingsSection} ${styles.sshRetainedSection}`}
+      >
+        <div className={styles.sshRetainedHeader}>
+          <span>
+            <strong>Retained remote sessions</strong>
+            <small>
+              Disconnected sessions kept on a remote host for later recovery.
+            </small>
+          </span>
           <span className={styles.settingsSectionMeta}>
             {retained ? retained.sessions.length : "Loading…"}
           </span>
@@ -390,7 +483,8 @@ export function SshConnectionsSettings(): JSX.Element {
                 <span>
                   <strong>{session.launch.title ?? session.launch.cwd}</strong>
                   <small>
-                    {session.reason} · {session.processState} · target {session.resourceKey.targetId}
+                    {session.reason} · {session.processState} · target{" "}
+                    {session.resourceKey.targetId}
                   </small>
                 </span>
                 <button
@@ -411,70 +505,119 @@ export function SshConnectionsSettings(): JSX.Element {
             ))}
           </div>
         ) : (
-          <p>No retained remote sessions.</p>
+          <p className={styles.sshRetainedEmpty}>
+            No retained remote sessions.
+          </p>
         )}
-      </div>
+      </section>
     </div>
   );
 }
 
-function SshProfileDetails({ profile }: { profile: SshProfileVm }): JSX.Element {
+function SshProfileDetails({
+  profile
+}: {
+  profile: SshProfileVm;
+}): JSX.Element {
   const effective = profile.effectiveConnection;
   const target = profile.verifiedTarget;
+  const status = profileStatus(profile);
+  const effectiveRoute = effective
+    ? `${effective.user}@${effective.hostName}:${effective.port}`
+    : "Not resolved";
   return (
     <div className={styles.sshConnectionFacts}>
-      <h4>{profile.name}</h4>
-      <Fact label="Locator" value={profile.sshConfigHost ?? profile.host ?? "—"} />
-      <Fact
-        label="Effective route"
-        value={
-          effective
-            ? `${effective.user}@${effective.hostName}:${effective.port}`
-            : "Not resolved"
-        }
-      />
-      <Fact
-        label="Policy hash"
-        value={effective?.policyHash ?? "Not resolved"}
-      />
-      <Fact
-        label="Host key fingerprint"
-        value={target?.sshHostKeyFingerprint ?? "Not reported by OpenSSH"}
-      />
-      <Fact
-        label="Installation ID"
-        value={target?.remoteInstallationId ?? "Not verified"}
-      />
-      <Fact label="Execution node ID" value={target?.executionNodeId ?? "Not verified"} />
-      <Fact
-        label="Authenticated principal"
-        value={
-          target
-            ? `${target.authenticatedPrincipal.accountName} (uid ${target.authenticatedPrincipal.uid})`
-            : "Not verified"
-        }
-      />
-      <Fact
-        label="Remote runtime"
-        value={
-          target?.runtimeVersion
-            ? `${target.runtimeVersion} · ${target.platform ?? "unknown"}/${target.arch ?? "unknown"}/${target.abi ?? "unknown"}`
-            : "Not verified"
-        }
-      />
-      <Fact
-        label="Persistence"
-        value={target?.persistenceLevel ?? "Not verified"}
-      />
-      <Fact
-        label="Capabilities"
-        value={target?.capabilities?.join(", ") || "Not verified"}
-      />
+      <header>
+        <span className={styles.sshProfileIdentity}>
+          <span className={styles.sshProfileTitleRow}>
+            <h4>{profile.name}</h4>
+            <span
+              className={styles.sshConnectionState}
+              data-status={status.status}
+            >
+              {status.label}
+            </span>
+          </span>
+          <code>{effectiveRoute}</code>
+        </span>
+      </header>
+
+      <div className={styles.sshOverviewGrid}>
+        <Fact
+          label="Locator"
+          value={profile.sshConfigHost ?? profile.host ?? "—"}
+        />
+        <Fact label="Effective route" value={effectiveRoute} />
+        <Fact
+          label="Remote runtime"
+          value={
+            target?.runtimeVersion
+              ? `${target.runtimeVersion} · ${target.platform ?? "unknown"}/${target.arch ?? "unknown"}`
+              : "Not verified"
+          }
+        />
+        <Fact
+          label="Last verified"
+          value={formatTimestamp(target?.lastVerifiedAt)}
+        />
+      </div>
+
+      <details className={styles.sshTechnicalDetails}>
+        <summary>
+          <span>
+            <strong>Identity &amp; technical details</strong>
+            <small>Host key, policy, authority, and runtime capabilities</small>
+          </span>
+        </summary>
+        <div className={styles.sshTechnicalFacts}>
+          <Fact
+            label="Policy hash"
+            value={effective?.policyHash ?? "Not resolved"}
+          />
+          <Fact
+            label="Host key fingerprint"
+            value={target?.sshHostKeyFingerprint ?? "Not reported by OpenSSH"}
+          />
+          <Fact
+            label="Installation ID"
+            value={target?.remoteInstallationId ?? "Not verified"}
+          />
+          <Fact
+            label="Execution node ID"
+            value={target?.executionNodeId ?? "Not verified"}
+          />
+          <Fact
+            label="Authenticated principal"
+            value={
+              target
+                ? `${target.authenticatedPrincipal.accountName} (uid ${target.authenticatedPrincipal.uid})`
+                : "Not verified"
+            }
+          />
+          <Fact
+            label="Runtime ABI"
+            value={
+              target
+                ? `${target.platform ?? "unknown"}/${target.arch ?? "unknown"}/${target.abi ?? "unknown"}`
+                : "Not verified"
+            }
+          />
+          <Fact
+            label="Persistence"
+            value={target?.persistenceLevel ?? "Not verified"}
+          />
+          <Fact
+            label="Capabilities"
+            value={target?.capabilities?.join(", ") || "Not verified"}
+          />
+        </div>
+      </details>
+
       {profile.lastError ? (
-        <div className={styles.worktreeError}>
-          <strong>Last connection/bootstrap error</strong>
+        <div className={styles.sshProfileError} role="status">
+          <strong>Last connection error</strong>
           <span>{profile.lastError.message}</span>
-          <small>{profile.lastError.at}</small>
+          <small>{formatTimestamp(profile.lastError.at)}</small>
         </div>
       ) : null}
     </div>
@@ -483,7 +626,7 @@ function SshProfileDetails({ profile }: { profile: SshProfileVm }): JSX.Element 
 
 function Fact({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div>
+    <div className={styles.sshFact}>
       <span>{label}</span>
       <code>{value}</code>
     </div>
@@ -497,117 +640,248 @@ function SshProfileEditor(props: {
   onCancel: () => void;
   onSave: () => void;
 }): JSX.Element {
-  const update = <K extends keyof EditorDraft>(
-    key: K,
-    value: EditorDraft[K]
-  ) => props.onChange({ ...props.draft, [key]: value });
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    hasAdvancedProfileOptions(props.draft)
+  );
+  const update = <K extends keyof EditorDraft>(key: K, value: EditorDraft[K]) =>
+    props.onChange({ ...props.draft, [key]: value });
+  const hasAdvancedOptions = hasAdvancedProfileOptions(props.draft);
   return (
     <div className={styles.sshProfileEditor}>
-      <label>
-        <span>Name</span>
-        <input
-          value={props.draft.name}
+      <header className={styles.sshEditorHeader}>
+        <span>
+          <h4>{props.draft.id ? "Edit connection" : "New connection"}</h4>
+          <p>
+            {props.draft.id
+              ? "Update how kmux reaches this host."
+              : "Add an OpenSSH alias or a host directly."}
+          </p>
+        </span>
+      </header>
+
+      <div className={styles.sshEditorSection}>
+        <div className={styles.sshEditorSectionHeader}>
+          <strong>Connection</strong>
+          <span>Required route and connection details</span>
+        </div>
+        <div className={styles.sshEditorGrid}>
+          <label className={styles.sshEditorField}>
+            <span>Name</span>
+            <input
+              value={props.draft.name}
+              placeholder="Production server"
+              disabled={props.disabled}
+              onChange={(event) => update("name", event.currentTarget.value)}
+            />
+          </label>
+          <label className={styles.sshEditorField}>
+            <span>Connection source</span>
+            <select
+              value={props.draft.locatorKind}
+              disabled={props.disabled}
+              onChange={(event) =>
+                update(
+                  "locatorKind",
+                  event.currentTarget.value as "alias" | "host"
+                )
+              }
+            >
+              <option value="alias">OpenSSH config alias</option>
+              <option value="host">Host name or address</option>
+            </select>
+          </label>
+          <label className={styles.sshEditorField}>
+            <span>
+              {props.draft.locatorKind === "alias" ? "SSH alias" : "Host"}
+            </span>
+            <input
+              value={props.draft.locator}
+              placeholder={
+                props.draft.locatorKind === "alias"
+                  ? "my-server"
+                  : "server.example.com"
+              }
+              disabled={props.disabled}
+              onChange={(event) => update("locator", event.currentTarget.value)}
+            />
+          </label>
+          <label className={styles.sshEditorField}>
+            <span>Port</span>
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              placeholder="22"
+              value={props.draft.port}
+              disabled={props.disabled}
+              onChange={(event) => update("port", event.currentTarget.value)}
+            />
+          </label>
+          {CONNECTION_TEXT_FIELDS.map((field) => (
+            <label
+              key={field.key}
+              className={styles.sshEditorField}
+              data-span={field.key === "identityFile" ? "full" : undefined}
+            >
+              <span>{field.label}</span>
+              <input
+                value={props.draft[field.key]}
+                placeholder={field.placeholder}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  update(field.key, event.currentTarget.value)
+                }
+              />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <details
+        className={styles.sshAdvancedOptions}
+        open={advancedOpen}
+        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+      >
+        <summary>
+          <span>
+            <strong>Advanced options</strong>
+            <small>
+              Workspace folder, shell, storage, environment, and agent
+              forwarding
+            </small>
+          </span>
+          <span className={styles.sshOptionsState}>
+            {hasAdvancedOptions ? "Configured" : "Using defaults"}
+          </span>
+        </summary>
+        <div className={styles.sshAdvancedBody}>
+          <div className={styles.sshEditorGrid}>
+            {ADVANCED_TEXT_FIELDS.map((field) => (
+              <label
+                key={field.key}
+                className={styles.sshEditorField}
+                data-span={
+                  field.key === "defaultRemoteCwd" ? "full" : undefined
+                }
+              >
+                <span>{field.label}</span>
+                <input
+                  value={props.draft[field.key]}
+                  placeholder={field.placeholder}
+                  disabled={props.disabled}
+                  onChange={(event) =>
+                    update(field.key, event.currentTarget.value)
+                  }
+                />
+              </label>
+            ))}
+            <label className={styles.sshEditorField}>
+              <span>Session retained-data quota (MiB)</span>
+              <input
+                type="number"
+                min={64}
+                placeholder="Default"
+                value={props.draft.sessionRetentionQuotaMiB}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  update("sessionRetentionQuotaMiB", event.currentTarget.value)
+                }
+              />
+            </label>
+            <label className={styles.sshEditorField}>
+              <span>Target retained-data quota (MiB)</span>
+              <input
+                type="number"
+                min={256}
+                placeholder="Default"
+                value={props.draft.targetRetentionQuotaMiB}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  update("targetRetentionQuotaMiB", event.currentTarget.value)
+                }
+              />
+            </label>
+            <label className={styles.sshEditorField} data-span="full">
+              <span>Environment overrides (JSON)</span>
+              <textarea
+                rows={5}
+                value={props.draft.envJson}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  update("envJson", event.currentTarget.value)
+                }
+              />
+            </label>
+            <label className={styles.sshForwardAgentField} data-span="full">
+              <input
+                type="checkbox"
+                checked={props.draft.forwardAgent}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  update("forwardAgent", event.currentTarget.checked)
+                }
+              />
+              <span>
+                <strong>Forward SSH agent</strong>
+                <small>Enable only for hosts you trust.</small>
+              </span>
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <div className={styles.sshEditorActions}>
+        <button
+          type="button"
+          className={styles.sshActionButton}
           disabled={props.disabled}
-          onChange={(event) => update("name", event.currentTarget.value)}
-        />
-      </label>
-      <label>
-        <span>Locator type</span>
-        <select
-          value={props.draft.locatorKind}
-          disabled={props.disabled}
-          onChange={(event) =>
-            update("locatorKind", event.currentTarget.value as "alias" | "host")
-          }
+          onClick={props.onCancel}
         >
-          <option value="alias">OpenSSH config alias</option>
-          <option value="host">Explicit host</option>
-        </select>
-      </label>
-      <label>
-        <span>{props.draft.locatorKind === "alias" ? "Alias" : "Host"}</span>
-        <input
-          value={props.draft.locator}
-          disabled={props.disabled}
-          onChange={(event) => update("locator", event.currentTarget.value)}
-        />
-      </label>
-      <label>
-        <span>Port</span>
-        <input
-          type="number"
-          min={1}
-          max={65535}
-          value={props.draft.port}
-          disabled={props.disabled}
-          onChange={(event) => update("port", event.currentTarget.value)}
-        />
-      </label>
-      {TEXT_FIELDS.map((field) => (
-        <label key={field.key}>
-          <span>{field.label}</span>
-          <input
-            value={props.draft[field.key]}
-            placeholder={field.placeholder}
-            disabled={props.disabled}
-            onChange={(event) => update(field.key, event.currentTarget.value)}
-          />
-        </label>
-      ))}
-      <label>
-        <span>Session retained-data quota (MiB)</span>
-        <input
-          type="number"
-          min={64}
-          value={props.draft.sessionRetentionQuotaMiB}
-          disabled={props.disabled}
-          onChange={(event) =>
-            update("sessionRetentionQuotaMiB", event.currentTarget.value)
-          }
-        />
-      </label>
-      <label>
-        <span>Target retained-data quota (MiB)</span>
-        <input
-          type="number"
-          min={256}
-          value={props.draft.targetRetentionQuotaMiB}
-          disabled={props.disabled}
-          onChange={(event) =>
-            update("targetRetentionQuotaMiB", event.currentTarget.value)
-          }
-        />
-      </label>
-      <label>
-        <span>Environment overrides (JSON)</span>
-        <textarea
-          rows={5}
-          value={props.draft.envJson}
-          disabled={props.disabled}
-          onChange={(event) => update("envJson", event.currentTarget.value)}
-        />
-      </label>
-      <label className={styles.checkboxRow}>
-        <input
-          type="checkbox"
-          checked={props.draft.forwardAgent}
-          disabled={props.disabled}
-          onChange={(event) =>
-            update("forwardAgent", event.currentTarget.checked)
-          }
-        />
-        <span>Enable agent forwarding for this profile</span>
-      </label>
-      <div className={styles.modalActions}>
-        <button type="button" disabled={props.disabled} onClick={props.onCancel}>
           Cancel
         </button>
-        <button type="button" disabled={props.disabled} onClick={props.onSave}>
-          Save
+        <button
+          type="button"
+          className={`${styles.sshActionButton} ${styles.sshPrimaryAction}`}
+          disabled={props.disabled}
+          onClick={props.onSave}
+        >
+          Save connection
         </button>
       </div>
     </div>
   );
+}
+
+function profileStatus(profile: SshProfileVm): {
+  status: "verified" | "error" | "resolved" | "untested";
+  label: string;
+} {
+  if (profile.lastError) {
+    return { status: "error", label: "Needs attention" };
+  }
+  if (profile.verifiedTarget) {
+    return { status: "verified", label: "Verified" };
+  }
+  if (profile.effectiveConnection) {
+    return { status: "resolved", label: "Resolved" };
+  }
+  return { status: "untested", label: "Not tested" };
+}
+
+function hasAdvancedProfileOptions(draft: EditorDraft): boolean {
+  return (
+    ADVANCED_TEXT_FIELDS.some((field) => draft[field.key].trim().length > 0) ||
+    draft.sessionRetentionQuotaMiB.trim().length > 0 ||
+    draft.targetRetentionQuotaMiB.trim().length > 0 ||
+    draft.envJson.trim() !== "{}" ||
+    draft.forwardAgent
+  );
+}
+
+function formatTimestamp(value: string | undefined): string {
+  if (!value) return "Not verified";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 function profileToEditor(profile: SshProfileVm): EditorDraft {
@@ -628,8 +902,7 @@ function profileToEditor(profile: SshProfileVm): EditorDraft {
     runtimePathOverride: profile.runtimePathOverride ?? "",
     sessionRetentionQuotaMiB:
       profile.sessionRetentionQuotaMiB?.toString() ?? "",
-    targetRetentionQuotaMiB:
-      profile.targetRetentionQuotaMiB?.toString() ?? "",
+    targetRetentionQuotaMiB: profile.targetRetentionQuotaMiB?.toString() ?? "",
     envJson: JSON.stringify(profile.env ?? {}, null, 2),
     forwardAgent: profile.forwardAgent === true
   };

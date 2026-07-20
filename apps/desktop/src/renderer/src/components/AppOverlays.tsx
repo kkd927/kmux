@@ -188,11 +188,6 @@ const SETTINGS_CATEGORIES: Array<{
     description: "App behavior"
   },
   {
-    id: "ssh",
-    label: "SSH Connections",
-    description: "Remote profiles"
-  },
-  {
     id: "terminal",
     label: "Terminal",
     description: "Theme, font, renderer"
@@ -206,6 +201,11 @@ const SETTINGS_CATEGORIES: Array<{
     id: "shortcuts",
     label: "Shortcuts",
     description: "Keyboard bindings"
+  },
+  {
+    id: "ssh",
+    label: "SSH Connections",
+    description: "Remote profiles"
   }
 ];
 
