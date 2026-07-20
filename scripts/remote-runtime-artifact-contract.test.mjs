@@ -248,16 +248,32 @@ describe("remote runtime artifact contract", () => {
     }
   });
 
-  it("keeps supplemental CI and release artifact checks on four matching architectures", () => {
+  it("keeps Linux SSH integration and release artifact checks on matching architectures", () => {
     const ci = readWorkflow(".github/workflows/ci.yml");
     const release = readWorkflow(".github/workflows/release-desktop.yml");
     expect(ci.jobs["ssh-native-parity"].strategy.matrix.include).toEqual(
       expectedNativeMatrix
     );
-    expect(ci.jobs["ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
-    expect(ci.jobs["ssh-integration-linux"].env.RUSTUP_TOOLCHAIN).toBe(
-      "1.97.0"
+    expect(ci.jobs["ssh-native-parity"].if).toBe(
+      "github.event_name != 'pull_request'"
     );
+    expect(ci.jobs["ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
+    expect(ci.jobs["ssh-integration-linux"]).toBeUndefined();
+    expect(ci.jobs["verify-linux"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
+    expect(
+      ci.jobs["verify-linux"].steps.some(
+        (step) => step.run === "npm run test:ssh:integration"
+      )
+    ).toBe(true);
+    expect(ci.jobs["verify-linux"]["runs-on"]).toBe("ubuntu-24.04");
+    expect(ci.jobs["verify-linux"]["timeout-minutes"]).toBe(40);
+    expect(
+      ci.jobs["verify-linux"].steps.some(
+        (step) =>
+          step.run ===
+          "cargo clippy --manifest-path remote/kmuxd/Cargo.toml --workspace --all-targets --locked -- -D warnings"
+      )
+    ).toBe(true);
     expect(
       release.jobs["remote-runtime-artifacts"].strategy.matrix.include
     ).toEqual(expectedNativeMatrix);

@@ -22,7 +22,10 @@ jobs:
       - run: npm run build
 
   verify-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -33,20 +36,6 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
-
-  ssh-integration-linux:
-    name: SSH integration (Linux x64)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      RUSTUP_TOOLCHAIN: 1.97.0
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
       - run: cargo fmt --manifest-path remote/kmuxd/Cargo.toml --all -- --check
@@ -56,6 +45,7 @@ jobs:
 
   ssh-native-parity:
     name: SSH native parity (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
