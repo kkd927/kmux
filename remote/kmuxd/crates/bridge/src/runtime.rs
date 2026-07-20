@@ -5628,6 +5628,10 @@ fn write_executable_atomic(path: &Path, bytes: &[u8]) -> Result<(), BridgeRuntim
             .open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
+        // Do not publish an executable while it still has a writable file
+        // descriptor. Linux rejects an exec racing with that descriptor as
+        // ETXTBSY ("Text file busy").
+        drop(file);
         fs::rename(&temporary, path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
         File::open(parent)?.sync_all()?;

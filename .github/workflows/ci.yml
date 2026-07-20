@@ -43,8 +43,8 @@ jobs:
       - run: cargo test --manifest-path remote/kmuxd/Cargo.toml --workspace --locked
       - run: npm run test:ssh:integration
 
-  ssh-native-parity:
-    name: SSH native parity (${{ matrix.target }})
+  verify-ssh-native-parity:
+    name: Verify SSH native parity (${{ matrix.target }})
     if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false

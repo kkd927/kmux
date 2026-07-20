@@ -251,13 +251,13 @@ describe("remote runtime artifact contract", () => {
   it("keeps Linux SSH integration and release artifact checks on matching architectures", () => {
     const ci = readWorkflow(".github/workflows/ci.yml");
     const release = readWorkflow(".github/workflows/release-desktop.yml");
-    expect(ci.jobs["ssh-native-parity"].strategy.matrix.include).toEqual(
+    expect(ci.jobs["verify-ssh-native-parity"].strategy.matrix.include).toEqual(
       expectedNativeMatrix
     );
-    expect(ci.jobs["ssh-native-parity"].if).toBe(
+    expect(ci.jobs["verify-ssh-native-parity"].if).toBe(
       "github.event_name != 'pull_request'"
     );
-    expect(ci.jobs["ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
+    expect(ci.jobs["verify-ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
     expect(ci.jobs["ssh-integration-linux"]).toBeUndefined();
     expect(ci.jobs["verify-linux"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
     expect(
