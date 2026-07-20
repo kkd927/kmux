@@ -1300,8 +1300,6 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
               cols,
               rows,
               succeeded: true,
-              platform: process.platform,
-              sigwinchExpected: process.platform !== "win32",
               ptyReportedCols: ptyProcess.cols,
               ptyReportedRows: ptyProcess.rows
             });
@@ -1316,8 +1314,6 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
               cols,
               rows,
               succeeded: false,
-              platform: process.platform,
-              sigwinchExpected: false,
               error: error instanceof Error ? error.message : String(error)
             });
           }
