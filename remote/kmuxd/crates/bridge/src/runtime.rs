@@ -23,9 +23,8 @@ use kmux_compat::{
     RemoteHistoryRecord, RemoteOperationIntent, RemoteOperationPayload, RemotePersistenceLevel,
     RemotePrincipal, RemoteResourceKey, RemoteRetentionPolicy, RemoteRuntimeRoots,
     RemoteSessionLaunchPayload, RemoteSessionStorageStatus, RemoteSpoolEvent, RemoteUsageRecord,
-    SurfaceCaptureChunkResponse,
-    SurfaceCaptureCompletedResponse, TerminalInputAckResponse, TerminalProxyEndpoint,
-    UsageScannedResponse, read_control, read_remote_frame, write_control,
+    SurfaceCaptureChunkResponse, SurfaceCaptureCompletedResponse, TerminalInputAckResponse,
+    TerminalProxyEndpoint, UsageScannedResponse, read_control, read_remote_frame, write_control,
 };
 use kmux_doctor::{DoctorPaths, run_doctor};
 use kmux_hook::{
