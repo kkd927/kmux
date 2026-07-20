@@ -208,6 +208,7 @@ fn probe_atomic_rename_and_durability(root: &Path) -> Result<(), DoctorError> {
 }
 
 fn probe_executable(root: &Path) -> Result<(), DoctorError> {
+    const MAX_EXEC_ATTEMPTS: usize = 3;
     let probe = root.join(format!(".doctor-exec-{}", Uuid::new_v4()));
     fs::write(&probe, b"#!/bin/sh\nexit 0\n").map_err(|source| DoctorError::PathCapability {
         path: root.to_owned(),
@@ -219,11 +220,38 @@ fn probe_executable(root: &Path) -> Result<(), DoctorError> {
             source,
         }
     })?;
-    let status = Command::new(&probe).status();
+    let mut attempt = 0;
+    let status = loop {
+        attempt += 1;
+        let status = Command::new(&probe).status();
+        if let Err(error) = &status
+            && attempt < MAX_EXEC_ATTEMPTS
+            && matches!(
+                error.kind(),
+                io::ErrorKind::ExecutableFileBusy
+                    | io::ErrorKind::ResourceBusy
+                    | io::ErrorKind::Interrupted
+            )
+        {
+            // Concurrent first-use probes can briefly race the host's
+            // executable scanner. A real noexec mount returns PermissionDenied
+            // and is never retried.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+        break status;
+    };
     let _ = fs::remove_file(&probe);
     match status {
         Ok(status) if status.success() => Ok(()),
-        _ => Err(DoctorError::InstallNoExec(root.to_owned())),
+        Ok(_) => Err(DoctorError::InstallNoExec(root.to_owned())),
+        Err(source) if source.kind() == io::ErrorKind::PermissionDenied => {
+            Err(DoctorError::InstallNoExec(root.to_owned()))
+        }
+        Err(source) => Err(DoctorError::PathCapability {
+            path: root.to_owned(),
+            source,
+        }),
     }
 }
 
