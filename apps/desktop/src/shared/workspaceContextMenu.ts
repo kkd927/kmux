@@ -94,7 +94,6 @@ export function buildWorkspaceContextMenuEntries(
       label: "Convert to SSH Workspace…",
       action: "ssh-workspace"
     },
-    { id: "separator-ssh", kind: "separator" },
     ...(canConvertToWorktree
       ? [
           {
@@ -102,10 +101,10 @@ export function buildWorkspaceContextMenuEntries(
             kind: "action" as const,
             label: "Convert to Worktree Workspace",
             action: "convert-worktree" as const
-          },
-          { id: "separator-worktree", kind: "separator" as const }
+          }
         ]
       : []),
+    { id: "separator-conversions", kind: "separator" },
     {
       id: "rename",
       kind: "action",

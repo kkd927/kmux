@@ -1119,6 +1119,305 @@
   overflow: hidden;
 }
 
+.sshWorkspaceDialog {
+  width: min(540px, calc(100vw - 36px));
+}
+
+.sshWorkspaceDialogHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--popup-bg);
+}
+
+.sshWorkspaceDialogHeader > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sshWorkspaceDialogHeader h2,
+.sshWorkspaceDialogSectionHeader h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.sshWorkspaceDialogHeader h2 {
+  font-size: 1.154rem;
+  line-height: 1.25;
+}
+
+.sshWorkspaceDialogHeader p,
+.sshWorkspaceDialogSectionHeader p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--settings-description-font-size);
+  line-height: var(--settings-description-line-height);
+}
+
+.sshWorkspaceDialogHeader button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sshWorkspaceDialogHeader button:hover:not(:disabled),
+.sshWorkspaceDialogHeader button:focus-visible {
+  border-color: var(--input-border);
+  background: var(--button-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.sshWorkspaceDialogHeader button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.sshWorkspaceDialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 18px 18px;
+}
+
+.sshWorkspaceDialogSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sshWorkspaceDialogSection + .sshWorkspaceDialogSection {
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.sshWorkspaceDialogSectionHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sshWorkspaceDialogSectionHeader h3 {
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.sshWorkspaceConnectionControl {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.sshWorkspaceConnectionControl select {
+  width: 100%;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-size: 1rem;
+}
+
+.sshWorkspaceConnectionControl select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  outline: none;
+}
+
+.sshWorkspaceConnectionRoute {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--kmux-terminal-font-family);
+  font-size: 0.846rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sshWorkspaceManageButton {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--settings-description-font-size);
+  line-height: var(--settings-description-line-height);
+  cursor: pointer;
+}
+
+.sshWorkspaceManageButton:hover:not(:disabled),
+.sshWorkspaceManageButton:focus-visible {
+  color: color-mix(in srgb, var(--accent) 76%, var(--text-primary));
+  text-decoration: underline;
+  outline: none;
+}
+
+.sshWorkspaceManageButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.sshWorkspaceChoices {
+  display: grid;
+  gap: 8px;
+}
+
+.sshWorkspaceChoice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition:
+    border-color 80ms ease,
+    background 80ms ease;
+}
+
+.sshWorkspaceChoice:hover:not([data-disabled="true"]) {
+  border-color: var(--input-border);
+  background: var(--list-hover);
+}
+
+.sshWorkspaceChoice[data-selected="true"] {
+  border-color: var(--list-active-border);
+  background: var(--list-active);
+}
+
+.sshWorkspaceChoice[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.sshWorkspaceChoice input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.sshWorkspaceChoice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sshWorkspaceChoice strong {
+  font-size: 0.923rem;
+  line-height: 1.3;
+}
+
+.sshWorkspaceChoice > span > span {
+  color: var(--text-secondary);
+  font-size: var(--settings-description-font-size);
+  line-height: var(--settings-description-line-height);
+}
+
+.sshWorkspaceProgress {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.sshWorkspaceProgress > span:first-child {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.sshWorkspaceProgress[data-phase="preparing"] > span:first-child {
+  animation: ssh-workspace-progress-pulse 1.2s ease-in-out infinite;
+}
+
+.sshWorkspaceProgress > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sshWorkspaceProgress strong {
+  color: var(--text-primary);
+  font-size: 0.923rem;
+  line-height: 1.3;
+}
+
+.sshWorkspaceProgress > span:last-child > span {
+  color: var(--text-secondary);
+  font-size: var(--settings-description-font-size);
+  line-height: var(--settings-description-line-height);
+}
+
+@keyframes ssh-workspace-progress-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sshWorkspaceProgress[data-phase="preparing"] > span:first-child {
+    animation: none;
+  }
+}
+
+.sshWorkspaceError {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--border-soft));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  color: var(--danger);
+  font-size: var(--settings-description-font-size);
+  line-height: var(--settings-description-line-height);
+}
+
+.sshWorkspaceDialogActions {
+  padding: 12px 18px 16px;
+}
+
+.sshWorkspaceDialogActions button[data-primary="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.sshWorkspaceDialogActions button[data-primary="true"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 78%, #ffffff);
+  background: color-mix(in srgb, var(--accent) 86%, #ffffff);
+}
+
+.sshWorkspaceDialogActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
 .palette input,
 .settings input,
 .settings select,

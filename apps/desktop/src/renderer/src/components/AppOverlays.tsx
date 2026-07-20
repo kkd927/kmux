@@ -144,7 +144,12 @@ interface AppOverlaysProps {
   onConfirmSshWorkspace: () => void;
   onManageSshConnections: () => void;
   settingsOpen: boolean;
-  settingsInitialCategory: "general" | "ssh" | "terminal" | "notifications" | "shortcuts";
+  settingsInitialCategory:
+    | "general"
+    | "ssh"
+    | "terminal"
+    | "notifications"
+    | "shortcuts";
   settingsDraft: KmuxSettings | undefined;
   setSettingsDraft: Dispatch<SetStateAction<KmuxSettings | undefined>>;
   settingsThemeNotice: string | null;
@@ -427,6 +432,10 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           profile.id === props.settingsDraft?.terminalThemes.activeProfileId
       ) ?? null)
     : null;
+  const selectedSshProfile =
+    props.sshWorkspaceDialog?.connections?.profiles.find(
+      (profile) => profile.id === props.sshWorkspaceDialog?.selectedProfileId
+    ) ?? null;
   const surfaceDiagnosticCaptureEnabled = props.settingsDraft
     ? resolveSurfaceDiagnosticCaptureEnabled(
         props.settingsDraft.surfaceDiagnosticCaptureMode,
@@ -898,10 +907,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
               <button type="button" onClick={props.onCancelSshAskpass}>
                 Cancel
               </button>
-              <button
-                type="submit"
-                disabled={!props.sshAskpassPrompt.response}
-              >
+              <button type="submit" disabled={!props.sshAskpassPrompt.response}>
                 Continue
               </button>
             </div>
@@ -918,7 +924,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
           }}
         >
           <div
-            className={styles.workspaceCloseConfirm}
+            className={`${styles.workspaceCloseConfirm} ${styles.sshWorkspaceDialog}`}
             role="dialog"
             aria-modal="true"
             aria-label="SSH Workspace"
@@ -926,8 +932,14 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className={styles.modalHeader}>
-              <h2>SSH Workspace</h2>
+            <header className={styles.sshWorkspaceDialogHeader}>
+              <span>
+                <h2>Connect through SSH</h2>
+                <p>
+                  Choose a saved connection, then decide what to do with this
+                  workspace.
+                </p>
+              </span>
               <button
                 type="button"
                 aria-label="Close SSH workspace dialog"
@@ -936,109 +948,161 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
               >
                 ×
               </button>
-            </div>
-            <div className={styles.settingsSection}>
-              <label className={styles.settingsRow}>
-                <span className={styles.settingsRowCopy}>
-                  <span className={styles.settingsRowTitle}>
-                    SSH connection
-                  </span>
-                  <span className={styles.settingsRowDescription}>
-                    Saved profiles are resolved by your system OpenSSH.
-                  </span>
-                </span>
-                <select
-                  aria-label="SSH connection"
-                  value={props.sshWorkspaceDialog.selectedProfileId ?? ""}
-                  disabled={
-                    props.sshWorkspaceDialog.phase !== "idle" ||
-                    !props.sshWorkspaceDialog.connections?.profiles.length
-                  }
-                  onChange={(event) =>
-                    props.onSelectSshProfile(event.currentTarget.value)
-                  }
-                >
-                  {!props.sshWorkspaceDialog.connections ? (
-                    <option value="">Loading connections…</option>
-                  ) : props.sshWorkspaceDialog.connections.profiles.length ? (
-                    props.sshWorkspaceDialog.connections.profiles.map(
-                      (profile) => (
-                        <option key={profile.id} value={profile.id}>
-                          {profile.name}
-                        </option>
-                      )
-                    )
-                  ) : (
-                    <option value="">No saved SSH connections</option>
-                  )}
-                </select>
-              </label>
-              <button
-                type="button"
-                className={styles.settingsRowButton}
-                onClick={props.onManageSshConnections}
-                disabled={props.sshWorkspaceDialog.phase !== "idle"}
+            </header>
+            <div className={styles.sshWorkspaceDialogBody}>
+              <section
+                className={styles.sshWorkspaceDialogSection}
+                aria-labelledby="ssh-workspace-connection-title"
               >
-                {props.sshWorkspaceDialog.connections?.profiles.length
-                  ? "Manage SSH Connections…"
-                  : "New SSH Connection…"}
-              </button>
-            </div>
-            <fieldset className={styles.settingsSection}>
-              <legend>How would you like to continue?</legend>
-              <label className={styles.checkboxRow}>
-                <input
-                  type="radio"
-                  name="ssh-workspace-continuation"
-                  checked={
-                    props.sshWorkspaceDialog.continuation === "convert"
-                  }
-                  disabled={
-                    props.sshWorkspaceDialog.phase !== "idle" ||
-                    props.sshWorkspaceDialog.sourceTargetKind !== "local"
-                  }
-                  onChange={() => props.onSelectSshContinuation("convert")}
-                />
-                <span>
-                  <strong>Convert current workspace</strong>
-                  <br />
-                  Replaces its local session and pane content only after the SSH
-                  workspace is ready.
-                </span>
-              </label>
-              <label className={styles.checkboxRow}>
-                <input
-                  type="radio"
-                  name="ssh-workspace-continuation"
-                  checked={props.sshWorkspaceDialog.continuation === "create"}
+                <div className={styles.sshWorkspaceDialogSectionHeader}>
+                  <h3 id="ssh-workspace-connection-title">SSH connection</h3>
+                  <p>Saved profiles are resolved by your system OpenSSH.</p>
+                </div>
+                <div className={styles.sshWorkspaceConnectionControl}>
+                  <select
+                    aria-label="SSH connection"
+                    value={props.sshWorkspaceDialog.selectedProfileId ?? ""}
+                    disabled={
+                      props.sshWorkspaceDialog.phase !== "idle" ||
+                      !props.sshWorkspaceDialog.connections?.profiles.length
+                    }
+                    onChange={(event) =>
+                      props.onSelectSshProfile(event.currentTarget.value)
+                    }
+                  >
+                    {!props.sshWorkspaceDialog.connections ? (
+                      <option value="">Loading connections…</option>
+                    ) : props.sshWorkspaceDialog.connections.profiles.length ? (
+                      props.sshWorkspaceDialog.connections.profiles.map(
+                        (profile) => (
+                          <option key={profile.id} value={profile.id}>
+                            {profile.name}
+                          </option>
+                        )
+                      )
+                    ) : (
+                      <option value="">No saved SSH connections</option>
+                    )}
+                  </select>
+                  {selectedSshProfile ? (
+                    <code className={styles.sshWorkspaceConnectionRoute}>
+                      {selectedSshProfile.effectiveConnection
+                        ? `${selectedSshProfile.effectiveConnection.user}@${selectedSshProfile.effectiveConnection.hostName}:${selectedSshProfile.effectiveConnection.port}`
+                        : (selectedSshProfile.sshConfigHost ??
+                          selectedSshProfile.host)}
+                    </code>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className={styles.sshWorkspaceManageButton}
+                  onClick={props.onManageSshConnections}
                   disabled={props.sshWorkspaceDialog.phase !== "idle"}
-                  onChange={() => props.onSelectSshContinuation("create")}
-                />
-                <span>
-                  <strong>Create new SSH workspace</strong>
-                  <br />
-                  Keeps the current workspace and every running session
-                  unchanged.
-                </span>
-              </label>
-            </fieldset>
-            {props.sshWorkspaceDialog.phase === "preparing" ? (
-              <p className={styles.confirmBody} role="status">
-                Verifying host, authentication, authority, and runtime… You can
-                cancel without changing this workspace.
-              </p>
-            ) : null}
-            {props.sshWorkspaceDialog.phase === "committing" ? (
-              <p className={styles.confirmBody} role="status">
-                Creating and committing the remote workspace…
-              </p>
-            ) : null}
-            {props.sshWorkspaceDialog.error ? (
-              <div className={styles.worktreeError} role="alert">
-                {props.sshWorkspaceDialog.error}
-              </div>
-            ) : null}
-            <div className={styles.modalActions}>
+                >
+                  {props.sshWorkspaceDialog.connections?.profiles.length
+                    ? "Manage SSH connections"
+                    : "Create SSH connection"}
+                </button>
+              </section>
+              <section
+                className={styles.sshWorkspaceDialogSection}
+                aria-labelledby="ssh-workspace-action-title"
+              >
+                <div className={styles.sshWorkspaceDialogSectionHeader}>
+                  <h3 id="ssh-workspace-action-title">Workspace action</h3>
+                  <p>Choose what happens after the remote host is ready.</p>
+                </div>
+                <div className={styles.sshWorkspaceChoices}>
+                  <label
+                    className={styles.sshWorkspaceChoice}
+                    data-selected={
+                      props.sshWorkspaceDialog.continuation === "convert"
+                        ? "true"
+                        : undefined
+                    }
+                    data-disabled={
+                      props.sshWorkspaceDialog.sourceTargetKind !== "local"
+                        ? "true"
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="ssh-workspace-continuation"
+                      checked={
+                        props.sshWorkspaceDialog.continuation === "convert"
+                      }
+                      disabled={
+                        props.sshWorkspaceDialog.phase !== "idle" ||
+                        props.sshWorkspaceDialog.sourceTargetKind !== "local"
+                      }
+                      onChange={() => props.onSelectSshContinuation("convert")}
+                    />
+                    <span>
+                      <strong>Convert this workspace</strong>
+                      <span>
+                        Replaces its local sessions and panes only after the SSH
+                        workspace is ready.
+                      </span>
+                    </span>
+                  </label>
+                  <label
+                    className={styles.sshWorkspaceChoice}
+                    data-selected={
+                      props.sshWorkspaceDialog.continuation === "create"
+                        ? "true"
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="ssh-workspace-continuation"
+                      checked={
+                        props.sshWorkspaceDialog.continuation === "create"
+                      }
+                      disabled={props.sshWorkspaceDialog.phase !== "idle"}
+                      onChange={() => props.onSelectSshContinuation("create")}
+                    />
+                    <span>
+                      <strong>Create a new SSH workspace</strong>
+                      <span>
+                        Keeps this workspace and every running session
+                        unchanged.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+              {props.sshWorkspaceDialog.phase !== "idle" ? (
+                <div
+                  className={styles.sshWorkspaceProgress}
+                  data-phase={props.sshWorkspaceDialog.phase}
+                  role="status"
+                >
+                  <span aria-hidden="true" />
+                  <span>
+                    <strong>
+                      {props.sshWorkspaceDialog.phase === "preparing"
+                        ? "Checking the remote host"
+                        : "Creating the SSH workspace"}
+                    </strong>
+                    <span>
+                      {props.sshWorkspaceDialog.phase === "preparing"
+                        ? "Authentication, authority, and runtime are being verified. You can still cancel."
+                        : "The remote workspace is being committed. This cannot be cancelled."}
+                    </span>
+                  </span>
+                </div>
+              ) : null}
+              {props.sshWorkspaceDialog.error ? (
+                <div className={styles.sshWorkspaceError} role="alert">
+                  {props.sshWorkspaceDialog.error}
+                </div>
+              ) : null}
+            </div>
+            <div
+              className={`${styles.modalActions} ${styles.sshWorkspaceDialogActions}`}
+            >
               <button
                 type="button"
                 onClick={props.onCloseSshWorkspaceDialog}
@@ -1048,13 +1112,16 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
               </button>
               <button
                 type="button"
+                data-primary="true"
                 onClick={props.onConfirmSshWorkspace}
                 disabled={
                   props.sshWorkspaceDialog.phase !== "idle" ||
                   !props.sshWorkspaceDialog.selectedProfileId
                 }
               >
-                Continue
+                {props.sshWorkspaceDialog.continuation === "convert"
+                  ? "Convert workspace"
+                  : "Create SSH workspace"}
               </button>
             </div>
           </div>
