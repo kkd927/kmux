@@ -905,6 +905,15 @@ durable operations defined above. It:
   snapshot and the descriptor/tombstone/resource revision retains the
   idempotency identity required after ledger GC
 
+The operation ledger, product projection, and resource receipt do not have
+independent retention policies. They form one checkpoint lifecycle: reconcile
+an exact authoritative descriptor receipt, persist the product snapshot that
+contains the terminal fact and remote revision, remove the matching ledger and
+projection, then remove the now-consumed receipt. Exact revision, create
+identity, and last-operation identity make compaction fail closed on stale
+evidence. This common lifecycle keeps all three bounded stores below their
+admission limits instead of adding kind-specific compaction exceptions.
+
 This coordinator is not in the terminal data path. It serializes state changes
 per `desktopInstallationId + targetId + workspaceId`, while unrelated
 workspaces and read-only provider operations may proceed concurrently. The
@@ -2768,11 +2777,13 @@ hardware, OpenSSH versions, network shaping, fixture repository, and generators
 to `tests/e2e/fixtures/remote-performance-gates.v1.json`. The reference target
 has at least 4 physical CPU cores, 8 GiB RAM, SSD-backed state, and a controlled
 20 ms RTT with less than 1 ms injected jitter. Every supported artifact must
-meet these v1 maxima:
+meet these v1 maxima. The JSON manifest is the executable numeric source of
+truth; its test validates schema and cross-field invariants without copying the
+entire manifest into a second literal.
 
 | Metric under the 16-keeper / 4-attached workload                          | Gate                                                                                                                                       |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Added key-echo latency versus a direct muxed OpenSSH PTY on the same link | p95 <= 8 ms; p99 <= 20 ms                                                                                                                  |
+| Added key-echo latency versus a direct muxed OpenSSH PTY on the same link | p95 <= 8 ms; p99 <= 20 ms during both steady load and the 4 MiB burst                                                                      |
 | `remote-host` event-loop delay                                            | p99 <= 10 ms; no single stall > 100 ms attributable to kmux                                                                                |
 | Terminal mutation continuity                                              | zero missing, duplicate, or reordered mutations                                                                                            |
 | Steady-state keeper RSS                                                   | p95 <= 32 MiB per keeper                                                                                                                   |
@@ -2789,9 +2800,11 @@ least one checkpoint. The harness records p50 as diagnostic data in addition to
 the gated p95/p99 values. The steady terminal generator emits its deterministic
 binary stream in 4 KiB application chunks. After the steady measurement, one
 attached keeper emits a 4 MiB ASCII burst in 64 KiB application chunks paced at
-20 ms while twenty interactive echo probes run. The burst must complete through
-the existing attachment without a mutation gap, duplicate, reorder, or hidden
-reattach; burst timings are retained as diagnostic data.
+20 ms while twenty interactive echo probes run. Input does not pause burst
+output. All probes must cross the original attachment before the end marker,
+and their added p95/p99 latency must satisfy the same fixed echo limits. The
+production attachment rejects a mutation gap, duplicate, or reorder before the
+harness can report a pass; there is no second decorative sequence counter.
 
 The manifest may tighten a limit or add platform-specific stricter gates.
 Loosening a limit, reducing the workload, or changing the topology or generator

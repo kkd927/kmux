@@ -17,12 +17,13 @@ use kmux_compat::{
     CohortProxyResponse, ConversionPreparedResponse, ConversionPromotedResponse,
     DesiredForwardResponse, EventsAcknowledgedResponse, EventsReplayedResponse,
     ForwardsObservedResponse, GitInspectedResponse, GitRepositoryResponse, HelloResponse,
-    HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse, OperationResult,
-    PortsInspectedResponse, ProvisionalReclaimedResponse, REMOTE_PROTOCOL_VERSION, RemoteAuthority,
-    RemoteControlError, RemoteFrameKind, RemoteHistoryRecord, RemoteOperationIntent,
-    RemoteOperationPayload, RemotePersistenceLevel, RemotePrincipal, RemoteResourceKey,
-    RemoteRetentionPolicy, RemoteRuntimeRoots, RemoteSessionLaunchPayload,
-    RemoteSessionStorageStatus, RemoteSpoolEvent, RemoteUsageRecord, SurfaceCaptureChunkResponse,
+    HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse,
+    ObservedWorkspace, OperationResult, PortsInspectedResponse, ProvisionalReclaimedResponse,
+    REMOTE_PROTOCOL_VERSION, RemoteAuthority, RemoteControlError, RemoteFrameKind,
+    RemoteHistoryRecord, RemoteOperationIntent, RemoteOperationPayload, RemotePersistenceLevel,
+    RemotePrincipal, RemoteResourceKey, RemoteRetentionPolicy, RemoteRuntimeRoots,
+    RemoteSessionLaunchPayload, RemoteSessionStorageStatus, RemoteSpoolEvent, RemoteUsageRecord,
+    SurfaceCaptureChunkResponse,
     SurfaceCaptureCompletedResponse, TerminalInputAckResponse, TerminalProxyEndpoint,
     UsageScannedResponse, read_control, read_remote_frame, write_control,
 };
@@ -3986,6 +3987,57 @@ fn observe(
 ) -> Result<ObservedResponse, BridgeRuntimeError> {
     validate_id(desktop_installation_id, "desktopInstallationId")?;
     validate_id(target_id, "targetId")?;
+    let workspace_directory = Path::new(&roots.state_root).join("workspaces");
+    ensure_private_directory(&workspace_directory)?;
+    let mut workspace_entries =
+        fs::read_dir(&workspace_directory)?.collect::<Result<Vec<_>, _>>()?;
+    workspace_entries.sort_by_key(|entry| entry.file_name());
+    if workspace_entries.len() > MAX_SESSION_DESCRIPTORS.saturating_mul(2) {
+        return Err(BridgeRuntimeError::Invalid(
+            "workspace inventory exceeds its hard bound".to_owned(),
+        ));
+    }
+    let mut workspaces = Vec::new();
+    for entry in workspace_entries {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let _workspace_lock = acquire_resource_lock(&path)?;
+        let Some(descriptor) = read_workspace_descriptor_optional(&path)? else {
+            continue;
+        };
+        if descriptor.resource_key.desktop_installation_id != desktop_installation_id
+            || descriptor.resource_key.target_id != target_id
+        {
+            continue;
+        }
+        if descriptor.resource_key.session_id.is_some() {
+            return Err(BridgeRuntimeError::Invalid(
+                "workspace descriptor identifies a session".to_owned(),
+            ));
+        }
+        if descriptor.pending_operation.is_some() {
+            return Err(BridgeRuntimeError::Retryable(
+                "workspace inventory contains an unresolved mutation".to_owned(),
+            ));
+        }
+        workspaces.push(ObservedWorkspace {
+            resource_key: descriptor.resource_key,
+            state: descriptor.state,
+            remote_resource_revision: descriptor.remote_resource_revision,
+            create_operation_id: descriptor.create_operation_id,
+            canonical_create_payload_hash: descriptor.canonical_create_payload_hash,
+            last_operation_id: descriptor.last_operation_id,
+            last_operation_payload_hash: descriptor.last_operation_payload_hash,
+            last_result_digest: descriptor.last_result_digest,
+        });
+        if workspaces.len() > MAX_SESSION_DESCRIPTORS {
+            return Err(BridgeRuntimeError::Invalid(
+                "workspace inventory exceeds its hard bound".to_owned(),
+            ));
+        }
+    }
     let directory = Path::new(&roots.state_root).join("sessions");
     ensure_private_directory(&directory)?;
     let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
@@ -4055,6 +4107,13 @@ fn observe(
         keepers.push(ObservedKeeper {
             resource_key: descriptor.resource_key,
             keeper_generation: descriptor.keeper_generation,
+            descriptor_state: match descriptor.state {
+                SessionDescriptorState::Creating => "creating",
+                SessionDescriptorState::Running => "running",
+                SessionDescriptorState::Exited => "exited",
+                SessionDescriptorState::Terminated => "terminated",
+            }
+            .to_owned(),
             process_state: process_state.to_owned(),
             remote_resource_revision: descriptor.remote_resource_revision,
             exit_code: descriptor.exit_code,
@@ -4094,6 +4153,7 @@ fn observe(
         target_id: target_id.to_owned(),
         bridge_generation: bridge_generation.to_owned(),
         observed_at: now_rfc3339(),
+        workspaces,
         keepers,
     })
 }

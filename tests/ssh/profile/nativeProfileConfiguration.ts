@@ -5,7 +5,7 @@ import { isAbsolute, normalize, posix } from "node:path";
 
 import type { Id, RemoteRuntimeRootsDto } from "@kmux/proto";
 
-export const NATIVE_PROFILE_ARTIFACT_TARGETS = [
+const NATIVE_PROFILE_ARTIFACT_TARGETS = [
   "darwin-arm64",
   "darwin-x64",
   "linux-arm64-musl",
@@ -93,7 +93,7 @@ const AUDIT_KEYS = ["args", "executable"] as const;
 const MAX_PATH_BYTES = 32 * 1024;
 const MAX_EVIDENCE_BYTES = 8 * 1024;
 const MAX_AUDIT_ARGUMENTS = 128;
-const MAX_RUNTIME_ARTIFACT_BYTES = 64 * 1024 * 1024;
+export const NATIVE_PROFILE_MAX_RUNTIME_ARTIFACT_BYTES = 64 * 1024 * 1024;
 
 export function decodeNativeProfileConfiguration(
   value: unknown
@@ -275,7 +275,7 @@ export async function verifyNativeProfileRuntimeArtifact(
     if (
       !metadata.isFile() ||
       metadata.size < 1 ||
-      metadata.size > MAX_RUNTIME_ARTIFACT_BYTES ||
+      metadata.size > NATIVE_PROFILE_MAX_RUNTIME_ARTIFACT_BYTES ||
       (metadata.mode & 0o111) === 0
     ) {
       throw new Error(

@@ -288,8 +288,11 @@ describe("durable remote operation store", () => {
     };
 
     expect(
-      store.compactAfterDurableSnapshot(admission.intent.operationId, snapshot)
-    ).toBe(false);
+      store.compactAfterDurableSnapshot(
+        [admission.intent.operationId],
+        snapshot
+      )
+    ).toEqual([]);
     store.recordResourceReceipt(
       createResourceReceipt({
         lastOperationId: admission.intent.operationId,
@@ -301,10 +304,67 @@ describe("durable remote operation store", () => {
     );
 
     expect(
-      store.compactAfterDurableSnapshot(admission.intent.operationId, snapshot)
-    ).toBe(true);
+      store.compactAfterDurableSnapshot(
+        [admission.intent.operationId],
+        snapshot
+      )
+    ).toEqual([admission.intent.operationId]);
     expect(store.get(admission.intent.operationId)).toBeNull();
     expect(store.listResourceReceipts()).toHaveLength(1);
+  });
+
+  it("compacts workspace operations from an advanced descriptor and removes the transient receipt", () => {
+    const store = createDurableRemoteOperationStore(root);
+    const admission = createWorkspaceAdmission();
+    const completedAt = "2026-07-17T00:00:01.000Z";
+    const resultDigest = "c".repeat(64);
+    store.admit(admission);
+    store.recordResult(
+      admission.intent.operationId,
+      {
+        outcome: "succeeded",
+        operationId: admission.intent.operationId,
+        remoteResourceRevision: uint64(1n),
+        resultDigest,
+        completedAt
+      },
+      {
+        type: "remote-operation.succeeded",
+        operationId: admission.intent.operationId,
+        remoteResourceRevision: uint64(1n),
+        resultDigest,
+        completedAt
+      }
+    );
+    const snapshot = createInitialState("/bin/sh");
+    snapshot.remoteOperations[admission.intent.operationId] = {
+      ...admission.pendingFact.projection,
+      state: "succeeded",
+      completedAt,
+      resultDigest
+    };
+    store.recordResourceReceipt({
+      resourceKey: structuredClone(admission.intent.resourceKey),
+      remoteResourceRevision: uint64(2n),
+      resourceState: "active",
+      createOperationId: admission.intent.operationId,
+      canonicalCreatePayloadHash: admission.intent.canonicalPayloadHash,
+      lastOperationId: "operation_later",
+      lastOperationPayloadHash: "d".repeat(64),
+      lastResultDigest: "e".repeat(64),
+      observedAt: "2026-07-17T00:00:02.000Z"
+    });
+
+    expect(
+      store.compactAfterDurableSnapshot(
+        [admission.intent.operationId],
+        snapshot
+      )
+    ).toEqual([admission.intent.operationId]);
+    expect(store.removeResourceReceipts([admission.intent.resourceKey])).toBe(
+      1
+    );
+    expect(store.listResourceReceipts()).toEqual([]);
   });
 });
 
@@ -372,5 +432,37 @@ function createResourceReceipt(
     lastResultDigest: "b".repeat(64),
     observedAt: "2026-07-17T00:00:00.000Z",
     ...overrides
+  };
+}
+
+function createWorkspaceAdmission() {
+  const payload: RemoteOperationPayloadDto = {
+    kind: "workspace.create",
+    workspaceId: "workspace_1",
+    defaultCwd: "/srv/app"
+  };
+  const canonicalPayload = canonicalizeRemoteOperationPayload(payload);
+  const intent: RemoteOperationIntent = {
+    operationId: "workspace_create_1",
+    kind: payload.kind,
+    resourceKey: {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: "workspace_1"
+    },
+    expectedWorkspaceRevision: "a".repeat(64),
+    expectedRemoteResourceRevision: uint64(0n),
+    nextRemoteResourceRevision: uint64(1n),
+    createOperationId: "workspace_create_1",
+    canonicalPayloadHash: createHash("sha256")
+      .update(canonicalPayload, "utf8")
+      .digest("hex"),
+    createdAt: "2026-07-17T00:00:00.000Z"
+  };
+  return {
+    intent,
+    payload,
+    pendingFact: createRemoteOperationPendingFact(undefined, intent, payload),
+    outbox: { admittedAt: intent.createdAt }
   };
 }

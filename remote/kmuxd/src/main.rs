@@ -107,18 +107,16 @@ enum ProfileSubcommand {
 
 #[derive(Args)]
 struct ProfileTerminalLoadCommand {
-    #[arg(long, value_parser = parse_positive_rate)]
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=16_777_216))]
     bytes_per_second: u64,
-    #[arg(long, value_parser = parse_profile_chunk_bytes)]
+    #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=1_048_576))]
     steady_chunk_bytes: usize,
-    #[arg(long, value_parser = parse_profile_burst_bytes)]
+    #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=16_777_216))]
     burst_bytes: usize,
-    #[arg(long, value_parser = parse_profile_chunk_bytes)]
+    #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=1_048_576))]
     burst_chunk_bytes: usize,
-    #[arg(long, value_parser = parse_profile_interval_ms)]
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=1_000))]
     burst_chunk_interval_ms: u64,
-    #[arg(long, value_parser = parse_profile_pause_ms)]
-    burst_echo_pause_ms: u64,
     #[arg(long, value_parser = parse_profile_seed)]
     seed: u64,
 }
@@ -126,8 +124,7 @@ struct ProfileTerminalLoadCommand {
 const PROFILE_BURST_TRIGGER_PREFIX: &[u8] = b"KMUX_PROFILE_BURST:";
 const PROFILE_BURST_BEGIN_PREFIX: &[u8] = b"KMUX_PROFILE_BURST_BEGIN:";
 const PROFILE_BURST_END_PREFIX: &[u8] = b"KMUX_PROFILE_BURST_END:";
-const PROFILE_STATUS_REQUEST_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS:";
-const PROFILE_STATUS_RESPONSE_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS:";
+const PROFILE_STATUS_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS:";
 const PROFILE_STATUS_END_PREFIX: &[u8] = b"KMUX_PROFILE_STATUS_END:";
 const PROFILE_BURST_TOKEN_MAX_BYTES: usize = 128;
 
@@ -462,16 +459,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse_positive_rate(value: &str) -> Result<u64, String> {
-    let rate = value
-        .parse::<u64>()
-        .map_err(|_| "bytes-per-second must be a positive integer".to_owned())?;
-    if !(1..=16 * 1024 * 1024).contains(&rate) {
-        return Err("bytes-per-second must be between 1 and 16777216".to_owned());
-    }
-    Ok(rate)
-}
-
 fn parse_profile_seed(value: &str) -> Result<u64, String> {
     let normalized = value.strip_prefix("0x").unwrap_or(value);
     let seed = u64::from_str_radix(normalized, 16)
@@ -482,51 +469,10 @@ fn parse_profile_seed(value: &str) -> Result<u64, String> {
     Ok(seed)
 }
 
-fn parse_profile_chunk_bytes(value: &str) -> Result<usize, String> {
-    let bytes = value
-        .parse::<usize>()
-        .map_err(|_| "chunk-bytes must be a positive integer".to_owned())?;
-    if !(1..=1024 * 1024).contains(&bytes) {
-        return Err("chunk-bytes must be between 1 and 1048576".to_owned());
-    }
-    Ok(bytes)
-}
-
-fn parse_profile_burst_bytes(value: &str) -> Result<usize, String> {
-    let bytes = value
-        .parse::<usize>()
-        .map_err(|_| "burst-bytes must be a positive integer".to_owned())?;
-    if !(1..=16 * 1024 * 1024).contains(&bytes) {
-        return Err("burst-bytes must be between 1 and 16777216".to_owned());
-    }
-    Ok(bytes)
-}
-
-fn parse_profile_interval_ms(value: &str) -> Result<u64, String> {
-    let milliseconds = value
-        .parse::<u64>()
-        .map_err(|_| "burst-chunk-interval-ms must be a positive integer".to_owned())?;
-    if !(1..=1_000).contains(&milliseconds) {
-        return Err("burst-chunk-interval-ms must be between 1 and 1000".to_owned());
-    }
-    Ok(milliseconds)
-}
-
-fn parse_profile_pause_ms(value: &str) -> Result<u64, String> {
-    let milliseconds = value
-        .parse::<u64>()
-        .map_err(|_| "burst-echo-pause-ms must be a non-negative integer".to_owned())?;
-    if milliseconds > 1_000 {
-        return Err("burst-echo-pause-ms must be between 0 and 1000".to_owned());
-    }
-    Ok(milliseconds)
-}
-
 struct ProfileBurst {
     token: Vec<u8>,
     remaining_bytes: usize,
     next_chunk_at: Instant,
-    paused_until: Instant,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -614,7 +560,6 @@ fn run_profile_terminal_load(command: ProfileTerminalLoadCommand) -> anyhow::Res
         command.steady_chunk_bytes as f64 / command.bytes_per_second as f64,
     );
     let burst_chunk_interval = Duration::from_millis(command.burst_chunk_interval_ms);
-    let burst_echo_pause = Duration::from_millis(command.burst_echo_pause_ms);
     let mut next_output = Instant::now();
     let mut generator = XorShift64::new(command.seed);
     let mut steady_chunk = vec![0_u8; command.steady_chunk_bytes];
@@ -644,7 +589,6 @@ fn run_profile_terminal_load(command: ProfileTerminalLoadCommand) -> anyhow::Res
                     token: burst_token.to_vec(),
                     remaining_bytes: command.burst_bytes,
                     next_chunk_at: now,
-                    paused_until: now,
                 });
                 burst_started = true;
                 continue;
@@ -652,15 +596,11 @@ fn run_profile_terminal_load(command: ProfileTerminalLoadCommand) -> anyhow::Res
             output.write_all(&token)?;
             output.write_all(b"\n")?;
             output.flush()?;
-            if let Some(active_burst) = burst.as_mut() {
-                active_burst.paused_until = Instant::now() + burst_echo_pause;
-            }
         }
         let now = Instant::now();
         if let Some(active_burst) = burst.as_mut() {
-            let resume_at = active_burst.next_chunk_at.max(active_burst.paused_until);
-            if now < resume_at {
-                thread::sleep((resume_at - now).min(Duration::from_millis(2)));
+            if now < active_burst.next_chunk_at {
+                thread::sleep((active_burst.next_chunk_at - now).min(Duration::from_millis(2)));
                 continue;
             }
             let chunk_bytes = active_burst.remaining_bytes.min(burst_chunk.len());
@@ -697,7 +637,7 @@ fn profile_burst_token(line: &[u8]) -> Option<&[u8]> {
 }
 
 fn profile_status_token(line: &[u8]) -> Option<&[u8]> {
-    profile_control_token(line, PROFILE_STATUS_REQUEST_PREFIX)
+    profile_control_token(line, PROFILE_STATUS_PREFIX)
 }
 
 fn profile_control_token<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
@@ -719,7 +659,7 @@ fn write_profile_status(
     steady_output_bytes: u64,
     burst_output_bytes: u64,
 ) -> anyhow::Result<()> {
-    output.write_all(PROFILE_STATUS_RESPONSE_PREFIX)?;
+    output.write_all(PROFILE_STATUS_PREFIX)?;
     output.write_all(token)?;
     writeln!(output, ":{steady_output_bytes}:{burst_output_bytes}")?;
     write_profile_marker(output, PROFILE_STATUS_END_PREFIX, token)
@@ -1037,8 +977,6 @@ mod tests {
             "65536",
             "--burst-chunk-interval-ms",
             "20",
-            "--burst-echo-pause-ms",
-            "100",
             "--seed",
             "0x4b4d555852454d31",
         ])
@@ -1052,7 +990,6 @@ mod tests {
         assert_eq!(load.burst_bytes, 4_194_304);
         assert_eq!(load.burst_chunk_bytes, 65_536);
         assert_eq!(load.burst_chunk_interval_ms, 20);
-        assert_eq!(load.burst_echo_pause_ms, 100);
         assert_eq!(load.seed, 0x4b4d_5558_5245_4d31);
 
         assert!(

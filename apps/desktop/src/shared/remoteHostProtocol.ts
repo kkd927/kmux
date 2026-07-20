@@ -24,6 +24,8 @@ import {
 } from "@kmux/proto";
 import type { TerminalSessionRef } from "@kmux/proto";
 
+export const REMOTE_ATTACHMENT_FILE_PREFIX = "kmux-attachment-v1-";
+
 export interface RemoteHostEffectiveSshConfig {
   hostName: string;
   user: string;
@@ -284,6 +286,16 @@ export interface RemoteHostFileReleaseRequest {
   localPath: string;
 }
 
+export interface RemoteHostFileAttachmentsPruneRequest {
+  type: "file.attachments-prune";
+  requestId: Id;
+  targetId: Id;
+  remoteDirectory: string;
+  nowUnixMs: number;
+  maxAgeMs: number;
+  maxTotalBytes: number;
+}
+
 export interface RemoteHostTerminalBindRequest {
   type: "terminal.bind";
   targetId: Id;
@@ -341,6 +353,7 @@ export type RemoteHostRequest =
   | RemoteHostFileDownloadRequest
   | RemoteHostFileUploadRequest
   | RemoteHostFileReleaseRequest
+  | RemoteHostFileAttachmentsPruneRequest
   | RemoteHostTerminalBindRequest
   | RemoteHostTargetDisconnectRequest
   | RemoteHostTargetRuntimeCleanRequest
@@ -861,6 +874,40 @@ export function decodeRemoteHostRequest(
         requestId: requireId(record.requestId, "requestId"),
         targetId: requireId(record.targetId, "targetId"),
         localPath: requireAbsoluteBoundedPath(record.localPath, "localPath")
+      };
+    case "file.attachments-prune":
+      assertExactKeys(record, [
+        "type",
+        "requestId",
+        "targetId",
+        "remoteDirectory",
+        "nowUnixMs",
+        "maxAgeMs",
+        "maxTotalBytes"
+      ]);
+      return {
+        type: record.type,
+        requestId: requireId(record.requestId, "requestId"),
+        targetId: requireId(record.targetId, "targetId"),
+        remoteDirectory: requireAbsoluteBoundedPath(
+          record.remoteDirectory,
+          "remoteDirectory"
+        ),
+        nowUnixMs: requireBoundedNonNegativeInteger(
+          record.nowUnixMs,
+          "nowUnixMs",
+          Number.MAX_SAFE_INTEGER
+        ),
+        maxAgeMs: requireBoundedPositiveInteger(
+          record.maxAgeMs,
+          "maxAgeMs",
+          365 * 24 * 60 * 60 * 1000
+        ),
+        maxTotalBytes: requireBoundedPositiveInteger(
+          record.maxTotalBytes,
+          "maxTotalBytes",
+          MAX_TRANSFER_BYTES
+        )
       };
     case "terminal.bind":
       assertExactKeys(record, [

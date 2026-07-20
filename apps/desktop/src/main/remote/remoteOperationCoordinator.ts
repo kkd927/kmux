@@ -49,7 +49,10 @@ export interface RemoteOperationCoordinator {
     operationId: Id,
     executor: (
       operation: DurableRemoteOperationRecord
-    ) => Promise<RemoteOperationExecutionOutcome>
+    ) => Promise<RemoteOperationExecutionOutcome>,
+    checkpoint?: {
+      afterResult: () => Promise<void>;
+    }
   ): Promise<RemoteOperationExecutionOutcome>;
   recordAuthoritativeResult(
     operationId: Id,
@@ -173,7 +176,10 @@ export function createRemoteOperationCoordinator(
       operationId: Id,
       executor: (
         operation: DurableRemoteOperationRecord
-      ) => Promise<RemoteOperationExecutionOutcome>
+      ) => Promise<RemoteOperationExecutionOutcome>,
+      checkpoint?: {
+        afterResult: () => Promise<void>;
+      }
     ): Promise<RemoteOperationExecutionOutcome> {
       const operation = options.store.get(operationId);
       if (!operation) {
@@ -190,6 +196,7 @@ export function createRemoteOperationCoordinator(
         assertDesktopInstallationScope(current, options.desktopInstallationId);
         if (current.result) {
           options.dispatchFact(current.result.fact);
+          if (checkpoint) await checkpoint.afterResult();
           return fromAuthoritativeResult(current.result.authoritative);
         }
         requireVerifiedBinding(current.intent.resourceKey.targetId);
@@ -203,6 +210,7 @@ export function createRemoteOperationCoordinator(
           return outcome;
         }
         recordAuthoritativeResult(operationId, outcome);
+        if (checkpoint) await checkpoint.afterResult();
         return outcome;
       });
     },

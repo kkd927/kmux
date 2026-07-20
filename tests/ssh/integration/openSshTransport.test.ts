@@ -166,16 +166,19 @@ describe("real system OpenSSH transport spike", () => {
       configRoot: join(productHome, "generated"),
       sshPath: target.sshPath,
       resolveEffective: resolveEffectiveSshConfig
-    }).resolve({
-      id: "profile_product_observer",
-      name: "Product observer",
-      host: target.proxyHost,
-      user: "kmux",
-      port: target.proxyPort,
-      identityFile: target.identity.privateKeyPath,
-      createdAt: "2026-07-19T00:00:00.000Z",
-      updatedAt: "2026-07-19T00:00:00.000Z"
-    });
+    }).resolve(
+      {
+        id: "profile_product_observer",
+        name: "Product observer",
+        host: target.proxyHost,
+        user: "kmux",
+        port: target.proxyPort,
+        identityFile: target.identity.privateKeyPath,
+        createdAt: "2026-07-19T00:00:00.000Z",
+        updatedAt: "2026-07-19T00:00:00.000Z"
+      },
+      "attempt_product_observer"
+    );
     const productPool = new SshTransportPool();
     try {
       await productPool.connectProvisional({
@@ -4101,8 +4104,6 @@ describe("real system OpenSSH transport spike", () => {
             "65536",
             "--burst-chunk-interval-ms",
             "20",
-            "--burst-echo-pause-ms",
-            "100",
             "--seed",
             "0x4b4d555852454d31"
           ]
@@ -4191,6 +4192,8 @@ describe("real system OpenSSH transport spike", () => {
     let secondTarget: StartedSshTarget | undefined;
     const firstPool = new SshTransportPool();
     const secondPool = new SshTransportPool();
+    let testFailed = false;
+    let testFailure: unknown;
     try {
       firstTarget = await startSshTarget({
         machineId: "11111111111111111111111111111111",
@@ -4254,19 +4257,73 @@ describe("real system OpenSSH transport spike", () => {
         doctorPaths("/var/lib/kmux-local/kmux/doctor")
       );
       expect(secondLocal.executionNodeId).not.toBe(firstLocal.executionNodeId);
-    } finally {
-      await firstPool.close();
-      await secondPool.close();
-      const ownershipTarget = secondTarget ?? firstTarget;
-      if (ownershipTarget) {
-        await restoreSharedHomeOwnership(ownershipTarget);
+    } catch (error) {
+      testFailed = true;
+      testFailure = error;
+    }
+    const cleanupFailures: Error[] = [];
+    await captureCleanupFailure(cleanupFailures, "first SSH pool", () =>
+      firstPool.close()
+    );
+    await captureCleanupFailure(cleanupFailures, "second SSH pool", () =>
+      secondPool.close()
+    );
+    const ownershipTarget = secondTarget ?? firstTarget;
+    if (ownershipTarget) {
+      await captureCleanupFailure(
+        cleanupFailures,
+        "shared-home ownership restore",
+        () => restoreSharedHomeOwnership(ownershipTarget)
+      );
+    }
+    if (secondTarget) {
+      const targetToStop = secondTarget;
+      await captureCleanupFailure(cleanupFailures, "second SSH target", () =>
+        targetToStop.stop()
+      );
+    }
+    if (firstTarget) {
+      const targetToStop = firstTarget;
+      await captureCleanupFailure(cleanupFailures, "first SSH target", () =>
+        targetToStop.stop()
+      );
+    }
+    await captureCleanupFailure(cleanupFailures, "shared-home fixture", () =>
+      rm(sharedHomePath, { recursive: true, force: true })
+    );
+    if (testFailed) {
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError(
+          [testFailure, ...cleanupFailures],
+          "shared-home test and cleanup both failed"
+        );
       }
-      await secondTarget?.stop();
-      await firstTarget?.stop();
-      await rm(sharedHomePath, { recursive: true, force: true });
+      throw testFailure;
+    }
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        cleanupFailures,
+        "shared-home test cleanup failed"
+      );
     }
   });
 });
+
+async function captureCleanupFailure(
+  failures: Error[],
+  label: string,
+  cleanup: () => Promise<unknown>
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch (error) {
+    failures.push(
+      new Error(`${label} cleanup failed`, {
+        cause: error instanceof Error ? error : new Error(String(error))
+      })
+    );
+  }
+}
 
 async function restoreSharedHomeOwnership(
   selectedTarget: StartedSshTarget

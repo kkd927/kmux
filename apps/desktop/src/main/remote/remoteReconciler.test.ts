@@ -199,6 +199,33 @@ describe("RemoteReconciler observations", () => {
     }
   });
 
+  it("does not resurrect a checkpointed explicit termination as retained", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-reconciler-tombstone-"));
+    try {
+      const fixture = createRemoteFixture();
+      const inventory = createRetainedSessionInventoryStore(
+        join(sandbox, "retained.json")
+      );
+      const reconciler = createReconciler(fixture.state, inventory);
+      const keeper = {
+        ...observedKeeper(fixture.workspaceId, fixture.sessionId),
+        descriptorState: "terminated" as const,
+        processState: "exited" as const,
+        exitCode: 0
+      };
+      applyAction(fixture.state, {
+        type: "workspace.close",
+        workspaceId: fixture.workspaceId
+      });
+
+      reconciler.observe(authoritativeInventory([keeper]));
+
+      expect(reconciler.listRetainedSessions()).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("keeps an offline termination retained until the matching durable tombstone is observed", () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-reconciler-terminate-"));
     try {

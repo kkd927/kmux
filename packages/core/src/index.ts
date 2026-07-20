@@ -164,6 +164,8 @@ export interface WorkspaceState {
   statusEntries: Record<string, SidebarStatusEntry>;
   progress?: SidebarProgress;
   logs: SidebarLogEntry[];
+  /** Last authoritative revision of the remote workspace descriptor. */
+  remoteResourceRevision?: Uint64;
 }
 
 export interface PaneState {
@@ -833,6 +835,10 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
         {
           ...workspace,
           location: encodeWorkspaceLocationDto(workspace.location),
+          remoteResourceRevision:
+            workspace.remoteResourceRevision === undefined
+              ? undefined
+              : formatUint64Decimal(workspace.remoteResourceRevision),
           worktree: workspace.worktree
             ? encodePersistedWorkspaceWorktree(workspace.worktree)
             : undefined,
@@ -3871,6 +3877,24 @@ function sanitizeState(state: AppState): AppState {
               defaultHomeDirectory()
           )
         : decodeWorkspaceLocationDto(rawLocation);
+    const rawRemoteResourceRevision = (
+      workspace as WorkspaceState & { remoteResourceRevision?: unknown }
+    ).remoteResourceRevision;
+    if (
+      workspace.location.target.kind === "ssh" &&
+      rawRemoteResourceRevision !== undefined
+    ) {
+      try {
+        workspace.remoteResourceRevision =
+          typeof rawRemoteResourceRevision === "bigint"
+            ? parseUint64Decimal(rawRemoteResourceRevision.toString(10))
+            : parseUint64Decimal(rawRemoteResourceRevision);
+      } catch {
+        delete workspace.remoteResourceRevision;
+      }
+    } else {
+      delete workspace.remoteResourceRevision;
+    }
     sanitizeWorkspaceStatusEntries(workspace);
     workspace.worktree = sanitizeWorkspaceWorktree(
       workspace.worktree,

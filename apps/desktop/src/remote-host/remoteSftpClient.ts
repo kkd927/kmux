@@ -4,6 +4,7 @@ import { lstat, mkdir, opendir, realpath, rm } from "node:fs/promises";
 import { isAbsolute, posix, resolve } from "node:path";
 import type { ChildProcess } from "node:child_process";
 
+import { REMOTE_ATTACHMENT_FILE_PREFIX } from "../shared/remoteHostProtocol";
 import { spawnMuxOnlyChannel } from "./muxOnlyOpenSshChannel";
 import type { AssignedSshMaster, SshTransportPool } from "./sshTransportPool";
 
@@ -14,6 +15,7 @@ const MAX_TRANSFER_BYTES = 1024 ** 3;
 const MAX_STAGED_FILES = 256;
 const MAX_STAGED_BYTES = 1024 ** 3;
 const MAX_STAGING_DIRECTORY_ENTRIES = 1_024;
+const MAX_MANAGED_ATTACHMENT_ENTRIES = 8_192;
 const STAGED_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const MAX_CONCURRENT_TRANSFERS = 4;
 const MAX_QUEUED_TRANSFERS = 64;
@@ -61,6 +63,12 @@ export interface RemoteSftpUploadResult {
   sha256: string;
 }
 
+export interface RemoteSftpAttachmentPruneResult {
+  deletedCount: number;
+  deletedBytes: number;
+  remainingBytes: number;
+}
+
 export interface MuxOnlyRemoteSftpClientOptions {
   pool: SshTransportPool;
   assigned: AssignedSshMaster;
@@ -78,6 +86,12 @@ interface StagedEntry {
   path: string;
   size: number;
   mtimeMs: number;
+}
+
+interface ManagedAttachmentEntry {
+  name: string;
+  size: number;
+  createdAtUnixMs: number;
 }
 
 export class MuxOnlyRemoteSftpClient {
@@ -272,6 +286,67 @@ export class MuxOnlyRemoteSftpClient {
     await rm(source, { force: true });
   }
 
+  pruneManagedAttachments(request: {
+    remoteDirectory: string;
+    nowUnixMs: number;
+    maxAgeMs: number;
+    maxTotalBytes: number;
+  }): Promise<RemoteSftpAttachmentPruneResult> {
+    return this.enqueue(async () => {
+      const remoteDirectory = validateRemotePath(request.remoteDirectory);
+      const nowUnixMs = validateNonNegativeInteger(
+        request.nowUnixMs,
+        "attachment cleanup time"
+      );
+      const maxAgeMs = validatePositiveInteger(
+        request.maxAgeMs,
+        "attachment retention",
+        365 * 24 * 60 * 60 * 1000
+      );
+      const maxTotalBytes = validatePositiveInteger(
+        request.maxTotalBytes,
+        "attachment quota",
+        MAX_TRANSFER_BYTES
+      );
+      const before = await this.listManagedAttachments(remoteDirectory);
+      const cutoff = nowUnixMs - maxAgeMs;
+      const retained = before.filter(
+        (entry) => entry.createdAtUnixMs >= cutoff
+      );
+      const removals = before.filter((entry) => entry.createdAtUnixMs < cutoff);
+      let retainedBytes = retained.reduce((sum, entry) => sum + entry.size, 0);
+      if (retainedBytes > maxTotalBytes) {
+        for (const entry of [...retained].sort(compareManagedAttachments)) {
+          if (retainedBytes <= maxTotalBytes) break;
+          removals.push(entry);
+          retainedBytes -= entry.size;
+        }
+      }
+      if (removals.length > 0) {
+        await this.removeManagedAttachments(
+          remoteDirectory,
+          removals.map((entry) => entry.name)
+        );
+      }
+      const after = await this.listManagedAttachments(remoteDirectory);
+      const remainingBytes = after.reduce((sum, entry) => sum + entry.size, 0);
+      if (remainingBytes > maxTotalBytes) {
+        throw new RemoteSftpError(
+          "limit-exceeded",
+          "remote attachment quota could not be reclaimed",
+          true
+        );
+      }
+      const remainingNames = new Set(after.map((entry) => entry.name));
+      const deleted = before.filter((entry) => !remainingNames.has(entry.name));
+      return {
+        deletedCount: deleted.length,
+        deletedBytes: deleted.reduce((sum, entry) => sum + entry.size, 0),
+        remainingBytes
+      };
+    });
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -431,6 +506,60 @@ export class MuxOnlyRemoteSftpClient {
       );
     }
     return size;
+  }
+
+  private async listManagedAttachments(
+    remoteDirectory: string
+  ): Promise<ManagedAttachmentEntry[]> {
+    let result: BatchResult;
+    try {
+      result = await this.runBatch(
+        `ls -ln ${quoteSftpPath(remoteDirectory)}\n`,
+        30_000
+      );
+    } catch (error) {
+      if (isMissingRemotePath(error)) return [];
+      throw error;
+    }
+    const entries: ManagedAttachmentEntry[] = [];
+    for (const rawLine of result.stdout.split(/\r?\n/u)) {
+      const metadata = parseSftpLongListingMetadata(rawLine);
+      if (!metadata || metadata.kind !== "-") continue;
+      const name = parseManagedAttachmentName(rawLine);
+      if (!name) continue;
+      entries.push({
+        name: name.value,
+        size: metadata.size,
+        createdAtUnixMs: name.createdAtUnixMs
+      });
+      if (entries.length > MAX_MANAGED_ATTACHMENT_ENTRIES) {
+        throw new RemoteSftpError(
+          "limit-exceeded",
+          "remote attachment directory exceeds its entry bound",
+          true
+        );
+      }
+    }
+    return entries;
+  }
+
+  private async removeManagedAttachments(
+    remoteDirectory: string,
+    names: string[]
+  ): Promise<void> {
+    const prefix = `cd ${quoteSftpPath(remoteDirectory)}\n`;
+    let batch = prefix;
+    for (const name of names) {
+      const command = `-rm ${quoteSftpPath(name)}\n`;
+      if (Buffer.byteLength(batch + command, "utf8") > MAX_SFTP_BATCH_BYTES) {
+        await this.runBatch(batch, 30_000);
+        batch = prefix;
+      }
+      batch += command;
+    }
+    if (batch !== prefix) {
+      await this.runBatch(batch, 30_000);
+    }
   }
 
   private async pruneStaging(reservedBytes: number): Promise<void> {
@@ -688,6 +817,43 @@ export function parseSftpLongListingMetadata(
   return null;
 }
 
+function parseManagedAttachmentName(
+  listingLine: string
+): { value: string; createdAtUnixMs: number } | null {
+  const token = listingLine.trim().split(/\s+/u).at(-1);
+  if (!token) return null;
+  const value = posix.basename(token);
+  const current = value.match(
+    new RegExp(
+      `^${REMOTE_ATTACHMENT_FILE_PREFIX}(\\d{1,16})-[a-f0-9]{32}(?:\\.[a-z0-9]{1,10})?$`,
+      "u"
+    )
+  );
+  if (current) {
+    const createdAtUnixMs = Number(current[1]);
+    return Number.isSafeInteger(createdAtUnixMs)
+      ? { value, createdAtUnixMs }
+      : null;
+  }
+  // Files from the pre-v1 development build had no timestamp. They live in
+  // this app-owned directory and are reclaimed as legacy entries once seen.
+  return /^(?=(?:[^-]*-){2})[A-Za-z0-9_-]{3,255}(?:\.[a-z0-9]{1,10})?$/u.test(
+    value
+  )
+    ? { value, createdAtUnixMs: 0 }
+    : null;
+}
+
+function compareManagedAttachments(
+  left: ManagedAttachmentEntry,
+  right: ManagedAttachmentEntry
+): number {
+  return (
+    left.createdAtUnixMs - right.createdAtUnixMs ||
+    left.name.localeCompare(right.name)
+  );
+}
+
 function terminateChild(child: ChildProcess): Promise<void> {
   const existing = childTerminations.get(child);
   if (existing) return existing;
@@ -782,6 +948,32 @@ function validateTransferLimit(value: number): number {
     throw new RemoteSftpError(
       "invalid-request",
       "SFTP transfer limit is outside 1..1GiB",
+      false
+    );
+  }
+  return value;
+}
+
+function validateNonNegativeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RemoteSftpError(
+      "invalid-request",
+      `${field} must be a non-negative safe integer`,
+      false
+    );
+  }
+  return value;
+}
+
+function validatePositiveInteger(
+  value: number,
+  field: string,
+  maximum: number
+): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new RemoteSftpError(
+      "invalid-request",
+      `${field} is outside its supported bound`,
       false
     );
   }

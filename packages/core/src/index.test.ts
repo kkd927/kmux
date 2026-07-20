@@ -71,10 +71,16 @@ describe("core reducer", () => {
     const remoteWorkspaceId = Object.keys(remote.workspaces).find(
       (id) => !existing.has(id)
     )!;
+    remote.workspaces[remoteWorkspaceId].remoteResourceRevision = uint64(7n);
     const encoded = encodeAppStateDto(remote);
     const encodedWorkspace = (
       encoded.workspaces as Record<string, Record<string, unknown>>
     )[remoteWorkspaceId]!;
+    expect(encodedWorkspace.remoteResourceRevision).toBe("7");
+    expect(
+      decodeAppStateDto(encoded).workspaces[remoteWorkspaceId]
+        .remoteResourceRevision
+    ).toBe(7n);
     encodedWorkspace.location = {
       target: { kind: "ssh", targetId: "" },
       defaultCwd: "/srv/app"

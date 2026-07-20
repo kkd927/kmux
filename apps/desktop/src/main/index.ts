@@ -38,7 +38,9 @@ import { createMainClipboardService } from "./clipboard";
 import { createExternalSessionIndexer } from "./externalSessions";
 import {
   createImageAttachmentService,
-  IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS
+  IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  IMAGE_ATTACHMENT_MAX_TOTAL_BYTES,
+  IMAGE_ATTACHMENT_RETENTION_MS
 } from "./imageAttachments";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
@@ -1025,22 +1027,47 @@ async function bootstrap(): Promise<void> {
     }
   });
   const runImageAttachmentCleanup = (): void => {
-    void imageAttachmentService
-      .cleanupImageAttachments()
-      .then((result) => {
-        if (result.deletedCount > 0) {
-          logDiagnostics("main.image-attachments.cleanup", {
-            deletedCount: result.deletedCount,
-            deletedBytes: result.deletedBytes,
-            remainingBytes: result.remainingBytes
-          });
-        }
-      })
-      .catch((error: unknown) => {
-        logDiagnostics("main.image-attachments.cleanup-error", {
-          message: error instanceof Error ? error.message : String(error)
-        });
+    void (async () => {
+      const local = await imageAttachmentService.cleanupImageAttachments();
+      const remoteResults = await Promise.all(
+        remoteTargetBindings.list().map(async (binding) => {
+          const roots = providerRemoteLifecycle.getTargetRuntimeRoots(
+            binding.id
+          );
+          if (!roots) return null;
+          try {
+            return await providerRemoteHost.pruneRemoteAttachments({
+              targetId: binding.id,
+              remoteDirectory: posix.join(roots.stateRoot, "attachments"),
+              nowUnixMs: Date.now(),
+              maxAgeMs: IMAGE_ATTACHMENT_RETENTION_MS,
+              maxTotalBytes: IMAGE_ATTACHMENT_MAX_TOTAL_BYTES
+            });
+          } catch (error) {
+            logDiagnostics("main.image-attachments.remote-cleanup-error", {
+              targetId: binding.id,
+              message: error instanceof Error ? error.message : String(error)
+            });
+            return null;
+          }
+        })
+      );
+      const totals = remoteResults.reduce<typeof local>(
+        (result, current) => ({
+          deletedCount: result.deletedCount + (current?.deletedCount ?? 0),
+          deletedBytes: result.deletedBytes + (current?.deletedBytes ?? 0),
+          remainingBytes: result.remainingBytes + (current?.remainingBytes ?? 0)
+        }),
+        local
+      );
+      if (totals.deletedCount > 0) {
+        logDiagnostics("main.image-attachments.cleanup", { ...totals });
+      }
+    })().catch((error: unknown) => {
+      logDiagnostics("main.image-attachments.cleanup-error", {
+        message: error instanceof Error ? error.message : String(error)
       });
+    });
   };
   runImageAttachmentCleanup();
   const imageAttachmentCleanupTimer = setInterval(

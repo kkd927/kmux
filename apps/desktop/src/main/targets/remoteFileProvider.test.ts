@@ -51,10 +51,15 @@ describe("remote file providers", () => {
         };
       }),
       uploadFile: vi.fn(),
-      releaseFile
+      releaseFile,
+      pruneRemoteAttachments: vi.fn()
     } as unknown as Pick<
       RemoteHostManager,
-      "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+      | "fileExists"
+      | "downloadFile"
+      | "uploadFile"
+      | "releaseFile"
+      | "pruneRemoteAttachments"
     >;
     const provider = providers(host, transferRoot, () => "transfer_1");
 
@@ -89,10 +94,15 @@ describe("remote file providers", () => {
         };
       }),
       uploadFile: vi.fn(),
-      releaseFile
+      releaseFile,
+      pruneRemoteAttachments: vi.fn()
     } as unknown as Pick<
       RemoteHostManager,
-      "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+      | "fileExists"
+      | "downloadFile"
+      | "uploadFile"
+      | "releaseFile"
+      | "pruneRemoteAttachments"
     >;
     const provider = providers(host, transferRoot, () => "transfer_open");
 
@@ -115,10 +125,15 @@ describe("remote file providers", () => {
       fileExists,
       downloadFile: vi.fn(),
       uploadFile: vi.fn(),
-      releaseFile: vi.fn()
+      releaseFile: vi.fn(),
+      pruneRemoteAttachments: vi.fn()
     } as unknown as Pick<
       RemoteHostManager,
-      "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+      | "fileExists"
+      | "downloadFile"
+      | "uploadFile"
+      | "releaseFile"
+      | "pruneRemoteAttachments"
     >;
     const provider = providers(host, transferRoot, () => "transfer_2");
 
@@ -155,12 +170,26 @@ describe("remote file providers", () => {
       fileExists: vi.fn(),
       downloadFile: vi.fn(),
       uploadFile,
-      releaseFile: vi.fn()
+      releaseFile: vi.fn(),
+      pruneRemoteAttachments: vi.fn(async () => ({
+        deletedCount: 0,
+        deletedBytes: 0,
+        remainingBytes: 0
+      }))
     } as unknown as Pick<
       RemoteHostManager,
-      "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+      | "fileExists"
+      | "downloadFile"
+      | "uploadFile"
+      | "releaseFile"
+      | "pruneRemoteAttachments"
     >;
-    const provider = providers(host, transferRoot, () => "transfer_3");
+    const provider = providers(
+      host,
+      transferRoot,
+      () => "transfer_3",
+      () => 1_721_430_000_000
+    );
     const bytes = new TextEncoder().encode("image payload");
 
     const stored = await provider.attachments.store({
@@ -175,13 +204,19 @@ describe("remote file providers", () => {
     expect(uploadFile).toHaveBeenCalledWith(
       expect.objectContaining({
         targetId: "target_1",
-        remotePath:
-          "/home/kmux/.local/state/kmux/attachments/workspace_1-session_1-transfer_3.png"
+        remotePath: expect.stringMatching(
+          /^\/home\/kmux\/\.local\/state\/kmux\/attachments\/kmux-attachment-v1-1721430000000-[a-f0-9]{32}\.png$/u
+        )
       })
     );
-    expect(rawRemote("target_1", stored.path)).toBe(
-      "/home/kmux/.local/state/kmux/attachments/workspace_1-session_1-transfer_3.png"
+    expect(host.pruneRemoteAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetId: "target_1",
+        remoteDirectory: "/home/kmux/.local/state/kmux/attachments",
+        nowUnixMs: 1_721_430_000_000
+      })
     );
+    expect(rawRemote("target_1", stored.path)).toBe(stored.terminalReference);
     expect(stored.terminalReference).toBe(rawRemote("target_1", stored.path));
   });
 });
@@ -189,10 +224,15 @@ describe("remote file providers", () => {
 function providers(
   host: Pick<
     RemoteHostManager,
-    "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+    | "fileExists"
+    | "downloadFile"
+    | "uploadFile"
+    | "releaseFile"
+    | "pruneRemoteAttachments"
   >,
   transferRoot: string,
-  createTransferId: () => Id
+  createTransferId: () => Id,
+  now?: () => number
 ): TargetServiceSet<RemotePath> {
   const registry = createTargetServiceRegistry({
     local: {} as TargetServiceSet<LocalPath>,
@@ -205,7 +245,8 @@ function providers(
         remoteHomeDir: "/home/kmux",
         resolveRemotePath,
         decodeRemotePath,
-        createTransferId
+        createTransferId,
+        ...(now === undefined ? {} : { now })
       }) as TargetServiceSet<RemotePath>
   });
   const resolved = registry.resolve({ kind: "ssh", targetId: "target_1" });

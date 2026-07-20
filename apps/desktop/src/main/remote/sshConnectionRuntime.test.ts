@@ -40,7 +40,7 @@ describe("SSH connection runtime", () => {
         desktopInstallationId: "desktop_1",
         profiles,
         bindings,
-        resolver: resolver(profile.id, hostKeyObservationPath),
+        resolver: resolver(profile.id, hostKeyObservationPath, "attempt_1"),
         host: host as unknown as RemoteHostManager,
         lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
         isTargetReferenced: () => false,
@@ -703,11 +703,15 @@ class FakeLifecycle {
 
 function resolver(
   profileId: string,
-  hostKeyObservationPath = `/tmp/kmux-missing-host-key-${profileId}`
+  hostKeyObservationPath = `/tmp/kmux-missing-host-key-${profileId}`,
+  expectedConnectionAttemptId?: string
 ): SshProfileConnectionResolver {
   return {
-    async resolve(profile) {
+    async resolve(profile, connectionAttemptId) {
       expect(profile.id).toBe(profileId);
+      if (expectedConnectionAttemptId !== undefined) {
+        expect(connectionAttemptId).toBe(expectedConnectionAttemptId);
+      }
       return {
         profile,
         sshPath: "/usr/bin/ssh",

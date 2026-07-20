@@ -14,6 +14,7 @@ import { uint64 } from "@kmux/proto";
 
 import {
   MainFactConflictError,
+  applyMainRemoteOperationCheckpointFact,
   applyMainRemoteOperationFact,
   applyMainRemoteSessionCursorFact,
   applyMainRemoteSessionObservationFact,
@@ -189,13 +190,13 @@ describe("Main-only SSH workspace addition patch", () => {
     });
     expect(state.sessions.session_remote.launch.shell).toBeUndefined();
     expect(state.sessions.session_remote.shellInputReady).toBe(true);
-    expect(encodeLocatedPathDto(state.sessions.session_remote.launch.cwd)).toEqual(
-      {
-        kind: "ssh",
-        targetId: "target_1",
-        path: "/srv/project"
-      }
-    );
+    expect(
+      encodeLocatedPathDto(state.sessions.session_remote.launch.cwd)
+    ).toEqual({
+      kind: "ssh",
+      targetId: "target_1",
+      path: "/srv/project"
+    });
     const window = state.windows[state.activeWindowId];
     expect(window.workspaceOrder.at(-1)).toBe("workspace_remote");
     expect(window.activeWorkspaceId).toBe("workspace_remote");
@@ -605,6 +606,7 @@ describe("Main-only remote operation facts", () => {
       path: worktree.path
     });
     expect(Object.keys(state.surfaces)).toHaveLength(surfaceCount);
+    expect(state.workspaces[workspaceId].remoteResourceRevision).toBe(1n);
 
     const removePayload = {
       kind: "worktree.remove" as const,
@@ -654,6 +656,18 @@ describe("Main-only remote operation facts", () => {
       completedAt: "2026-07-17T00:00:02.000Z"
     });
     expect(state.workspaces[workspaceId].worktree).toBeUndefined();
+    expect(state.workspaces[workspaceId].remoteResourceRevision).toBe(2n);
+    applyMainRemoteOperationCheckpointFact(state, {
+      type: "remote-operation.checkpointed",
+      operationId: createOperationIntent.operationId,
+      resultDigest: "7".repeat(64)
+    });
+    applyMainRemoteOperationCheckpointFact(state, {
+      type: "remote-operation.checkpointed",
+      operationId: removeIntent.operationId,
+      resultDigest: "8".repeat(64)
+    });
+    expect(state.remoteOperations).toEqual({});
   });
 
   it("projects a durably constructed pending fact and an authoritative result", () => {

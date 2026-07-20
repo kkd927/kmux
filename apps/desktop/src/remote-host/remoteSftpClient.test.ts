@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { REMOTE_ATTACHMENT_FILE_PREFIX } from "../shared/remoteHostProtocol";
+
 const { spawnMuxOnlyChannel } = vi.hoisted(() => ({
   spawnMuxOnlyChannel: vi.fn()
 }));
@@ -72,6 +74,53 @@ describe("MuxOnlyRemoteSftpClient", () => {
     );
     child.succeed();
     await expect(exists).resolves.toBe(true);
+    await client.close();
+  });
+
+  it("prunes only managed remote attachments by age and reports verified totals", async () => {
+    const children: FakeChildProcess[] = [];
+    spawnMuxOnlyChannel.mockImplementation(async () => {
+      const child = new FakeChildProcess();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    });
+    const client = await createClient();
+    const oldName = `${REMOTE_ATTACHMENT_FILE_PREFIX}50000-${"a".repeat(32)}.png`;
+    const currentName = `${REMOTE_ATTACHMENT_FILE_PREFIX}150000-${"b".repeat(32)}.png`;
+
+    const pruning = client.pruneManagedAttachments({
+      remoteDirectory: "/state/attachments",
+      nowUnixMs: 200_000,
+      maxAgeMs: 100_000,
+      maxTotalBytes: 100
+    });
+    await eventually(() => children[0]?.input.length > 0);
+    children[0]!.stdout.write(
+      [
+        `-rw------- 1 1000 1000 40 Jul 18 12:00 ${oldName}`,
+        `-rw------- 1 1000 1000 60 Jul 18 12:00 ${currentName}`,
+        "-rw------- 1 1000 1000 999 Jul 18 12:00 user-owned.txt",
+        ""
+      ].join("\n")
+    );
+    children[0]!.succeed();
+
+    await eventually(() => children[1]?.input.length > 0);
+    expect(children[1]!.input).toContain(`-rm "${oldName}"`);
+    expect(children[1]!.input).not.toContain("user-owned.txt");
+    children[1]!.succeed();
+
+    await eventually(() => children[2]?.input.length > 0);
+    children[2]!.stdout.write(
+      `-rw------- 1 1000 1000 60 Jul 18 12:00 ${currentName}\n`
+    );
+    children[2]!.succeed();
+
+    await expect(pruning).resolves.toEqual({
+      deletedCount: 1,
+      deletedBytes: 40,
+      remainingBytes: 60
+    });
     await client.close();
   });
 

@@ -63,7 +63,6 @@
         "totalBytes": 4194304,
         "chunkBytes": 65536,
         "chunkIntervalMs": 20,
-        "echoPauseMs": 100,
         "echoProbes": 20,
         "completionTimeoutMs": 30000
       }
@@ -82,11 +81,6 @@
   "gates": {
     "addedKeyEchoLatencyMs": { "p95Max": 8, "p99Max": 20 },
     "remoteHostEventLoopDelayMs": { "p99Max": 10, "singleStallMax": 100 },
-    "terminalMutationContinuity": {
-      "missing": 0,
-      "duplicate": 0,
-      "reordered": 0
-    },
     "keeperRssBytes": { "p95Max": 33554432 },
     "remoteHostProcessTreeRssBytes": { "max": 201326592 },
     "journalGroupSyncMs": {

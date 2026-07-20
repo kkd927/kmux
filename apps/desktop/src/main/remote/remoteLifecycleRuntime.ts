@@ -20,6 +20,7 @@ import {
 } from "@kmux/proto";
 import {
   canonicalizeRemoteOperationPayload,
+  cloneState,
   encodeLocatedPathDto,
   validateRemoteTargetBinding,
   type AppAction,
@@ -33,7 +34,11 @@ import {
   type RemoteResourceKey,
   type RemoteTargetBinding
 } from "@kmux/core";
-import { MainFactConflictError, type MainFact } from "@kmux/core/main";
+import {
+  applyMainRemoteOperationCheckpointFact,
+  MainFactConflictError,
+  type MainFact
+} from "@kmux/core/main";
 
 import type {
   RemoteRuntimeOperationOutcome,
@@ -280,6 +285,7 @@ export class RemoteLifecycleRuntime {
   recover(): void {
     if (this.recovered) return;
     this.coordinator.recover();
+    this.pruneCheckpointedOperationProjections();
     this.recovered = true;
   }
 
@@ -425,8 +431,6 @@ export class RemoteLifecycleRuntime {
       await this.retryPendingForTarget(
         operation.intent.resourceKey.targetId
       ).catch((error: unknown) => this.report(error));
-    } else if (outcome.status !== "pending") {
-      await this.tryReconcile(operation.intent.resourceKey.targetId);
     }
     return { operationId: operation.intent.operationId, outcome };
   }
@@ -856,6 +860,11 @@ export class RemoteLifecycleRuntime {
       this.markObservationUnknown(targetId);
       throw error;
     }
+    // Consume receipts from a prior observation before admitting any new
+    // receipt. This lets an upgraded store recover even when its old receipt
+    // directory is already at the hard bound.
+    this.pruneCheckpointedOperationProjections();
+    this.compactCheckpointedOperations(true);
     this.reconciler.observe(observed);
     this.compactCheckpointedOperations();
   }
@@ -1345,18 +1354,30 @@ export class RemoteLifecycleRuntime {
   private executeOperation(
     operationId: Id
   ): Promise<RemoteOperationExecutionOutcome> {
-    return this.coordinator.execute(operationId, async (operation) => {
-      const targetId = operation.intent.resourceKey.targetId;
-      if (!this.connectedTargets.has(targetId)) {
-        return { status: "pending", reason: "offline" };
-      }
-      const outcome = await this.options.host.executeOperation(
-        targetId,
-        operation.intent,
-        operation.payload
+    const operation = this.options.operationStore.get(operationId);
+    if (!operation) {
+      return Promise.reject(
+        new Error(`remote operation ${operationId} is not admitted`)
       );
-      return mapRuntimeOutcome(operationId, outcome);
-    });
+    }
+    const targetId = operation.intent.resourceKey.targetId;
+    return this.coordinator.execute(
+      operationId,
+      async (current) => {
+        if (!this.connectedTargets.has(targetId)) {
+          return { status: "pending", reason: "offline" };
+        }
+        const outcome = await this.options.host.executeOperation(
+          targetId,
+          current.intent,
+          current.payload
+        );
+        return mapRuntimeOutcome(operationId, outcome);
+      },
+      {
+        afterResult: () => this.tryReconcile(targetId)
+      }
+    );
   }
 
   private async retryPendingForTarget(targetId: Id): Promise<void> {
@@ -1513,20 +1534,101 @@ export class RemoteLifecycleRuntime {
     );
   }
 
-  private compactCheckpointedOperations(): void {
+  private compactCheckpointedOperations(successfulOnly = false): void {
     if (!this.options.persistDurableProductSnapshot) return;
     const terminal = this.options.operationStore
       .loadAll()
-      .filter((operation) => operation.result !== undefined);
-    if (terminal.length === 0) return;
-    const state = this.options.getState();
-    this.options.persistDurableProductSnapshot(state);
-    for (const operation of terminal) {
-      this.options.operationStore.compactAfterDurableSnapshot(
-        operation.intent.operationId,
-        state
+      .filter(
+        (operation) =>
+          operation.result !== undefined &&
+          ((!successfulOnly &&
+            operation.result.authoritative.outcome === "failed") ||
+            this.options.operationStore.getResourceReceipt(
+              operation.intent.resourceKey
+            ) !== null)
       );
+    if (terminal.length > 0) {
+      const state = this.options.getState();
+      this.options.persistDurableProductSnapshot(state);
+      const validationState = cloneState(state);
+      for (const operation of terminal) {
+        applyMainRemoteOperationCheckpointFact(validationState, {
+          type: "remote-operation.checkpointed",
+          operationId: operation.intent.operationId,
+          resultDigest: operation.result!.authoritative.resultDigest
+        });
+      }
+      const compactedIds = new Set(
+        this.options.operationStore.compactAfterDurableSnapshot(
+          terminal.map((operation) => operation.intent.operationId),
+          state
+        )
+      );
+      for (const operation of terminal) {
+        if (!compactedIds.has(operation.intent.operationId)) continue;
+        this.options.dispatchFact({
+          type: "remote-operation.checkpointed",
+          operationId: operation.intent.operationId,
+          resultDigest: operation.result!.authoritative.resultDigest
+        });
+      }
+      if (compactedIds.size > 0) {
+        this.options.persistDurableProductSnapshot(this.options.getState());
+      }
     }
+    this.removeUnneededResourceReceipts();
+  }
+
+  private pruneCheckpointedOperationProjections(): void {
+    const persist = this.options.persistDurableProductSnapshot;
+    if (!persist) return;
+    const durableOperationIds = new Set(
+      this.options.operationStore
+        .loadAll()
+        .map((operation) => operation.intent.operationId)
+    );
+    let pruned = false;
+    for (const projection of Object.values(
+      this.options.getState().remoteOperations
+    )) {
+      if (
+        durableOperationIds.has(projection.operationId) ||
+        (projection.state !== "succeeded" && projection.state !== "failed") ||
+        projection.resultDigest === undefined
+      ) {
+        continue;
+      }
+      this.options.dispatchFact({
+        type: "remote-operation.checkpointed",
+        operationId: projection.operationId,
+        resultDigest: projection.resultDigest
+      });
+      pruned = true;
+    }
+    if (pruned) persist(this.options.getState());
+    this.removeUnneededResourceReceipts();
+  }
+
+  private removeUnneededResourceReceipts(): void {
+    const required = new Set(
+      this.options.operationStore
+        .loadAll()
+        .filter(
+          (operation) => operation.result?.authoritative.outcome === "succeeded"
+        )
+        .map((operation) =>
+          remoteResourceIdentity(operation.intent.resourceKey)
+        )
+    );
+    this.options.operationStore.removeResourceReceipts(
+      this.options.operationStore
+        .listResourceReceipts()
+        .filter(
+          (receipt) =>
+            !required.has(remoteResourceIdentity(receipt.resourceKey))
+        )
+        .map((receipt) => receipt.resourceKey)
+    );
   }
 }
 
@@ -1728,6 +1830,15 @@ function latestProjectedSessionRevision(
   return revision;
 }
 
+function remoteResourceIdentity(resourceKey: RemoteResourceKey): string {
+  return [
+    resourceKey.desktopInstallationId,
+    resourceKey.targetId,
+    resourceKey.workspaceId,
+    resourceKey.sessionId ?? ""
+  ].join("\0");
+}
+
 export function compareRemoteOperationRetryOrder(
   left: RemoteOperationProjection,
   right: RemoteOperationProjection
@@ -1790,6 +1901,22 @@ function decodeObservedState(
     inventoryComplete: true,
     bridgeGeneration: body.bridgeGeneration,
     persistenceLevel,
+    workspaces: (body.workspaces ?? []).map((workspace) => ({
+      resourceKey: {
+        desktopInstallationId: workspace.resourceKey.desktopInstallationId,
+        targetId: workspace.resourceKey.targetId,
+        workspaceId: workspace.resourceKey.workspaceId
+      },
+      state: workspace.state,
+      remoteResourceRevision: parseUint64Decimal(
+        workspace.remoteResourceRevision
+      ),
+      createOperationId: workspace.createOperationId,
+      canonicalCreatePayloadHash: workspace.canonicalCreatePayloadHash,
+      lastOperationId: workspace.lastOperationId,
+      lastOperationPayloadHash: workspace.lastOperationPayloadHash,
+      lastResultDigest: workspace.lastResultDigest
+    })),
     keepers: body.keepers.map((keeper) => ({
       resourceKey: {
         desktopInstallationId: keeper.resourceKey.desktopInstallationId,
@@ -1798,6 +1925,9 @@ function decodeObservedState(
         sessionId: keeper.resourceKey.sessionId
       },
       generation: keeper.keeperGeneration,
+      ...(keeper.descriptorState === undefined
+        ? {}
+        : { descriptorState: keeper.descriptorState }),
       processState: keeper.processState,
       remoteResourceRevision: parseUint64Decimal(keeper.remoteResourceRevision),
       persistenceLevel,

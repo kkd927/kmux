@@ -42,6 +42,7 @@ import type {
   RemoteTerminalInputAcknowledgement
 } from "../remote-host/linuxX64RemoteRuntime";
 import type {
+  RemoteSftpAttachmentPruneResult,
   RemoteSftpTransferResult,
   RemoteSftpUploadResult
 } from "../remote-host/remoteSftpClient";
@@ -914,6 +915,50 @@ export class RemoteHostManager extends EventEmitter {
     if (record.targetId !== targetId || record.localPath !== localPath) {
       throw new Error("remote-host released another staged file");
     }
+  }
+
+  async pruneRemoteAttachments(options: {
+    targetId: Id;
+    remoteDirectory: string;
+    nowUnixMs: number;
+    maxAgeMs: number;
+    maxTotalBytes: number;
+  }): Promise<RemoteSftpAttachmentPruneResult> {
+    const body = await this.requestWithId({
+      type: "file.attachments-prune",
+      requestId: makeId("remote-host-request"),
+      ...options
+    });
+    const record = requireBodyRecord(body, "file.attachments-pruned");
+    assertBodyExactKeys(record, ["type", "targetId", "result"]);
+    if (record.targetId !== options.targetId) {
+      throw new Error("remote-host pruned attachments for another target");
+    }
+    const result = requireBodyRecord(record.result, "attachment prune result");
+    assertBodyExactKeys(result, [
+      "deletedCount",
+      "deletedBytes",
+      "remainingBytes"
+    ]);
+    for (const field of [
+      "deletedCount",
+      "deletedBytes",
+      "remainingBytes"
+    ] as const) {
+      if (
+        !Number.isSafeInteger(result[field]) ||
+        (result[field] as number) < 0
+      ) {
+        throw new Error(
+          "remote-host returned invalid attachment cleanup totals"
+        );
+      }
+    }
+    return {
+      deletedCount: result.deletedCount as number,
+      deletedBytes: result.deletedBytes as number,
+      remainingBytes: result.remainingBytes as number
+    };
   }
 
   async disconnectTarget(targetId: Id): Promise<void> {

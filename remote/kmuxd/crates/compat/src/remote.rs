@@ -919,7 +919,21 @@ pub struct ObservedResponse {
     pub target_id: String,
     pub bridge_generation: String,
     pub observed_at: String,
+    pub workspaces: Vec<ObservedWorkspace>,
     pub keepers: Vec<ObservedKeeper>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedWorkspace {
+    pub resource_key: RemoteResourceKey,
+    pub state: String,
+    pub remote_resource_revision: String,
+    pub create_operation_id: String,
+    pub canonical_create_payload_hash: String,
+    pub last_operation_id: String,
+    pub last_operation_payload_hash: String,
+    pub last_result_digest: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -927,6 +941,7 @@ pub struct ObservedResponse {
 pub struct ObservedKeeper {
     pub resource_key: RemoteResourceKey,
     pub keeper_generation: String,
+    pub descriptor_state: String,
     pub process_state: String,
     pub remote_resource_revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]

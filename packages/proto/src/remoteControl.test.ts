@@ -366,6 +366,22 @@ describe("remote control v1", () => {
       targetId: "target_1",
       bridgeGeneration: "bridge_1",
       observedAt: "2026-07-18T00:00:00.000Z",
+      workspaces: [
+        {
+          resourceKey: {
+            desktopInstallationId: "desktop_1",
+            targetId: "target_1",
+            workspaceId: "workspace_1"
+          },
+          state: "active",
+          remoteResourceRevision: "2",
+          createOperationId: "workspace_create_1",
+          canonicalCreatePayloadHash: "d".repeat(64),
+          lastOperationId: "worktree_create_1",
+          lastOperationPayloadHash: "e".repeat(64),
+          lastResultDigest: "f".repeat(64)
+        }
+      ],
       keepers: [
         {
           resourceKey: {
@@ -375,6 +391,7 @@ describe("remote control v1", () => {
             sessionId: "session_1"
           },
           keeperGeneration: "keeper_1",
+          descriptorState: "running",
           processState: "running",
           remoteResourceRevision: "1",
           createOperationId: "create_1",
@@ -402,9 +419,17 @@ describe("remote control v1", () => {
     };
     expect(envelope("observe_1", observed)).toMatchObject({
       body: {
+        workspaces: [
+          {
+            state: "active",
+            remoteResourceRevision: "2",
+            lastOperationId: "worktree_create_1"
+          }
+        ],
         keepers: [
           {
             lifecycleState: "provisional",
+            descriptorState: "running",
             everGrantedWriterLease: false,
             checkpointAvailable: true,
             retainedRangeTruncated: true,

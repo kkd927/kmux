@@ -205,9 +205,20 @@ export type RemoteBridgeResponseBody =
       targetId: Id;
       bridgeGeneration: Id;
       observedAt: string;
+      workspaces?: Array<{
+        resourceKey: RemoteResourceKeyDto;
+        state: "active" | "terminated" | "provisional" | "abandoned";
+        remoteResourceRevision: string;
+        createOperationId: Id;
+        canonicalCreatePayloadHash: string;
+        lastOperationId: Id;
+        lastOperationPayloadHash: string;
+        lastResultDigest: string;
+      }>;
       keepers: Array<{
         resourceKey: RemoteResourceKeyDto & { sessionId: Id };
         keeperGeneration: Id;
+        descriptorState?: "creating" | "running" | "exited" | "terminated";
         processState: "running" | "exited";
         remoteResourceRevision: string;
         exitCode?: number;
@@ -1534,8 +1545,15 @@ function decodeObservedBody(
     "targetId",
     "bridgeGeneration",
     "observedAt",
+    "workspaces",
     "keepers"
   ]);
+  if (
+    record.workspaces !== undefined &&
+    (!Array.isArray(record.workspaces) || record.workspaces.length > 4_096)
+  ) {
+    throw new TypeError("observed workspaces must be a bounded array");
+  }
   if (!Array.isArray(record.keepers) || record.keepers.length > 4_096) {
     throw new TypeError("observed keepers must be a bounded array");
   }
@@ -1544,11 +1562,71 @@ function decodeObservedBody(
     targetId: requireId(record.targetId, "targetId"),
     bridgeGeneration: requireId(record.bridgeGeneration, "bridgeGeneration"),
     observedAt: requireTimestamp(record.observedAt, "observedAt"),
+    ...(record.workspaces === undefined
+      ? {}
+      : {
+          workspaces: record.workspaces.map((value) => {
+            const workspace = requireRecord(value, "observed workspace");
+            assertExactKeys(workspace, [
+              "resourceKey",
+              "state",
+              "remoteResourceRevision",
+              "createOperationId",
+              "canonicalCreatePayloadHash",
+              "lastOperationId",
+              "lastOperationPayloadHash",
+              "lastResultDigest"
+            ]);
+            if (
+              workspace.state !== "active" &&
+              workspace.state !== "terminated" &&
+              workspace.state !== "provisional" &&
+              workspace.state !== "abandoned"
+            ) {
+              throw new TypeError("observed workspace state is invalid");
+            }
+            const resourceKey = decodeResourceKey(workspace.resourceKey);
+            if (resourceKey.sessionId !== undefined) {
+              throw new TypeError(
+                "observed workspace resource key cannot identify a session"
+              );
+            }
+            return {
+              resourceKey,
+              state: workspace.state,
+              remoteResourceRevision: requireUint64String(
+                workspace.remoteResourceRevision,
+                "remoteResourceRevision"
+              ),
+              createOperationId: requireId(
+                workspace.createOperationId,
+                "createOperationId"
+              ),
+              canonicalCreatePayloadHash: requireHash(
+                workspace.canonicalCreatePayloadHash,
+                "canonicalCreatePayloadHash"
+              ),
+              lastOperationId: requireId(
+                workspace.lastOperationId,
+                "lastOperationId"
+              ),
+              lastOperationPayloadHash: requireHash(
+                workspace.lastOperationPayloadHash,
+                "lastOperationPayloadHash"
+              ),
+              lastResultDigest: requireHash(
+                workspace.lastResultDigest,
+                "lastResultDigest"
+              )
+            };
+          })
+        }),
     keepers: record.keepers.map((value) => {
       const keeper = requireRecord(value, "observed keeper");
       assertExactKeys(keeper, [
         "resourceKey",
         "keeperGeneration",
+        "descriptorState",
         "processState",
         "remoteResourceRevision",
         "exitCode",
@@ -1572,6 +1650,15 @@ function decodeObservedBody(
         keeper.processState !== "exited"
       ) {
         throw new TypeError("observed keeper processState is invalid");
+      }
+      if (
+        keeper.descriptorState !== undefined &&
+        keeper.descriptorState !== "creating" &&
+        keeper.descriptorState !== "running" &&
+        keeper.descriptorState !== "exited" &&
+        keeper.descriptorState !== "terminated"
+      ) {
+        throw new TypeError("observed keeper descriptorState is invalid");
       }
       if (
         keeper.exitCode !== undefined &&
@@ -1605,6 +1692,9 @@ function decodeObservedBody(
           keeper.keeperGeneration,
           "keeperGeneration"
         ),
+        ...(keeper.descriptorState === undefined
+          ? {}
+          : { descriptorState: keeper.descriptorState }),
         processState: keeper.processState,
         remoteResourceRevision: requireUint64String(
           keeper.remoteResourceRevision,

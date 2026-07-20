@@ -6,7 +6,13 @@ import { posix, resolve } from "node:path";
 import { decodeLocalPath, type RemotePath } from "@kmux/core";
 import type { Id } from "@kmux/proto";
 
+import {
+  IMAGE_ATTACHMENT_MAX_TOTAL_BYTES,
+  IMAGE_ATTACHMENT_RETENTION_MS,
+  MAX_IMAGE_ATTACHMENT_BYTES
+} from "../imageAttachments";
 import type { RemoteHostManager } from "../remoteHost";
+import { REMOTE_ATTACHMENT_FILE_PREFIX } from "../../shared/remoteHostProtocol";
 import type { AttachmentProvider, FileProvider } from "./contracts";
 import type {
   RemotePathDecoder,
@@ -14,7 +20,6 @@ import type {
 } from "./targetServiceRegistry";
 
 const MAX_TRANSFER_BYTES = 1024 ** 3;
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_REMOTE_PATH_BYTES = 32 * 1024;
 const LINE_COLUMN_SUFFIX_RE = /^(.+?):\d+(?::\d+)?$/u;
 const URL_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
@@ -22,7 +27,11 @@ const URL_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
 export interface CreateRemoteFileProvidersOptions {
   host: Pick<
     RemoteHostManager,
-    "fileExists" | "downloadFile" | "uploadFile" | "releaseFile"
+    | "fileExists"
+    | "downloadFile"
+    | "uploadFile"
+    | "releaseFile"
+    | "pruneRemoteAttachments"
   >;
   targetId: Id;
   transferRoot: string;
@@ -31,6 +40,7 @@ export interface CreateRemoteFileProvidersOptions {
   decodeRemotePath: RemotePathDecoder;
   remoteHomeDir?: string;
   createTransferId?: () => Id;
+  now?: () => number;
 }
 
 export interface RemoteFileProviders {
@@ -43,6 +53,7 @@ export function createRemoteFileProviders(
 ): RemoteFileProviders {
   const transferId =
     options.createTransferId ?? (() => `file_${randomUUID()}` as Id);
+  const now = options.now ?? Date.now;
   const decode = (value: string): RemotePath =>
     options.decodeRemotePath(validateRemotePath(value));
   const raw = (value: RemotePath): string =>
@@ -146,7 +157,7 @@ export function createRemoteFileProviders(
     async store(request) {
       if (
         request.bytes.byteLength < 1 ||
-        request.bytes.byteLength > MAX_ATTACHMENT_BYTES
+        request.bytes.byteLength > MAX_IMAGE_ATTACHMENT_BYTES
       ) {
         throw new Error("remote attachment is outside the 20 MiB bound");
       }
@@ -157,10 +168,33 @@ export function createRemoteFileProviders(
       const localPath = resolve(uploadRoot, `${safeId(id)}.upload`);
       const sha256 = createHash("sha256").update(request.bytes).digest("hex");
       const extension = safeExtension(request.name);
-      const remotePath = posix.join(
+      const createdAtUnixMs = now();
+      if (!Number.isSafeInteger(createdAtUnixMs) || createdAtUnixMs < 0) {
+        throw new Error("remote attachment clock is invalid");
+      }
+      const attachmentDirectory = posix.join(
         validateRemotePath(options.remoteStateRoot),
-        "attachments",
-        `${safeId(request.workspaceId)}-${safeId(request.sessionId)}-${safeId(id)}${extension}`
+        "attachments"
+      );
+      await options.host.pruneRemoteAttachments({
+        targetId: options.targetId,
+        remoteDirectory: attachmentDirectory,
+        nowUnixMs: createdAtUnixMs,
+        maxAgeMs: IMAGE_ATTACHMENT_RETENTION_MS,
+        maxTotalBytes:
+          IMAGE_ATTACHMENT_MAX_TOTAL_BYTES - request.bytes.byteLength
+      });
+      const attachmentId = createHash("sha256")
+        .update(request.workspaceId)
+        .update("\0")
+        .update(request.sessionId)
+        .update("\0")
+        .update(id)
+        .digest("hex")
+        .slice(0, 32);
+      const remotePath = posix.join(
+        attachmentDirectory,
+        `${REMOTE_ATTACHMENT_FILE_PREFIX}${createdAtUnixMs}-${attachmentId}${extension}`
       );
       await writeFile(localPath, request.bytes, {
         flag: "wx",
@@ -172,7 +206,7 @@ export function createRemoteFileProviders(
           transferId: id,
           localPath,
           remotePath,
-          maxBytes: MAX_ATTACHMENT_BYTES,
+          maxBytes: MAX_IMAGE_ATTACHMENT_BYTES,
           sha256
         });
       } finally {

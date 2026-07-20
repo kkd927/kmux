@@ -88,10 +88,11 @@ export interface DurableRemoteOperationRecord {
 }
 
 export interface DurableRemoteResourceReceipt {
-  resourceKey: RemoteResourceKey & { sessionId: string };
+  resourceKey: RemoteResourceKey;
   remoteResourceRevision: Uint64;
-  keeperGeneration: string;
-  processState: "running" | "exited";
+  keeperGeneration?: string;
+  processState?: "running" | "exited";
+  resourceState?: "active" | "terminated";
   createOperationId: string;
   canonicalCreatePayloadHash: string;
   lastOperationId: string;
@@ -170,10 +171,14 @@ export interface DurableRemoteOperationStore {
     receipt: DurableRemoteResourceReceipt
   ): DurableRemoteResourceReceipt;
   getResourceReceipt(
-    resourceKey: RemoteResourceKey & { sessionId: string }
+    resourceKey: RemoteResourceKey
   ): DurableRemoteResourceReceipt | null;
   listResourceReceipts(): DurableRemoteResourceReceipt[];
-  compactAfterDurableSnapshot(operationId: string, snapshot: AppState): boolean;
+  removeResourceReceipts(resourceKeys: readonly RemoteResourceKey[]): number;
+  compactAfterDurableSnapshot(
+    operationIds: readonly string[],
+    snapshot: AppState
+  ): string[];
 }
 
 export interface CreateDurableRemoteOperationStoreOptions {
@@ -213,7 +218,7 @@ export function createDurableRemoteOperationStore(
   };
 
   const getResourceReceipt = (
-    resourceKey: RemoteResourceKey & { sessionId: string }
+    resourceKey: RemoteResourceKey
   ): DurableRemoteResourceReceipt | null => {
     const validatedKey = validateResourceKey(resourceKey);
     const path = join(resourceRoot, fileNameForResource(validatedKey));
@@ -321,14 +326,13 @@ export function createDurableRemoteOperationStore(
           if (
             canonicalJson(resourceReceiptAuthorityAtRevision(existing)) !==
               canonicalJson(resourceReceiptAuthorityAtRevision(receipt)) ||
-            (existing.processState === "exited" &&
-              receipt.processState === "running")
+            resourceStateRegressed(existing, receipt)
           ) {
             throw new DurableOperationConflictError(
               "remote resource receipt conflicts at the same revision"
             );
           }
-          if (existing.processState === receipt.processState) {
+          if (sameObservedResourceState(existing, receipt)) {
             // Reconnect/reconcile commonly repeats an identical authoritative
             // descriptor with only a newer observation timestamp. The receipt
             // already supplies all GC/idempotency evidence, so avoid an
@@ -372,23 +376,68 @@ export function createDurableRemoteOperationStore(
       );
     },
 
-    compactAfterDurableSnapshot(
-      operationId: string,
-      snapshot: AppState
-    ): boolean {
-      const operation = get(operationId);
-      if (!operation?.result) return false;
-      if (!durableSnapshotContainsResult(snapshot, operation)) return false;
-      if (
-        operation.result.authoritative.outcome === "succeeded" &&
-        !resourceReceiptRetainsResult(operation, getResourceReceipt)
-      ) {
-        return false;
+    removeResourceReceipts(resourceKeys: readonly RemoteResourceKey[]): number {
+      if (resourceKeys.length > MAX_RESOURCE_RECEIPTS) {
+        throw new TypeError("resource receipt compaction batch is invalid");
       }
-      const path = join(root, fileNameForOperation(operationId));
-      unlinkSync(path);
-      fsyncDirectory(root);
-      return true;
+      const validated = resourceKeys.map(validateResourceKey);
+      if (
+        new Set(validated.map(resourceKeyIdentity)).size !== validated.length
+      ) {
+        throw new TypeError("resource receipt compaction batch is invalid");
+      }
+      const paths = validated
+        .map((resourceKey) =>
+          join(resourceRoot, fileNameForResource(resourceKey))
+        )
+        .filter((path) => tryLstat(path) !== undefined);
+      if (paths.length === 0) return 0;
+      ensurePrivateStoreRoot(root, uid);
+      ensurePrivateStoreRoot(resourceRoot, uid);
+      let removed = 0;
+      try {
+        for (const path of paths) {
+          unlinkSync(path);
+          removed += 1;
+        }
+      } finally {
+        if (removed > 0) fsyncDirectory(resourceRoot);
+      }
+      return removed;
+    },
+
+    compactAfterDurableSnapshot(
+      operationIds: readonly string[],
+      snapshot: AppState
+    ): string[] {
+      if (
+        operationIds.length > maxRecords ||
+        new Set(operationIds).size !== operationIds.length
+      ) {
+        throw new TypeError("operation compaction batch is invalid");
+      }
+      // Validate the complete snapshot once for the batch. Each operation is
+      // still checked against its own exact terminal projection and receipt.
+      encodeAppStateDto(snapshot);
+      const compacted: string[] = [];
+      try {
+        for (const operationId of operationIds) {
+          const operation = get(operationId);
+          if (!operation?.result) continue;
+          if (!durableSnapshotContainsResult(snapshot, operation)) continue;
+          if (
+            operation.result.authoritative.outcome === "succeeded" &&
+            !resourceReceiptRetainsResult(operation, getResourceReceipt)
+          ) {
+            continue;
+          }
+          unlinkSync(join(root, fileNameForOperation(operationId)));
+          compacted.push(operationId);
+        }
+      } finally {
+        if (compacted.length > 0) fsyncDirectory(root);
+      }
+      return compacted;
     }
   });
 }
@@ -694,11 +743,9 @@ function readRecord(
 function encodeResourceReceipt(
   receipt: DurableRemoteResourceReceipt
 ): DurableRemoteResourceReceiptEnvelope {
-  const dto: DurableRemoteResourceReceiptDto = {
+  const authority = {
     resourceKey: structuredClone(receipt.resourceKey),
     remoteResourceRevision: formatUint64Decimal(receipt.remoteResourceRevision),
-    keeperGeneration: receipt.keeperGeneration,
-    processState: receipt.processState,
     createOperationId: receipt.createOperationId,
     canonicalCreatePayloadHash: receipt.canonicalCreatePayloadHash,
     lastOperationId: receipt.lastOperationId,
@@ -706,6 +753,18 @@ function encodeResourceReceipt(
     lastResultDigest: receipt.lastResultDigest,
     observedAt: receipt.observedAt
   };
+  const dto: DurableRemoteResourceReceiptDto = isSessionResourceReceipt(receipt)
+    ? {
+        ...authority,
+        resourceKey: structuredClone(receipt.resourceKey),
+        keeperGeneration: receipt.keeperGeneration,
+        processState: receipt.processState
+      }
+    : {
+        ...authority,
+        resourceKey: structuredClone(receipt.resourceKey),
+        resourceState: receipt.resourceState
+      };
   return {
     version: STORE_VERSION,
     receipt: dto,
@@ -723,26 +782,10 @@ function decodeResourceReceipt(value: unknown): DurableRemoteResourceReceipt {
   if (envelope.receiptDigest !== sha256(canonicalJson(receipt))) {
     throw new TypeError("remote resource receipt digest mismatch");
   }
-  assertExactKeys(receipt, [
-    "resourceKey",
-    "remoteResourceRevision",
-    "keeperGeneration",
-    "processState",
-    "createOperationId",
-    "canonicalCreatePayloadHash",
-    "lastOperationId",
-    "lastOperationPayloadHash",
-    "lastResultDigest",
-    "observedAt"
-  ]);
-  if (receipt.processState !== "running" && receipt.processState !== "exited") {
-    throw new TypeError("remote resource receipt process state is invalid");
-  }
-  return {
-    resourceKey: validateResourceKey(receipt.resourceKey),
+  const resourceKey = validateResourceKey(receipt.resourceKey);
+  const common = {
+    resourceKey,
     remoteResourceRevision: parseUint64Decimal(receipt.remoteResourceRevision),
-    keeperGeneration: requireId(receipt.keeperGeneration, "keeperGeneration"),
-    processState: receipt.processState,
     createOperationId: requireId(
       receipt.createOperationId,
       "createOperationId"
@@ -761,6 +804,54 @@ function decodeResourceReceipt(value: unknown): DurableRemoteResourceReceipt {
       "lastResultDigest"
     ),
     observedAt: requireTimestamp(receipt.observedAt, "observedAt")
+  };
+  if (resourceKey.sessionId !== undefined) {
+    assertExactKeys(receipt, [
+      "resourceKey",
+      "remoteResourceRevision",
+      "keeperGeneration",
+      "processState",
+      "createOperationId",
+      "canonicalCreatePayloadHash",
+      "lastOperationId",
+      "lastOperationPayloadHash",
+      "lastResultDigest",
+      "observedAt"
+    ]);
+    if (
+      receipt.processState !== "running" &&
+      receipt.processState !== "exited"
+    ) {
+      throw new TypeError("remote resource receipt process state is invalid");
+    }
+    return {
+      ...common,
+      resourceKey: { ...resourceKey, sessionId: resourceKey.sessionId },
+      keeperGeneration: requireId(receipt.keeperGeneration, "keeperGeneration"),
+      processState: receipt.processState
+    };
+  }
+  assertExactKeys(receipt, [
+    "resourceKey",
+    "remoteResourceRevision",
+    "resourceState",
+    "createOperationId",
+    "canonicalCreatePayloadHash",
+    "lastOperationId",
+    "lastOperationPayloadHash",
+    "lastResultDigest",
+    "observedAt"
+  ]);
+  if (
+    receipt.resourceState !== "active" &&
+    receipt.resourceState !== "terminated"
+  ) {
+    throw new TypeError("remote resource receipt resource state is invalid");
+  }
+  return {
+    ...common,
+    resourceKey,
+    resourceState: receipt.resourceState
   };
 }
 
@@ -1071,13 +1162,44 @@ function cloneResourceReceipt(
 
 function resourceReceiptAuthorityAtRevision(
   receipt: DurableRemoteResourceReceipt
-): Omit<DurableRemoteResourceReceiptDto, "observedAt" | "processState"> {
-  const {
-    observedAt: _observedAt,
-    processState: _processState,
-    ...stable
-  } = encodeResourceReceipt(receipt).receipt;
+): Record<string, unknown> {
+  const { observedAt: _observedAt, ...stable } =
+    encodeResourceReceipt(receipt).receipt;
+  delete (stable as Record<string, unknown>).processState;
+  delete (stable as Record<string, unknown>).resourceState;
   return stable;
+}
+
+function isSessionResourceReceipt(
+  receipt: DurableRemoteResourceReceipt
+): receipt is DurableRemoteResourceReceipt & {
+  resourceKey: RemoteResourceKey & { sessionId: string };
+  keeperGeneration: string;
+  processState: "running" | "exited";
+} {
+  return receipt.resourceKey.sessionId !== undefined;
+}
+
+function sameObservedResourceState(
+  left: DurableRemoteResourceReceipt,
+  right: DurableRemoteResourceReceipt
+): boolean {
+  return isSessionResourceReceipt(left) && isSessionResourceReceipt(right)
+    ? left.processState === right.processState
+    : !isSessionResourceReceipt(left) && !isSessionResourceReceipt(right)
+      ? left.resourceState === right.resourceState
+      : false;
+}
+
+function resourceStateRegressed(
+  left: DurableRemoteResourceReceipt,
+  right: DurableRemoteResourceReceipt
+): boolean {
+  return isSessionResourceReceipt(left) && isSessionResourceReceipt(right)
+    ? left.processState === "exited" && right.processState === "running"
+    : !isSessionResourceReceipt(left) && !isSessionResourceReceipt(right)
+      ? left.resourceState === "terminated" && right.resourceState === "active"
+      : true;
 }
 
 function fileNameForOperation(operationId: string): string {
@@ -1085,33 +1207,28 @@ function fileNameForOperation(operationId: string): string {
   return `${sha256(operationId)}.json`;
 }
 
-function fileNameForResource(
-  resourceKey: RemoteResourceKey & { sessionId: string }
-): string {
+function fileNameForResource(resourceKey: RemoteResourceKey): string {
   return `${sha256(resourceKeyIdentity(validateResourceKey(resourceKey)))}.json`;
 }
 
-function resourceKeyIdentity(
-  resourceKey: RemoteResourceKey & { sessionId: string }
-): string {
+function resourceKeyIdentity(resourceKey: RemoteResourceKey): string {
   return [
     resourceKey.desktopInstallationId,
     resourceKey.targetId,
     resourceKey.workspaceId,
-    resourceKey.sessionId
+    resourceKey.sessionId ?? ""
   ].join("\0");
 }
 
-function validateResourceKey(
-  value: unknown
-): RemoteResourceKey & { sessionId: string } {
+function validateResourceKey(value: unknown): RemoteResourceKey {
   const record = requireRecord(value, "remote resource key");
-  assertExactKeys(record, [
-    "desktopInstallationId",
-    "targetId",
-    "workspaceId",
-    "sessionId"
-  ]);
+  const hasSessionId = record.sessionId !== undefined;
+  assertExactKeys(
+    record,
+    hasSessionId
+      ? ["desktopInstallationId", "targetId", "workspaceId", "sessionId"]
+      : ["desktopInstallationId", "targetId", "workspaceId"]
+  );
   return {
     desktopInstallationId: requireId(
       record.desktopInstallationId,
@@ -1119,7 +1236,9 @@ function validateResourceKey(
     ),
     targetId: requireId(record.targetId, "targetId"),
     workspaceId: requireId(record.workspaceId, "workspaceId"),
-    sessionId: requireId(record.sessionId, "sessionId")
+    ...(hasSessionId
+      ? { sessionId: requireId(record.sessionId, "sessionId") }
+      : {})
   };
 }
 
@@ -1127,9 +1246,6 @@ function durableSnapshotContainsResult(
   snapshot: AppState,
   operation: DurableRemoteOperationRecord
 ): boolean {
-  // Round-trip validation ensures the caller supplied a complete product
-  // snapshot shape rather than an object forged around one projection.
-  encodeAppStateDto(snapshot);
   const projection = snapshot.remoteOperations[operation.intent.operationId];
   const result = operation.result?.authoritative;
   if (!projection || !result) return false;
@@ -1156,26 +1272,25 @@ function durableSnapshotContainsResult(
 
 function resourceReceiptRetainsResult(
   operation: DurableRemoteOperationRecord,
-  getReceipt: (
-    key: RemoteResourceKey & { sessionId: string }
-  ) => DurableRemoteResourceReceipt | null
+  getReceipt: (key: RemoteResourceKey) => DurableRemoteResourceReceipt | null
 ): boolean {
   const result = operation.result?.authoritative;
-  const sessionId = operation.intent.resourceKey.sessionId;
-  if (!result || result.outcome !== "succeeded" || !sessionId) return false;
-  const key = {
-    ...operation.intent.resourceKey,
-    sessionId
-  } satisfies RemoteResourceKey & { sessionId: string };
-  const receipt = getReceipt(key);
+  if (!result || result.outcome !== "succeeded") return false;
+  const receipt = getReceipt(operation.intent.resourceKey);
   if (!receipt) return false;
-  if (operation.intent.kind === "session.create") {
+  if (
+    operation.intent.kind === "session.create" ||
+    operation.intent.kind === "workspace.create"
+  ) {
     return (
       receipt.createOperationId === operation.intent.operationId &&
       receipt.canonicalCreatePayloadHash ===
         operation.intent.canonicalPayloadHash &&
       receipt.remoteResourceRevision >= result.remoteResourceRevision
     );
+  }
+  if (receipt.remoteResourceRevision > result.remoteResourceRevision) {
+    return true;
   }
   return (
     receipt.remoteResourceRevision === result.remoteResourceRevision &&

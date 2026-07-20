@@ -454,6 +454,7 @@ function instrumentStore(
     recordResourceReceipt: store.recordResourceReceipt,
     getResourceReceipt: store.getResourceReceipt,
     listResourceReceipts: store.listResourceReceipts,
+    removeResourceReceipts: store.removeResourceReceipts,
     compactAfterDurableSnapshot: store.compactAfterDurableSnapshot
   };
 }

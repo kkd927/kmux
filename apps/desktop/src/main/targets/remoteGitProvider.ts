@@ -154,7 +154,12 @@ export function currentWorkspaceRemoteRevision(
   targetId: Id,
   workspaceId: Id
 ): Uint64 {
-  let revision = uint64(0n);
+  const workspace = state.workspaces[workspaceId];
+  let revision =
+    workspace?.location.target.kind === "ssh" &&
+    workspace.location.target.targetId === targetId
+      ? (workspace.remoteResourceRevision ?? uint64(0n))
+      : uint64(0n);
   for (const operation of Object.values(state.remoteOperations)) {
     if (
       operation.resourceKey.targetId !== targetId ||

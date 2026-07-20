@@ -86,6 +86,30 @@ describe("Linux x64 remote terminal attachment", () => {
     expect(child.killed).toBe(true);
   });
 
+  it("rejects a pending mutation read when the attachment closes on a sequence gap", async () => {
+    const child = new FakeChildProcess();
+    const attachment = new RemoteTerminalAttachment(
+      child as unknown as ChildProcess,
+      attachRequest()
+    );
+    child.sendControl(attachReady());
+    await attachment.ready;
+
+    const pending = attachment.nextMutation();
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "mutation-gap"
+    });
+    child.sendMutation({
+      kind: "resize",
+      sequence: uint64(2n),
+      cols: 100,
+      rows: 30
+    });
+
+    await rejection;
+    expect(child.killed).toBe(true);
+  });
+
   it("correlates a retry ack by lease and an advanced highest sequence", async () => {
     const child = new FakeChildProcess();
     const attachment = new RemoteTerminalAttachment(

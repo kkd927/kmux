@@ -77,6 +77,7 @@ type RemoteHostRuntimeLike = Pick<
   | "downloadFile"
   | "uploadFile"
   | "releaseFile"
+  | "pruneRemoteAttachments"
   | "attach"
   | "close"
 >;
@@ -581,6 +582,21 @@ export class RemoteHostService {
           type: "file.released",
           targetId: request.targetId,
           localPath: request.localPath
+        });
+        return;
+      }
+      case "file.attachments-prune": {
+        const target = this.requireTarget(request.targetId);
+        const result = await target.runtime.pruneRemoteAttachments({
+          remoteDirectory: request.remoteDirectory,
+          nowUnixMs: request.nowUnixMs,
+          maxAgeMs: request.maxAgeMs,
+          maxTotalBytes: request.maxTotalBytes
+        });
+        this.respondOk(request.requestId, {
+          type: "file.attachments-pruned",
+          targetId: request.targetId,
+          result
         });
         return;
       }
@@ -1163,17 +1179,23 @@ function requestQueueKey(
   return request.targetId;
 }
 
-function isFileRequest(
-  request: DecodedRemoteHostRequest
-): request is Extract<
+function isFileRequest(request: DecodedRemoteHostRequest): request is Extract<
   DecodedRemoteHostRequest,
-  { type: "file.exists" | "file.download" | "file.upload" | "file.release" }
+  {
+    type:
+      | "file.exists"
+      | "file.download"
+      | "file.upload"
+      | "file.release"
+      | "file.attachments-prune";
+  }
 > {
   return (
     request.type === "file.exists" ||
     request.type === "file.download" ||
     request.type === "file.upload" ||
-    request.type === "file.release"
+    request.type === "file.release" ||
+    request.type === "file.attachments-prune"
   );
 }
 

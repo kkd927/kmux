@@ -32,6 +32,7 @@ export type RemoteTargetStatus = "unknown" | "offline" | "ready" | "mismatch";
 export interface ObservedSessionKeeper {
   resourceKey: RemoteResourceKey & { sessionId: Id };
   generation: Id;
+  descriptorState?: "creating" | "running" | "exited" | "terminated";
   processState: "running" | "exited";
   remoteResourceRevision: Uint64;
   persistenceLevel: RemotePersistenceLevel;
@@ -60,12 +61,24 @@ export interface ObservedSessionKeeper {
   };
 }
 
+export interface ObservedWorkspaceDescriptor {
+  resourceKey: RemoteResourceKey & { sessionId?: never };
+  state: "active" | "terminated" | "provisional" | "abandoned";
+  remoteResourceRevision: Uint64;
+  createOperationId: Id;
+  canonicalCreatePayloadHash: string;
+  lastOperationId: Id;
+  lastOperationPayloadHash: string;
+  lastResultDigest: string;
+}
+
 export interface RemoteObservedState {
   targetId: Id;
   targetStatus: RemoteTargetStatus;
   inventoryComplete: boolean;
   bridgeGeneration?: Id;
   persistenceLevel?: RemotePersistenceLevel;
+  workspaces?: ObservedWorkspaceDescriptor[];
   keepers: ObservedSessionKeeper[];
   lastObservedAt?: string;
 }
@@ -96,7 +109,7 @@ export interface CreateRemoteReconcilerOptions {
   retainedInventory?: RetainedSessionInventoryStore;
   resourceReceiptStore?: Pick<
     DurableRemoteOperationStore,
-    "recordResourceReceipt"
+    "loadAll" | "recordResourceReceipt"
   >;
 }
 
@@ -250,9 +263,37 @@ export function createRemoteReconciler(
 
 function recordResourceReceipts(
   observed: RemoteObservedState,
-  store: Pick<DurableRemoteOperationStore, "recordResourceReceipt">
+  store: Pick<DurableRemoteOperationStore, "loadAll" | "recordResourceReceipt">
 ): void {
+  const needed = new Set(
+    store
+      .loadAll()
+      .filter(
+        (operation) => operation.result?.authoritative.outcome === "succeeded"
+      )
+      .map((operation) => resourceIdentity(operation.intent.resourceKey))
+  );
+  for (const workspace of observed.workspaces ?? []) {
+    if (
+      !needed.has(resourceIdentity(workspace.resourceKey)) ||
+      (workspace.state !== "active" && workspace.state !== "terminated")
+    ) {
+      continue;
+    }
+    store.recordResourceReceipt({
+      resourceKey: structuredClone(workspace.resourceKey),
+      remoteResourceRevision: workspace.remoteResourceRevision,
+      resourceState: workspace.state,
+      createOperationId: workspace.createOperationId,
+      canonicalCreatePayloadHash: workspace.canonicalCreatePayloadHash,
+      lastOperationId: workspace.lastOperationId,
+      lastOperationPayloadHash: workspace.lastOperationPayloadHash,
+      lastResultDigest: workspace.lastResultDigest,
+      observedAt: observed.lastObservedAt!
+    });
+  }
   for (const keeper of observed.keepers) {
+    if (!needed.has(resourceIdentity(keeper.resourceKey))) continue;
     const descriptor = keeper.descriptor;
     if (!descriptor) {
       throw new Error(
@@ -293,6 +334,19 @@ function synchronizeRetainedInventory(
       } else {
         inventory.remove(keeper.resourceKey);
       }
+      continue;
+    }
+    if (
+      !owned &&
+      keeper.descriptorState === "terminated" &&
+      !retainedEntry?.termination
+    ) {
+      // `terminated` is written only by an explicit lifecycle mutation (or
+      // provisional reclaim), unlike a natural `exited` keeper. Once the
+      // terminal operation projection is checkpointed, this descriptor state
+      // remains the compact tombstone that prevents a closed session from
+      // being resurrected as retained inventory.
+      if (retainedEntry) inventory.remove(keeper.resourceKey);
       continue;
     }
     if (
@@ -508,6 +562,7 @@ export function decodeRemoteObservedState(value: unknown): RemoteObservedState {
     "inventoryComplete",
     "bridgeGeneration",
     "persistenceLevel",
+    "workspaces",
     "keepers",
     "lastObservedAt"
   ]);
@@ -526,6 +581,22 @@ export function decodeRemoteObservedState(value: unknown): RemoteObservedState {
     throw new TypeError("keepers must be a bounded array");
   }
   const keepers = record.keepers.map(decodeObservedSessionKeeper);
+  if (
+    record.workspaces !== undefined &&
+    (!Array.isArray(record.workspaces) ||
+      record.workspaces.length > MAX_OBSERVED_KEEPERS)
+  ) {
+    throw new TypeError("workspaces must be a bounded array");
+  }
+  const workspaces = (record.workspaces ?? []).map(
+    decodeObservedWorkspaceDescriptor
+  );
+  if (
+    new Set(workspaces.map((workspace) => workspace.resourceKey.workspaceId))
+      .size !== workspaces.length
+  ) {
+    throw new TypeError("remote observed state contains a duplicate workspace");
+  }
   const sessionIds = new Set<Id>();
   for (const keeper of keepers) {
     if (sessionIds.has(keeper.resourceKey.sessionId)) {
@@ -559,8 +630,65 @@ export function decodeRemoteObservedState(value: unknown): RemoteObservedState {
     inventoryComplete: record.inventoryComplete,
     ...(bridgeGeneration === undefined ? {} : { bridgeGeneration }),
     ...(persistenceLevel === undefined ? {} : { persistenceLevel }),
+    ...(record.workspaces === undefined ? {} : { workspaces }),
     keepers,
     ...(lastObservedAt === undefined ? {} : { lastObservedAt })
+  };
+}
+
+function decodeObservedWorkspaceDescriptor(
+  value: unknown
+): ObservedWorkspaceDescriptor {
+  const record = requireRecord(value, "observed workspace descriptor");
+  assertExactKeys(record, [
+    "resourceKey",
+    "state",
+    "remoteResourceRevision",
+    "createOperationId",
+    "canonicalCreatePayloadHash",
+    "lastOperationId",
+    "lastOperationPayloadHash",
+    "lastResultDigest"
+  ]);
+  const resource = requireRecord(record.resourceKey, "remote resource key");
+  assertExactKeys(resource, [
+    "desktopInstallationId",
+    "targetId",
+    "workspaceId"
+  ]);
+  if (
+    record.state !== "active" &&
+    record.state !== "terminated" &&
+    record.state !== "provisional" &&
+    record.state !== "abandoned"
+  ) {
+    throw new TypeError("observed workspace state is invalid");
+  }
+  if (typeof record.remoteResourceRevision !== "bigint") {
+    throw new TypeError("remoteResourceRevision must be an in-memory bigint");
+  }
+  return {
+    resourceKey: {
+      desktopInstallationId: requireId(
+        resource.desktopInstallationId,
+        "desktopInstallationId"
+      ),
+      targetId: requireId(resource.targetId, "targetId"),
+      workspaceId: requireId(resource.workspaceId, "workspaceId")
+    },
+    state: record.state,
+    remoteResourceRevision: uint64(record.remoteResourceRevision),
+    createOperationId: requireId(record.createOperationId, "createOperationId"),
+    canonicalCreatePayloadHash: requireDigest(
+      record.canonicalCreatePayloadHash,
+      "canonicalCreatePayloadHash"
+    ),
+    lastOperationId: requireId(record.lastOperationId, "lastOperationId"),
+    lastOperationPayloadHash: requireDigest(
+      record.lastOperationPayloadHash,
+      "lastOperationPayloadHash"
+    ),
+    lastResultDigest: requireDigest(record.lastResultDigest, "lastResultDigest")
   };
 }
 
@@ -569,6 +697,7 @@ function decodeObservedSessionKeeper(value: unknown): ObservedSessionKeeper {
   assertExactKeys(record, [
     "resourceKey",
     "generation",
+    "descriptorState",
     "processState",
     "remoteResourceRevision",
     "persistenceLevel",
@@ -588,6 +717,15 @@ function decodeObservedSessionKeeper(value: unknown): ObservedSessionKeeper {
   const processState = record.processState;
   if (processState !== "running" && processState !== "exited") {
     throw new TypeError("observed keeper processState is invalid");
+  }
+  if (
+    record.descriptorState !== undefined &&
+    record.descriptorState !== "creating" &&
+    record.descriptorState !== "running" &&
+    record.descriptorState !== "exited" &&
+    record.descriptorState !== "terminated"
+  ) {
+    throw new TypeError("observed keeper descriptorState is invalid");
   }
   const exitCode = requireExitCode(record.exitCode);
   if (processState === "running" && exitCode !== undefined) {
@@ -620,6 +758,9 @@ function decodeObservedSessionKeeper(value: unknown): ObservedSessionKeeper {
       sessionId: requireId(resource.sessionId, "sessionId")
     },
     generation: requireId(record.generation, "generation"),
+    ...(record.descriptorState === undefined
+      ? {}
+      : { descriptorState: record.descriptorState }),
     processState,
     remoteResourceRevision: uint64(record.remoteResourceRevision),
     persistenceLevel: record.persistenceLevel,
@@ -763,6 +904,14 @@ function authorizeObservedKeepers(
   observed: RemoteObservedState,
   desktopInstallationId: Id
 ): void {
+  for (const workspace of observed.workspaces ?? []) {
+    if (
+      workspace.resourceKey.desktopInstallationId !== desktopInstallationId ||
+      workspace.resourceKey.targetId !== observed.targetId
+    ) {
+      throw new Error("observed workspace is outside the reconciler authority");
+    }
+  }
   for (const keeper of observed.keepers) {
     if (
       keeper.resourceKey.desktopInstallationId !== desktopInstallationId ||
@@ -786,6 +935,15 @@ function authorizeObservedKeepers(
       throw new Error("observed keeper does not match product ownership");
     }
   }
+}
+
+function resourceIdentity(resourceKey: RemoteResourceKey): string {
+  return [
+    resourceKey.desktopInstallationId,
+    resourceKey.targetId,
+    resourceKey.workspaceId,
+    resourceKey.sessionId ?? ""
+  ].join("\0");
 }
 
 function remoteSessionsForTarget(

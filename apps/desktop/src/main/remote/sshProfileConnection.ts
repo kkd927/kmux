@@ -3,6 +3,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 import type {
+  Id,
   RemoteRuntimeRootsDto,
   SshEffectiveConnectionVm,
   SshProfileDto
@@ -39,7 +40,10 @@ export interface ResolvedSshProfileConnection {
 }
 
 export interface SshProfileConnectionResolver {
-  resolve(profile: SshProfileDto): Promise<ResolvedSshProfileConnection>;
+  resolve(
+    profile: SshProfileDto,
+    connectionAttemptId: Id
+  ): Promise<ResolvedSshProfileConnection>;
 }
 
 export function createSshProfileConnectionResolver(options: {
@@ -61,19 +65,21 @@ export function createSshProfileConnectionResolver(options: {
   const resolveEffective = options.resolveEffective;
   return Object.freeze({
     async resolve(
-      profile: SshProfileDto
+      profile: SshProfileDto,
+      connectionAttemptId: Id
     ): Promise<ResolvedSshProfileConnection> {
       const host = profile.sshConfigHost ?? internalProfileHost(profile.id);
       assertSafeConfigToken(host, "SSH host alias");
-      const configPath = join(
-        options.configRoot,
-        `${createHash("sha256").update(profile.id).digest("hex")}.conf`
-      );
-      const profileHash = createHash("sha256").update(profile.id).digest("hex");
+      const resolutionHash = createHash("sha256")
+        .update(profile.id)
+        .update("\0")
+        .update(connectionAttemptId)
+        .digest("hex");
+      const configPath = join(options.configRoot, `${resolutionHash}.conf`);
       const observerPath = join(options.configRoot, HOST_KEY_OBSERVER_FILE);
       const hostKeyObservationPath = join(
         options.configRoot,
-        `${profileHash}.host-key-fingerprint`
+        `${resolutionHash}.host-key-fingerprint`
       );
       durableAtomicReplace(
         options.configRoot,
@@ -82,7 +88,7 @@ export function createSshProfileConnectionResolver(options: {
       );
       durableAtomicReplace(
         options.configRoot,
-        `${profileHash}.host-key-fingerprint`,
+        `${resolutionHash}.host-key-fingerprint`,
         new Uint8Array()
       );
       const config = renderProfileConfig({

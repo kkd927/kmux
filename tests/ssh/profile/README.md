@@ -28,10 +28,17 @@ Use the checked-in v1 performance manifest unchanged on every target. Its
 steady terminal stream uses deterministic binary output in 4 KiB application
 chunks. After the 120-second steady interval, one of the four already attached
 keepers emits a 4 MiB ASCII burst in 64 KiB chunks paced at 20 ms while twenty
-echo probes traverse that same attachment. The harness requires all probes to
-precede the burst end marker, then queries every generator for exact steady and
-burst byte counts. Changing this generator shape requires an ADR amendment and
-benchmark evidence.
+echo probes traverse that same attachment without pausing its output. The
+harness requires all probes to precede the burst end marker and satisfy the
+manifest's added p95/p99 echo limits, then queries every generator for exact
+steady and burst byte counts. Changing this generator shape requires an ADR
+amendment and benchmark evidence.
+
+Profiling and SSH implementation work must not instrument or reroute the local
+surface live-output path. That path remains `pty-host` ring/coalescing/credit →
+direct renderer `MessagePort` → singleton router → existing scheduler/xterm.
+The versioned local regression gate compares the immutable pre-SSH capture with
+each phase candidate; the SSH profile is a separate remote transport gate.
 
 `auditSnapshot.executable` is an absolute local executable that prints one JSON
 object containing these exact monotonic counters:

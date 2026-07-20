@@ -66,6 +66,10 @@ export function createTerminalBridge(
   const lastDispatchedTitleMetadata = new Map<string, string>();
 
   function surfaceSessionId(surfaceId: Id): Id | null {
+    return options.getState().surfaces[surfaceId]?.sessionId ?? null;
+  }
+
+  function localSurfaceSessionId(surfaceId: Id): Id | null {
     const state = options.getState();
     const surface = state.surfaces[surfaceId];
     const pane = surface ? state.panes[surface.paneId] : undefined;
@@ -87,7 +91,7 @@ export function createTerminalBridge(
   }
 
   function isCurrentSurfaceSession(surfaceId: Id, sessionId: Id): boolean {
-    return surfaceSessionId(surfaceId) === sessionId;
+    return localSurfaceSessionId(surfaceId) === sessionId;
   }
 
   function isLocalProductSession(sessionId: Id): boolean {

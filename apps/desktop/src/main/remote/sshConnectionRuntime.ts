@@ -153,7 +153,10 @@ export function createSshConnectionRuntime(options: {
         await Promise.all(
           options.profiles.list().map(async (profile) => {
             try {
-              const resolved = await options.resolver.resolve(profile);
+              const resolved = await options.resolver.resolve(
+                profile,
+                makeConnectionAttemptId()
+              );
               effectiveCache.set(profile.id, resolved.effective);
             } catch {
               // Config resolution diagnostics are returned by explicit test or
@@ -212,13 +215,16 @@ export function createSshConnectionRuntime(options: {
         if (internal.signal?.aborted) {
           throw new Error("SSH authentication was cancelled");
         }
-        const resolved = await options.resolver.resolve(profile);
+        const connectionAttemptId = makeConnectionAttemptId();
+        const resolved = await options.resolver.resolve(
+          profile,
+          connectionAttemptId
+        );
         effectiveCache.set(profile.id, resolved.effective);
         options.host.start(options.hostEnv);
         if (!options.host.isRunning()) {
           throw new Error("remote-host failed to start");
         }
-        const connectionAttemptId = makeConnectionAttemptId();
         const verificationId = makeVerificationId();
         askpassContext = await options.askpassBroker?.createContext(profile);
         internal.signal?.addEventListener("abort", cancelAskpass, {
@@ -387,7 +393,11 @@ export function createSshConnectionRuntime(options: {
       }
       let verification: RemoteHostTargetVerification | undefined;
       try {
-        const resolved = await options.resolver.resolve(profile);
+        const connectionAttemptId = makeConnectionAttemptId();
+        const resolved = await options.resolver.resolve(
+          profile,
+          connectionAttemptId
+        );
         effectiveCache.set(profile.id, resolved.effective);
         if (
           resolved.effective.policyHash !==
@@ -401,7 +411,6 @@ export function createSshConnectionRuntime(options: {
         if (!options.host.isRunning()) {
           throw new Error("remote-host failed to start");
         }
-        const connectionAttemptId = makeConnectionAttemptId();
         const verificationId = makeVerificationId();
         // Automatic restore deliberately has no askpass context. OpenSSH may
         // use an already-available agent or credential facility, but kmux must

@@ -53,6 +53,7 @@ import type { AssignedSshMaster, SshTransportPool } from "./sshTransportPool";
 import {
   MuxOnlyRemoteSftpClient,
   RemoteSftpError,
+  type RemoteSftpAttachmentPruneResult,
   type RemoteSftpTransferResult,
   type RemoteSftpUploadResult
 } from "./remoteSftpClient";
@@ -663,6 +664,17 @@ export class LinuxX64RemoteRuntime {
 
   async releaseFile(localPath: string): Promise<void> {
     await this.withSftpError(() => this.sftp.release(localPath));
+  }
+
+  async pruneRemoteAttachments(request: {
+    remoteDirectory: string;
+    nowUnixMs: number;
+    maxAgeMs: number;
+    maxTotalBytes: number;
+  }): Promise<RemoteSftpAttachmentPruneResult> {
+    return await this.withSftpError(() =>
+      this.sftp.pruneManagedAttachments(request)
+    );
   }
 
   async attach(options: {
@@ -1341,13 +1353,8 @@ export class RemoteTerminalAttachment {
       return mutation;
     }
     if (!this.open) {
-      if (
-        this.closeError &&
-        (!(this.closeError instanceof RemoteRuntimeError) ||
-          this.closeError.code !== "attachment-closed")
-      ) {
-        throw this.closeError;
-      }
+      const closeError = this.mutationCloseError();
+      if (closeError) throw closeError;
       return null;
     }
     if (this.mutationWaiters.length !== 0) {
@@ -1460,7 +1467,7 @@ export class RemoteTerminalAttachment {
     } else if (this.terminationPromise) {
       await this.terminationPromise;
     }
-    this.resolveMutationWaiters();
+    this.settleMutationWaiters();
   }
 
   private async writeTerminal(
@@ -1885,11 +1892,23 @@ export class RemoteTerminalAttachment {
     this.checkpointDeferred.reject(closeError);
     this.pendingInput?.deferred.reject(closeError);
     this.pendingResize?.deferred.reject(closeError);
-    this.resolveMutationWaiters();
+    this.settleMutationWaiters();
   }
 
-  private resolveMutationWaiters(): void {
-    for (const waiter of this.mutationWaiters.splice(0)) waiter.resolve(null);
+  private settleMutationWaiters(): void {
+    const closeError = this.mutationCloseError();
+    for (const waiter of this.mutationWaiters.splice(0)) {
+      if (closeError) waiter.reject(closeError);
+      else waiter.resolve(null);
+    }
+  }
+
+  private mutationCloseError(): Error | undefined {
+    return this.closeError &&
+      (!(this.closeError instanceof RemoteRuntimeError) ||
+        this.closeError.code !== "attachment-closed")
+      ? this.closeError
+      : undefined;
   }
 
   private appendStderr(chunk: Buffer): void {

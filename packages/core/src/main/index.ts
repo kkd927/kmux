@@ -19,10 +19,7 @@ import {
   type RemoteOperationProjectionDto,
   type RemoteWorktreeProductMetadata
 } from "../remoteOperation";
-import type {
-  RemoteResourceKey,
-  RemoteSessionStorageStatus
-} from "../domain";
+import type { RemoteResourceKey, RemoteSessionStorageStatus } from "../domain";
 import {
   locatedPathForTarget,
   sameLocatedPath,
@@ -89,8 +86,15 @@ export type MainRemoteSessionCursorFact = {
   sequence: Uint64;
 };
 
+export type MainRemoteOperationCheckpointFact = {
+  type: "remote-operation.checkpointed";
+  operationId: Id;
+  resultDigest: string;
+};
+
 export type MainFact =
   | MainRemoteOperationFact
+  | MainRemoteOperationCheckpointFact
   | MainRemoteSessionObservationFact
   | MainRemoteSessionCursorFact;
 
@@ -288,8 +292,10 @@ export interface CreateSshWorkspaceReplacementPatchOptions {
   };
 }
 
-export interface CreateSshWorkspaceAdditionPatchOptions
-  extends Omit<CreateSshWorkspaceReplacementPatchOptions, "workspaceId"> {
+export interface CreateSshWorkspaceAdditionPatchOptions extends Omit<
+  CreateSshWorkspaceReplacementPatchOptions,
+  "workspaceId"
+> {
   sourceWorkspaceId: Id;
   workspaceId: Id;
 }
@@ -1045,6 +1051,8 @@ export function applyMainFact(
   fact: MainFact
 ): ApplyMainFactResult {
   switch (fact.type) {
+    case "remote-operation.checkpointed":
+      return applyMainRemoteOperationCheckpointFact(state, fact);
     case "remote-session.observation-unknown":
     case "remote-session.observed":
     case "remote-session.absent":
@@ -1054,6 +1062,25 @@ export function applyMainFact(
     default:
       return applyMainRemoteOperationFact(state, fact);
   }
+}
+
+export function applyMainRemoteOperationCheckpointFact(
+  state: AppState,
+  fact: MainRemoteOperationCheckpointFact
+): ApplyMainFactResult {
+  const projection = state.remoteOperations[fact.operationId];
+  if (!projection) return noChange();
+  if (
+    (projection.state !== "succeeded" && projection.state !== "failed") ||
+    projection.resultDigest !== fact.resultDigest
+  ) {
+    throw new MainFactConflictError(
+      "operation-terminal",
+      `operation ${fact.operationId} is not the checkpointed terminal result`
+    );
+  }
+  delete state.remoteOperations[fact.operationId];
+  return changed();
 }
 
 /**
@@ -1378,6 +1405,12 @@ function applySucceededFact(
   }
   assertKeeperGenerationForResult(projection, fact.keeperGeneration);
   applySucceededProductProjection(state, projection, fact);
+  if (projection.resourceKey.sessionId === undefined) {
+    const workspace = state.workspaces[projection.resourceKey.workspaceId];
+    if (workspace) {
+      workspace.remoteResourceRevision = fact.remoteResourceRevision;
+    }
+  }
   projection.state = "succeeded";
   projection.completedAt = fact.completedAt;
   projection.resultDigest = fact.resultDigest;
@@ -2157,11 +2190,11 @@ function sameRemoteSessionStorageStatus(
 ): boolean {
   return Boolean(
     left &&
-      left.state === right.state &&
-      left.journalAdmitted === right.journalAdmitted &&
-      left.journalSynced === right.journalSynced &&
-      left.emergencyBytes === right.emergencyBytes &&
-      left.lastSyncDurationMs === right.lastSyncDurationMs
+    left.state === right.state &&
+    left.journalAdmitted === right.journalAdmitted &&
+    left.journalSynced === right.journalSynced &&
+    left.emergencyBytes === right.emergencyBytes &&
+    left.lastSyncDurationMs === right.lastSyncDurationMs
   );
 }
 

@@ -43,7 +43,9 @@ describe("terminal bridge", () => {
       onSurfaceInputText
     });
 
-    expect(bridge.surfaceSessionId(surfaceId)).toBeNull();
+    // Product-level identity remains available to target-neutral features,
+    // while every local PTY path below still rejects the SSH surface.
+    expect(bridge.surfaceSessionId(surfaceId)).toBe(sessionId);
     expect(() => bridge.sendText(surfaceId, "whoami\n")).toThrow(
       /target provider/
     );

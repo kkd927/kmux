@@ -853,7 +853,20 @@ describe("RemoteLifecycleRuntime", () => {
       () => child as unknown as UtilityProcess
     );
     host.on("error", vi.fn());
-    const runtime = createRuntime(fixture.state, host, binding(), sandbox);
+    const errors: Error[] = [];
+    const operationStore = createDurableRemoteOperationStore(
+      join(sandbox, "operations")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      errors,
+      undefined,
+      operationStore,
+      vi.fn()
+    );
     runtime.recover();
     await runtime.connectTarget(connection());
 
@@ -903,6 +916,10 @@ describe("RemoteLifecycleRuntime", () => {
       surfaceIds: [initialSurfaceId],
       activeSurfaceId: initialSurfaceId
     });
+    expect(operationStore.loadAll()).toEqual([]);
+    expect(errors).toEqual([]);
+    await runtime.reconcileTarget("target_1");
+    expect(runtime.listRetainedSessions()).toEqual([]);
     expect(
       child.messages
         .filter((message) => message.type === "operation.execute")
@@ -914,7 +931,6 @@ describe("RemoteLifecycleRuntime", () => {
       "launch-input",
       "session.terminate"
     ]);
-
     await runtime.stop();
   });
 
@@ -969,11 +985,10 @@ describe("RemoteLifecycleRuntime", () => {
     });
 
     expect(result.outcome.status).toBe("succeeded");
-    expect(persistDurableProductSnapshot).toHaveBeenCalledTimes(1);
-    expect(fixture.state.remoteOperations[result.operationId].state).toBe(
-      "succeeded"
-    );
+    expect(persistDurableProductSnapshot).toHaveBeenCalledTimes(2);
+    expect(fixture.state.remoteOperations[result.operationId]).toBeUndefined();
     expect(operationStore.get(result.operationId)).toBeNull();
+    expect(operationStore.listResourceReceipts()).toEqual([]);
 
     await runtime.stop();
   });
@@ -1355,8 +1370,11 @@ interface ScriptedKeeper {
   };
   keeperGeneration: string;
   remoteResourceRevision: string;
+  descriptorState?: "running" | "exited" | "terminated";
   processState?: "running" | "exited";
   exitCode?: number;
+  createOperationId?: string;
+  canonicalCreatePayloadHash?: string;
   lastOperationId?: string;
   lastOperationPayloadHash?: string;
   lastResultDigest?: string;
@@ -1453,13 +1471,19 @@ class ScriptedUtilityProcess extends EventEmitter {
             keepers: [...this.keepers.values()].map((keeper) => ({
               resourceKey: keeper.resourceKey,
               keeperGeneration: keeper.keeperGeneration,
+              descriptorState:
+                keeper.descriptorState ??
+                (keeper.processState === "exited" ? "exited" : "running"),
               processState: keeper.processState ?? "running",
               remoteResourceRevision: keeper.remoteResourceRevision,
               ...(keeper.exitCode === undefined
                 ? {}
                 : { exitCode: keeper.exitCode }),
-              createOperationId: `create_${keeper.resourceKey.sessionId}`,
-              canonicalCreatePayloadHash: "a".repeat(64),
+              createOperationId:
+                keeper.createOperationId ??
+                `create_${keeper.resourceKey.sessionId}`,
+              canonicalCreatePayloadHash:
+                keeper.canonicalCreatePayloadHash ?? "a".repeat(64),
               lastOperationId:
                 keeper.lastOperationId ??
                 `last_${keeper.resourceKey.sessionId}`,
@@ -1501,6 +1525,7 @@ class ScriptedUtilityProcess extends EventEmitter {
           if (existing) {
             this.keepers.set(payload.sessionId, {
               ...existing,
+              descriptorState: "terminated",
               processState: "exited",
               exitCode: 0,
               remoteResourceRevision: intent.nextRemoteResourceRevision,
@@ -1528,7 +1553,20 @@ class ScriptedUtilityProcess extends EventEmitter {
               sessionId: payload.sessionId
             },
             keeperGeneration,
-            remoteResourceRevision: intent.nextRemoteResourceRevision
+            remoteResourceRevision: intent.nextRemoteResourceRevision,
+            createOperationId:
+              payload.kind === "session.create"
+                ? intent.operationId
+                : (existingKeeper?.createOperationId ??
+                  `create_${payload.sessionId}`),
+            canonicalCreatePayloadHash:
+              payload.kind === "session.create"
+                ? intent.canonicalPayloadHash
+                : (existingKeeper?.canonicalCreatePayloadHash ??
+                  "a".repeat(64)),
+            lastOperationId: intent.operationId,
+            lastOperationPayloadHash: intent.canonicalPayloadHash,
+            lastResultDigest: "f".repeat(64)
           });
         }
         this.ok(requestId, {
