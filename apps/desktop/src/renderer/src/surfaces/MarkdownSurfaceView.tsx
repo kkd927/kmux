@@ -1,89 +1,199 @@
-import { useEffect, useRef, useState } from "react";
-import type { MarkdownDocumentEvent } from "@kmux/proto";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type UIEvent
+} from "react";
 
 import type { SurfaceViewProps } from "./contracts";
+import {
+  applyMarkdownDocumentEvent,
+  markMarkdownSubscriptionError,
+  readMarkdownSurfaceCache,
+  sameMarkdownRenderState,
+  updateMarkdownSurfaceScroll,
+  type MarkdownSurfaceCacheEntry
+} from "./markdownSurfaceCache";
+import { SurfaceRenderErrorBoundary } from "./SurfaceRenderErrorBoundary";
+import "../styles/MarkdownSurface.css";
 
-type PlaceholderState =
-  | { status: "loading" }
-  | { status: "ready"; text: string }
-  | { status: "offline"; text?: string }
-  | { status: "error"; errorCode: string };
+const LazyMarkdownRenderedContent = lazy(async () => {
+  const module = await import("./MarkdownRenderedContent");
+  return { default: module.MarkdownRenderedContent };
+});
+
+interface RenderedState {
+  entry: MarkdownSurfaceCacheEntry;
+  surfaceId: string;
+}
 
 export function MarkdownSurfaceView({
+  colorTheme,
+  onFocusPane,
+  paneId,
   surface,
   visible
-}: SurfaceViewProps<"markdown">): JSX.Element {
-  const [state, setState] = useState<PlaceholderState>({ status: "loading" });
-  const revisionRef = useRef(0);
+}: SurfaceViewProps<"markdown">): JSX.Element | null {
+  const [renderedState, setRenderedState] = useState<RenderedState>(() => ({
+    entry: readMarkdownSurfaceCache(surface.id),
+    surfaceId: surface.id
+  }));
+  const [renderAttempt, setRenderAttempt] = useState(0);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const entry =
+    renderedState.surfaceId === surface.id
+      ? renderedState.entry
+      : readMarkdownSurfaceCache(surface.id);
+
+  const publishEntry = useCallback(
+    (next: MarkdownSurfaceCacheEntry) => {
+      setRenderedState((previous) => {
+        if (
+          previous.surfaceId === surface.id &&
+          sameMarkdownRenderState(previous.entry, next)
+        ) {
+          return previous;
+        }
+        return { entry: next, surfaceId: surface.id };
+      });
+    },
+    [surface.id]
+  );
 
   useEffect(() => {
     if (!visible) return;
+    publishEntry(readMarkdownSurfaceCache(surface.id));
+    let active = true;
     const unsubscribeEvents = window.kmux.subscribeDocumentEvents((event) => {
-      if (
-        event.surfaceId !== surface.id ||
-        event.revision <= revisionRef.current
-      ) {
-        return;
-      }
-      revisionRef.current = event.revision;
-      setState((previous) => nextPlaceholderState(previous, event));
+      if (event.surfaceId !== surface.id) return;
+      const next = applyMarkdownDocumentEvent(event);
+      if (next) publishEntry(next);
     });
     void window.kmux.subscribeDocument(surface.id).catch(() => {
-      setState({ status: "error", errorCode: "read-failed" });
+      if (active) publishEntry(markMarkdownSubscriptionError(surface.id));
     });
     return () => {
+      active = false;
+      const viewport = viewportRef.current;
+      if (viewport) {
+        updateMarkdownSurfaceScroll(surface.id, viewport.scrollTop);
+      }
       unsubscribeEvents();
       void window.kmux.unsubscribeDocument(surface.id);
     };
-  }, [surface.id, visible]);
+  }, [publishEntry, surface.id, visible]);
 
-  const body =
-    state.status === "ready"
-      ? state.text
-      : state.status === "offline"
-        ? state.text
-        : undefined;
+  const restoreScroll = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollTop = readMarkdownSurfaceCache(surface.id).scrollTop;
+    }
+  }, [surface.id]);
+
+  useLayoutEffect(restoreScroll, [restoreScroll]);
+
+  if (!visible) return null;
+  const body = entry.text;
+  const renderKey = `${surface.id}:${colorTheme}:${body ?? "empty"}:${renderAttempt}`;
+
+  function focusPaneShell(event: KeyboardEvent<HTMLDivElement>): void {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onFocusPane(paneId);
+    event.currentTarget
+      .closest<HTMLElement>("[data-pane-id]")
+      ?.focus({ preventScroll: true });
+  }
+
+  function rememberScroll(event: UIEvent<HTMLDivElement>): void {
+    updateMarkdownSurfaceScroll(surface.id, event.currentTarget.scrollTop);
+  }
+
   return (
     <div
+      ref={viewportRef}
+      className="kmuxMarkdownSurface"
       role="document"
       aria-label={`Markdown preview ${surface.title}`}
-      style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "24px" }}
+      onKeyDown={focusPaneShell}
+      onScroll={rememberScroll}
+      tabIndex={0}
     >
-      {state.status === "offline" ? (
-        <div role="status">Remote document is offline. Retrying…</div>
-      ) : null}
-      {state.status === "error" ? (
-        <div role="alert">
-          Markdown preview failed: {state.errorCode}.{" "}
-          <button
-            onClick={() => void window.kmux.subscribeDocument(surface.id)}
+      <div className="kmuxMarkdownSurface__content">
+        {entry.status === "offline" ? (
+          <div
+            className="kmuxMarkdownSurface__status"
+            data-offline="true"
+            role="status"
           >
-            Retry
-          </button>
-        </div>
-      ) : body === undefined ? (
-        <div role="status">Loading Markdown preview…</div>
-      ) : (
-        <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{body}</pre>
-      )}
+            Remote document is offline. The last available version is shown.
+            <button
+              type="button"
+              onClick={() => void window.kmux.subscribeDocument(surface.id)}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {entry.status === "error" ? (
+          <div className="kmuxMarkdownSurface__error" role="alert">
+            Markdown preview failed: {entry.errorCode ?? "read-failed"}.
+            <button
+              type="button"
+              onClick={() => void window.kmux.subscribeDocument(surface.id)}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {body === undefined ? (
+          entry.status === "error" ? null : (
+            <div className="kmuxMarkdownSurface__status" role="status">
+              Loading Markdown preview…
+            </div>
+          )
+        ) : (
+          <SurfaceRenderErrorBoundary
+            fallback={
+              <div className="kmuxMarkdownSurface__error" role="alert">
+                Markdown rendering failed. Edit the file or retry the preview.
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenderAttempt((attempt) => attempt + 1);
+                    void window.kmux.subscribeDocument(surface.id);
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            }
+            resetKey={renderKey}
+          >
+            <Suspense
+              fallback={
+                <div className="kmuxMarkdownSurface__status" role="status">
+                  Preparing Markdown renderer…
+                </div>
+              }
+            >
+              <LazyMarkdownRenderedContent
+                colorTheme={colorTheme}
+                markdown={body}
+                onReady={restoreScroll}
+                surfaceId={surface.id}
+                viewportRef={viewportRef}
+              />
+            </Suspense>
+          </SurfaceRenderErrorBoundary>
+        )}
+      </div>
     </div>
   );
-}
-
-function nextPlaceholderState(
-  previous: PlaceholderState,
-  event: MarkdownDocumentEvent
-): PlaceholderState {
-  if (event.type === "snapshot") return { status: "ready", text: event.text };
-  if (event.type === "offline") {
-    const text =
-      previous.status === "ready" || previous.status === "offline"
-        ? previous.text
-        : undefined;
-    return { status: "offline", ...(text === undefined ? {} : { text }) };
-  }
-  if (event.type === "error") {
-    return { status: "error", errorCode: event.errorCode };
-  }
-  return previous.status === "ready" ? previous : { status: "loading" };
 }

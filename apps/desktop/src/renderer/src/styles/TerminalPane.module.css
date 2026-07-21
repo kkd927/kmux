@@ -8,6 +8,7 @@
   background: var(--panel-bg);
   border: 1px solid var(--border-strong);
   border-top: 0;
+  outline: none;
   overflow: hidden;
   position: relative;
 }

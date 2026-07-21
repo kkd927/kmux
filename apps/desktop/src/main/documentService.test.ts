@@ -197,6 +197,39 @@ describe("DocumentService", () => {
     service.close();
   });
 
+  it("re-publishes an unchanged SSH body after recovering from offline", async () => {
+    const fixture = createMarkdownFixture("ssh");
+    const sender = new FakeSender();
+    const metadata: FileMetadata = { kind: "file", size: 6 };
+    const stat = vi
+      .fn<() => Promise<FileMetadata>>()
+      .mockResolvedValueOnce(metadata)
+      .mockRejectedValueOnce(new Error("target unavailable"))
+      .mockResolvedValue(metadata);
+    const read = vi.fn(async () => new TextEncoder().encode("remote"));
+    const service = createService(fixture.state, { stat, read });
+
+    service.subscribe(sender, { surfaceId: fixture.surfaceId });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "snapshot",
+      text: "remote"
+    });
+
+    service.retryTarget("target_1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({ type: "offline" });
+
+    service.retryTarget("target_1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "snapshot",
+      text: "remote"
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    service.close();
+  });
+
   it("rejects subscriptions from a renderer that does not own the Surface window", () => {
     const fixture = createMarkdownFixture("local");
     const service = createService(

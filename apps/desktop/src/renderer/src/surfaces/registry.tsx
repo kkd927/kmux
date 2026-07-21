@@ -1,11 +1,16 @@
-import type { ComponentType } from "react";
+import { lazy, Suspense, type ComponentType } from "react";
 import type { KmuxSettings, SurfaceKind, SurfaceVm } from "@kmux/proto";
 
 import { Codicon } from "../components/Codicon";
 import type { SurfaceContextMenuContext } from "../../../shared/surfaceContextMenu";
 import type { SurfacePaneProps, SurfaceViewProps } from "./contracts";
-import { MarkdownSurfaceView } from "./MarkdownSurfaceView";
+import { SurfaceRenderErrorBoundary } from "./SurfaceRenderErrorBoundary";
 import { TerminalSurfaceView } from "./TerminalSurfaceView";
+
+const LazyMarkdownSurfaceView = lazy(async () => {
+  const module = await import("./MarkdownSurfaceView");
+  return { default: module.MarkdownSurfaceView };
+});
 
 export interface SurfaceViewModule<K extends SurfaceKind> {
   readonly kind: K;
@@ -33,6 +38,29 @@ const TerminalSurfaceAdapter = ({
   />
 );
 
+const MarkdownSurfaceAdapter = (
+  props: SurfaceViewProps<"markdown">
+): JSX.Element => (
+  <SurfaceRenderErrorBoundary
+    fallback={
+      <div role="alert" style={{ flex: 1, padding: 24 }}>
+        Markdown preview could not be loaded.
+      </div>
+    }
+    resetKey={props.surface.id}
+  >
+    <Suspense
+      fallback={
+        <div role="status" style={{ flex: 1, padding: 24 }}>
+          Loading Markdown preview…
+        </div>
+      }
+    >
+      <LazyMarkdownSurfaceView {...props} />
+    </Suspense>
+  </SurfaceRenderErrorBoundary>
+);
+
 const terminalSurfaceViewModule: SurfaceViewModule<"terminal"> = {
   kind: "terminal",
   Component: TerminalSurfaceAdapter,
@@ -50,7 +78,7 @@ const terminalSurfaceViewModule: SurfaceViewModule<"terminal"> = {
 
 const markdownSurfaceViewModule: SurfaceViewModule<"markdown"> = {
   kind: "markdown",
-  Component: MarkdownSurfaceView,
+  Component: MarkdownSurfaceAdapter,
   Icon: () => <Codicon name="markdown" />,
   tabTitle: (surface) => surface.title
 };

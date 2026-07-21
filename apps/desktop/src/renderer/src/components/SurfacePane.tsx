@@ -53,6 +53,7 @@ export function SurfacePane(props: SurfacePaneProps): JSX.Element {
       data-pane-id={props.paneId}
       data-active-surface-id={activeSurface.id}
       data-focused={props.focused}
+      tabIndex={-1}
       onMouseDown={() => props.onFocusPane(props.paneId)}
     >
       <div className={styles.header}>

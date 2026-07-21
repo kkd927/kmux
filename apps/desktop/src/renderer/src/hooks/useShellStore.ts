@@ -272,7 +272,7 @@ function teardownIfUnused(): void {
   refetchAfterCurrentRequest = false;
 }
 
-export function subscribeRemovedTerminalSurfaces(
+export function subscribeRemovedSurfaces(
   listener: (surfaceIds: Id[]) => void
 ): () => void {
   removedSurfaceListeners.add(listener);
@@ -282,6 +282,8 @@ export function subscribeRemovedTerminalSurfaces(
     teardownIfUnused();
   };
 }
+
+export const subscribeRemovedTerminalSurfaces = subscribeRemovedSurfaces;
 
 export function useShellSnapshot(): ShellStoreSnapshot | null {
   return useSyncExternalStore(

@@ -1438,7 +1438,7 @@ async function bootstrap(): Promise<void> {
     sendKeyInput: terminalBridge.sendKeyInput,
     openExternalUrl: async (surfaceId, rawUrl) => {
       const url = new URL(rawUrl);
-      if (!["http:", "https:"].includes(url.protocol)) {
+      if (!["http:", "https:", "mailto:"].includes(url.protocol)) {
         throw new Error(`Unsupported external URL protocol: ${url.protocol}`);
       }
       const state = runtime.getState();
@@ -1446,7 +1446,13 @@ async function bootstrap(): Promise<void> {
       const pane = surface ? state.panes[surface.paneId] : undefined;
       const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
       if (!surface || !workspace) {
-        throw new Error("external terminal URL surface is unavailable");
+        throw new Error("external URL surface is unavailable");
+      }
+      if (url.protocol === "mailto:") {
+        if (process.env.NODE_ENV !== "test") {
+          await shell.openExternal(url.toString());
+        }
+        return;
       }
       const remapped = await targetServices
         .resolveLocated(workspace.location.target)

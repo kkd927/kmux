@@ -50,6 +50,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useShellSelector, useShellSnapshotRef } from "./hooks/useShellStore";
 import { useTerminalInstanceCleanup } from "./hooks/useTerminalInstanceCleanup";
+import { useMarkdownSurfaceCacheCleanup } from "./hooks/useMarkdownSurfaceCacheCleanup";
 import {
   clampSidebarWidthForWindow,
   MAX_SIDEBAR_WIDTH,
@@ -279,6 +280,7 @@ export function App(): JSX.Element {
     forgetTerminalStreamSurface,
     releaseTerminalSurface: terminalInstanceStore.release
   });
+  useMarkdownSurfaceCacheCleanup();
 
   useEffect(() => {
     if (!pendingWorkspaceClose || !shellReady) {
