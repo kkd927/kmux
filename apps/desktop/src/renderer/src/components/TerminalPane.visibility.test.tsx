@@ -2225,7 +2225,7 @@ describe("TerminalPane visibility cleanup", () => {
     expect(sentTexts()).toEqual(["녕"]);
   });
 
-  it("uses xterm's propagated macOS IME commit before replaying bare navigation", async () => {
+  it("clears propagated macOS IME residue before cursor movement and the next composition", async () => {
     const props = createProps("surface_1");
     props.keyboardPlatform = "darwin";
 
@@ -2261,9 +2261,9 @@ describe("TerminalPane visibility cleanup", () => {
       terminalTextarea!.dispatchEvent(
         createCompositionEvent("compositionstart")
       );
-      terminalTextarea!.value = "간";
+      terminalTextarea!.value = "대";
       terminalTextarea!.dispatchEvent(
-        createCompositionEvent("compositionupdate", "간")
+        createCompositionEvent("compositionupdate", "대")
       );
       expect(
         handler!(
@@ -2274,11 +2274,11 @@ describe("TerminalPane visibility cleanup", () => {
         )
       ).toBe(false);
       terminalTextarea!.dispatchEvent(
-        createCompositionEvent("compositionend", "간")
+        createCompositionEvent("compositionend", "대")
       );
       // Chromium can expose the real commit only after compositionend. This
       // non-prefix correction catches both an early guessed send and a clear.
-      terminalTextarea!.value = "가나";
+      terminalTextarea!.value = "데";
       expect(
         handler!(
           new KeyboardEvent("keydown", {
@@ -2289,7 +2289,7 @@ describe("TerminalPane visibility cleanup", () => {
       ).toBe(false);
     });
 
-    expect(terminalTextarea!.value).toBe("가나");
+    expect(terminalTextarea!.value).toBe("데");
     expect(sentTexts()).toEqual([]);
 
     await act(async () => {
@@ -2299,28 +2299,31 @@ describe("TerminalPane visibility cleanup", () => {
       ["\u001b[D", true],
       ["\u001b[C", true]
     ]);
-    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C"]);
+    expect(sentTexts()).toEqual(["데", "\u001b[D", "\u001b[C"]);
 
     act(() => {
+      // A retained commit plus a hidden-textarea caret moved to the front made
+      // xterm slice the old suffix as the next commit (for example, "데"
+      // instead of the newly composed "근").
+      terminalTextarea!.setSelectionRange(0, 0);
       terminalTextarea!.dispatchEvent(
         createCompositionEvent("compositionstart")
       );
-      terminalTextarea!.value = "가나발행";
+      terminalTextarea!.setRangeText("근");
       terminalTextarea!.dispatchEvent(
-        createCompositionEvent("compositionupdate", "발행")
+        createCompositionEvent("compositionupdate", "근")
       );
       terminalTextarea!.dispatchEvent(
-        createCompositionEvent("compositionend", "발행")
+        createCompositionEvent("compositionend", "근")
       );
-      terminalTextarea!.value = "가나발행 후";
     });
 
-    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C"]);
+    expect(sentTexts()).toEqual(["데", "\u001b[D", "\u001b[C"]);
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(terminalTextarea!.value).toBe("가나발행 후");
-    expect(sentTexts()).toEqual(["가나", "\u001b[D", "\u001b[C", "발행 후"]);
+    expect(sentTexts()).toEqual(["데", "\u001b[D", "\u001b[C", "근"]);
+    expect(terminalTextarea!.value).toBe("");
   });
 });

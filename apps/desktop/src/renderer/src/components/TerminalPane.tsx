@@ -2402,14 +2402,15 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         xtermTextarea.value = "";
       }
       // xterm defers its own compositionend send with setTimeout(0). Run after
-      // that callback. macOS leaves commit authority and textarea ownership to
-      // xterm; Linux clears any ibus residue after xterm had one chance to send.
+      // that callback so macOS can still read Chromium's propagated commit.
+      // Once every composition has settled, clear the hidden textarea residue;
+      // otherwise a moved textarea caret can make xterm slice the previous
+      // Korean character as the next commit.
       const settlementTimeout = setTimeout(() => {
         imeSettlementTimeouts.delete(settlementTimeout);
         const navigationKeys =
           imeInputController.finishComposition(settlementId);
         if (
-          props.keyboardPlatform === "linux" &&
           xtermTextarea &&
           imeInputController.getPhase() === "idle"
         ) {
