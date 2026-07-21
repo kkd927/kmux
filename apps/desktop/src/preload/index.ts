@@ -374,8 +374,7 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, workspaceId: string) =>
       listener(workspaceId);
     ipcRenderer.on("kmux:ssh-workspace-open-request", handler);
-    return () =>
-      ipcRenderer.off("kmux:ssh-workspace-open-request", handler);
+    return () => ipcRenderer.off("kmux:ssh-workspace-open-request", handler);
   },
   subscribeWorkspaceCloseRequest(
     listener: (workspaceId: string) => void
@@ -479,6 +478,9 @@ const api = {
 };
 
 const testApi = {
+  crashRenderer(): void {
+    process.crash();
+  },
   getRuntimeEnv(): Record<string, string> {
     return {
       APPIMAGE: process.env.APPIMAGE ?? "",

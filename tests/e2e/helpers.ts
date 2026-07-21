@@ -37,6 +37,7 @@ type KmuxWindow = {
     dispatch: (action: unknown) => Promise<void>;
   };
   kmuxTest?: {
+    crashRenderer: () => void;
     getRuntimeEnv: () => Record<string, string>;
     snapshotSurface: (
       surfaceId: string,

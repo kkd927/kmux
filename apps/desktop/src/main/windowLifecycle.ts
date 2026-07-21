@@ -4,6 +4,7 @@ import {
   nativeImage,
   shell,
   type BrowserWindowConstructorOptions,
+  type Rectangle,
   type WebContents
 } from "electron";
 import { existsSync } from "node:fs";
@@ -16,11 +17,18 @@ import type {
 } from "@kmux/persistence";
 import type { MainWindowPlatformPolicy } from "./platform/runtime";
 
+export interface MainWindowRecoveryState {
+  bounds: Rectangle;
+  maximized: boolean;
+  fullscreen: boolean;
+}
+
 interface CreateMainWindowOptions {
   currentDir: string;
   loadWindowState: () => PersistedWindowState | null;
   onClose: (window: BrowserWindow) => void;
   platform: MainWindowPlatformPolicy;
+  recoveryState?: MainWindowRecoveryState;
 }
 
 interface PersistWindowStateOptions {
@@ -61,10 +69,12 @@ export function createMainWindow(
     supportsDock: options.platform.supportsDock
   });
   const savedWindowState = options.loadWindowState();
+  const recoveryState = options.recoveryState;
   const window = new BrowserWindow(
     buildMainWindowBrowserOptions({
       currentDir: options.currentDir,
       savedWindowState,
+      recoveryState,
       platform: options.platform,
       env: process.env
     })
@@ -91,8 +101,11 @@ export function createMainWindow(
       window.showInactive();
       return;
     }
-    if (savedWindowState?.maximized) {
+    if (resolveInitialWindowMaximized(recoveryState, savedWindowState)) {
       window.maximize();
+    }
+    if (recoveryState?.fullscreen) {
+      window.setFullScreen(true);
     }
   });
   window.on("close", () => options.onClose(window));
@@ -100,9 +113,17 @@ export function createMainWindow(
   return window;
 }
 
+export function resolveInitialWindowMaximized(
+  recoveryState: MainWindowRecoveryState | undefined,
+  savedWindowState: PersistedWindowState | null
+): boolean {
+  return recoveryState?.maximized ?? savedWindowState?.maximized ?? false;
+}
+
 export function buildMainWindowBrowserOptions(options: {
   currentDir: string;
   savedWindowState: PersistedWindowState | null;
+  recoveryState?: MainWindowRecoveryState;
   platform: MainWindowPlatformPolicy;
   env?: NodeJS.ProcessEnv;
 }): BrowserWindowConstructorOptions {
@@ -111,14 +132,20 @@ export function buildMainWindowBrowserOptions(options: {
   const useNativeFrame =
     options.platform.windowChrome === "native" && !options.platform.isMac;
   const browserOptions: BrowserWindowConstructorOptions = {
-    width: options.savedWindowState?.width ?? 1277,
-    height: options.savedWindowState?.height ?? 1179,
+    width:
+      options.recoveryState?.bounds.width ??
+      options.savedWindowState?.width ??
+      1277,
+    height:
+      options.recoveryState?.bounds.height ??
+      options.savedWindowState?.height ??
+      1179,
     x: backgroundTestWindow
       ? offscreenTestPosition.x
-      : options.savedWindowState?.x,
+      : (options.recoveryState?.bounds.x ?? options.savedWindowState?.x),
     y: backgroundTestWindow
       ? offscreenTestPosition.y
-      : options.savedWindowState?.y,
+      : (options.recoveryState?.bounds.y ?? options.savedWindowState?.y),
     show: !backgroundTestWindow,
     paintWhenInitiallyHidden: backgroundTestWindow,
     skipTaskbar: backgroundTestWindow,
@@ -142,6 +169,9 @@ export function buildMainWindowBrowserOptions(options: {
     };
   } else if (!useNativeFrame) {
     browserOptions.titleBarStyle = "hidden";
+    // Electron 43 exposes rounded-corner control for frameless windows. Keep
+    // the existing square custom-frame silhouette explicit across upgrades.
+    browserOptions.roundedCorners = false;
   }
 
   return browserOptions;

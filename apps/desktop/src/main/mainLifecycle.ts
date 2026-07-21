@@ -25,6 +25,7 @@ interface MainLifecycleOptions {
   };
   getWindowCount(): number;
   openMainWindow(reason: "activate"): void;
+  isReplacingRenderer?: () => boolean;
   getCurrentWindow(): BrowserWindow | null;
   getWarnBeforeQuit(): boolean;
   setWarnBeforeQuit(value: boolean): void;
@@ -39,6 +40,7 @@ interface MainLifecycleOptions {
 
 export interface MainLifecycleController {
   allowQuit(): void;
+  isQuitInProgress(): boolean;
   handleActivate(): void;
   handleBeforeQuit(event: BeforeQuitEventLike): void;
   handleWindowAllClosed(): void;
@@ -78,6 +80,9 @@ export function createMainLifecycleController(
   return {
     allowQuit(): void {
       confirmationBypassed = true;
+    },
+    isQuitInProgress(): boolean {
+      return quitPhase !== "idle";
     },
     handleActivate(): void {
       if (options.getWindowCount() === 0) {
@@ -132,7 +137,11 @@ export function createMainLifecycleController(
         });
     },
     handleWindowAllClosed(): void {
-      if (!options.isMac) {
+      if (
+        !options.isMac &&
+        options.getWindowCount() === 0 &&
+        !options.isReplacingRenderer?.()
+      ) {
         options.app.quit();
       }
     }

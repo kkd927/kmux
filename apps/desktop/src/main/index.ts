@@ -8,6 +8,7 @@ import {
 } from "electron";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
@@ -104,7 +105,8 @@ import { createAsyncDiagnosticsWriter } from "./asyncDiagnosticsWriter";
 import { createNodeSmoothnessProfileRecorder } from "../shared/nodeSmoothnessProfile";
 import {
   KMUX_PROFILE_LOG_PATH_ENV,
-  isSmoothnessProfileLogPathAllowed
+  isSmoothnessProfileLogPathAllowed,
+  type SmoothnessProfileEvent
 } from "../shared/smoothnessProfile";
 import {
   KMUX_NATIVE_CACHE_ROOT_ENV,
@@ -117,8 +119,13 @@ import {
 import {
   createMainWindow,
   persistWindowState,
-  setDevelopmentDockIcon
+  setDevelopmentDockIcon,
+  type MainWindowRecoveryState
 } from "./windowLifecycle";
+import {
+  createRendererRecoveryController,
+  type MainWindowOpenReason
+} from "./rendererRecoveryController";
 import { AppStore } from "./store";
 import {
   ensureAntigravityHooksInstalled,
@@ -251,6 +258,31 @@ async function bootstrap(): Promise<void> {
     diagnosticsWriter?.record(record) ?? false;
   setDiagnosticsRecordSink(diagnosticsWriter ? recordMainDiagnostics : null);
   const smoothnessProfile = createNodeSmoothnessProfileRecorder(process.env);
+  let lastRendererInteraction: Record<string, unknown> | undefined;
+  let lastRendererActionType: string | undefined;
+  let activeRuntimeContextProvider: () => Record<string, unknown> = () => ({});
+  const recordProfileDiagnosticEvent = (
+    event: SmoothnessProfileEvent,
+    recordSmoothness = true
+  ): void => {
+    if (recordSmoothness) {
+      smoothnessProfile.record(event);
+    }
+    if (event.name === "renderer.interaction") {
+      lastRendererInteraction = { at: event.at, ...event.details };
+    }
+    const details = {
+      source: event.source,
+      eventAt: event.at,
+      ...activeRuntimeContextProvider(),
+      ...event.details
+    };
+    if (event.name.startsWith("terminal.")) {
+      logTerminalDiagnostics(event.name, details);
+    } else {
+      logDiagnostics(event.name, details);
+    }
+  };
   logDiagnostics("main.bootstrap", {
     packaged: app.isPackaged,
     version: app.getVersion(),
@@ -480,7 +512,12 @@ async function bootstrap(): Promise<void> {
     },
     nativeNotificationIdentity,
     resolveLocalPath,
-    profileRecorder: smoothnessProfile,
+    profileRecorder: {
+      get enabled() {
+        return smoothnessProfile.enabled || diagnosticLoggingSettingEnabled;
+      },
+      record: recordProfileDiagnosticEvent
+    },
     persistWindowState: (window) => {
       persistWindowState({
         windowStateStore,
@@ -496,6 +533,8 @@ async function bootstrap(): Promise<void> {
       });
     }
   });
+  activeRuntimeContextProvider = () =>
+    getActiveRuntimeContext(runtime.getState());
 
   metadataRuntime = createMetadataRuntime({
     getState: runtime.getState,
@@ -1195,6 +1234,11 @@ async function bootstrap(): Promise<void> {
     getUpdaterState: () => updater.getState(),
     dispatchRendererAction: (action) => {
       const route = routeRendererAppAction(action, runtime.getState());
+      lastRendererActionType = route.action.type;
+      logDiagnostics("renderer.action.dispatch", {
+        actionType: route.action.type,
+        ...getActiveRuntimeContext(runtime.getState())
+      });
       if (route.kind === "local") {
         runtime.dispatchAppAction(route.action);
         return;
@@ -1416,14 +1460,7 @@ async function bootstrap(): Promise<void> {
     installDownloadedUpdate: () => updater.quitAndInstall(),
     clipboard: createMainClipboardService(),
     recordProfileEvent: (event) => {
-      smoothnessProfile.record(event);
-      if (event.name.startsWith("terminal.")) {
-        logTerminalDiagnostics(event.name, {
-          source: event.source,
-          eventAt: event.at,
-          ...event.details
-        });
-      }
+      recordProfileDiagnosticEvent(event);
     },
     recordProfileEvents: (events) => {
       if (smoothnessProfile.recordMany) {
@@ -1432,13 +1469,7 @@ async function bootstrap(): Promise<void> {
         events.forEach((event) => smoothnessProfile.record(event));
       }
       for (const event of events) {
-        if (event.name.startsWith("terminal.")) {
-          logTerminalDiagnostics(event.name, {
-            source: event.source,
-            eventAt: event.at,
-            ...event.details
-          });
-        }
+        recordProfileDiagnosticEvent(event, false);
       }
     }
   });
@@ -1454,10 +1485,14 @@ async function bootstrap(): Promise<void> {
     }
     return null;
   };
-  const openMainWindow = (_reason: "initial" | "activate"): void => {
+  const openMainWindow = (
+    reason: MainWindowOpenReason,
+    recoveryState?: MainWindowRecoveryState
+  ): BrowserWindow => {
     const window = createMainWindow({
       currentDir,
       loadWindowState: () => windowStateStore.load(),
+      ...(recoveryState ? { recoveryState } : {}),
       platform: platformRuntime.desktop.window,
       onClose: (closingWindow) => {
         persistWindowState({
@@ -1476,6 +1511,12 @@ async function bootstrap(): Promise<void> {
     });
     currentMainWindow = window;
     runtime.setMainWindow(window);
+    logDiagnostics("main.window.opened", {
+      reason,
+      webContentsId: window.webContents.id,
+      rendererPid: getRendererProcessId(window),
+      ...getActiveRuntimeContext(runtime.getState())
+    });
     window.webContents.once("did-finish-load", () => {
       // The scan worker forks a Node helper. Starting it while Chromium is
       // establishing renderer/utility IPC can starve macOS Electron startup.
@@ -1485,6 +1526,10 @@ async function bootstrap(): Promise<void> {
       }
       runtime.syncWindowTitles();
       broadcastUpdaterState();
+      window.webContents.send(
+        "kmux:diagnostics-logging",
+        Boolean(diagnosticsLogPath)
+      );
     });
     window.once("ready-to-show", () => {
       updater.startBackgroundChecks();
@@ -1495,7 +1540,83 @@ async function bootstrap(): Promise<void> {
         runtime.setMainWindow(null);
       }
     });
+    return window;
   };
+  const rendererRecovery = createRendererRecoveryController({
+    openMainWindow: (reason, recoveryState) =>
+      openMainWindow(reason, recoveryState),
+    isAppQuitting: () => lifecycle.isQuitInProgress(),
+    getDiagnosticContext: () => ({
+      ...getActiveRuntimeContext(runtime.getState()),
+      lastInteraction: lastRendererInteraction,
+      lastRendererActionType
+    }),
+    log: (scope, details) => {
+      logDiagnostics(scope, {
+        ...details,
+        electronVersion: process.versions.electron,
+        chromiumVersion: process.versions.chrome,
+        appVersion: app.getVersion()
+      });
+    },
+    showRecoveryLimitDialog: async () => {
+      const result = await dialog.showMessageBox({
+        type: "error",
+        title: "kmux UI stopped repeatedly",
+        message: "The kmux UI stopped three times within five minutes.",
+        detail:
+          "Shell processes and sessions are still running. Reopen the UI to reconnect, or quit kmux.",
+        buttons: ["UI 다시 열기", "kmux 종료"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true
+      });
+      return result.response === 0 ? "reopen" : "quit";
+    },
+    quit: () => app.quit()
+  });
+  const diagnosticSampleIntervalMs = 5_000;
+  let previousSampleAt = performance.now();
+  let expectedSampleAt = previousSampleAt + diagnosticSampleIntervalMs;
+  let previousCpuUsage = process.cpuUsage();
+  const diagnosticsSampleTimer = setInterval(() => {
+    const sampledAt = performance.now();
+    const elapsedMs = Math.max(1, sampledAt - previousSampleAt);
+    const eventLoopDelayMs = Math.max(0, sampledAt - expectedSampleAt);
+    const cpuUsage = process.cpuUsage(previousCpuUsage);
+    previousCpuUsage = process.cpuUsage();
+    previousSampleAt = sampledAt;
+    expectedSampleAt = sampledAt + diagnosticSampleIntervalMs;
+    if (!diagnosticsLogPath) {
+      return;
+    }
+    const rendererPid =
+      currentMainWindow && !currentMainWindow.isDestroyed()
+        ? getRendererProcessId(currentMainWindow)
+        : undefined;
+    const rendererMetric = app
+      .getAppMetrics()
+      .find((metric) => metric.pid === rendererPid);
+    const memory = process.memoryUsage();
+    logDiagnostics("main.event-loop-resource.sample", {
+      eventLoopDelayMs,
+      cpuPercent:
+        ((cpuUsage.user + cpuUsage.system) / (elapsedMs * 1_000)) * 100,
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+      rendererPid,
+      rendererCpuPercent: rendererMetric?.cpu.percentCPUUsage,
+      rendererWorkingSetKb: rendererMetric?.memory.workingSetSize,
+      rendererPeakWorkingSetKb: rendererMetric?.memory.peakWorkingSetSize,
+      webContentsId: currentMainWindow?.webContents.id,
+      electronVersion: process.versions.electron,
+      chromiumVersion: process.versions.chrome,
+      appVersion: app.getVersion(),
+      ...getActiveRuntimeContext(runtime.getState())
+    });
+  }, diagnosticSampleIntervalMs);
+  diagnosticsSampleTimer.unref();
   const autoUpdaterChannel = resolveAutoUpdaterChannel({
     platform: process.platform,
     arch: process.arch
@@ -1542,6 +1663,7 @@ async function bootstrap(): Promise<void> {
         logDiagnostics("main.shutdown.begin", {});
         unsubscribeUpdater();
         updater.dispose();
+        clearInterval(diagnosticsSampleTimer);
         cancelShellEnvironmentRefresh();
         let preserveRemoteWorkspaceLayout = false;
         if (!runtime.getState().settings.restoreWorkspacesAfterQuit) {
@@ -1597,7 +1719,10 @@ async function bootstrap(): Promise<void> {
     shouldConfirmQuit: process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM !== "1",
     app,
     getWindowCount: () => BrowserWindow.getAllWindows().length,
-    openMainWindow,
+    openMainWindow: (reason) => {
+      rendererRecovery.registerWindow(openMainWindow(reason));
+    },
+    isReplacingRenderer: rendererRecovery.isReplacingRenderer,
     getCurrentWindow,
     getWarnBeforeQuit: () => runtime.getState().settings.warnBeforeQuit,
     setWarnBeforeQuit: (value) => {
@@ -1649,7 +1774,7 @@ async function bootstrap(): Promise<void> {
       failed: result.failed.length
     });
   });
-  openMainWindow("initial");
+  rendererRecovery.registerWindow(openMainWindow("initial"));
   const pendingInstall = evaluatePendingInstall(
     app.getVersion(),
     pendingUpdateStore.read()
@@ -1704,6 +1829,34 @@ async function bootstrap(): Promise<void> {
   app.on("window-all-closed", () => {
     lifecycle.handleWindowAllClosed();
   });
+}
+
+function getActiveRuntimeContext(state: AppState): {
+  workspaceId?: string;
+  paneId?: string;
+  surfaceId?: string;
+  sessionId?: string;
+} {
+  const window = state.windows[state.activeWindowId];
+  const workspace = window
+    ? state.workspaces[window.activeWorkspaceId]
+    : undefined;
+  const pane = workspace ? state.panes[workspace.activePaneId] : undefined;
+  const surface = pane ? state.surfaces[pane.activeSurfaceId] : undefined;
+  return {
+    workspaceId: workspace?.id,
+    paneId: pane?.id,
+    surfaceId: surface?.id,
+    sessionId: surface?.sessionId
+  };
+}
+
+function getRendererProcessId(window: BrowserWindow): number | undefined {
+  try {
+    return window.webContents.getOSProcessId();
+  } catch {
+    return undefined;
+  }
 }
 
 function requireRemoteWorkspaceScope(

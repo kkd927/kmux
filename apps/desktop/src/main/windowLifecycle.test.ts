@@ -27,6 +27,7 @@ import { app, nativeImage } from "electron";
 
 import {
   buildMainWindowBrowserOptions,
+  resolveInitialWindowMaximized,
   setDevelopmentDockIcon
 } from "./windowLifecycle";
 
@@ -126,5 +127,56 @@ describe("window lifecycle platform options", () => {
 
     expect(options.frame).toBe(false);
     expect(options.titleBarStyle).toBe("hidden");
+    expect(options.roundedCorners).toBe(false);
+  });
+
+  it("uses an in-memory recovery snapshot ahead of persisted bounds", () => {
+    const options = buildMainWindowBrowserOptions({
+      currentDir: "/home/test/kmux/apps/desktop/out/main",
+      savedWindowState: {
+        width: 1200,
+        height: 800,
+        x: 10,
+        y: 20,
+        maximized: false
+      },
+      recoveryState: {
+        bounds: { x: 30, y: 40, width: 1400, height: 900 },
+        maximized: true,
+        fullscreen: false
+      },
+      platform: {
+        isMac: false,
+        supportsDock: false,
+        windowChrome: "custom"
+      },
+      env: {}
+    });
+
+    expect(options).toMatchObject({
+      width: 1400,
+      height: 900,
+      x: 30,
+      y: 40
+    });
+  });
+
+  it("keeps an explicit non-maximized recovery state over stale persistence", () => {
+    expect(
+      resolveInitialWindowMaximized(
+        {
+          bounds: { x: 30, y: 40, width: 1400, height: 900 },
+          maximized: false,
+          fullscreen: false
+        },
+        {
+          width: 1200,
+          height: 800,
+          x: 10,
+          y: 20,
+          maximized: true
+        }
+      )
+    ).toBe(false);
   });
 });

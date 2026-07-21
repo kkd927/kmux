@@ -8,11 +8,13 @@ import {
 import { applyThemeVariables } from "@kmux/ui";
 
 import { App } from "./App";
+import { installRendererDiagnostics } from "./rendererDiagnostics";
 import "./styles/global.css";
 import "@vscode/codicons/dist/codicon.css";
 import "@xterm/xterm/css/xterm.css";
 
 applyThemeVariables(document.documentElement, "dark");
+installRendererDiagnostics();
 
 // Preload bundled terminal fonts so xterm.js measures and paints cells against
 // the final monospace metrics from its first render.

@@ -35,6 +35,10 @@ export type SmoothnessProfileEventName =
   | "terminal.focus.lifecycle"
   | "terminal.data-plane.main-ingress"
   | "terminal.data-plane.supervisor"
+  | "renderer.interaction"
+  | "renderer.event-loop-memory.sample"
+  | "renderer.error"
+  | "renderer.unhandled-rejection"
   | "pane-divider.drag.start"
   | "pane-divider.drag.end";
 

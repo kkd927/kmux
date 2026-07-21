@@ -132,6 +132,50 @@ describe("main lifecycle controller", () => {
     expect(app.quit).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a non-macOS app alive while its renderer window is replaced", () => {
+    const app = { quit: vi.fn() };
+    const controller = createMainLifecycleController({
+      isMac: false,
+      app,
+      getWindowCount: () => 0,
+      openMainWindow: vi.fn(),
+      isReplacingRenderer: () => true,
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => true,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit: vi.fn(),
+      shutdown: vi.fn(async () => undefined)
+    });
+
+    controller.handleWindowAllClosed();
+
+    expect(app.quit).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale window-all-closed event after replacement opens", () => {
+    const app = { quit: vi.fn() };
+    const controller = createMainLifecycleController({
+      isMac: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      isReplacingRenderer: () => false,
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => true,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit: vi.fn(),
+      shutdown: vi.fn(async () => undefined)
+    });
+
+    controller.handleWindowAllClosed();
+
+    expect(app.quit).not.toHaveBeenCalled();
+  });
+
   it("reopens a main window on activate when none are open", () => {
     const openMainWindow = vi.fn();
     const controller = createMainLifecycleController({

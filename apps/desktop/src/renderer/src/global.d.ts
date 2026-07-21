@@ -212,6 +212,7 @@ declare global {
       ): Promise<void>;
     };
     kmuxTest?: {
+      crashRenderer(): void;
       getRuntimeEnv(): Record<string, string>;
       snapshotSurface(
         surfaceId: string,
