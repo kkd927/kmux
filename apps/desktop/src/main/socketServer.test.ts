@@ -12,7 +12,13 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { applyAction, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  listWorkspaceSurfaceIds,
+  locatedPathForTarget,
+  terminalSessionForSurface
+} from "@kmux/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { KmuxSocketServer, SocketStartupError } from "./socketServer";
@@ -257,6 +263,28 @@ describe("kmux socket server startup", () => {
     const remoteWorkspaceId = Object.keys(state.workspaces).find(
       (workspaceId) => !priorWorkspaceIds.has(workspaceId)
     )!;
+    const remoteSurfaceId = listWorkspaceSurfaceIds(
+      state,
+      remoteWorkspaceId
+    )[0];
+    const remoteSession = terminalSessionForSurface(state, remoteSurfaceId);
+    if (!remoteSession) throw new Error("remote terminal session is missing");
+    remoteSession.runtimeMetadata.branch = "main";
+    remoteSession.runtimeMetadata.gitRepository = {
+      root: locatedPathForTarget(
+        { kind: "ssh", targetId: "target_1" },
+        "/srv/app"
+      ),
+      gitDir: locatedPathForTarget(
+        { kind: "ssh", targetId: "target_1" },
+        "/srv/app/.git"
+      ),
+      commonGitDir: locatedPathForTarget(
+        { kind: "ssh", targetId: "target_1" },
+        "/srv/app/.git"
+      ),
+      linkedWorktree: false
+    };
     const server = createTestSocketServer(socketPath, state);
     await server.start();
 
@@ -287,7 +315,24 @@ describe("kmux socket server startup", () => {
       });
       expect(surfaces.result).toEqual([
         expect.objectContaining({
-          cwd: { kind: "ssh", targetId: "target_1", path: "/srv/app" }
+          branch: "main",
+          cwd: { kind: "ssh", targetId: "target_1", path: "/srv/app" },
+          gitRepository: {
+            root: { kind: "ssh", targetId: "target_1", path: "/srv/app" },
+            gitDir: {
+              kind: "ssh",
+              targetId: "target_1",
+              path: "/srv/app/.git"
+            },
+            commonGitDir: {
+              kind: "ssh",
+              targetId: "target_1",
+              path: "/srv/app/.git"
+            },
+            linkedWorktree: false
+          },
+          ports: [],
+          sessionId: expect.any(String)
         })
       ]);
     } finally {

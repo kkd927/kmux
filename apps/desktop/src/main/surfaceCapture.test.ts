@@ -12,6 +12,8 @@ import { Script } from "node:vm";
 import type { BrowserWindow } from "electron";
 
 import {
+  locatedPathForTarget,
+  pendingSessionRuntimeStatus,
   workspaceLocation,
   type AppState
 } from "@kmux/core";
@@ -707,7 +709,23 @@ function createState(): AppState {
         content: { kind: "terminal", sessionId }
       }
     },
-    sessions: {},
+    sessions: {
+      [sessionId]: {
+        id: sessionId,
+        surfaceId,
+        launch: {
+          cwd: locatedPathForTarget({ kind: "local" }, "/tmp"),
+          shell: "/bin/zsh"
+        },
+        authToken: "auth_test",
+        runtimeStatus: pendingSessionRuntimeStatus(),
+        shellInputReady: false,
+        runtimeMetadata: {
+          cwd: locatedPathForTarget({ kind: "local" }, "/tmp"),
+          ports: []
+        }
+      }
+    },
     remoteOperations: {},
     remoteEventReceipts: {},
     notifications: [],

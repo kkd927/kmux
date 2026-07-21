@@ -6,7 +6,8 @@ import {
   encodeAppStateDto,
   type AppAction,
   type AppState,
-  listWorkspaceSurfaceIds
+  listWorkspaceSurfaceIds,
+  terminalSessionForSurface
 } from "@kmux/core";
 import type {
   JsonRpcEnvelope,
@@ -908,9 +909,31 @@ function encodeSurfaceSocketDtos(
 ): unknown[] {
   const snapshot = encodeAppStateDto(state);
   const surfaces = readDtoRecord(snapshot.surfaces);
-  return surfaceIds.flatMap((surfaceId) =>
-    surfaces[surfaceId] === undefined ? [] : [surfaces[surfaceId]]
-  );
+  const sessions = readDtoRecord(snapshot.sessions);
+  return surfaceIds.flatMap((surfaceId) => {
+    const surface = surfaces[surfaceId];
+    if (!surface || typeof surface !== "object" || Array.isArray(surface)) {
+      return [];
+    }
+    const session = terminalSessionForSurface(state, surfaceId);
+    const sessionDto = session
+      ? readDtoRecord(sessions[session.id])
+      : undefined;
+    const runtimeMetadata = sessionDto
+      ? readDtoRecord(sessionDto.runtimeMetadata)
+      : undefined;
+    return [
+      {
+        ...surface,
+        ...(session
+          ? {
+              sessionId: session.id,
+              ...runtimeMetadata
+            }
+          : {})
+      }
+    ];
+  });
 }
 
 function readDtoRecord(value: unknown): Record<string, unknown> {
