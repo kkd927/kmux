@@ -25,7 +25,10 @@ function shellQuote(value: string): string {
 function createGitFixtureRepo(root: string): string {
   const repoDir = join(root, "branch-refresh-repo");
   mkdirSync(repoDir, { recursive: true });
-  execFileSync("git", ["init", "-b", "main"], { cwd: repoDir, stdio: "ignore" });
+  execFileSync("git", ["init", "-b", "main"], {
+    cwd: repoDir,
+    stdio: "ignore"
+  });
   writeFileSync(join(repoDir, "README.md"), "kmux\n", "utf8");
   execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "ignore" });
   execFileSync(
@@ -103,8 +106,8 @@ for (const shellCase of shellCases) {
             view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
           return (
             !!activeSurfaceId &&
-            view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-              "running"
+            view.activeWorkspace.surfaces[activeSurfaceId]?.content
+              .runtimeStatus === "running"
           );
         },
         "initial shell should reach a running session state",
@@ -138,8 +141,8 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.cwd ===
-              repoDir &&
+            view.activeWorkspace.surfaces[activeSurfaceId]?.content
+              .runtimeMetadata.cwd === repoDir &&
             row?.cwd === repoDir &&
             row?.branch === expectedBranch
           );
@@ -148,9 +151,10 @@ for (const shellCase of shellCases) {
         10_000
       );
 
-      expect(repoView.activeWorkspace.surfaces[activeSurfaceId]?.cwd).toBe(
-        repoDir
-      );
+      expect(
+        repoView.activeWorkspace.surfaces[activeSurfaceId]?.content
+          .runtimeMetadata.cwd
+      ).toBe(repoDir);
       expect(
         repoView.workspaceRows.find(
           (entry) => entry.workspaceId === workspaceId
@@ -182,7 +186,8 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.cwd === repoDir &&
+            view.activeWorkspace.surfaces[activeSurfaceId]?.content
+              .runtimeMetadata.cwd === repoDir &&
             row?.cwd === repoDir &&
             row?.branch === switchedBranch
           );
@@ -213,8 +218,8 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.cwd ===
-              sandbox.shellHomeDir &&
+            view.activeWorkspace.surfaces[activeSurfaceId]?.content
+              .runtimeMetadata.cwd === sandbox.shellHomeDir &&
             row?.cwd === sandbox.shellHomeDir &&
             row?.branch === undefined
           );
@@ -259,8 +264,8 @@ test("kmux preserves zsh login startup files while wrapping zsh", async () => {
           view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
         return (
           !!activeSurfaceId &&
-          view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-            "running"
+          view.activeWorkspace.surfaces[activeSurfaceId]?.content
+            .runtimeStatus === "running"
         );
       },
       "initial zsh shell should reach a running session state",
@@ -315,8 +320,8 @@ test("kmux restores zsh history before loading the user zshrc", async () => {
           view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
         return (
           !!activeSurfaceId &&
-          view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-            "running"
+          view.activeWorkspace.surfaces[activeSurfaceId]?.content
+            .runtimeStatus === "running"
         );
       },
       "initial zsh shell should reach a running session state",
@@ -331,8 +336,7 @@ test("kmux restores zsh history before loading the user zshrc", async () => {
       ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
       {
         surfaceId: activeSurfaceId,
-        text:
-          'print -r -- "__KMUX_HISTORY__ HISTFILE=$HISTFILE COUNT=${#history} MATCH=${history[(r)echo kmux-history-proof*]}"\r'
+        text: 'print -r -- "__KMUX_HISTORY__ HISTFILE=$HISTFILE COUNT=${#history} MATCH=${history[(r)echo kmux-history-proof*]}"\r'
       }
     );
 

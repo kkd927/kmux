@@ -722,12 +722,17 @@ function createSurface(
 ): ShellStoreSnapshot["activeWorkspacePaneTree"]["surfaces"][string] {
   return {
     id,
-    sessionId: `session_${id}`,
+    paneId: "pane_1",
     title: id,
-    ports: [],
+    titleLocked: false,
     unreadCount: 0,
     attention: false,
-    sessionState: "running",
-    shellInputReady: true
+    content: {
+      kind: "terminal",
+      sessionId: `session_${id}`,
+      runtimeStatus: "running",
+      shellInputReady: true,
+      runtimeMetadata: { ports: [] }
+    }
   };
 }

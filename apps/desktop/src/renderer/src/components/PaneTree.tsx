@@ -15,16 +15,14 @@ import type {
 } from "../../../shared/platform/keyboardPolicy";
 import styles from "../styles/PaneTree.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
-import {
-  beginPaneDividerDrag,
-  endPaneDividerDrag
-} from "../paneDividerDrag";
+import { beginPaneDividerDrag, endPaneDividerDrag } from "../paneDividerDrag";
 import { recordRendererSmoothnessProfileEvent } from "../smoothnessProfile";
 import type {
   SurfaceTabDragPayload,
   SurfaceTabDropDirection
 } from "../surfaceTabDrag";
-import { TerminalPane, type TerminalFocusRequest } from "./TerminalPane";
+import { SurfacePane } from "./SurfacePane";
+import type { TerminalFocusRequest } from "../surfaces/TerminalSurfaceView";
 
 export interface PaneTreeProps {
   workspace: ActiveWorkspacePaneTreeVm;
@@ -120,7 +118,7 @@ function PaneNode(
       return <div className={styles.invalidPane}>Pane unavailable</div>;
     }
     return (
-      <TerminalPane
+      <SurfacePane
         paneId={pane.id}
         focused={pane.focused}
         surfaces={surfaces}

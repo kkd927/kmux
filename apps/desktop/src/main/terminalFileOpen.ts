@@ -7,6 +7,8 @@ import { shell } from "electron";
 import {
   localLocatedPath,
   locatedPathForTarget,
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
   type AppState,
   type LocatedPath,
   type WorkspaceTarget
@@ -167,15 +169,16 @@ export async function openTerminalFilePath({
 }: OpenTerminalFilePathOptions): Promise<void> {
   const state = getState();
   const surface = state.surfaces[surfaceId];
-  if (!surface) {
+  const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
+  if (!surface || !metadata) {
     throw new Error(
       `Cannot open terminal file path for missing surface: ${surfaceId}`
     );
   }
 
   let cwd = baseCwd;
-  if (cwd === undefined && surface.cwd) {
-    cwd = resolveLocalPath(surface.cwd);
+  if (cwd === undefined) {
+    cwd = resolveLocalPath(metadata.cwd);
   }
   const resolvedPath = resolveTerminalFilePath({
     rawPath,
@@ -197,8 +200,10 @@ export function resolveTerminalFileLinks({
   homeDir = homedir(),
   resolveLocalPath
 }: ResolveTerminalFileLinksOptions): TerminalFileLinkResolveResult {
-  const surface = getState().surfaces[surfaceId];
-  if (!surface || !Array.isArray(candidates)) {
+  const state = getState();
+  const surface = state.surfaces[surfaceId];
+  const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
+  if (!surface || !metadata || !Array.isArray(candidates)) {
     return { links: [] };
   }
 
@@ -213,8 +218,8 @@ export function resolveTerminalFileLinks({
     }
     let cwd = candidate.baseCwd;
     try {
-      if (cwd === undefined && surface.cwd) {
-        cwd = resolveLocalPath(surface.cwd);
+      if (cwd === undefined) {
+        cwd = resolveLocalPath(metadata.cwd);
       }
     } catch {
       return { links: [] };
@@ -453,12 +458,13 @@ function targetFileContext(
   rawCwd?: string
 ): { target: WorkspaceTarget; cwd?: LocatedPath } | null {
   const surface = state.surfaces[surfaceId];
+  const session = terminalSessionForSurface(state, surfaceId);
   const pane = surface ? state.panes[surface.paneId] : undefined;
   const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
-  if (!surface || !workspace) return null;
+  if (!surface || !session || !workspace) return null;
   const target = workspace.location.target;
-  const fallback = locatedPathMatchesTarget(surface.cwd, target)
-    ? surface.cwd
+  const fallback = locatedPathMatchesTarget(session.runtimeMetadata.cwd, target)
+    ? session.runtimeMetadata.cwd
     : undefined;
   const cwd = resolveLocatedCwd(target, rawCwd, fallback);
   return { target, ...(cwd === undefined ? {} : { cwd }) };

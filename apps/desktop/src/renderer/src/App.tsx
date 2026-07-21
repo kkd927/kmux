@@ -303,7 +303,9 @@ export function App(): JSX.Element {
   useEffect(() => {
     return window.kmux.subscribeSshAskpassPrompt((prompt) => {
       setSshAskpassPrompts((current) => {
-        if (current.some((candidate) => candidate.requestId === prompt.requestId)) {
+        if (
+          current.some((candidate) => candidate.requestId === prompt.requestId)
+        ) {
           return current;
         }
         if (current.length >= 16) {
@@ -1251,7 +1253,9 @@ export function App(): JSX.Element {
         onCloseSshWorkspaceDialog={closeSshWorkspaceDialog}
         onSelectSshProfile={(profileId) =>
           setSshWorkspaceDialog((current) =>
-            current ? { ...current, selectedProfileId: profileId, error: null } : current
+            current
+              ? { ...current, selectedProfileId: profileId, error: null }
+              : current
           )
         }
         onSelectSshContinuation={(continuation) =>
@@ -1340,8 +1344,12 @@ export function App(): JSX.Element {
   }
 
   function openSettingsModal(
-    category: "general" | "ssh" | "terminal" | "notifications" | "shortcuts" =
-      "general"
+    category:
+      | "general"
+      | "ssh"
+      | "terminal"
+      | "notifications"
+      | "shortcuts" = "general"
   ): void {
     if (!settings) {
       return;
@@ -1396,13 +1404,13 @@ export function App(): JSX.Element {
   async function requestSurfaceRestart(surfaceId: string): Promise<void> {
     const latestView = await window.kmux.getShellState();
     const surface = latestView.activeWorkspacePaneTree.surfaces[surfaceId];
-    if (!surface || surface.sessionState === "pending") {
+    if (!surface || surface.content.runtimeStatus === "pending") {
       return;
     }
-    if (surface.sessionState === "running") {
+    if (surface.content.runtimeStatus === "running") {
       setPendingSurfaceRestart({
         surfaceId,
-        sessionId: surface.sessionId,
+        sessionId: surface.content.sessionId,
         title: surface.title
       });
       return;
@@ -1421,8 +1429,8 @@ export function App(): JSX.Element {
       latestView.activeWorkspacePaneTree.surfaces[pendingRestart.surfaceId];
     if (
       !surface ||
-      surface.sessionId !== pendingRestart.sessionId ||
-      surface.sessionState === "pending"
+      surface.content.sessionId !== pendingRestart.sessionId ||
+      surface.content.runtimeStatus === "pending"
     ) {
       return;
     }
@@ -1699,11 +1707,7 @@ export function App(): JSX.Element {
 
   async function confirmSshWorkspaceDialog(): Promise<void> {
     const dialog = sshWorkspaceDialog;
-    if (
-      !dialog ||
-      !dialog.selectedProfileId ||
-      dialog.phase !== "idle"
-    ) {
+    if (!dialog || !dialog.selectedProfileId || dialog.phase !== "idle") {
       return;
     }
     const requestId = createRendererRequestId("ssh_workspace");
@@ -1769,7 +1773,9 @@ export function App(): JSX.Element {
         .cancelSshWorkspacePreparation({ requestId: dialog.requestId })
         .catch(() => undefined);
       setSshAskpassPrompts((current) =>
-        current.filter((prompt) => prompt.profileId !== dialog.selectedProfileId)
+        current.filter(
+          (prompt) => prompt.profileId !== dialog.selectedProfileId
+        )
       );
     }
     setSshWorkspaceDialog(null);

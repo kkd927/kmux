@@ -241,7 +241,7 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 import { Terminal } from "@xterm/xterm";
-import { TerminalPane } from "./TerminalPane";
+import { TerminalSurfaceView } from "./TerminalSurfaceView";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import { flushRendererSmoothnessProfileEvents } from "../smoothnessProfile";
 
@@ -263,18 +263,25 @@ class MockResizeObserver {
   disconnect = vi.fn();
 }
 
-type TerminalPaneProps = React.ComponentProps<typeof TerminalPane>;
+type TerminalSurfaceViewProps = React.ComponentProps<
+  typeof TerminalSurfaceView
+>;
 
 function createSurface(id: string): SurfaceVm {
   return {
     id,
-    sessionId: `session_${id}`,
+    paneId: "pane_1",
     title: id,
-    ports: [],
+    titleLocked: false,
     unreadCount: 0,
     attention: false,
-    sessionState: "running",
-    shellInputReady: true
+    content: {
+      kind: "terminal",
+      sessionId: `session_${id}`,
+      runtimeStatus: "running",
+      shellInputReady: true,
+      runtimeMetadata: { ports: [] }
+    }
   };
 }
 
@@ -302,7 +309,7 @@ function createSettings(): KmuxSettings {
   };
 }
 
-function createProps(surfaceId: string): TerminalPaneProps {
+function createProps(surfaceId: string): TerminalSurfaceViewProps {
   const surface = createSurface(surfaceId);
   return {
     paneId: "pane_1",
@@ -579,7 +586,7 @@ function provideCurrentTerminalFileLinks(): Promise<ILink[] | undefined> {
   });
 }
 
-describe("TerminalPane visibility cleanup", () => {
+describe("TerminalSurfaceView visibility cleanup", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
   let windowFocus: ReturnType<typeof vi.spyOn>;
@@ -663,7 +670,7 @@ describe("TerminalPane visibility cleanup", () => {
     props.keyboardPlatform = "darwin";
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks();
     });
 
@@ -688,7 +695,7 @@ describe("TerminalPane visibility cleanup", () => {
     window.kmux.recordSmoothnessProfileEvents = vi.fn(async () => {});
 
     await act(async () => {
-      root.render(<TerminalPane {...createProps("surface_1")} />);
+      root.render(<TerminalSurfaceView {...createProps("surface_1")} />);
       await flushMicrotasks();
     });
     const terminal = vi.mocked(Terminal).mock.results[0]?.value as {
@@ -742,7 +749,7 @@ describe("TerminalPane visibility cleanup", () => {
     });
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const oldTerminal = vi.mocked(Terminal).mock.results[0]?.value as {
@@ -858,7 +865,7 @@ describe("TerminalPane visibility cleanup", () => {
     );
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks();
     });
     const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as {
@@ -905,7 +912,7 @@ describe("TerminalPane visibility cleanup", () => {
   it("buffers text and binary in FIFO order while a closed stream reattaches", async () => {
     const props = createProps("surface_1");
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const firstAttach = latestTerminalStreamAttach("surface_1");
@@ -977,7 +984,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1027,7 +1034,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const attach = latestTerminalStreamAttach("surface_1");
@@ -1076,13 +1083,16 @@ describe("TerminalPane visibility cleanup", () => {
     pendingProps.surfaces = [
       {
         ...pendingProps.surfaces[0],
-        sessionState: "pending",
-        shellInputReady: false
+        content: {
+          ...pendingProps.surfaces[0].content,
+          runtimeStatus: "pending",
+          shellInputReady: false
+        }
       }
     ];
 
     await act(async () => {
-      root.render(<TerminalPane {...pendingProps} />);
+      root.render(<TerminalSurfaceView {...pendingProps} />);
       await flushMicrotasks(10);
     });
 
@@ -1093,12 +1103,15 @@ describe("TerminalPane visibility cleanup", () => {
       surfaces: [
         {
           ...pendingProps.surfaces[0],
-          sessionState: "running" as const
+          content: {
+            ...pendingProps.surfaces[0].content,
+            runtimeStatus: "running" as const
+          }
         }
       ]
     };
     await act(async () => {
-      root.render(<TerminalPane {...runningProps} />);
+      root.render(<TerminalSurfaceView {...runningProps} />);
       await flushMicrotasks(10);
     });
 
@@ -1114,18 +1127,21 @@ describe("TerminalPane visibility cleanup", () => {
     props.surfaces = [
       {
         ...props.surfaces[0],
-        storageStatus: {
-          state: "backpressured",
-          journalAdmitted: "42",
-          journalSynced: "41",
-          emergencyBytes: 4 * 1024 * 1024,
-          lastSyncDurationMs: 2000
+        content: {
+          ...props.surfaces[0].content,
+          storageStatus: {
+            state: "backpressured",
+            journalAdmitted: "42",
+            journalSynced: "41",
+            emergencyBytes: 4 * 1024 * 1024,
+            lastSyncDurationMs: 2000
+          }
         }
       }
     ];
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1137,16 +1153,19 @@ describe("TerminalPane visibility cleanup", () => {
 
     await act(async () => {
       root.render(
-        <TerminalPane
+        <TerminalSurfaceView
           {...props}
           surfaces={[
             {
               ...props.surfaces[0],
-              storageStatus: {
-                state: "normal",
-                journalAdmitted: "42",
-                journalSynced: "42",
-                emergencyBytes: 0
+              content: {
+                ...props.surfaces[0].content,
+                storageStatus: {
+                  state: "normal",
+                  journalAdmitted: "42",
+                  journalSynced: "42",
+                  emergencyBytes: 0
+                }
               }
             }
           ]}
@@ -1164,13 +1183,16 @@ describe("TerminalPane visibility cleanup", () => {
     props.surfaces = [
       {
         ...props.surfaces[0],
-        sessionState: "exited",
-        exitCode: 0
+        content: {
+          ...props.surfaces[0].content,
+          runtimeStatus: "exited",
+          exitCode: 0
+        }
       }
     ];
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1180,7 +1202,7 @@ describe("TerminalPane visibility cleanup", () => {
   it("keeps the direct port alive for final output after the control state exits", async () => {
     const props = createProps("surface_1");
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const attach = latestTerminalStreamAttach("surface_1");
@@ -1215,7 +1237,7 @@ describe("TerminalPane visibility cleanup", () => {
         ]
       };
       await act(async () => {
-        root.render(<TerminalPane {...exitedProps} />);
+        root.render(<TerminalSurfaceView {...exitedProps} />);
         await flushMicrotasks(10);
       });
 
@@ -1271,7 +1293,7 @@ describe("TerminalPane visibility cleanup", () => {
       });
 
       await act(async () => {
-        root.render(<TerminalPane {...props} />);
+        root.render(<TerminalSurfaceView {...props} />);
         await flushMicrotasks(10);
       });
       expect(window.kmux.attachTerminalStream).toHaveBeenCalledOnce();
@@ -1315,12 +1337,15 @@ describe("TerminalPane visibility cleanup", () => {
     props.surfaces = [
       {
         ...props.surfaces[0],
-        shellInputReady: false
+        content: {
+          ...props.surfaces[0].content,
+          shellInputReady: false
+        }
       }
     ];
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     expect(
@@ -1338,7 +1363,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1411,7 +1436,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane key="first" {...props} />);
+      root.render(<TerminalSurfaceView key="first" {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1420,7 +1445,7 @@ describe("TerminalPane visibility cleanup", () => {
     fitDimensions = { cols: 100, rows: 40 };
 
     await act(async () => {
-      root.render(<TerminalPane key="second" {...props} />);
+      root.render(<TerminalSurfaceView key="second" {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -1441,7 +1466,7 @@ describe("TerminalPane visibility cleanup", () => {
   it("preserves warm geometry until resume replay precedes the desired pane resize", async () => {
     const props = createProps("surface_1");
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const firstAttach = latestTerminalStreamAttach("surface_1");
@@ -1495,7 +1520,7 @@ describe("TerminalPane visibility cleanup", () => {
     });
     fitDimensions = { cols: 90, rows: 28 };
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(20);
     });
 
@@ -1546,18 +1571,21 @@ describe("TerminalPane visibility cleanup", () => {
     restartedProps.surfaces = [
       {
         ...restartedProps.surfaces[0],
-        sessionId: "session_restarted"
+        content: {
+          ...restartedProps.surfaces[0].content,
+          sessionId: "session_restarted"
+        }
       }
     ];
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const previousAttach = latestTerminalStreamAttach("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...restartedProps} />);
+      root.render(<TerminalSurfaceView {...restartedProps} />);
       await flushMicrotasks(10);
     });
 
@@ -1581,13 +1609,13 @@ describe("TerminalPane visibility cleanup", () => {
     };
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
     const previousAttach = latestTerminalStreamAttach("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...switchedProps} />);
+      root.render(<TerminalSurfaceView {...switchedProps} />);
       await flushMicrotasks(10);
     });
 
@@ -1621,7 +1649,7 @@ describe("TerminalPane visibility cleanup", () => {
 
     try {
       await act(async () => {
-        root.render(<TerminalPane {...props} />);
+        root.render(<TerminalSurfaceView {...props} />);
         await flushMicrotasks();
       });
 
@@ -1637,7 +1665,9 @@ describe("TerminalPane visibility cleanup", () => {
 
       textareaFocusSpy.mockRestore();
       await act(async () => {
-        root.render(<TerminalPane {...props} activeSurfaceId="surface_2" />);
+        root.render(
+          <TerminalSurfaceView {...props} activeSurfaceId="surface_2" />
+        );
         await flushMicrotasks();
       });
 
@@ -1694,16 +1724,16 @@ describe("TerminalPane visibility cleanup", () => {
 
     try {
       await act(async () => {
-        root.render(<TerminalPane {...sourceProps} />);
+        root.render(<TerminalSurfaceView {...sourceProps} />);
         await flushMicrotasks(10);
       });
       const movedAttach = latestTerminalStreamAttach("surface_1");
       await act(async () => {
-        targetRoot.render(<TerminalPane {...targetProps} />);
+        targetRoot.render(<TerminalSurfaceView {...targetProps} />);
         await flushMicrotasks(10);
       });
       await act(async () => {
-        root.render(<TerminalPane {...sourceAfterMoveProps} />);
+        root.render(<TerminalSurfaceView {...sourceAfterMoveProps} />);
         await flushMicrotasks(10);
       });
 
@@ -1729,7 +1759,7 @@ describe("TerminalPane visibility cleanup", () => {
     window.kmux.hasPasteableClipboardContent = vi.fn(async () => true);
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
     vi.mocked(window.kmux.readClipboardImages).mockClear();
 
@@ -1777,7 +1807,7 @@ describe("TerminalPane visibility cleanup", () => {
     });
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     await act(async () => {
@@ -1802,7 +1832,7 @@ describe("TerminalPane visibility cleanup", () => {
     });
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
     const viewport = container.querySelector(
       "[data-testid='terminal-surface_2']"
@@ -1847,7 +1877,7 @@ describe("TerminalPane visibility cleanup", () => {
     props.onToggleSearch = onToggleSearch;
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     const terminalHost = container.querySelector(
@@ -1889,7 +1919,7 @@ describe("TerminalPane visibility cleanup", () => {
     props.onToggleSearch = onToggleSearch;
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     const terminalHost = container.querySelector(
@@ -1931,7 +1961,7 @@ describe("TerminalPane visibility cleanup", () => {
     };
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     const terminalHost = container.querySelector(
@@ -1983,7 +2013,7 @@ describe("TerminalPane visibility cleanup", () => {
     };
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks();
     });
 
@@ -2027,7 +2057,7 @@ describe("TerminalPane visibility cleanup", () => {
     window.kmux.readClipboardText = vi.fn(async () => "fallback paste text");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks();
     });
 
@@ -2071,7 +2101,7 @@ describe("TerminalPane visibility cleanup", () => {
     props.onToggleSearch = onToggleSearch;
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     const terminalHost = container.querySelector(
@@ -2132,7 +2162,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
     });
 
     const terminalTextarea = container.querySelector(
@@ -2211,7 +2241,7 @@ describe("TerminalPane visibility cleanup", () => {
     const props = createProps("surface_1");
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 
@@ -2269,7 +2299,7 @@ describe("TerminalPane visibility cleanup", () => {
     props.keyboardPlatform = "darwin";
 
     await act(async () => {
-      root.render(<TerminalPane {...props} />);
+      root.render(<TerminalSurfaceView {...props} />);
       await flushMicrotasks(10);
     });
 

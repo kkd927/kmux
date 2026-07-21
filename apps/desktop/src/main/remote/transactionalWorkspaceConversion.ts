@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   cloneState,
   encodeAppStateDto,
+  terminalSessionForSurface,
   validateRemoteTargetBinding,
   type AppState,
   type RemoteTargetBinding
@@ -482,7 +483,7 @@ function captureCleanupSet(
   return Object.values(state.surfaces)
     .filter((surface) => paneIds.has(surface.paneId))
     .map((surface) => {
-      const session = state.sessions[surface.sessionId];
+      const session = terminalSessionForSurface(state, surface.id);
       if (!session || session.surfaceId !== surface.id) {
         throw new Error(
           "conversion source graph has inconsistent session ownership"

@@ -22,6 +22,8 @@ import {
   canonicalizeRemoteOperationPayload,
   cloneState,
   encodeLocatedPathDto,
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
   validateRemoteTargetBinding,
   type AppAction,
   type AppState,
@@ -486,9 +488,12 @@ export class RemoteLifecycleRuntime {
     const { workspace, pane } = requireRemotePaneContext(state, paneId);
     const activeSurface = state.surfaces[pane.activeSurfaceId];
     const activeSession = activeSurface
-      ? state.sessions[activeSurface.sessionId]
+      ? terminalSessionForSurface(state, activeSurface.id)
       : undefined;
-    if (!activeSurface || !activeSession) {
+    const activeMetadata = activeSurface
+      ? terminalRuntimeMetadataForSurface(state, activeSurface.id)
+      : undefined;
+    if (!activeSurface || !activeSession || !activeMetadata) {
       throw new Error(
         "remote session create requires an active source surface"
       );
@@ -498,7 +503,7 @@ export class RemoteLifecycleRuntime {
     const cwd =
       requestedLaunch?.cwd ??
       (action.type === "surface.create" ? action.cwd : undefined) ??
-      encodeLocatedPathDto(activeSurface.cwd).path;
+      encodeLocatedPathDto(activeMetadata.cwd).path;
     const title =
       requestedLaunch?.title ??
       (action.type === "surface.create" ? action.title : undefined);
@@ -879,7 +884,7 @@ export class RemoteLifecycleRuntime {
       !surface ||
       !session ||
       !workspace ||
-      surface.sessionId !== sessionId ||
+      terminalSessionForSurface(state, surfaceId)?.id !== sessionId ||
       session.surfaceId !== surfaceId ||
       workspace.location.target.kind !== "ssh" ||
       !this.connectedTargets.has(workspace.location.target.targetId) ||
@@ -1326,7 +1331,10 @@ export class RemoteLifecycleRuntime {
     if (!surface) {
       throw new Error("remote surface is unavailable");
     }
-    const terminal = this.getRemoteTerminal(surfaceId, surface.sessionId);
+    const session = terminalSessionForSurface(state, surfaceId);
+    const terminal = session
+      ? this.getRemoteTerminal(surfaceId, session.id)
+      : null;
     if (!terminal) {
       throw new Error(
         "remote surface is not connected to its current running keeper"
@@ -1645,7 +1653,9 @@ function requireRemotePaneContext(state: AppState, paneId: Id) {
 
 function requireRemoteSurfaceContext(state: AppState, surfaceId: Id) {
   const surface = state.surfaces[surfaceId];
-  const session = surface ? state.sessions[surface.sessionId] : undefined;
+  const session = surface
+    ? terminalSessionForSurface(state, surface.id)
+    : undefined;
   const context = surface
     ? requireRemotePaneContext(state, surface.paneId)
     : undefined;
@@ -1671,7 +1681,7 @@ function normalizeRemoteSpoolEvent(
     !pane ||
     !session ||
     pane.workspaceId !== workspace.id ||
-    surface.sessionId !== session.id ||
+    terminalSessionForSurface(state, surface.id)?.id !== session.id ||
     session.surfaceId !== surface.id ||
     workspace.location.target.kind !== "ssh" ||
     workspace.location.target.targetId !== event.resourceKey.targetId ||

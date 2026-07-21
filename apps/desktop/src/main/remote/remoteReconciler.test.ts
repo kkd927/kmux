@@ -122,7 +122,9 @@ describe("RemoteReconciler observations", () => {
     });
     const sessionIds = Object.values(fixture.state.panes)
       .filter((pane) => pane.workspaceId === fixture.workspaceId)
-      .map((pane) => fixture.state.surfaces[pane.activeSurfaceId].sessionId)
+      .map(
+        (pane) => fixture.state.surfaces[pane.activeSurfaceId].content.sessionId
+      )
       .sort();
     const [firstSessionId, staleSessionId] = sessionIds;
     if (!firstSessionId || !staleSessionId) {
@@ -402,7 +404,7 @@ function createRemoteFixture(): {
     (id) => !existing.has(id)
   )!;
   const pane = state.panes[state.workspaces[workspaceId].activePaneId];
-  const sessionId = state.surfaces[pane.activeSurfaceId].sessionId;
+  const sessionId = state.surfaces[pane.activeSurfaceId].content.sessionId;
   return { state, workspaceId, sessionId };
 }
 

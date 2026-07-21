@@ -83,7 +83,9 @@ describe("usage runtime", () => {
     const localWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
     const localPaneId = state.workspaces[localWorkspaceId].activePaneId;
-    state.surfaces[state.panes[localPaneId].activeSurfaceId].cwd =
+    const localSurface =
+      state.surfaces[state.panes[localPaneId].activeSurfaceId];
+    state.sessions[localSurface.content.sessionId].runtimeMetadata.cwd =
       localPath("/tmp/local");
     applyAction(state, {
       type: "workspace.create",
@@ -430,7 +432,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: state.surfaces[surfaceId].sessionId,
+      sessionId: state.surfaces[surfaceId].content.sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -497,7 +499,9 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-usage-before-rebind");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-usage-before-rebind");
     const emitSnapshot = vi.fn();
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -554,7 +558,9 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-project");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-project");
 
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -598,8 +604,10 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual");
+    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-codex-manual");
     state.sessions[sessionId].pid = 4242;
     state.sessions[sessionId].runtimeStatus.processState = "running";
     const resolveAiCliProcesses = vi.fn(async () => {
@@ -673,8 +681,10 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-manual");
+    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-antigravity-manual");
     state.sessions[sessionId].pid = 4242;
     state.sessions[sessionId].runtimeStatus.processState = "running";
     const resolveAiCliProcesses = vi.fn(async () => {
@@ -733,7 +743,9 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-usage");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-antigravity-usage");
     const adapter = new FakeUsageAdapter({
       vendor: "antigravity",
       initialReads: [
@@ -869,7 +881,9 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-antigravity-usage");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-antigravity-usage");
     const timestampMs = new Date("2026-06-02T02:00:00.000Z").getTime();
     const baseSample = buildSample({
       vendor: "antigravity",
@@ -2314,7 +2328,9 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-external-refresh");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-external-refresh");
 
     const adapter = new FakeUsageAdapter({
       initialReads: [{ sourceCount: 0, samples: [] }],
@@ -2374,8 +2390,10 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual-backoff");
+    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-codex-manual-backoff");
     state.sessions[sessionId].pid = 4242;
     state.sessions[sessionId].runtimeStatus.processState = "running";
 
@@ -2440,10 +2458,10 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = localPath(
-      "/tmp/kmux-codex-manual-ps-failure"
-    );
+    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-codex-manual-ps-failure");
     state.sessions[sessionId].pid = 4242;
     state.sessions[sessionId].runtimeStatus.processState = "running";
 
@@ -2510,8 +2528,10 @@ describe("usage runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].sessionId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux-codex-manual-catchup");
+    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux-codex-manual-catchup");
     state.sessions[sessionId].pid = 4242;
     state.sessions[sessionId].runtimeStatus.processState = "running";
 

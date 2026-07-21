@@ -127,10 +127,7 @@ describe("conversion WAL", () => {
 
 function preparingRecord(
   patch: ReturnType<typeof replacementPatch>
-): Omit<
-  ConversionPreparingRecord,
-  "version" | "state"
-> {
+): Omit<ConversionPreparingRecord, "version" | "state"> {
   return {
     continuation: "convert",
     transactionId: "conversion_1",
@@ -176,7 +173,7 @@ function replacementPatch() {
   const originalWorkspace = state.workspaces[originalWorkspaceId];
   const originalPane = state.panes[originalWorkspace.activePaneId];
   const originalSurface = state.surfaces[originalPane.activeSurfaceId];
-  const originalSession = state.sessions[originalSurface.sessionId];
+  const originalSession = state.sessions[originalSurface.content.sessionId];
   state.workspaces.workspace_1 = {
     ...originalWorkspace,
     id: "workspace_1",
@@ -205,7 +202,7 @@ function replacementPatch() {
     ...originalSurface,
     id: "surface_local",
     paneId: "pane_local",
-    sessionId: "session_local"
+    content: { kind: "terminal", sessionId: "session_local" }
   };
   delete state.surfaces[originalSurface.id];
   state.sessions.session_local = {

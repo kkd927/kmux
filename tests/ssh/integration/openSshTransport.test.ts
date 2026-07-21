@@ -4444,8 +4444,11 @@ function remoteCoordinatorState(
     pane.workspaceId = workspaceId;
     for (const surfaceId of pane.surfaceIds) {
       const surface = state.surfaces[surfaceId];
-      const session = state.sessions[surface.sessionId];
-      surface.cwd = locatedPathForTarget({ kind: "ssh", targetId }, cwd);
+      const session = state.sessions[surface.content.sessionId];
+      session.runtimeMetadata.cwd = locatedPathForTarget(
+        { kind: "ssh", targetId },
+        cwd
+      );
       session.launch = {
         ...session.launch,
         cwd: locatedPathForTarget({ kind: "ssh", targetId }, cwd)

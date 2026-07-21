@@ -1,7 +1,11 @@
 import { MessageChannelMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
-import type { AppState, RemoteResourceKey } from "@kmux/core";
+import {
+  terminalSessionForSurface,
+  type AppState,
+  type RemoteResourceKey
+} from "@kmux/core";
 import type { Id } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
 
@@ -50,7 +54,7 @@ export function createTerminalDataPlaneController(
         !pane ||
         !workspace ||
         !productSession ||
-        surface.sessionId !== expectedSessionId ||
+        terminalSessionForSurface(state, surfaceId)?.id !== expectedSessionId ||
         productSession.surfaceId !== surfaceId ||
         pane.activeSurfaceId !== surfaceId ||
         activeWindow?.activeWorkspaceId !== workspace.id ||

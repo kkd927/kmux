@@ -89,8 +89,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     await waitForView(
       page,
       (view) =>
-        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-        "running",
+        view.activeWorkspace.surfaces[activeSurfaceId]?.content
+          .runtimeStatus === "running",
       "packaged shell should reach a running session state",
       15_000
     );
@@ -265,8 +265,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
         view.activeWorkspace.id === targetWorkspaceId &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-          "running",
+        view.activeWorkspace.surfaces[activeSurfaceId]?.content
+          .runtimeStatus === "running",
       "packaged renderer reload should preserve the active running surface",
       15_000
     );
@@ -322,8 +322,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
         view.settings.restoreWorkspacesAfterQuit === true &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-          "running" &&
+        view.activeWorkspace.surfaces[activeSurfaceId]?.content
+          .runtimeStatus === "running" &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.title === "packaged hidden continuity"
         ),

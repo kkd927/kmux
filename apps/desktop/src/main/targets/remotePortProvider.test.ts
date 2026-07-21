@@ -209,9 +209,7 @@ function remoteState(): AppState {
     { kind: "ssh", targetId: "target_1" },
     "/home/kmux"
   );
-  surface.cwd = locatedPathForTarget(
-    { kind: "ssh", targetId: "target_1" },
-    "/home/kmux"
-  );
+  state.sessions[surface.content.sessionId].runtimeMetadata.cwd =
+    locatedPathForTarget({ kind: "ssh", targetId: "target_1" }, "/home/kmux");
   return state;
 }

@@ -20,6 +20,8 @@ import {
 
 import {
   resolveSurfaceDiagnosticCaptureEnabled,
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
   type AppState,
   type LocalPath,
   type RemotePath
@@ -825,7 +827,12 @@ async function bootstrap(): Promise<void> {
       async list(sessionId) {
         const state = runtime.getState();
         const surfaceId = state.sessions[sessionId]?.surfaceId;
-        return surfaceId ? [...(state.surfaces[surfaceId]?.ports ?? [])] : [];
+        return surfaceId
+          ? [
+              ...(terminalRuntimeMetadataForSurface(state, surfaceId)?.ports ??
+                [])
+            ]
+          : [];
       },
       async remapBrowserUrl({ url }) {
         return { url };
@@ -1054,7 +1061,8 @@ async function bootstrap(): Promise<void> {
         !surface ||
         !session ||
         !workspace ||
-        surface.sessionId !== request.sessionId ||
+        terminalSessionForSurface(state, request.surfaceId)?.id !==
+          request.sessionId ||
         session.surfaceId !== request.surfaceId
       ) {
         throw new Error("attachment surface identity changed before staging");
@@ -1064,7 +1072,7 @@ async function bootstrap(): Promise<void> {
         .attachments.store({
           workspaceId: workspace.id,
           sessionId: session.id,
-          cwd: surface.cwd,
+          cwd: session.runtimeMetadata.cwd,
           bytes: request.bytes,
           name: request.displayName
         });
@@ -1853,7 +1861,9 @@ function getActiveRuntimeContext(state: AppState): {
     workspaceId: workspace?.id,
     paneId: pane?.id,
     surfaceId: surface?.id,
-    sessionId: surface?.sessionId
+    sessionId: surface
+      ? terminalSessionForSurface(state, surface.id)?.id
+      : undefined
   };
 }
 

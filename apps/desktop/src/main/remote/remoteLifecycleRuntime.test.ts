@@ -500,9 +500,9 @@ describe("RemoteLifecycleRuntime", () => {
             desktopInstallationId: "desktop_1",
             targetId: "target_1",
             workspaceId,
-            sessionId: surface.sessionId
+            sessionId: surface.content.sessionId
           },
-          generation: `keeper_${surface.sessionId}`,
+          generation: `keeper_${surface.content.sessionId}`,
           processState: "running",
           persistenceLevel: "ssh-disconnect",
           remoteResourceRevision: uint64(1n),
@@ -510,9 +510,9 @@ describe("RemoteLifecycleRuntime", () => {
           checkpointAvailable: false,
           retainedRangeTruncated: false,
           descriptor: {
-            createOperationId: `create_${surface.sessionId}`,
+            createOperationId: `create_${surface.content.sessionId}`,
             canonicalCreatePayloadHash: "a".repeat(64),
-            lastOperationId: `create_${surface.sessionId}`,
+            lastOperationId: `create_${surface.content.sessionId}`,
             lastOperationPayloadHash: "a".repeat(64),
             lastResultDigest: "b".repeat(64),
             launch: { cwd: "/srv/app" },
@@ -579,9 +579,9 @@ describe("RemoteLifecycleRuntime", () => {
           desktopInstallationId: "desktop_1",
           targetId: "target_1",
           workspaceId: fixture.workspaceId,
-          sessionId: surface.sessionId
+          sessionId: surface.content.sessionId
         },
-        generation: `keeper_${surface.sessionId}`,
+        generation: `keeper_${surface.content.sessionId}`,
         processState: "running",
         persistenceLevel: "ssh-disconnect",
         remoteResourceRevision: uint64(1n),
@@ -589,9 +589,9 @@ describe("RemoteLifecycleRuntime", () => {
         checkpointAvailable: false,
         retainedRangeTruncated: false,
         descriptor: {
-          createOperationId: `create_${surface.sessionId}`,
+          createOperationId: `create_${surface.content.sessionId}`,
           canonicalCreatePayloadHash: "a".repeat(64),
-          lastOperationId: `create_${surface.sessionId}`,
+          lastOperationId: `create_${surface.content.sessionId}`,
           lastOperationPayloadHash: "a".repeat(64),
           lastResultDigest: "b".repeat(64),
           launch: { cwd: "/srv/app" },
@@ -797,11 +797,12 @@ describe("RemoteLifecycleRuntime", () => {
       fixture.paneId
     ].surfaceIds.find(
       (surfaceId) =>
-        fixture.state.surfaces[surfaceId].sessionId !== fixture.initialSessionId
+        fixture.state.surfaces[surfaceId].content.sessionId !==
+        fixture.initialSessionId
     )!;
     const created =
       fixture.state.sessions[
-        fixture.state.surfaces[createdSurfaceId].sessionId
+        fixture.state.surfaces[createdSurfaceId].content.sessionId
       ];
     expect(created?.launch.initialInput).toBe("codex\r");
     expect(() =>
@@ -891,7 +892,8 @@ describe("RemoteLifecycleRuntime", () => {
     const createdSurfaceId = fixture.state.panes[
       fixture.paneId
     ].surfaceIds.find((surfaceId) => surfaceId !== initialSurfaceId)!;
-    const createdSessionId = fixture.state.surfaces[createdSurfaceId].sessionId;
+    const createdSessionId =
+      fixture.state.surfaces[createdSurfaceId].content.sessionId;
     expect(fixture.state.sessions[createdSessionId]).toMatchObject({
       launch: { cwd: { kind: "ssh" }, initialInput: "echo ready\r" },
       remoteRuntime: { remoteResourceRevision: 2n }
@@ -1303,7 +1305,7 @@ function remoteFixture(): {
     state,
     workspaceId,
     paneId,
-    initialSessionId: state.surfaces[initialSurfaceId].sessionId
+    initialSessionId: state.surfaces[initialSurfaceId].content.sessionId
   };
 }
 

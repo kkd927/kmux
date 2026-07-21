@@ -8,7 +8,12 @@ import {
   type GitRepositoryMetadata
 } from "@kmux/metadata";
 
-import type { AppAction, AppState } from "@kmux/core";
+import {
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
+  type AppAction,
+  type AppState
+} from "@kmux/core";
 import { isoNow, type Id } from "@kmux/proto";
 import type { LocalPathResolver } from "./targets/targetServiceRegistry";
 
@@ -60,10 +65,17 @@ export function createMetadataRuntime(
         return;
       }
 
-      const session = currentState.sessions[surface.sessionId];
+      const session = terminalSessionForSurface(currentState, surfaceId);
+      const metadata = terminalRuntimeMetadataForSurface(
+        currentState,
+        surfaceId
+      );
+      if (!session || !metadata) {
+        return;
+      }
       if (cwd !== undefined) {
         try {
-          if (resolveLocalPath(surface.cwd) !== cwd) {
+          if (resolveLocalPath(metadata.cwd) !== cwd) {
             return;
           }
         } catch {
@@ -241,9 +253,12 @@ export function createMetadataRuntime(
       const liveSurfaceIds = [...entry.surfaceIds].filter(
         (surfaceId) =>
           surfaceGitDirs.get(surfaceId) === gitDir &&
-          Boolean(currentState.surfaces[surfaceId]?.cwd)
+          Boolean(terminalRuntimeMetadataForSurface(currentState, surfaceId))
       );
-      const locatedCwd = currentState.surfaces[liveSurfaceIds[0]]?.cwd;
+      const locatedCwd = terminalRuntimeMetadataForSurface(
+        currentState,
+        liveSurfaceIds[0]
+      )?.cwd;
       if (!locatedCwd) {
         return;
       }
@@ -262,12 +277,16 @@ export function createMetadataRuntime(
         if (!surface || surfaceGitDirs.get(surfaceId) !== gitDir) {
           continue;
         }
-        const repository = surface.gitRepository
+        const metadata = terminalRuntimeMetadataForSurface(
+          nextState,
+          surfaceId
+        );
+        const repository = metadata?.gitRepository
           ? {
-              root: resolveLocalPath(surface.gitRepository.root),
-              gitDir: resolveLocalPath(surface.gitRepository.gitDir),
+              root: resolveLocalPath(metadata.gitRepository.root),
+              gitDir: resolveLocalPath(metadata.gitRepository.gitDir),
               commonGitDir: resolveLocalPath(
-                surface.gitRepository.commonGitDir
+                metadata.gitRepository.commonGitDir
               )
             }
           : null;
@@ -287,7 +306,10 @@ export function createMetadataRuntime(
       const surface = state.surfaces[surfaceId];
       let cwd: string | undefined;
       try {
-        cwd = surface ? resolveLocalPath(surface.cwd) : undefined;
+        const metadata = surface
+          ? terminalRuntimeMetadataForSurface(state, surfaceId)
+          : undefined;
+        cwd = metadata ? resolveLocalPath(metadata.cwd) : undefined;
       } catch {
         cwd = undefined;
       }

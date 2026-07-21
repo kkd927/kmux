@@ -708,7 +708,7 @@ describe("Main-only remote operation facts", () => {
     const retainedSurfaceId = state.panes[paneId].activeSurfaceId;
     applyAction(state, { type: "surface.create", paneId });
     const closingSurfaceId = state.panes[paneId].activeSurfaceId;
-    const closingSessionId = state.surfaces[closingSurfaceId].sessionId;
+    const closingSessionId = state.surfaces[closingSurfaceId].content.sessionId;
     state.sessions[closingSessionId].remoteRuntime = {
       keeperGeneration: "keeper_closing",
       remoteResourceRevision: uint64(7n)
@@ -828,7 +828,7 @@ describe("Main-only remote session observation facts", () => {
       attachmentState: "failed"
     });
     expect(state.sessions[sessionId]).toBe(session);
-    expect(state.surfaces[surfaceId]?.sessionId).toBe(sessionId);
+    expect(state.surfaces[surfaceId]?.content.sessionId).toBe(sessionId);
     expect(state.workspaces[workspaceId]?.location.target).toEqual({
       kind: "ssh",
       targetId: "target_1"
@@ -925,7 +925,7 @@ function createRemoteState(): {
     (id) => !existing.has(id)
   )!;
   const pane = state.panes[state.workspaces[workspaceId].activePaneId];
-  const sessionId = state.surfaces[pane.activeSurfaceId].sessionId;
+  const sessionId = state.surfaces[pane.activeSurfaceId].content.sessionId;
   return { state, workspaceId, sessionId };
 }
 

@@ -150,7 +150,9 @@ function createStateAtCwd(cwd: string) {
   const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
   const paneId = state.workspaces[workspaceId].activePaneId;
   const surfaceId = state.panes[paneId].activeSurfaceId;
-  state.surfaces[surfaceId].cwd = localPath(cwd);
+  state.sessions[
+    state.surfaces[surfaceId].content.sessionId
+  ].runtimeMetadata.cwd = localPath(cwd);
   return { state, workspaceId, paneId };
 }
 
@@ -422,9 +424,12 @@ describe("worktree runtime", () => {
         expect(rawPath(storedWorktree.commonGitDir)).toBe(
           worktree.commonGitDir
         );
-        expect(rawPath(state.surfaces[activeSurfaceId].cwd)).toBe(
-          worktree.path
-        );
+        expect(
+          rawPath(
+            state.sessions[state.surfaces[activeSurfaceId].content.sessionId]
+              .runtimeMetadata.cwd
+          )
+        ).toBe(worktree.path);
         expect(
           execFileSync("git", ["branch", "--show-current"], {
             cwd: worktree.path,

@@ -1,4 +1,10 @@
-import type { AppAction, AppState, RemotePath } from "@kmux/core";
+import {
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
+  type AppAction,
+  type AppState,
+  type RemotePath
+} from "@kmux/core";
 import { isoNow, type Id } from "@kmux/proto";
 
 import type { GitProvider, MetadataProvider, PortProvider } from "./contracts";
@@ -44,11 +50,11 @@ async function refreshRemoteMetadata(
   const cwd = request.cwd;
   if (!cwd) return;
   const rawCwd = options.resolveRemotePath(cwd);
-  if (surfaceRawCwd(options, initial.surface) !== rawCwd) return;
+  if (surfaceRawCwd(options, initial.metadata) !== rawCwd) return;
 
   const [inspection, ports] = await Promise.all([
     options.git.inspect(cwd, { dirtyLimit: 0 }),
-    options.ports.list(initial.surface.sessionId)
+    options.ports.list(initial.session.id)
   ]);
   const current = requireRemoteSurface(
     options.getState(),
@@ -56,8 +62,8 @@ async function refreshRemoteMetadata(
     request.surfaceId
   );
   if (
-    current.surface.sessionId !== initial.surface.sessionId ||
-    surfaceRawCwd(options, current.surface) !== rawCwd
+    current.session.id !== initial.session.id ||
+    surfaceRawCwd(options, current.metadata) !== rawCwd
   ) {
     return;
   }
@@ -129,30 +135,39 @@ function requireRemoteSurface(
   surface: AppState["surfaces"][string];
   pane: AppState["panes"][string];
   workspace: AppState["workspaces"][string];
+  session: AppState["sessions"][string];
+  metadata: AppState["sessions"][string]["runtimeMetadata"];
 } {
   const surface = state.surfaces[surfaceId];
   const pane = surface ? state.panes[surface.paneId] : undefined;
   const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+  const session = terminalSessionForSurface(state, surfaceId);
+  const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
   if (
     !surface ||
     !pane ||
     !workspace ||
+    !session ||
+    !metadata ||
     workspace.location.target.kind !== "ssh" ||
     workspace.location.target.targetId !== targetId
   ) {
     throw new Error("remote metadata surface is outside its provider target");
   }
-  return { surface, pane, workspace };
+  return { surface, pane, workspace, session, metadata };
 }
 
 function surfaceRawCwd(
   options: { targetId: Id; resolveRemotePath: RemotePathResolver },
-  surface: AppState["surfaces"][string]
+  metadata: AppState["sessions"][string]["runtimeMetadata"]
 ): string | null {
-  if (surface.cwd.kind !== "ssh" || surface.cwd.targetId !== options.targetId) {
+  if (
+    metadata.cwd.kind !== "ssh" ||
+    metadata.cwd.targetId !== options.targetId
+  ) {
     return null;
   }
-  return options.resolveRemotePath(surface.cwd.path);
+  return options.resolveRemotePath(metadata.cwd.path);
 }
 
 function deriveRemoteRepoRoot(commonGitDir: string): string {

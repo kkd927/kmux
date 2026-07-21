@@ -69,8 +69,8 @@ describe("metadata runtime", () => {
     const state = createInitialState("/bin/zsh");
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
-    const session = state.sessions[surface.sessionId];
-    surface.cwd = localPath("/tmp/kmux");
+    const session = state.sessions[surface.content.sessionId];
+    session.runtimeMetadata.cwd = localPath("/tmp/kmux");
     session.pid = 123;
     const dispatchAppAction = vi.fn();
     const env = { PATH: "/usr/bin:/bin" };
@@ -171,7 +171,9 @@ describe("metadata runtime", () => {
   it("closes the repo watcher when a tracked surface is removed", async () => {
     const state = createInitialState("/bin/zsh");
     const surfaceId = Object.keys(state.surfaces)[0];
-    state.surfaces[surfaceId].cwd = localPath("/tmp/kmux");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/kmux");
     const watcher = { close: vi.fn(), on: vi.fn() };
     watch.mockReturnValue(watcher);
     resolveGitRepository.mockResolvedValue({
@@ -205,7 +207,9 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const firstSurfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[firstSurfaceId].cwd = localPath("/tmp/repo-a/first");
+    state.sessions[
+      state.surfaces[firstSurfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/repo-a/first");
     applyAction(state, {
       type: "surface.create",
       paneId,
@@ -245,7 +249,9 @@ describe("metadata runtime", () => {
       dispatchAppAction.mockClear();
       resolveGitBranch.mockClear();
       resolveGitBranch.mockResolvedValueOnce("repo-a-updated");
-      state.surfaces[firstSurfaceId].cwd = localPath("/tmp/repo-b");
+      state.sessions[
+        state.surfaces[firstSurfaceId].content.sessionId
+      ].runtimeMetadata.cwd = localPath("/tmp/repo-b");
       runtime.handleAppAction({
         type: "surface.metadata",
         surfaceId: firstSurfaceId,
@@ -280,7 +286,9 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/repo-wt");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     const watcher = { close: vi.fn(), on: vi.fn() };
     watch.mockReturnValue(watcher);
@@ -328,7 +336,9 @@ describe("metadata runtime", () => {
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
-    state.surfaces[surfaceId].cwd = localPath("/tmp/repo-wt");
+    state.sessions[
+      state.surfaces[surfaceId].content.sessionId
+    ].runtimeMetadata.cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     let headListener:
       | ((eventType: string, filename: string | Buffer | null) => void)
@@ -356,7 +366,9 @@ describe("metadata runtime", () => {
     try {
       runtime.refreshMetadata(surfaceId, "/tmp/repo-wt");
       await flushMetadataRuntime();
-      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe("old");
+      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe(
+        "old"
+      );
 
       dispatchAppAction.mockClear();
       headListener?.("change", "HEAD");
@@ -378,7 +390,9 @@ describe("metadata runtime", () => {
           branch: "new"
         })
       });
-      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe("new");
+      expect(state.workspaces[workspaceId].detectedWorktree?.branch).toBe(
+        "new"
+      );
     } finally {
       runtime.dispose();
       vi.useRealTimers();

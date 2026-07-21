@@ -118,10 +118,13 @@ function createRuntime(
       loadRecord: () =>
         options.snapshotRecord
           ? {
-              ...options.snapshotRecord,
-              restoreOnLaunch: options.snapshotRecord.restoreOnLaunch === true
+              status: "ok" as const,
+              record: {
+                ...options.snapshotRecord,
+                restoreOnLaunch: options.snapshotRecord.restoreOnLaunch === true
+              }
             }
-          : null,
+          : { status: "missing" as const },
       save: snapshotSave,
       saveDurable: snapshotSave
     },
@@ -177,7 +180,7 @@ describe("app runtime Main fact projection", () => {
     const workspace = initialState.workspaces[workspaceId];
     const pane = initialState.panes[workspace.activePaneId];
     const surface = initialState.surfaces[pane.activeSurfaceId];
-    const session = initialState.sessions[surface.sessionId];
+    const session = initialState.sessions[surface.content.sessionId];
     const runtime = createRuntime(false, { initialState });
     const window = createMockWindow();
     browserWindows.push(window);
@@ -240,7 +243,8 @@ describe("app runtime Main fact projection", () => {
       initialState.windows[initialState.activeWindowId].activeWorkspaceId;
     const workspace = initialState.workspaces[workspaceId];
     const pane = initialState.panes[workspace.activePaneId];
-    const sessionId = initialState.surfaces[pane.activeSurfaceId].sessionId;
+    const sessionId =
+      initialState.surfaces[pane.activeSurfaceId].content.sessionId;
     const runtime = createRuntime(false, { initialState });
     const window = createMockWindow();
     browserWindows.push(window);
@@ -543,7 +547,7 @@ describe("app runtime external sessions", () => {
     const workspace = state.workspaces[result.workspaceId];
     const pane = state.panes[workspace.activePaneId];
     const surface = state.surfaces[result.surfaceId];
-    const session = state.sessions[surface.sessionId];
+    const session = state.sessions[surface.content.sessionId];
 
     expect(workspace.name).toBe("Fix terminal focus");
     expect(pane.activeSurfaceId).toBe(result.surfaceId);
@@ -665,7 +669,7 @@ describe("app runtime external sessions", () => {
     const firstSurface = firstState.surfaces[firstResult.surfaceId];
     runtime.dispatchAppAction({
       type: "session.exited",
-      sessionId: firstSurface.sessionId,
+      sessionId: firstSurface.content.sessionId,
       exitCode: 0
     });
     const workspaceCountAfterExit = Object.keys(
@@ -683,7 +687,7 @@ describe("app runtime external sessions", () => {
     );
     expect(state.surfaces[firstResult.surfaceId]).toBeTruthy();
     expect(
-      state.sessions[state.surfaces[firstResult.surfaceId].sessionId]
+      state.sessions[state.surfaces[firstResult.surfaceId].content.sessionId]
         .runtimeStatus.processState
     ).toBe("exited");
   });
@@ -842,7 +846,9 @@ describe("app runtime restore", () => {
 
     const restored = runtime.restoreInitialState();
     const restoredSessionIds = new Set(
-      Object.values(restored.surfaces).map((surface) => surface.sessionId)
+      Object.values(restored.surfaces).map(
+        (surface) => surface.content.sessionId
+      )
     );
     for (const sessionId of restoredSessionIds) {
       expect(restored.sessions[sessionId]).toMatchObject({
@@ -888,7 +894,7 @@ describe("app runtime restore", () => {
     const remotePane =
       snapshot.panes[snapshot.workspaces[remoteWorkspaceId].activePaneId];
     const remoteSessionId =
-      snapshot.surfaces[remotePane.activeSurfaceId].sessionId;
+      snapshot.surfaces[remotePane.activeSurfaceId].content.sessionId;
     snapshot.sessions[remoteSessionId].runtimeStatus = {
       processState: "running",
       observationState: "observed",

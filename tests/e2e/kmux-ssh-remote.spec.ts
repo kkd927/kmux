@@ -65,8 +65,8 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
         view.activeWorkspace.id === opened.workspaceId &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) =>
-            surface.sessionState === "running" &&
-            surface.shellInputReady === true
+            surface.content.runtimeStatus === "running" &&
+            surface.content.shellInputReady === true
         ),
       "real SSH workspace should become ready",
       90_000
@@ -95,8 +95,8 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) =>
             surface.id === surfaceId &&
-            surface.sessionState === "running" &&
-            surface.shellInputReady === true
+            surface.content.runtimeStatus === "running" &&
+            surface.content.shellInputReady === true
         ),
       "desktop relaunch should restore the existing remote keeper",
       90_000

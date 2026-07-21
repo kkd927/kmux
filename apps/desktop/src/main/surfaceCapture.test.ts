@@ -12,7 +12,6 @@ import { Script } from "node:vm";
 import type { BrowserWindow } from "electron";
 
 import {
-  locatedPathForTarget,
   workspaceLocation,
   type AppState
 } from "@kmux/core";
@@ -701,13 +700,11 @@ function createState(): AppState {
       [surfaceId]: {
         id: surfaceId,
         paneId,
-        sessionId,
         title: "Test",
         titleLocked: false,
-        cwd: locatedPathForTarget({ kind: "local" }, "/tmp"),
-        ports: [],
         unreadCount: 0,
-        attention: false
+        attention: false,
+        content: { kind: "terminal", sessionId }
       }
     },
     sessions: {},

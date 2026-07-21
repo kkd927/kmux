@@ -245,8 +245,8 @@ test("explicit quit tears down background services and restores workspaces when 
         Object.keys(view.activeWorkspace.surfaces).length === 3 &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.sessionState ===
-          "running" &&
+        view.activeWorkspace.surfaces[activeSurfaceId]?.content
+          .runtimeStatus === "running" &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.title === "quit hidden continuity"
         ),
@@ -328,7 +328,7 @@ test("explicit quit clears persisted notifications before the next relaunch", as
       (view) =>
         view.notifications.length === 0 &&
         Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.sessionState === "running"
+          (surface) => surface.content.runtimeStatus === "running"
         ),
       "explicit quit should relaunch without stale notifications"
     );

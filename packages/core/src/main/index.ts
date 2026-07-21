@@ -373,13 +373,11 @@ export function createSshWorkspaceReplacementPatch(
   replacementState.surfaces[options.surfaceId] = {
     id: options.surfaceId,
     paneId: options.paneId,
-    sessionId: options.sessionId,
     title,
     titleLocked: Boolean(options.launch.title?.trim()),
-    cwd,
-    ports: [],
     unreadCount: 0,
-    attention: false
+    attention: false,
+    content: { kind: "terminal", sessionId: options.sessionId }
   };
   replacementState.sessions[options.sessionId] = {
     id: options.sessionId,
@@ -412,7 +410,8 @@ export function createSshWorkspaceReplacementPatch(
     // Remote prepare returns only after the keeper child and health RPC are
     // ready. The current interactive adapter uses the explicit `none`
     // readiness strategy, so that authoritative boundary admits input.
-    shellInputReady: true
+    shellInputReady: true,
+    runtimeMetadata: { cwd, ports: [] }
   };
 
   // Persist the sanitized form that apply/recovery will decode. Hashing a
@@ -532,13 +531,11 @@ export function createSshWorkspaceAdditionPatch(
   additionState.surfaces[options.surfaceId] = {
     id: options.surfaceId,
     paneId: options.paneId,
-    sessionId: options.sessionId,
     title,
     titleLocked: Boolean(options.launch.title?.trim()),
-    cwd,
-    ports: [],
     unreadCount: 0,
-    attention: false
+    attention: false,
+    content: { kind: "terminal", sessionId: options.sessionId }
   };
   additionState.sessions[options.sessionId] = {
     id: options.sessionId,
@@ -568,7 +565,8 @@ export function createSshWorkspaceAdditionPatch(
       keeperGeneration: options.keeperGeneration,
       remoteResourceRevision: options.remoteResourceRevision
     },
-    shellInputReady: true
+    shellInputReady: true,
+    runtimeMetadata: { cwd, ports: [] }
   };
   const expectedWindowWorkspaceOrder = [...window.workspaceOrder];
   const resultingWindowWorkspaceOrder = [
@@ -1639,17 +1637,15 @@ function applySessionOwnershipProductProjection(
   state.surfaces[product.surfaceId] = {
     id: product.surfaceId,
     paneId: projectedPane.id,
-    sessionId: product.sessionId,
     title:
       product.launch.title?.trim() ||
       (direction === undefined
         ? `tab ${projectedPane.surfaceIds.length + 1}`
         : "new terminal"),
     titleLocked: Boolean(product.launch.title?.trim()),
-    cwd,
-    ports: [],
     unreadCount: 0,
-    attention: false
+    attention: false,
+    content: { kind: "terminal", sessionId: product.sessionId }
   };
   state.sessions[product.sessionId] = {
     id: product.sessionId,
@@ -1661,7 +1657,8 @@ function applySessionOwnershipProductProjection(
       observationState: "unknown",
       attachmentState: "detached"
     },
-    shellInputReady: false
+    shellInputReady: false,
+    runtimeMetadata: { cwd, ports: [] }
   };
   projectedPane.surfaceIds.push(product.surfaceId);
   projectedPane.activeSurfaceId = product.surfaceId;
@@ -1698,7 +1695,12 @@ function applySucceededProductProjection(
       }
       const surface = state.surfaces[product.surfaceId];
       const workspace = state.workspaces[projection.resourceKey.workspaceId];
-      if (!surface || surface.sessionId !== session.id || !workspace) {
+      if (
+        !surface ||
+        surface.content.kind !== "terminal" ||
+        surface.content.sessionId !== session.id ||
+        !workspace
+      ) {
         throw new MainFactConflictError(
           "operation-missing",
           "session restart product ownership no longer matches"
@@ -1726,7 +1728,7 @@ function applySucceededProductProjection(
           ? {}
           : { initialInput: session.launch.initialInput })
       };
-      surface.cwd = cwd;
+      session.runtimeMetadata.cwd = cwd;
       if (product.launch.title?.trim()) {
         surface.title = product.launch.title.trim();
         surface.titleLocked = true;
@@ -1887,7 +1889,8 @@ function markRemoteSessionRunning(
     session.id !== sessionId ||
     session.surfaceId !== surfaceId ||
     !surface ||
-    surface.sessionId !== sessionId
+    surface.content.kind !== "terminal" ||
+    surface.content.sessionId !== sessionId
   ) {
     throw new MainFactConflictError(
       "operation-missing",
@@ -1926,7 +1929,8 @@ function rollbackFailedProductProjection(
     !projectedPane ||
     !workspace ||
     session.surfaceId !== surface.id ||
-    surface.sessionId !== session.id ||
+    surface.content.kind !== "terminal" ||
+    surface.content.sessionId !== session.id ||
     surface.paneId !== projectedPane.id ||
     !projectedPane.surfaceIds.includes(surface.id) ||
     projectedPane.activeSurfaceId !== surface.id ||

@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-import type { AppState } from "@kmux/core";
+import { terminalSessionForSurface, type AppState } from "@kmux/core";
 import type {
   Id,
   SurfaceCaptureDiagnosticsWriterHealth,
@@ -144,10 +144,14 @@ export function createSurfaceCaptureService(
         ? undefined
         : join(outDir, "pty-raw-tail.txt");
     const rawOutputHistory = copyRawOutputHistory(snapshot, outDir);
+    const session = terminalSessionForSurface(state, surfaceId);
+    if (!session) {
+      throw new Error("surface capture requires a Terminal Surface");
+    }
 
     const payload: SurfaceCapturePayload = {
       surfaceId,
-      sessionId: surface.sessionId,
+      sessionId: session.id,
       workspaceId: resolveWorkspaceId(state, surface.paneId),
       paneId: surface.paneId,
       capturedAt,

@@ -46,11 +46,14 @@ describe("remote metadata provider", () => {
 
     provider.refresh({ surfaceId: surface.id, cwd });
     await vi.waitFor(() => {
-      expect(state.surfaces[surface.id].branch).toBe("feature");
+      expect(
+        state.sessions[surface.content.sessionId].runtimeMetadata.branch
+      ).toBe("feature");
     });
 
-    expect(state.surfaces[surface.id].ports).toEqual([3_000, 5_173]);
-    expect(state.surfaces[surface.id].gitRepository).toMatchObject({
+    const metadata = state.sessions[surface.content.sessionId].runtimeMetadata;
+    expect(metadata.ports).toEqual([3_000, 5_173]);
+    expect(metadata.gitRepository).toMatchObject({
       root: { kind: "ssh", targetId: "target_1" },
       commonGitDir: { kind: "ssh", targetId: "target_1" },
       linkedWorktree: true
@@ -90,7 +93,7 @@ describe("remote metadata provider", () => {
     const surface = Object.values(state.surfaces)[0];
 
     provider.refresh({ surfaceId: surface.id, cwd });
-    surface.cwd = {
+    state.sessions[surface.content.sessionId].runtimeMetadata.cwd = {
       kind: "ssh",
       targetId: "target_1",
       path: decode("/srv/new")
@@ -122,7 +125,11 @@ function remoteState(cwd: RemotePath) {
     { kind: "ssh", targetId: "target_1" },
     "/srv/repo"
   );
-  surface.cwd = { kind: "ssh", targetId: "target_1", path: cwd };
+  state.sessions[surface.content.sessionId].runtimeMetadata.cwd = {
+    kind: "ssh",
+    targetId: "target_1",
+    path: cwd
+  };
   return state;
 }
 

@@ -43,7 +43,7 @@ function streamHost(state: AppState): PtyHostManager {
   return {
     sessionRef: vi.fn(() => ({
       surfaceId: surface.id,
-      sessionId: surface.sessionId,
+      sessionId: surface.content.sessionId,
       epoch: "epoch_1"
     })),
     bindTerminalStream: vi.fn(() => true)
@@ -80,7 +80,11 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(rendererEvent().event, surface.id, surface.sessionId)
+      controller.attach(
+        rendererEvent().event,
+        surface.id,
+        surface.content.sessionId
+      )
     ).toEqual({
       status: "retryable-not-ready",
       reason: "runtime-not-ready"
@@ -102,7 +106,7 @@ describe("terminal data-plane controller", () => {
     const result = controller.attach(
       renderer.event,
       surface.id,
-      surface.sessionId
+      surface.content.sessionId
     );
     expect(result.status).toBe("granted");
     const grant = result.status === "granted" ? result.grant : null;
@@ -111,7 +115,7 @@ describe("terminal data-plane controller", () => {
       attachId: expect.stringMatching(/^attach_/),
       session: {
         surfaceId: surface.id,
-        sessionId: surface.sessionId,
+        sessionId: surface.content.sessionId,
         epoch: "epoch_1"
       }
     });
@@ -148,12 +152,12 @@ describe("terminal data-plane controller", () => {
     const first = controller.attach(
       rendererEvent().event,
       surface.id,
-      surface.sessionId
+      surface.content.sessionId
     );
     const second = controller.attach(
       rendererEvent().event,
       surface.id,
-      surface.sessionId
+      surface.content.sessionId
     );
 
     expect(first.status).toBe("granted");
@@ -189,7 +193,7 @@ describe("terminal data-plane controller", () => {
       inactiveController.attach(
         rendererEvent().event,
         inactiveSurface.id,
-        inactiveSurface.sessionId
+        inactiveSurface.content.sessionId
       )
     ).toEqual({ status: "denied", reason: "not-current-surface" });
 
@@ -201,10 +205,10 @@ describe("terminal data-plane controller", () => {
     hiddenState.surfaces[hiddenSurfaceId] = {
       ...visible,
       id: hiddenSurfaceId,
-      sessionId: hiddenSessionId
+      content: { kind: "terminal", sessionId: hiddenSessionId }
     };
     hiddenState.sessions[hiddenSessionId] = {
-      ...hiddenState.sessions[visible.sessionId],
+      ...hiddenState.sessions[visible.content.sessionId],
       id: hiddenSessionId,
       surfaceId: hiddenSurfaceId
     };
@@ -238,21 +242,29 @@ describe("terminal data-plane controller", () => {
     ).toEqual({ status: "denied", reason: "not-current-surface" });
     expect(host.sessionRef).not.toHaveBeenCalled();
 
-    state.sessions[surface.sessionId].runtimeStatus.processState = "exited";
+    state.sessions[surface.content.sessionId].runtimeStatus.processState =
+      "exited";
     mockChannel();
     expect(
-      controller.attach(rendererEvent().event, surface.id, surface.sessionId)
+      controller.attach(
+        rendererEvent().event,
+        surface.id,
+        surface.content.sessionId
+      )
     ).toMatchObject({
       status: "granted",
       grant: {
         session: {
           surfaceId: surface.id,
-          sessionId: surface.sessionId,
+          sessionId: surface.content.sessionId,
           epoch: "epoch_1"
         }
       }
     });
-    expect(host.sessionRef).toHaveBeenCalledWith(surface.id, surface.sessionId);
+    expect(host.sessionRef).toHaveBeenCalledWith(
+      surface.id,
+      surface.content.sessionId
+    );
   });
 
   it("rejects subframes, destroyed frames, and missing current runtime epochs", () => {
@@ -268,18 +280,22 @@ describe("terminal data-plane controller", () => {
       {};
 
     expect(
-      controller.attach(subframe.event, surface.id, surface.sessionId)
+      controller.attach(subframe.event, surface.id, surface.content.sessionId)
     ).toEqual({ status: "denied", reason: "invalid-frame" });
 
     const destroyed = rendererEvent();
     destroyed.frame.isDestroyed.mockReturnValue(true);
     expect(
-      controller.attach(destroyed.event, surface.id, surface.sessionId)
+      controller.attach(destroyed.event, surface.id, surface.content.sessionId)
     ).toEqual({ status: "denied", reason: "invalid-frame" });
 
     vi.mocked(host.sessionRef).mockReturnValue(null);
     expect(
-      controller.attach(rendererEvent().event, surface.id, surface.sessionId)
+      controller.attach(
+        rendererEvent().event,
+        surface.id,
+        surface.content.sessionId
+      )
     ).toEqual({
       status: "retryable-not-ready",
       reason: "runtime-not-ready"
@@ -300,7 +316,7 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(renderer.event, surface.id, surface.sessionId)
+      controller.attach(renderer.event, surface.id, surface.content.sessionId)
     ).toEqual({
       status: "retryable-not-ready",
       reason: "runtime-bind-race"
@@ -323,7 +339,11 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(rendererEvent().event, surface.id, surface.sessionId)
+      controller.attach(
+        rendererEvent().event,
+        surface.id,
+        surface.content.sessionId
+      )
     ).toEqual({
       status: "retryable-not-ready",
       reason: "channel-unavailable"
@@ -346,7 +366,7 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(renderer.event, surface.id, surface.sessionId)
+      controller.attach(renderer.event, surface.id, surface.content.sessionId)
     ).toEqual({ status: "denied", reason: "renderer-transfer-failed" });
     expect(port2.close).toHaveBeenCalledOnce();
   });

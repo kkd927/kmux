@@ -1026,21 +1026,16 @@ export interface SurfaceStorageStatusVm {
   lastSyncDurationMs?: number;
 }
 
-export interface SurfaceVm {
-  id: Id;
-  sessionId: Id;
-  title: string;
-  cwd?: string;
-  branch?: string;
-  gitRepository?: WorkspaceGitRepositoryMetadata;
-  ports: number[];
-  unreadCount: number;
-  attention: boolean;
-  sessionState: SessionRuntimeState;
-  shellInputReady: boolean;
-  exitCode?: number;
-  storageStatus?: SurfaceStorageStatusVm;
-}
+export type {
+  SurfaceKind,
+  SurfaceVmCommon,
+  SurfaceVmContentMap,
+  TerminalRuntimeMetadataDto,
+  TerminalSurfaceVmContent,
+  SurfaceVm
+} from "./surfaces/contracts";
+
+import type { SurfaceVm } from "./surfaces/contracts";
 
 export interface PaneVm {
   id: Id;

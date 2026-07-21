@@ -519,7 +519,8 @@ test("surface index shortcuts traverse workspace tabs across split panes without
       (view) =>
         Object.values(view.activeWorkspace.surfaces).every(
           (surface) =>
-            surface.sessionState === "running" && surface.shellInputReady
+            surface.content.runtimeStatus === "running" &&
+            surface.content.shellInputReady
         ),
       "all shortcut target surfaces should be ready for terminal input",
       15_000
@@ -582,7 +583,8 @@ test("surface index shortcuts traverse workspace tabs across split panes without
     await waitForView(
       page,
       (view) =>
-        view.activeWorkspace.activePaneId === realKeyboardForwardTarget.paneId &&
+        view.activeWorkspace.activePaneId ===
+          realKeyboardForwardTarget.paneId &&
         view.activeWorkspace.panes[realKeyboardForwardTarget.paneId]
           .activeSurfaceId === realKeyboardForwardTarget.surfaceId,
       "Control+2 should focus the forward real-keyboard target"

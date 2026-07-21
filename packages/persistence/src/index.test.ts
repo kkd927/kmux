@@ -44,12 +44,15 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(state);
     expect(store.loadRecord()).toEqual({
-      snapshot: state,
-      cleanShutdown: false,
-      restoreOnLaunch: false
+      status: "ok",
+      record: {
+        snapshot: state,
+        cleanShutdown: false,
+        restoreOnLaunch: false
+      }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 2,
+      version: 3,
       cleanShutdown: false,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(state)
@@ -65,12 +68,15 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(state);
     expect(store.loadRecord()).toEqual({
-      snapshot: state,
-      cleanShutdown: true,
-      restoreOnLaunch: false
+      status: "ok",
+      record: {
+        snapshot: state,
+        cleanShutdown: true,
+        restoreOnLaunch: false
+      }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 2,
+      version: 3,
       cleanShutdown: true,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(state)
@@ -87,9 +93,9 @@ describe("file-store persistence", () => {
     expect(store.load()).toEqual(state);
     expect(lstatSync(statePath).isFile()).toBe(true);
     expect(lstatSync(statePath).mode & 0o077).toBe(0);
-    expect(
-      readFileSync(statePath, "utf8").includes(".snapshot.tmp")
-    ).toBe(false);
+    expect(readFileSync(statePath, "utf8").includes(".snapshot.tmp")).toBe(
+      false
+    );
   });
 
   it("persists normal quit restore metadata on the final snapshot save", () => {
@@ -100,12 +106,15 @@ describe("file-store persistence", () => {
     store.save(state, { cleanShutdown: true, restoreOnLaunch: true });
 
     expect(store.loadRecord()).toEqual({
-      snapshot: state,
-      cleanShutdown: true,
-      restoreOnLaunch: true
+      status: "ok",
+      record: {
+        snapshot: state,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 2,
+      version: 3,
       cleanShutdown: true,
       restoreOnLaunch: true,
       snapshot: encodeAppStateDto(state)
@@ -251,6 +260,69 @@ describe("file-store persistence", () => {
     );
   });
 
+  it("migrates legacy terminal surfaces and metadata into snapshot v3", () => {
+    const statePath = join(sandboxDir, "state-v2.json");
+    const state = createInitialState("/bin/zsh");
+    const encoded = encodeAppStateDto(state) as Record<string, unknown>;
+    const surfaces = encoded.surfaces as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const sessions = encoded.sessions as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const surface of Object.values(surfaces)) {
+      const content = surface.content as { sessionId: string };
+      const metadata = sessions[content.sessionId].runtimeMetadata as Record<
+        string,
+        unknown
+      >;
+      surface.sessionId = content.sessionId;
+      surface.cwd = metadata.cwd;
+      surface.branch = metadata.branch;
+      surface.gitRepository = metadata.gitRepository;
+      surface.ports = metadata.ports;
+      delete surface.content;
+      delete sessions[content.sessionId].runtimeMetadata;
+    }
+    writeFileSync(statePath, JSON.stringify({ version: 2, snapshot: encoded }));
+
+    const result = createSnapshotStore(statePath).loadRecord();
+
+    expect(result).toEqual({
+      status: "ok",
+      record: {
+        snapshot: state,
+        cleanShutdown: false,
+        restoreOnLaunch: false
+      }
+    });
+  });
+
+  it("preserves incompatible snapshots and disables writes for the run", () => {
+    const statePath = join(sandboxDir, "state-incompatible.json");
+    const state = createInitialState("/bin/zsh");
+    const envelope = {
+      version: 3,
+      snapshot: encodeAppStateDto(state)
+    };
+    const surfaces = envelope.snapshot.surfaces as Record<
+      string,
+      Record<string, unknown>
+    >;
+    surfaces[Object.keys(surfaces)[0]].content = { kind: "future" };
+    const original = JSON.stringify(envelope);
+    writeFileSync(statePath, original);
+    const store = createSnapshotStore(statePath);
+
+    expect(store.loadRecord()).toMatchObject({ status: "incompatible" });
+    store.save(createInitialState("/bin/bash"));
+    store.saveDurable(createInitialState("/bin/bash"));
+
+    expect(readFileSync(statePath, "utf8")).toBe(original);
+  });
+
   it("overwrites existing snapshot files atomically", () => {
     const statePath = join(sandboxDir, "state.json");
     const store = createSnapshotStore(statePath);
@@ -262,7 +334,7 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(secondState);
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 2,
+      version: 3,
       cleanShutdown: false,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(secondState)
@@ -541,16 +613,12 @@ describe("resolveAppPaths", () => {
     expect(paths.desktopInstallationIdentityPath).toBe(
       "/xdg/state/kmux/remote/desktop-installation.json"
     );
-    expect(paths.sshProfilesPath).toBe(
-      "/xdg/config/kmux/ssh-connections.json"
-    );
+    expect(paths.sshProfilesPath).toBe("/xdg/config/kmux/ssh-connections.json");
     expect(paths.remoteTargetBindingsPath).toBe(
       "/xdg/state/kmux/remote/target-bindings.json"
     );
     expect(paths.remoteOperationRoot).toBe("/xdg/state/kmux/remote/operations");
-    expect(paths.conversionWalRoot).toBe(
-      "/xdg/state/kmux/remote/conversions"
-    );
+    expect(paths.conversionWalRoot).toBe("/xdg/state/kmux/remote/conversions");
     expect(paths.retainedSessionInventoryPath).toBe(
       "/xdg/state/kmux/remote/retained-sessions.json"
     );

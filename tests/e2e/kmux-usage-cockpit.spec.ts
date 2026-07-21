@@ -98,7 +98,9 @@ printf 'DONE\\n'
     await expect(page.getByTestId(`usage-hud-${surfaceId}`)).toHaveCount(0);
 
     await expect(
-      page.getByRole("button", { name: "Toggle usage dashboard" }).locator(".codicon")
+      page
+        .getByRole("button", { name: "Toggle usage dashboard" })
+        .locator(".codicon")
     ).toHaveClass(/codicon-layout-sidebar-right/);
 
     await page.keyboard.press("Meta+Shift+U");
@@ -195,9 +197,11 @@ test("unique cwd usage stays in the dashboard but does not show a pane HUD befor
     const { page } = launched;
     const view = await getView(page);
     const activeSurfaceId =
-      view.activeWorkspace.panes[view.activeWorkspace.activePaneId].activeSurfaceId;
+      view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
+        .activeSurfaceId;
     const projectPath =
-      view.activeWorkspace.surfaces[activeSurfaceId]?.cwd ?? sandbox.shellHomeDir;
+      view.activeWorkspace.surfaces[activeSurfaceId]?.content.runtimeMetadata
+        .cwd ?? sandbox.shellHomeDir;
 
     writeUsageFixture(usageDir, [
       buildClaudeUsageRecord({
@@ -228,7 +232,9 @@ test("unique cwd usage stays in the dashboard but does not show a pane HUD befor
 
     const dashboard = page.getByTestId("usage-dashboard");
     await expect(dashboard).toBeVisible();
-    await expect(page.getByTestId(`usage-hud-${activeSurfaceId}`)).toHaveCount(0);
+    await expect(page.getByTestId(`usage-hud-${activeSurfaceId}`)).toHaveCount(
+      0
+    );
     await expect(dashboard).toContainText("claude-sonnet-4");
     await expect(dashboard).toContainText("$0.55");
     await expect(dashboard).toContainText("Project Hotspots");
@@ -425,8 +431,12 @@ test("moderate daily spend does not create budget alerts, sidebar statuses, or t
       `[data-workspace-id="${initialView.activeWorkspace.id}"]`
     );
     await expect(workspaceCard).not.toContainText(/budget/i);
-    await expect(page.getByTestId(`surface-alert-dot-${surfaceId}`)).toHaveCount(0);
-    await expect(page.getByTestId(`surface-unread-badge-${surfaceId}`)).toHaveCount(0);
+    await expect(
+      page.getByTestId(`surface-alert-dot-${surfaceId}`)
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId(`surface-unread-badge-${surfaceId}`)
+    ).toHaveCount(0);
 
     await page.getByRole("button", { name: "Toggle notifications" }).click();
     await expect(page.getByText(/budget/i)).toHaveCount(0);
@@ -468,11 +478,12 @@ function buildClaudeUsageRecord(options: {
 }
 
 async function getUsageView(page: Page): Promise<UsageViewSnapshot> {
-  return page.evaluate(
-    () =>
-      (window as unknown as {
+  return page.evaluate(() =>
+    (
+      window as unknown as {
         kmux: { getUsageView: () => Promise<UsageViewSnapshot> };
-      }).kmux.getUsageView()
+      }
+    ).kmux.getUsageView()
   );
 }
 

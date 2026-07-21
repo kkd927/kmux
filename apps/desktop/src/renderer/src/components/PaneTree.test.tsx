@@ -12,8 +12,8 @@ import {
 
 const terminalPaneRenderSpy = vi.fn();
 
-vi.mock("./TerminalPane", () => ({
-  TerminalPane: (props: { paneId: string }) => {
+vi.mock("./SurfacePane", () => ({
+  SurfacePane: (props: { paneId: string }) => {
     terminalPaneRenderSpy(props.paneId);
     return <div data-testid="terminal-pane" />;
   }
@@ -48,15 +48,22 @@ function createPaneTreeProps(): PaneTreeProps {
       surfaces: {
         surface_1: {
           id: "surface_1",
-          sessionId: "session_1",
+          paneId: "pane_1",
           title: "repo / shell",
-          cwd: "/repo",
-          branch: "main",
-          ports: [3000],
+          titleLocked: false,
           unreadCount: 0,
           attention: false,
-          sessionState: "running",
-          shellInputReady: true
+          content: {
+            kind: "terminal",
+            sessionId: "session_1",
+            runtimeStatus: "running",
+            shellInputReady: true,
+            runtimeMetadata: {
+              cwd: "/repo",
+              branch: "main",
+              ports: [3000]
+            }
+          }
         }
       },
       activePaneId: "pane_1"
@@ -173,7 +180,11 @@ function createSplitPaneTreeProps(): PaneTreeProps {
         surface_2: {
           ...base.workspace.surfaces.surface_1,
           id: "surface_2",
-          sessionId: "session_2",
+          paneId: "pane_2",
+          content: {
+            ...base.workspace.surfaces.surface_1.content,
+            sessionId: "session_2"
+          },
           title: "repo / shell 2"
         }
       }

@@ -3,6 +3,8 @@ import { BrowserWindow } from "electron";
 
 import {
   encodeLocatedPathDto,
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
   type AppAction,
   type AppState,
   type LocatedPath,
@@ -734,7 +736,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         continue;
       }
       const surface = state.surfaces[binding.surfaceId];
-      const session = surface ? state.sessions[surface.sessionId] : undefined;
+      const session = surface
+        ? terminalSessionForSurface(state, surface.id)
+        : undefined;
       if (!surface || session?.runtimeStatus.processState === "exited") {
         continue;
       }
@@ -1119,7 +1123,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         continue;
       }
 
-      const session = state.sessions[surface.sessionId];
+      const session = terminalSessionForSurface(state, surface.id);
       if (existingBinding?.source === "manual_cli") {
         if (
           !existingBinding.vendorProcessId ||
@@ -1180,6 +1184,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       if (!surface || !pane) {
         continue;
       }
+      const session = terminalSessionForSurface(state, surfaceId);
+      const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
+      if (!session || !metadata) {
+        continue;
+      }
 
       if (match && match.vendor === probeMeta.vendor) {
         bindings.set(surfaceId, {
@@ -1187,9 +1196,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           workspaceId: pane.workspaceId,
           vendor: match.vendor,
           source: "manual_cli",
-          kmuxSessionId: surface.sessionId,
+          kmuxSessionId: session.id,
           vendorProcessId: match.pid,
-          cwd: surface.cwd,
+          cwd: metadata.cwd,
           boundAtMs: existingBinding?.boundAtMs ?? probeMeta.boundAtMs,
           lastAgentEventAtMs: nowMs
         });
@@ -1312,19 +1321,24 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     if (!surface || !pane) {
       return;
     }
+    const session = terminalSessionForSurface(state, surfaceId);
+    const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
+    if (!session || !metadata) {
+      return;
+    }
 
     const existing = bindings.get(surfaceId);
     if (action.event !== "session_start" && action.event !== "needs_input") {
       if (existing?.vendor === vendor) {
         existing.workspaceId = pane.workspaceId;
-        existing.kmuxSessionId = surface.sessionId;
-        existing.cwd = surface.cwd;
+        existing.kmuxSessionId = session.id;
+        existing.cwd = metadata.cwd;
         existing.lastAgentEventAtMs = now();
       }
       return;
     }
 
-    const kmuxSessionId = surface.sessionId;
+    const kmuxSessionId = session.id;
     const vendorSessionId =
       action.sessionId && action.sessionId !== kmuxSessionId
         ? action.sessionId
@@ -1336,7 +1350,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       source: "agent",
       kmuxSessionId,
       vendorSessionId,
-      cwd: surface.cwd,
+      cwd: metadata.cwd,
       boundAtMs: existing?.boundAtMs ?? now(),
       lastAgentEventAtMs: now()
     });
@@ -1368,7 +1382,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         bindings.delete(surfaceId);
         continue;
       }
-      const session = state.sessions[surface.sessionId];
+      const session = terminalSessionForSurface(state, surfaceId);
+      const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
       if (!session || session.runtimeStatus.processState === "exited") {
         if (binding.source === "manual_cli") {
           bindings.delete(surfaceId);
@@ -1376,8 +1391,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         continue;
       }
       binding.workspaceId = pane.workspaceId;
-      binding.kmuxSessionId = surface.sessionId;
-      binding.cwd = surface.cwd;
+      binding.kmuxSessionId = session.id;
+      binding.cwd = metadata?.cwd;
     }
   }
 
@@ -1540,7 +1555,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         ? bindings.get(sampleMatch.surfaceId)
         : undefined;
       const fallbackSurfaceCwd = sampleMatch
-        ? state.surfaces[sampleMatch.surfaceId]?.cwd
+        ? terminalRuntimeMetadataForSurface(state, sampleMatch.surfaceId)?.cwd
         : undefined;
       const directoryPath = resolveDirectoryHotspotPath(
         sample,
@@ -1955,7 +1970,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     if (!binding) {
       return;
     }
-    binding.cwd = options.getState().surfaces[surfaceId]?.cwd;
+    binding.cwd = terminalRuntimeMetadataForSurface(
+      options.getState(),
+      surfaceId
+    )?.cwd;
   }
 
   function markVendorAdaptersDirty(
@@ -2317,7 +2335,10 @@ function buildUnboundSurfacePathIndex(
       ? state.workspaces[pane.workspaceId]?.location.target
       : undefined;
     if (!target) continue;
-    const rawPath = rawUsagePath(target, surface.cwd);
+    const rawPath = rawUsagePath(
+      target,
+      terminalRuntimeMetadataForSurface(state, surface.id)?.cwd
+    );
     const comparablePath = normalizeComparablePath(rawPath);
     const pathKey = comparablePath
       ? `${usageTargetKey(target)}\0${comparablePath}`

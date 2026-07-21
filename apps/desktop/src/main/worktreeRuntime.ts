@@ -1,8 +1,10 @@
-import type {
-  AppAction,
-  AppState,
-  LocatedPath,
-  LocatedWorkspaceWorktreeMetadata
+import {
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
+  type AppAction,
+  type AppState,
+  type LocatedPath,
+  type LocatedWorkspaceWorktreeMetadata
 } from "@kmux/core";
 import { encodeLocatedPathDto } from "@kmux/core";
 import type {
@@ -69,7 +71,7 @@ export function createWorktreeRuntime(
     const services = options.targetServices.resolveLocated(
       context.workspace.location.target
     );
-    const inspection = await services.git.inspect(context.surface.cwd, {
+    const inspection = await services.git.inspect(context.metadata.cwd, {
       dirtyLimit: MAX_DIRTY_ENTRIES
     });
     if (!inspection.repository) return null;
@@ -109,7 +111,7 @@ export function createWorktreeRuntime(
     const services = options.targetServices.resolveLocated(
       context.workspace.location.target
     );
-    const inspection = await services.git.inspect(context.surface.cwd, {
+    const inspection = await services.git.inspect(context.metadata.cwd, {
       dirtyLimit: MAX_DIRTY_ENTRIES
     });
     if (!inspection.repository) {
@@ -144,7 +146,7 @@ export function createWorktreeRuntime(
     const worktree = worktreeDto(preview, true);
     const outcome = await services.git.createWorktree({
       workspaceId,
-      cwd: context.surface.cwd,
+      cwd: context.metadata.cwd,
       path: preview.path,
       branch: preview.dto.branch,
       baseRef: preview.dto.baseRef,
@@ -300,7 +302,7 @@ export function createWorktreeRuntime(
     const services = options.targetServices.resolveLocated(
       context.workspace.location.target
     );
-    const inspection = await services.git.inspect(context.surface.cwd, {
+    const inspection = await services.git.inspect(context.metadata.cwd, {
       dirtyLimit: MAX_DIRTY_ENTRIES
     });
     const repository = inspection.repository;
@@ -444,7 +446,7 @@ function findLaunchSession(
 ) {
   for (const surface of Object.values(state.surfaces)) {
     const pane = state.panes[surface.paneId];
-    const session = state.sessions[surface.sessionId];
+    const session = terminalSessionForSurface(state, surface.id);
     if (
       pane?.workspaceId === workspaceId &&
       session !== undefined &&
@@ -460,7 +462,12 @@ function activeWorkspaceSurfaceContext(state: AppState, workspaceId: Id) {
   const workspace = state.workspaces[workspaceId];
   const pane = workspace ? state.panes[workspace.activePaneId] : undefined;
   const surface = pane ? state.surfaces[pane.activeSurfaceId] : undefined;
-  return workspace && pane && surface ? { workspace, pane, surface } : null;
+  const metadata = surface
+    ? terminalRuntimeMetadataForSurface(state, surface.id)
+    : undefined;
+  return workspace && pane && surface && metadata
+    ? { workspace, pane, surface, metadata }
+    : null;
 }
 
 function requireActiveWorkspaceSurfaceContext(

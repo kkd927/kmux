@@ -79,15 +79,22 @@ function createShellSnapshot(version = 0): ShellStoreSnapshot {
       surfaces: {
         surface_1: {
           id: "surface_1",
-          sessionId: "session_1",
+          paneId: "pane_1",
           title: "repo / shell",
-          cwd: "/repo",
-          branch: "main",
-          ports: [3000],
+          titleLocked: false,
           unreadCount: 0,
           attention: false,
-          sessionState: "running",
-          shellInputReady: true
+          content: {
+            kind: "terminal",
+            sessionId: "session_1",
+            runtimeStatus: "running",
+            shellInputReady: true,
+            runtimeMetadata: {
+              cwd: "/repo",
+              branch: "main",
+              ports: [3000]
+            }
+          }
         }
       },
       activePaneId: "pane_1"

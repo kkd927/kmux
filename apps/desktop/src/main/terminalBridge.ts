@@ -1,5 +1,7 @@
 import {
   encodeLocatedPathDto,
+  terminalRuntimeMetadataForSurface,
+  terminalSessionForSurface,
   type AppAction,
   type AppState
 } from "@kmux/core";
@@ -66,7 +68,7 @@ export function createTerminalBridge(
   const lastDispatchedTitleMetadata = new Map<string, string>();
 
   function surfaceSessionId(surfaceId: Id): Id | null {
-    return options.getState().surfaces[surfaceId]?.sessionId ?? null;
+    return terminalSessionForSurface(options.getState(), surfaceId)?.id ?? null;
   }
 
   function localSurfaceSessionId(surfaceId: Id): Id | null {
@@ -75,7 +77,7 @@ export function createTerminalBridge(
     const pane = surface ? state.panes[surface.paneId] : undefined;
     const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
     return surface && workspace?.location.target.kind === "local"
-      ? surface.sessionId
+      ? (terminalSessionForSurface(state, surfaceId)?.id ?? null)
       : null;
   }
 
@@ -87,7 +89,9 @@ export function createTerminalBridge(
     if (workspace?.location.target.kind === "ssh") {
       throw new Error("SSH terminal control requires a target provider");
     }
-    return surface?.sessionId ?? null;
+    return surface
+      ? (terminalSessionForSurface(state, surfaceId)?.id ?? null)
+      : null;
   }
 
   function isCurrentSurfaceSession(surfaceId: Id, sessionId: Id): boolean {
@@ -146,7 +150,7 @@ export function createTerminalBridge(
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.sessionId,
+      sessionId: terminalSessionForSurface(state, surfaceId)?.id,
       ...triggerInfo
     });
     options.dispatchAppAction({
@@ -277,7 +281,12 @@ export function createTerminalBridge(
     title: string
   ): boolean {
     const surface = options.getState().surfaces[surfaceId];
-    if (!surface || surface.sessionId !== sessionId || surface.titleLocked) {
+    if (
+      !surface ||
+      terminalSessionForSurface(options.getState(), surfaceId)?.id !==
+        sessionId ||
+      surface.titleLocked
+    ) {
       return false;
     }
     if (surface.title === title) {
@@ -341,10 +350,14 @@ export function createTerminalBridge(
       return null;
     }
     requireLocalSurfaceSession(surfaceId);
+    const session = terminalSessionForSurface(options.getState(), surfaceId);
+    if (!session) {
+      return null;
+    }
     return (
       (await options
         .getPtyHost()
-        ?.snapshot(surface.sessionId, surfaceId, snapshotOptions)) ?? null
+        ?.snapshot(session.id, surfaceId, snapshotOptions)) ?? null
     );
   }
 
@@ -445,9 +458,15 @@ export function createTerminalBridge(
           return;
         }
         const title = event.title ?? surface.title;
+        const runtimeMetadata = terminalRuntimeMetadataForSurface(
+          state,
+          event.surfaceId
+        );
         const message =
           event.message ??
-          encodeLocatedPathDto(surface.cwd).path ??
+          (runtimeMetadata
+            ? encodeLocatedPathDto(runtimeMetadata.cwd).path
+            : undefined) ??
           "Terminal notification";
         const codexAttentionMatch = matchCodexInputAttentionForVendor(
           vendor,

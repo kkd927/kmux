@@ -371,7 +371,7 @@ function createRemoteFixture(): {
   return {
     state,
     workspaceId,
-    sessionId: state.surfaces[pane.activeSurfaceId].sessionId
+    sessionId: state.surfaces[pane.activeSurfaceId].content.sessionId
   };
 }
 

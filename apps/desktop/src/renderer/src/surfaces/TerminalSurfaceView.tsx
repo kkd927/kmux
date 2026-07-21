@@ -20,6 +20,7 @@ import type {
   ResolvedTerminalThemeVm,
   ResolvedTerminalTypographyVm,
   SurfaceVm,
+  TerminalSurfaceVmContent,
   TerminalDelta
 } from "@kmux/proto";
 import {
@@ -29,8 +30,6 @@ import {
 } from "@kmux/ui";
 import type { ColorTheme } from "@kmux/ui";
 
-import { Codicon } from "./Codicon";
-import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
 import {
   applyPendingTerminalEnterRewrite,
   countSupportedImageFiles,
@@ -102,7 +101,6 @@ import {
 import {
   canDropSurfaceTabOnPane,
   decodeSurfaceTabDragPayload,
-  encodeSurfaceTabDragPayload,
   resolveSurfaceTabDropDirection,
   SURFACE_TAB_DRAG_MIME,
   SURFACE_TAB_DROP_PROMPT,
@@ -116,7 +114,7 @@ export interface TerminalFocusRequest {
   token: number;
 }
 
-interface TerminalPaneProps {
+export interface TerminalSurfaceViewProps {
   paneId: string;
   focused: boolean;
   surfaces: SurfaceVm[];
@@ -356,7 +354,9 @@ function terminalLinkHandler(surfaceId: string): ILinkHandler {
   };
 }
 
-export function TerminalPane(props: TerminalPaneProps): JSX.Element {
+export function TerminalSurfaceView(
+  props: TerminalSurfaceViewProps
+): JSX.Element {
   const activeSurface =
     props.surfaces.find((surface) => surface.id === props.activeSurfaceId) ??
     props.surfaces[0];
@@ -393,9 +393,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
   const terminalDiagnosticsEnabledRef = useRef(terminalDiagnosticsEnabled);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
-  const terminalStreamEligible = activeSurface.sessionState !== "pending";
+  const terminalStreamEligible =
+    activeSurface.content.runtimeStatus !== "pending";
   const storageStatusMessage = remoteStorageStatusMessage(
-    activeSurface.storageStatus
+    activeSurface.content.storageStatus
   );
   const previousActiveSurfaceIdRef = useRef(activeSurface.id);
   const copyModeRef = useRef(copyMode);
@@ -806,7 +807,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   function sessionIdForSurface(surfaceId: string): string | null {
     if (activeSurfaceRef.current?.id === surfaceId) {
-      return activeSurfaceRef.current.sessionId;
+      return activeSurfaceRef.current.content.sessionId;
     }
     return surfaceSessionIdsRef.current.get(surfaceId) ?? null;
   }
@@ -937,7 +938,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       const attachedStream =
         currentSurface &&
         stream?.grant.session.surfaceId === currentSurface.id &&
-        stream.grant.session.sessionId === currentSurface.sessionId
+        stream.grant.session.sessionId === currentSurface.content.sessionId
           ? stream
           : null;
       const observedAt = terminalDataPlaneNowMs(performance);
@@ -954,7 +955,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         paneFocused: paneFocusedRef.current,
         requestedSurfaceId: surfaceId,
         surfaceId: currentSurface?.id ?? null,
-        sessionId: currentSurface?.sessionId ?? null,
+        sessionId: currentSurface?.content.sessionId ?? null,
         attachId: attachedStream?.grant.attachId ?? null,
         epoch: attachedStream?.grant.session.epoch ?? null,
         focusEligible: surfaceId ? shouldFocusActiveTerminal(surfaceId) : false,
@@ -1608,8 +1609,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     return {
       canCopy: surfaceIsActive && Boolean(terminalRef.current?.getSelection()),
       canPaste,
-      canRestart: surface.sessionState !== "pending",
-      sessionState: surface.sessionState,
+      canRestart: surface.content.runtimeStatus !== "pending",
+      sessionState: surface.content.runtimeStatus,
       settings: {
         shortcuts: props.settings.shortcuts
       }
@@ -1650,7 +1651,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         props.onSplitRight(props.paneId);
         return;
       case "restart-session":
-        if (targetSurface.sessionState !== "pending") {
+        if (targetSurface.content.runtimeStatus !== "pending") {
           props.onRestartSurface(surfaceId);
         }
         return;
@@ -1968,7 +1969,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       const stream = terminalStreamRef.current;
       const attachedStream =
         stream?.grant.session.surfaceId === activeSurface.id &&
-        stream.grant.session.sessionId === activeSurface.sessionId
+        stream.grant.session.sessionId === activeSurface.content.sessionId
           ? stream
           : null;
       recordRendererSmoothnessProfileEvent("terminal.focus.lifecycle", {
@@ -1977,7 +1978,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         paneId: props.paneId,
         paneFocused: paneFocusedRef.current,
         surfaceId: activeSurface.id,
-        sessionId: activeSurface.sessionId,
+        sessionId: activeSurface.content.sessionId,
         attachId: attachedStream?.grant.attachId ?? null,
         epoch: attachedStream?.grant.session.epoch ?? null,
         documentHasFocus: document.hasFocus(),
@@ -2064,7 +2065,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     };
   }, [
     activeSurface.id,
-    activeSurface.sessionId,
+    activeSurface.content.sessionId,
     props.focused,
     props.paneId,
     terminalDiagnosticsEnabled,
@@ -2102,8 +2103,14 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const previousSessionId = surfaceSessionIdsRef.current.get(
       activeSurface.id
     );
-    surfaceSessionIdsRef.current.set(activeSurface.id, activeSurface.sessionId);
-    if (!previousSessionId || previousSessionId === activeSurface.sessionId) {
+    surfaceSessionIdsRef.current.set(
+      activeSurface.id,
+      activeSurface.content.sessionId
+    );
+    if (
+      !previousSessionId ||
+      previousSessionId === activeSurface.content.sessionId
+    ) {
       return;
     }
     // Keep the last authoritative frame visible until the new epoch's
@@ -2128,7 +2135,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       lastFocusEventAt: null,
       lastFocusEvent: null
     });
-  }, [activeSurface.id, activeSurface.sessionId, terminalInstanceKey]);
+  }, [activeSurface.id, activeSurface.content.sessionId, terminalInstanceKey]);
 
   useEffect(() => {
     const previousSurfaceId = previousActiveSurfaceIdRef.current;
@@ -2467,10 +2474,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         imeSettlementTimeouts.delete(settlementTimeout);
         const navigationKeys =
           imeInputController.finishComposition(settlementId);
-        if (
-          xtermTextarea &&
-          imeInputController.getPhase() === "idle"
-        ) {
+        if (xtermTextarea && imeInputController.getPhase() === "idle") {
           xtermTextarea.value = "";
         }
         replayDeferredImeNavigation(navigationKeys);
@@ -2723,7 +2727,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       return;
     }
     const surfaceId = activeSurface.id;
-    const sessionId = activeSurface.sessionId;
+    const sessionId = activeSurface.content.sessionId;
     const instanceKey = terminalInstanceKey;
     let mounted = true;
     let rearmAttempt = 0;
@@ -3064,7 +3068,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       if (
         !preservePendingInputForReattach ||
         currentSurface?.id !== surfaceId ||
-        currentSurface.sessionId !== sessionId
+        currentSurface.content.sessionId !== sessionId
       ) {
         pendingTerminalStreamInputRef.current.discard();
       }
@@ -3149,8 +3153,8 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
               mounted &&
               !attachAbortController.signal.aborted &&
               activeSurfaceRef.current?.id === surfaceId &&
-              activeSurfaceRef.current.sessionId === sessionId &&
-              activeSurfaceRef.current.sessionState === "running"
+              activeSurfaceRef.current.content.sessionId === sessionId &&
+              activeSurfaceRef.current.content.runtimeStatus === "running"
             ) {
               scheduleAttachRearm(attachStream);
             } else {
@@ -3228,7 +3232,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     return cleanupAttachment;
   }, [
     activeSurface?.id,
-    activeSurface?.sessionId,
+    activeSurface?.content.sessionId,
     terminalStreamEligible,
     terminalAttachmentGeneration,
     terminalInstanceKey
@@ -3285,9 +3289,9 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
 
   const tabs = useMemo(() => props.surfaces, [props.surfaces]);
   const showMeta = Boolean(
-    activeSurface.cwd ||
-    activeSurface.branch ||
-    activeSurface.ports.length ||
+    activeSurface.content.runtimeMetadata.cwd ||
+    activeSurface.content.runtimeMetadata.branch ||
+    activeSurface.content.runtimeMetadata.ports.length ||
     activeSurface.attention
   );
   const showSurfaceDropPrompt = Boolean(
@@ -3402,15 +3406,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     props.onMoveSurfaceToSplit(payload.surfaceId, props.paneId, direction);
   };
 
-  function handleSurfaceTabContextMenu(
-    event: MouseEvent,
-    surfaceId: string
-  ): void {
-    event.preventDefault();
-    event.stopPropagation();
-    void openSurfaceContextMenu(surfaceId, event.clientX, event.clientY);
-  }
-
   function handleTerminalContextMenu(event: MouseEvent<HTMLDivElement>): void {
     event.preventDefault();
     event.stopPropagation();
@@ -3441,134 +3436,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     ) ?? props.copyModeSelectAllShortcut;
 
   return (
-    <div
-      className={styles.pane}
-      data-pane-id={props.paneId}
-      data-active-surface-id={activeSurface.id}
-      data-focused={props.focused}
-      data-copy-mode={copyMode}
-      onMouseDown={() => props.onFocusPane(props.paneId)}
-    >
-      <div className={styles.header}>
-        <div
-          className={styles.tabs}
-          role="tablist"
-          aria-label={`Pane ${props.paneId} surfaces`}
-          onWheel={(event) => {
-            if (event.deltaY !== 0) {
-              event.currentTarget.scrollBy({
-                left: event.deltaY,
-                behavior: "auto"
-              });
-            }
-          }}
-        >
-          {tabs.map((surface) => {
-            const selected = surface.id === props.activeSurfaceId;
-            const active = selected && props.focused;
-            return (
-              <div
-                key={surface.id}
-                className={styles.tabItem}
-                data-selected={selected}
-                data-active={active}
-                data-surface-id={surface.id}
-                onContextMenu={(event) =>
-                  handleSurfaceTabContextMenu(event, surface.id)
-                }
-              >
-                <button
-                  className={styles.tab}
-                  role="tab"
-                  aria-selected={surface.id === props.activeSurfaceId}
-                  aria-label={`Focus surface ${surface.title}`}
-                  onClick={() => props.onFocusSurface(surface.id)}
-                  draggable
-                  onDragStart={(event) => {
-                    const payload = {
-                      surfaceId: surface.id,
-                      sourcePaneId: props.paneId
-                    };
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(
-                      SURFACE_TAB_DRAG_MIME,
-                      encodeSurfaceTabDragPayload(payload)
-                    );
-                    event.dataTransfer.setData("text/plain", surface.id);
-                    props.onSurfaceTabDragStart(payload);
-                  }}
-                  onDragEnd={() => {
-                    setSurfaceDropDirection(null);
-                    props.onSurfaceTabDragEnd();
-                  }}
-                  title={surface.cwd ?? surface.title}
-                >
-                  <span className={styles.tabIcon}>
-                    <Codicon name="terminal" />
-                  </span>
-                  <span className={styles.tabLabel}>{surface.title}</span>
-                  <SurfaceUsageAlertDot
-                    fallbackVisible={
-                      surface.attention || surface.unreadCount > 0
-                    }
-                  />
-                  {surface.unreadCount > 0 ? (
-                    <span
-                      className={styles.badge}
-                      data-testid={`surface-unread-badge-${surface.id}`}
-                    >
-                      {surface.unreadCount}
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  className={styles.tabClose}
-                  aria-label={`Close tab ${surface.title}`}
-                  title={`Close tab ${surface.title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onCloseSurface(surface.id);
-                  }}
-                >
-                  <Codicon name="close" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        <div className={styles.headerTrailing}>
-          <div className={styles.controls}>
-            <button
-              title="New tab"
-              aria-label="Create new tab"
-              onClick={() => props.onCreateSurface(props.paneId)}
-            >
-              <Codicon name="add" />
-            </button>
-            <button
-              title="Split right"
-              aria-label="Split active pane right"
-              onClick={() => props.onSplitRight(props.paneId)}
-            >
-              <Codicon name="split-horizontal" />
-            </button>
-            <button
-              title="Split down"
-              aria-label="Split active pane down"
-              onClick={() => props.onSplitDown(props.paneId)}
-            >
-              <Codicon name="split-vertical" />
-            </button>
-            <button
-              title="Close pane"
-              aria-label="Close active pane"
-              onClick={() => props.onClosePane(props.paneId)}
-            >
-              <Codicon name="close" />
-            </button>
-          </div>
-        </div>
-      </div>
+    <>
       {props.showSearch ? (
         <div className={styles.searchBar}>
           <input
@@ -3639,13 +3507,17 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
       ) : null}
       {showMeta ? (
         <div className={styles.meta}>
-          {activeSurface.cwd ? (
-            <span className={styles.metaLabel}>{activeSurface.cwd}</span>
+          {activeSurface.content.runtimeMetadata.cwd ? (
+            <span className={styles.metaLabel}>
+              {activeSurface.content.runtimeMetadata.cwd}
+            </span>
           ) : null}
-          {activeSurface.branch ? (
-            <span className={styles.metaChip}>{activeSurface.branch}</span>
+          {activeSurface.content.runtimeMetadata.branch ? (
+            <span className={styles.metaChip}>
+              {activeSurface.content.runtimeMetadata.branch}
+            </span>
           ) : null}
-          {activeSurface.ports.map((port) => (
+          {activeSurface.content.runtimeMetadata.ports.map((port) => (
             <span key={port} className={styles.metaChip}>
               {port}
             </span>
@@ -3676,7 +3548,7 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
         {storageStatusMessage ? (
           <div
             className={styles.storageStatus}
-            data-storage-state={activeSurface.storageStatus?.state}
+            data-storage-state={activeSurface.content.storageStatus?.state}
             role="status"
             aria-live="polite"
           >
@@ -3698,12 +3570,12 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           );
         })}
       </div>
-    </div>
+    </>
   );
 }
 
 function remoteStorageStatusMessage(
-  status: SurfaceVm["storageStatus"]
+  status: TerminalSurfaceVmContent["storageStatus"]
 ): string | null {
   if (!status || status.state === "normal") {
     return null;

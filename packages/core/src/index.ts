@@ -66,6 +66,27 @@ import {
   encodeRemoteOperationProjectionDto,
   type RemoteOperationProjection
 } from "./remoteOperation";
+import type {
+  SurfaceContentOf,
+  SurfaceOpenAction,
+  SurfaceState,
+  TerminalRuntimeMetadata
+} from "./surfaces/contracts";
+
+export type {
+  SurfaceContent,
+  SurfaceContentMap,
+  SurfaceContentOf,
+  SurfaceInit,
+  SurfaceInitMap,
+  SurfaceOpenAction,
+  SurfacePlacementRequest,
+  SurfaceState,
+  TerminalRuntimeMetadata,
+  TerminalSurfaceContent,
+  TerminalSurfaceInit
+} from "./surfaces/contracts";
+import { surfaceCoreRegistry } from "./surfaces/registry";
 
 export {
   LocalPath,
@@ -175,20 +196,6 @@ export interface PaneState {
   activeSurfaceId: Id;
 }
 
-export interface SurfaceState {
-  id: Id;
-  paneId: Id;
-  sessionId: Id;
-  title: string;
-  titleLocked: boolean;
-  cwd: LocatedPath;
-  branch?: string;
-  gitRepository?: LocatedWorkspaceGitRepositoryMetadata;
-  ports: number[];
-  unreadCount: number;
-  attention: boolean;
-}
-
 export interface SessionState {
   id: Id;
   surfaceId: Id;
@@ -200,6 +207,7 @@ export interface SessionState {
   shellInputReady: boolean;
   pid?: number;
   exitCode?: number;
+  runtimeMetadata: TerminalRuntimeMetadata;
 }
 
 export interface RemoteEventReceiptState {
@@ -276,7 +284,7 @@ function defaultLocalCwd(): LocatedPath {
   return locatedPathForTarget({ kind: "local" }, defaultHomeDirectory());
 }
 
-function pendingSessionRuntimeStatus(): SessionRuntimeStatus {
+export function pendingSessionRuntimeStatus(): SessionRuntimeStatus {
   return {
     processState: "pending",
     observationState: "unknown",
@@ -393,6 +401,7 @@ export type AppAction =
     }
   | { type: "pane.setSplitRatio"; splitNodeId: Id; ratio: number }
   | { type: "pane.close"; paneId: Id }
+  | SurfaceOpenAction
   | {
       type: "surface.create";
       paneId: Id;
@@ -791,13 +800,11 @@ export function createInitialState(
       [surfaceId]: {
         id: surfaceId,
         paneId,
-        sessionId,
         title: "new workspace",
         titleLocked: false,
-        cwd: defaultLocalCwd(),
-        ports: [],
         unreadCount: 0,
-        attention: false
+        attention: false,
+        content: { kind: "terminal", sessionId }
       }
     },
     sessions: {
@@ -810,7 +817,11 @@ export function createInitialState(
         },
         authToken: makeId("auth"),
         runtimeStatus: pendingSessionRuntimeStatus(),
-        shellInputReady: false
+        shellInputReady: false,
+        runtimeMetadata: {
+          cwd: defaultLocalCwd(),
+          ports: []
+        }
       }
     },
     remoteOperations: {},
@@ -860,11 +871,15 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
       Object.entries(snapshot.surfaces).map(([id, surface]) => [
         id,
         {
-          ...surface,
-          cwd: encodeLocatedPathDto(surface.cwd),
-          gitRepository: surface.gitRepository
-            ? encodePersistedWorkspaceGitRepository(surface.gitRepository)
-            : undefined
+          id: surface.id,
+          paneId: surface.paneId,
+          title: surface.title,
+          titleLocked: surface.titleLocked,
+          unreadCount: surface.unreadCount,
+          attention: surface.attention,
+          content: surfaceCoreRegistry[surface.content.kind].encodeContent(
+            surface.content
+          )
         }
       ])
     ),
@@ -885,6 +900,16 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
                   : undefined
               }
             : undefined,
+          runtimeMetadata: {
+            ...session.runtimeMetadata,
+            cwd: encodeLocatedPathDto(session.runtimeMetadata.cwd),
+            gitRepository: session.runtimeMetadata.gitRepository
+              ? encodePersistedWorkspaceGitRepository(
+                  session.runtimeMetadata.gitRepository
+                )
+              : undefined,
+            ports: [...session.runtimeMetadata.ports]
+          },
           remoteRuntime: session.remoteRuntime
             ? {
                 keeperGeneration: session.remoteRuntime.keeperGeneration,
@@ -942,13 +967,23 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
   };
 }
 
-/** Decodes both the current DTO and the pre-located-path local snapshot. */
-export function decodeAppStateDto(value: unknown): AppState {
+export interface DecodeAppStateOptions {
+  snapshotVersion?: 1 | 2 | 3;
+}
+
+/** Decodes the current DTO and explicitly supported legacy snapshot schemas. */
+export function decodeAppStateDto(
+  value: unknown,
+  options: DecodeAppStateOptions = {}
+): AppState {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("app state snapshot must be an object");
   }
   const cloned = structuredClone(value) as AppState;
-  return sanitizeState(cloned);
+  return sanitizeState(cloned, {
+    allowLegacySurfaceFormat:
+      options.snapshotVersion === 1 || options.snapshotVersion === 2
+  });
 }
 
 export function cloneState(snapshot: AppState): AppState {
@@ -1058,6 +1093,8 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
       return setSplitRatio(state, action.splitNodeId, action.ratio);
     case "pane.close":
       return closePane(state, action.paneId);
+    case "surface.open":
+      return openSurfaceAtPlacement(state, action);
     case "surface.create":
       return createSurface(
         state,
@@ -1168,7 +1205,7 @@ function applyActionEffects(state: AppState, action: AppAction): AppEffect[] {
                 workspaceId: pane.workspaceId,
                 surfaceId: surface.id,
                 pid: action.pid,
-                cwd: surface.cwd
+                cwd: session.runtimeMetadata.cwd
               },
               { type: "persist" }
             ]
@@ -1314,6 +1351,7 @@ function mutationSummaryForAction(action: AppAction): AppMutationSummary {
     case "pane.setSplitRatio":
     case "pane.close":
     case "surface.create":
+    case "surface.open":
     case "surface.rename":
     case "surface.close":
     case "surface.closeOthers":
@@ -1379,31 +1417,10 @@ function createWorkspace(
   const locatedWorkspaceCwd = locatedPathForTarget(target, workspaceCwd);
   const workspaceId = makeId("workspace");
   const paneId = makeId("pane");
-  const surfaceId = makeId("surface");
-  const sessionId = makeId("session");
   const nodeId = makeId("node");
   const workspaceName =
     name.trim() || `workspace ${window.workspaceOrder.length + 1}`;
   const explicitLaunchTitle = launch?.title?.trim();
-  const defaultShell =
-    target.kind === "local"
-      ? state.settings.shell || process.env.SHELL
-      : undefined;
-  const sessionLaunch = sanitizeStoredSessionLaunchConfig(
-    {
-      ...(defaultShell === undefined ? {} : { shell: defaultShell }),
-      ...launch,
-      cwd: locatedPathForTarget(target, launch?.cwd ?? workspaceCwd),
-      ...(explicitLaunchTitle ? { title: explicitLaunchTitle } : {})
-    },
-    defaultShell
-  );
-  const surfaceTitle = explicitLaunchTitle || workspaceName;
-  const sanitizedAgentSessionRef = sanitizeAgentSessionRef(
-    agentSessionRef,
-    target,
-    sessionLaunch.cwd
-  );
 
   state.workspaces[workspaceId] = {
     id: workspaceId,
@@ -1429,38 +1446,28 @@ function createWorkspace(
   state.panes[paneId] = {
     id: paneId,
     workspaceId,
-    surfaceIds: [surfaceId],
-    activeSurfaceId: surfaceId
-  };
-  state.surfaces[surfaceId] = {
-    id: surfaceId,
-    paneId,
-    sessionId,
-    title: surfaceTitle,
-    titleLocked: Boolean(explicitLaunchTitle),
-    cwd: sessionLaunch.cwd ?? locatedWorkspaceCwd,
-    ports: [],
-    unreadCount: 0,
-    attention: false
-  };
-  state.sessions[sessionId] = {
-    id: sessionId,
-    surfaceId,
-    launch: sessionLaunch,
-    ...(sanitizedAgentSessionRef
-      ? { agentSessionRef: sanitizedAgentSessionRef }
-      : {}),
-    authToken: makeId("auth"),
-    runtimeStatus: pendingSessionRuntimeStatus(),
-    shellInputReady: false
+    surfaceIds: [],
+    activeSurfaceId: ""
   };
   window.workspaceOrder.push(workspaceId);
   window.activeWorkspaceId = workspaceId;
 
-  return [
-    buildSessionSpawnEffect(state, workspaceId, surfaceId, sessionId),
-    { type: "persist" }
-  ];
+  return openSurfaceAtPlacement(state, {
+    type: "surface.open",
+    workspaceId,
+    init: {
+      kind: "terminal",
+      title: explicitLaunchTitle,
+      cwd: encodeLocatedPathDto(locatedWorkspaceCwd).path,
+      launch: {
+        ...launch,
+        ...(explicitLaunchTitle ? { title: explicitLaunchTitle } : {}),
+        cwd: launch?.cwd ?? workspaceCwd
+      },
+      agentSessionRef
+    },
+    placement: { kind: "tab", paneId }
+  });
 }
 
 function selectWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
@@ -1764,16 +1771,14 @@ function removeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
     return [];
   }
   const paneIds = listWorkspacePaneIds(state, workspace.id);
-  const sessionIds = paneIds.flatMap((paneId) =>
-    state.panes[paneId].surfaceIds
-      .map((surfaceId) => state.surfaces[surfaceId]?.sessionId)
-      .filter(Boolean)
-  ) as Id[];
+  const closeEffects: AppEffect[] = [];
 
   for (const paneId of paneIds) {
     for (const surfaceId of state.panes[paneId].surfaceIds) {
+      const surface = state.surfaces[surfaceId];
+      if (!surface) continue;
       purgeSurfaceReferences(state, surfaceId);
-      delete state.sessions[state.surfaces[surfaceId].sessionId];
+      closeEffects.push(...closeSurfaceResource(state, surface));
       delete state.surfaces[surfaceId];
     }
     delete state.panes[paneId];
@@ -1783,9 +1788,7 @@ function removeWorkspace(state: AppState, workspaceId: Id): AppEffect[] {
     (id) => id !== workspaceId
   );
 
-  return sessionIds.map(
-    (sessionId) => ({ type: "session.close", sessionId }) satisfies AppEffect
-  );
+  return closeEffects;
 }
 
 function splitPane(
@@ -1794,55 +1797,75 @@ function splitPane(
   direction: SplitDirection
 ): AppEffect[] {
   const pane = state.panes[paneId];
-  if (!pane) {
-    return [];
-  }
-  const workspace = state.workspaces[pane.workspaceId];
-  const targetLeafId = findLeafIdForPane(workspace, paneId);
-  if (!targetLeafId) {
-    return [];
-  }
+  return pane
+    ? openSurfaceAtPlacement(state, {
+        type: "surface.open",
+        workspaceId: pane.workspaceId,
+        init: {
+          kind: "terminal",
+          cwd: encodeLocatedPathDto(defaultNewSurfaceCwd(state, paneId)).path
+        },
+        placement: { kind: "split", paneId, direction }
+      })
+    : [];
+}
 
+export function createSplitPaneLeaf(
+  state: AppState,
+  paneId: Id,
+  direction: SplitDirection
+): { newPaneId: Id } {
+  const pane = state.panes[paneId];
+  const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+  const targetLeafId = workspace
+    ? findLeafIdForPane(workspace, paneId)
+    : undefined;
+  if (!pane || !workspace || !targetLeafId) {
+    throw new Error("Cannot split an unknown pane leaf");
+  }
   const newPaneId = makeId("pane");
-  const newSurfaceId = makeId("surface");
-  const newSessionId = makeId("session");
-  const launchCwd = defaultNewSurfaceCwd(state, paneId);
   insertPaneLeafSplit(workspace, targetLeafId, newPaneId, direction);
-
   state.panes[newPaneId] = {
     id: newPaneId,
     workspaceId: workspace.id,
-    surfaceIds: [newSurfaceId],
-    activeSurfaceId: newSurfaceId
+    surfaceIds: [],
+    activeSurfaceId: ""
   };
-  state.surfaces[newSurfaceId] = {
-    id: newSurfaceId,
-    paneId: newPaneId,
-    sessionId: newSessionId,
-    title: "new terminal",
-    titleLocked: false,
-    cwd: launchCwd,
-    ports: [],
-    unreadCount: 0,
-    attention: false
-  };
-  state.sessions[newSessionId] = {
-    id: newSessionId,
-    surfaceId: newSurfaceId,
-    launch: {
-      cwd: launchCwd,
-      shell: state.settings.shell || process.env.SHELL
-    },
-    authToken: makeId("auth"),
-    runtimeStatus: pendingSessionRuntimeStatus(),
-    shellInputReady: false
-  };
-  workspace.activePaneId = newPaneId;
+  return { newPaneId };
+}
 
-  return [
-    buildSessionSpawnEffect(state, workspace.id, newSurfaceId, newSessionId),
-    { type: "persist" }
-  ];
+export function openSurfaceAtPlacement(
+  state: AppState,
+  action: SurfaceOpenAction
+): AppEffect[] {
+  const workspace = state.workspaces[action.workspaceId];
+  const sourcePane = state.panes[action.placement.paneId];
+  if (!workspace || !sourcePane || sourcePane.workspaceId !== workspace.id) {
+    return [];
+  }
+  const targetPaneId =
+    action.placement.kind === "tab"
+      ? sourcePane.id
+      : createSplitPaneLeaf(state, sourcePane.id, action.placement.direction)
+          .newPaneId;
+  const targetPane = state.panes[targetPaneId];
+  const surfaceId = makeId("surface");
+  const module = surfaceCoreRegistry[action.init.kind];
+  const created = module.create(
+    {
+      state,
+      workspaceId: workspace.id,
+      paneId: targetPane.id,
+      surfaceId,
+      createResourceId: () => makeId("session")
+    },
+    action.init
+  );
+  state.surfaces[surfaceId] = created.surface;
+  targetPane.surfaceIds.push(surfaceId);
+  targetPane.activeSurfaceId = surfaceId;
+  workspace.activePaneId = targetPane.id;
+  return [...created.effects, { type: "persist" }];
 }
 
 function moveSurfaceToSplit(
@@ -1868,20 +1891,12 @@ function moveSurfaceToSplit(
   }
 
   const workspace = state.workspaces[targetPane.workspaceId];
-  const targetLeafId = findLeafIdForPane(workspace, targetPane.id);
   const sourceLeafId = findLeafIdForPane(workspace, sourcePane.id);
-  if (!targetLeafId || !sourceLeafId) {
+  if (!sourceLeafId) {
     return [];
   }
 
-  const newPaneId = makeId("pane");
-  state.panes[newPaneId] = {
-    id: newPaneId,
-    workspaceId: workspace.id,
-    surfaceIds: [],
-    activeSurfaceId: surfaceId
-  };
-  insertPaneLeafSplit(workspace, targetLeafId, newPaneId, direction);
+  const { newPaneId } = createSplitPaneLeaf(state, targetPane.id, direction);
 
   removeSurfaceFromPane(sourcePane, surfaceId);
   if (sourcePane.surfaceIds.length === 0) {
@@ -1890,6 +1905,7 @@ function moveSurfaceToSplit(
   }
 
   state.panes[newPaneId].surfaceIds = [surfaceId];
+  state.panes[newPaneId].activeSurfaceId = surfaceId;
   surface.paneId = newPaneId;
   workspace.activePaneId = newPaneId;
   markSurfaceNotificationsRead(state, workspace.id, surfaceId);
@@ -2023,8 +2039,7 @@ function closePane(state: AppState, paneId: Id): AppEffect[] {
   for (const surfaceId of pane.surfaceIds) {
     const surface = state.surfaces[surfaceId];
     purgeSurfaceReferences(state, surfaceId);
-    closeEffects.push({ type: "session.close", sessionId: surface.sessionId });
-    delete state.sessions[surface.sessionId];
+    closeEffects.push(...closeSurfaceResource(state, surface));
     delete state.surfaces[surfaceId];
   }
   delete state.panes[paneId];
@@ -2041,59 +2056,14 @@ function createSurface(
   launch?: SessionLaunchConfigDto
 ): AppEffect[] {
   const pane = state.panes[paneId];
-  if (!pane) {
-    return [];
-  }
-  const workspace = state.workspaces[pane.workspaceId];
-  const surfaceId = makeId("surface");
-  const sessionId = makeId("session");
-  const launchCwd = defaultNewSurfaceCwd(state, paneId, cwd);
-  const defaultTitle = title?.trim() || `tab ${pane.surfaceIds.length + 1}`;
-  const defaultShell =
-    workspace.location.target.kind === "local"
-      ? state.settings.shell || process.env.SHELL
-      : undefined;
-  const sessionLaunch = sanitizeStoredSessionLaunchConfig(
-    {
-      ...(defaultShell === undefined ? {} : { shell: defaultShell }),
-      title,
-      ...launch,
-      cwd:
-        launch?.cwd === undefined
-          ? launchCwd
-          : locatedPathForTarget(workspace.location.target, launch.cwd)
-    },
-    defaultShell
-  );
-  const surfaceTitle = sessionLaunch.title?.trim() || defaultTitle;
-
-  state.surfaces[surfaceId] = {
-    id: surfaceId,
-    paneId,
-    sessionId,
-    title: surfaceTitle,
-    titleLocked: Boolean(sessionLaunch.title?.trim()),
-    cwd: sessionLaunch.cwd,
-    ports: [],
-    unreadCount: 0,
-    attention: false
-  };
-  state.sessions[sessionId] = {
-    id: sessionId,
-    surfaceId,
-    launch: sessionLaunch,
-    authToken: makeId("auth"),
-    runtimeStatus: pendingSessionRuntimeStatus(),
-    shellInputReady: false
-  };
-  pane.surfaceIds.push(surfaceId);
-  pane.activeSurfaceId = surfaceId;
-  workspace.activePaneId = paneId;
-
-  return [
-    buildSessionSpawnEffect(state, workspace.id, surfaceId, sessionId),
-    { type: "persist" }
-  ];
+  return pane
+    ? openSurfaceAtPlacement(state, {
+        type: "surface.open",
+        workspaceId: pane.workspaceId,
+        init: { kind: "terminal", title, cwd, launch },
+        placement: { kind: "tab", paneId }
+      })
+    : [];
 }
 
 function focusSurface(state: AppState, surfaceId: Id): AppEffect[] {
@@ -2152,12 +2122,16 @@ function closeSurface(state: AppState, surfaceId: Id): AppEffect[] {
       remainingSurfaceIds[nextActiveIndex] ?? remainingSurfaceIds[0];
   }
   purgeSurfaceReferences(state, surfaceId);
-  delete state.sessions[surface.sessionId];
+  const closeEffects = closeSurfaceResource(state, surface);
   delete state.surfaces[surfaceId];
-  return [
-    { type: "session.close", sessionId: surface.sessionId },
-    { type: "persist" }
-  ];
+  return [...closeEffects, { type: "persist" }];
+}
+
+function closeSurfaceResource(
+  state: AppState,
+  surface: SurfaceState
+): AppEffect[] {
+  return surfaceCoreRegistry[surface.content.kind].close(state, surface);
 }
 
 function closeOtherSurfaces(state: AppState, surfaceId: Id): AppEffect[] {
@@ -2175,7 +2149,7 @@ function closeOtherSurfaces(state: AppState, surfaceId: Id): AppEffect[] {
 
 function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
   const surface = state.surfaces[surfaceId];
-  if (!surface) {
+  if (!surface || surface.content.kind !== "terminal") {
     return [];
   }
   const pane = state.panes[surface.paneId];
@@ -2183,7 +2157,7 @@ function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
     return [];
   }
   const workspace = state.workspaces[pane.workspaceId];
-  const oldSession = state.sessions[surface.sessionId];
+  const oldSession = terminalSessionForSurface(state, surfaceId);
   if (!oldSession || oldSession.runtimeStatus.processState === "pending") {
     return [];
   }
@@ -2208,9 +2182,16 @@ function restartSurfaceSession(state: AppState, surfaceId: Id): AppEffect[] {
     launch,
     authToken: makeId("auth"),
     runtimeStatus: pendingSessionRuntimeStatus(),
-    shellInputReady: false
+    shellInputReady: false,
+    runtimeMetadata: {
+      ...oldSession.runtimeMetadata,
+      ...(oldSession.runtimeMetadata.gitRepository
+        ? { gitRepository: { ...oldSession.runtimeMetadata.gitRepository } }
+        : {}),
+      ports: [...oldSession.runtimeMetadata.ports]
+    }
   };
-  surface.sessionId = newSessionId;
+  surface.content = { kind: "terminal", sessionId: newSessionId };
   surface.attention = false;
   surface.unreadCount = 0;
   pane.activeSurfaceId = surfaceId;
@@ -2228,7 +2209,8 @@ function updateSurfaceMetadata(
   action: Extract<AppAction, { type: "surface.metadata" }>
 ): AppEffect[] {
   const surface = state.surfaces[action.surfaceId];
-  if (!surface) {
+  const session = terminalSessionForSurface(state, action.surfaceId);
+  if (!surface || !session) {
     return [];
   }
   const workspaceId = state.panes[surface.paneId].workspaceId;
@@ -2237,8 +2219,8 @@ function updateSurfaceMetadata(
 
   if (action.cwd !== undefined) {
     const nextCwd = locatedPathForTarget(workspace.location.target, action.cwd);
-    if (!sameLocatedPath(nextCwd, surface.cwd)) {
-      surface.cwd = nextCwd;
+    if (!sameLocatedPath(nextCwd, session.runtimeMetadata.cwd)) {
+      session.runtimeMetadata.cwd = nextCwd;
       shouldRefreshDerivedMetadata = true;
     }
   }
@@ -2248,10 +2230,10 @@ function updateSurfaceMetadata(
     }
   }
   if ("branch" in action) {
-    surface.branch = action.branch ?? undefined;
+    session.runtimeMetadata.branch = action.branch ?? undefined;
   }
   if ("gitRepository" in action) {
-    surface.gitRepository = action.gitRepository
+    session.runtimeMetadata.gitRepository = action.gitRepository
       ? decodeWorkspaceGitRepository(
           action.gitRepository,
           workspace.location.target
@@ -2259,7 +2241,7 @@ function updateSurfaceMetadata(
       : undefined;
   }
   if (action.ports !== undefined) {
-    surface.ports = action.ports.slice(0, 3);
+    session.runtimeMetadata.ports = action.ports.slice(0, 3);
   }
   if (action.attention !== undefined) {
     surface.attention = action.attention;
@@ -2267,7 +2249,6 @@ function updateSurfaceMetadata(
   if (action.unreadDelta) {
     surface.unreadCount = Math.max(0, surface.unreadCount + action.unreadDelta);
   }
-  const session = state.sessions[surface.sessionId];
   if (shouldRefreshDerivedMetadata) {
     return [
       {
@@ -2275,7 +2256,7 @@ function updateSurfaceMetadata(
         workspaceId,
         surfaceId: surface.id,
         pid: session?.pid,
-        cwd: surface.cwd
+        cwd: session.runtimeMetadata.cwd
       },
       { type: "persist" }
     ];
@@ -2543,7 +2524,9 @@ function backfillAgentSessionRef(
     return false;
   }
   const surface = target.surface;
-  const session = surface ? state.sessions[surface.sessionId] : undefined;
+  const session = surface
+    ? terminalSessionForSurface(state, surface.id)
+    : undefined;
   const vendor = normalizeExternalAgentSessionVendor(action.agent);
   const vendorSessionId =
     vendor === "antigravity"
@@ -2573,7 +2556,9 @@ function backfillAgentSessionRef(
         ? target.workspace.location.target.targetId
         : "local",
     cwd:
-      surface?.cwd ??
+      (surface
+        ? terminalRuntimeMetadataForSurface(state, surface.id)?.cwd
+        : undefined) ??
       locatedPathForTarget(
         target.workspace.location.target,
         encodeWorkspaceDefaultCwd(target.workspace.location)
@@ -3265,7 +3250,26 @@ function activeSurface(state: AppState, paneId: Id): SurfaceState | undefined {
   return pane ? state.surfaces[pane.activeSurfaceId] : undefined;
 }
 
-function defaultNewSurfaceCwd(
+export function terminalSessionForSurface(
+  state: AppState,
+  surfaceId: Id
+): SessionState | undefined {
+  const surface = state.surfaces[surfaceId];
+  if (!surface || surface.content.kind !== "terminal") {
+    return undefined;
+  }
+  const session = state.sessions[surface.content.sessionId];
+  return session?.surfaceId === surface.id ? session : undefined;
+}
+
+export function terminalRuntimeMetadataForSurface(
+  state: AppState,
+  surfaceId: Id
+): TerminalRuntimeMetadata | undefined {
+  return terminalSessionForSurface(state, surfaceId)?.runtimeMetadata;
+}
+
+export function defaultNewSurfaceCwd(
   state: AppState,
   paneId: Id,
   explicitCwd?: string
@@ -3280,7 +3284,12 @@ function defaultNewSurfaceCwd(
   }
   return (
     workspace.worktree?.path ??
-    activeSurface(state, paneId)?.cwd ??
+    (activeSurface(state, paneId)
+      ? terminalRuntimeMetadataForSurface(
+          state,
+          activeSurface(state, paneId)!.id
+        )?.cwd
+      : undefined) ??
     locatedPathForTarget(
       workspace.location.target,
       encodeWorkspaceDefaultCwd(workspace.location)
@@ -3288,7 +3297,7 @@ function defaultNewSurfaceCwd(
   );
 }
 
-function buildSessionSpawnEffect(
+export function buildSessionSpawnEffect(
   state: AppState,
   workspaceId: Id,
   surfaceId: Id,
@@ -3422,12 +3431,16 @@ export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
   return orderedWorkspaceIds.map((workspaceId) => {
     const entry = state.workspaces[workspaceId];
     const representativeSurface = representativeWorkspaceSurface(state, entry);
+    const representativeSession = representativeSurface
+      ? terminalSessionForSurface(state, representativeSurface.id)
+      : undefined;
+    const representativeMetadata = representativeSession?.runtimeMetadata;
     const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
       (surfaceId) => state.surfaces[surfaceId]
     );
     const worktree = entry.worktree;
     const detectedWorktree = worktree ? undefined : entry.detectedWorktree;
-    const branch = worktree?.branch ?? representativeSurface?.branch;
+    const branch = worktree?.branch ?? representativeMetadata?.branch;
     const baseStatusEntries = workspaceStatusEntries(entry).map(
       (statusEntry) => ({
         ...statusEntry
@@ -3455,18 +3468,19 @@ export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
         : workspaceSummary(representativeSurface),
       cwd:
         (worktree ? encodedLocatedPath(worktree.path) : undefined) ??
-        (representativeSurface
-          ? encodedLocatedPath(representativeSurface.cwd)
+        (representativeMetadata
+          ? encodedLocatedPath(representativeMetadata.cwd)
           : entry.cwdSummary),
       branch,
-      gitRepository: representativeSurface?.gitRepository
-        ? encodeWorkspaceGitRepository(representativeSurface.gitRepository)
+      gitRepository: representativeMetadata?.gitRepository
+        ? encodeWorkspaceGitRepository(representativeMetadata.gitRepository)
         : undefined,
       worktree: worktree ? encodeWorkspaceWorktree(worktree) : undefined,
       detectedWorktree: detectedWorktree
         ? encodeDetectedWorkspaceWorktree(detectedWorktree)
         : undefined,
       ports: aggregateWorkspacePorts(
+        state,
         surfaces,
         state.panes[entry.activePaneId]?.activeSurfaceId
       ),
@@ -3553,43 +3567,19 @@ export function buildWorkspacePaneTreeVm(
     surfaces: Object.fromEntries(
       workspaceSurfaceIds.map((surfaceId) => {
         const surface = state.surfaces[surfaceId];
-        const storageStatus =
-          state.sessions[surface.sessionId]?.remoteRuntime?.storageStatus;
         return [
           surface.id,
           {
             id: surface.id,
-            sessionId: surface.sessionId,
+            paneId: surface.paneId,
             title: surface.title,
-            cwd: encodedLocatedPath(surface.cwd),
-            branch: surface.branch,
-            gitRepository: surface.gitRepository
-              ? encodeWorkspaceGitRepository(surface.gitRepository)
-              : undefined,
-            ports: [...surface.ports],
+            titleLocked: surface.titleLocked,
             unreadCount: surface.unreadCount,
             attention: surface.attention,
-            sessionState:
-              state.sessions[surface.sessionId]?.runtimeStatus.processState ??
-              "pending",
-            shellInputReady:
-              state.sessions[surface.sessionId]?.shellInputReady === true,
-            exitCode: state.sessions[surface.sessionId]?.exitCode,
-            ...(storageStatus === undefined
-              ? {}
-              : {
-                  storageStatus: {
-                    state: storageStatus.state,
-                    journalAdmitted: storageStatus.journalAdmitted.toString(10),
-                    journalSynced: storageStatus.journalSynced.toString(10),
-                    emergencyBytes: storageStatus.emergencyBytes,
-                    ...(storageStatus.lastSyncDurationMs === undefined
-                      ? {}
-                      : {
-                          lastSyncDurationMs: storageStatus.lastSyncDurationMs
-                        })
-                  }
-                })
+            content: surfaceCoreRegistry[surface.content.kind].buildVmContent(
+              state,
+              surface
+            )
           } satisfies SurfaceVm
         ];
       })
@@ -3726,6 +3716,7 @@ function workspaceSummary(representativeSurface: SurfaceState | null): string {
 }
 
 function aggregateWorkspacePorts(
+  state: AppState,
   surfaces: SurfaceState[],
   activeSurfaceId?: Id
 ): number[] {
@@ -3743,13 +3734,18 @@ function aggregateWorkspacePorts(
     aggregate.push(port);
   }
 
-  for (const port of activeSurface?.ports ?? []) {
+  for (const port of activeSurface
+    ? (terminalRuntimeMetadataForSurface(state, activeSurface.id)?.ports ?? [])
+    : []) {
     pushPort(port);
   }
 
   const otherPorts = surfaces
     .filter((surface) => surface.id !== activeSurface?.id)
-    .flatMap((surface) => surface.ports)
+    .flatMap(
+      (surface) =>
+        terminalRuntimeMetadataForSurface(state, surface.id)?.ports ?? []
+    )
     .filter((port) => Number.isFinite(port) && !seen.has(port))
     .sort((left, right) => left - right);
 
@@ -3760,7 +3756,10 @@ function aggregateWorkspacePorts(
   return aggregate;
 }
 
-function sanitizeState(state: AppState): AppState {
+function sanitizeState(
+  state: AppState,
+  options: { allowLegacySurfaceFormat: boolean }
+): AppState {
   const rawRemoteEventReceipts = (
     state as AppState & { remoteEventReceipts?: unknown }
   ).remoteEventReceipts;
@@ -3942,29 +3941,47 @@ function sanitizeState(state: AppState): AppState {
       })
     : [];
 
+  const legacyMetadataBySurfaceId = new Map<
+    Id,
+    {
+      cwd?: unknown;
+      branch?: unknown;
+      gitRepository?: unknown;
+      ports?: unknown;
+    }
+  >();
+
   for (const surface of Object.values(state.surfaces)) {
     const pane = state.panes[surface.paneId];
     const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
-    const target = workspace?.location.target ?? ({ kind: "local" } as const);
-    const fallbackCwd = workspace
-      ? locatedPathForTarget(
-          target,
-          encodeWorkspaceDefaultCwd(workspace.location)
-        )
-      : defaultLocalCwd();
-    try {
-      surface.cwd = decodeFeaturePath(
-        (surface as SurfaceState & { cwd?: unknown }).cwd,
-        target,
-        fallbackCwd
-      );
-    } catch {
-      surface.cwd = fallbackCwd;
+    if (!workspace) {
+      throw new TypeError(`Surface ${surface.id} has no owning workspace`);
     }
-    surface.gitRepository = sanitizeWorkspaceGitRepository(
-      surface.gitRepository,
-      target
-    );
+    const record = surface as unknown as Record<string, unknown>;
+    const content = record.content;
+    if (content === undefined) {
+      if (!options.allowLegacySurfaceFormat) {
+        throw new TypeError(`Surface ${surface.id} is missing content`);
+      }
+      const sessionId = normalizeOptionalText(record.sessionId, 512);
+      if (!sessionId) {
+        throw new TypeError(`Legacy Surface ${surface.id} has no sessionId`);
+      }
+      surface.content = { kind: "terminal", sessionId };
+      legacyMetadataBySurfaceId.set(surface.id, {
+        cwd: record.cwd,
+        branch: record.branch,
+        gitRepository: record.gitRepository,
+        ports: record.ports
+      });
+    } else {
+      surface.content = decodeSurfaceContent(content);
+    }
+    delete record.sessionId;
+    delete record.cwd;
+    delete record.branch;
+    delete record.gitRepository;
+    delete record.ports;
     syncSurfaceNotificationState(state, surface.id);
   }
 
@@ -3973,7 +3990,21 @@ function sanitizeState(state: AppState): AppState {
     const pane = surface ? state.panes[surface.paneId] : undefined;
     const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
     const target = workspace?.location.target ?? ({ kind: "local" } as const);
-    const fallbackCwd = surface?.cwd ?? defaultLocalCwd();
+    if (!surface || surface.content.kind !== "terminal") {
+      throw new TypeError(`Session ${session.id} has no Terminal Surface`);
+    }
+    if (surface.content.sessionId !== session.id) {
+      throw new TypeError(
+        `Terminal Surface ${surface.id} does not reference Session ${session.id}`
+      );
+    }
+    const legacyMetadata = legacyMetadataBySurfaceId.get(surface.id);
+    const fallbackCwd = workspace
+      ? locatedPathForTarget(
+          target,
+          encodeWorkspaceDefaultCwd(workspace.location)
+        )
+      : defaultLocalCwd();
     const rawLaunch = session.launch as unknown as Record<string, unknown>;
     let launchCwd = fallbackCwd;
     try {
@@ -3993,6 +4024,14 @@ function sanitizeState(state: AppState): AppState {
     if (!session.agentSessionRef) {
       delete session.agentSessionRef;
     }
+    const rawRuntimeMetadata = (
+      session as SessionState & { runtimeMetadata?: unknown }
+    ).runtimeMetadata;
+    session.runtimeMetadata = decodeTerminalRuntimeMetadata(
+      rawRuntimeMetadata ?? legacyMetadata,
+      target,
+      launchCwd
+    );
     session.runtimeStatus = sanitizeSessionRuntimeStatus(
       (
         session as SessionState & {
@@ -4013,7 +4052,69 @@ function sanitizeState(state: AppState): AppState {
       session.shellInputReady === true;
   }
 
+  for (const surface of Object.values(state.surfaces)) {
+    if (!terminalSessionForSurface(state, surface.id)) {
+      throw new TypeError(
+        `Terminal Surface ${surface.id} has an invalid Session reference`
+      );
+    }
+    const pane = state.panes[surface.paneId];
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (!workspace) {
+      throw new TypeError(`Surface ${surface.id} has no owning workspace`);
+    }
+    assertLocatedPathTarget(
+      workspace.location.target,
+      terminalRuntimeMetadataForSurface(state, surface.id)!.cwd
+    );
+  }
+
   return state;
+}
+
+function decodeSurfaceContent(value: unknown): SurfaceContentOf {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Surface content must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "terminal") {
+    throw new TypeError(`Unsupported Surface kind: ${String(record.kind)}`);
+  }
+  return surfaceCoreRegistry.terminal.decodeContent(value);
+}
+
+function decodeTerminalRuntimeMetadata(
+  value: unknown,
+  target: WorkspaceTarget,
+  fallbackCwd: LocatedPath
+): TerminalRuntimeMetadata {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { cwd: fallbackCwd, ports: [] };
+  }
+  const record = value as Record<string, unknown>;
+  const cwd = decodeFeaturePath(record.cwd, target, fallbackCwd);
+  const branch = normalizeOptionalText(record.branch, 4096);
+  const gitRepository = sanitizeWorkspaceGitRepository(
+    record.gitRepository,
+    target
+  );
+  const ports = Array.isArray(record.ports)
+    ? record.ports
+        .filter(
+          (port): port is number =>
+            typeof port === "number" &&
+            Number.isInteger(port) &&
+            port > 0 &&
+            port <= 65_535
+        )
+        .slice(0, 3)
+    : [];
+  return {
+    cwd,
+    ...(branch === undefined ? {} : { branch }),
+    ...(gitRepository === undefined ? {} : { gitRepository }),
+    ports
+  };
 }
 
 function sanitizeRemoteSessionRuntimeState(
@@ -4238,7 +4339,7 @@ function sanitizeWorkspaceStatusEntries(workspace: WorkspaceState): void {
   pruneWorkspaceStatusEntries(workspace);
 }
 
-function sanitizeStoredSessionLaunchConfig(
+export function sanitizeStoredSessionLaunchConfig(
   launch: Record<string, unknown> & { cwd: LocatedPath },
   fallbackShell: string | undefined
 ): StoredSessionLaunchConfig {
@@ -4286,7 +4387,7 @@ function sanitizeLaunchEnvironment(
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
-function sanitizeAgentSessionRef(
+export function sanitizeAgentSessionRef(
   value: unknown,
   target: WorkspaceTarget,
   fallbackCwd: LocatedPath
@@ -4427,7 +4528,7 @@ function encodeWorkspaceDefaultCwd(location: WorkspaceLocation): string {
   return encodeWorkspaceLocationDto(location).defaultCwd;
 }
 
-function encodeWorkspaceGitRepository(
+export function encodeWorkspaceGitRepository(
   repository: LocatedWorkspaceGitRepositoryMetadata
 ): WorkspaceGitRepositoryMetadataDto {
   return {

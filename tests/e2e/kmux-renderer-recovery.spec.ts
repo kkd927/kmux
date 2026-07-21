@@ -27,7 +27,8 @@ test("renderer crash reconnects to the existing shell and terminal streams", asy
     const workspaceId = initial.activeWorkspace.id;
     const paneId = initial.activeWorkspace.activePaneId;
     const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
-    const sessionId = initial.activeWorkspace.surfaces[surfaceId].sessionId;
+    const sessionId =
+      initial.activeWorkspace.surfaces[surfaceId].content.sessionId;
     const mainPid = launched.app.process().pid;
     const diagnosticLogPath = join(
       launched.sandbox.stateDir,
@@ -80,9 +81,9 @@ test("renderer crash reconnects to the existing shell and terminal streams", asy
         view.activeWorkspace.panes[paneId]?.activeSurfaceId === surfaceId,
       "recovered renderer should restore the active workspace, pane, and surface"
     );
-    expect(recovered.activeWorkspace.surfaces[surfaceId].sessionId).toBe(
-      sessionId
-    );
+    expect(
+      recovered.activeWorkspace.surfaces[surfaceId].content.sessionId
+    ).toBe(sessionId);
     await waitForSurfaceSnapshotContains(
       recoveredPage,
       surfaceId,

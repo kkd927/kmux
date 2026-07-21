@@ -25,7 +25,7 @@ import {
 } from "@kmux/core";
 import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
-const SNAPSHOT_STORE_VERSION = 2;
+const SNAPSHOT_STORE_VERSION = 3;
 const WINDOW_STATE_STORE_VERSION = 1;
 const USAGE_HISTORY_STORE_VERSION = 1;
 const DEFAULT_SOCKET_FILE_NAME = "control.sock";
@@ -130,6 +130,11 @@ export interface SnapshotRecord {
   restoreOnLaunch: boolean;
 }
 
+export type SnapshotLoadResult =
+  | { status: "ok"; record: SnapshotRecord }
+  | { status: "missing" }
+  | { status: "incompatible"; reason: string };
+
 export interface SnapshotSaveOptions {
   cleanShutdown?: boolean;
   restoreOnLaunch?: boolean;
@@ -150,7 +155,7 @@ interface UsageHistoryEnvelope {
 export interface SnapshotFileStore {
   path: string;
   load(): AppState | null;
-  loadRecord(): SnapshotRecord | null;
+  loadRecord(): SnapshotLoadResult;
   save(snapshot: AppState, options?: SnapshotSaveOptions): void;
   saveDurable(snapshot: AppState, options?: SnapshotSaveOptions): void;
 }
@@ -330,34 +335,55 @@ function durableAtomicWrite(filePath: string, content: string): void {
 }
 
 export function createSnapshotStore(statePath: string): SnapshotFileStore {
-  const loadRecord = (): SnapshotRecord | null => {
-    const envelope = readJsonFile<Partial<SnapshotEnvelope>>(statePath);
-    if (!envelope) {
-      return null;
+  let writesDisabled = false;
+
+  const incompatible = (reason: string): SnapshotLoadResult => {
+    writesDisabled = true;
+    warnInvalidFile(statePath, reason);
+    return { status: "incompatible", reason };
+  };
+
+  const loadRecord = (): SnapshotLoadResult => {
+    const readResult = readTextFile(statePath);
+    if (readResult.status === "missing") {
+      return { status: "missing" };
     }
-    if (envelope.version !== 1 && envelope.version !== SNAPSHOT_STORE_VERSION) {
-      warnInvalidFile(
-        statePath,
-        `unsupported version ${String(envelope.version)}`
+    if (readResult.status === "error") {
+      return incompatible(readResult.reason);
+    }
+    let envelope: Partial<SnapshotEnvelope>;
+    try {
+      envelope = JSON.parse(readResult.content) as Partial<SnapshotEnvelope>;
+    } catch (error) {
+      return incompatible(
+        error instanceof Error ? error.message : String(error)
       );
-      return null;
+    }
+    if (
+      envelope.version !== 1 &&
+      envelope.version !== 2 &&
+      envelope.version !== SNAPSHOT_STORE_VERSION
+    ) {
+      return incompatible(`unsupported version ${String(envelope.version)}`);
     }
     if (!envelope.snapshot) {
-      warnInvalidFile(statePath, "missing snapshot payload");
-      return null;
+      return incompatible("missing snapshot payload");
     }
     try {
       return {
-        snapshot: decodeAppStateDto(envelope.snapshot),
-        cleanShutdown: envelope.cleanShutdown === true,
-        restoreOnLaunch: envelope.restoreOnLaunch === true
+        status: "ok",
+        record: {
+          snapshot: decodeAppStateDto(envelope.snapshot, {
+            snapshotVersion: envelope.version
+          }),
+          cleanShutdown: envelope.cleanShutdown === true,
+          restoreOnLaunch: envelope.restoreOnLaunch === true
+        }
       };
     } catch (error) {
-      warnInvalidFile(
-        statePath,
+      return incompatible(
         error instanceof Error ? error.message : String(error)
       );
-      return null;
     }
   };
 
@@ -375,13 +401,22 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
   return {
     path: statePath,
     load() {
-      return loadRecord()?.snapshot ?? null;
+      const result = loadRecord();
+      return result.status === "ok" ? result.record.snapshot : null;
     },
     loadRecord,
     save(snapshot, options = {}) {
+      if (writesDisabled) {
+        warnSkippedSave(statePath, "snapshot is incompatible for this run");
+        return;
+      }
       atomicWrite(statePath, encodeSnapshot(snapshot, options));
     },
     saveDurable(snapshot, options = {}) {
+      if (writesDisabled) {
+        warnSkippedSave(statePath, "snapshot is incompatible for this run");
+        return;
+      }
       durableAtomicWrite(statePath, encodeSnapshot(snapshot, options));
     }
   };

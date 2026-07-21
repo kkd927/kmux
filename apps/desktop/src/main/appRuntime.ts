@@ -9,7 +9,6 @@ import {
   type AppMutationSummary,
   type AppState,
   type LocatedPath,
-  type SessionSpawnEffect,
   type StoredSessionLaunchConfig,
   type WorkspaceTarget,
   buildActiveWorkspaceActivityVm,
@@ -22,7 +21,8 @@ import {
   createDefaultSettings,
   createInitialState,
   mergeSettings,
-  migrateShortcutDefaultsForPlatform
+  migrateShortcutDefaultsForPlatform,
+  terminalSessionForSurface
 } from "@kmux/core";
 import type { MainFact } from "@kmux/core/main";
 import { locatedPathForTarget } from "@kmux/core";
@@ -42,13 +42,13 @@ import type {
   WorkspaceRowsPatch,
   WorkspaceRowVm
 } from "@kmux/proto";
-import { makeId } from "@kmux/proto";
+import { isoNow, makeId } from "@kmux/proto";
 import type {
   SettingsFileStore,
   SnapshotFileStore,
   WindowStateFileStore
 } from "@kmux/persistence";
-import type { PtySessionSpec, ShellLaunchPolicy } from "../shared/ptyProtocol";
+import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
@@ -62,6 +62,7 @@ import {
   type NativeNotificationIdentity
 } from "./nativeNotifications";
 import { type LocalPathResolver } from "./targets/targetServiceRegistry";
+import { dispatchSurfaceRuntimeEffect } from "./surfaces/registry";
 
 export interface AppRuntimeOptions {
   paths: {
@@ -411,31 +412,16 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
 
     for (const effect of effects) {
+      if (
+        dispatchSurfaceRuntimeEffect(effect, {
+          ptyHost,
+          resolveLocalPath,
+          createShellLaunchPolicy: options.createShellLaunchPolicy
+        })
+      ) {
+        continue;
+      }
       switch (effect.type) {
-        case "session.spawn":
-          if (effect.launch.cwd.kind !== "local") {
-            throw new Error(
-              "SSH session creation must enter RemoteOperationCoordinator"
-            );
-          }
-          {
-            const localLaunch = toLocalLaunchDto(
-              effect.launch,
-              resolveLocalPath
-            );
-            ptyHost?.send({
-              type: "spawn",
-              spec: buildPtySessionSpec(effect, localLaunch),
-              shellLaunchPolicy: options.createShellLaunchPolicy(localLaunch)
-            });
-          }
-          break;
-        case "session.close":
-          ptyHost?.send({
-            type: "close",
-            sessionId: effect.sessionId
-          });
-          break;
         case "metadata.refresh":
           options.refreshMetadata(
             effect.surfaceId ?? "",
@@ -620,7 +606,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function restoreInitialState(): AppState {
-    const snapshotRecord = options.snapshotStore.loadRecord();
+    const snapshotLoad = options.snapshotStore.loadRecord();
+    const snapshotRecord =
+      snapshotLoad.status === "ok" ? snapshotLoad.record : null;
     const snapshot = snapshotRecord?.snapshot ?? null;
     const savedWindowState = options.windowStateStore.load();
     const settings = migrateRuntimeShortcutDefaults(
@@ -639,6 +627,25 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     if (shouldRestoreSnapshot) {
       resetRestoredSessions(initial);
       clearSnapshotNotifications(initial);
+    }
+
+    if (snapshotLoad.status === "incompatible") {
+      const window = initial.windows[initial.activeWindowId];
+      const workspace = window
+        ? initial.workspaces[window.activeWorkspaceId]
+        : undefined;
+      if (workspace) {
+        initial.notifications.push({
+          id: makeId("notification"),
+          workspaceId: workspace.id,
+          title: "Saved workspace could not be restored",
+          message:
+            "The saved state is incompatible. kmux started a clean recovery session and will not overwrite the original state file.",
+          source: "system",
+          kind: "generic",
+          createdAt: isoNow()
+        });
+      }
     }
 
     const activeWindow = initial.windows[initial.activeWindowId];
@@ -866,7 +873,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
           session.launch = storedLaunchFromDto(
             resumeSpec.launch,
             workspace.location.target,
-            surface.cwd
+            session.runtimeMetadata.cwd
           );
           session.agentSessionRef = agentSessionRefFromExternal(
             resumeSpec.agentSessionRef,
@@ -1016,34 +1023,6 @@ function playBellSound(playBellSoundOverride?: () => void): void {
   shell.beep();
 }
 
-function buildPtySessionSpec(
-  effect: SessionSpawnEffect,
-  launch: SessionLaunchConfig
-): PtySessionSpec {
-  return {
-    sessionId: effect.sessionId,
-    surfaceId: effect.surfaceId,
-    runtimeEpoch: makeId("epoch"),
-    workspaceId: effect.workspaceId,
-    launch,
-    cols: effect.initialSize.cols,
-    rows: effect.initialSize.rows,
-    env: effect.sessionEnv
-  };
-}
-
-function toLocalLaunchDto(
-  launch: StoredSessionLaunchConfig,
-  resolveLocalPath: LocalPathResolver
-): SessionLaunchConfig {
-  return {
-    ...launch,
-    cwd: resolveLocalPath(launch.cwd),
-    args: launch.args ? [...launch.args] : undefined,
-    env: launch.env ? { ...launch.env } : undefined
-  };
-}
-
 function storedLaunchFromDto(
   launch: SessionLaunchConfig,
   target: WorkspaceTarget,
@@ -1085,7 +1064,9 @@ function clearSnapshotNotifications(state: AppState): void {
 function resetRestoredSessions(state: AppState): void {
   for (const session of Object.values(state.sessions)) {
     const surface = state.surfaces[session.surfaceId];
-    if (!surface || surface.sessionId !== session.id) {
+    if (
+      terminalSessionForSurface(state, session.surfaceId)?.id !== session.id
+    ) {
       continue;
     }
     const pane = state.panes[surface.paneId];
