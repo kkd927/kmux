@@ -11,7 +11,11 @@ import { Script } from "node:vm";
 
 import type { BrowserWindow } from "electron";
 
-import { locatedPathForTarget, workspaceLocation, type AppState } from "@kmux/core";
+import {
+  locatedPathForTarget,
+  workspaceLocation,
+  type AppState
+} from "@kmux/core";
 import type {
   SurfaceCaptureOptions,
   SurfaceCaptureRendererDom,
@@ -150,6 +154,74 @@ describe("surface capture diagnostics", () => {
       "rawOutputLog.available=true"
     );
   });
+
+  it("flushes and copies diagnostics with explicit loss health", async () => {
+    const captureRoot = mkdtempSync(join(tmpdir(), "kmux-surface-capture-"));
+    const diagnosticsRoot = mkdtempSync(
+      join(tmpdir(), "kmux-surface-diagnostics-")
+    );
+    cleanupPaths.push(captureRoot, diagnosticsRoot);
+    const diagnosticsLogPath = join(diagnosticsRoot, "kmux-debug.log");
+    writeFileSync(diagnosticsLogPath, "diagnostic marker\n", "utf8");
+    const flushDiagnostics = vi.fn(async () => {});
+    const writerHealth = {
+      enabled: true,
+      accepting: true,
+      failed: false,
+      queuedBytes: 0,
+      queuedRecords: 0,
+      droppedTerminalTelemetry: 3,
+      droppedOther: 0,
+      pendingDroppedTerminalTelemetry: 0,
+      pendingDroppedOther: 0,
+      logTruncationCount: 1,
+      lastLogTruncatedAt: "2026-07-21T00:00:00.000Z",
+      lastFailureAt: null,
+      lastFailureReason: null
+    };
+    const service = createSurfaceCaptureService({
+      captureRoot,
+      getState: createState,
+      getWindow: () => null,
+      snapshotSurface: vi.fn(async () =>
+        createSnapshot({
+          diagnosticsHealth: {
+            enabled: true,
+            pendingRecords: 0,
+            sentRecords: 20,
+            droppedRecords: 2,
+            failedBatches: 1
+          }
+        })
+      ),
+      flushDiagnostics,
+      getDiagnosticsWriterHealth: () => writerHealth,
+      getDiagnosticsLogPath: () => diagnosticsLogPath
+    });
+
+    const capture = await service.captureSurface(surfaceId, {
+      settleForMs: 0,
+      timeoutMs: 1
+    });
+
+    expect(flushDiagnostics).toHaveBeenCalledOnce();
+    expect(readFileSync(capture.files.diagnosticsLog!, "utf8")).toBe(
+      "diagnostic marker\n"
+    );
+    expect(capture.diagnosticsHealth).toEqual({
+      mainWriter: writerHealth,
+      ptyHost: {
+        enabled: true,
+        pendingRecords: 0,
+        sentRecords: 20,
+        droppedRecords: 2,
+        failedBatches: 1
+      }
+    });
+    expect(readFileSync(capture.files.text, "utf8")).toContain(
+      "diagnostics.ptyHost="
+    );
+  });
 });
 
 function createRendererDom(
@@ -158,6 +230,10 @@ function createRendererDom(
   const rect = { x: 0, y: 0, width: 800, height: 600 };
   return {
     surfaceId,
+    surfaceActive: true,
+    surfaceVisible: true,
+    activeSurfaceId: surfaceId,
+    bufferSource: "active-live",
     documentHasFocus: true,
     fontStatus: "loaded",
     devicePixelRatio: 1,
@@ -167,6 +243,7 @@ function createRendererDom(
       renderedSequence: null,
       targetSequence: null,
       waitTimedOut: false,
+      waitSkippedReason: null,
       waitDurationMs: 0,
       sources: {
         wrapperProp: null,
@@ -257,6 +334,64 @@ describe("surface capture renderer formatting", () => {
 
     expect(rendererProbe).not.toBe("");
     expect(() => new Script(rendererProbe)).not.toThrow();
+    expect(rendererProbe).toContain("readFiniteNumberValue");
+    expect(rendererProbe).toContain("lastReceiveAt: readFiniteNumberValue");
+    expect(rendererProbe).toContain(
+      "if (surfaceVisible && typeof targetSequence === 'bigint')"
+    );
+    expect(rendererProbe).toContain("waitSkippedReason");
+  });
+
+  it("labels an inactive renderer cache and does not screenshot another surface", async () => {
+    const captureRoot = mkdtempSync(join(tmpdir(), "kmux-surface-capture-"));
+    cleanupPaths.push(captureRoot);
+    const baselineDom = createRendererDom();
+    const dom = createRendererDom({
+      surfaceActive: false,
+      surfaceVisible: false,
+      activeSurfaceId: "surface_other",
+      bufferSource: "inactive-cache",
+      terminalDiagnostics: {
+        ...baselineDom.terminalDiagnostics,
+        targetSequence: uint64(42n),
+        waitSkippedReason: "inactive-surface"
+      },
+      recentText: "cached inactive transcript"
+    });
+    const capturePage = vi.fn(async () => ({ toPNG: () => Buffer.alloc(4) }));
+    const fakeWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        executeJavaScript: vi.fn(async () => ({ ok: true, dom })),
+        capturePage
+      }
+    } as unknown as BrowserWindow;
+    const service = createSurfaceCaptureService({
+      captureRoot,
+      getState: createState,
+      getWindow: () => fakeWindow,
+      snapshotSurface: vi.fn(async () => createSnapshot())
+    });
+
+    const capture = await service.captureSurface(surfaceId, {
+      settleForMs: 0,
+      timeoutMs: 1
+    });
+
+    expect(capturePage).not.toHaveBeenCalled();
+    expect(capture.files.screenshot).toBeUndefined();
+    expect(capture.timings.screenshotCompletedAt).toBeUndefined();
+    expect(capture.screenshotDiagnostics).toEqual({
+      sourceSurfaceId: null,
+      trusted: null,
+      skippedReason: "inactive-surface"
+    });
+    expect(capture.rendererBufferTrusted).toBe(false);
+    expect(capture.rendererTrusted).toBe(false);
+    const text = readFileSync(capture.files.text, "utf8");
+    expect(text).toContain("renderer.bufferSource=inactive-cache");
+    expect(text).toContain("renderer.waitSkippedReason=inactive-surface");
+    expect(text).toContain("screenshot.skippedReason=inactive-surface");
   });
 
   it("treats trailing-whitespace-only differences as matching rows", async () => {
@@ -310,12 +445,22 @@ describe("surface capture renderer formatting", () => {
               lastInputAt: 1_001,
               lastInputBytes: 10,
               lastInputRoute: "live-stream",
+              lastReceiveAt: 1_001.5,
+              lastReceiveSequence: uint64(41n),
+              lastScreenReceiveAt: 1_001.5,
+              lastScreenReceiveSequence: uint64(41n),
               lastWriteAt: 1_002,
-              lastWriteSequence: 41,
+              lastWriteSequence: uint64(41n),
+              lastScreenWriteAt: 1_002,
+              lastScreenWriteSequence: uint64(41n),
               lastParsedAt: 1_003,
-              lastParsedSequence: 41,
+              lastParsedSequence: uint64(41n),
+              lastScreenParsedAt: 1_003,
+              lastScreenParsedSequence: uint64(41n),
               lastOnRenderAt: 1_004,
-              lastOnRenderSequence: 41
+              lastOnRenderSequence: uint64(41n),
+              lastScreenOnRenderAt: 1_004,
+              lastScreenOnRenderSequence: uint64(41n)
             }
           })
         ),
@@ -402,6 +547,7 @@ describe("surface capture renderer formatting", () => {
         renderedSequence: null,
         targetSequence: uint64(42n),
         waitTimedOut: true,
+        waitSkippedReason: null,
         waitDurationMs: 3000,
         sources: {
           wrapperProp: null,
@@ -451,6 +597,7 @@ describe("surface capture renderer formatting", () => {
         renderedSequence: uint64(10n),
         targetSequence: uint64(42n),
         waitTimedOut: true,
+        waitSkippedReason: null,
         waitDurationMs: 3000,
         sources: {
           wrapperProp: null,

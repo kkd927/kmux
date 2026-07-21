@@ -2,6 +2,8 @@ import type { FileHandle } from "node:fs/promises";
 import { mkdir, open, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import type { SurfaceCaptureDiagnosticsWriterHealth } from "@kmux/proto";
+
 import {
   formatStructuredDiagnosticsRecord,
   MAX_DIAGNOSTICS_LOG_BYTES,
@@ -29,6 +31,7 @@ interface DropSummarySnapshot {
 export interface AsyncDiagnosticsWriter {
   readonly enabled: boolean;
   readonly queuedBytes: number;
+  snapshot(): SurfaceCaptureDiagnosticsWriterHealth;
   configure(logPath: string | undefined): Promise<boolean>;
   record(record: DiagnosticsRecord): boolean;
   flush(): Promise<void>;
@@ -79,6 +82,12 @@ export function createAsyncDiagnosticsWriter(
   const queue: QueuedDiagnosticsRecord[] = [];
   let droppedTerminalTelemetry = 0;
   let droppedOther = 0;
+  let totalDroppedTerminalTelemetry = 0;
+  let totalDroppedOther = 0;
+  let logTruncationCount = 0;
+  let lastLogTruncatedAt: string | null = null;
+  let lastFailureAt: string | null = null;
+  let lastFailureReason: string | null = null;
 
   function cancelFlushTimer(): void {
     if (!flushTimer) {
@@ -126,17 +135,26 @@ export function createAsyncDiagnosticsWriter(
       if (fileBytes > maxLogBytes) {
         await file.truncate(0);
         fileBytes = 0;
+        logTruncationCount += 1;
+        lastLogTruncatedAt = new Date().toISOString();
       }
       return file;
-    } catch {
-      failClosed();
+    } catch (error) {
+      failClosed(error);
       return null;
     }
   }
 
-  function failClosed(): void {
+  function failClosed(error?: unknown): void {
     failed = true;
     accepting = false;
+    lastFailureAt = new Date().toISOString();
+    lastFailureReason =
+      error === undefined
+        ? "unknown diagnostics writer failure"
+        : error instanceof Error
+          ? error.message
+          : String(error);
     cancelFlushTimer();
     queue.length = 0;
     queueBytes = 0;
@@ -162,6 +180,7 @@ export function createAsyncDiagnosticsWriter(
       queue.splice(index, 1);
       queueBytes -= queued.bytes;
       droppedTerminalTelemetry += 1;
+      totalDroppedTerminalTelemetry += 1;
     }
   }
 
@@ -201,12 +220,14 @@ export function createAsyncDiagnosticsWriter(
       if (fileBytes + bytes > maxLogBytes) {
         await handle.truncate(0);
         fileBytes = 0;
+        logTruncationCount += 1;
+        lastLogTruncatedAt = new Date().toISOString();
       }
       await handle.write(contents, null, "utf8");
       fileBytes += bytes;
       return true;
-    } catch {
-      failClosed();
+    } catch (error) {
+      failClosed(error);
       return false;
     }
   }
@@ -257,6 +278,23 @@ export function createAsyncDiagnosticsWriter(
     get queuedBytes() {
       return queueBytes;
     },
+    snapshot(): SurfaceCaptureDiagnosticsWriterHealth {
+      return {
+        enabled: accepting && !failed && Boolean(logPath),
+        accepting,
+        failed,
+        queuedBytes: queueBytes,
+        queuedRecords: queue.length,
+        droppedTerminalTelemetry: totalDroppedTerminalTelemetry,
+        droppedOther: totalDroppedOther,
+        pendingDroppedTerminalTelemetry: droppedTerminalTelemetry,
+        pendingDroppedOther: droppedOther,
+        logTruncationCount,
+        lastLogTruncatedAt,
+        lastFailureAt,
+        lastFailureReason
+      };
+    },
     configure(nextLogPath): Promise<boolean> {
       const resolvedPath = resolveDiagnosticsLogPath(nextLogPath);
       if (!resolvedPath) {
@@ -300,8 +338,10 @@ export function createAsyncDiagnosticsWriter(
       if (bytes > maxQueueBytes) {
         if (record.terminalTelemetry) {
           droppedTerminalTelemetry += 1;
+          totalDroppedTerminalTelemetry += 1;
         } else {
           droppedOther += 1;
+          totalDroppedOther += 1;
         }
         scheduleFlush();
         return false;
@@ -312,8 +352,10 @@ export function createAsyncDiagnosticsWriter(
       if (queueBytes + bytes > maxQueueBytes) {
         if (record.terminalTelemetry) {
           droppedTerminalTelemetry += 1;
+          totalDroppedTerminalTelemetry += 1;
         } else {
           droppedOther += 1;
+          totalDroppedOther += 1;
         }
         scheduleFlush();
         return false;

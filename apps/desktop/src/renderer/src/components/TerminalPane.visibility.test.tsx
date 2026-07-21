@@ -1790,6 +1790,45 @@ describe("TerminalPane visibility cleanup", () => {
     expect(onRestartSurface).toHaveBeenCalledWith("surface_1");
   });
 
+  it("captures an inactive surface without focusing or waking it", async () => {
+    const props = createProps("surface_1");
+    props.surfaces = [createSurface("surface_1"), createSurface("surface_2")];
+    let nativeMenuListener:
+      | Parameters<typeof window.kmux.subscribeSurfaceContextMenuAction>[0]
+      | null = null;
+    window.kmux.subscribeSurfaceContextMenuAction = vi.fn((listener) => {
+      nativeMenuListener = listener;
+      return vi.fn();
+    });
+
+    await act(async () => {
+      root.render(<TerminalPane {...props} />);
+    });
+    const viewport = container.querySelector(
+      "[data-testid='terminal-surface_2']"
+    );
+    await act(async () => {
+      viewport!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          clientX: 24,
+          clientY: 32,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      nativeMenuListener?.({
+        surfaceId: "surface_2",
+        action: "capture-diagnostics"
+      });
+    });
+
+    expect(window.kmux.captureSurfaceDiagnostics).toHaveBeenCalledWith(
+      "surface_2"
+    );
+    expect(props.onFocusPane).not.toHaveBeenCalled();
+    expect(props.onFocusSurface).not.toHaveBeenCalled();
+  });
+
   it("passes reserved system chords through terminal shortcuts", async () => {
     const policy = buildPlatformKeyboardPolicy({
       platform: "linux",

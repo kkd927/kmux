@@ -19,10 +19,20 @@ export interface TerminalDiagnosticMetadata {
   /** All *At fields below use high-resolution Unix epoch milliseconds. */
   lastOnRenderAt: number | null;
   lastOnRenderSequence: Uint64 | null;
+  lastScreenOnRenderAt: number | null;
+  lastScreenOnRenderSequence: Uint64 | null;
+  lastReceiveAt: number | null;
+  lastReceiveSequence: Uint64 | null;
+  lastScreenReceiveAt: number | null;
+  lastScreenReceiveSequence: Uint64 | null;
   lastWriteAt: number | null;
   lastWriteSequence: Uint64 | null;
+  lastScreenWriteAt: number | null;
+  lastScreenWriteSequence: Uint64 | null;
   lastParsedAt: number | null;
   lastParsedSequence: Uint64 | null;
+  lastScreenParsedAt: number | null;
+  lastScreenParsedSequence: Uint64 | null;
   lastInputAt: number | null;
   lastInputKind: TerminalInputDiagnosticKind | null;
   lastInputBytes: number | null;
@@ -83,10 +93,20 @@ export function createTerminalBundle({
     renderGeneration: 0,
     lastOnRenderAt: null,
     lastOnRenderSequence: null,
+    lastScreenOnRenderAt: null,
+    lastScreenOnRenderSequence: null,
+    lastReceiveAt: null,
+    lastReceiveSequence: null,
+    lastScreenReceiveAt: null,
+    lastScreenReceiveSequence: null,
     lastWriteAt: null,
     lastWriteSequence: null,
+    lastScreenWriteAt: null,
+    lastScreenWriteSequence: null,
     lastParsedAt: null,
     lastParsedSequence: null,
+    lastScreenParsedAt: null,
+    lastScreenParsedSequence: null,
     lastInputAt: null,
     lastInputKind: null,
     lastInputBytes: null,

@@ -1013,12 +1013,16 @@ async function bootstrap(): Promise<void> {
       BrowserWindow.getFocusedWindow() ??
       BrowserWindow.getAllWindows()[0] ??
       null,
-    snapshotSurface: terminalBridge.snapshotSurface
+    snapshotSurface: terminalBridge.snapshotSurface,
+    flushDiagnostics: async () => {
+      await diagnosticsWriter?.flush();
+    },
+    getDiagnosticsWriterHealth: () => diagnosticsWriter?.snapshot() ?? null,
+    getDiagnosticsLogPath: () => diagnosticsLogPath
   });
   const captureSurfaceDiagnostics = async (surfaceId: string) => {
-    runtime.dispatchAppAction({ type: "surface.focus", surfaceId });
     const capture = await surfaceCaptureService.captureSurface(surfaceId, {
-      settleForMs: 250,
+      settleForMs: 0,
       timeoutMs: 3000
     });
     logDiagnostics("surface.capture.completed", {
@@ -1026,6 +1030,8 @@ async function bootstrap(): Promise<void> {
       outDir: capture.outDir,
       json: capture.files.json,
       screenshot: capture.files.screenshot,
+      screenshotSkippedReason: capture.screenshotDiagnostics.skippedReason,
+      rendererBufferSource: capture.renderer.dom?.bufferSource ?? null,
       rendererWaitTimedOut:
         capture.renderer.dom?.terminalDiagnostics.waitTimedOut ?? null
     });

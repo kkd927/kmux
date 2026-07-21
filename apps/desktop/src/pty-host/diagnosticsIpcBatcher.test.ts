@@ -78,4 +78,24 @@ describe("pty-host diagnostics IPC batcher", () => {
     expect(setTimeoutFn).not.toHaveBeenCalled();
     expect(sendBatch).not.toHaveBeenCalled();
   });
+
+  it("reports failed IPC batches instead of silently discarding diagnostics", () => {
+    const batcher = createPtyDiagnosticsIpcBatcher({
+      enabled: true,
+      sendBatch: () => false
+    });
+
+    batcher.record(record(1));
+    batcher.record(record(2));
+    expect(batcher.snapshot().pendingRecords).toBe(2);
+    batcher.flush();
+
+    expect(batcher.snapshot()).toEqual({
+      enabled: true,
+      pendingRecords: 0,
+      sentRecords: 0,
+      droppedRecords: 2,
+      failedBatches: 1
+    });
+  });
 });

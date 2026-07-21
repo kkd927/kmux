@@ -78,6 +78,10 @@ export interface TerminalSessionStreamStats {
   maxAttachmentOutstandingOutputBytes: number;
   peakAttachmentOutstandingOutputBytes: number;
   creditBoundViolationCount: number;
+  lastOutputPortSentAt?: number | null;
+  lastOutputPortSentSequence?: Uint64 | null;
+  lastScreenOutputPortSentAt?: number | null;
+  lastScreenOutputPortSentSequence?: Uint64 | null;
 }
 
 interface OutstandingOutputEntry {
@@ -139,6 +143,10 @@ export class TerminalSessionStream {
   private readonly maxOutstandingOutputEvents: number;
   private readonly maxReplayEvents: number;
   private telemetryNow: (() => number) | undefined;
+  private lastOutputPortSentAt: number | null = null;
+  private lastOutputPortSentSequence: Uint64 | null = null;
+  private lastScreenOutputPortSentAt: number | null = null;
+  private lastScreenOutputPortSentSequence: Uint64 | null = null;
 
   constructor(private readonly options: TerminalSessionStreamOptions) {
     this.telemetryNow = options.telemetryNow;
@@ -214,7 +222,11 @@ export class TerminalSessionStream {
       maxAttachmentOutstandingOutputBytes,
       peakAttachmentOutstandingOutputBytes:
         this.peakAttachmentOutstandingOutputBytes,
-      creditBoundViolationCount: this.creditBoundViolationCount
+      creditBoundViolationCount: this.creditBoundViolationCount,
+      lastOutputPortSentAt: this.lastOutputPortSentAt,
+      lastOutputPortSentSequence: this.lastOutputPortSentSequence,
+      lastScreenOutputPortSentAt: this.lastScreenOutputPortSentAt,
+      lastScreenOutputPortSentSequence: this.lastScreenOutputPortSentSequence
     };
   }
 
@@ -942,16 +954,38 @@ export class TerminalSessionStream {
       return false;
     }
     try {
-      const outboundMessage: TerminalDataPlaneHostMessage =
+      const portSentAt =
         message.type === "delta" && this.telemetryNow
+          ? this.telemetryNow()
+          : undefined;
+      const outboundMessage: TerminalDataPlaneHostMessage =
+        message.type === "delta" && portSentAt !== undefined
           ? {
               ...message,
-              telemetry: { portSentAt: this.telemetryNow() }
+              telemetry: { portSentAt }
             }
           : message;
       // Electron MessagePortMain only accepts MessagePortMain capabilities in
       // its transfer list. Bounded ArrayBuffer payloads use structured clone.
       attachment.port.postMessage(outboundMessage);
+      if (
+        message.type === "delta" &&
+        message.delta.type === "output" &&
+        portSentAt !== undefined
+      ) {
+        this.lastOutputPortSentAt = portSentAt;
+        this.lastOutputPortSentSequence = message.delta.sequence;
+        if (
+          message.delta.segments.some(
+            (segment) =>
+              segment.telemetry?.outputKind === "screen" ||
+              segment.telemetry?.outputKind === "mixed"
+          )
+        ) {
+          this.lastScreenOutputPortSentAt = portSentAt;
+          this.lastScreenOutputPortSentSequence = message.delta.sequence;
+        }
+      }
       return true;
     } catch {
       this.removeAttachment(attachment, true);

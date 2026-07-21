@@ -78,6 +78,10 @@ import {
 import { createRawTerminalEventStdoutLogger } from "./rawTerminalStdoutLog";
 import { resolveRawOutputHistoryDir } from "./rawOutputHistoryPath";
 import {
+  createRawOutputTimeline,
+  type RawOutputTimeline
+} from "./rawOutputTimeline";
+import {
   createPtyResizeCoalescer,
   type PtyResizeCoalescer,
   type PtyResizeCommitContext
@@ -166,13 +170,16 @@ interface SessionRuntime {
   outputDiagnosticClassifier?: TerminalOutputDiagnosticClassifier;
   outputDiagnosticClassifierActive: boolean;
   outputSegmenterState: TerminalOutputSegmenterState;
-  rawOutputTail: string;
-  rawOutputTailTruncated: boolean;
+  rawOutputTimeline: RawOutputTimeline;
   rawOutputLogPath?: string;
   rawOutputIndexPath?: string;
   rawOutputLogBytes: number;
   rawOutputLogChars: number;
   rawOutputLogChunks: number;
+  lastHeadlessCommitAt?: number;
+  lastHeadlessCommitSequence?: Uint64;
+  lastScreenHeadlessCommitAt?: number;
+  lastScreenHeadlessCommitSequence?: Uint64;
   inFlightOutputRuns: number;
   disposeTerminalWhenIdle: boolean;
   sequence: Uint64;
@@ -279,7 +286,6 @@ const SESSION_DELTA_RING_EVENTS = 2_048;
 const SUPERVISOR_DELTA_RING_BYTES = 64 * 1024 * 1024;
 const SUPERVISOR_DELTA_RING_EVENTS = 65_536;
 const PENDING_DIRECT_INPUT_MAX_BYTES = 1 * 1024 * 1024;
-const RAW_OUTPUT_TAIL_MAX_CHARS = 128 * 1024;
 const RAW_OUTPUT_HISTORY_ENABLED = process.env[PTY_STDOUT_LOGS_ENV] === "1";
 const deltaStore = new TerminalDeltaStore<TerminalDelta>({
   maxSessionBytes: SESSION_DELTA_RING_BYTES,
@@ -505,16 +511,6 @@ function recordPtyChunk(
   );
 }
 
-function appendRawOutputTail(record: SessionRuntime, chunk: string): void {
-  record.rawOutputTail += chunk;
-  if (record.rawOutputTail.length <= RAW_OUTPUT_TAIL_MAX_CHARS) {
-    return;
-  }
-
-  record.rawOutputTail = record.rawOutputTail.slice(-RAW_OUTPUT_TAIL_MAX_CHARS);
-  record.rawOutputTailTruncated = true;
-}
-
 function createRawOutputHistory(
   sessionId: Id,
   surfaceId: Id
@@ -681,6 +677,16 @@ async function writeTerminalOutputRun(
               if (chunkSequence > record.parsedSequence) {
                 record.parsedSequence = chunkSequence;
               }
+              const headlessCommitAt = terminalDataPlaneNowMs(performance);
+              record.lastHeadlessCommitAt = headlessCommitAt;
+              record.lastHeadlessCommitSequence = chunkSequence;
+              if (
+                segment.telemetry?.outputKind === "screen" ||
+                segment.telemetry?.outputKind === "mixed"
+              ) {
+                record.lastScreenHeadlessCommitAt = headlessCommitAt;
+                record.lastScreenHeadlessCommitSequence = chunkSequence;
+              }
               committedSegments.push({
                 sequence: chunkSequence,
                 data: segment.chunk,
@@ -690,7 +696,7 @@ async function writeTerminalOutputRun(
                   ? {
                       telemetry: {
                         ptyReadAt: segment.telemetry.ptyReadAt,
-                        headlessCommitAt: terminalDataPlaneNowMs(performance),
+                        headlessCommitAt,
                         outputKind: segment.telemetry.outputKind,
                         visibleAtPtyRead: segment.telemetry.visibleAtPtyRead,
                         ...(segment.telemetry.inputAcceptedAt === undefined
@@ -865,6 +871,10 @@ function snapshot(
     bufferLength: record.terminal.buffer.active.length,
     restoreScrollbackLines: materialization.scrollbackLines
   });
+  const rawOutput = record.rawOutputTimeline.snapshot(
+    terminalMetricsProfile.enabled
+  );
+  const streamStats = record.stream.stats();
   return {
     surfaceId: record.surfaceId,
     sessionId: record.sessionId,
@@ -879,10 +889,31 @@ function snapshot(
     unreadCount: 0,
     attention: false,
     cwdRanges: record.cwdRanges.snapshotRanges(cwdRangeWindow),
+    pipelineProgress: {
+      ...rawOutput.progress,
+      lastHeadlessCommitAt: record.lastHeadlessCommitAt ?? null,
+      lastHeadlessCommitSequence: record.lastHeadlessCommitSequence ?? null,
+      lastScreenHeadlessCommitAt: record.lastScreenHeadlessCommitAt ?? null,
+      lastScreenHeadlessCommitSequence:
+        record.lastScreenHeadlessCommitSequence ?? null,
+      lastPortSentAt: streamStats.lastOutputPortSentAt ?? null,
+      lastPortSentSequence: streamStats.lastOutputPortSentSequence ?? null,
+      lastScreenPortSentAt: streamStats.lastScreenOutputPortSentAt ?? null,
+      lastScreenPortSentSequence:
+        streamStats.lastScreenOutputPortSentSequence ?? null
+    },
+    diagnosticsHealth: diagnosticsIpc?.snapshot() ?? {
+      enabled: false,
+      pendingRecords: 0,
+      sentRecords: 0,
+      droppedRecords: 0,
+      failedBatches: 0
+    },
     ...(options.includeRawOutputTail
       ? {
-          rawOutputTail: record.rawOutputTail,
-          rawOutputTailTruncated: record.rawOutputTailTruncated,
+          rawOutputTail: rawOutput.rawOutputTail,
+          rawOutputTailTruncated: rawOutput.rawOutputTailTruncated,
+          rawOutputTimeline: rawOutput.timeline,
           rawOutputLogPath: record.rawOutputLogPath,
           rawOutputIndexPath: record.rawOutputIndexPath,
           rawOutputLogBytes: record.rawOutputLogBytes,
@@ -927,6 +958,7 @@ function sendSnapshotAfterMutationQueue(
             requestedSurfaceId: record.surfaceId
           });
         }
+        diagnosticsIpc?.flush();
       }
       send({
         type: "snapshot",
@@ -1344,8 +1376,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       : undefined,
     outputDiagnosticClassifierActive: terminalMetricsProfile.enabled,
     outputSegmenterState: { pendingOsc7: false, pendingOsc7Prefix: "" },
-    rawOutputTail: "",
-    rawOutputTailTruncated: false,
+    rawOutputTimeline: createRawOutputTimeline(),
     rawOutputLogPath: rawOutputHistory?.rawOutputLogPath,
     rawOutputIndexPath: rawOutputHistory?.rawOutputIndexPath,
     rawOutputLogBytes: 0,
@@ -1585,9 +1616,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           sessionId: record.sessionId,
           gapMs,
           ptyReadAt,
-          nextSequence: formatUint64Decimal(
-            incrementUint64(record.sequence)
-          ),
+          nextSequence: formatUint64Decimal(incrementUint64(record.sequence)),
           chunkBytes: Buffer.byteLength(chunk, "utf8"),
           outputKind,
           ...(record.pendingInputTelemetry
@@ -1613,7 +1642,22 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     if (outputKind !== undefined && ptyReadAt !== undefined) {
       recordPtyChunk(record, chunk, outputKind, ptyReadAt);
     }
-    appendRawOutputTail(record, chunk);
+    record.rawOutputTimeline.record(
+      chunk,
+      ptyReadAt === undefined || outputKind === undefined
+        ? undefined
+        : {
+            ptyReadAt,
+            outputKind,
+            visibleAtPtyRead,
+            ...(pendingInputTelemetry
+              ? {
+                  inputSequence: pendingInputTelemetry.inputSequence,
+                  inputKind: pendingInputTelemetry.inputKind
+                }
+              : {})
+          }
+    );
     record.lastActivityAt = Date.now();
     const splitOutput = splitTerminalOutputByOsc7({
       chunk,

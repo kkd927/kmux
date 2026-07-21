@@ -217,16 +217,23 @@ function registerTestHandlers(options: {
           selected: "unavailable" as const,
           attempts: []
         },
+        diagnosticsHealth: { mainWriter: null, ptyHost: null },
         renderer: { ok: false },
         timings: {
           snapshotCompletedAt: "2026-05-27T00:00:00.000Z",
           rendererCompletedAt: "2026-05-27T00:00:00.000Z"
+        },
+        screenshotDiagnostics: {
+          sourceSurfaceId: null,
+          trusted: null,
+          skippedReason: "renderer-unavailable" as const
         },
         contentConsistency: {
           verdict: "indeterminate" as const,
           sampledLines: 0,
           matchedLines: 0
         },
+        rendererBufferTrusted: null,
         rendererTrusted: null
       })),
     prepareWorktreeConversion: vi.fn(),
@@ -809,16 +816,23 @@ describe("ipc handlers", () => {
         selected: "unavailable" as const,
         attempts: []
       },
+      diagnosticsHealth: { mainWriter: null, ptyHost: null },
       renderer: { ok: true },
       timings: {
         snapshotCompletedAt: "2026-05-27T00:00:00.000Z",
         rendererCompletedAt: "2026-05-27T00:00:00.000Z"
+      },
+      screenshotDiagnostics: {
+        sourceSurfaceId: null,
+        trusted: null,
+        skippedReason: "renderer-unavailable" as const
       },
       contentConsistency: {
         verdict: "indeterminate" as const,
         sampledLines: 0,
         matchedLines: 0
       },
+      rendererBufferTrusted: null,
       rendererTrusted: null
     }));
     registerTestHandlers({

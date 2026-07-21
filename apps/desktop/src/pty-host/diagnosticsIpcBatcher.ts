@@ -8,7 +8,16 @@ export interface PtyDiagnosticsIpcBatcher {
   configure(enabled: boolean): void;
   record(record: DiagnosticsRecord): boolean;
   flush(): void;
+  snapshot(): PtyDiagnosticsIpcBatcherSnapshot;
   close(): void;
+}
+
+export interface PtyDiagnosticsIpcBatcherSnapshot {
+  enabled: boolean;
+  pendingRecords: number;
+  sentRecords: number;
+  droppedRecords: number;
+  failedBatches: number;
 }
 
 export function createPtyDiagnosticsIpcBatcher(options: {
@@ -27,6 +36,9 @@ export function createPtyDiagnosticsIpcBatcher(options: {
   let enabled = options.enabled;
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let sentRecords = 0;
+  let droppedRecords = 0;
+  let failedBatches = 0;
 
   const cancelTimer = (): void => {
     if (!timer) {
@@ -41,7 +53,13 @@ export function createPtyDiagnosticsIpcBatcher(options: {
     if (pending.length === 0) {
       return;
     }
-    options.sendBatch(pending.splice(0));
+    const batch = pending.splice(0);
+    if (options.sendBatch(batch)) {
+      sentRecords += batch.length;
+    } else {
+      droppedRecords += batch.length;
+      failedBatches += 1;
+    }
   };
 
   return {
@@ -71,6 +89,15 @@ export function createPtyDiagnosticsIpcBatcher(options: {
       return true;
     },
     flush,
+    snapshot(): PtyDiagnosticsIpcBatcherSnapshot {
+      return {
+        enabled: enabled && !closed,
+        pendingRecords: pending.length,
+        sentRecords,
+        droppedRecords,
+        failedBatches
+      };
+    },
     close(): void {
       if (closed) {
         return;

@@ -113,6 +113,10 @@ describe("async diagnostics writer", () => {
 
     expect(readFileSync(path, "utf8")).not.toContain("stale");
     expect(parsedLines(path)).toEqual([{ scope: "fresh", sequence: 9 }]);
+    expect(writer.snapshot()).toMatchObject({
+      logTruncationCount: 1,
+      lastLogTruncatedAt: expect.any(String)
+    });
   });
 
   it("flushes before clear, disable, and close without accepting disabled records", async () => {
@@ -150,6 +154,7 @@ describe("async diagnostics writer", () => {
       );
     }
     expect(writer.queuedBytes).toBeLessThanOrEqual(700);
+    expect(writer.snapshot().droppedTerminalTelemetry).toBeGreaterThan(0);
     expect(writer.record(record("main.lifecycle", { preserved: true }))).toBe(
       true
     );
@@ -166,6 +171,10 @@ describe("async diagnostics writer", () => {
       })
     );
     expect(lines).toContainEqual({ scope: "main.lifecycle", preserved: true });
+    expect(writer.snapshot()).toMatchObject({
+      pendingDroppedTerminalTelemetry: 0,
+      pendingDroppedOther: 0
+    });
   });
 
   it("keeps accepting work within the bound while one asynchronous write is slow", async () => {
@@ -297,6 +306,13 @@ describe("async diagnostics writer", () => {
       false
     );
     expect(writer.record(record("after-failure"))).toBe(false);
+    expect(writer.snapshot()).toMatchObject({
+      enabled: false,
+      accepting: false,
+      failed: true,
+      lastFailureAt: expect.any(String),
+      lastFailureReason: expect.any(String)
+    });
     await expect(writer.close()).resolves.toBeUndefined();
   });
 });

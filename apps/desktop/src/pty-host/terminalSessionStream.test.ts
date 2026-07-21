@@ -90,7 +90,7 @@ function outputDelta(
   sequence: number,
   data = "hello",
   cwd?: string
-): TerminalDelta {
+): Extract<TerminalDelta, { type: "output" }> {
   return {
     type: "output",
     fromSequence: u(sequence - 1),
@@ -467,7 +467,11 @@ describe("TerminalSessionStream", () => {
       outstandingOutputBytes: 5,
       maxAttachmentOutstandingOutputBytes: 5,
       peakAttachmentOutstandingOutputBytes: 5,
-      creditBoundViolationCount: 0
+      creditBoundViolationCount: 0,
+      lastOutputPortSentAt: null,
+      lastOutputPortSentSequence: null,
+      lastScreenOutputPortSentAt: null,
+      lastScreenOutputPortSentSequence: null
     });
 
     port.receive({
@@ -737,11 +741,26 @@ describe("TerminalSessionStream", () => {
     stream.bind("attach_1", port);
     await attach(port);
 
-    stream.publish(outputDelta(1));
+    const delta = outputDelta(1);
+    delta.segments[0]!.telemetry = {
+      ptyReadAt: 1_230,
+      headlessCommitAt: 1_232,
+      outputKind: "screen"
+    };
+    stream.publish(delta);
 
     expect(port.sent.at(-1)).toMatchObject({
       type: "delta",
-      telemetry: { portSentAt: 1_234.5 }
+      telemetry: { portSentAt: 1_234.5 },
+      delta: {
+        segments: [{ telemetry: { outputKind: "screen" } }]
+      }
+    });
+    expect(stream.stats()).toMatchObject({
+      lastOutputPortSentAt: 1_234.5,
+      lastOutputPortSentSequence: u(1),
+      lastScreenOutputPortSentAt: 1_234.5,
+      lastScreenOutputPortSentSequence: u(1)
     });
   });
 

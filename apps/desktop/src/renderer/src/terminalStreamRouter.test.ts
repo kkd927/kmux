@@ -90,6 +90,7 @@ function createSink(options: { autoCheckpoint?: boolean } = {}) {
   }> = [];
   const errors: TerminalStreamRouterError[] = [];
   const events: string[] = [];
+  const received: Array<{ sequence: Uint64; receivedAt: number | null }> = [];
   const sink: TerminalStreamSink = {
     beginCheckpoint(value) {
       events.push(`checkpoint:${value.sequence}`);
@@ -125,6 +126,9 @@ function createSink(options: { autoCheckpoint?: boolean } = {}) {
     applyResume: vi.fn((resume) => {
       events.push(`resume:${resume.resumedFromSequence}`);
     }),
+    outputReceived(delta, receivedAt) {
+      received.push({ sequence: delta.sequence, receivedAt });
+    },
     write(data, complete, context) {
       events.push(`write:${context.delta.sequence}`);
       writes.push({ data, complete, context });
@@ -140,7 +144,7 @@ function createSink(options: { autoCheckpoint?: boolean } = {}) {
       errors.push(error);
     }
   };
-  return { sink, writes, checkpoints, errors, events };
+  return { sink, writes, checkpoints, errors, events, received };
 }
 
 function envelope(
@@ -257,6 +261,7 @@ function register(
       TerminalStreamRouter["register"]
     >[0]["writeScheduler"];
     metrics?: Parameters<TerminalStreamRouter["register"]>[0]["metrics"];
+    metricsSampleEvery?: number;
   } = {}
 ) {
   const port = options.port ?? new FakePort();
@@ -277,7 +282,10 @@ function register(
     ...(options.writeScheduler === undefined
       ? {}
       : { writeScheduler: options.writeScheduler }),
-    ...(options.metrics === undefined ? {} : { metrics: options.metrics })
+    ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+    ...(options.metricsSampleEvery === undefined
+      ? {}
+      : { metricsSampleEvery: options.metricsSampleEvery })
   });
   return { port, ...sinkHarness, registration };
 }
@@ -751,6 +759,31 @@ describe("TerminalStreamRouter", () => {
     expect(harness.writes[3]?.data).toBe("\u001b[31mred");
     harness.writes[3]?.complete();
     await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(5)));
+    router.dispose();
+  });
+
+  it("reports every renderer receive boundary even when performance metrics are sampled", async () => {
+    const metricRecords: string[] = [];
+    const router = new TerminalStreamRouter();
+    const harness = register(router, {
+      metrics: {
+        now: () => 1_000,
+        record: (name) => metricRecords.push(name)
+      },
+      metricsSampleEvery: 8
+    });
+    await waitForCheckpoint(harness, 0);
+
+    harness.port.receive(output(0, "one"));
+    harness.port.receive(output(1, "two"));
+
+    expect(harness.received).toEqual([
+      { sequence: u(1), receivedAt: 1_000 },
+      { sequence: u(2), receivedAt: 1_000 }
+    ]);
+    expect(
+      metricRecords.filter((name) => name === "terminal.data-plane.receive")
+    ).toHaveLength(1);
     router.dispose();
   });
 

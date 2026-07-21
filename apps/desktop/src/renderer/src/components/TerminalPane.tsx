@@ -310,6 +310,28 @@ function cwdAtDataOffset(
   return delta.segments.at(-1)?.cwd;
 }
 
+function outputRangeAffectsScreen(
+  delta: Extract<TerminalDelta, { type: "output" }>,
+  dataOffset: number,
+  dataLength: number
+): boolean {
+  const dataEnd = dataOffset + dataLength;
+  let segmentStart = 0;
+  for (const segment of delta.segments) {
+    const segmentEnd = segmentStart + segment.data.length;
+    if (
+      segmentEnd > dataOffset &&
+      segmentStart < dataEnd &&
+      (segment.telemetry?.outputKind === "screen" ||
+        segment.telemetry?.outputKind === "mixed")
+    ) {
+      return true;
+    }
+    segmentStart = segmentEnd;
+  }
+  return false;
+}
+
 function openExternalTerminalLink(surfaceId: string, rawUrl: string): void {
   let url: URL;
   try {
@@ -490,12 +512,31 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           element.__kmuxTerminalDiagnostics?.lastOnRenderAt ?? null,
         lastOnRenderSequence:
           element.__kmuxTerminalDiagnostics?.lastOnRenderSequence ?? null,
+        lastScreenOnRenderAt:
+          element.__kmuxTerminalDiagnostics?.lastScreenOnRenderAt ?? null,
+        lastScreenOnRenderSequence:
+          element.__kmuxTerminalDiagnostics?.lastScreenOnRenderSequence ?? null,
+        lastReceiveAt: element.__kmuxTerminalDiagnostics?.lastReceiveAt ?? null,
+        lastReceiveSequence:
+          element.__kmuxTerminalDiagnostics?.lastReceiveSequence ?? null,
+        lastScreenReceiveAt:
+          element.__kmuxTerminalDiagnostics?.lastScreenReceiveAt ?? null,
+        lastScreenReceiveSequence:
+          element.__kmuxTerminalDiagnostics?.lastScreenReceiveSequence ?? null,
         lastWriteAt: element.__kmuxTerminalDiagnostics?.lastWriteAt ?? null,
         lastWriteSequence:
           element.__kmuxTerminalDiagnostics?.lastWriteSequence ?? null,
+        lastScreenWriteAt:
+          element.__kmuxTerminalDiagnostics?.lastScreenWriteAt ?? null,
+        lastScreenWriteSequence:
+          element.__kmuxTerminalDiagnostics?.lastScreenWriteSequence ?? null,
         lastParsedAt: element.__kmuxTerminalDiagnostics?.lastParsedAt ?? null,
         lastParsedSequence:
           element.__kmuxTerminalDiagnostics?.lastParsedSequence ?? null,
+        lastScreenParsedAt:
+          element.__kmuxTerminalDiagnostics?.lastScreenParsedAt ?? null,
+        lastScreenParsedSequence:
+          element.__kmuxTerminalDiagnostics?.lastScreenParsedSequence ?? null,
         lastInputAt: element.__kmuxTerminalDiagnostics?.lastInputAt ?? null,
         lastInputKind: element.__kmuxTerminalDiagnostics?.lastInputKind ?? null,
         lastInputBytes:
@@ -1585,8 +1626,10 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!targetSurface) {
       return;
     }
-    props.onFocusPane(props.paneId);
-    props.onFocusSurface(surfaceId);
+    if (action !== "capture-diagnostics") {
+      props.onFocusPane(props.paneId);
+      props.onFocusSurface(surfaceId);
+    }
 
     const terminal = terminalRef.current;
     switch (action) {
@@ -1858,14 +1901,28 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     const renderListener = terminal.onRender(() => {
       const diagnostics = (containerRef.current as TerminalHostElement | null)
         ?.__kmuxTerminalDiagnostics;
+      const renderedAt = terminalDataPlaneNowMs(performance);
+      const pendingScreenSequence =
+        diagnostics?.lastScreenParsedSequence ?? null;
+      const screenRenderPending =
+        pendingScreenSequence !== null &&
+        (diagnostics?.lastScreenOnRenderSequence === null ||
+          diagnostics?.lastScreenOnRenderSequence === undefined ||
+          pendingScreenSequence > diagnostics.lastScreenOnRenderSequence);
       updateTerminalDiagnostics(activeSurface.id, terminal, {
-        lastOnRenderAt: terminalDataPlaneNowMs(performance),
+        lastOnRenderAt: renderedAt,
         ...(terminalDiagnosticsEnabledRef.current
           ? {
               lastOnRenderSequence:
                 diagnostics?.lastParsedSequence ??
                 diagnostics?.renderedSequence ??
-                null
+                null,
+              ...(screenRenderPending
+                ? {
+                    lastScreenOnRenderAt: renderedAt,
+                    lastScreenOnRenderSequence: pendingScreenSequence
+                  }
+                : {})
             }
           : {})
       });
@@ -2754,15 +2811,50 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
           attachAvailableSequence: resume.availableSequence
         });
       },
+      outputReceived(delta, receivedAt) {
+        if (terminalDiagnosticsEnabledRef.current && receivedAt !== null) {
+          const screenAffecting = delta.segments.some(
+            (segment) =>
+              segment.telemetry?.outputKind === "screen" ||
+              segment.telemetry?.outputKind === "mixed"
+          );
+          updateTerminalDiagnostics(
+            surfaceId,
+            checkpointController.currentBundle.terminal,
+            {
+              lastReceiveAt: receivedAt,
+              lastReceiveSequence: delta.sequence,
+              ...(screenAffecting
+                ? {
+                    lastScreenReceiveAt: receivedAt,
+                    lastScreenReceiveSequence: delta.sequence
+                  }
+                : {})
+            }
+          );
+        }
+      },
       write(data, onParsed, context) {
         const bundle = checkpointController.currentBundle;
         const currentTerminal = bundle.terminal;
         const lineCwds = bundle.lineCwds;
         const cwd = cwdAtDataOffset(context.delta, context.dataOffset);
+        const screenAffecting = outputRangeAffectsScreen(
+          context.delta,
+          context.dataOffset,
+          data.length
+        );
         if (terminalDiagnosticsEnabledRef.current) {
+          const writeAt = terminalDataPlaneNowMs(performance);
           updateTerminalDiagnostics(surfaceId, currentTerminal, {
-            lastWriteAt: terminalDataPlaneNowMs(performance),
-            lastWriteSequence: context.delta.sequence
+            lastWriteAt: writeAt,
+            lastWriteSequence: context.delta.sequence,
+            ...(screenAffecting
+              ? {
+                  lastScreenWriteAt: writeAt,
+                  lastScreenWriteSequence: context.delta.sequence
+                }
+              : {})
           });
         }
         let cwdCursor = cwdWriteCursorsRef.current.get(currentTerminal);
@@ -2801,12 +2893,21 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
                 surfaceId,
                 context.delta.sequence
               );
+              const parsedAt = terminalDiagnosticsEnabledRef.current
+                ? terminalDataPlaneNowMs(performance)
+                : null;
               updateTerminalDiagnostics(surfaceId, currentTerminal, {
                 renderedSequence: context.delta.sequence,
-                ...(terminalDiagnosticsEnabledRef.current
+                ...(parsedAt !== null
                   ? {
-                      lastParsedAt: terminalDataPlaneNowMs(performance),
-                      lastParsedSequence: context.delta.sequence
+                      lastParsedAt: parsedAt,
+                      lastParsedSequence: context.delta.sequence,
+                      ...(screenAffecting
+                        ? {
+                            lastScreenParsedAt: parsedAt,
+                            lastScreenParsedSequence: context.delta.sequence
+                          }
+                        : {})
                     }
                   : {})
               });
@@ -3325,8 +3426,6 @@ export function TerminalPane(props: TerminalPaneProps): JSX.Element {
     if (!surface) {
       return;
     }
-    props.onFocusPane(props.paneId);
-    props.onFocusSurface(surfaceId);
     try {
       const context = await surfaceMenuContextFor(surface);
       await window.kmux.showSurfaceContextMenu(surfaceId, x, y, context);

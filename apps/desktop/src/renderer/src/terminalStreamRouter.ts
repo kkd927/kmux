@@ -101,6 +101,10 @@ export interface TerminalStreamSink {
     totalBytes: number
   ): MaybePromise<TerminalCheckpointHydration>;
   applyResume(resume: TerminalStreamResume): MaybePromise<void>;
+  outputReceived?(
+    delta: Extract<TerminalDelta, { type: "output" }>,
+    receivedAt: number | null
+  ): void;
   write(
     data: string,
     onParsed: () => void,
@@ -705,11 +709,13 @@ export class TerminalStreamRouter {
       validation.value.type === "delta" &&
       validation.value.delta.type === "output"
     ) {
+      const receivedAt = portReceiveAt ?? attachment.metrics?.now() ?? null;
+      attachment.sink.outputReceived?.(validation.value.delta, receivedAt);
       this.recordOutputReceived(
         attachment,
         validation.value.delta,
         validation.value.telemetry?.portSentAt,
-        portReceiveAt ?? attachment.metrics?.now()
+        receivedAt ?? undefined
       );
     }
     attachment.messages.push(validation.value);

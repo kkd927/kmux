@@ -1,4 +1,8 @@
 import type { Uint64 } from "./uint64";
+import type {
+  TerminalInputDiagnosticKind,
+  TerminalOutputDiagnosticKind
+} from "./terminalDataPlane";
 
 export type Id = string;
 export type RemotePersistenceLevel =
@@ -545,7 +549,72 @@ export interface SurfaceSnapshotPayload {
   rawOutputIndexPath?: string;
   rawOutputLogBytes?: number;
   rawOutputLogChunks?: number;
+  rawOutputTimeline?: SurfaceSnapshotRawOutputTimeline;
+  pipelineProgress?: SurfaceSnapshotPipelineProgress;
+  diagnosticsHealth?: SurfaceSnapshotDiagnosticsHealth;
   cwdRanges?: SurfaceSnapshotCwdRange[];
+}
+
+/**
+ * Unsampled metadata recorded at the node-pty onData boundary. Character and
+ * byte offsets are absolute within the session output stream, so a capture can
+ * map these entries back to the retained raw-output tail without storing more
+ * terminal content.
+ */
+export interface SurfaceSnapshotRawOutputChunk {
+  chunkSequence: Uint64;
+  ptyReadAt: number;
+  byteStart: number;
+  byteEnd: number;
+  charStart: number;
+  charEnd: number;
+  utf8Bytes: number;
+  chars: number;
+  outputKind: TerminalOutputDiagnosticKind;
+  visibleAtPtyRead: boolean;
+  inputSequence?: Uint64;
+  inputKind?: TerminalInputDiagnosticKind;
+}
+
+export interface SurfaceSnapshotRawOutputTimeline {
+  enabled: boolean;
+  sampleEvery: 1;
+  maxChunks: number;
+  totalChunks: Uint64;
+  retainedChunks: number;
+  droppedChunks: number;
+  unobservedChunks: number;
+  rawTailCharStart: number;
+  rawTailCharEnd: number;
+  chunks: SurfaceSnapshotRawOutputChunk[];
+}
+
+/** All *At fields use high-resolution Unix epoch milliseconds. */
+export interface SurfaceSnapshotPipelineProgress {
+  lastAnyPtyReadAt: number | null;
+  lastAnyPtyChunkSequence: Uint64 | null;
+  lastScreenPtyReadAt: number | null;
+  lastScreenPtyChunkSequence: Uint64 | null;
+  lastTitleOnlyPtyReadAt: number | null;
+  lastTitleOnlyPtyChunkSequence: Uint64 | null;
+  lastIndeterminatePtyReadAt: number | null;
+  lastIndeterminatePtyChunkSequence: Uint64 | null;
+  lastHeadlessCommitAt: number | null;
+  lastHeadlessCommitSequence: Uint64 | null;
+  lastScreenHeadlessCommitAt: number | null;
+  lastScreenHeadlessCommitSequence: Uint64 | null;
+  lastPortSentAt: number | null;
+  lastPortSentSequence: Uint64 | null;
+  lastScreenPortSentAt: number | null;
+  lastScreenPortSentSequence: Uint64 | null;
+}
+
+export interface SurfaceSnapshotDiagnosticsHealth {
+  enabled: boolean;
+  pendingRecords: number;
+  sentRecords: number;
+  droppedRecords: number;
+  failedBatches: number;
 }
 
 export interface SurfaceSnapshotOptions {
@@ -599,6 +668,10 @@ export interface SurfaceCaptureDiagnosticSources {
 
 export interface SurfaceCaptureRendererDom {
   surfaceId: Id;
+  surfaceActive: boolean;
+  surfaceVisible: boolean;
+  activeSurfaceId: Id | null;
+  bufferSource: "active-live" | "inactive-cache" | "inactive-unavailable";
   documentHasFocus: boolean;
   fontStatus: string;
   devicePixelRatio: number;
@@ -611,6 +684,7 @@ export interface SurfaceCaptureRendererDom {
     renderedSequence: Uint64 | null;
     targetSequence: Uint64 | null;
     waitTimedOut: boolean;
+    waitSkippedReason: "inactive-surface" | "surface-not-visible" | null;
     waitDurationMs: number;
     sources: SurfaceCaptureDiagnosticSources;
   };
@@ -630,12 +704,22 @@ export interface SurfaceCaptureRendererDom {
     lastInputAt: number | null;
     lastInputBytes: number | null;
     lastInputRoute: string | null;
+    lastReceiveAt: number | null;
+    lastReceiveSequence: Uint64 | null;
+    lastScreenReceiveAt: number | null;
+    lastScreenReceiveSequence: Uint64 | null;
     lastWriteAt: number | null;
-    lastWriteSequence: number | null;
+    lastWriteSequence: Uint64 | null;
+    lastScreenWriteAt: number | null;
+    lastScreenWriteSequence: Uint64 | null;
     lastParsedAt: number | null;
-    lastParsedSequence: number | null;
+    lastParsedSequence: Uint64 | null;
+    lastScreenParsedAt: number | null;
+    lastScreenParsedSequence: Uint64 | null;
     lastOnRenderAt: number | null;
-    lastOnRenderSequence: number | null;
+    lastOnRenderSequence: Uint64 | null;
+    lastScreenOnRenderAt: number | null;
+    lastScreenOnRenderSequence: Uint64 | null;
   };
   scroll: {
     isAtBottom: boolean;
@@ -681,6 +765,29 @@ export interface SurfaceCaptureFiles {
   rawOutputTail?: string;
   rawOutputLog?: string;
   rawOutputIndex?: string;
+  diagnosticsLog?: string;
+}
+
+export interface SurfaceCaptureDiagnosticsWriterHealth {
+  enabled: boolean;
+  accepting: boolean;
+  failed: boolean;
+  queuedBytes: number;
+  queuedRecords: number;
+  droppedTerminalTelemetry: number;
+  droppedOther: number;
+  pendingDroppedTerminalTelemetry: number;
+  pendingDroppedOther: number;
+  logTruncationCount: number;
+  lastLogTruncatedAt: string | null;
+  lastFailureAt: string | null;
+  lastFailureReason: string | null;
+}
+
+export interface SurfaceCaptureDiagnosticsHealth {
+  mainWriter: SurfaceCaptureDiagnosticsWriterHealth | null;
+  ptyHost: SurfaceSnapshotDiagnosticsHealth | null;
+  diagnosticsLogCopyError?: string;
 }
 
 export type SurfaceCaptureSnapshotAttemptKind = "settled" | "immediate";
@@ -712,6 +819,17 @@ export interface SurfaceCaptureTimings {
   screenshotCompletedAt?: string;
 }
 
+export interface SurfaceCaptureScreenshotDiagnostics {
+  sourceSurfaceId: Id | null;
+  trusted: boolean | null;
+  skippedReason:
+    | "inactive-surface"
+    | "surface-not-visible"
+    | "renderer-unavailable"
+    | "capture-unavailable"
+    | null;
+}
+
 export type SurfaceCaptureContentConsistencyVerdict =
   | "consistent"
   | "behind"
@@ -739,12 +857,15 @@ export interface SurfaceCapturePayload {
   snapshot: SurfaceSnapshotPayload | null;
   snapshotDiagnostics: SurfaceCaptureSnapshotDiagnostics;
   rawOutputCopyErrors?: string[];
+  diagnosticsHealth: SurfaceCaptureDiagnosticsHealth;
   renderer: SurfaceCaptureRendererPayload;
   timings: SurfaceCaptureTimings;
+  screenshotDiagnostics: SurfaceCaptureScreenshotDiagnostics;
   contentConsistency: SurfaceCaptureContentConsistency;
-  // True when the renderer capture can be trusted: the sequence wait
-  // completed, or it timed out but the content cross-check says the
-  // renderer is current. Null when no renderer DOM was captured.
+  // True when the captured renderer buffer is live for the requested surface
+  // and its sequence/content checks pass. Null when no renderer DOM exists.
+  rendererBufferTrusted: boolean | null;
+  // Backward-compatible alias for rendererBufferTrusted.
   rendererTrusted: boolean | null;
 }
 

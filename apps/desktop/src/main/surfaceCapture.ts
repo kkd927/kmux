@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { AppState } from "@kmux/core";
 import type {
   Id,
+  SurfaceCaptureDiagnosticsWriterHealth,
   SurfaceCaptureOptions,
   SurfaceCapturePayload,
   SurfaceCaptureRendererPayload,
@@ -37,6 +38,9 @@ interface SurfaceCaptureServiceOptions {
     surfaceId: Id,
     options?: SurfaceCaptureOptions
   ) => Promise<SurfaceSnapshotPayload | null>;
+  flushDiagnostics?: () => Promise<void>;
+  getDiagnosticsWriterHealth?: () => SurfaceCaptureDiagnosticsWriterHealth | null;
+  getDiagnosticsLogPath?: () => string | undefined;
 }
 
 export interface SurfaceCaptureService {
@@ -75,6 +79,21 @@ export function createSurfaceCaptureService(
         captureOptions
       );
     const snapshotCompletedAt = isoNow();
+    await options.flushDiagnostics?.();
+    const diagnosticsErrors: string[] = [];
+    const diagnosticsLogPath = copyOptionalFile({
+      sourcePath: options.getDiagnosticsLogPath?.(),
+      targetPath: join(outDir, "kmux-debug.log"),
+      label: "diagnostics log",
+      errors: diagnosticsErrors
+    });
+    const diagnosticsHealth = {
+      mainWriter: options.getDiagnosticsWriterHealth?.() ?? null,
+      ptyHost: snapshot?.diagnosticsHealth ?? null,
+      ...(diagnosticsErrors.length > 0
+        ? { diagnosticsLogCopyError: diagnosticsErrors.join(" | ") }
+        : {})
+    };
     const window = options.getWindow();
     const rendererTimeoutMs = normalizeDuration(
       captureOptions.timeoutMs,
@@ -88,9 +107,24 @@ export function createSurfaceCaptureService(
     );
     const rendererCompletedAt = isoNow();
 
-    const screenshotPath = renderer.dom
-      ? await captureScreenshot(window, renderer.dom.rootRect, outDir)
-      : undefined;
+    const screenshotSkipReason = renderer.dom
+      ? !renderer.dom.surfaceActive
+        ? "inactive-surface"
+        : !renderer.dom.surfaceVisible
+          ? "surface-not-visible"
+          : null
+      : "renderer-unavailable";
+    const screenshotPath =
+      screenshotSkipReason === null && renderer.dom
+        ? await captureScreenshot(window, renderer.dom.rootRect, outDir)
+        : undefined;
+    const screenshotDiagnostics = {
+      sourceSurfaceId: screenshotPath ? surfaceId : null,
+      trusted: screenshotPath ? true : null,
+      skippedReason:
+        screenshotSkipReason ??
+        (screenshotPath === undefined ? "capture-unavailable" : null)
+    } as const;
     const screenshotCompletedAt =
       screenshotPath === undefined ? undefined : isoNow();
     const contentConsistency = assessContentConsistency({
@@ -98,9 +132,10 @@ export function createSurfaceCaptureService(
       snapshotScreenRows: snapshot?.rows,
       rendererRecentText: renderer.dom?.recentText
     });
-    const rendererTrusted = renderer.dom
-      ? !renderer.dom.terminalDiagnostics.waitTimedOut ||
-        contentConsistency.verdict === "consistent"
+    const rendererBufferTrusted = renderer.dom
+      ? renderer.dom.bufferSource === "active-live" &&
+        (!renderer.dom.terminalDiagnostics.waitTimedOut ||
+          contentConsistency.verdict === "consistent")
       : null;
     const textPath = join(outDir, "terminal.txt");
     const jsonPath = join(outDir, "capture.json");
@@ -123,11 +158,13 @@ export function createSurfaceCaptureService(
         screenshot: screenshotPath,
         rawOutputTail: rawOutputTailPath,
         rawOutputLog: rawOutputHistory.rawOutputLogPath,
-        rawOutputIndex: rawOutputHistory.rawOutputIndexPath
+        rawOutputIndex: rawOutputHistory.rawOutputIndexPath,
+        diagnosticsLog: diagnosticsLogPath
       },
       snapshot,
       snapshotDiagnostics,
       rawOutputCopyErrors: rawOutputHistory.errors,
+      diagnosticsHealth,
       renderer,
       timings: {
         snapshotCompletedAt,
@@ -136,8 +173,10 @@ export function createSurfaceCaptureService(
           ? { screenshotCompletedAt }
           : {})
       },
+      screenshotDiagnostics,
       contentConsistency,
-      rendererTrusted
+      rendererBufferTrusted,
+      rendererTrusted: rendererBufferTrusted
     };
 
     if (rawOutputTailPath !== undefined) {
@@ -323,7 +362,10 @@ async function attemptSnapshot({
   }
 }
 
-function normalizeDuration(value: number | undefined, fallback: number): number {
+function normalizeDuration(
+  value: number | undefined,
+  fallback: number
+): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return fallback;
   }
@@ -405,6 +447,8 @@ function createRendererCaptureScript(
     });
     const readSequenceValue = (value) =>
       typeof value === 'bigint' && value >= 0n ? value : null;
+    const readFiniteNumberValue = (value) =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
     const readStringValue = (value) =>
       typeof value === 'string' ? value : null;
     const readAttrSequence = (attr) => {
@@ -506,10 +550,28 @@ function createRendererCaptureScript(
         error: 'Terminal root not found for surface ' + surfaceId
       };
     }
+    const pane = root.closest('[data-pane-id]');
+    const activeSurfaceId = pane
+      ? readStringValue(pane.getAttribute('data-active-surface-id'))
+      : null;
+    const surfaceActive =
+      root.getAttribute('data-active') === 'true' &&
+      activeSurfaceId === surfaceId;
+    const initialRootRect = root.getBoundingClientRect();
+    const rootStyle = window.getComputedStyle(root);
+    const surfaceVisible =
+      surfaceActive &&
+      rootStyle.visibility !== 'hidden' &&
+      rootStyle.display !== 'none' &&
+      initialRootRect.width > 0 &&
+      initialRootRect.height > 0;
+    const waitSkippedReason = surfaceActive
+      ? (surfaceVisible ? null : 'surface-not-visible')
+      : 'inactive-surface';
     const waitStartedAt = performance.now();
     const deadline = waitStartedAt + Math.max(0, timeoutMs);
     let waitTimedOut = false;
-    if (typeof targetSequence === 'bigint') {
+    if (surfaceVisible && typeof targetSequence === 'bigint') {
       while (performance.now() < deadline) {
         const diagnostics = readDiagnostics(root);
         if (
@@ -526,7 +588,9 @@ function createRendererCaptureScript(
         diagnostics.renderedSequence < targetSequence;
     }
     const waitDurationMs = Math.round(performance.now() - waitStartedAt);
-    await nextPaint();
+    if (surfaceVisible) {
+      await nextPaint();
+    }
     const attrs = {};
     for (const attr of Array.from(root.attributes)) {
       if (attr.name.startsWith('data-terminal-')) {
@@ -547,11 +611,11 @@ function createRendererCaptureScript(
     const latestDiagnosticMetadata = (timestampKey) => {
       let latest = diagnosticMetadataSources[0] || null;
       let latestAt = latest
-        ? (readSequenceValue(latest[timestampKey]) ?? -Infinity)
+        ? (readFiniteNumberValue(latest[timestampKey]) ?? -Infinity)
         : -Infinity;
       for (const candidate of diagnosticMetadataSources.slice(1)) {
         const candidateAt =
-          readSequenceValue(candidate[timestampKey]) ?? -Infinity;
+          readFiniteNumberValue(candidate[timestampKey]) ?? -Infinity;
         if (candidateAt > latestAt) {
           latest = candidate;
           latestAt = candidateAt;
@@ -561,13 +625,19 @@ function createRendererCaptureScript(
     };
     const focusMetadata = latestDiagnosticMetadata('lastFocusEventAt');
     const inputMetadata = latestDiagnosticMetadata('lastInputAt');
+    const receiveMetadata = latestDiagnosticMetadata('lastReceiveAt');
+    const screenReceiveMetadata = latestDiagnosticMetadata('lastScreenReceiveAt');
     const writeMetadata = latestDiagnosticMetadata('lastWriteAt');
+    const screenWriteMetadata = latestDiagnosticMetadata('lastScreenWriteAt');
     const parsedMetadata = latestDiagnosticMetadata('lastParsedAt');
+    const screenParsedMetadata = latestDiagnosticMetadata('lastScreenParsedAt');
     const renderMetadata = latestDiagnosticMetadata('lastOnRenderAt');
+    const screenRenderMetadata = latestDiagnosticMetadata('lastScreenOnRenderAt');
     const terminalDiagnostics = {
       ...readDiagnostics(root),
       targetSequence,
       waitTimedOut,
+      waitSkippedReason,
       waitDurationMs
     };
     const terminalTextarea = terminal ? terminal.textarea : null;
@@ -584,7 +654,6 @@ function createRendererCaptureScript(
         ? element.tagName.toLowerCase()
         : 'other';
     })();
-    const pane = root.closest('[data-pane-id]');
     const paneFocusedAttr = pane ? pane.getAttribute('data-focused') : null;
     const interactionDiagnostics = {
       visibilityState: document.visibilityState,
@@ -612,17 +681,27 @@ function createRendererCaptureScript(
       attachId: root.getAttribute('data-terminal-stream-ready'),
       inputReady: root.getAttribute('data-terminal-input-ready') === 'true',
       lastFocusEvent: readStringValue(focusMetadata?.lastFocusEvent),
-      lastFocusEventAt: readSequenceValue(focusMetadata?.lastFocusEventAt),
+      lastFocusEventAt: readFiniteNumberValue(focusMetadata?.lastFocusEventAt),
       lastInputKind: readStringValue(inputMetadata?.lastInputKind),
-      lastInputAt: readSequenceValue(inputMetadata?.lastInputAt),
-      lastInputBytes: readSequenceValue(inputMetadata?.lastInputBytes),
+      lastInputAt: readFiniteNumberValue(inputMetadata?.lastInputAt),
+      lastInputBytes: readFiniteNumberValue(inputMetadata?.lastInputBytes),
       lastInputRoute: root.getAttribute('data-terminal-last-input-route'),
-      lastWriteAt: readSequenceValue(writeMetadata?.lastWriteAt),
+      lastReceiveAt: readFiniteNumberValue(receiveMetadata?.lastReceiveAt),
+      lastReceiveSequence: readSequenceValue(receiveMetadata?.lastReceiveSequence),
+      lastScreenReceiveAt: readFiniteNumberValue(screenReceiveMetadata?.lastScreenReceiveAt),
+      lastScreenReceiveSequence: readSequenceValue(screenReceiveMetadata?.lastScreenReceiveSequence),
+      lastWriteAt: readFiniteNumberValue(writeMetadata?.lastWriteAt),
       lastWriteSequence: readSequenceValue(writeMetadata?.lastWriteSequence),
-      lastParsedAt: readSequenceValue(parsedMetadata?.lastParsedAt),
+      lastScreenWriteAt: readFiniteNumberValue(screenWriteMetadata?.lastScreenWriteAt),
+      lastScreenWriteSequence: readSequenceValue(screenWriteMetadata?.lastScreenWriteSequence),
+      lastParsedAt: readFiniteNumberValue(parsedMetadata?.lastParsedAt),
       lastParsedSequence: readSequenceValue(parsedMetadata?.lastParsedSequence),
-      lastOnRenderAt: readSequenceValue(renderMetadata?.lastOnRenderAt),
-      lastOnRenderSequence: readSequenceValue(renderMetadata?.lastOnRenderSequence)
+      lastScreenParsedAt: readFiniteNumberValue(screenParsedMetadata?.lastScreenParsedAt),
+      lastScreenParsedSequence: readSequenceValue(screenParsedMetadata?.lastScreenParsedSequence),
+      lastOnRenderAt: readFiniteNumberValue(renderMetadata?.lastOnRenderAt),
+      lastOnRenderSequence: readSequenceValue(renderMetadata?.lastOnRenderSequence),
+      lastScreenOnRenderAt: readFiniteNumberValue(screenRenderMetadata?.lastScreenOnRenderAt),
+      lastScreenOnRenderSequence: readSequenceValue(screenRenderMetadata?.lastScreenOnRenderSequence)
     };
     let bufferRows = [];
     let bottomRows = [];
@@ -673,10 +752,19 @@ function createRendererCaptureScript(
     }
     const xterm = root.querySelector('.xterm');
     const screen = root.querySelector('.xterm-screen');
+    const bufferSource = surfaceVisible
+      ? 'active-live'
+      : terminal
+        ? 'inactive-cache'
+        : 'inactive-unavailable';
     return {
       ok: true,
       dom: {
         surfaceId,
+        surfaceActive,
+        surfaceVisible,
+        activeSurfaceId,
+        bufferSource,
         documentHasFocus: document.hasFocus(),
         fontStatus: 'fonts' in document ? document.fonts.status : 'unsupported',
         devicePixelRatio: window.devicePixelRatio,
@@ -709,7 +797,9 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
   const rawOutputTailPreview =
     rawOutputTail === undefined
       ? "<unavailable>"
-      : escapeForDiagnostics(tail(rawOutputTail, RAW_OUTPUT_TAIL_PREVIEW_CHARS));
+      : escapeForDiagnostics(
+          tail(rawOutputTail, RAW_OUTPUT_TAIL_PREVIEW_CHARS)
+        );
   const domBufferComparison = compareDomBufferRows(payload);
   const diagnostics = payload.renderer.dom?.terminalDiagnostics;
   const interaction = payload.renderer.dom?.interactionDiagnostics;
@@ -726,11 +816,16 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     }`,
     `renderer.ok=${payload.renderer.ok}`,
     `renderer.error=${payload.renderer.error ?? ""}`,
+    `renderer.surfaceActive=${payload.renderer.dom?.surfaceActive ?? ""}`,
+    `renderer.surfaceVisible=${payload.renderer.dom?.surfaceVisible ?? ""}`,
+    `renderer.activeSurfaceId=${payload.renderer.dom?.activeSurfaceId ?? ""}`,
+    `renderer.bufferSource=${payload.renderer.dom?.bufferSource ?? ""}`,
     `renderer.targetSequence=${diagnostics?.targetSequence ?? ""}`,
     `renderer.hydratedSequence=${diagnostics?.hydratedSequence ?? "null"}`,
     `renderer.renderedSequence=${diagnostics?.renderedSequence ?? "null"}`,
     `renderer.waitTimedOut=${diagnostics?.waitTimedOut ?? ""}`,
     `renderer.waitTimedOutReason=${formatWaitTimedOutReason(payload)}`,
+    `renderer.waitSkippedReason=${diagnostics?.waitSkippedReason ?? ""}`,
     `renderer.waitDurationMs=${diagnostics?.waitDurationMs ?? ""}`,
     `renderer.diagnosticsSources=${
       diagnostics ? stringifyJson(diagnostics.sources) : ""
@@ -755,12 +850,30 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     `renderer.lastInputAt=${interaction?.lastInputAt ?? ""}`,
     `renderer.lastInputBytes=${interaction?.lastInputBytes ?? ""}`,
     `renderer.lastInputRoute=${interaction?.lastInputRoute ?? ""}`,
+    `renderer.lastReceiveAt=${interaction?.lastReceiveAt ?? ""}`,
+    `renderer.lastReceiveSequence=${interaction?.lastReceiveSequence ?? ""}`,
+    `renderer.lastScreenReceiveAt=${interaction?.lastScreenReceiveAt ?? ""}`,
+    `renderer.lastScreenReceiveSequence=${
+      interaction?.lastScreenReceiveSequence ?? ""
+    }`,
     `renderer.lastWriteAt=${interaction?.lastWriteAt ?? ""}`,
     `renderer.lastWriteSequence=${interaction?.lastWriteSequence ?? ""}`,
+    `renderer.lastScreenWriteAt=${interaction?.lastScreenWriteAt ?? ""}`,
+    `renderer.lastScreenWriteSequence=${
+      interaction?.lastScreenWriteSequence ?? ""
+    }`,
     `renderer.lastParsedAt=${interaction?.lastParsedAt ?? ""}`,
     `renderer.lastParsedSequence=${interaction?.lastParsedSequence ?? ""}`,
+    `renderer.lastScreenParsedAt=${interaction?.lastScreenParsedAt ?? ""}`,
+    `renderer.lastScreenParsedSequence=${
+      interaction?.lastScreenParsedSequence ?? ""
+    }`,
     `renderer.lastOnRenderAt=${interaction?.lastOnRenderAt ?? ""}`,
     `renderer.lastOnRenderSequence=${interaction?.lastOnRenderSequence ?? ""}`,
+    `renderer.lastScreenOnRenderAt=${interaction?.lastScreenOnRenderAt ?? ""}`,
+    `renderer.lastScreenOnRenderSequence=${
+      interaction?.lastScreenOnRenderSequence ?? ""
+    }`,
     `renderer.isAtBottom=${payload.renderer.dom?.scroll?.isAtBottom ?? ""}`,
     `renderer.scrollOffsetRows=${
       payload.renderer.dom?.scroll?.scrollOffsetRows ?? ""
@@ -771,19 +884,52 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     )}`,
     `snapshot.available=${payload.snapshot ? "true" : "false"}`,
     `snapshot.sequence=${payload.snapshot?.sequence ?? ""}`,
-    `rawOutputTail.available=${
-      rawOutputTail === undefined ? "false" : "true"
-    }`,
+    `rawOutputTail.available=${rawOutputTail === undefined ? "false" : "true"}`,
     `rawOutputTail.truncated=${payload.snapshot?.rawOutputTailTruncated ?? ""}`,
     `rawOutputTail.path=${payload.files.rawOutputTail ?? ""}`,
-    `rawOutputLog.available=${
-      payload.files.rawOutputLog ? "true" : "false"
-    }`,
+    `rawOutputLog.available=${payload.files.rawOutputLog ? "true" : "false"}`,
     `rawOutputLog.path=${payload.files.rawOutputLog ?? ""}`,
     `rawOutputIndex.path=${payload.files.rawOutputIndex ?? ""}`,
     `rawOutputLog.bytes=${payload.snapshot?.rawOutputLogBytes ?? ""}`,
     `rawOutputLog.chunks=${payload.snapshot?.rawOutputLogChunks ?? ""}`,
     `rawOutputCopyErrors=${payload.rawOutputCopyErrors?.join(" | ") ?? ""}`,
+    `rawOutputTimeline.enabled=${
+      payload.snapshot?.rawOutputTimeline?.enabled ?? ""
+    }`,
+    `rawOutputTimeline.sampleEvery=${
+      payload.snapshot?.rawOutputTimeline?.sampleEvery ?? ""
+    }`,
+    `rawOutputTimeline.totalChunks=${
+      payload.snapshot?.rawOutputTimeline?.totalChunks ?? ""
+    }`,
+    `rawOutputTimeline.retainedChunks=${
+      payload.snapshot?.rawOutputTimeline?.retainedChunks ?? ""
+    }`,
+    `rawOutputTimeline.droppedChunks=${
+      payload.snapshot?.rawOutputTimeline?.droppedChunks ?? ""
+    }`,
+    `rawOutputTimeline.unobservedChunks=${
+      payload.snapshot?.rawOutputTimeline?.unobservedChunks ?? ""
+    }`,
+    `pipeline.progress=${
+      payload.snapshot?.pipelineProgress
+        ? stringifyJson(payload.snapshot.pipelineProgress)
+        : ""
+    }`,
+    `diagnosticsLog.path=${payload.files.diagnosticsLog ?? ""}`,
+    `diagnostics.mainWriter=${
+      payload.diagnosticsHealth.mainWriter
+        ? stringifyJson(payload.diagnosticsHealth.mainWriter)
+        : ""
+    }`,
+    `diagnostics.ptyHost=${
+      payload.diagnosticsHealth.ptyHost
+        ? stringifyJson(payload.diagnosticsHealth.ptyHost)
+        : ""
+    }`,
+    `diagnostics.logCopyError=${
+      payload.diagnosticsHealth.diagnosticsLogCopyError ?? ""
+    }`,
     `renderer.domBufferMismatchRows=${
       domBufferComparison?.trimmedMismatches.length ?? ""
     }`,
@@ -795,21 +941,35 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
         ? ""
         : domBufferComparison.trimmedMismatches.length === 0
     }`,
+    `screenshot.sourceSurfaceId=${
+      payload.screenshotDiagnostics.sourceSurfaceId ?? ""
+    }`,
+    `screenshot.trusted=${payload.screenshotDiagnostics.trusted ?? ""}`,
+    `screenshot.skippedReason=${
+      payload.screenshotDiagnostics.skippedReason ?? ""
+    }`,
     `verdict.contentConsistency=${payload.contentConsistency.verdict}`,
     `verdict.contentSampledLines=${payload.contentConsistency.sampledLines}`,
     `verdict.contentMatchedLines=${payload.contentConsistency.matchedLines}`,
+    `verdict.rendererBufferTrusted=${payload.rendererBufferTrusted ?? ""}`,
     `verdict.rendererTrusted=${payload.rendererTrusted ?? ""}`,
     "",
     "[analysis]",
     "Compare the same missing text across these layers:",
     "1. Codex JSONL/source transcript",
-    "2. pty-raw-stream.ansi + pty-raw-index.jsonl",
+    "2. pty.rawOutputTimeline + pty-raw-tail.txt (or the optional full raw stream/index)",
     "3. [pty.snapshot]",
     "4. [renderer.xterm.buffer.rows]",
-    "5. [renderer.dom.rows] and terminal.png",
+    "5. [renderer.dom.rows] and terminal.png when screenshot.trusted=true",
     "If raw PTY stream does not contain the missing text or contains later erase/overwrite sequences before the snapshot sequence, inspect the agent CLI terminal output. If raw PTY stream contains stable text but pty.snapshot does not, inspect pty-host headless ingestion/serialization. If pty.snapshot has it but renderer buffer does not, inspect bridge attach/replay/live delivery. If renderer buffer has it but DOM/screenshot do not, inspect xterm render/paint.",
-    "For an interaction stall, correlate terminal.focus.lifecycle and terminal.data-plane.input with rawOutputIndex outputKind, then compare renderer.lastWriteSequence, lastParsedSequence, and lastOnRenderSequence.",
+    "For an interaction stall, compare the unsampled screen-specific clocks from PTY read through renderer receive/write/parse/render. Any dropped, unobserved, truncated, or failed diagnostic count makes that boundary explicitly incomplete.",
+    "inactive-cache is intentionally not sequence-waited or screenshotted; its buffer is a labeled historical hint, not a live renderer observation.",
     "osc-title-only means the PTY emitted title activity without a terminal-body mutation; indeterminate means logging began in the middle of an unobserved VT sequence.",
+    "",
+    "[pty.rawOutputTimeline]",
+    ...(payload.snapshot?.rawOutputTimeline?.chunks.map((chunk) =>
+      stringifyJson(chunk)
+    ) ?? ["<unavailable>"]),
     "",
     "[renderer.dom-buffer.mismatches.trimmed]",
     ...(domBufferComparison === null
