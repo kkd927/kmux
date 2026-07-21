@@ -13,13 +13,17 @@ import {
   type LocatedPath,
   type WorkspaceTarget
 } from "@kmux/core";
+import { MAX_MARKDOWN_BYTES } from "@kmux/proto";
 import type {
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolved,
   TerminalFileLinkResolveResult
 } from "@kmux/proto";
 import type { LocalPathResolver } from "./targets/targetServiceRegistry";
-import type { TargetServiceRegistry } from "./targets/contracts";
+import type {
+  LocatedTargetServiceSet,
+  TargetServiceRegistry
+} from "./targets/contracts";
 
 const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
@@ -44,6 +48,7 @@ const TERMINAL_FILE_LINK_TRAILING_PUNCTUATION = new Set([
   "!",
   "?"
 ]);
+const MARKDOWN_EXTENSION_RE = /\.(?:md|markdown)$/iu;
 
 interface OpenTerminalFilePathOptions {
   surfaceId: string;
@@ -140,6 +145,10 @@ export async function resolveTargetTerminalFileLinks(options: {
       if (!resolved) continue;
       const trimmedCharacterCount =
         candidate.rawPath.length - variant.openRawPath.length;
+      const canPreview = await canPreviewMarkdownFile({
+        files: services.files,
+        path: resolved.path
+      });
       links.push({
         id: candidate.id,
         openRawPath: variant.openRawPath,
@@ -149,12 +158,37 @@ export async function resolveTargetTerminalFileLinks(options: {
           candidate.linkText.length - trimmedCharacterCount
         ),
         startIndex: candidate.startIndex,
-        endIndex: candidate.endIndex - trimmedCharacterCount
+        endIndex: candidate.endIndex - trimmedCharacterCount,
+        ...(candidate.baseCwd === undefined
+          ? {}
+          : { baseCwd: candidate.baseCwd }),
+        ...(canPreview ? { activation: "markdown-preview" as const } : {})
       });
       break;
     }
   }
   return { links };
+}
+
+export async function canPreviewMarkdownFile(options: {
+  path: LocatedPath;
+  files: LocatedTargetServiceSet["files"];
+}): Promise<boolean> {
+  if (!isMarkdownFileName(options.files.basename(options.path))) {
+    return false;
+  }
+  try {
+    const metadata = await options.files.stat(options.path);
+    return Boolean(
+      metadata?.kind === "file" && metadata.size <= MAX_MARKDOWN_BYTES
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isMarkdownFileName(value: string): boolean {
+  return MARKDOWN_EXTENSION_RE.test(value);
 }
 
 export async function openTerminalFilePath({
@@ -177,7 +211,7 @@ export async function openTerminalFilePath({
   }
 
   let cwd = baseCwd;
-  if (cwd === undefined) {
+  if (cwd === undefined && metadata.cwd !== undefined) {
     cwd = resolveLocalPath(metadata.cwd);
   }
   const resolvedPath = resolveTerminalFilePath({

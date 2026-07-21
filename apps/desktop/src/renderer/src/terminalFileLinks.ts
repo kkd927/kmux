@@ -8,7 +8,8 @@ import type {
 import type {
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolved,
-  TerminalFileLinkResolveResult
+  TerminalFileLinkResolveResult,
+  TerminalFileLinkActivationDto
 } from "@kmux/proto";
 
 import type { KeyboardShortcutPlatform } from "../../shared/platform/keyboardPolicy";
@@ -83,6 +84,7 @@ interface TerminalFileLinkProviderOptions {
     surfaceId: string,
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult>;
+  activateFileLink?: (request: TerminalFileLinkActivationDto) => Promise<void>;
   getCwdForBufferLine?: (bufferLineNumber: number) => string | undefined;
 }
 
@@ -201,6 +203,7 @@ export function registerTerminalFileLinkProvider({
   openFilePath,
   resolveFileLinks = (id, candidates) =>
     window.kmux.resolveTerminalFileLinks(id, candidates),
+  activateFileLink = (request) => window.kmux.activateTerminalFileLink(request),
   getCwdForBufferLine
 }: TerminalFileLinkProviderOptions): IDisposable {
   const activeDecorations = new Set<ILinkDecorations>();
@@ -251,6 +254,7 @@ export function registerTerminalFileLinkProvider({
         terminal,
         surfaceId,
         openFilePath,
+        activateFileLink,
         resolveFileLinks,
         getCwdForBufferLine,
         getKeyboardPlatform,
@@ -288,6 +292,7 @@ async function provideValidatedTerminalFileLinks({
   terminal,
   surfaceId,
   openFilePath,
+  activateFileLink,
   resolveFileLinks,
   getCwdForBufferLine,
   getKeyboardPlatform,
@@ -303,6 +308,7 @@ async function provideValidatedTerminalFileLinks({
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  activateFileLink: (request: TerminalFileLinkActivationDto) => Promise<void>;
   resolveFileLinks: (
     surfaceId: string,
     candidates: TerminalFileLinkResolveCandidate[]
@@ -352,6 +358,7 @@ async function provideValidatedTerminalFileLinks({
         terminal,
         surfaceId,
         openFilePath,
+        activateFileLink,
         getKeyboardPlatform,
         activeDecorations,
         updateModifierFromEvent
@@ -418,6 +425,7 @@ function createTerminalFileLink({
   terminal,
   surfaceId,
   openFilePath,
+  activateFileLink,
   getKeyboardPlatform,
   activeDecorations,
   updateModifierFromEvent
@@ -431,6 +439,7 @@ function createTerminalFileLink({
     rawPath: string,
     baseCwd?: string
   ) => Promise<void>;
+  activateFileLink: (request: TerminalFileLinkActivationDto) => Promise<void>;
   getKeyboardPlatform: () => KeyboardShortcutPlatform;
   activeDecorations: Set<ILinkDecorations>;
   updateModifierFromEvent: (
@@ -510,7 +519,17 @@ function createTerminalFileLink({
       if (!isTerminalFileLinkModifierActive(event, getKeyboardPlatform())) {
         return;
       }
-      void openFilePath(surfaceId, candidate.resolvedPath).catch((error) => {
+      const activation =
+        candidate.activation === "markdown-preview"
+          ? activateFileLink({
+              sourceSurfaceId: surfaceId,
+              rawPath: candidate.openRawPath,
+              ...(candidate.baseCwd === undefined
+                ? {}
+                : { baseCwd: candidate.baseCwd })
+            })
+          : openFilePath(surfaceId, candidate.resolvedPath);
+      void activation.catch((error) => {
         console.warn("Failed to open terminal file path", error);
       });
     },

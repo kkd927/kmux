@@ -521,6 +521,8 @@ export interface TerminalFileLinkResolved {
   linkText: string;
   startIndex: number;
   endIndex: number;
+  baseCwd?: string;
+  activation?: "markdown-preview";
 }
 
 export interface TerminalFileLinkResolveResult {
@@ -1034,6 +1036,7 @@ export type {
   MarkdownDocumentSubscriptionDto,
   MarkdownDocumentErrorCode,
   MarkdownDocumentEvent,
+  TerminalFileLinkActivationDto,
   TerminalRuntimeMetadataDto,
   TerminalSurfaceVmContent,
   SurfaceVm
@@ -1043,6 +1046,7 @@ export {
   MAX_MARKDOWN_BYTES,
   decodeMarkdownDocumentEvent,
   decodeMarkdownDocumentSubscriptionDto,
+  decodeTerminalFileLinkActivationDto,
   requireTerminalSurfaceVmContent,
   terminalSurfaceVmContent
 } from "./surfaces/contracts";

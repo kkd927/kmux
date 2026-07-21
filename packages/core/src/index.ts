@@ -69,6 +69,7 @@ import {
 import type {
   SurfaceContentOf,
   SurfaceOpenAction,
+  SurfacePlacementRequest,
   SurfaceState,
   TerminalRuntimeMetadata
 } from "./surfaces/contracts";
@@ -1847,14 +1848,17 @@ export function openSurfaceAtPlacement(
   action: SurfaceOpenAction
 ): AppEffect[] {
   const workspace = state.workspaces[action.workspaceId];
-  const sourcePane = state.panes[action.placement.paneId];
-  if (!workspace || !sourcePane || sourcePane.workspaceId !== workspace.id) {
+  const placement = workspace
+    ? resolveSurfacePlacement(state, workspace, action.placement)
+    : null;
+  if (!workspace || !placement) {
     return [];
   }
+  const sourcePane = state.panes[placement.paneId];
   const targetPaneId =
-    action.placement.kind === "tab"
+    placement.kind === "tab"
       ? sourcePane.id
-      : createSplitPaneLeaf(state, sourcePane.id, action.placement.direction)
+      : createSplitPaneLeaf(state, sourcePane.id, placement.direction)
           .newPaneId;
   const targetPane = state.panes[targetPaneId];
   const surfaceId = makeId("surface");
@@ -1874,6 +1878,74 @@ export function openSurfaceAtPlacement(
   targetPane.activeSurfaceId = surfaceId;
   workspace.activePaneId = targetPane.id;
   return [...created.effects, { type: "persist" }];
+}
+
+type ResolvedSurfacePlacement =
+  | { kind: "tab"; paneId: Id }
+  | { kind: "split"; paneId: Id; direction: SplitDirection };
+
+const PANE_RECT_TIE_EPSILON = 1e-9;
+
+function resolveSurfacePlacement(
+  state: AppState,
+  workspace: WorkspaceState,
+  placement: SurfacePlacementRequest
+): ResolvedSurfacePlacement | null {
+  if (placement.kind !== "right-preview") {
+    const pane = state.panes[placement.paneId];
+    return pane?.workspaceId === workspace.id ? placement : null;
+  }
+
+  const sourceSurface = state.surfaces[placement.sourceSurfaceId];
+  const sourcePane = sourceSurface
+    ? state.panes[sourceSurface.paneId]
+    : undefined;
+  if (!sourcePane || sourcePane.workspaceId !== workspace.id) return null;
+
+  const paneRects = computePaneRects(workspace);
+  const hasVerticalAxis = Object.values(workspace.nodeMap).some(
+    (node) => node.kind === "split" && node.axis === "vertical"
+  );
+  if (paneRects.length <= 1 || !hasVerticalAxis) {
+    return { kind: "split", paneId: sourcePane.id, direction: "right" };
+  }
+
+  const sourceRect = paneRects.find((rect) => rect.paneId === sourcePane.id);
+  if (!sourceRect) return null;
+  const traversalIndex = new Map(
+    paneRects.map((rect, index) => [rect.paneId, index])
+  );
+  const rightmost = [...paneRects].sort((left, right) => {
+    const edgeDifference = right.x + right.width - (left.x + left.width);
+    if (Math.abs(edgeDifference) > PANE_RECT_TIE_EPSILON) {
+      return edgeDifference;
+    }
+    const overlapDifference =
+      verticalOverlap(sourceRect, right) - verticalOverlap(sourceRect, left);
+    if (Math.abs(overlapDifference) > PANE_RECT_TIE_EPSILON) {
+      return overlapDifference;
+    }
+    const activeDifference =
+      Number(right.paneId === workspace.activePaneId) -
+      Number(left.paneId === workspace.activePaneId);
+    if (activeDifference !== 0) return activeDifference;
+    return (
+      (traversalIndex.get(left.paneId) ?? Number.MAX_SAFE_INTEGER) -
+      (traversalIndex.get(right.paneId) ?? Number.MAX_SAFE_INTEGER)
+    );
+  })[0];
+  return rightmost ? { kind: "tab", paneId: rightmost.paneId } : null;
+}
+
+function verticalOverlap(
+  left: { y: number; height: number },
+  right: { y: number; height: number }
+): number {
+  return Math.max(
+    0,
+    Math.min(left.y + left.height, right.y + right.height) -
+      Math.max(left.y, right.y)
+  );
 }
 
 function moveSurfaceToSplit(

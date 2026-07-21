@@ -82,6 +82,10 @@ function registerTestHandlers(options: {
     surfaceId: string,
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
+  activateTerminalFileLink?: (
+    sender: { id: number },
+    request: unknown
+  ) => Promise<void>;
   isSurfaceDiagnosticsEnabled?: () => boolean;
   clearDiagnosticLog?: () => boolean;
   dispatchRendererAction?: (action: unknown) => void | Promise<void>;
@@ -195,6 +199,8 @@ function registerTestHandlers(options: {
     openTerminalFilePath: options.openTerminalFilePath ?? vi.fn(),
     resolveTerminalFileLinks:
       options.resolveTerminalFileLinks ?? vi.fn(() => ({ links: [] })),
+    activateTerminalFileLink:
+      options.activateTerminalFileLink ?? vi.fn(async () => undefined),
     identify: vi.fn(),
     previewTerminalTypography: vi.fn(),
     reportTerminalTypographyProbe: vi.fn(),
@@ -1041,5 +1047,41 @@ describe("ipc handlers", () => {
       "surface-1",
       candidates
     );
+  });
+
+  it("activates terminal file links only from the trusted main frame", async () => {
+    const activateTerminalFileLink = vi.fn(async () => undefined);
+    registerTestHandlers({
+      snapshot: { updatedAt: "2026-05-13T12:00:00.000Z", sessions: [] },
+      resumeResult: { workspaceId: "workspace-1", surfaceId: "surface-1" },
+      activateTerminalFileLink
+    });
+    const handler = handlers.get("kmux:resource:activate-terminal-file-link")!;
+    const mainFrame = { detached: false, isDestroyed: () => false };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { id: 7, mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const request = {
+      sourceSurfaceId: "surface-1",
+      rawPath: "README.md"
+    };
+
+    await expect(
+      Promise.resolve(handler(event, request))
+    ).resolves.toBeUndefined();
+    expect(activateTerminalFileLink).toHaveBeenCalledWith(
+      event.sender,
+      request
+    );
+    expect(() =>
+      handler(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { id: 7, mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        request
+      )
+    ).toThrow(/trusted main frame/u);
   });
 });

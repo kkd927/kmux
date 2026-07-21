@@ -38,6 +38,7 @@ import {
 
 import { createAppRuntime } from "./appRuntime";
 import { DocumentService } from "./documentService";
+import { ResourceOpenCoordinator } from "./resourceOpenCoordinator";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { createMainClipboardService } from "./clipboard";
 import { createExternalSessionIndexer } from "./externalSessions";
@@ -978,17 +979,23 @@ async function bootstrap(): Promise<void> {
         message: error.message
       })
   });
+  const ownsRendererWindow = (
+    sender: { readonly id: number },
+    windowId: string
+  ): boolean => {
+    const state = runtime.getState();
+    return Boolean(
+      windowId === state.activeWindowId &&
+      state.windows[windowId] &&
+      BrowserWindow.getAllWindows().some(
+        (window) => !window.isDestroyed() && window.webContents.id === sender.id
+      )
+    );
+  };
   const documentService = new DocumentService({
     getState: runtime.getState,
     targetServices,
-    ownsWindow: (sender, windowId) =>
-      Boolean(
-        runtime.getState().windows[windowId] &&
-        BrowserWindow.getAllWindows().some(
-          (window) =>
-            !window.isDestroyed() && window.webContents.id === sender.id
-        )
-      ),
+    ownsWindow: ownsRendererWindow,
     watchLocal: (path, onChange) => {
       if (path.kind !== "local") {
         throw new Error("local document watch requires a local path");
@@ -1005,6 +1012,12 @@ async function bootstrap(): Promise<void> {
         return () => {};
       }
     }
+  });
+  const resourceOpenCoordinator = new ResourceOpenCoordinator({
+    getState: runtime.getState,
+    targetServices,
+    ownsWindow: ownsRendererWindow,
+    dispatchAppAction: runtime.dispatchAppAction
   });
   runtime.setDocumentService(documentService);
   providerRemoteHost.on("target-available", (targetId: string) => {
@@ -1462,6 +1475,8 @@ async function bootstrap(): Promise<void> {
         getState: runtime.getState,
         targetServices
       }),
+    activateTerminalFileLink: (sender, request) =>
+      resourceOpenCoordinator.activateTerminalFileLink(sender, request),
     identify: runtime.identify,
     previewTerminalTypography: runtime.previewTerminalTypography,
     reportTerminalTypographyProbe: runtime.reportTerminalTypographyProbe,

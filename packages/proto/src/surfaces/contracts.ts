@@ -67,6 +67,12 @@ export interface MarkdownDocumentSubscriptionDto {
   surfaceId: Id;
 }
 
+export interface TerminalFileLinkActivationDto {
+  sourceSurfaceId: Id;
+  rawPath: string;
+  baseCwd?: string;
+}
+
 export type MarkdownDocumentErrorCode =
   | "missing"
   | "too-large"
@@ -99,6 +105,28 @@ export function decodeMarkdownDocumentSubscriptionDto(
     "document subscription"
   );
   return { surfaceId: requireBoundedId(record.surfaceId, "surfaceId") };
+}
+
+export function decodeTerminalFileLinkActivationDto(
+  value: unknown
+): TerminalFileLinkActivationDto {
+  const record = requireRecord(value, "terminal file-link activation");
+  const keys =
+    record.baseCwd === undefined
+      ? ["sourceSurfaceId", "rawPath"]
+      : ["sourceSurfaceId", "rawPath", "baseCwd"];
+  const exact = requireExactRecord(
+    value,
+    keys,
+    "terminal file-link activation"
+  );
+  return {
+    sourceSurfaceId: requireBoundedId(exact.sourceSurfaceId, "sourceSurfaceId"),
+    rawPath: requireBoundedPathText(exact.rawPath, "rawPath"),
+    ...(exact.baseCwd === undefined
+      ? {}
+      : { baseCwd: requireBoundedPathText(exact.baseCwd, "baseCwd") })
+  };
 }
 
 export function decodeMarkdownDocumentEvent(
@@ -178,6 +206,18 @@ function requireRevision(value: unknown): number {
     throw new TypeError("document revision must be a positive safe integer");
   }
   return value as number;
+}
+
+function requireBoundedPathText(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    new TextEncoder().encode(value).byteLength > 32 * 1024 ||
+    value.includes("\0")
+  ) {
+    throw new TypeError(`${label} must be a bounded path string`);
+  }
+  return value;
 }
 
 function isMarkdownDocumentErrorCode(

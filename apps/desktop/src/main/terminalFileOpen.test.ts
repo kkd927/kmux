@@ -5,8 +5,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createInitialState,
   encodeLocatedPathDto,
   locatedPathForTarget,
+  requireTerminalSurfaceContent,
   type AppState
 } from "@kmux/core";
 
@@ -22,8 +24,13 @@ vi.mock("electron", () => ({
 
 import {
   openTerminalFilePath as openTerminalFilePathImpl,
+  resolveTargetTerminalFileLinks,
   resolveTerminalFileLinks as resolveTerminalFileLinksImpl
 } from "./terminalFileOpen";
+import type {
+  LocatedTargetServiceSet,
+  TargetServiceRegistry
+} from "./targets/contracts";
 
 type OpenTerminalFilePathOptions = Parameters<
   typeof openTerminalFilePathImpl
@@ -308,6 +315,61 @@ describe("openTerminalFilePath", () => {
     expect(fileExists).toHaveBeenCalledTimes(1);
   });
 
+  it("marks only bounded regular Markdown links for preview activation", async () => {
+    const markdownPath = locatedPathForTarget(
+      { kind: "local" },
+      "/repo/README.MD"
+    );
+    const sourcePath = locatedPathForTarget(
+      { kind: "local" },
+      "/repo/src/App.tsx"
+    );
+    const stat = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: "file" as const, size: 64 })
+      .mockRejectedValueOnce(new Error("stat unavailable"));
+    const files = {
+      resolveTerminalPath: vi.fn(async ({ rawPath }: { rawPath: string }) => ({
+        path: /\.md$/iu.test(rawPath) ? markdownPath : sourcePath,
+        displayPath: `/repo/${rawPath}`
+      })),
+      basename: vi.fn(
+        (candidate: typeof markdownPath) =>
+          encodeLocatedPathDto(candidate).path.split("/").at(-1)!
+      ),
+      stat
+    } as unknown as LocatedTargetServiceSet["files"];
+    const targetServices = {
+      resolveLocated: () => ({ files }) as LocatedTargetServiceSet
+    } as unknown as TargetServiceRegistry;
+
+    const result = await resolveTargetTerminalFileLinks({
+      surfaceId: "surface_1",
+      candidates: [
+        linkCandidate("markdown", "README.MD", { baseCwd: "/repo/old" }),
+        linkCandidate("offline-markdown", "offline.md"),
+        linkCandidate("source", "src/App.tsx")
+      ],
+      getState: () => stateWithSurface("surface_1", "/repo"),
+      targetServices
+    });
+
+    expect(result.links).toEqual([
+      expect.objectContaining({
+        id: "markdown",
+        activation: "markdown-preview",
+        baseCwd: "/repo/old"
+      }),
+      expect.objectContaining({ id: "offline-markdown" }),
+      expect.objectContaining({ id: "source" })
+    ]);
+    expect(result.links[1]?.activation).toBeUndefined();
+    expect(result.links[2]?.activation).toBeUndefined();
+    expect(stat).toHaveBeenCalledTimes(2);
+    expect(stat).toHaveBeenNthCalledWith(1, markdownPath);
+    expect(stat).toHaveBeenNthCalledWith(2, markdownPath);
+  });
+
   it("rejects a missing surface without opening anything", async () => {
     const filePath = writeTempFile("file.md");
 
@@ -392,14 +454,24 @@ describe("openTerminalFilePath", () => {
 });
 
 function stateWithSurface(surfaceId: string, cwd?: string): AppState {
-  return {
-    surfaces: {
-      [surfaceId]: {
-        id: surfaceId,
-        ...(cwd
-          ? { cwd: locatedPathForTarget({ kind: "local" }, cwd) }
-          : {})
-      }
-    }
-  } as unknown as AppState;
+  const state = createInitialState();
+  const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+  const pane = state.panes[state.workspaces[workspaceId].activePaneId];
+  const priorSurfaceId = pane.activeSurfaceId;
+  const surface = state.surfaces[priorSurfaceId];
+  const session =
+    state.sessions[requireTerminalSurfaceContent(surface).sessionId];
+  delete state.surfaces[priorSurfaceId];
+  surface.id = surfaceId;
+  session.surfaceId = surfaceId;
+  state.surfaces[surfaceId] = surface;
+  pane.surfaceIds = [surfaceId];
+  pane.activeSurfaceId = surfaceId;
+  if (cwd === undefined) {
+    delete (session.runtimeMetadata as Partial<typeof session.runtimeMetadata>)
+      .cwd;
+  } else {
+    session.runtimeMetadata.cwd = locatedPathForTarget({ kind: "local" }, cwd);
+  }
+  return state;
 }

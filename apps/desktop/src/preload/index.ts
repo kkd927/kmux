@@ -53,6 +53,7 @@ import type {
   SurfaceSnapshotPayload,
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolveResult,
+  TerminalFileLinkActivationDto,
   TerminalTypographyProbeReport,
   TerminalTypographySettings,
   TerminalKeyInput,
@@ -285,6 +286,14 @@ const api = {
       "kmux:terminal-file-links:resolve",
       surfaceId,
       candidates
+    );
+  },
+  activateTerminalFileLink(
+    request: TerminalFileLinkActivationDto
+  ): Promise<void> {
+    return ipcRenderer.invoke(
+      "kmux:resource:activate-terminal-file-link",
+      request
     );
   },
   createImageAttachments(

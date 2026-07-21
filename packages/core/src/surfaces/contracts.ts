@@ -77,7 +77,8 @@ export type SurfaceInit<K extends SurfaceKind = SurfaceKind> =
 
 export type SurfacePlacementRequest =
   | { kind: "tab"; paneId: Id }
-  | { kind: "split"; paneId: Id; direction: SplitDirection };
+  | { kind: "split"; paneId: Id; direction: SplitDirection }
+  | { kind: "right-preview"; sourceSurfaceId: Id };
 
 export interface SurfaceOpenAction {
   type: "surface.open";

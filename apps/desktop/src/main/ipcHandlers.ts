@@ -44,6 +44,7 @@ import type {
 } from "@kmux/proto";
 import { decodeMarkdownDocumentSubscriptionDto } from "@kmux/proto";
 import type { DocumentEventSender } from "./documentService";
+import type { ResourceActivationSender } from "./resourceOpenCoordinator";
 
 import {
   buildNativeSurfaceContextMenu,
@@ -128,6 +129,10 @@ interface IpcHandlersOptions {
     surfaceId: Id,
     candidates: TerminalFileLinkResolveCandidate[]
   ) => Promise<TerminalFileLinkResolveResult> | TerminalFileLinkResolveResult;
+  activateTerminalFileLink: (
+    sender: ResourceActivationSender,
+    request: unknown
+  ) => Promise<void>;
   identify: () => ShellIdentity;
   previewTerminalTypography: (
     settings: TerminalTypographySettings
@@ -404,6 +409,13 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     "kmux:terminal-file-links:resolve",
     (_event, surfaceId: Id, candidates: TerminalFileLinkResolveCandidate[]) =>
       options.resolveTerminalFileLinks(surfaceId, candidates)
+  );
+  ipcMain.handle(
+    "kmux:resource:activate-terminal-file-link",
+    (event, request: unknown) => {
+      assertTrustedMainFrame(event, "terminal file-link activation");
+      return options.activateTerminalFileLink(event.sender, request);
+    }
   );
   ipcMain.handle(
     "kmux:terminal-typography:preview",

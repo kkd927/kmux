@@ -343,6 +343,53 @@ describe("terminal file link provider", () => {
     registration.dispose();
   });
 
+  it("sends Markdown activation using the original path context", async () => {
+    const providers: ILinkProvider[] = [];
+    const terminal = createFakeTerminal("docs/README.md:12");
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+    const openFilePath = vi.fn(async () => {});
+    const activateFileLink = vi.fn(async () => {});
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "linux",
+      surfaceId: "surface_1",
+      openFilePath,
+      activateFileLink,
+      getCwdForBufferLine: () => "/repo",
+      resolveFileLinks: async (_surfaceId, candidates) => ({
+        links: candidates.map((candidate) => ({
+          id: candidate.id,
+          openRawPath: "docs/README.md",
+          resolvedPath: "/repo/docs/README.md",
+          linkText: candidate.linkText,
+          startIndex: candidate.startIndex,
+          endIndex: candidate.endIndex,
+          baseCwd: candidate.baseCwd,
+          activation: "markdown-preview" as const
+        }))
+      })
+    });
+
+    const links = await provideLinksFromProvider(providers[0], 1);
+    links?.[0]?.activate(
+      new MouseEvent("click", { ctrlKey: true }),
+      "docs/README.md:12"
+    );
+    await Promise.resolve();
+
+    expect(activateFileLink).toHaveBeenCalledWith({
+      sourceSurfaceId: "surface_1",
+      rawPath: "docs/README.md",
+      baseCwd: "/repo"
+    });
+    expect(openFilePath).not.toHaveBeenCalled();
+    registration.dispose();
+  });
+
   it("updates hover decorations with the platform modifier and gates activation", async () => {
     const providers: ILinkProvider[] = [];
     const providerDisposable = { dispose: vi.fn() };

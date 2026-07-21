@@ -47,6 +47,23 @@ function rawPath(value: ReturnType<typeof localPath>): string {
   return encodeLocatedPathDto(value).path;
 }
 
+function openMarkdownPreview(
+  state: ReturnType<typeof createInitialState>,
+  workspaceId: string,
+  sourceSurfaceId: string
+): void {
+  applyAction(state, {
+    type: "surface.open",
+    workspaceId,
+    init: {
+      kind: "markdown",
+      path: localPath("/tmp/README.md"),
+      title: "README.md"
+    },
+    placement: { kind: "right-preview", sourceSurfaceId }
+  });
+}
+
 describe("core reducer", () => {
   const legacyRendererSettingKey = ["terminalUse", "Web", "gl"].join("");
   const legacyTerminalTextFontFamily =
@@ -691,6 +708,106 @@ describe("core reducer", () => {
       })
     ).toThrow(/does not belong/);
     expect(encodeAppStateDto(state)).toEqual(before);
+  });
+
+  it("opens a one-pane Markdown preview in a new right split", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const sourcePaneId = workspace.activePaneId;
+    const sourceSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+
+    openMarkdownPreview(state, workspaceId, sourceSurfaceId);
+
+    const targetPaneId = workspace.activePaneId;
+    expect(listPaneIds(workspace)).toHaveLength(2);
+    expect(targetPaneId).not.toBe(sourcePaneId);
+    expect(workspace.nodeMap[workspace.rootNodeId]).toMatchObject({
+      kind: "split",
+      axis: "vertical"
+    });
+    expect(
+      state.surfaces[state.panes[targetPaneId].activeSurfaceId].content.kind
+    ).toBe("markdown");
+  });
+
+  it("adds a right split beside the source in a horizontal-only layout", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const sourcePaneId = workspace.activePaneId;
+    const sourceSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: sourcePaneId,
+      direction: "down"
+    });
+    const otherPaneId = workspace.activePaneId;
+
+    openMarkdownPreview(state, workspaceId, sourceSurfaceId);
+
+    expect(listPaneIds(workspace)).toHaveLength(3);
+    expect(workspace.activePaneId).not.toBe(sourcePaneId);
+    expect(workspace.activePaneId).not.toBe(otherPaneId);
+    expect(
+      Object.values(workspace.nodeMap).some(
+        (node) => node.kind === "split" && node.axis === "vertical"
+      )
+    ).toBe(true);
+  });
+
+  it("reuses the rightmost pane when a vertical layout already exists", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const sourcePaneId = workspace.activePaneId;
+    const sourceSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: sourcePaneId,
+      direction: "right"
+    });
+    const rightPaneId = workspace.activePaneId;
+
+    openMarkdownPreview(state, workspaceId, sourceSurfaceId);
+
+    expect(listPaneIds(workspace)).toHaveLength(2);
+    expect(workspace.activePaneId).toBe(rightPaneId);
+    expect(state.panes[rightPaneId].surfaceIds).toHaveLength(2);
+    expect(
+      state.surfaces[state.panes[rightPaneId].activeSurfaceId].content.kind
+    ).toBe("markdown");
+  });
+
+  it("uses overlap before active-pane status to break rightmost ties", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const sourcePaneId = workspace.activePaneId;
+    const sourceSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: sourcePaneId,
+      direction: "right"
+    });
+    const topRightPaneId = workspace.activePaneId;
+    applyAction(state, {
+      type: "pane.split",
+      paneId: sourcePaneId,
+      direction: "down"
+    });
+    applyAction(state, {
+      type: "pane.split",
+      paneId: topRightPaneId,
+      direction: "down"
+    });
+    const activeBottomRightPaneId = workspace.activePaneId;
+
+    openMarkdownPreview(state, workspaceId, sourceSurfaceId);
+
+    expect(listPaneIds(workspace)).toHaveLength(4);
+    expect(activeBottomRightPaneId).not.toBe(topRightPaneId);
+    expect(workspace.activePaneId).toBe(topRightPaneId);
   });
 
   it("inherits the active surface cwd when splitting within the same workspace", () => {

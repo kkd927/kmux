@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   decodeMarkdownDocumentEvent,
-  decodeMarkdownDocumentSubscriptionDto
+  decodeMarkdownDocumentSubscriptionDto,
+  decodeTerminalFileLinkActivationDto
 } from "./contracts";
 
 describe("Markdown document IPC decoders", () => {
@@ -49,5 +50,32 @@ describe("Markdown document IPC decoders", () => {
         errorCode: "credentials"
       })
     ).toThrow(/error code/u);
+  });
+
+  it("accepts only exact bounded terminal file-link activations", () => {
+    expect(
+      decodeTerminalFileLinkActivationDto({
+        sourceSurfaceId: "surface_1",
+        rawPath: "docs/README.md",
+        baseCwd: "/repo"
+      })
+    ).toEqual({
+      sourceSurfaceId: "surface_1",
+      rawPath: "docs/README.md",
+      baseCwd: "/repo"
+    });
+    expect(() =>
+      decodeTerminalFileLinkActivationDto({
+        sourceSurfaceId: "surface_1",
+        rawPath: "docs/README.md",
+        targetId: "target_forged"
+      })
+    ).toThrow(/keys/u);
+    expect(() =>
+      decodeTerminalFileLinkActivationDto({
+        sourceSurfaceId: "surface_1",
+        rawPath: "x".repeat(32 * 1024 + 1)
+      })
+    ).toThrow(/bounded path/u);
   });
 });
