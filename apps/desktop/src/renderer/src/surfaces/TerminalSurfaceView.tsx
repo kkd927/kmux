@@ -16,9 +16,6 @@ import { Terminal, type IDisposable, type ILinkHandler } from "@xterm/xterm";
 import type {
   CreateImageAttachmentPayload,
   ImageAttachmentSource,
-  KmuxSettings,
-  ResolvedTerminalThemeVm,
-  ResolvedTerminalTypographyVm,
   SurfaceVm,
   TerminalSurfaceVmContent,
   TerminalDelta
@@ -28,7 +25,6 @@ import {
   normalizeShortcut,
   normalizeShortcutBinding
 } from "@kmux/ui";
-import type { ColorTheme } from "@kmux/ui";
 
 import {
   applyPendingTerminalEnterRewrite,
@@ -77,10 +73,7 @@ import {
 } from "../paneDividerDrag";
 import styles from "../styles/TerminalPane.module.css";
 import { useSmoothnessRenderCounter } from "../hooks/useSmoothnessRenderCounter";
-import {
-  formatShortcutLabel,
-  type ShortcutLabelStyle
-} from "../shortcutLabels";
+import { formatShortcutLabel } from "../shortcutLabels";
 import {
   isRendererSmoothnessProfileEnabled,
   recordRendererSmoothnessProfileEvent,
@@ -89,8 +82,7 @@ import {
 import { createSmoothnessProfileBucket } from "../../../shared/smoothnessProfileBucket";
 import {
   isReservedSystemChordBinding,
-  type KeyChord,
-  type KeyboardShortcutPlatform
+  type KeyChord
 } from "../../../shared/platform/keyboardPolicy";
 import { TERMINAL_LIVE_SCROLLBACK_LINES } from "../../../shared/terminalConfig";
 import { terminalDataPlaneNowMs } from "../../../shared/terminalDataPlaneMetrics";
@@ -108,46 +100,16 @@ import {
   type SurfaceTabDropDirection
 } from "../surfaceTabDrag";
 import { type SurfaceContextAction } from "../../../shared/surfaceContextMenu";
+import type { SurfacePaneProps } from "./contracts";
 
 export interface TerminalFocusRequest {
   surfaceId: string;
   token: number;
 }
 
-export interface TerminalSurfaceViewProps {
-  paneId: string;
-  focused: boolean;
-  surfaces: SurfaceVm[];
-  activeSurfaceId: string;
-  settings: KmuxSettings;
-  reservedSystemChords: KeyChord[];
-  keyboardPlatform: KeyboardShortcutPlatform;
-  shortcutLabelStyle: ShortcutLabelStyle;
-  copyModeSelectAllShortcut: KeyChord;
-  terminalTypography: ResolvedTerminalTypographyVm;
-  terminalTheme: ResolvedTerminalThemeVm;
-  colorTheme: ColorTheme;
-  showSearch: boolean;
-  draggedSurfaceTab: SurfaceTabDragPayload | null;
-  onFocusPane: (paneId: string) => void;
-  onFocusSurface: (surfaceId: string) => void;
-  onCreateSurface: (paneId: string) => void;
-  onCloseSurface: (surfaceId: string) => void;
-  onCloseOthers: (surfaceId: string) => void;
-  onMoveSurfaceToSplit: (
-    surfaceId: string,
-    targetPaneId: string,
-    direction: SurfaceTabDropDirection
-  ) => void;
-  onSurfaceTabDragStart: (payload: SurfaceTabDragPayload) => void;
-  onSurfaceTabDragEnd: () => void;
-  onSplitRight: (paneId: string) => void;
-  onSplitDown: (paneId: string) => void;
-  onClosePane: (paneId: string) => void;
-  onRestartSurface: (surfaceId: string) => void;
-  onToggleSearch: (surfaceId: string | null) => void;
-  focusRequest?: TerminalFocusRequest | null;
-}
+export type TerminalSurfaceViewProps = Omit<SurfacePaneProps, "surfaces"> & {
+  surfaces: SurfaceVm<"terminal">[];
+};
 
 type OpenTerminalFilePathWithBaseCwd = (
   surfaceId: string,
@@ -388,7 +350,7 @@ export function TerminalSurfaceView(
   const [terminalDiagnosticsEnabled, setTerminalDiagnosticsEnabled] = useState(
     () => isRendererSmoothnessProfileEnabled()
   );
-  const activeSurfaceRef = useRef<SurfaceVm | null>(activeSurface);
+  const activeSurfaceRef = useRef<SurfaceVm<"terminal"> | null>(activeSurface);
   const paneFocusedRef = useRef(props.focused);
   const terminalDiagnosticsEnabledRef = useRef(terminalDiagnosticsEnabled);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
@@ -1603,7 +1565,7 @@ export function TerminalSurfaceView(
     }
   }
 
-  async function surfaceMenuContextFor(surface: SurfaceVm) {
+  async function surfaceMenuContextFor(surface: SurfaceVm<"terminal">) {
     const surfaceIsActive = activeSurfaceRef.current?.id === surface.id;
     const canPaste = surfaceIsActive ? await canPasteIntoSurface() : false;
     return {

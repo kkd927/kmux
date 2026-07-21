@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import {
   mkdtempSync,
   readFileSync,
@@ -173,7 +175,8 @@ function replacementPatch() {
   const originalWorkspace = state.workspaces[originalWorkspaceId];
   const originalPane = state.panes[originalWorkspace.activePaneId];
   const originalSurface = state.surfaces[originalPane.activeSurfaceId];
-  const originalSession = state.sessions[originalSurface.content.sessionId];
+  const originalSession =
+    state.sessions[requireTerminalSurfaceContent(originalSurface).sessionId];
   state.workspaces.workspace_1 = {
     ...originalWorkspace,
     id: "workspace_1",

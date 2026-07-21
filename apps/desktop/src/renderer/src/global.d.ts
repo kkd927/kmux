@@ -12,6 +12,7 @@ import type {
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
+  MarkdownDocumentEvent,
   TerminalColorPalette,
   ResolvedTerminalTypographyVm,
   RetainedRemoteSessionResourceKey,
@@ -54,6 +55,11 @@ declare global {
     kmux: {
       getPlatform(): Promise<RendererPlatformDescriptor>;
       getPathForFile(file: File): string;
+      subscribeDocument(surfaceId: string): Promise<void>;
+      unsubscribeDocument(surfaceId: string): Promise<void>;
+      subscribeDocumentEvents(
+        listener: (event: MarkdownDocumentEvent) => void
+      ): () => void;
       getShellState(): Promise<ShellStoreSnapshot>;
       getUsageView(): Promise<UsageViewSnapshot>;
       getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;

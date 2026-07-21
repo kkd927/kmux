@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import {
   applyAction,
   createInitialState,
@@ -69,7 +71,8 @@ describe("metadata runtime", () => {
     const state = createInitialState("/bin/zsh");
     const surfaceId = Object.keys(state.surfaces)[0];
     const surface = state.surfaces[surfaceId];
-    const session = state.sessions[surface.content.sessionId];
+    const session =
+      state.sessions[requireTerminalSurfaceContent(surface).sessionId];
     session.runtimeMetadata.cwd = localPath("/tmp/kmux");
     session.pid = 123;
     const dispatchAppAction = vi.fn();
@@ -172,7 +175,7 @@ describe("metadata runtime", () => {
     const state = createInitialState("/bin/zsh");
     const surfaceId = Object.keys(state.surfaces)[0];
     state.sessions[
-      state.surfaces[surfaceId].content.sessionId
+      requireTerminalSurfaceContent(state.surfaces[surfaceId]).sessionId
     ].runtimeMetadata.cwd = localPath("/tmp/kmux");
     const watcher = { close: vi.fn(), on: vi.fn() };
     watch.mockReturnValue(watcher);
@@ -208,7 +211,7 @@ describe("metadata runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const firstSurfaceId = state.panes[paneId].activeSurfaceId;
     state.sessions[
-      state.surfaces[firstSurfaceId].content.sessionId
+      requireTerminalSurfaceContent(state.surfaces[firstSurfaceId]).sessionId
     ].runtimeMetadata.cwd = localPath("/tmp/repo-a/first");
     applyAction(state, {
       type: "surface.create",
@@ -250,7 +253,7 @@ describe("metadata runtime", () => {
       resolveGitBranch.mockClear();
       resolveGitBranch.mockResolvedValueOnce("repo-a-updated");
       state.sessions[
-        state.surfaces[firstSurfaceId].content.sessionId
+        requireTerminalSurfaceContent(state.surfaces[firstSurfaceId]).sessionId
       ].runtimeMetadata.cwd = localPath("/tmp/repo-b");
       runtime.handleAppAction({
         type: "surface.metadata",
@@ -287,7 +290,7 @@ describe("metadata runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     state.sessions[
-      state.surfaces[surfaceId].content.sessionId
+      requireTerminalSurfaceContent(state.surfaces[surfaceId]).sessionId
     ].runtimeMetadata.cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     const watcher = { close: vi.fn(), on: vi.fn() };
@@ -337,7 +340,7 @@ describe("metadata runtime", () => {
     const paneId = state.workspaces[workspaceId].activePaneId;
     const surfaceId = state.panes[paneId].activeSurfaceId;
     state.sessions[
-      state.surfaces[surfaceId].content.sessionId
+      requireTerminalSurfaceContent(state.surfaces[surfaceId]).sessionId
     ].runtimeMetadata.cwd = localPath("/tmp/repo-wt");
     const dispatchAppAction = vi.fn((action) => applyAction(state, action));
     let headListener:

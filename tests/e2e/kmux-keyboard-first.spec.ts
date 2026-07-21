@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { expect, test, type Page } from "@playwright/test";
 
 import {
@@ -519,8 +521,8 @@ test("surface index shortcuts traverse workspace tabs across split panes without
       (view) =>
         Object.values(view.activeWorkspace.surfaces).every(
           (surface) =>
-            surface.content.runtimeStatus === "running" &&
-            surface.content.shellInputReady
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(surface)?.shellInputReady
         ),
       "all shortcut target surfaces should be ready for terminal input",
       15_000

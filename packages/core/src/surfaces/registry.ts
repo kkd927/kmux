@@ -6,6 +6,7 @@ import type {
   SurfaceInitMap,
   SurfaceState
 } from "./contracts";
+import { markdownSurfaceCoreModule } from "./markdown";
 import { terminalSurfaceCoreModule } from "./terminal";
 
 export interface SurfaceCreateContext {
@@ -42,5 +43,12 @@ export type SurfaceCoreRegistry = {
 };
 
 export const surfaceCoreRegistry = {
-  terminal: terminalSurfaceCoreModule
+  terminal: terminalSurfaceCoreModule,
+  markdown: markdownSurfaceCoreModule
 } satisfies SurfaceCoreRegistry;
+
+export function surfaceCoreModule<K extends SurfaceKind>(
+  kind: K
+): SurfaceCoreModule<K> {
+  return surfaceCoreRegistry[kind] as SurfaceCoreModule<K>;
+}

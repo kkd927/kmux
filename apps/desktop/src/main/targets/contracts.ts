@@ -45,6 +45,12 @@ export interface StagedLocalFile {
   sha256: string;
 }
 
+export interface FileMetadata {
+  kind: "file" | "directory" | "other";
+  size: number;
+  modifiedAtMs?: number;
+}
+
 export interface TargetHistoryRecord<
   TPath extends LocalPath | RemotePath | LocatedPath
 > {
@@ -146,6 +152,7 @@ export interface GitProvider<TPath extends LocalPath | RemotePath> {
 
 export interface FileProvider<TPath extends LocalPath | RemotePath> {
   exists(path: TPath): Promise<boolean>;
+  stat(path: TPath): Promise<FileMetadata | null>;
   read(path: TPath, options: { maxBytes: number }): Promise<Uint8Array>;
   join(base: TPath, ...segments: string[]): TPath;
   dirname(path: TPath): TPath;
@@ -286,6 +293,7 @@ export interface LocatedTargetServiceSet {
   };
   files: {
     exists(path: LocatedPath): Promise<boolean>;
+    stat(path: LocatedPath): Promise<FileMetadata | null>;
     read(path: LocatedPath, options: { maxBytes: number }): Promise<Uint8Array>;
     join(base: LocatedPath, ...segments: string[]): LocatedPath;
     dirname(path: LocatedPath): LocatedPath;

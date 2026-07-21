@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -4444,7 +4446,8 @@ function remoteCoordinatorState(
     pane.workspaceId = workspaceId;
     for (const surfaceId of pane.surfaceIds) {
       const surface = state.surfaces[surfaceId];
-      const session = state.sessions[surface.content.sessionId];
+      const session =
+        state.sessions[requireTerminalSurfaceContent(surface).sessionId];
       session.runtimeMetadata.cwd = locatedPathForTarget(
         { kind: "ssh", targetId },
         cwd

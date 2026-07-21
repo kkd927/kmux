@@ -28,6 +28,7 @@ export interface CreateRemoteFileProvidersOptions {
   host: Pick<
     RemoteHostManager,
     | "fileExists"
+    | "statFile"
     | "downloadFile"
     | "uploadFile"
     | "releaseFile"
@@ -62,6 +63,9 @@ export function createRemoteFileProviders(
   const files: FileProvider<RemotePath> = {
     async exists(path) {
       return await options.host.fileExists(options.targetId, raw(path));
+    },
+    async stat(path) {
+      return await options.host.statFile(options.targetId, raw(path));
     },
     async read(path, readOptions) {
       assertTransferBound(readOptions.maxBytes);

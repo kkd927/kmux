@@ -113,13 +113,31 @@ function touchesRemoteLifecycle(action: AppAction, state: AppState): boolean {
       );
     case "pane.split":
     case "pane.close":
-      return isSshPane(state, action.paneId);
+      return (
+        isSshPane(state, action.paneId) &&
+        paneContainsTerminal(state, action.paneId)
+      );
     case "surface.create":
       return isSshPane(state, action.paneId);
     case "surface.close":
-    case "surface.closeOthers":
     case "surface.restartSession":
-      return isSshSurface(state, action.surfaceId);
+      return (
+        isSshSurface(state, action.surfaceId) &&
+        state.surfaces[action.surfaceId]?.content.kind === "terminal"
+      );
+    case "surface.closeOthers": {
+      const surface = state.surfaces[action.surfaceId];
+      const pane = surface ? state.panes[surface.paneId] : undefined;
+      return Boolean(
+        pane &&
+        isSshPane(state, pane.id) &&
+        pane.surfaceIds.some(
+          (surfaceId) =>
+            surfaceId !== action.surfaceId &&
+            state.surfaces[surfaceId]?.content.kind === "terminal"
+        )
+      );
+    }
     default:
       return false;
   }
@@ -168,6 +186,14 @@ function isSshPane(state: AppState, paneId: string): boolean {
   return pane
     ? isSshTarget(state.workspaces[pane.workspaceId]?.location.target)
     : false;
+}
+
+function paneContainsTerminal(state: AppState, paneId: string): boolean {
+  return Boolean(
+    state.panes[paneId]?.surfaceIds.some(
+      (surfaceId) => state.surfaces[surfaceId]?.content.kind === "terminal"
+    )
+  );
 }
 
 function isSshTarget(target: WorkspaceTarget | undefined): boolean {

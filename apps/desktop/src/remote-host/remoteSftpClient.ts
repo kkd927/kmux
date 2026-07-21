@@ -56,6 +56,11 @@ export interface RemoteSftpTransferResult {
   sha256: string;
 }
 
+export interface RemoteSftpFileMetadata {
+  kind: "file" | "directory" | "other";
+  size: number;
+}
+
 export interface RemoteSftpUploadResult {
   transferId: string;
   remotePath: string;
@@ -133,6 +138,39 @@ export class MuxOnlyRemoteSftpClient {
         if (isMissingRemotePath(error)) return false;
         throw error;
       }
+    });
+  }
+
+  stat(remotePath: string): Promise<RemoteSftpFileMetadata | null> {
+    return this.enqueue(async () => {
+      const path = validateRemotePath(remotePath);
+      let result: BatchResult;
+      try {
+        result = await this.runBatch(
+          `ls -ldn ${quoteSftpPath(path)}\n`,
+          30_000
+        );
+      } catch (error) {
+        if (isMissingRemotePath(error)) return null;
+        throw error;
+      }
+      const metadata = parseSftpLongListingMetadata(result.stdout);
+      if (!metadata) {
+        throw new RemoteSftpError(
+          "integrity-failed",
+          "remote SFTP stat returned invalid metadata",
+          true
+        );
+      }
+      return {
+        kind:
+          metadata.kind === "-"
+            ? "file"
+            : metadata.kind === "d"
+              ? "directory"
+              : "other",
+        size: metadata.size
+      };
     });
   }
 

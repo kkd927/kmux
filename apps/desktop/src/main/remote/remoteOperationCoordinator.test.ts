@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -371,7 +373,9 @@ function createRemoteFixture(): {
   return {
     state,
     workspaceId,
-    sessionId: state.surfaces[pane.activeSurfaceId].content.sessionId
+    sessionId: requireTerminalSurfaceContent(
+      state.surfaces[pane.activeSurfaceId]
+    ).sessionId
   };
 }
 

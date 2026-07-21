@@ -29,6 +29,36 @@ afterEach(async () => {
 });
 
 describe("remote file providers", () => {
+  it("routes stat through the target-bound SFTP facade", async () => {
+    const transferRoot = await sandbox();
+    const statFile = vi.fn(async () => ({ kind: "file" as const, size: 42 }));
+    const provider = providers(
+      {
+        fileExists: vi.fn(),
+        statFile,
+        downloadFile: vi.fn(),
+        uploadFile: vi.fn(),
+        releaseFile: vi.fn(),
+        pruneRemoteAttachments: vi.fn()
+      } as unknown as Pick<
+        RemoteHostManager,
+        | "fileExists"
+        | "statFile"
+        | "downloadFile"
+        | "uploadFile"
+        | "releaseFile"
+        | "pruneRemoteAttachments"
+      >,
+      transferRoot,
+      () => "transfer_stat"
+    );
+
+    await expect(
+      provider.files.stat(remotePath("target_1", "/home/kmux/README.md"))
+    ).resolves.toEqual({ kind: "file", size: 42 });
+    expect(statFile).toHaveBeenCalledWith("target_1", "/home/kmux/README.md");
+  });
+
   it("downloads through target-scoped staging and verifies byte identity", async () => {
     const transferRoot = await sandbox();
     const stageRoot = join(transferRoot, "target");
@@ -229,7 +259,8 @@ function providers(
     | "uploadFile"
     | "releaseFile"
     | "pruneRemoteAttachments"
-  >,
+  > &
+    Partial<Pick<RemoteHostManager, "statFile">>,
   transferRoot: string,
   createTransferId: () => Id,
   now?: () => number
@@ -238,7 +269,10 @@ function providers(
     local: {} as TargetServiceSet<LocalPath>,
     remote: (targetId, resolveRemotePath, decodeRemotePath) =>
       createRemoteFileProviders({
-        host,
+        host: {
+          statFile: vi.fn(async () => null),
+          ...host
+        },
         targetId,
         transferRoot,
         remoteStateRoot: "/home/kmux/.local/state/kmux",

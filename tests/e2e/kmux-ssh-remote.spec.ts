@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -65,8 +67,8 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
         view.activeWorkspace.id === opened.workspaceId &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) =>
-            surface.content.runtimeStatus === "running" &&
-            surface.content.shellInputReady === true
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(surface)?.shellInputReady === true
         ),
       "real SSH workspace should become ready",
       90_000
@@ -95,8 +97,8 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) =>
             surface.id === surfaceId &&
-            surface.content.runtimeStatus === "running" &&
-            surface.content.shellInputReady === true
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(surface)?.shellInputReady === true
         ),
       "desktop relaunch should restore the existing remote keeper",
       90_000

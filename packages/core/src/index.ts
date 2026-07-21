@@ -82,11 +82,14 @@ export type {
   SurfaceOpenAction,
   SurfacePlacementRequest,
   SurfaceState,
+  MarkdownFileSource,
+  MarkdownSurfaceContent,
+  MarkdownSurfaceInit,
   TerminalRuntimeMetadata,
   TerminalSurfaceContent,
   TerminalSurfaceInit
 } from "./surfaces/contracts";
-import { surfaceCoreRegistry } from "./surfaces/registry";
+import { surfaceCoreModule } from "./surfaces/registry";
 
 export {
   LocalPath,
@@ -297,6 +300,11 @@ export type AppEffect =
   | {
       type: "session.close";
       sessionId: Id;
+    }
+  | {
+      type: "surface.runtime.close";
+      kind: "markdown";
+      surfaceId: Id;
     }
   | {
       type: "metadata.refresh";
@@ -877,7 +885,7 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
           titleLocked: surface.titleLocked,
           unreadCount: surface.unreadCount,
           attention: surface.attention,
-          content: surfaceCoreRegistry[surface.content.kind].encodeContent(
+          content: surfaceCoreModule(surface.content.kind).encodeContent(
             surface.content
           )
         }
@@ -1850,7 +1858,7 @@ export function openSurfaceAtPlacement(
           .newPaneId;
   const targetPane = state.panes[targetPaneId];
   const surfaceId = makeId("surface");
-  const module = surfaceCoreRegistry[action.init.kind];
+  const module = surfaceCoreModule(action.init.kind);
   const created = module.create(
     {
       state,
@@ -2131,7 +2139,7 @@ function closeSurfaceResource(
   state: AppState,
   surface: SurfaceState
 ): AppEffect[] {
-  return surfaceCoreRegistry[surface.content.kind].close(state, surface);
+  return surfaceCoreModule(surface.content.kind).close(state, surface);
 }
 
 function closeOtherSurfaces(state: AppState, surfaceId: Id): AppEffect[] {
@@ -3262,6 +3270,15 @@ export function terminalSessionForSurface(
   return session?.surfaceId === surface.id ? session : undefined;
 }
 
+export function requireTerminalSurfaceContent(
+  surface: SurfaceState
+): SurfaceContentOf<"terminal"> {
+  if (surface.content.kind !== "terminal") {
+    throw new TypeError(`Surface ${surface.id} is not a Terminal Surface`);
+  }
+  return surface.content;
+}
+
 export function terminalRuntimeMetadataForSurface(
   state: AppState,
   surfaceId: Id
@@ -3431,8 +3448,10 @@ export function buildWorkspaceRowsVm(state: AppState): WorkspaceRowVm[] {
   return orderedWorkspaceIds.map((workspaceId) => {
     const entry = state.workspaces[workspaceId];
     const representativeSurface = representativeWorkspaceSurface(state, entry);
-    const representativeSession = representativeSurface
-      ? terminalSessionForSurface(state, representativeSurface.id)
+    const representativeTerminalSurface =
+      representativeWorkspaceTerminalSurface(state, entry);
+    const representativeSession = representativeTerminalSurface
+      ? terminalSessionForSurface(state, representativeTerminalSurface.id)
       : undefined;
     const representativeMetadata = representativeSession?.runtimeMetadata;
     const surfaces = (workspaceSurfaceIdsById.get(workspaceId) ?? []).map(
@@ -3576,7 +3595,7 @@ export function buildWorkspacePaneTreeVm(
             titleLocked: surface.titleLocked,
             unreadCount: surface.unreadCount,
             attention: surface.attention,
-            content: surfaceCoreRegistry[surface.content.kind].buildVmContent(
+            content: surfaceCoreModule(surface.content.kind).buildVmContent(
               state,
               surface
             )
@@ -3693,6 +3712,50 @@ function representativeWorkspaceSurface(
   }
   const surfaceId = pane.surfaceIds[0];
   return surfaceId ? (state.surfaces[surfaceId] ?? null) : null;
+}
+
+function representativeWorkspaceTerminalSurface(
+  state: AppState,
+  workspace: WorkspaceState
+): SurfaceState<"terminal"> | null {
+  const activePane = state.panes[workspace.activePaneId];
+  const activeSurface = activePane
+    ? state.surfaces[activePane.activeSurfaceId]
+    : undefined;
+  if (activeSurface?.content.kind === "terminal") {
+    return activeSurface as SurfaceState<"terminal">;
+  }
+
+  const paneIds = [
+    ...(activePane ? [activePane.id] : []),
+    ...paneIdsInTreeOrder(workspace).filter((id) => id !== activePane?.id)
+  ];
+  for (const paneId of paneIds) {
+    const pane = state.panes[paneId];
+    for (const surfaceId of pane?.surfaceIds ?? []) {
+      const surface = state.surfaces[surfaceId];
+      if (surface?.content.kind === "terminal") {
+        return surface as SurfaceState<"terminal">;
+      }
+    }
+  }
+  return null;
+}
+
+function paneIdsInTreeOrder(workspace: WorkspaceState): Id[] {
+  const paneIds: Id[] = [];
+  function walk(nodeId: Id): void {
+    const node = workspace.nodeMap[nodeId];
+    if (!node) return;
+    if (node.kind === "leaf") {
+      paneIds.push(node.paneId);
+      return;
+    }
+    walk(node.first);
+    walk(node.second);
+  }
+  walk(workspace.rootNodeId);
+  return paneIds;
 }
 
 function firstPaneIdInTreeOrder(workspace: WorkspaceState): Id | null {
@@ -4053,20 +4116,25 @@ function sanitizeState(
   }
 
   for (const surface of Object.values(state.surfaces)) {
-    if (!terminalSessionForSurface(state, surface.id)) {
-      throw new TypeError(
-        `Terminal Surface ${surface.id} has an invalid Session reference`
-      );
-    }
     const pane = state.panes[surface.paneId];
     const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
     if (!workspace) {
       throw new TypeError(`Surface ${surface.id} has no owning workspace`);
     }
-    assertLocatedPathTarget(
-      workspace.location.target,
-      terminalRuntimeMetadataForSurface(state, surface.id)!.cwd
-    );
+    if (surface.content.kind === "terminal") {
+      const metadata = terminalRuntimeMetadataForSurface(state, surface.id);
+      if (!metadata) {
+        throw new TypeError(
+          `Terminal Surface ${surface.id} has an invalid Session reference`
+        );
+      }
+      assertLocatedPathTarget(workspace.location.target, metadata.cwd);
+    } else {
+      assertLocatedPathTarget(
+        workspace.location.target,
+        surface.content.source.path
+      );
+    }
   }
 
   return state;
@@ -4077,10 +4145,10 @@ function decodeSurfaceContent(value: unknown): SurfaceContentOf {
     throw new TypeError("Surface content must be an object");
   }
   const record = value as Record<string, unknown>;
-  if (record.kind !== "terminal") {
+  if (record.kind !== "terminal" && record.kind !== "markdown") {
     throw new TypeError(`Unsupported Surface kind: ${String(record.kind)}`);
   }
-  return surfaceCoreRegistry.terminal.decodeContent(value);
+  return surfaceCoreModule(record.kind).decodeContent(value);
 }
 
 function decodeTerminalRuntimeMetadata(

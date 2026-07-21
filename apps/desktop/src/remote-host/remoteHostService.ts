@@ -74,6 +74,7 @@ type RemoteHostRuntimeLike = Pick<
   | "replayEvents"
   | "acknowledgeEvents"
   | "fileExists"
+  | "statFile"
   | "downloadFile"
   | "uploadFile"
   | "releaseFile"
@@ -542,6 +543,17 @@ export class RemoteHostService {
           targetId: request.targetId,
           remotePath: request.remotePath,
           exists
+        });
+        return;
+      }
+      case "file.stat": {
+        const target = this.requireTarget(request.targetId);
+        const metadata = await target.runtime.statFile(request.remotePath);
+        this.respondOk(request.requestId, {
+          type: "file.stat-result",
+          targetId: request.targetId,
+          remotePath: request.remotePath,
+          metadata
         });
         return;
       }

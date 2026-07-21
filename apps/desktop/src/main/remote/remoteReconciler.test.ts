@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { applyAction, createInitialState, type AppState } from "@kmux/core";
 import { applyMainRemoteSessionObservationFact } from "@kmux/core/main";
 import { uint64 } from "@kmux/proto";
@@ -123,7 +125,10 @@ describe("RemoteReconciler observations", () => {
     const sessionIds = Object.values(fixture.state.panes)
       .filter((pane) => pane.workspaceId === fixture.workspaceId)
       .map(
-        (pane) => fixture.state.surfaces[pane.activeSurfaceId].content.sessionId
+        (pane) =>
+          requireTerminalSurfaceContent(
+            fixture.state.surfaces[pane.activeSurfaceId]
+          ).sessionId
       )
       .sort();
     const [firstSessionId, staleSessionId] = sessionIds;
@@ -404,7 +409,9 @@ function createRemoteFixture(): {
     (id) => !existing.has(id)
   )!;
   const pane = state.panes[state.workspaces[workspaceId].activePaneId];
-  const sessionId = state.surfaces[pane.activeSurfaceId].content.sessionId;
+  const sessionId = requireTerminalSurfaceContent(
+    state.surfaces[pane.activeSurfaceId]
+  ).sessionId;
   return { state, workspaceId, sessionId };
 }
 

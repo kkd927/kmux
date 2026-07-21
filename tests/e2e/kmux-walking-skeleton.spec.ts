@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { expect, test, type Page } from "@playwright/test";
 import type { SurfaceSnapshotPayload } from "@kmux/proto";
 
@@ -137,7 +139,8 @@ test("walking skeleton verifies platform descriptor, socket identity, and pty ho
       page,
       (view) =>
         Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.content.runtimeStatus === "running"
+          (surface) =>
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running"
         ),
       "initial pty session should reach running state",
       10_000
@@ -207,7 +210,8 @@ test("walking skeleton verifies terminal cell metrics through foreground resize"
       page,
       (view) =>
         Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.content.runtimeStatus === "running"
+          (surface) =>
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running"
         ),
       "initial pty session should reach running state before metric checks",
       10_000

@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import {
   applyAction,
   createInitialState,
@@ -47,11 +49,14 @@ describe("remote metadata provider", () => {
     provider.refresh({ surfaceId: surface.id, cwd });
     await vi.waitFor(() => {
       expect(
-        state.sessions[surface.content.sessionId].runtimeMetadata.branch
+        state.sessions[requireTerminalSurfaceContent(surface).sessionId]
+          .runtimeMetadata.branch
       ).toBe("feature");
     });
 
-    const metadata = state.sessions[surface.content.sessionId].runtimeMetadata;
+    const metadata =
+      state.sessions[requireTerminalSurfaceContent(surface).sessionId]
+        .runtimeMetadata;
     expect(metadata.ports).toEqual([3_000, 5_173]);
     expect(metadata.gitRepository).toMatchObject({
       root: { kind: "ssh", targetId: "target_1" },
@@ -93,7 +98,9 @@ describe("remote metadata provider", () => {
     const surface = Object.values(state.surfaces)[0];
 
     provider.refresh({ surfaceId: surface.id, cwd });
-    state.sessions[surface.content.sessionId].runtimeMetadata.cwd = {
+    state.sessions[
+      requireTerminalSurfaceContent(surface).sessionId
+    ].runtimeMetadata.cwd = {
       kind: "ssh",
       targetId: "target_1",
       path: decode("/srv/new")
@@ -125,7 +132,9 @@ function remoteState(cwd: RemotePath) {
     { kind: "ssh", targetId: "target_1" },
     "/srv/repo"
   );
-  state.sessions[surface.content.sessionId].runtimeMetadata.cwd = {
+  state.sessions[
+    requireTerminalSurfaceContent(surface).sessionId
+  ].runtimeMetadata.cwd = {
     kind: "ssh",
     targetId: "target_1",
     path: cwd

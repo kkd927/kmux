@@ -77,6 +77,22 @@ describe("MuxOnlyRemoteSftpClient", () => {
     await client.close();
   });
 
+  it("stats a remote regular file without downloading it", async () => {
+    const child = new FakeChildProcess();
+    spawnMuxOnlyChannel.mockResolvedValue(child as unknown as ChildProcess);
+    const client = await createClient();
+    const stat = client.stat("/remote/README.md");
+    await eventually(() => child.input.length > 0);
+
+    expect(child.input).toBe('ls -ldn "/remote/README.md"\n');
+    child.stdout.write(
+      "-rw-r--r-- 1 1000 1000 42 Jul 22 12:00 /remote/README.md\n"
+    );
+    child.succeed();
+    await expect(stat).resolves.toEqual({ kind: "file", size: 42 });
+    await client.close();
+  });
+
   it("prunes only managed remote attachments by age and reports verified totals", async () => {
     const children: FakeChildProcess[] = [];
     spawnMuxOnlyChannel.mockImplementation(async () => {

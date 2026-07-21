@@ -259,6 +259,13 @@ export interface RemoteHostFileExistsRequest {
   remotePath: string;
 }
 
+export interface RemoteHostFileStatRequest {
+  type: "file.stat";
+  requestId: Id;
+  targetId: Id;
+  remotePath: string;
+}
+
 export interface RemoteHostFileDownloadRequest {
   type: "file.download";
   requestId: Id;
@@ -350,6 +357,7 @@ export type RemoteHostRequest =
   | RemoteHostEventsReplayRequest
   | RemoteHostEventsAckRequest
   | RemoteHostFileExistsRequest
+  | RemoteHostFileStatRequest
   | RemoteHostFileDownloadRequest
   | RemoteHostFileUploadRequest
   | RemoteHostFileReleaseRequest
@@ -814,6 +822,14 @@ export function decodeRemoteHostRequest(
         )
       };
     case "file.exists":
+      assertExactKeys(record, ["type", "requestId", "targetId", "remotePath"]);
+      return {
+        type: record.type,
+        requestId: requireId(record.requestId, "requestId"),
+        targetId: requireId(record.targetId, "targetId"),
+        remotePath: requireAbsoluteBoundedPath(record.remotePath, "remotePath")
+      };
+    case "file.stat":
       assertExactKeys(record, ["type", "requestId", "targetId", "remotePath"]);
       return {
         type: record.type,

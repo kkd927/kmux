@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import {
   createInitialState,
   locatedPathForTarget,
@@ -209,7 +211,11 @@ function remoteState(): AppState {
     { kind: "ssh", targetId: "target_1" },
     "/home/kmux"
   );
-  state.sessions[surface.content.sessionId].runtimeMetadata.cwd =
-    locatedPathForTarget({ kind: "ssh", targetId: "target_1" }, "/home/kmux");
+  state.sessions[
+    requireTerminalSurfaceContent(surface).sessionId
+  ].runtimeMetadata.cwd = locatedPathForTarget(
+    { kind: "ssh", targetId: "target_1" },
+    "/home/kmux"
+  );
   return state;
 }

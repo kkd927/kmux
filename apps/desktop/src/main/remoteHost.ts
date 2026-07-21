@@ -43,6 +43,7 @@ import type {
 } from "../remote-host/linuxX64RemoteRuntime";
 import type {
   RemoteSftpAttachmentPruneResult,
+  RemoteSftpFileMetadata,
   RemoteSftpTransferResult,
   RemoteSftpUploadResult
 } from "../remote-host/remoteSftpClient";
@@ -342,7 +343,9 @@ export class RemoteHostManager extends EventEmitter {
     if (record.targetId !== options.targetId) {
       throw new Error("remote-host promoted another target");
     }
-    return decodeExpectedBridgeBody(record.hello, "hello");
+    const hello = decodeExpectedBridgeBody(record.hello, "hello");
+    this.emit("target-available", options.targetId);
+    return hello;
   }
 
   async discardTargetVerification(verificationId: Id): Promise<void> {
@@ -843,6 +846,39 @@ export class RemoteHostManager extends EventEmitter {
       throw new Error("remote-host returned an invalid file existence result");
     }
     return record.exists;
+  }
+
+  async statFile(
+    targetId: Id,
+    remotePath: string
+  ): Promise<RemoteSftpFileMetadata | null> {
+    const body = await this.requestWithId({
+      type: "file.stat",
+      requestId: makeId("remote-host-request"),
+      targetId,
+      remotePath
+    });
+    const record = requireBodyRecord(body, "file.stat-result");
+    assertBodyExactKeys(record, ["type", "targetId", "remotePath", "metadata"]);
+    if (record.targetId !== targetId || record.remotePath !== remotePath) {
+      throw new Error("remote-host returned file metadata for another target");
+    }
+    if (record.metadata === null) return null;
+    const metadata = requireBodyRecord(record.metadata, "file metadata");
+    assertBodyExactKeys(metadata, ["kind", "size"]);
+    if (
+      (metadata.kind !== "file" &&
+        metadata.kind !== "directory" &&
+        metadata.kind !== "other") ||
+      !Number.isSafeInteger(metadata.size) ||
+      (metadata.size as number) < 0
+    ) {
+      throw new Error("remote-host returned invalid file metadata");
+    }
+    return {
+      kind: metadata.kind,
+      size: metadata.size as number
+    };
   }
 
   async downloadFile(options: {

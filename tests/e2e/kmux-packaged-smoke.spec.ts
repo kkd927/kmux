@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { expect, test } from "@playwright/test";
 
 import {
@@ -89,8 +91,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
     await waitForView(
       page,
       (view) =>
-        view.activeWorkspace.surfaces[activeSurfaceId]?.content
-          .runtimeStatus === "running",
+        terminalSurfaceVmContent(view.activeWorkspace.surfaces[activeSurfaceId])
+          ?.runtimeStatus === "running",
       "packaged shell should reach a running session state",
       15_000
     );
@@ -265,8 +267,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
         view.activeWorkspace.id === targetWorkspaceId &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.content
-          .runtimeStatus === "running",
+        terminalSurfaceVmContent(view.activeWorkspace.surfaces[activeSurfaceId])
+          ?.runtimeStatus === "running",
       "packaged renderer reload should preserve the active running surface",
       15_000
     );
@@ -322,8 +324,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
         view.settings.restoreWorkspacesAfterQuit === true &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.content
-          .runtimeStatus === "running" &&
+        terminalSurfaceVmContent(view.activeWorkspace.surfaces[activeSurfaceId])
+          ?.runtimeStatus === "running" &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.title === "packaged hidden continuity"
         ),

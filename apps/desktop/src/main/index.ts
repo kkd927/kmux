@@ -7,6 +7,7 @@ import {
   utilityProcess
 } from "electron";
 import { homedir } from "node:os";
+import { watch as watchFile } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,7 @@ import {
 } from "@kmux/persistence";
 
 import { createAppRuntime } from "./appRuntime";
+import { DocumentService } from "./documentService";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { createMainClipboardService } from "./clipboard";
 import { createExternalSessionIndexer } from "./externalSessions";
@@ -976,6 +978,38 @@ async function bootstrap(): Promise<void> {
         message: error.message
       })
   });
+  const documentService = new DocumentService({
+    getState: runtime.getState,
+    targetServices,
+    ownsWindow: (sender, windowId) =>
+      Boolean(
+        runtime.getState().windows[windowId] &&
+        BrowserWindow.getAllWindows().some(
+          (window) =>
+            !window.isDestroyed() && window.webContents.id === sender.id
+        )
+      ),
+    watchLocal: (path, onChange) => {
+      if (path.kind !== "local") {
+        throw new Error("local document watch requires a local path");
+      }
+      try {
+        const watcher = watchFile(
+          resolveLocalPath(path),
+          { persistent: false },
+          onChange
+        );
+        watcher.on("error", onChange);
+        return () => watcher.close();
+      } catch {
+        return () => {};
+      }
+    }
+  });
+  runtime.setDocumentService(documentService);
+  providerRemoteHost.on("target-available", (targetId: string) => {
+    documentService.retryTarget(targetId);
+  });
   worktreeRuntime = createWorktreeRuntime({
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
@@ -1246,6 +1280,10 @@ async function bootstrap(): Promise<void> {
     resumeExternalAgentSession: runtime.resumeExternalAgentSession,
     createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
+    subscribeDocument: (sender, request) =>
+      documentService.subscribe(sender, request),
+    unsubscribeDocument: (sender, request) =>
+      documentService.unsubscribe(sender, request),
     dispatchRendererAction: (action) => {
       const route = routeRendererAppAction(action, runtime.getState());
       lastRendererActionType = route.action.type;
@@ -1695,6 +1733,7 @@ async function bootstrap(): Promise<void> {
         });
         metadataRuntime.dispose();
         usageRuntime.shutdown();
+        documentService.close();
 
         await diagnosticConfiguration;
         const server = socketServer;

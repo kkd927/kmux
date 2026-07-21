@@ -40,6 +40,23 @@ export function createLocalFileProvider(options: {
         return false;
       }
     },
+    async stat(value) {
+      try {
+        const metadata = await stat(raw(value));
+        return {
+          kind: metadata.isFile()
+            ? "file"
+            : metadata.isDirectory()
+              ? "directory"
+              : "other",
+          size: metadata.size,
+          modifiedAtMs: metadata.mtimeMs
+        };
+      } catch (error) {
+        if (isMissingFileError(error)) return null;
+        throw error;
+      }
+    },
     async read(value, readOptions) {
       assertTransferBound(readOptions.maxBytes);
       const filePath = raw(value);
@@ -94,6 +111,15 @@ export function createLocalFileProvider(options: {
     }
   };
   return Object.freeze(provider);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    ((error as NodeJS.ErrnoException).code === "ENOENT" ||
+      (error as NodeJS.ErrnoException).code === "ENOTDIR")
+  );
 }
 
 export function createLocalGitProvider(options: {

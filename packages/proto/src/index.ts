@@ -1030,9 +1030,21 @@ export type {
   SurfaceKind,
   SurfaceVmCommon,
   SurfaceVmContentMap,
+  MarkdownSurfaceVmContent,
+  MarkdownDocumentSubscriptionDto,
+  MarkdownDocumentErrorCode,
+  MarkdownDocumentEvent,
   TerminalRuntimeMetadataDto,
   TerminalSurfaceVmContent,
   SurfaceVm
+} from "./surfaces/contracts";
+
+export {
+  MAX_MARKDOWN_BYTES,
+  decodeMarkdownDocumentEvent,
+  decodeMarkdownDocumentSubscriptionDto,
+  requireTerminalSurfaceVmContent,
+  terminalSurfaceVmContent
 } from "./surfaces/contracts";
 
 import type { SurfaceVm } from "./surfaces/contracts";

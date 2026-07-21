@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -151,7 +153,7 @@ function createStateAtCwd(cwd: string) {
   const paneId = state.workspaces[workspaceId].activePaneId;
   const surfaceId = state.panes[paneId].activeSurfaceId;
   state.sessions[
-    state.surfaces[surfaceId].content.sessionId
+    requireTerminalSurfaceContent(state.surfaces[surfaceId]).sessionId
   ].runtimeMetadata.cwd = localPath(cwd);
   return { state, workspaceId, paneId };
 }
@@ -426,8 +428,10 @@ describe("worktree runtime", () => {
         );
         expect(
           rawPath(
-            state.sessions[state.surfaces[activeSurfaceId].content.sessionId]
-              .runtimeMetadata.cwd
+            state.sessions[
+              requireTerminalSurfaceContent(state.surfaces[activeSurfaceId])
+                .sessionId
+            ].runtimeMetadata.cwd
           )
         ).toBe(worktree.path);
         expect(

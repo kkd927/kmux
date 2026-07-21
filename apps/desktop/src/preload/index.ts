@@ -62,6 +62,10 @@ import type {
   WorktreeRemoveResult,
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
+import {
+  decodeMarkdownDocumentEvent,
+  type MarkdownDocumentEvent
+} from "@kmux/proto";
 
 ipcRenderer.on(
   KMUX_TERMINAL_PORT_CHANNEL,
@@ -98,6 +102,25 @@ const api = {
   },
   getPathForFile(file: File): string {
     return webUtils.getPathForFile(file);
+  },
+  subscribeDocument(surfaceId: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:document:subscribe", { surfaceId });
+  },
+  unsubscribeDocument(surfaceId: string): Promise<void> {
+    return ipcRenderer.invoke("kmux:document:unsubscribe", { surfaceId });
+  },
+  subscribeDocumentEvents(
+    listener: (event: MarkdownDocumentEvent) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      try {
+        listener(decodeMarkdownDocumentEvent(value));
+      } catch (error) {
+        console.warn("Ignoring invalid Markdown document event", error);
+      }
+    };
+    ipcRenderer.on("kmux:document:event", handler);
+    return () => ipcRenderer.off("kmux:document:event", handler);
   },
   getShellState(): Promise<ShellStoreSnapshot> {
     return ipcRenderer.invoke("kmux:shell:get");

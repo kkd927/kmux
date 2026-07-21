@@ -97,6 +97,9 @@ export interface ExternalSessionIndexerRuntime {
 export interface AppRuntime {
   setStore(store: AppStore): void;
   setPtyHost(ptyHost: PtyHostManager | null): void;
+  setDocumentService(
+    service: { closeSurface(surfaceId: Id): void } | null
+  ): void;
   setMainWindow(window: BrowserWindow | null): void;
   getState(): AppState;
   getShellState(): ShellStoreSnapshot;
@@ -121,6 +124,7 @@ export interface AppRuntime {
 export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let store: AppStore | null = null;
   let ptyHost: PtyHostManager | null = null;
+  let documentService: { closeSurface(surfaceId: Id): void } | null = null;
   let mainWindow: BrowserWindow | null = null;
   let persistTimer: NodeJS.Timeout | null = null;
   let shellState: ShellStoreSnapshot | null = null;
@@ -416,7 +420,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         dispatchSurfaceRuntimeEffect(effect, {
           ptyHost,
           resolveLocalPath,
-          createShellLaunchPolicy: options.createShellLaunchPolicy
+          createShellLaunchPolicy: options.createShellLaunchPolicy,
+          closeMarkdownSurface: (surfaceId) =>
+            documentService?.closeSurface(surfaceId)
         })
       ) {
         continue;
@@ -960,6 +966,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     },
     setPtyHost(nextPtyHost) {
       ptyHost = nextPtyHost;
+    },
+    setDocumentService(nextDocumentService) {
+      documentService = nextDocumentService;
     },
     setMainWindow(window) {
       mainWindow = window;

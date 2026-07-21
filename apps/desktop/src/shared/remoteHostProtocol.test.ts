@@ -37,6 +37,31 @@ describe("remote retention profile policy", () => {
 });
 
 describe("remote-host UtilityProcess operation outcome boundary", () => {
+  it("accepts only an exact target-bound file stat request", () => {
+    expect(
+      decodeRemoteHostRequest({
+        type: "file.stat",
+        requestId: "request_stat",
+        targetId: "target_1",
+        remotePath: "/srv/app/README.md"
+      })
+    ).toEqual({
+      type: "file.stat",
+      requestId: "request_stat",
+      targetId: "target_1",
+      remotePath: "/srv/app/README.md"
+    });
+    expect(() =>
+      decodeRemoteHostRequest({
+        type: "file.stat",
+        requestId: "request_stat",
+        targetId: "target_1",
+        remotePath: "/srv/app/README.md",
+        recursive: true
+      })
+    ).toThrow(/recursive/u);
+  });
+
   it("accepts only an exact bounded utility-owned SSH config request", () => {
     expect(
       decodeRemoteHostRequest({

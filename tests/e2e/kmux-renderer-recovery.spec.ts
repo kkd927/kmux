@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,8 +29,9 @@ test("renderer crash reconnects to the existing shell and terminal streams", asy
     const workspaceId = initial.activeWorkspace.id;
     const paneId = initial.activeWorkspace.activePaneId;
     const surfaceId = initial.activeWorkspace.panes[paneId].activeSurfaceId;
-    const sessionId =
-      initial.activeWorkspace.surfaces[surfaceId].content.sessionId;
+    const sessionId = terminalSurfaceVmContent(
+      initial.activeWorkspace.surfaces[surfaceId]
+    )?.sessionId;
     const mainPid = launched.app.process().pid;
     const diagnosticLogPath = join(
       launched.sandbox.stateDir,
@@ -82,7 +85,8 @@ test("renderer crash reconnects to the existing shell and terminal streams", asy
       "recovered renderer should restore the active workspace, pane, and surface"
     );
     expect(
-      recovered.activeWorkspace.surfaces[surfaceId].content.sessionId
+      terminalSurfaceVmContent(recovered.activeWorkspace.surfaces[surfaceId])
+        ?.sessionId
     ).toBe(sessionId);
     await waitForSurfaceSnapshotContains(
       recoveredPage,

@@ -267,7 +267,7 @@ type TerminalSurfaceViewProps = React.ComponentProps<
   typeof TerminalSurfaceView
 >;
 
-function createSurface(id: string): SurfaceVm {
+function createSurface(id: string): SurfaceVm<"terminal"> {
   return {
     id,
     paneId: "pane_1",

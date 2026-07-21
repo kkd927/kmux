@@ -1,3 +1,7 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import process from "node:process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,8 +47,12 @@ function seedPriorReleaseSnapshot(sandbox: KmuxSandbox) {
   snapshot.settings.restoreWorkspacesAfterQuit = true;
   snapshot.settings.warnBeforeQuit = false;
   for (const surface of Object.values(snapshot.surfaces)) {
-    snapshot.sessions[surface.content.sessionId].runtimeMetadata.cwd =
-      locatedPathForTarget({ kind: "local" }, sandbox.shellHomeDir);
+    snapshot.sessions[
+      requireTerminalSurfaceContent(surface).sessionId
+    ].runtimeMetadata.cwd = locatedPathForTarget(
+      { kind: "local" },
+      sandbox.shellHomeDir
+    );
   }
   for (const session of Object.values(snapshot.sessions)) {
     session.launch = {
@@ -125,10 +133,10 @@ async function probeVisibleRestoredShell(
     page,
     (view) =>
       view.activeWorkspace.id === workspaceId &&
-      view.activeWorkspace.surfaces[surfaceId]?.content.runtimeStatus ===
-        "running" &&
-      view.activeWorkspace.surfaces[surfaceId]?.content.shellInputReady ===
-        true &&
+      terminalSurfaceVmContent(view.activeWorkspace.surfaces[surfaceId])
+        ?.runtimeStatus === "running" &&
+      terminalSurfaceVmContent(view.activeWorkspace.surfaces[surfaceId])
+        ?.shellInputReady === true &&
       Object.values(view.activeWorkspace.panes).some(
         (pane) => pane.activeSurfaceId === surfaceId
       ),
@@ -269,7 +277,8 @@ test("unclean shutdown reuses the saved workspace snapshot on relaunch", async (
         view.workspaceRows.some((row) => row.name === "restore workspace") &&
         Object.keys(view.activeWorkspace.panes).length === 2 &&
         Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.content.runtimeStatus === "running"
+          (surface) =>
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running"
         ),
       "crash recovery relaunch should reuse the saved workspace layout"
     );

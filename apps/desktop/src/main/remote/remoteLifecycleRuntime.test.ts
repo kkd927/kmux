@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -500,9 +502,9 @@ describe("RemoteLifecycleRuntime", () => {
             desktopInstallationId: "desktop_1",
             targetId: "target_1",
             workspaceId,
-            sessionId: surface.content.sessionId
+            sessionId: requireTerminalSurfaceContent(surface).sessionId
           },
-          generation: `keeper_${surface.content.sessionId}`,
+          generation: `keeper_${requireTerminalSurfaceContent(surface).sessionId}`,
           processState: "running",
           persistenceLevel: "ssh-disconnect",
           remoteResourceRevision: uint64(1n),
@@ -510,9 +512,9 @@ describe("RemoteLifecycleRuntime", () => {
           checkpointAvailable: false,
           retainedRangeTruncated: false,
           descriptor: {
-            createOperationId: `create_${surface.content.sessionId}`,
+            createOperationId: `create_${requireTerminalSurfaceContent(surface).sessionId}`,
             canonicalCreatePayloadHash: "a".repeat(64),
-            lastOperationId: `create_${surface.content.sessionId}`,
+            lastOperationId: `create_${requireTerminalSurfaceContent(surface).sessionId}`,
             lastOperationPayloadHash: "a".repeat(64),
             lastResultDigest: "b".repeat(64),
             launch: { cwd: "/srv/app" },
@@ -579,9 +581,9 @@ describe("RemoteLifecycleRuntime", () => {
           desktopInstallationId: "desktop_1",
           targetId: "target_1",
           workspaceId: fixture.workspaceId,
-          sessionId: surface.content.sessionId
+          sessionId: requireTerminalSurfaceContent(surface).sessionId
         },
-        generation: `keeper_${surface.content.sessionId}`,
+        generation: `keeper_${requireTerminalSurfaceContent(surface).sessionId}`,
         processState: "running",
         persistenceLevel: "ssh-disconnect",
         remoteResourceRevision: uint64(1n),
@@ -589,9 +591,9 @@ describe("RemoteLifecycleRuntime", () => {
         checkpointAvailable: false,
         retainedRangeTruncated: false,
         descriptor: {
-          createOperationId: `create_${surface.content.sessionId}`,
+          createOperationId: `create_${requireTerminalSurfaceContent(surface).sessionId}`,
           canonicalCreatePayloadHash: "a".repeat(64),
-          lastOperationId: `create_${surface.content.sessionId}`,
+          lastOperationId: `create_${requireTerminalSurfaceContent(surface).sessionId}`,
           lastOperationPayloadHash: "a".repeat(64),
           lastResultDigest: "b".repeat(64),
           launch: { cwd: "/srv/app" },
@@ -797,12 +799,13 @@ describe("RemoteLifecycleRuntime", () => {
       fixture.paneId
     ].surfaceIds.find(
       (surfaceId) =>
-        fixture.state.surfaces[surfaceId].content.sessionId !==
-        fixture.initialSessionId
+        requireTerminalSurfaceContent(fixture.state.surfaces[surfaceId])
+          .sessionId !== fixture.initialSessionId
     )!;
     const created =
       fixture.state.sessions[
-        fixture.state.surfaces[createdSurfaceId].content.sessionId
+        requireTerminalSurfaceContent(fixture.state.surfaces[createdSurfaceId])
+          .sessionId
       ];
     expect(created?.launch.initialInput).toBe("codex\r");
     expect(() =>
@@ -892,8 +895,9 @@ describe("RemoteLifecycleRuntime", () => {
     const createdSurfaceId = fixture.state.panes[
       fixture.paneId
     ].surfaceIds.find((surfaceId) => surfaceId !== initialSurfaceId)!;
-    const createdSessionId =
-      fixture.state.surfaces[createdSurfaceId].content.sessionId;
+    const createdSessionId = requireTerminalSurfaceContent(
+      fixture.state.surfaces[createdSurfaceId]
+    ).sessionId;
     expect(fixture.state.sessions[createdSessionId]).toMatchObject({
       launch: { cwd: { kind: "ssh" }, initialInput: "echo ready\r" },
       remoteRuntime: { remoteResourceRevision: 2n }
@@ -1305,7 +1309,9 @@ function remoteFixture(): {
     state,
     workspaceId,
     paneId,
-    initialSessionId: state.surfaces[initialSurfaceId].content.sessionId
+    initialSessionId: requireTerminalSurfaceContent(
+      state.surfaces[initialSurfaceId]
+    ).sessionId
   };
 }
 

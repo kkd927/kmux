@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -106,8 +108,9 @@ for (const shellCase of shellCases) {
             view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
           return (
             !!activeSurfaceId &&
-            view.activeWorkspace.surfaces[activeSurfaceId]?.content
-              .runtimeStatus === "running"
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeStatus === "running"
           );
         },
         "initial shell should reach a running session state",
@@ -141,8 +144,9 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.content
-              .runtimeMetadata.cwd === repoDir &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeMetadata.cwd === repoDir &&
             row?.cwd === repoDir &&
             row?.branch === expectedBranch
           );
@@ -152,8 +156,9 @@ for (const shellCase of shellCases) {
       );
 
       expect(
-        repoView.activeWorkspace.surfaces[activeSurfaceId]?.content
-          .runtimeMetadata.cwd
+        terminalSurfaceVmContent(
+          repoView.activeWorkspace.surfaces[activeSurfaceId]
+        )?.runtimeMetadata.cwd
       ).toBe(repoDir);
       expect(
         repoView.workspaceRows.find(
@@ -186,8 +191,9 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.content
-              .runtimeMetadata.cwd === repoDir &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeMetadata.cwd === repoDir &&
             row?.cwd === repoDir &&
             row?.branch === switchedBranch
           );
@@ -218,8 +224,9 @@ for (const shellCase of shellCases) {
             (entry) => entry.workspaceId === workspaceId
           );
           return (
-            view.activeWorkspace.surfaces[activeSurfaceId]?.content
-              .runtimeMetadata.cwd === sandbox.shellHomeDir &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeMetadata.cwd === sandbox.shellHomeDir &&
             row?.cwd === sandbox.shellHomeDir &&
             row?.branch === undefined
           );
@@ -264,8 +271,9 @@ test("kmux preserves zsh login startup files while wrapping zsh", async () => {
           view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
         return (
           !!activeSurfaceId &&
-          view.activeWorkspace.surfaces[activeSurfaceId]?.content
-            .runtimeStatus === "running"
+          terminalSurfaceVmContent(
+            view.activeWorkspace.surfaces[activeSurfaceId]
+          )?.runtimeStatus === "running"
         );
       },
       "initial zsh shell should reach a running session state",
@@ -320,8 +328,9 @@ test("kmux restores zsh history before loading the user zshrc", async () => {
           view.activeWorkspace.panes[activePaneId]?.activeSurfaceId;
         return (
           !!activeSurfaceId &&
-          view.activeWorkspace.surfaces[activeSurfaceId]?.content
-            .runtimeStatus === "running"
+          terminalSurfaceVmContent(
+            view.activeWorkspace.surfaces[activeSurfaceId]
+          )?.runtimeStatus === "running"
         );
       },
       "initial zsh shell should reach a running session state",

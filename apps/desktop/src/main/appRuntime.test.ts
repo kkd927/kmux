@@ -8,7 +8,8 @@ import {
   createDefaultSettings,
   createInitialState,
   encodeLocatedPathDto,
-  locatedPathForTarget
+  locatedPathForTarget,
+  requireTerminalSurfaceContent
 } from "@kmux/core";
 import { LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
 import { vi } from "vitest";
@@ -180,7 +181,8 @@ describe("app runtime Main fact projection", () => {
     const workspace = initialState.workspaces[workspaceId];
     const pane = initialState.panes[workspace.activePaneId];
     const surface = initialState.surfaces[pane.activeSurfaceId];
-    const session = initialState.sessions[surface.content.sessionId];
+    const session =
+      initialState.sessions[requireTerminalSurfaceContent(surface).sessionId];
     const runtime = createRuntime(false, { initialState });
     const window = createMockWindow();
     browserWindows.push(window);
@@ -243,8 +245,9 @@ describe("app runtime Main fact projection", () => {
       initialState.windows[initialState.activeWindowId].activeWorkspaceId;
     const workspace = initialState.workspaces[workspaceId];
     const pane = initialState.panes[workspace.activePaneId];
-    const sessionId =
-      initialState.surfaces[pane.activeSurfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      initialState.surfaces[pane.activeSurfaceId]
+    ).sessionId;
     const runtime = createRuntime(false, { initialState });
     const window = createMockWindow();
     browserWindows.push(window);
@@ -270,6 +273,37 @@ describe("app runtime Main fact projection", () => {
       expect(getLastShellPatch(window)).toMatchObject({
         activeWorkspacePaneTree: expect.any(Object)
       });
+    } finally {
+      runtime.shutdown();
+    }
+  });
+});
+
+describe("app runtime surface cleanup", () => {
+  it("closes a Markdown document subscription with its surface", () => {
+    const runtime = createRuntime(false);
+    const state = runtime.getState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const closeSurface = vi.fn();
+    runtime.setDocumentService({ closeSurface });
+
+    try {
+      runtime.dispatchAppAction({
+        type: "surface.open",
+        workspaceId,
+        init: {
+          kind: "markdown",
+          path: localPath("/tmp/README.md"),
+          title: "README.md"
+        },
+        placement: { kind: "tab", paneId }
+      });
+      const surfaceId = runtime.getState().panes[paneId].activeSurfaceId;
+
+      runtime.dispatchAppAction({ type: "surface.close", surfaceId });
+
+      expect(closeSurface).toHaveBeenCalledWith(surfaceId);
     } finally {
       runtime.shutdown();
     }
@@ -547,7 +581,8 @@ describe("app runtime external sessions", () => {
     const workspace = state.workspaces[result.workspaceId];
     const pane = state.panes[workspace.activePaneId];
     const surface = state.surfaces[result.surfaceId];
-    const session = state.sessions[surface.content.sessionId];
+    const session =
+      state.sessions[requireTerminalSurfaceContent(surface).sessionId];
 
     expect(workspace.name).toBe("Fix terminal focus");
     expect(pane.activeSurfaceId).toBe(result.surfaceId);
@@ -669,7 +704,7 @@ describe("app runtime external sessions", () => {
     const firstSurface = firstState.surfaces[firstResult.surfaceId];
     runtime.dispatchAppAction({
       type: "session.exited",
-      sessionId: firstSurface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(firstSurface).sessionId,
       exitCode: 0
     });
     const workspaceCountAfterExit = Object.keys(
@@ -687,8 +722,10 @@ describe("app runtime external sessions", () => {
     );
     expect(state.surfaces[firstResult.surfaceId]).toBeTruthy();
     expect(
-      state.sessions[state.surfaces[firstResult.surfaceId].content.sessionId]
-        .runtimeStatus.processState
+      state.sessions[
+        requireTerminalSurfaceContent(state.surfaces[firstResult.surfaceId])
+          .sessionId
+      ].runtimeStatus.processState
     ).toBe("exited");
   });
 });
@@ -847,7 +884,7 @@ describe("app runtime restore", () => {
     const restored = runtime.restoreInitialState();
     const restoredSessionIds = new Set(
       Object.values(restored.surfaces).map(
-        (surface) => surface.content.sessionId
+        (surface) => requireTerminalSurfaceContent(surface).sessionId
       )
     );
     for (const sessionId of restoredSessionIds) {
@@ -893,8 +930,9 @@ describe("app runtime restore", () => {
     )!;
     const remotePane =
       snapshot.panes[snapshot.workspaces[remoteWorkspaceId].activePaneId];
-    const remoteSessionId =
-      snapshot.surfaces[remotePane.activeSurfaceId].content.sessionId;
+    const remoteSessionId = requireTerminalSurfaceContent(
+      snapshot.surfaces[remotePane.activeSurfaceId]
+    ).sessionId;
     snapshot.sessions[remoteSessionId].runtimeStatus = {
       processState: "running",
       observationState: "observed",

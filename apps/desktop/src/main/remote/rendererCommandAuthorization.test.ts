@@ -1,4 +1,9 @@
-import { applyAction, createInitialState, type AppState } from "@kmux/core";
+import {
+  applyAction,
+  createInitialState,
+  locatedPathForTarget,
+  type AppState
+} from "@kmux/core";
 
 import {
   authorizeRendererAppAction,
@@ -92,6 +97,57 @@ describe("renderer command authorization", () => {
         state
       ).kind
     ).toBe("local");
+  });
+
+  it("keeps SSH Markdown lifecycle local while routing Terminal resources remotely", () => {
+    const {
+      state,
+      workspaceId,
+      paneId,
+      surfaceId: terminalSurfaceId
+    } = createRemoteState();
+    applyAction(state, {
+      type: "surface.open",
+      workspaceId,
+      init: {
+        kind: "markdown",
+        path: locatedPathForTarget(
+          { kind: "ssh", targetId: "target_1" },
+          "/srv/app/README.md"
+        ),
+        title: "README.md"
+      },
+      placement: { kind: "tab", paneId }
+    });
+    const markdownSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    expect(
+      routeRendererAppAction(
+        { type: "surface.close", surfaceId: markdownSurfaceId },
+        state
+      )
+    ).toEqual({
+      kind: "local",
+      action: { type: "surface.close", surfaceId: markdownSurfaceId }
+    });
+    expect(
+      routeRendererAppAction(
+        { type: "surface.restartSession", surfaceId: markdownSurfaceId },
+        state
+      ).kind
+    ).toBe("local");
+    expect(
+      routeRendererAppAction(
+        { type: "surface.closeOthers", surfaceId: markdownSurfaceId },
+        state
+      ).kind
+    ).toBe("remote-lifecycle");
+    expect(
+      routeRendererAppAction(
+        { type: "surface.close", surfaceId: terminalSurfaceId },
+        state
+      ).kind
+    ).toBe("remote-lifecycle");
   });
 });
 

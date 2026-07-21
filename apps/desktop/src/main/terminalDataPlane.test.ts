@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import { MessageChannelMain } from "electron";
 import type { AppState } from "@kmux/core";
 import { createInitialState, workspaceLocation } from "@kmux/core";
@@ -43,7 +45,7 @@ function streamHost(state: AppState): PtyHostManager {
   return {
     sessionRef: vi.fn(() => ({
       surfaceId: surface.id,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       epoch: "epoch_1"
     })),
     bindTerminalStream: vi.fn(() => true)
@@ -83,7 +85,7 @@ describe("terminal data-plane controller", () => {
       controller.attach(
         rendererEvent().event,
         surface.id,
-        surface.content.sessionId
+        requireTerminalSurfaceContent(surface).sessionId
       )
     ).toEqual({
       status: "retryable-not-ready",
@@ -106,7 +108,7 @@ describe("terminal data-plane controller", () => {
     const result = controller.attach(
       renderer.event,
       surface.id,
-      surface.content.sessionId
+      requireTerminalSurfaceContent(surface).sessionId
     );
     expect(result.status).toBe("granted");
     const grant = result.status === "granted" ? result.grant : null;
@@ -115,7 +117,7 @@ describe("terminal data-plane controller", () => {
       attachId: expect.stringMatching(/^attach_/),
       session: {
         surfaceId: surface.id,
-        sessionId: surface.content.sessionId,
+        sessionId: requireTerminalSurfaceContent(surface).sessionId,
         epoch: "epoch_1"
       }
     });
@@ -152,12 +154,12 @@ describe("terminal data-plane controller", () => {
     const first = controller.attach(
       rendererEvent().event,
       surface.id,
-      surface.content.sessionId
+      requireTerminalSurfaceContent(surface).sessionId
     );
     const second = controller.attach(
       rendererEvent().event,
       surface.id,
-      surface.content.sessionId
+      requireTerminalSurfaceContent(surface).sessionId
     );
 
     expect(first.status).toBe("granted");
@@ -193,7 +195,7 @@ describe("terminal data-plane controller", () => {
       inactiveController.attach(
         rendererEvent().event,
         inactiveSurface.id,
-        inactiveSurface.content.sessionId
+        requireTerminalSurfaceContent(inactiveSurface).sessionId
       )
     ).toEqual({ status: "denied", reason: "not-current-surface" });
 
@@ -208,7 +210,7 @@ describe("terminal data-plane controller", () => {
       content: { kind: "terminal", sessionId: hiddenSessionId }
     };
     hiddenState.sessions[hiddenSessionId] = {
-      ...hiddenState.sessions[visible.content.sessionId],
+      ...hiddenState.sessions[requireTerminalSurfaceContent(visible).sessionId],
       id: hiddenSessionId,
       surfaceId: hiddenSurfaceId
     };
@@ -242,28 +244,29 @@ describe("terminal data-plane controller", () => {
     ).toEqual({ status: "denied", reason: "not-current-surface" });
     expect(host.sessionRef).not.toHaveBeenCalled();
 
-    state.sessions[surface.content.sessionId].runtimeStatus.processState =
-      "exited";
+    state.sessions[
+      requireTerminalSurfaceContent(surface).sessionId
+    ].runtimeStatus.processState = "exited";
     mockChannel();
     expect(
       controller.attach(
         rendererEvent().event,
         surface.id,
-        surface.content.sessionId
+        requireTerminalSurfaceContent(surface).sessionId
       )
     ).toMatchObject({
       status: "granted",
       grant: {
         session: {
           surfaceId: surface.id,
-          sessionId: surface.content.sessionId,
+          sessionId: requireTerminalSurfaceContent(surface).sessionId,
           epoch: "epoch_1"
         }
       }
     });
     expect(host.sessionRef).toHaveBeenCalledWith(
       surface.id,
-      surface.content.sessionId
+      requireTerminalSurfaceContent(surface).sessionId
     );
   });
 
@@ -280,13 +283,21 @@ describe("terminal data-plane controller", () => {
       {};
 
     expect(
-      controller.attach(subframe.event, surface.id, surface.content.sessionId)
+      controller.attach(
+        subframe.event,
+        surface.id,
+        requireTerminalSurfaceContent(surface).sessionId
+      )
     ).toEqual({ status: "denied", reason: "invalid-frame" });
 
     const destroyed = rendererEvent();
     destroyed.frame.isDestroyed.mockReturnValue(true);
     expect(
-      controller.attach(destroyed.event, surface.id, surface.content.sessionId)
+      controller.attach(
+        destroyed.event,
+        surface.id,
+        requireTerminalSurfaceContent(surface).sessionId
+      )
     ).toEqual({ status: "denied", reason: "invalid-frame" });
 
     vi.mocked(host.sessionRef).mockReturnValue(null);
@@ -294,7 +305,7 @@ describe("terminal data-plane controller", () => {
       controller.attach(
         rendererEvent().event,
         surface.id,
-        surface.content.sessionId
+        requireTerminalSurfaceContent(surface).sessionId
       )
     ).toEqual({
       status: "retryable-not-ready",
@@ -316,7 +327,11 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(renderer.event, surface.id, surface.content.sessionId)
+      controller.attach(
+        renderer.event,
+        surface.id,
+        requireTerminalSurfaceContent(surface).sessionId
+      )
     ).toEqual({
       status: "retryable-not-ready",
       reason: "runtime-bind-race"
@@ -342,7 +357,7 @@ describe("terminal data-plane controller", () => {
       controller.attach(
         rendererEvent().event,
         surface.id,
-        surface.content.sessionId
+        requireTerminalSurfaceContent(surface).sessionId
       )
     ).toEqual({
       status: "retryable-not-ready",
@@ -366,7 +381,11 @@ describe("terminal data-plane controller", () => {
     });
 
     expect(
-      controller.attach(renderer.event, surface.id, surface.content.sessionId)
+      controller.attach(
+        renderer.event,
+        surface.id,
+        requireTerminalSurfaceContent(surface).sessionId
+      )
     ).toEqual({ status: "denied", reason: "renderer-transfer-failed" });
     expect(port2.close).toHaveBeenCalledOnce();
   });

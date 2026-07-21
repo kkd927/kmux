@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import process from "node:process";
 
 import { expect, test } from "@playwright/test";
@@ -245,8 +247,8 @@ test("explicit quit tears down background services and restores workspaces when 
         Object.keys(view.activeWorkspace.surfaces).length === 3 &&
         view.activeWorkspace.panes[activePaneId]?.activeSurfaceId ===
           activeSurfaceId &&
-        view.activeWorkspace.surfaces[activeSurfaceId]?.content
-          .runtimeStatus === "running" &&
+        terminalSurfaceVmContent(view.activeWorkspace.surfaces[activeSurfaceId])
+          ?.runtimeStatus === "running" &&
         Object.values(view.activeWorkspace.surfaces).some(
           (surface) => surface.title === "quit hidden continuity"
         ),
@@ -328,7 +330,8 @@ test("explicit quit clears persisted notifications before the next relaunch", as
       (view) =>
         view.notifications.length === 0 &&
         Object.values(view.activeWorkspace.surfaces).some(
-          (surface) => surface.content.runtimeStatus === "running"
+          (surface) =>
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running"
         ),
       "explicit quit should relaunch without stale notifications"
     );

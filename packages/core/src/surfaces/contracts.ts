@@ -16,8 +16,19 @@ export interface TerminalSurfaceContent {
   sessionId: Id;
 }
 
+export interface MarkdownFileSource {
+  kind: "file";
+  path: LocatedPath;
+}
+
+export interface MarkdownSurfaceContent {
+  kind: "markdown";
+  source: MarkdownFileSource;
+}
+
 export type SurfaceContentMap = {
   terminal: TerminalSurfaceContent;
+  markdown: MarkdownSurfaceContent;
 };
 
 export type SurfaceContentOf<K extends SurfaceKind = SurfaceKind> =
@@ -50,8 +61,15 @@ export interface TerminalSurfaceInit {
   agentSessionRef?: ExternalAgentSessionRef;
 }
 
+export interface MarkdownSurfaceInit {
+  kind: "markdown";
+  path: LocatedPath;
+  title: string;
+}
+
 export type SurfaceInitMap = {
   terminal: TerminalSurfaceInit;
+  markdown: MarkdownSurfaceInit;
 };
 
 export type SurfaceInit<K extends SurfaceKind = SurfaceKind> =

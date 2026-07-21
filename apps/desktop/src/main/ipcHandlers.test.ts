@@ -125,6 +125,8 @@ function registerTestHandlers(options: {
     getWorkspaceContextView: vi.fn(),
     getUsageView: vi.fn(),
     getUpdaterState: vi.fn(),
+    subscribeDocument: vi.fn(),
+    unsubscribeDocument: vi.fn(),
     dispatchRendererAction: options.dispatchRendererAction ?? vi.fn(),
     getRetainedRemoteSessions:
       options.getRetainedRemoteSessions ??

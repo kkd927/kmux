@@ -9,6 +9,7 @@ import type {
   CreateImageAttachmentsResult,
   Id,
   ImportedTerminalThemePalette,
+  MarkdownDocumentSubscriptionDto,
   ResolvedTerminalTypographyVm,
   RetainedRemoteSessionResourceKey,
   RetainedRemoteSessionsSnapshot,
@@ -41,6 +42,8 @@ import type {
   WorktreeRemoveResult,
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
+import { decodeMarkdownDocumentSubscriptionDto } from "@kmux/proto";
+import type { DocumentEventSender } from "./documentService";
 
 import {
   buildNativeSurfaceContextMenu,
@@ -165,6 +168,14 @@ interface IpcHandlersOptions {
   setUsageDashboardOpen: (open: boolean) => void;
   downloadAvailableUpdate: () => Promise<void>;
   installDownloadedUpdate: () => void;
+  subscribeDocument: (
+    sender: DocumentEventSender,
+    request: MarkdownDocumentSubscriptionDto
+  ) => void;
+  unsubscribeDocument: (
+    sender: DocumentEventSender,
+    request: MarkdownDocumentSubscriptionDto
+  ) => void;
   clipboard?: MainClipboardService;
   recordProfileEvent?: (event: SmoothnessProfileEvent) => void;
   recordProfileEvents?: (events: SmoothnessProfileEvent[]) => void;
@@ -198,6 +209,20 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     clipboardService.hasPasteableContent()
   );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
+  ipcMain.handle("kmux:document:subscribe", (event, value: unknown) => {
+    assertTrustedMainFrame(event, "document subscription");
+    options.subscribeDocument(
+      event.sender,
+      decodeMarkdownDocumentSubscriptionDto(value)
+    );
+  });
+  ipcMain.handle("kmux:document:unsubscribe", (event, value: unknown) => {
+    assertTrustedMainFrame(event, "document unsubscription");
+    options.unsubscribeDocument(
+      event.sender,
+      decodeMarkdownDocumentSubscriptionDto(value)
+    );
+  });
   ipcMain.handle("kmux:dispatch", (event, action: unknown) => {
     assertTrustedMainFrame(event, "renderer dispatch");
     return options.dispatchRendererAction(action);
@@ -238,13 +263,10 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       return options.saveSshProfile(request);
     }
   );
-  ipcMain.handle(
-    "kmux:ssh-connections:duplicate",
-    (event, profileId: Id) => {
-      assertTrustedMainFrame(event, "SSH connection duplicate");
-      return options.duplicateSshProfile(profileId);
-    }
-  );
+  ipcMain.handle("kmux:ssh-connections:duplicate", (event, profileId: Id) => {
+    assertTrustedMainFrame(event, "SSH connection duplicate");
+    return options.duplicateSshProfile(profileId);
+  });
   ipcMain.handle("kmux:ssh-connections:delete", (event, profileId: Id) => {
     assertTrustedMainFrame(event, "SSH connection delete");
     options.deleteSshProfile(profileId);
@@ -257,14 +279,20 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     assertTrustedMainFrame(event, "SSH connection rebind");
     return options.rebindSshProfile(profileId);
   });
-  ipcMain.handle("kmux:ssh-connections:runtime-clean", (event, profileId: Id) => {
-    assertTrustedMainFrame(event, "SSH runtime clean");
-    return options.cleanSshRuntime(profileId);
-  });
-  ipcMain.handle("kmux:ssh-connections:runtime-reset", (event, profileId: Id) => {
-    assertTrustedMainFrame(event, "SSH runtime reset");
-    return options.resetSshRuntime(profileId);
-  });
+  ipcMain.handle(
+    "kmux:ssh-connections:runtime-clean",
+    (event, profileId: Id) => {
+      assertTrustedMainFrame(event, "SSH runtime clean");
+      return options.cleanSshRuntime(profileId);
+    }
+  );
+  ipcMain.handle(
+    "kmux:ssh-connections:runtime-reset",
+    (event, profileId: Id) => {
+      assertTrustedMainFrame(event, "SSH runtime reset");
+      return options.resetSshRuntime(profileId);
+    }
+  );
   ipcMain.handle(
     "kmux:ssh-workspace:prepare",
     (event, request: SshWorkspacePrepareRequest) => {

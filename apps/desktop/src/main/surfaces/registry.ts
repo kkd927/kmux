@@ -13,22 +13,28 @@ type TerminalRuntimeEffect = Extract<
   AppEffect,
   { type: "session.spawn" | "session.close" }
 >;
+type MarkdownRuntimeEffect = Extract<
+  AppEffect,
+  { type: "surface.runtime.close"; kind: "markdown" }
+>;
 
 export interface SurfaceRuntimeContext {
   ptyHost: PtyHostManager | null;
   resolveLocalPath: LocalPathResolver;
   createShellLaunchPolicy(launch: SessionLaunchConfig): ShellLaunchPolicy;
+  closeMarkdownSurface(surfaceId: string): void;
 }
 
 interface SurfaceRuntimeModule<K extends SurfaceKind> {
   readonly kind: K;
+}
+
+const terminalSurfaceRuntimeModule: SurfaceRuntimeModule<"terminal"> & {
   runEffect(
     effect: TerminalRuntimeEffect,
     context: SurfaceRuntimeContext
   ): void;
-}
-
-const terminalSurfaceRuntimeModule: SurfaceRuntimeModule<"terminal"> = {
+} = {
   kind: "terminal",
   runEffect(effect, context) {
     if (effect.type === "session.close") {
@@ -53,8 +59,21 @@ const terminalSurfaceRuntimeModule: SurfaceRuntimeModule<"terminal"> = {
   }
 };
 
+const markdownSurfaceRuntimeModule: SurfaceRuntimeModule<"markdown"> & {
+  runEffect(
+    effect: MarkdownRuntimeEffect,
+    context: SurfaceRuntimeContext
+  ): void;
+} = {
+  kind: "markdown",
+  runEffect(effect, context) {
+    context.closeMarkdownSurface(effect.surfaceId);
+  }
+};
+
 export const surfaceRuntimeRegistry = {
-  terminal: terminalSurfaceRuntimeModule
+  terminal: terminalSurfaceRuntimeModule,
+  markdown: markdownSurfaceRuntimeModule
 } satisfies { [K in SurfaceKind]: SurfaceRuntimeModule<K> };
 
 export function dispatchSurfaceRuntimeEffect(
@@ -62,7 +81,9 @@ export function dispatchSurfaceRuntimeEffect(
   context: SurfaceRuntimeContext
 ): boolean {
   if (effect.type !== "session.spawn" && effect.type !== "session.close") {
-    return false;
+    if (effect.type !== "surface.runtime.close") return false;
+    surfaceRuntimeRegistry[effect.kind].runEffect(effect, context);
+    return true;
   }
   surfaceRuntimeRegistry.terminal.runEffect(effect, context);
   return true;

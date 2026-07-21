@@ -1,3 +1,5 @@
+import { terminalSurfaceVmContent } from "@kmux/proto";
+
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -200,8 +202,8 @@ test("unique cwd usage stays in the dashboard but does not show a pane HUD befor
       view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
         .activeSurfaceId;
     const projectPath =
-      view.activeWorkspace.surfaces[activeSurfaceId]?.content.runtimeMetadata
-        .cwd ?? sandbox.shellHomeDir;
+      terminalSurfaceVmContent(view.activeWorkspace.surfaces[activeSurfaceId])
+        ?.runtimeMetadata.cwd ?? sandbox.shellHomeDir;
 
     writeUsageFixture(usageDir, [
       buildClaudeUsageRecord({

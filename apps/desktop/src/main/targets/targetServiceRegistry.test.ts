@@ -124,6 +124,7 @@ function services<TPath extends LocalPath | RemotePath>(
     },
     files: {
       exists: vi.fn(),
+      stat: vi.fn(),
       read: vi.fn(),
       join: vi.fn((base: TPath) => base),
       dirname: vi.fn((value: TPath) => value),

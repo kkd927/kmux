@@ -1,22 +1,30 @@
-import type { MouseEvent } from "react";
+import { useRef, type MouseEvent } from "react";
 
 import { Codicon } from "./Codicon";
 import { SurfaceUsageAlertDot } from "./SurfaceUsageAlertDot";
-import type { TerminalSurfaceViewProps } from "../surfaces/TerminalSurfaceView";
-import { surfaceViewRegistry } from "../surfaces/registry";
+import type { SurfacePaneProps } from "../surfaces/contracts";
+import {
+  surfaceTabChrome,
+  surfaceViewModules,
+  surfaceViewProps
+} from "../surfaces/registry";
 import {
   encodeSurfaceTabDragPayload,
   SURFACE_TAB_DRAG_MIME
 } from "../surfaceTabDrag";
 import styles from "../styles/TerminalPane.module.css";
 
-export type SurfacePaneProps = TerminalSurfaceViewProps;
+export type { SurfacePaneProps } from "../surfaces/contracts";
 
 export function SurfacePane(props: SurfacePaneProps): JSX.Element {
   const activeSurface =
     props.surfaces.find((surface) => surface.id === props.activeSurfaceId) ??
     props.surfaces[0];
-  const View = surfaceViewRegistry[activeSurface.content.kind].Component;
+  const activeSurfaceByKindRef = useRef(new Map<string, string>());
+  activeSurfaceByKindRef.current.set(
+    activeSurface.content.kind,
+    activeSurface.id
+  );
   async function openSurfaceContextMenu(
     event: MouseEvent,
     surfaceId: string
@@ -25,8 +33,7 @@ export function SurfacePane(props: SurfacePaneProps): JSX.Element {
     event.stopPropagation();
     const surface = props.surfaces.find((entry) => entry.id === surfaceId);
     if (!surface) return;
-    const module = surfaceViewRegistry[surface.content.kind];
-    const context = module.contextMenu?.(surface, props.settings);
+    const context = surfaceTabChrome(surface, props.settings).contextMenu;
     if (!context) return;
     try {
       await window.kmux.showSurfaceContextMenu(
@@ -65,8 +72,8 @@ export function SurfacePane(props: SurfacePaneProps): JSX.Element {
           {props.surfaces.map((surface) => {
             const selected = surface.id === props.activeSurfaceId;
             const active = selected && props.focused;
-            const module = surfaceViewRegistry[surface.content.kind];
-            const Icon = module.Icon;
+            const chrome = surfaceTabChrome(surface, props.settings);
+            const Icon = chrome.Icon;
             return (
               <div
                 key={surface.id}
@@ -99,7 +106,7 @@ export function SurfacePane(props: SurfacePaneProps): JSX.Element {
                     props.onSurfaceTabDragStart(payload);
                   }}
                   onDragEnd={props.onSurfaceTabDragEnd}
-                  title={module.tabTitle(surface)}
+                  title={chrome.title}
                 >
                   <span className={styles.tabIcon}>
                     <Icon />
@@ -167,7 +174,26 @@ export function SurfacePane(props: SurfacePaneProps): JSX.Element {
           </div>
         </div>
       </div>
-      <View {...props} />
+      {surfaceViewModules.map((module) => {
+        const viewProps = surfaceViewProps(
+          module,
+          props,
+          activeSurface,
+          activeSurfaceByKindRef.current.get(module.kind)
+        );
+        if (!viewProps) return null;
+        const View = module.Component;
+        return (
+          <div
+            key={module.kind}
+            style={
+              viewProps.visible ? { display: "contents" } : { display: "none" }
+            }
+          >
+            <View {...viewProps} />
+          </div>
+        );
+      })}
     </div>
   );
 }

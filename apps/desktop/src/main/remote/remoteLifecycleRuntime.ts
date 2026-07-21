@@ -21,8 +21,8 @@ import {
 import {
   canonicalizeRemoteOperationPayload,
   cloneState,
+  defaultNewSurfaceCwd,
   encodeLocatedPathDto,
-  terminalRuntimeMetadataForSurface,
   terminalSessionForSurface,
   validateRemoteTargetBinding,
   type AppAction,
@@ -449,16 +449,20 @@ export class RemoteLifecycleRuntime {
         await this.restartProductSession(action.surfaceId);
         return;
       case "surface.close":
-        await this.terminateProductSurface(action.surfaceId);
+        await this.closeProductSurface(action.surfaceId);
         return;
       case "surface.closeOthers": {
         const state = this.options.getState();
-        const { pane } = requireRemoteSurfaceContext(state, action.surfaceId);
+        const surface = state.surfaces[action.surfaceId];
+        const { pane } = surface
+          ? requireRemotePaneContext(state, surface.paneId)
+          : { pane: undefined };
+        if (!surface || !pane) return;
         const closeSurfaceIds = pane.surfaceIds.filter(
           (surfaceId) => surfaceId !== action.surfaceId
         );
         for (const surfaceId of closeSurfaceIds) {
-          await this.terminateProductSurface(surfaceId);
+          await this.closeProductSurface(surfaceId);
         }
         return;
       }
@@ -471,7 +475,7 @@ export class RemoteLifecycleRuntime {
         if (countWorkspacePanes(workspace) <= 1) return;
         const closeSurfaceIds = [...pane.surfaceIds];
         for (const surfaceId of closeSurfaceIds) {
-          await this.terminateProductSurface(surfaceId);
+          await this.closeProductSurface(surfaceId);
         }
       }
     }
@@ -486,24 +490,15 @@ export class RemoteLifecycleRuntime {
     const state = this.options.getState();
     const paneId = action.paneId;
     const { workspace, pane } = requireRemotePaneContext(state, paneId);
-    const activeSurface = state.surfaces[pane.activeSurfaceId];
-    const activeSession = activeSurface
-      ? terminalSessionForSurface(state, activeSurface.id)
-      : undefined;
-    const activeMetadata = activeSurface
-      ? terminalRuntimeMetadataForSurface(state, activeSurface.id)
-      : undefined;
-    if (!activeSurface || !activeSession || !activeMetadata) {
-      throw new Error(
-        "remote session create requires an active source surface"
-      );
-    }
+    const sourceSession = pane.surfaceIds
+      .map((surfaceId) => terminalSessionForSurface(state, surfaceId))
+      .find((session) => session !== undefined);
     const requestedLaunch =
       action.type === "surface.create" ? action.launch : undefined;
     const cwd =
       requestedLaunch?.cwd ??
       (action.type === "surface.create" ? action.cwd : undefined) ??
-      encodeLocatedPathDto(activeMetadata.cwd).path;
+      encodeLocatedPathDto(defaultNewSurfaceCwd(state, paneId)).path;
     const title =
       requestedLaunch?.title ??
       (action.type === "surface.create" ? action.title : undefined);
@@ -522,9 +517,9 @@ export class RemoteLifecycleRuntime {
         cwd,
         ...(requestedLaunch?.shell !== undefined
           ? { shell: requestedLaunch.shell }
-          : activeSession.launch.shell === undefined
+          : sourceSession?.launch.shell === undefined
             ? {}
-            : { shell: activeSession.launch.shell }),
+            : { shell: sourceSession.launch.shell }),
         ...(requestedLaunch?.args === undefined
           ? {}
           : { args: [...requestedLaunch.args] }),
@@ -637,6 +632,16 @@ export class RemoteLifecycleRuntime {
       ),
       payload: { kind: "session.terminate", sessionId: session.id }
     });
+  }
+
+  private async closeProductSurface(surfaceId: Id): Promise<void> {
+    const surface = this.options.getState().surfaces[surfaceId];
+    if (!surface) return;
+    if (surface.content.kind === "markdown") {
+      this.options.dispatchAppAction?.({ type: "surface.close", surfaceId });
+      return;
+    }
+    await this.terminateProductSurface(surfaceId);
   }
 
   async startWorkspaceConversion(request: StartWorkspaceConversionRequest) {

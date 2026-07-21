@@ -7,6 +7,7 @@ type CodiconName =
   | "git-branch"
   | "layout-sidebar-left"
   | "layout-sidebar-right"
+  | "markdown"
   | "split-horizontal"
   | "split-vertical"
   | "terminal";

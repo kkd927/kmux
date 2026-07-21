@@ -644,6 +644,10 @@ export class LinuxX64RemoteRuntime {
     return await this.withSftpError(() => this.sftp.exists(remotePath));
   }
 
+  async statFile(remotePath: string) {
+    return await this.withSftpError(() => this.sftp.stat(remotePath));
+  }
+
   async downloadFile(request: {
     transferId: string;
     remotePath: string;

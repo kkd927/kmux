@@ -182,8 +182,11 @@ function createSplitPaneTreeProps(): PaneTreeProps {
           id: "surface_2",
           paneId: "pane_2",
           content: {
-            ...base.workspace.surfaces.surface_1.content,
-            sessionId: "session_2"
+            kind: "terminal",
+            sessionId: "session_2",
+            runtimeStatus: "running",
+            shellInputReady: true,
+            runtimeMetadata: { ports: [] }
           },
           title: "repo / shell 2"
         }

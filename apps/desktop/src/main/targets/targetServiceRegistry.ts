@@ -228,6 +228,7 @@ function bindLocatedFiles<TPath extends LocalPath | RemotePath>(
 ): LocatedTargetServiceSet["files"] {
   return {
     exists: (value) => files.exists(path(value)),
+    stat: (value) => files.stat(path(value)),
     read: (value, options) => files.read(path(value), options),
     join: (base, ...segments) => wrap(files.join(path(base), ...segments)),
     dirname: (value) => wrap(files.dirname(path(value))),

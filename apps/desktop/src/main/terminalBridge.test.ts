@@ -1,3 +1,5 @@
+import { requireTerminalSurfaceContent } from "@kmux/core";
+
 import {
   applyAction,
   createInitialState,
@@ -27,7 +29,9 @@ describe("terminal bridge", () => {
     )!;
     const pane = state.panes[state.workspaces[workspaceId].activePaneId];
     const surfaceId = pane.activeSurfaceId;
-    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     const onSurfaceInputText = vi.fn();
     const ptyHost = {
       sendText: vi.fn(),
@@ -84,7 +88,9 @@ describe("terminal bridge", () => {
   it("routes BEL events to the terminal bell action", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     const dispatchAppAction = vi.fn<(action: AppAction) => void>();
     const bridge = createTerminalBridge({
       getState: () => state,
@@ -108,7 +114,9 @@ describe("terminal bridge", () => {
   it("drops stale BEL events after a surface session changes", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const oldSessionId = state.surfaces[surfaceId].content.sessionId;
+    const oldSessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     state.surfaces[surfaceId] = {
       ...state.surfaces[surfaceId],
       content: { kind: "terminal", sessionId: "session-restarted" }
@@ -138,7 +146,9 @@ describe("terminal bridge", () => {
       dispatchAppAction,
       getPtyHost: () => null
     });
-    const sessionId = Object.values(state.surfaces)[0].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      Object.values(state.surfaces)[0]
+    ).sessionId;
 
     bridge.handlePtyEvent({
       type: "spawned",
@@ -158,7 +168,9 @@ describe("terminal bridge", () => {
   it("routes shell.ready into session.shellReady", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     const dispatchAppAction = vi.fn<(action: AppAction) => void>();
     const bridge = createTerminalBridge({
       getState: () => state,
@@ -195,7 +207,7 @@ describe("terminal bridge", () => {
       sessions: [
         {
           surfaceId: surface.id,
-          sessionId: surface.content.sessionId,
+          sessionId: requireTerminalSurfaceContent(surface).sessionId,
           epoch: "epoch_lost"
         },
         {
@@ -209,10 +221,11 @@ describe("terminal bridge", () => {
     expect(dispatchAppAction).toHaveBeenCalledTimes(1);
     expect(dispatchAppAction).toHaveBeenCalledWith({
       type: "session.exited",
-      sessionId: surface.content.sessionId
+      sessionId: requireTerminalSurfaceContent(surface).sessionId
     });
     expect(
-      state.sessions[surface.content.sessionId].runtimeStatus.processState
+      state.sessions[requireTerminalSurfaceContent(surface).sessionId]
+        .runtimeStatus.processState
     ).toBe("exited");
   });
 
@@ -233,7 +246,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "first"
       }
     });
@@ -241,7 +255,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "second"
       }
     });
@@ -249,7 +264,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "third"
       }
     });
@@ -276,7 +292,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "third"
       }
     });
@@ -286,7 +303,9 @@ describe("terminal bridge", () => {
   it("drops stale metadata after a surface session changes", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const oldSessionId = state.surfaces[surfaceId].content.sessionId;
+    const oldSessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     state.surfaces[surfaceId] = {
       ...state.surfaces[surfaceId],
       content: { kind: "terminal", sessionId: "session-restarted" }
@@ -328,7 +347,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "first"
       }
     });
@@ -336,7 +356,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "stale"
       }
     });
@@ -344,7 +365,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "first"
       }
     });
@@ -376,7 +398,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "first"
       }
     });
@@ -384,7 +407,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "pending"
       }
     });
@@ -392,7 +416,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         cwd: "/tmp/kmux"
       }
     });
@@ -419,7 +444,9 @@ describe("terminal bridge", () => {
     vi.useFakeTimers();
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     const dispatchAppAction = vi.fn((action: AppAction) => {
       applyAction(state, action);
     });
@@ -433,7 +460,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "first"
       }
     });
@@ -441,7 +469,8 @@ describe("terminal bridge", () => {
       type: "metadata",
       payload: {
         surfaceId,
-        sessionId: state.surfaces[surfaceId].content.sessionId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
         title: "final"
       }
     });
@@ -484,7 +513,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 777
     });
 
@@ -495,7 +524,8 @@ describe("terminal bridge", () => {
       surfaceId,
       title: surface.title,
       message: encodeLocatedPathDto(
-        state.sessions[surface.content.sessionId].runtimeMetadata.cwd
+        state.sessions[requireTerminalSurfaceContent(surface).sessionId]
+          .runtimeMetadata.cwd
       ).path,
       source: "terminal"
     });
@@ -504,7 +534,9 @@ describe("terminal bridge", () => {
   it("drops stale terminal notifications after a surface session changes", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const oldSessionId = state.surfaces[surfaceId].content.sessionId;
+    const oldSessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     state.surfaces[surfaceId] = {
       ...state.surfaces[surfaceId],
       content: { kind: "terminal", sessionId: "session-restarted" }
@@ -544,7 +576,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 777,
       title: "osc777 title",
       message: "osc777 body"
@@ -569,7 +601,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 9,
       title: "CodexBar",
       message: "Plan mode prompt: Depth"
@@ -580,7 +612,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       title: "Codex needs input",
@@ -614,7 +646,7 @@ describe("terminal bridge", () => {
       bridge.handlePtyEvent({
         type: "terminal.notification",
         surfaceId,
-        sessionId: surface.content.sessionId,
+        sessionId: requireTerminalSurfaceContent(surface).sessionId,
         protocol: 9,
         title: "CodexBar",
         message
@@ -650,7 +682,7 @@ describe("terminal bridge", () => {
       bridge.handlePtyEvent({
         type: "terminal.notification",
         surfaceId,
-        sessionId: surface.content.sessionId,
+        sessionId: requireTerminalSurfaceContent(surface).sessionId,
         protocol: 9,
         title: "CodexBar",
         message
@@ -662,7 +694,7 @@ describe("terminal bridge", () => {
           workspaceId: pane.workspaceId,
           paneId: surface.paneId,
           surfaceId,
-          sessionId: surface.content.sessionId,
+          sessionId: requireTerminalSurfaceContent(surface).sessionId,
           agent: "codex",
           event: "needs_input",
           message
@@ -687,7 +719,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 9,
       title: "Claude",
       message: "Needs input"
@@ -726,7 +758,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 9,
       title: "CodexBar",
       message: "Plan mode prompt: Depth"
@@ -737,7 +769,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       title: "Codex needs input",
@@ -774,7 +806,7 @@ describe("terminal bridge", () => {
       bridge.handlePtyEvent({
         type: "terminal.notification",
         surfaceId,
-        sessionId: surface.content.sessionId,
+        sessionId: requireTerminalSurfaceContent(surface).sessionId,
         protocol: 9,
         title: "tool",
         message
@@ -815,7 +847,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 9,
       title: "CodexBar",
       message: "Plan mode prompt: Depth"
@@ -826,7 +858,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       title: "Codex needs input",
@@ -853,7 +885,7 @@ describe("terminal bridge", () => {
     bridge.handlePtyEvent({
       type: "terminal.notification",
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       protocol: 9,
       title: "kmux",
       message: "Hi. What do you need changed in `kmux`?"
@@ -881,7 +913,7 @@ describe("terminal bridge", () => {
     });
 
     expect(ptyHost.snapshot).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       surfaceId,
       {
         settleForMs: 300,
@@ -909,7 +941,7 @@ describe("terminal bridge", () => {
 
     expect(onSurfaceInputText).toHaveBeenCalledWith(surfaceId, "codex exec\r");
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "codex exec\r"
     );
   });
@@ -917,7 +949,9 @@ describe("terminal bridge", () => {
   it("observes accepted direct-port input only for the current runtime epoch", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
-    const sessionId = state.surfaces[surfaceId].content.sessionId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
     const onSurfaceInputText = vi.fn();
     const ptyHost = {
       sessionRef: vi.fn(() => ({
@@ -963,7 +997,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -987,7 +1021,7 @@ describe("terminal bridge", () => {
       surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "\u001b"
     );
   });
@@ -1007,7 +1041,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1030,9 +1064,12 @@ describe("terminal bridge", () => {
       type: "agent.attention.clear",
       surfaceId
     });
-    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.content.sessionId, {
-      key: "Escape"
-    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(
+      requireTerminalSurfaceContent(surface).sessionId,
+      {
+        key: "Escape"
+      }
+    );
   });
 
   it("clears visible Claude needs-input attention when escape text dismisses the prompt", () => {
@@ -1050,7 +1087,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "claude",
       event: "needs_input",
       message: "Continue? (Yes, No)"
@@ -1070,7 +1107,7 @@ describe("terminal bridge", () => {
       surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "\u001b"
     );
   });
@@ -1090,7 +1127,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "claude",
       event: "needs_input",
       message: "Continue? (Yes, No)"
@@ -1109,9 +1146,12 @@ describe("terminal bridge", () => {
       type: "agent.attention.clear",
       surfaceId
     });
-    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.content.sessionId, {
-      key: "Escape"
-    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(
+      requireTerminalSurfaceContent(surface).sessionId,
+      {
+        key: "Escape"
+      }
+    );
   });
 
   it("does not clear Claude needs-input attention when the surface is not visible", () => {
@@ -1129,7 +1169,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "claude",
       event: "needs_input",
       message: "Continue? (Yes, No)"
@@ -1146,7 +1186,7 @@ describe("terminal bridge", () => {
 
     expect(dispatchAppAction).not.toHaveBeenCalled();
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "\u001b"
     );
   });
@@ -1166,7 +1206,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1190,7 +1230,7 @@ describe("terminal bridge", () => {
       surfaceId
     });
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "\r"
     );
   });
@@ -1210,7 +1250,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1233,9 +1273,12 @@ describe("terminal bridge", () => {
       type: "agent.attention.clear",
       surfaceId
     });
-    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.content.sessionId, {
-      key: "Enter"
-    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(
+      requireTerminalSurfaceContent(surface).sessionId,
+      {
+        key: "Enter"
+      }
+    );
   });
 
   it("clears visible Antigravity needs-input attention when Enter submits the prompt", () => {
@@ -1253,7 +1296,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "antigravity",
       event: "needs_input",
       message: "Tool permission requested: WriteFile"
@@ -1272,9 +1315,12 @@ describe("terminal bridge", () => {
       type: "agent.attention.clear",
       surfaceId
     });
-    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.content.sessionId, {
-      key: "Enter"
-    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(
+      requireTerminalSurfaceContent(surface).sessionId,
+      {
+        key: "Enter"
+      }
+    );
   });
 
   it("clears visible Claude needs-input attention when Enter submits the prompt", () => {
@@ -1292,7 +1338,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "claude",
       event: "needs_input",
       message: "Continue? (Yes, No)"
@@ -1311,9 +1357,12 @@ describe("terminal bridge", () => {
       type: "agent.attention.clear",
       surfaceId
     });
-    expect(ptyHost.sendKey).toHaveBeenCalledWith(surface.content.sessionId, {
-      key: "Enter"
-    });
+    expect(ptyHost.sendKey).toHaveBeenCalledWith(
+      requireTerminalSurfaceContent(surface).sessionId,
+      {
+        key: "Enter"
+      }
+    );
   });
 
   it("does not clear Codex needs-input on arrow keys (navigation should not submit)", () => {
@@ -1331,7 +1380,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1368,7 +1417,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1405,7 +1454,7 @@ describe("terminal bridge", () => {
       workspaceId: pane.workspaceId,
       paneId: surface.paneId,
       surfaceId,
-      sessionId: surface.content.sessionId,
+      sessionId: requireTerminalSurfaceContent(surface).sessionId,
       agent: "codex",
       event: "needs_input",
       message: "Plan mode prompt: Depth",
@@ -1426,7 +1475,7 @@ describe("terminal bridge", () => {
 
     expect(dispatchAppAction).not.toHaveBeenCalled();
     expect(ptyHost.sendText).toHaveBeenCalledWith(
-      surface.content.sessionId,
+      requireTerminalSurfaceContent(surface).sessionId,
       "foo\nbar\n"
     );
   });

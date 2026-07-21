@@ -1404,7 +1404,11 @@ export function App(): JSX.Element {
   async function requestSurfaceRestart(surfaceId: string): Promise<void> {
     const latestView = await window.kmux.getShellState();
     const surface = latestView.activeWorkspacePaneTree.surfaces[surfaceId];
-    if (!surface || surface.content.runtimeStatus === "pending") {
+    if (
+      !surface ||
+      surface.content.kind !== "terminal" ||
+      surface.content.runtimeStatus === "pending"
+    ) {
       return;
     }
     if (surface.content.runtimeStatus === "running") {
@@ -1429,6 +1433,7 @@ export function App(): JSX.Element {
       latestView.activeWorkspacePaneTree.surfaces[pendingRestart.surfaceId];
     if (
       !surface ||
+      surface.content.kind !== "terminal" ||
       surface.content.sessionId !== pendingRestart.sessionId ||
       surface.content.runtimeStatus === "pending"
     ) {
