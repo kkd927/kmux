@@ -6,7 +6,7 @@ import {
   type RefObject
 } from "react";
 import { cjk } from "@streamdown/cjk";
-import { createCodePlugin } from "@streamdown/code";
+import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { harden } from "rehype-harden";
@@ -19,10 +19,10 @@ import {
 
 import type { ColorTheme } from "@kmux/ui";
 
-const code = createCodePlugin({
-  themes: ["github-light", "github-dark-high-contrast"]
-});
 const plugins = { code, mermaid, math, cjk };
+const streamdownPrefix = "kmuxsd";
+const streamdownLinkClassName =
+  "kmuxsd:wrap-anywhere kmuxsd:font-medium kmuxsd:text-primary kmuxsd:underline";
 const rehypePlugins: NonNullable<StreamdownProps["rehypePlugins"]> = [
   defaultRehypePlugins.sanitize,
   [
@@ -72,44 +72,46 @@ export function MarkdownRenderedContent({
   );
 
   return (
-    <Streamdown
-      className="kmuxMarkdownSurface__document"
-      components={components}
-      controls={{
-        code: { copy: true, download: false },
-        mermaid: {
-          copy: true,
-          download: false,
-          fullscreen: true,
-          panZoom: true
-        },
-        table: { copy: true, download: false, fullscreen: true }
-      }}
-      dir="auto"
-      disallowedElements={["img"]}
-      isAnimating={false}
-      lineNumbers
-      mermaid={{
-        config: {
-          securityLevel: "strict",
-          startOnLoad: false,
-          theme: colorTheme === "dark" ? "dark" : "default"
+    <div className="kmuxMarkdownSurface__document">
+      <Streamdown
+        components={components}
+        controls={{
+          code: { copy: true, download: true },
+          mermaid: {
+            copy: true,
+            download: true,
+            fullscreen: true,
+            panZoom: true
+          },
+          table: { copy: true, download: true, fullscreen: true }
+        }}
+        dir="auto"
+        disallowedElements={["img"]}
+        isAnimating={false}
+        lineNumbers
+        mermaid={{
+          config: {
+            securityLevel: "strict",
+            startOnLoad: false,
+            theme: colorTheme === "dark" ? "dark" : "default"
+          }
+        }}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={plugins}
+        prefix={streamdownPrefix}
+        rehypePlugins={rehypePlugins}
+        shikiTheme={["github-light", "github-dark"]}
+        skipHtml
+        urlTransform={(url, key) =>
+          key === "src" || classifyMarkdownUrl(url).kind === "blocked"
+            ? null
+            : url
         }
-      }}
-      mode="static"
-      parseIncompleteMarkdown={false}
-      plugins={plugins}
-      rehypePlugins={rehypePlugins}
-      shikiTheme={["github-light", "github-dark-high-contrast"]}
-      skipHtml
-      urlTransform={(url, key) =>
-        key === "src" || classifyMarkdownUrl(url).kind === "blocked"
-          ? null
-          : url
-      }
-    >
-      {markdown}
-    </Streamdown>
+      >
+        {markdown}
+      </Streamdown>
+    </div>
   );
 }
 
@@ -141,6 +143,7 @@ interface MarkdownLinkProps extends ComponentPropsWithoutRef<"a"> {
 }
 
 function MarkdownLink({
+  className,
   href,
   onClick,
   surfaceId,
@@ -166,7 +169,15 @@ function MarkdownLink({
     }
   }
 
-  return <a {...props} href={href} onClick={activate} />;
+  return (
+    <a
+      {...props}
+      className={[streamdownLinkClassName, className].filter(Boolean).join(" ")}
+      data-streamdown="link"
+      href={href}
+      onClick={activate}
+    />
+  );
 }
 
 function findFragment(

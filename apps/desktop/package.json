@@ -14,7 +14,10 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
+    "generate:streamdown-styles": "node ../../scripts/generate-streamdown-tailwind-source.mjs",
+    "predev": "npm run generate:streamdown-styles",
     "dev": "electron-vite dev --config electron.vite.config.ts",
+    "prebuild": "npm run generate:streamdown-styles",
     "build": "electron-vite build --config electron.vite.config.ts",
     "dist:mac": "electron-builder --config electron-builder.yml --mac --publish never",
     "dist:linux": "electron-builder --config electron-builder.yml --linux AppImage --publish never",
@@ -49,6 +52,7 @@
     "@napi-rs/keyring-linux-x64-gnu": "1.3.0"
   },
   "devDependencies": {
+    "@tailwindcss/oxide": "^4.3.3",
     "@tailwindcss/vite": "^4.3.3",
     "postcss-prefix-selector": "^2.1.1",
     "tailwindcss": "^4.3.3"

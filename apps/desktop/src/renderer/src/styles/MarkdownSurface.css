@@ -1,19 +1,37 @@
-@layer theme, utilities;
+@layer theme, base, utilities;
 
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "tailwindcss/theme.css" layer(theme) prefix(kmuxsd);
+@import "tailwindcss/utilities.css" layer(utilities) source(none) prefix(kmuxsd);
 @import "streamdown/styles.css";
 @import "katex/dist/katex.min.css";
 
-@source "../../../../../../node_modules/streamdown/dist";
-@source "../../../../../../node_modules/@streamdown/code/dist";
-@source "../../../../../../node_modules/@streamdown/mermaid/dist";
-@source "../../../../../../node_modules/@streamdown/math/dist";
-@source "../../../../../../node_modules/@streamdown/cjk/dist";
+@source "./streamdown-prefix-source.txt";
+@source "../surfaces/MarkdownRenderedContent.tsx";
 
 @custom-variant dark (&:where([data-color-theme="dark"], [data-color-theme="dark"] *));
 
+:root {
+  --kmux-markdown-scale: calc(12 / 13);
+}
+
 @theme inline {
+  --spacing: calc(4px * var(--kmux-markdown-scale, 1));
+  --container-md: 448px;
+  --text-xs: calc(12px * var(--kmux-markdown-scale, 1));
+  --text-xs--line-height: calc(16px * var(--kmux-markdown-scale, 1));
+  --text-sm: calc(14px * var(--kmux-markdown-scale, 1));
+  --text-sm--line-height: calc(20px * var(--kmux-markdown-scale, 1));
+  --text-base: calc(16px * var(--kmux-markdown-scale, 1));
+  --text-base--line-height: calc(24px * var(--kmux-markdown-scale, 1));
+  --text-lg: calc(18px * var(--kmux-markdown-scale, 1));
+  --text-lg--line-height: calc(28px * var(--kmux-markdown-scale, 1));
+  --text-xl: calc(20px * var(--kmux-markdown-scale, 1));
+  --text-xl--line-height: calc(28px * var(--kmux-markdown-scale, 1));
+  --text-2xl: calc(24px * var(--kmux-markdown-scale, 1));
+  --text-2xl--line-height: calc(32px * var(--kmux-markdown-scale, 1));
+  --text-3xl: calc(30px * var(--kmux-markdown-scale, 1));
+  --text-3xl--line-height: calc(36px * var(--kmux-markdown-scale, 1));
+  --font-mono: var(--kmux-terminal-font-family);
   --color-background: var(--panel-bg);
   --color-foreground: var(--text-primary);
   --color-card: var(--card-bg);
@@ -32,10 +50,43 @@
   --color-border: var(--border-soft);
   --color-input: var(--input-border);
   --color-ring: var(--focus-ring-strong);
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --color-sidebar: var(--panel-muted);
+  --color-sidebar-foreground: var(--text-primary);
+  --radius-sm: calc(4px * var(--kmux-markdown-scale, 1));
+  --radius-md: calc(6px * var(--kmux-markdown-scale, 1));
+  --radius-lg: calc(8px * var(--kmux-markdown-scale, 1));
+  --radius-xl: calc(12px * var(--kmux-markdown-scale, 1));
+}
+
+@layer base {
+  button[class*="kmuxsd:"] {
+    appearance: none;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+  }
+
+  button[class*="kmuxsd:"] > svg {
+    display: block;
+    width: calc(16px * var(--kmux-markdown-scale, 1));
+    height: calc(16px * var(--kmux-markdown-scale, 1));
+  }
+}
+
+[data-streamdown="code-block-body"] pre {
+  font-family: var(--kmux-terminal-font-family);
+}
+
+[data-streamdown="code-block-body"] code > span::before {
+  font-size: calc(13px * var(--kmux-markdown-scale, 1));
+}
+
+button[class*="kmuxsd:"]:focus-visible {
+  outline: 2px solid var(--focus-ring-strong);
+  outline-offset: 2px;
 }
 
 .kmuxMarkdownSurface {
@@ -47,8 +98,8 @@
   background: var(--panel-bg);
   color: var(--text-primary);
   font-family: var(--kmux-ui-font-family);
-  font-size: 14px;
-  line-height: 1.65;
+  font-size: calc(16px * var(--kmux-markdown-scale, 1));
+  line-height: 1.5;
   outline: none;
 }
 
@@ -96,64 +147,6 @@
 
 .kmuxMarkdownSurface__document {
   overflow-wrap: anywhere;
-}
-
-.kmuxMarkdownSurface__document > :first-child {
-  margin-top: 0;
-}
-
-.kmuxMarkdownSurface__document h1,
-.kmuxMarkdownSurface__document h2,
-.kmuxMarkdownSurface__document h3,
-.kmuxMarkdownSurface__document h4 {
-  color: var(--text-primary);
-  line-height: 1.25;
-  scroll-margin-top: 18px;
-}
-
-.kmuxMarkdownSurface__document h1,
-.kmuxMarkdownSurface__document h2 {
-  padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.kmuxMarkdownSurface__document a {
-  color: var(--accent);
-  text-decoration-color: color-mix(in srgb, var(--accent) 52%, transparent);
-  text-underline-offset: 0.16em;
-}
-
-.kmuxMarkdownSurface__document a:hover {
-  color: var(--accent-hover);
-}
-
-.kmuxMarkdownSurface__document :not(pre) > code {
-  padding: 0.14em 0.34em;
-  border: 1px solid var(--border-soft);
-  border-radius: 4px;
-  background: var(--panel-muted);
-  font-family: var(--kmux-terminal-font-family);
-  font-size: 0.9em;
-}
-
-.kmuxMarkdownSurface__document pre,
-.kmuxMarkdownSurface__document code {
-  font-family: var(--kmux-terminal-font-family);
-}
-
-.kmuxMarkdownSurface__document blockquote {
-  margin-left: 0;
-  padding-left: 1em;
-  border-left: 3px solid var(--border-strong);
-  color: var(--text-secondary);
-}
-
-.kmuxMarkdownSurface__document table {
-  max-width: 100%;
-}
-
-.kmuxMarkdownSurface__document svg {
-  max-width: 100%;
 }
 
 .kmuxMarkdownSurface .katex-display {

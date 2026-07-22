@@ -467,6 +467,35 @@ function createTerminalFileLink({
     return null;
   }
 
+  const range = {
+    start: { x: startColumn + 1, y: startLine + 1 },
+    end: { x: endColumn, y: endLine + 1 }
+  };
+  const activateLink = (): void => {
+    const activation =
+      candidate.activation === "markdown-preview"
+        ? activateFileLink({
+            sourceSurfaceId: surfaceId,
+            rawPath: candidate.openRawPath,
+            ...(candidate.baseCwd === undefined
+              ? {}
+              : { baseCwd: candidate.baseCwd })
+          })
+        : openFilePath(surfaceId, candidate.resolvedPath);
+    void activation.catch((error) => {
+      console.warn("Failed to open terminal file path", error);
+    });
+  };
+
+  if (candidate.activation === "markdown-preview") {
+    return {
+      range,
+      text: candidate.linkText,
+      decorations: { pointerCursor: true, underline: true },
+      activate: activateLink
+    };
+  }
+
   const initialDecorations: ILinkDecorations = {
     pointerCursor: false,
     underline: false
@@ -509,29 +538,14 @@ function createTerminalFileLink({
   };
 
   const link: ILink = {
-    range: {
-      start: { x: startColumn + 1, y: startLine + 1 },
-      end: { x: endColumn, y: endLine + 1 }
-    },
+    range,
     text: candidate.linkText,
     decorations: initialDecorations,
     activate: (event) => {
       if (!isTerminalFileLinkModifierActive(event, getKeyboardPlatform())) {
         return;
       }
-      const activation =
-        candidate.activation === "markdown-preview"
-          ? activateFileLink({
-              sourceSurfaceId: surfaceId,
-              rawPath: candidate.openRawPath,
-              ...(candidate.baseCwd === undefined
-                ? {}
-                : { baseCwd: candidate.baseCwd })
-            })
-          : openFilePath(surfaceId, candidate.resolvedPath);
-      void activation.catch((error) => {
-        console.warn("Failed to open terminal file path", error);
-      });
+      activateLink();
     },
     hover: (event) => {
       hovered = true;

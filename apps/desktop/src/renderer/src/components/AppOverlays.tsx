@@ -1693,7 +1693,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                             Font size
                           </span>
                           <span className={styles.settingsRowDescription}>
-                            Affects all terminal panes.
+                            Affects terminal panes and Markdown previews.
                           </span>
                         </span>
                         <input

@@ -33,6 +33,9 @@ remote/kmuxd/target/
 remote/kmuxd/dist/
 tsconfig.tsbuildinfo
 
+# Generated source indexes
+/apps/desktop/src/renderer/src/styles/streamdown-prefix-source.txt
+
 # Accidental local TypeScript emits
 apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map

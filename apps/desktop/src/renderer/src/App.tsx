@@ -2098,14 +2098,20 @@ function applyTypographySettings(
   terminalTypography: ResolvedTerminalTypographyVm
 ): void {
   const root = document.documentElement;
+  const defaultFontSize = 13;
+  const markdownBaselineScale = 12 / defaultFontSize;
+  const fontSize = Number.isFinite(settings.terminalTypography.fontSize)
+    ? settings.terminalTypography.fontSize
+    : defaultFontSize;
   root.style.setProperty(
     "--kmux-terminal-font-family",
     terminalTypography.resolvedFontFamily ||
       settings.terminalTypography.preferredTextFontFamily.trim()
   );
+  root.style.setProperty("--kmux-terminal-font-size", `${fontSize}px`);
   root.style.setProperty(
-    "--kmux-terminal-font-size",
-    `${Number.isFinite(settings.terminalTypography.fontSize) ? settings.terminalTypography.fontSize : 13}px`
+    "--kmux-markdown-scale",
+    `${(fontSize / defaultFontSize) * markdownBaselineScale}`
   );
   root.style.setProperty(
     "--kmux-terminal-line-height",
