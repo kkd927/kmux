@@ -137,7 +137,6 @@ async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
         hookEvent,
         payload,
         workspaceId: env.KMUX_WORKSPACE_ID,
-        paneId: env.KMUX_PANE_ID,
         surfaceId: env.KMUX_SURFACE_ID,
         sessionId: env.KMUX_SESSION_ID
       },
@@ -201,12 +200,7 @@ surface
       session?: Id;
       direction: string;
     }) => {
-      const paneMatchesSpawnEnv =
-        options.pane &&
-        env.KMUX_PANE_ID &&
-        options.pane === env.KMUX_PANE_ID &&
-        (options.surface ?? env.KMUX_SURFACE_ID);
-      const useStableCurrentSurface = !options.pane || paneMatchesSpawnEnv;
+      const useStableCurrentSurface = !options.pane;
 
       print(
         await sendRpc("surface.split", {

@@ -50,7 +50,6 @@ interface DocumentSubscription {
   generation: number;
   lastMetadataKey?: string;
   lastText?: string;
-  lastByteLength?: number;
   needsRecoverySnapshot?: boolean;
   pollCount: number;
   failedPolls: number;
@@ -238,19 +237,19 @@ export class DocumentService {
       const metadata = await files.stat(subscription.path);
       if (!this.isCompletionCurrent(subscription, generation)) return;
       if (!metadata) {
-        subscription.needsRecoverySnapshot = true;
+        this.recordFailure(subscription);
         this.emit(subscription, { type: "error", errorCode: "missing" });
         this.scheduleNext(subscription, false);
         return;
       }
       if (metadata.kind !== "file") {
-        subscription.needsRecoverySnapshot = true;
+        this.recordFailure(subscription);
         this.emit(subscription, { type: "error", errorCode: "read-failed" });
         this.scheduleNext(subscription, false);
         return;
       }
       if (metadata.size > MAX_MARKDOWN_BYTES) {
-        subscription.needsRecoverySnapshot = true;
+        this.recordFailure(subscription);
         this.emit(subscription, { type: "error", errorCode: "too-large" });
         this.scheduleNext(subscription, false);
         return;
@@ -264,7 +263,6 @@ export class DocumentService {
         !reconcile &&
         subscription.lastMetadataKey === metadataKey
       ) {
-        this.emitRecoverySnapshot(subscription);
         subscription.failedPolls = 0;
         this.scheduleNext(subscription, true);
         return;
@@ -274,7 +272,7 @@ export class DocumentService {
       });
       if (!this.isCompletionCurrent(subscription, generation)) return;
       if (bytes.byteLength > MAX_MARKDOWN_BYTES) {
-        subscription.needsRecoverySnapshot = true;
+        this.recordFailure(subscription);
         this.emit(subscription, { type: "error", errorCode: "too-large" });
         this.scheduleNext(subscription, false);
         return;
@@ -287,7 +285,6 @@ export class DocumentService {
         subscription.needsRecoverySnapshot
       ) {
         subscription.lastText = text;
-        subscription.lastByteLength = bytes.byteLength;
         subscription.needsRecoverySnapshot = false;
         this.emit(subscription, {
           type: "snapshot",
@@ -299,7 +296,7 @@ export class DocumentService {
     } catch (error) {
       if (!this.isCompletionCurrent(subscription, generation)) return;
       if (error instanceof TypeError && error.message === "invalid UTF-8") {
-        subscription.needsRecoverySnapshot = true;
+        this.recordFailure(subscription);
         this.emit(subscription, {
           type: "error",
           errorCode: "invalid-encoding"
@@ -307,8 +304,7 @@ export class DocumentService {
         this.scheduleNext(subscription, false);
         return;
       }
-      subscription.failedPolls += 1;
-      subscription.needsRecoverySnapshot = true;
+      this.recordFailure(subscription);
       if (isOfflineFailure(subscription.target, error)) {
         this.emit(subscription, { type: "offline" });
       } else {
@@ -337,20 +333,10 @@ export class DocumentService {
     this.scheduleRead(subscription, false, delay);
   }
 
-  private emitRecoverySnapshot(subscription: DocumentSubscription): void {
-    if (
-      !subscription.needsRecoverySnapshot ||
-      subscription.lastText === undefined ||
-      subscription.lastByteLength === undefined
-    ) {
-      return;
-    }
-    subscription.needsRecoverySnapshot = false;
-    this.emit(subscription, {
-      type: "snapshot",
-      text: subscription.lastText,
-      byteLength: subscription.lastByteLength
-    });
+  private recordFailure(subscription: DocumentSubscription): void {
+    subscription.lastMetadataKey = undefined;
+    subscription.failedPolls += 1;
+    subscription.needsRecoverySnapshot = true;
   }
 
   private emit(

@@ -1855,29 +1855,92 @@ export function openSurfaceAtPlacement(
     return [];
   }
   const sourcePane = state.panes[placement.paneId];
-  const targetPaneId =
-    placement.kind === "tab"
-      ? sourcePane.id
-      : createSplitPaneLeaf(state, sourcePane.id, placement.direction)
-          .newPaneId;
-  const targetPane = state.panes[targetPaneId];
+  const activePaneIdBefore = workspace.activePaneId;
+  const paneTreeBefore =
+    placement.kind === "split"
+      ? {
+          nodeMap: structuredClone(workspace.nodeMap),
+          rootNodeId: workspace.rootNodeId
+        }
+      : undefined;
+  const paneIdsBefore = new Set(Object.keys(state.panes));
   const surfaceId = makeId("surface");
-  const module = surfaceCoreModule(action.init.kind);
-  const created = module.create(
-    {
-      state,
-      workspaceId: workspace.id,
-      paneId: targetPane.id,
-      surfaceId,
-      createResourceId: () => makeId("session")
-    },
-    action.init
-  );
-  state.surfaces[surfaceId] = created.surface;
-  targetPane.surfaceIds.push(surfaceId);
-  targetPane.activeSurfaceId = surfaceId;
-  workspace.activePaneId = targetPane.id;
-  return [...created.effects, { type: "persist" }];
+  const resourceIds: Id[] = [];
+  let targetPaneBefore:
+    | { pane: PaneState; surfaceIds: Id[]; activeSurfaceId: Id }
+    | undefined;
+
+  try {
+    const targetPaneId =
+      placement.kind === "tab"
+        ? sourcePane.id
+        : createSplitPaneLeaf(state, sourcePane.id, placement.direction)
+            .newPaneId;
+    const targetPane = state.panes[targetPaneId];
+    if (placement.kind === "tab") {
+      targetPaneBefore = {
+        pane: targetPane,
+        surfaceIds: [...targetPane.surfaceIds],
+        activeSurfaceId: targetPane.activeSurfaceId
+      };
+    }
+    const module = surfaceCoreModule(action.init.kind);
+    const created = module.create(
+      {
+        state,
+        workspaceId: workspace.id,
+        paneId: targetPane.id,
+        surfaceId,
+        createResourceId: () => {
+          const resourceId = makeId("session");
+          resourceIds.push(resourceId);
+          return resourceId;
+        }
+      },
+      action.init
+    );
+    state.surfaces[surfaceId] = created.surface;
+    targetPane.surfaceIds.push(surfaceId);
+    targetPane.activeSurfaceId = surfaceId;
+    workspace.activePaneId = targetPane.id;
+    return [...created.effects, { type: "persist" }];
+  } catch (error) {
+    workspace.activePaneId = activePaneIdBefore;
+    if (paneTreeBefore) restorePaneTree(workspace, paneTreeBefore);
+    for (const paneId of Object.keys(state.panes) as Id[]) {
+      if (!paneIdsBefore.has(paneId)) delete state.panes[paneId];
+    }
+    if (targetPaneBefore) {
+      targetPaneBefore.pane.surfaceIds = targetPaneBefore.surfaceIds;
+      targetPaneBefore.pane.activeSurfaceId = targetPaneBefore.activeSurfaceId;
+    }
+    delete state.surfaces[surfaceId];
+    for (const resourceId of resourceIds) {
+      delete state.sessions[resourceId];
+    }
+    throw error;
+  }
+}
+
+function restorePaneTree(
+  workspace: WorkspaceState,
+  snapshot: { nodeMap: Record<Id, PaneTreeNode>; rootNodeId: Id }
+): void {
+  workspace.rootNodeId = snapshot.rootNodeId;
+  for (const nodeId of Object.keys(workspace.nodeMap) as Id[]) {
+    if (!(nodeId in snapshot.nodeMap)) delete workspace.nodeMap[nodeId];
+  }
+  for (const [nodeId, nextNode] of Object.entries(snapshot.nodeMap) as [
+    Id,
+    PaneTreeNode
+  ][]) {
+    const currentNode = workspace.nodeMap[nodeId];
+    if (!currentNode) {
+      workspace.nodeMap[nodeId] = nextNode;
+      continue;
+    }
+    Object.assign(currentNode, nextNode);
+  }
 }
 
 type ResolvedSurfacePlacement =
@@ -3325,11 +3388,6 @@ function findAncestorSplits(
   return result;
 }
 
-function activeSurface(state: AppState, paneId: Id): SurfaceState | undefined {
-  const pane = state.panes[paneId];
-  return pane ? state.surfaces[pane.activeSurfaceId] : undefined;
-}
-
 export function terminalSessionForSurface(
   state: AppState,
   surfaceId: Id
@@ -3371,13 +3429,15 @@ export function defaultNewSurfaceCwd(
   if (explicitCwd !== undefined) {
     return locatedPathForTarget(workspace.location.target, explicitCwd);
   }
+  const representativeTerminal = representativeWorkspaceTerminalSurface(
+    state,
+    workspace,
+    paneId
+  );
   return (
     workspace.worktree?.path ??
-    (activeSurface(state, paneId)
-      ? terminalRuntimeMetadataForSurface(
-          state,
-          activeSurface(state, paneId)!.id
-        )?.cwd
+    (representativeTerminal
+      ? terminalRuntimeMetadataForSurface(state, representativeTerminal.id)?.cwd
       : undefined) ??
     locatedPathForTarget(
       workspace.location.target,
@@ -3393,7 +3453,6 @@ export function buildSessionSpawnEffect(
   sessionId: Id
 ): SessionSpawnEffect {
   const session = state.sessions[sessionId];
-  const paneId = state.surfaces[surfaceId]?.paneId;
   return {
     type: "session.spawn",
     sessionId,
@@ -3407,7 +3466,6 @@ export function buildSessionSpawnEffect(
     sessionEnv: {
       KMUX_SOCKET_MODE: state.settings.socketMode,
       KMUX_WORKSPACE_ID: workspaceId,
-      ...(paneId ? { KMUX_PANE_ID: paneId } : {}),
       KMUX_SURFACE_ID: surfaceId,
       KMUX_SESSION_ID: sessionId,
       KMUX_AUTH_TOKEN: session.authToken,
@@ -3786,21 +3844,26 @@ function representativeWorkspaceSurface(
   return surfaceId ? (state.surfaces[surfaceId] ?? null) : null;
 }
 
-function representativeWorkspaceTerminalSurface(
+export function representativeWorkspaceTerminalSurface(
   state: AppState,
-  workspace: WorkspaceState
+  workspace: WorkspaceState,
+  preferredPaneId: Id = workspace.activePaneId
 ): SurfaceState<"terminal"> | null {
-  const activePane = state.panes[workspace.activePaneId];
-  const activeSurface = activePane
-    ? state.surfaces[activePane.activeSurfaceId]
+  const preferredPane = state.panes[preferredPaneId];
+  const scopedPreferredPane =
+    preferredPane?.workspaceId === workspace.id ? preferredPane : undefined;
+  const activeSurface = scopedPreferredPane
+    ? state.surfaces[scopedPreferredPane.activeSurfaceId]
     : undefined;
   if (activeSurface?.content.kind === "terminal") {
     return activeSurface as SurfaceState<"terminal">;
   }
 
   const paneIds = [
-    ...(activePane ? [activePane.id] : []),
-    ...paneIdsInTreeOrder(workspace).filter((id) => id !== activePane?.id)
+    ...(scopedPreferredPane ? [scopedPreferredPane.id] : []),
+    ...paneIdsInTreeOrder(workspace).filter(
+      (id) => id !== scopedPreferredPane?.id
+    )
   ];
   for (const paneId of paneIds) {
     const pane = state.panes[paneId];

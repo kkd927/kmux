@@ -306,7 +306,7 @@ describe("kmux cli agent hook forwarding", () => {
   );
 
   it(
-    "uses the stable surface context when legacy pane env is passed back to surface split",
+    "uses an explicit pane context when surface split receives --pane",
     async () => {
       const socketDir = mkdtempSync(join(tmpdir(), "kmux-cli-split-test-"));
       tempDirs.push(socketDir);
@@ -372,7 +372,6 @@ describe("kmux cli agent hook forwarding", () => {
             env: {
               ...process.env,
               KMUX_SOCKET_PATH: socketPath,
-              KMUX_PANE_ID: "pane_spawn",
               KMUX_SURFACE_ID: "surface_live",
               KMUX_SESSION_ID: "session_live"
             },
@@ -399,11 +398,11 @@ describe("kmux cli agent hook forwarding", () => {
           method: "surface.split",
           params: {
             direction: "right",
-            surfaceId: "surface_live",
-            sessionId: "session_live"
+            paneId: "pane_spawn"
           }
         });
-        expect(request?.params).not.toHaveProperty("paneId");
+        expect(request?.params).not.toHaveProperty("surfaceId");
+        expect(request?.params).not.toHaveProperty("sessionId");
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

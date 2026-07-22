@@ -311,8 +311,6 @@ export interface SurfaceCoreModule<K extends SurfaceKind> {
 
   close(state: AppState, surface: SurfaceState<K>): AppEffect[];
 
-  restore(state: AppState, surface: SurfaceState<K>): AppEffect[];
-
   encodeContent(content: SurfaceContentOf<K>): Record<string, unknown>;
 
   decodeContent(value: unknown): SurfaceContentOf<K>;
@@ -335,18 +333,18 @@ export const surfaceCoreRegistry = {
 
 The core reducer and kind modules follow the existing in-place mutation style. They never return a
 replacement AppState. The common reducer handles pane membership, tab order, focus, and placement. A create
-module may mutate only kind-owned resource state and returns the Surface to insert plus effects. Close and
-restore mutate kind-owned resource state when applicable and return effects.
+module may mutate only kind-owned resource state and returns the Surface to insert plus effects. Close mutates
+kind-owned resource state when applicable and returns effects.
 
 Expand the module contract only when an implemented kind needs additional behavior.
 
-### Main runtime registry
+### Main runtime effects
 
-apps/desktop/src/main/surfaces/registry.ts owns Electron/main capabilities and runtime effects.
+apps/desktop/src/main/appRuntime.ts dispatches all Electron/main runtime effects with one exhaustive switch
+over AppEffect.type.
 
-- The terminal module calls the existing PTY host and remote session coordinator.
-- The markdown module serves visible subscriptions from the file source in current Surface state and removes
-  active subscriptions when a Surface disappears.
+- Terminal effects call the existing PTY host and remote session coordinator.
+- Markdown effects remove active DocumentService subscriptions when a Surface disappears.
 
 Preserve existing session.spawn/session.close payloads and execution order. The implementation may keep a
 flat AppEffect union or use a kind envelope, but the following contracts are normative:
@@ -506,7 +504,8 @@ openSurfaceAtPlacement performs the following in one reducer transaction:
 6. Update the target pane's activeSurfaceId and the workspace activePaneId.
 7. Produce one ShellPatch and persistence schedule.
 
-Never create an intermediate empty pane or temporary Terminal.
+Never leave behind an intermediate empty pane or temporary Terminal. If any creation step throws, restore the
+prior pane tree, pane membership, and newly allocated resources before rethrowing.
 
 Split the current splitPane responsibility as follows:
 
@@ -592,10 +591,9 @@ Restore proceeds in this order:
 
 1. Decode or migrate the snapshot.
 2. Restore pane tree, tab order, Surfaces and their content, Session resources, and active IDs.
-3. Invoke restore through the kind registry.
-4. Terminal uses the existing respawn/reconnect path.
-5. Markdown has no eager core or main restore effect.
-6. DocumentService derives the restored file source and reads it when the visible Markdown Surface subscribes.
+3. Terminal uses the existing respawn/reconnect path.
+4. Markdown has no eager core or main restore effect.
+5. DocumentService derives the restored file source and reads it when the visible Markdown Surface subscribes.
 
 A missing Markdown file or offline SSH target does not remove the Surface or layout. Display an error or
 offline view and allow retry.

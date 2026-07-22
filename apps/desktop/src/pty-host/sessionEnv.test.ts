@@ -76,11 +76,13 @@ describe("buildSessionEnv", () => {
       baseEnv: {
         ELECTRON_RUN_AS_NODE: "1",
         PATH: "/usr/bin",
-        KMUX_SOCKET_PATH: "/base.sock"
+        KMUX_SOCKET_PATH: "/base.sock",
+        KMUX_PANE_ID: "pane_base"
       },
       launchEnv: {
         PATH: "/opt/bin:/usr/bin",
-        KMUX_SOCKET_PATH: "/launch.sock"
+        KMUX_SOCKET_PATH: "/launch.sock",
+        KMUX_PANE_ID: "pane_launch"
       },
       hookEnv: {
         KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
@@ -106,6 +108,7 @@ describe("buildSessionEnv", () => {
     expect(env.KMUX_SOCKET_PATH).toBe("/run/user/1000/kmux/control.sock");
     expect(env.KMUX_AGENT_BIN_DIR).toBe("/home/test/.local/share/kmux/hooks");
     expect(env.KMUX_NODE_PATH).toBe("/opt/kmux/kmux");
+    expect(env.KMUX_PANE_ID).toBeUndefined();
     expect(env.KMUX_WORKSPACE_ID).toBe("workspace_1");
     expect(env.PATH).toBe(
       "/home/test/.local/share/kmux/wrappers:/opt/bin:/usr/bin"

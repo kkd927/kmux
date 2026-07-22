@@ -29,7 +29,6 @@ export interface SurfaceCoreModule<K extends SurfaceKind> {
     init: SurfaceInitMap[K]
   ): SurfaceCreateResult<K>;
   close(state: AppState, surface: SurfaceState<K>): AppEffect[];
-  restore(state: AppState, surface: SurfaceState<K>): AppEffect[];
   encodeContent(content: SurfaceContentOf<K>): Record<string, unknown>;
   decodeContent(value: unknown): SurfaceContentOf<K>;
   buildVmContent(

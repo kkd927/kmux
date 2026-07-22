@@ -358,6 +358,45 @@ describe("worktree runtime", () => {
   );
 
   it(
+    "prepares a worktree while a Markdown preview is active",
+    async () => {
+      const rootDir = mkdtempSync(join(tmpdir(), "kmux-worktree-preview-"));
+      const repoDir = createCommittedRepo(rootDir);
+      const { state, workspaceId, paneId } = createStateAtCwd(repoDir);
+      const sourceSurfaceId = state.panes[paneId].activeSurfaceId;
+      applyAction(state, {
+        type: "surface.open",
+        workspaceId,
+        init: {
+          kind: "markdown",
+          path: localPath(join(repoDir, "README.md")),
+          title: "README.md"
+        },
+        placement: { kind: "right-preview", sourceSurfaceId }
+      });
+      const runtime = createWorktreeRuntime({
+        getState: () => state,
+        dispatchAppAction: (action) => applyAction(state, action),
+        homeDir: rootDir,
+        managedRoot: join(rootDir, "managed"),
+        now: () => new Date(2026, 4, 12, 14, 30)
+      });
+
+      try {
+        const preview = await runtime.prepareConversion(workspaceId);
+
+        expect(preview).toMatchObject({
+          repoRoot: realpathSync(repoDir),
+          from: "main"
+        });
+      } finally {
+        rmSync(rootDir, { force: true, recursive: true });
+      }
+    },
+    GIT_WORKTREE_TEST_TIMEOUT_MS
+  );
+
+  it(
     "sanitizes repository basenames before building default names",
     async () => {
       const rootDir = mkdtempSync(join(tmpdir(), "kmux-worktree-preview-"));

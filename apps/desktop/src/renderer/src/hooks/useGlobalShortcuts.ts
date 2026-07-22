@@ -518,6 +518,14 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         return;
       }
       if (matchShortcut(currentView, event, "terminal.search")) {
+        const paneTree = currentView.activeWorkspacePaneTree;
+        const activePane = paneTree.panes[paneTree.activePaneId];
+        const activeSurface = activePane
+          ? paneTree.surfaces[activePane.activeSurfaceId]
+          : undefined;
+        if (activeSurface?.content.kind !== "terminal") {
+          return;
+        }
         event.preventDefault();
         void currentOptions.withLatestActiveShortcutContext(
           ({ activeSurfaceId: latestSurfaceId }) => {

@@ -374,17 +374,21 @@ export function assertLocatedPathTarget(
 }
 
 export function decodeLocatedPathDto(value: unknown): LocatedPath {
-  const record = requireExactRecord(
+  const record = requireRecordWithAllowedKeys(
     value,
     ["kind", "targetId", "path"],
     "located path"
   );
   if (record.kind === "local") {
-    requireExactRecord(record, ["kind", "path"], "local located path");
+    requireRecordWithAllowedKeys(
+      record,
+      ["kind", "path"],
+      "local located path"
+    );
     return localLocatedPath(decodeLocalPath(record.path));
   }
   if (record.kind === "ssh") {
-    requireExactRecord(
+    requireRecordWithAllowedKeys(
       record,
       ["kind", "targetId", "path"],
       "SSH located path"
@@ -398,7 +402,7 @@ export function decodeLocatedPathDto(value: unknown): LocatedPath {
 }
 
 export function decodeWorkspaceLocationDto(value: unknown): WorkspaceLocation {
-  const record = requireExactRecord(
+  const record = requireRecordWithAllowedKeys(
     value,
     ["target", "defaultCwd"],
     "workspace location"
@@ -408,17 +412,21 @@ export function decodeWorkspaceLocationDto(value: unknown): WorkspaceLocation {
 }
 
 export function decodeWorkspaceTarget(value: unknown): WorkspaceTarget {
-  const record = requireExactRecord(
+  const record = requireRecordWithAllowedKeys(
     value,
     ["kind", "targetId"],
     "workspace target"
   );
   if (record.kind === "local") {
-    requireExactRecord(record, ["kind"], "local workspace target");
+    requireRecordWithAllowedKeys(record, ["kind"], "local workspace target");
     return Object.freeze({ kind: "local" as const });
   }
   if (record.kind === "ssh") {
-    requireExactRecord(record, ["kind", "targetId"], "SSH workspace target");
+    requireRecordWithAllowedKeys(
+      record,
+      ["kind", "targetId"],
+      "SSH workspace target"
+    );
     return Object.freeze({
       kind: "ssh" as const,
       targetId: validateId(record.targetId)
@@ -430,7 +438,7 @@ export function decodeWorkspaceTarget(value: unknown): WorkspaceTarget {
 export function validateRemoteTargetBinding(
   value: unknown
 ): RemoteTargetBinding {
-  const binding = requireExactRecord(
+  const binding = requireRecordWithAllowedKeys(
     value,
     [
       "id",
@@ -442,12 +450,12 @@ export function validateRemoteTargetBinding(
     ],
     "remote target binding"
   );
-  const authority = requireExactRecord(
+  const authority = requireRecordWithAllowedKeys(
     binding.authority,
     ["remoteInstallationId", "executionNodeId", "authenticatedPrincipal"],
     "remote target authority"
   );
-  const principal = requireExactRecord(
+  const principal = requireRecordWithAllowedKeys(
     authority.authenticatedPrincipal,
     ["uid", "accountName"],
     "authenticated principal"
@@ -469,7 +477,7 @@ export function validateRemoteTargetBinding(
   if (/\p{Cc}/u.test(accountName)) {
     throw new TypeError("authenticated principal accountName is invalid");
   }
-  const locator = requireExactRecord(
+  const locator = requireRecordWithAllowedKeys(
     binding.locator,
     ["profileId", "effectiveConnectionPolicyHash", "lastVerifiedAt"],
     "remote target locator"
@@ -526,7 +534,7 @@ export function validateRemoteTargetBinding(
 function validateRemoteTargetObservation(
   value: unknown
 ): RemoteTargetObservation {
-  const observation = requireExactRecord(
+  const observation = requireRecordWithAllowedKeys(
     value,
     [
       "platform",
@@ -554,8 +562,7 @@ function validateRemoteTargetObservation(
   // Version-1 target bindings predate explicit persistence reporting. Their
   // only proven contract was SSH-disconnect survival, so migrate that exact
   // conservative level instead of rejecting otherwise valid durable state.
-  const persistenceLevel =
-    observation.persistenceLevel ?? "ssh-disconnect";
+  const persistenceLevel = observation.persistenceLevel ?? "ssh-disconnect";
   if (
     persistenceLevel !== "ssh-disconnect" &&
     persistenceLevel !== "user-logout" &&
@@ -705,7 +712,7 @@ function validateIsoTimestamp(value: unknown, field: string): string {
   return timestamp;
 }
 
-function requireExactRecord(
+function requireRecordWithAllowedKeys(
   value: unknown,
   allowed: readonly string[],
   field: string

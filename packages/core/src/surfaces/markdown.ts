@@ -45,10 +45,6 @@ export const markdownSurfaceCoreModule: SurfaceCoreModule<"markdown"> = {
     ];
   },
 
-  restore() {
-    return [];
-  },
-
   encodeContent(content) {
     return {
       kind: "markdown",

@@ -2,7 +2,6 @@ import type { AgentEventName, Id, NotificationItem } from "./index";
 
 export interface AgentHookEnvironment {
   KMUX_WORKSPACE_ID?: string;
-  KMUX_PANE_ID?: string;
   KMUX_SURFACE_ID?: string;
   KMUX_SESSION_ID?: string;
 }
@@ -248,8 +247,7 @@ function resolveHookTarget(
     ),
     paneId: firstString(
       stringField(payload, "pane_id"),
-      stringField(payload, "paneId"),
-      environment.KMUX_PANE_ID
+      stringField(payload, "paneId")
     ),
     surfaceId,
     sessionId

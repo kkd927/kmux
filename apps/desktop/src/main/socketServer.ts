@@ -719,13 +719,18 @@ export class KmuxSocketServer {
           request.params.payload ?? {},
           {
             KMUX_WORKSPACE_ID: request.params.workspaceId,
-            KMUX_PANE_ID: request.params.paneId,
             KMUX_SURFACE_ID: request.params.surfaceId,
             KMUX_SESSION_ID: request.params.sessionId
           }
         );
         if (event) {
-          return this.dispatchAgentEvent(event, activeWorkspaceId, runtime);
+          return this.dispatchAgentEvent(
+            event.paneId || !request.params.paneId
+              ? event
+              : { ...event, paneId: request.params.paneId },
+            activeWorkspaceId,
+            runtime
+          );
         }
         const notification = normalizeHookNotificationInvocation(
           request.params.agent,
@@ -733,14 +738,15 @@ export class KmuxSocketServer {
           request.params.payload ?? {},
           {
             KMUX_WORKSPACE_ID: request.params.workspaceId,
-            KMUX_PANE_ID: request.params.paneId,
             KMUX_SURFACE_ID: request.params.surfaceId,
             KMUX_SESSION_ID: request.params.sessionId
           }
         );
         if (notification) {
           return this.dispatchHookNotification(
-            notification,
+            notification.paneId || !request.params.paneId
+              ? notification
+              : { ...notification, paneId: request.params.paneId },
             activeWorkspaceId,
             runtime
           );

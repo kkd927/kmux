@@ -3,6 +3,7 @@ import { delimiter } from "node:path";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
 
 const BLOCKED_INHERITED_ENV_KEYS = ["ELECTRON_RUN_AS_NODE"] as const;
+const RETIRED_KMUX_CONTEXT_ENV_KEYS = ["KMUX_PANE_ID"] as const;
 const SHELL_MANAGED_ENV_KEYS = ["PATH", "MANPATH", "INFOPATH"] as const;
 
 interface BuildSessionEnvOptions {
@@ -53,6 +54,10 @@ export function buildSessionEnv(input: BuildSessionEnvInput): NodeJS.ProcessEnv 
     // authoritative for CLI/socket/wrapper continuity.
     ...hookEnv
   };
+
+  for (const key of RETIRED_KMUX_CONTEXT_ENV_KEYS) {
+    delete mergedEnv[key];
+  }
 
   if (options.agentPath?.prependWrapperToPath) {
     mergedEnv.PATH = prependPathSegment(

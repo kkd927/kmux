@@ -1710,7 +1710,6 @@ function normalizeRemoteSpoolEvent(
       separator > 0 ? event.name.slice(separator + 1) : event.name;
     const environment = {
       KMUX_WORKSPACE_ID: workspace.id,
-      KMUX_PANE_ID: pane.id,
       KMUX_SURFACE_ID: surface.id,
       KMUX_SESSION_ID: session.id
     };

@@ -91,10 +91,6 @@ export const terminalSurfaceCoreModule: SurfaceCoreModule<"terminal"> = {
     return [{ type: "session.close", sessionId: session.id }];
   },
 
-  restore() {
-    return [];
-  },
-
   encodeContent(content) {
     return { kind: "terminal", sessionId: content.sessionId };
   },

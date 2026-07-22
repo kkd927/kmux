@@ -32,7 +32,7 @@ import {
   resolveSurfaceDiagnosticCaptureEnabled,
   sanitizeSettings
 } from "./index";
-import type { SettingsPatch } from "./index";
+import type { SettingsPatch, SurfacePlacementRequest } from "./index";
 
 function expectedHomeDirectory(): string {
   const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
@@ -636,6 +636,31 @@ describe("core reducer", () => {
     expect(rawPath(session.launch.cwd)).toBe("/tmp/kmux-moved");
   });
 
+  it("inherits a representative terminal cwd from an active Markdown pane", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    const sourcePaneId = workspace.activePaneId;
+    const sourceSurfaceId = state.panes[sourcePaneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "surface.metadata",
+      surfaceId: sourceSurfaceId,
+      cwd: "/tmp/kmux-moved"
+    });
+    openMarkdownPreview(state, workspaceId, sourceSurfaceId);
+
+    const previewPaneId = workspace.activePaneId;
+    applyAction(state, { type: "surface.create", paneId: previewPaneId });
+    const createdSurface =
+      state.surfaces[state.panes[previewPaneId].activeSurfaceId];
+    const session =
+      state.sessions[requireTerminalSurfaceContent(createdSurface).sessionId];
+
+    expect(rawPath(session.launch.cwd)).toBe("/tmp/kmux-moved");
+    expect(rawPath(session.runtimeMetadata.cwd)).toBe("/tmp/kmux-moved");
+  });
+
   it("creates, persists, restores, and closes a Markdown surface without a Session", () => {
     const state = createInitialState();
     const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
@@ -686,29 +711,39 @@ describe("core reducer", () => {
     expect(Object.keys(restored.sessions)).toEqual(sessionIdsBefore);
   });
 
-  it("rejects Markdown sources belonging to another workspace target", () => {
-    const state = createInitialState();
-    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
-    const paneId = state.workspaces[workspaceId].activePaneId;
-    const before = encodeAppStateDto(state);
+  it.each(["tab", "split", "right-preview"] as const)(
+    "rejects Markdown sources belonging to another target in %s placement atomically",
+    (placementKind) => {
+      const state = createInitialState();
+      const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+      const paneId = state.workspaces[workspaceId].activePaneId;
+      const sourceSurfaceId = state.panes[paneId].activeSurfaceId;
+      const placement: SurfacePlacementRequest =
+        placementKind === "tab"
+          ? { kind: "tab", paneId }
+          : placementKind === "split"
+            ? { kind: "split", paneId, direction: "right" }
+            : { kind: "right-preview", sourceSurfaceId };
+      const before = encodeAppStateDto(state);
 
-    expect(() =>
-      applyAction(state, {
-        type: "surface.open",
-        workspaceId,
-        init: {
-          kind: "markdown",
-          path: locatedPathForTarget(
-            { kind: "ssh", targetId: "target_other" },
-            "/tmp/README.md"
-          ),
-          title: "README.md"
-        },
-        placement: { kind: "tab", paneId }
-      })
-    ).toThrow(/does not belong/);
-    expect(encodeAppStateDto(state)).toEqual(before);
-  });
+      expect(() =>
+        applyAction(state, {
+          type: "surface.open",
+          workspaceId,
+          init: {
+            kind: "markdown",
+            path: locatedPathForTarget(
+              { kind: "ssh", targetId: "target_other" },
+              "/tmp/README.md"
+            ),
+            title: "README.md"
+          },
+          placement
+        })
+      ).toThrow(/does not belong/);
+      expect(encodeAppStateDto(state)).toEqual(before);
+    }
+  );
 
   it("opens a one-pane Markdown preview in a new right split", () => {
     const state = createInitialState();

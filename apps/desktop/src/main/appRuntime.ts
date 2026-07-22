@@ -62,7 +62,6 @@ import {
   type NativeNotificationIdentity
 } from "./nativeNotifications";
 import { type LocalPathResolver } from "./targets/targetServiceRegistry";
-import { dispatchSurfaceRuntimeEffect } from "./surfaces/registry";
 
 export interface AppRuntimeOptions {
   paths: {
@@ -416,18 +415,41 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
 
     for (const effect of effects) {
-      if (
-        dispatchSurfaceRuntimeEffect(effect, {
-          ptyHost,
-          resolveLocalPath,
-          createShellLaunchPolicy: options.createShellLaunchPolicy,
-          closeMarkdownSurface: (surfaceId) =>
-            documentService?.closeSurface(surfaceId)
-        })
-      ) {
-        continue;
-      }
       switch (effect.type) {
+        case "session.close":
+          ptyHost?.send({ type: "close", sessionId: effect.sessionId });
+          break;
+        case "session.spawn": {
+          if (effect.launch.cwd.kind !== "local") {
+            throw new Error(
+              "SSH session creation must enter RemoteOperationCoordinator"
+            );
+          }
+          const launch: SessionLaunchConfig = {
+            ...effect.launch,
+            cwd: resolveLocalPath(effect.launch.cwd),
+            args: effect.launch.args ? [...effect.launch.args] : undefined,
+            env: effect.launch.env ? { ...effect.launch.env } : undefined
+          };
+          ptyHost?.send({
+            type: "spawn",
+            spec: {
+              sessionId: effect.sessionId,
+              surfaceId: effect.surfaceId,
+              runtimeEpoch: makeId("epoch"),
+              workspaceId: effect.workspaceId,
+              launch,
+              cols: effect.initialSize.cols,
+              rows: effect.initialSize.rows,
+              env: effect.sessionEnv
+            },
+            shellLaunchPolicy: options.createShellLaunchPolicy(launch)
+          });
+          break;
+        }
+        case "surface.runtime.close":
+          documentService?.closeSurface(effect.surfaceId);
+          break;
         case "metadata.refresh":
           options.refreshMetadata(
             effect.surfaceId ?? "",
@@ -474,8 +496,12 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         case "persist":
           schedulePersist();
           break;
-        default:
-          break;
+        default: {
+          const unhandledEffect: never = effect;
+          throw new Error(
+            `Unhandled AppEffect: ${JSON.stringify(unhandledEffect)}`
+          );
+        }
       }
     }
   }
@@ -906,7 +932,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
             sessionEnv: {
               KMUX_SOCKET_MODE: state.settings.socketMode,
               KMUX_WORKSPACE_ID: workspaceId,
-              KMUX_PANE_ID: pane.id,
               KMUX_SURFACE_ID: session.surfaceId,
               KMUX_SESSION_ID: session.id,
               KMUX_AUTH_TOKEN: session.authToken,

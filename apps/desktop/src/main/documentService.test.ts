@@ -230,6 +230,56 @@ describe("DocumentService", () => {
     service.close();
   });
 
+  it("keeps a same-size invalid SSH document in error until a verified reread succeeds", async () => {
+    const fixture = createMarkdownFixture("ssh");
+    const sender = new FakeSender();
+    let bytes = new TextEncoder().encode("remote");
+    const stat = vi.fn(
+      async (): Promise<FileMetadata> => ({
+        kind: "file",
+        size: bytes.byteLength
+      })
+    );
+    const read = vi.fn(async () => bytes);
+    const service = createService(fixture.state, { stat, read });
+
+    service.subscribe(sender, { surfaceId: fixture.surfaceId });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "snapshot",
+      text: "remote"
+    });
+
+    bytes = new Uint8Array([0xc3, 0x28, 0x20, 0x20, 0x20, 0x20]);
+    service.subscribe(sender, { surfaceId: fixture.surfaceId });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "error",
+      errorCode: "invalid-encoding"
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "error",
+      errorCode: "invalid-encoding"
+    });
+    expect(
+      sender.events.slice(3).some((event) => event.type === "snapshot")
+    ).toBe(false);
+
+    bytes = new TextEncoder().encode("remote");
+    service.subscribe(sender, { surfaceId: fixture.surfaceId });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sender.events.at(-1)).toMatchObject({
+      type: "snapshot",
+      text: "remote"
+    });
+    service.close();
+  });
+
   it("rejects subscriptions from a renderer that does not own the Surface window", () => {
     const fixture = createMarkdownFixture("local");
     const service = createService(

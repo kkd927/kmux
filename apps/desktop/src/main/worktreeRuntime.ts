@@ -1,4 +1,6 @@
 import {
+  encodeLocatedPathDto,
+  representativeWorkspaceTerminalSurface,
   terminalRuntimeMetadataForSurface,
   terminalSessionForSurface,
   type AppAction,
@@ -6,7 +8,6 @@ import {
   type LocatedPath,
   type LocatedWorkspaceWorktreeMetadata
 } from "@kmux/core";
-import { encodeLocatedPathDto } from "@kmux/core";
 import type {
   Id,
   WorktreeBulkRemoveResult,
@@ -63,7 +64,7 @@ export function createWorktreeRuntime(
   async function prepareConversion(
     workspaceId: Id
   ): Promise<WorktreeConversionPreview | null> {
-    const context = activeWorkspaceSurfaceContext(
+    const context = workspaceTerminalSurfaceContext(
       options.getState(),
       workspaceId
     );
@@ -104,7 +105,7 @@ export function createWorktreeRuntime(
     workspaceId: Id,
     name: string
   ): Promise<WorkspaceWorktreeMetadata> {
-    const context = requireActiveWorkspaceSurfaceContext(
+    const context = requireWorkspaceTerminalSurfaceContext(
       options.getState(),
       workspaceId
     );
@@ -115,7 +116,7 @@ export function createWorktreeRuntime(
       dirtyLimit: MAX_DIRTY_ENTRIES
     });
     if (!inspection.repository) {
-      throw new Error("Active terminal cwd is not inside a git repository.");
+      throw new Error("Workspace terminal cwd is not inside a git repository.");
     }
     const normalizedName = normalizeWorktreeName(name);
     const validationError = validateWorktreeName(normalizedName);
@@ -295,7 +296,7 @@ export function createWorktreeRuntime(
   async function convertDetected(
     workspaceId: Id
   ): Promise<WorkspaceWorktreeMetadata> {
-    const context = requireActiveWorkspaceSurfaceContext(
+    const context = requireWorkspaceTerminalSurfaceContext(
       options.getState(),
       workspaceId
     );
@@ -307,7 +308,7 @@ export function createWorktreeRuntime(
     });
     const repository = inspection.repository;
     if (!repository?.linkedWorktree) {
-      throw new Error("Active terminal cwd is not a linked git worktree.");
+      throw new Error("Workspace terminal cwd is not a linked git worktree.");
     }
     const branch = inspection.branch || "HEAD";
     const detected: WorkspaceDetectedWorktreeMetadata = {
@@ -458,10 +459,12 @@ function findLaunchSession(
   return undefined;
 }
 
-function activeWorkspaceSurfaceContext(state: AppState, workspaceId: Id) {
+function workspaceTerminalSurfaceContext(state: AppState, workspaceId: Id) {
   const workspace = state.workspaces[workspaceId];
-  const pane = workspace ? state.panes[workspace.activePaneId] : undefined;
-  const surface = pane ? state.surfaces[pane.activeSurfaceId] : undefined;
+  const surface = workspace
+    ? representativeWorkspaceTerminalSurface(state, workspace)
+    : undefined;
+  const pane = surface ? state.panes[surface.paneId] : undefined;
   const metadata = surface
     ? terminalRuntimeMetadataForSurface(state, surface.id)
     : undefined;
@@ -470,12 +473,12 @@ function activeWorkspaceSurfaceContext(state: AppState, workspaceId: Id) {
     : null;
 }
 
-function requireActiveWorkspaceSurfaceContext(
+function requireWorkspaceTerminalSurfaceContext(
   state: AppState,
   workspaceId: Id
 ) {
-  const context = activeWorkspaceSurfaceContext(state, workspaceId);
-  if (!context) throw new Error("Workspace has no active terminal cwd.");
+  const context = workspaceTerminalSurfaceContext(state, workspaceId);
+  if (!context) throw new Error("Workspace has no terminal cwd.");
   return context;
 }
 
