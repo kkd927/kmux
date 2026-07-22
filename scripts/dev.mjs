@@ -22,7 +22,6 @@ const ELECTRON_PATH_TXT_RELATIVE_PATH = path.join(
   "electron",
   "path.txt"
 );
-const SNAPSHOT_STORE_VERSION = 1;
 const KMUX_INHERITED_RUNTIME_ENV_KEYS = [
   "KMUX_SOCKET_PATH",
   "KMUX_SOCKET_MODE",
@@ -257,7 +256,6 @@ export function readDevStateRestoreMetadata({
   if (
     !envelope ||
     typeof envelope !== "object" ||
-    envelope.version !== SNAPSHOT_STORE_VERSION ||
     !envelope.snapshot
   ) {
     return {

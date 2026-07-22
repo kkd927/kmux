@@ -254,13 +254,13 @@ describe("dev launcher", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("preserves dev workspace state when the previous clean shutdown opted into restore", () => {
+  it("preserves restorable dev workspace state without owning snapshot schema versions", () => {
     const calls = [];
     const stateDir = path.join(path.sep, "repo", ".kmux", "dev", "config");
     const statePath = path.join(stateDir, "state.json");
     const readFile = () =>
       JSON.stringify({
-        version: 1,
+        version: 999,
         cleanShutdown: true,
         restoreOnLaunch: true,
         snapshot: {}
