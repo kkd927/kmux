@@ -46,6 +46,14 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
       aliases: ["claude-sonnet-5"]
     },
     {
+      modelId: "claude-opus-5",
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.000025,
+      cacheReadCostPerToken: 0.0000005,
+      cacheCreateCostPerToken: 0.00000625,
+      aliases: ["claude-opus-5"]
+    },
+    {
       modelId: "claude-mythos-5",
       inputCostPerToken: 0.00001,
       outputCostPerToken: 0.00005,
@@ -283,6 +291,18 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
     }
   ],
   gemini: [
+    {
+      modelId: "gemini-3.6-flash",
+      inputCostPerToken: 0.0000015,
+      outputCostPerToken: 0.0000075,
+      cacheReadCostPerToken: 0.00000015
+    },
+    {
+      modelId: "gemini-3.5-flash-lite",
+      inputCostPerToken: 0.0000003,
+      outputCostPerToken: 0.0000025,
+      cacheReadCostPerToken: 0.00000003
+    },
     {
       modelId: "gemini-3.5-flash",
       inputCostPerToken: 0.0000015,
