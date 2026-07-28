@@ -44,6 +44,16 @@ const TARGET_IMAGE_TAG = "kmux/ssh-target:phase1-v1";
 const TOXIPROXY_IMAGE =
   "ghcr.io/shopify/toxiproxy:2.9.0@sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8";
 const TARGET_NETWORK_ALIAS = "kmux-ssh-target";
+const TARGET_IMAGE_PLATFORM = "linux/amd64";
+
+if (
+  process.platform === "darwin" &&
+  (process.env.DOCKER_HOST === undefined ||
+    process.env.DOCKER_HOST.startsWith("unix://")) &&
+  process.env.TESTCONTAINERS_HOST_OVERRIDE === undefined
+) {
+  process.env.TESTCONTAINERS_HOST_OVERRIDE = "127.0.0.1";
+}
 
 let targetImageBuild: Promise<void> | undefined;
 
@@ -158,6 +168,7 @@ export async function startSshTarget(
       throw new TypeError("storage fixture size must be 8-512 MiB");
     }
     const targetContainer = new GenericContainer(TARGET_IMAGE_TAG)
+      .withPlatform(TARGET_IMAGE_PLATFORM)
       .withNetwork(network)
       .withNetworkAliases(TARGET_NETWORK_ALIAS)
       .withExposedPorts(22)
@@ -247,10 +258,11 @@ export async function startSshTarget(
       upstream: `${TARGET_NETWORK_ALIAS}:22`,
       enabled: true
     });
+    const proxyHost = normalizeContainerHost(proxy.host);
 
     const hostKey = await probeExpectedHostKey({
       target,
-      proxyHost: proxy.host,
+      proxyHost,
       proxyPort: proxy.port,
       sandboxPath,
       sshKeyscanPath: tools.sshKeyscanPath,
@@ -267,7 +279,7 @@ export async function startSshTarget(
       sshConfigPath,
       buildSshConfig({
         hostAlias,
-        hostName: proxy.host,
+        hostName: proxyHost,
         port: proxy.port,
         identityPath: identity.privateKeyPath,
         knownHostsPath,
@@ -292,7 +304,7 @@ export async function startSshTarget(
       controlDirectoryPath,
       controlPath: join(controlDirectoryPath, "master.sock"),
       hostAlias,
-      proxyHost: proxy.host,
+      proxyHost,
       proxyPort: proxy.port,
       expectedHostKeyFingerprint: hostKey.fingerprint,
       remoteRuntimePath: REMOTE_RUNTIME_PATH,
@@ -311,7 +323,7 @@ export async function startSshTarget(
           configPath,
           buildSshConfig({
             hostAlias,
-            hostName: proxy.host,
+            hostName: proxyHost,
             port: proxy.port,
             identityPath: identity.privateKeyPath,
             knownHostsPath,
@@ -361,6 +373,7 @@ export async function startSshBastion(
   let bastion: StartedTestContainer | undefined;
   try {
     bastion = await new GenericContainer(TARGET_IMAGE_TAG)
+      .withPlatform(TARGET_IMAGE_PLATFORM)
       .withNetwork(destination.network)
       .withNetworkAliases(networkAlias)
       .withExposedPorts(22)
@@ -382,7 +395,7 @@ export async function startSshBastion(
       .withWaitStrategy(Wait.forListeningPorts())
       .withStartupTimeout(120_000)
       .start();
-    const host = bastion.getHost();
+    const host = normalizeContainerHost(bastion.getHost());
     const port = bastion.getMappedPort(22);
     const bastionHostKey = await probeExpectedHostKey({
       target: bastion,
@@ -443,6 +456,7 @@ export async function startSshBastion(
 async function ensureTargetImage(): Promise<void> {
   targetImageBuild ??= GenericContainer.fromDockerfile(imageDirectory)
     .withBuildkit()
+    .withPlatform(TARGET_IMAGE_PLATFORM)
     .build(TARGET_IMAGE_TAG, { deleteOnExit: false })
     .then(() => undefined);
   await targetImageBuild;
@@ -462,6 +476,10 @@ function resolveSystemTools(): {
     sshKeygenPath:
       process.env.KMUX_TEST_SSH_KEYGEN_PATH ?? "/usr/bin/ssh-keygen"
   };
+}
+
+function normalizeContainerHost(host: string): string {
+  return host === "localhost" ? "127.0.0.1" : host;
 }
 
 async function probeExpectedHostKey(options: {

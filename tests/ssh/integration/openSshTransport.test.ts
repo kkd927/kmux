@@ -1855,7 +1855,17 @@ describe("real system OpenSSH transport spike", () => {
       const disabled = await installedTarget.target.exec([
         "sh",
         "-c",
-        "sed -i 's#Subsystem sftp internal-sftp#Subsystem sftp /bin/false#' /run/kmux-ssh/sshd_config && kill -HUP \"$(cat /run/kmux-ssh/sshd.pid)\""
+        [
+          "previous_listeners=$(grep -c 'Server listening on' /var/log/kmux-ssh/sshd.log || true)",
+          "sed -i 's#Subsystem sftp internal-sftp#Subsystem sftp /bin/false#' /run/kmux-ssh/sshd_config",
+          'kill -HUP "$(cat /run/kmux-ssh/sshd.pid)"',
+          "attempt=0",
+          'while [ "$(grep -c \'Server listening on\' /var/log/kmux-ssh/sshd.log || true)" -le "$previous_listeners" ]; do',
+          "  attempt=$((attempt + 1))",
+          '  [ "$attempt" -lt 100 ] || exit 1',
+          "  sleep 0.05",
+          "done"
+        ].join("\n")
       ]);
       expect(disabled.exitCode).toBe(0);
       const secondAssigned = await connectAssignedMasterFor(
