@@ -43,6 +43,7 @@ import {
   describeTerminalTypographyStatus,
   describeTerminalTypographySupportLines
 } from "../terminalTypography";
+import type { SshAskpassPromptKind } from "../sshAskpassPrompt";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { SshConnectionsSettings } from "./SshConnectionsSettings";
 import { WorkspaceContextMenu } from "./WorkspaceContextMenu";
@@ -124,7 +125,12 @@ interface AppOverlaysProps {
   onDismissDetectedWorktree: () => void;
   onChangeWorktreeName: (name: string) => void;
   onConfirmWorktreeDialog: () => void;
-  sshAskpassPrompt: (SshAskpassPrompt & { response: string }) | null;
+  sshAskpassPrompt:
+    | (SshAskpassPrompt & {
+        kind: SshAskpassPromptKind;
+        response: string;
+      })
+    | null;
   onChangeSshAskpassResponse: (response: string) => void;
   onCancelSshAskpass: () => void;
   onSubmitSshAskpass: () => void;
@@ -849,7 +855,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
       ) : null}
       {props.sshAskpassPrompt ? (
         <div
-          className={`${styles.overlay} ${styles.settingsOverlay}`}
+          className={`${styles.overlay} ${styles.settingsOverlay} ${styles.sshAskpassOverlay}`}
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) {
               props.onCancelSshAskpass();
@@ -860,7 +866,11 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             className={styles.workspaceCloseConfirm}
             role="dialog"
             aria-modal="true"
-            aria-label="SSH Authentication"
+            aria-label={
+              props.sshAskpassPrompt.kind === "host-authenticity"
+                ? "SSH Host Verification"
+                : "SSH Authentication"
+            }
             data-testid="ssh-askpass-dialog"
             onMouseDown={(event) => event.stopPropagation()}
             onSubmit={(event) => {
@@ -869,7 +879,11 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             }}
           >
             <div className={styles.modalHeader}>
-              <h2>SSH Authentication</h2>
+              <h2>
+                {props.sshAskpassPrompt.kind === "host-authenticity"
+                  ? "Verify SSH Host"
+                  : "SSH Authentication"}
+              </h2>
               <button
                 type="button"
                 aria-label="Cancel SSH authentication"
@@ -881,34 +895,51 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             <p className={styles.confirmBody}>
               <strong>{props.sshAskpassPrompt.profileName}</strong>
               <br />
-              {props.sshAskpassPrompt.prompt}
-            </p>
-            <label className={styles.settingsRow}>
-              <span className={styles.settingsRowCopy}>
-                <span className={styles.settingsRowTitle}>
-                  Password or passphrase
-                </span>
-                <span className={styles.settingsRowDescription}>
-                  Used once by system OpenSSH and never saved in kmux settings.
-                </span>
+              <span className={styles.sshAskpassPromptText}>
+                {props.sshAskpassPrompt.prompt}
               </span>
-              <input
-                autoFocus
-                type="password"
-                autoComplete="current-password"
-                aria-label="SSH password or passphrase"
-                value={props.sshAskpassPrompt.response}
-                onChange={(event) =>
-                  props.onChangeSshAskpassResponse(event.currentTarget.value)
-                }
-              />
-            </label>
+            </p>
+            {props.sshAskpassPrompt.kind === "host-authenticity" ? (
+              <p className={styles.sshHostVerificationNotice}>
+                Confirm this fingerprint with the server administrator before
+                trusting it. OpenSSH will save the accepted host key in your
+                configured known_hosts file.
+              </p>
+            ) : (
+              <label className={styles.settingsRow}>
+                <span className={styles.settingsRowCopy}>
+                  <span className={styles.settingsRowTitle}>
+                    Password or passphrase
+                  </span>
+                  <span className={styles.settingsRowDescription}>
+                    Used once by system OpenSSH and never saved in kmux
+                    settings.
+                  </span>
+                </span>
+                <input
+                  autoFocus
+                  type="password"
+                  autoComplete="current-password"
+                  aria-label="SSH password or passphrase"
+                  value={props.sshAskpassPrompt.response}
+                  onChange={(event) =>
+                    props.onChangeSshAskpassResponse(event.currentTarget.value)
+                  }
+                />
+              </label>
+            )}
             <div className={styles.modalActions}>
-              <button type="button" onClick={props.onCancelSshAskpass}>
+              <button
+                type="button"
+                autoFocus={props.sshAskpassPrompt.kind === "host-authenticity"}
+                onClick={props.onCancelSshAskpass}
+              >
                 Cancel
               </button>
               <button type="submit" disabled={!props.sshAskpassPrompt.response}>
-                Continue
+                {props.sshAskpassPrompt.kind === "host-authenticity"
+                  ? "Trust and continue"
+                  : "Continue"}
               </button>
             </div>
           </form>

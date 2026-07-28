@@ -6,15 +6,17 @@ import {
   rmSync,
   statSync
 } from "node:fs";
-import {tmpdir} from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import {spawnSync} from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 const DEFAULT_RELEASE_SEARCH_ROOTS = [
   path.resolve("apps/desktop/release"),
   path.resolve("release-assets")
 ];
+export const MAC_LOCAL_NETWORK_USAGE_DESCRIPTION =
+  "kmux uses the local network to connect to SSH hosts you configure.";
 
 function readPathArg(argv, index, flagName) {
   const value = argv[index + 1];
@@ -99,6 +101,24 @@ export function findDmgPath(
   );
 }
 
+export function assertMacLocalNetworkUsageDescription(
+  appPath,
+  runCommand = run
+) {
+  const infoPlistPath = path.join(appPath, "Contents", "Info.plist");
+  const description = runCommand("/usr/libexec/PlistBuddy", [
+    "-c",
+    "Print :NSLocalNetworkUsageDescription",
+    infoPlistPath
+  ]);
+
+  if (description !== MAC_LOCAL_NETWORK_USAGE_DESCRIPTION) {
+    throw new Error(
+      `Unexpected NSLocalNetworkUsageDescription in ${infoPlistPath}: ${JSON.stringify(description)}`
+    );
+  }
+}
+
 function copyMountedApp(mountPoint, destinationRoot) {
   const mountedEntries = readdirSync(mountPoint).filter((entry) =>
     entry.endsWith(".app")
@@ -141,6 +161,7 @@ export function main(argv = process.argv.slice(2)) {
     run("hdiutil", ["attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse"]);
     ({ appPath, executablePath } = copyMountedApp(mountPoint, tempRoot));
     run("hdiutil", ["detach", mountPoint]);
+    assertMacLocalNetworkUsageDescription(appPath);
 
     const env = {
       ...process.env,

@@ -38,6 +38,8 @@ mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  extendInfo:
+    NSLocalNetworkUsageDescription: kmux uses the local network to connect to SSH hosts you configure.
   hardenedRuntime: true
   gatekeeperAssess: false
   sign: ./build/custom-mac-sign.cjs

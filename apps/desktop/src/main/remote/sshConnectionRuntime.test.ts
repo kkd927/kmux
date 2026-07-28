@@ -87,6 +87,75 @@ describe("SSH connection runtime", () => {
     }
   });
 
+  it.each([
+    {
+      name: "guides macOS LAN failures",
+      platform: "darwin" as const,
+      message:
+        "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
+      expectsLocalNetworkGuidance: true
+    },
+    {
+      name: "preserves Linux route failures",
+      platform: "linux" as const,
+      message:
+        "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
+      expectsLocalNetworkGuidance: false
+    },
+    {
+      name: "preserves macOS authentication failures",
+      platform: "darwin" as const,
+      message: "Permission denied (publickey).",
+      expectsLocalNetworkGuidance: false
+    }
+  ])("$name", async ({ platform, message, expectsLocalNetworkGuidance }) => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "private-lan",
+        host: "192.168.45.117"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: new FakeHost(
+          undefined,
+          new Error(message)
+        ) as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          bindings
+        ) as unknown as RemoteLifecycleRuntime,
+        platform,
+        isTargetReferenced: () => false,
+        now: () => NOW
+      });
+
+      await expect(runtime.connectProfile(profile.id)).rejects.toThrow(message);
+
+      const storedMessage = (await runtime.getSnapshot()).profiles[0]?.lastError
+        ?.message;
+      if (expectsLocalNetworkGuidance) {
+        expect(storedMessage).toContain(message);
+        expect(storedMessage).toContain(
+          "System Settings > Privacy & Security > Local Network"
+        );
+      } else {
+        expect(storedMessage).toBe(message);
+      }
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("serializes concurrent aliases so one verified authority gets one target ID", async () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
     try {
@@ -565,7 +634,8 @@ class FakeHost {
       remoteInstallationId: string;
     } = {
       remoteInstallationId: "11111111-1111-4111-8111-111111111111"
-    }
+    },
+    private readonly verificationError?: Error
   ) {
     this.verified = new Promise<void>((resolve) => {
       this.resolveVerified = resolve;
@@ -583,6 +653,9 @@ class FakeHost {
   async verifyTarget(options: { verificationId: string }) {
     this.verifyRequests.push(structuredClone(options));
     this.resolveVerified();
+    if (this.verificationError) {
+      throw this.verificationError;
+    }
     return {
       verificationId: options.verificationId,
       effectiveConnectionPolicyHash: POLICY,

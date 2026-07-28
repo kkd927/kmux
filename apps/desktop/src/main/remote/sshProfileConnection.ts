@@ -119,7 +119,10 @@ export function createSshProfileConnectionResolver(options: {
         configPath,
         hostKeyObservationPath,
         host,
-        effective: toEffectiveVm(effective),
+        effective: toEffectiveVm(effective, {
+          observerPath,
+          hostKeyObservationPath
+        }),
         rootOverrides: profileRootOverrides(profile)
       };
     }
@@ -222,7 +225,11 @@ function profileRootOverrides(
 }
 
 function toEffectiveVm(
-  config: RemoteHostEffectiveSshConfig
+  config: RemoteHostEffectiveSshConfig,
+  productObservation: {
+    observerPath: string;
+    hostKeyObservationPath: string;
+  }
 ): SshEffectiveConnectionVm {
   return {
     hostName: config.hostName,
@@ -233,8 +240,39 @@ function toEffectiveVm(
     ...(config.proxyCommand === undefined
       ? {}
       : { proxyCommand: config.proxyCommand }),
-    policyHash: config.policyHash
+    policyHash: stableEffectivePolicyHash(config, productObservation)
   };
+}
+
+function stableEffectivePolicyHash(
+  config: RemoteHostEffectiveSshConfig,
+  productObservation: {
+    observerPath: string;
+    hostKeyObservationPath: string;
+  }
+): string {
+  let normalizedProductObservation = false;
+  const stableLines = config.canonicalLines.map((line) => {
+    if (
+      !line.startsWith("knownhostscommand ") ||
+      !line.includes(productObservation.observerPath) ||
+      !line.includes(productObservation.hostKeyObservationPath)
+    ) {
+      return line;
+    }
+    normalizedProductObservation = true;
+    return line.replaceAll(
+      productObservation.hostKeyObservationPath,
+      "<kmux-host-key-observation>"
+    );
+  });
+  if (!normalizedProductObservation) {
+    return config.policyHash;
+  }
+  return createHash("sha256")
+    .update(stableLines.join("\n"))
+    .update("\n")
+    .digest("hex");
 }
 
 function internalProfileHost(profileId: string): string {

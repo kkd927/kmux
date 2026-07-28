@@ -62,6 +62,10 @@ describe("electron builder config", () => {
       "./build/artifact-build-completed.cjs"
     );
     expect(mac.sign).toBe("./build/custom-mac-sign.cjs");
+    expect(mac.extendInfo).toEqual({
+      NSLocalNetworkUsageDescription:
+        "kmux uses the local network to connect to SSH hosts you configure."
+    });
   });
 
   it("configures Linux packaging as AppImage-only with desktop identity fields", () => {

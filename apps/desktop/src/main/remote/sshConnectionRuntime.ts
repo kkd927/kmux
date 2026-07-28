@@ -38,6 +38,10 @@ import { readObservedSshHostKeyFingerprint } from "./sshProfileConnection";
 import type { SshProfileStore } from "./sshProfileStore";
 import type { SshAskpassBroker, SshAskpassContext } from "./sshAskpassBroker";
 
+const MACOS_LOCAL_NETWORK_GUIDANCE =
+  "If this SSH host is on your local network, macOS may be blocking kmux's Local Network access. Allow kmux in System Settings > Privacy & Security > Local Network, then retry.";
+const NO_ROUTE_TO_HOST_PATTERN = /\b(?:No route to host|EHOSTUNREACH)\b/iu;
+
 export interface ConnectedSshProfile {
   profile: SshProfileDto;
   binding: RemoteTargetBinding;
@@ -81,6 +85,7 @@ export function createSshConnectionRuntime(options: {
   resolver: SshProfileConnectionResolver;
   host: RemoteHostManager;
   lifecycle: RemoteLifecycleRuntime;
+  platform?: NodeJS.Platform;
   hostEnv?: NodeJS.ProcessEnv;
   controlRoot?: string;
   askpassPath?: string;
@@ -92,6 +97,7 @@ export function createSshConnectionRuntime(options: {
   makeVerificationId?: () => Id;
   makeToken?: () => string;
 }): SshConnectionRuntime {
+  const platform = options.platform ?? process.platform;
   const now = options.now ?? (() => new Date().toISOString());
   const makeTargetId = options.makeTargetId ?? (() => makeId("remote-target"));
   const makeConnectionAttemptId =
@@ -373,8 +379,7 @@ export function createSshConnectionRuntime(options: {
             .discardTargetVerification(verification.verificationId)
             .catch(() => undefined);
         }
-        const failure =
-          error instanceof Error ? error : new Error(String(error));
+        const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profile.id, failure);
         touch();
         throw failure;
@@ -512,8 +517,7 @@ export function createSshConnectionRuntime(options: {
             .discardTargetVerification(verification.verificationId)
             .catch(() => undefined);
         }
-        const failure =
-          error instanceof Error ? error : new Error(String(error));
+        const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profile.id, failure);
         touch();
         throw failure;
@@ -560,8 +564,7 @@ export function createSshConnectionRuntime(options: {
         touch();
         return report;
       } catch (error) {
-        const failure =
-          error instanceof Error ? error : new Error(String(error));
+        const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profileId, failure);
         touch();
         throw failure;
@@ -612,13 +615,30 @@ export function createSshConnectionRuntime(options: {
         touch();
         return report;
       } catch (error) {
-        const failure =
-          error instanceof Error ? error : new Error(String(error));
+        const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profileId, failure);
         touch();
         throw failure;
       }
     }
+  });
+}
+
+function presentSshConnectionFailure(
+  error: unknown,
+  platform: NodeJS.Platform
+): Error {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  if (
+    platform !== "darwin" ||
+    !NO_ROUTE_TO_HOST_PATTERN.test(failure.message) ||
+    failure.message.includes(MACOS_LOCAL_NETWORK_GUIDANCE)
+  ) {
+    return failure;
+  }
+
+  return new Error(`${failure.message}. ${MACOS_LOCAL_NETWORK_GUIDANCE}`, {
+    cause: failure
   });
 }
 

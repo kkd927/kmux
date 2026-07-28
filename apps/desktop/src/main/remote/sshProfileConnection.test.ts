@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +15,7 @@ import {
   createSshProfileConnectionResolver,
   readObservedSshHostKeyFingerprint
 } from "./sshProfileConnection";
+import { resolveEffectiveSshConfig } from "../../remote-host/openSshProcess";
 
 describe("SSH profile connection resolver", () => {
   it("materializes a private wrapper config and hashes OpenSSH's effective policy", async () => {
@@ -172,6 +179,65 @@ describe("SSH profile connection resolver", () => {
       expect(
         readObservedSshHostKeyFingerprint(second.hostKeyObservationPath)
       ).toBe("SHA256:SecondKey0123+/=");
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the effective policy stable across attempt-local host-key observations", async () => {
+    const sandbox = mkdtempSync(
+      join(tmpdir(), "kmux-ssh-profile-policy-stability-")
+    );
+    try {
+      const sshDirectory = join(sandbox, ".ssh");
+      mkdirSync(sshDirectory, { mode: 0o700 });
+      const userConfigPath = join(sshDirectory, "config");
+      writeFileSync(
+        userConfigPath,
+        [
+          "Host fixture",
+          "  HostName 127.0.0.1",
+          "  User fixture-user",
+          "  Port 22",
+          ""
+        ].join("\n"),
+        { mode: 0o600 }
+      );
+      const resolver = createSshProfileConnectionResolver({
+        homeDir: sandbox,
+        configRoot: join(sandbox, "generated"),
+        resolveEffective: resolveEffectiveSshConfig
+      });
+      const profile = {
+        id: "profile_stable",
+        name: "Stable",
+        sshConfigHost: "fixture",
+        createdAt: "2026-07-19T00:00:00.000Z",
+        updatedAt: "2026-07-19T00:00:00.000Z"
+      };
+
+      const first = await resolver.resolve(profile, "attempt_first");
+      const second = await resolver.resolve(profile, "attempt_second");
+
+      expect(first.hostKeyObservationPath).not.toBe(
+        second.hostKeyObservationPath
+      );
+      expect(first.effective.policyHash).toBe(second.effective.policyHash);
+
+      writeFileSync(
+        userConfigPath,
+        [
+          "Host fixture",
+          "  HostName 127.0.0.1",
+          "  User fixture-user",
+          "  Port 2222",
+          ""
+        ].join("\n"),
+        { mode: 0o600 }
+      );
+      const changed = await resolver.resolve(profile, "attempt_changed");
+
+      expect(changed.effective.policyHash).not.toBe(first.effective.policyHash);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

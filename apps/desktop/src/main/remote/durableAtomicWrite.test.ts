@@ -1,6 +1,9 @@
 import {
+  chmodSync,
   closeSync,
   existsSync,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -153,13 +156,48 @@ describe("durableAtomicReplace", () => {
 
     expect(() =>
       durableAtomicReplace(linkedRoot, "operation.json", new Uint8Array([1]))
-    ).toThrow(/real directory/);
+    ).toThrow(/symbolic link or not a directory/);
 
     const targetLink = join(realRoot, "operation.json");
     symlinkSync(join(sandbox, "outside"), targetLink);
     expect(() =>
       durableAtomicReplace(realRoot, "operation.json", new Uint8Array([1]))
     ).toThrow(/regular file/);
+  });
+
+  it("makes an existing user-owned storage directory private before writing", () => {
+    for (const initialMode of [0o755, 0o600]) {
+      const root = join(sandbox, `existing-${initialMode.toString(8)}`);
+      mkdirSync(root, { mode: initialMode });
+      chmodSync(root, initialMode);
+
+      durableAtomicReplace(
+        root,
+        "ssh-connections.json",
+        new TextEncoder().encode("{}")
+      );
+
+      expect(lstatSync(root).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(root, "ssh-connections.json")).mode & 0o777).toBe(
+        0o600
+      );
+    }
+  });
+
+  it("does not change a storage directory owned by another user", () => {
+    const root = join(sandbox, "foreign");
+    mkdirSync(root, { mode: 0o755 });
+    chmodSync(root, 0o755);
+    const originalMode = lstatSync(root).mode & 0o777;
+
+    expect(() =>
+      durableAtomicReplace(root, "operation.json", new Uint8Array([1]), {
+        uid: lstatSync(root).uid + 1
+      })
+    ).toThrow(/owned by another user/);
+
+    expect(lstatSync(root).mode & 0o777).toBe(originalMode);
+    expect(existsSync(join(root, "operation.json"))).toBe(false);
   });
 });
 
@@ -177,6 +215,8 @@ function proxyFileSystem(overrides: {
   return {
     closeSync,
     existsSync,
+    fchmodSync,
+    fstatSync,
     fsyncSync: overrides.fsync ?? fsyncSync,
     lstatSync,
     mkdirSync,

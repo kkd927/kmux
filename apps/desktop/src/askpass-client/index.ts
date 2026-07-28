@@ -6,12 +6,12 @@ const REQUEST_TIMEOUT_MS = 2 * 60_000;
 const socketPath = requireEnvironment("KMUX_SSH_ASKPASS_SOCKET", 4_096);
 const token = requireEnvironment("KMUX_SSH_ASKPASS_TOKEN", 256);
 const contextId = requireEnvironment("KMUX_SSH_ASKPASS_CONTEXT", 256);
-const prompt = process.argv[2] ?? "SSH authentication";
+const prompt = normalizePrompt(process.argv[2] ?? "SSH authentication");
 
-if (Buffer.byteLength(prompt, "utf8") > 4_096 || /[\0\r\n]/u.test(prompt)) {
+if (prompt === null) {
   process.exitCode = 1;
 } else {
-  requestCredential().then(
+  requestCredential(prompt).then(
     (credential) => {
       if (credential === null) {
         process.exitCode = 1;
@@ -25,7 +25,7 @@ if (Buffer.byteLength(prompt, "utf8") > 4_096 || /[\0\r\n]/u.test(prompt)) {
   );
 }
 
-async function requestCredential(): Promise<string | null> {
+async function requestCredential(prompt: string): Promise<string | null> {
   return await new Promise<string | null>((resolve, reject) => {
     const socket = createConnection(socketPath);
     let settled = false;
@@ -82,6 +82,32 @@ async function requestCredential(): Promise<string | null> {
       }
     });
   });
+}
+
+function normalizePrompt(value: string): string | null {
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  if (
+    normalized.length === 0 ||
+    Buffer.byteLength(normalized, "utf8") > 4_096 ||
+    containsDisallowedPromptControl(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function containsDisallowedPromptControl(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint <= 0x09 ||
+      (codePoint >= 0x0b && codePoint <= 0x1f) ||
+      codePoint === 0x7f
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function requireEnvironment(name: string, maxBytes: number): string {

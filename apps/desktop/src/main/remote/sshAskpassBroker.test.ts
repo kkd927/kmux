@@ -73,7 +73,7 @@ describe("SSH askpass broker", () => {
     expect(() => statSync(context.askpassPath)).toThrow();
   });
 
-  it("runs the product askpass client through the generated helper", async () => {
+  it("runs a multiline OpenSSH host-key prompt through the product askpass client", async () => {
     const compileRoot = mkdtempSync(join(tmpdir(), "kmux-askpass-client-"));
     const clientPath = join(compileRoot, "askpass-client.mjs");
     const clientSource = readFileSync(
@@ -107,7 +107,13 @@ describe("SSH askpass broker", () => {
       });
       await broker.start();
       const context = await broker.createContext(profile());
-      const child = spawn(context.askpassPath, ["Password for kmux:"], {
+      const hostKeyPrompt = [
+        "The authenticity of host '192.168.45.117 (192.168.45.117)' can't be established.",
+        "ED25519 key fingerprint is: SHA256:UGsgm186h5zmAWGWQIkQhrVufyvy6vF7zso2i+Clx6k",
+        "This key is not known by any other names.",
+        "Are you sure you want to continue connecting (yes/no/[fingerprint])?"
+      ].join("\n");
+      const child = spawn(context.askpassPath, [hostKeyPrompt], {
         stdio: ["ignore", "pipe", "pipe"]
       });
       const completed = collectChild(child);
@@ -125,15 +131,16 @@ describe("SSH askpass broker", () => {
         );
       }
       expect(prompts).toEqual([firstOutcome.prompt]);
+      expect(firstOutcome.prompt.prompt).toBe(hostKeyPrompt);
       broker.respond({
         requestId: "prompt_product_client",
         cancelled: false,
-        response: "one-time-product-secret"
+        response: "yes"
       });
 
       await expect(completed).resolves.toEqual({
         code: 0,
-        stdout: "one-time-product-secret\n",
+        stdout: "yes\n",
         stderr: ""
       });
       await context.dispose();

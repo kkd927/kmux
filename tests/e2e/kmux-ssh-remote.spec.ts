@@ -57,10 +57,28 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
   const consoleMessages: string[] = [];
   try {
     enableSandboxDiagnostics(sandbox);
-    installSshFixtureConfig(sandbox, target.sshConfigPath);
+    const firstUseKnownHostsPath = installSshFixtureConfig(
+      sandbox,
+      target.sshConfigPath,
+      target.hostAlias
+    );
     first = await launchKmuxWithSandbox(sandbox);
     recordPageConsole(first.page, consoleMessages);
-    const opened = await createRemoteWorkspace(first.page, target.hostAlias);
+    const openWorkspace = createRemoteWorkspace(first.page, target.hostAlias);
+    const hostVerification = first.page.getByRole("dialog", {
+      name: "SSH Host Verification"
+    });
+    await expect(hostVerification).toBeVisible({ timeout: 30_000 });
+    await expect(hostVerification).toContainText(
+      target.expectedHostKeyFingerprint
+    );
+    await hostVerification
+      .getByRole("button", { name: "Trust and continue" })
+      .click();
+    const opened = await openWorkspace;
+    expect(readFileSync(firstUseKnownHostsPath, "utf8")).toMatch(
+      /ssh-ed25519/u
+    );
     const firstView = await waitForView(
       first.page,
       (view) =>
@@ -293,15 +311,27 @@ async function waitForSshRestore(
 
 function installSshFixtureConfig(
   sandbox: KmuxSandbox,
-  fixtureConfigPath: string
-): void {
+  fixtureConfigPath: string,
+  hostAlias: string
+): string {
   const sshDirectory = join(sandbox.shellHomeDir, ".ssh");
   mkdirSync(sshDirectory, { recursive: true, mode: 0o700 });
+  const firstUseKnownHostsPath = join(sshDirectory, "known_hosts");
+  writeFileSync(firstUseKnownHostsPath, "", { mode: 0o600 });
   writeFileSync(
     join(sshDirectory, "config"),
-    `Include "${fixtureConfigPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"\n`,
+    [
+      `Host ${hostAlias}`,
+      `  UserKnownHostsFile "${firstUseKnownHostsPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
+      "  GlobalKnownHostsFile /dev/null",
+      "  StrictHostKeyChecking ask",
+      "  BatchMode no",
+      `Include "${fixtureConfigPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
+      ""
+    ].join("\n"),
     { mode: 0o600 }
   );
+  return firstUseKnownHostsPath;
 }
 
 async function createRemoteWorkspace(
@@ -336,6 +366,12 @@ async function sendMarker(
   surfaceId: string,
   marker: string
 ): Promise<void> {
+  const closeReleaseNotes = page.getByRole("button", {
+    name: "Close release notes"
+  });
+  if (await closeReleaseNotes.isVisible()) {
+    await closeReleaseNotes.click();
+  }
   const screen = committedTerminalHost(page, surfaceId).locator(
     ".xterm-screen"
   );

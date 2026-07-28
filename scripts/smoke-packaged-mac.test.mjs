@@ -9,7 +9,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { findDmgPath, parseArgs } from "./smoke-packaged-mac.mjs";
+import {
+  assertMacLocalNetworkUsageDescription,
+  findDmgPath,
+  MAC_LOCAL_NETWORK_USAGE_DESCRIPTION,
+  parseArgs
+} from "./smoke-packaged-mac.mjs";
 
 describe("packaged mac smoke", () => {
   it("parses an explicit DMG path", () => {
@@ -58,5 +63,32 @@ describe("packaged mac smoke", () => {
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
+  });
+
+  it("requires the packaged app to declare its local network usage", () => {
+    const calls = [];
+    const appPath = "/tmp/kmux.app";
+
+    assertMacLocalNetworkUsageDescription(appPath, (command, args) => {
+      calls.push([command, args]);
+      return MAC_LOCAL_NETWORK_USAGE_DESCRIPTION;
+    });
+
+    expect(calls).toEqual([
+      [
+        "/usr/libexec/PlistBuddy",
+        [
+          "-c",
+          "Print :NSLocalNetworkUsageDescription",
+          path.join(appPath, "Contents", "Info.plist")
+        ]
+      ]
+    ]);
+  });
+
+  it("rejects a packaged app with the wrong local network usage", () => {
+    expect(() =>
+      assertMacLocalNetworkUsageDescription("/tmp/kmux.app", () => "wrong")
+    ).toThrow(/Unexpected NSLocalNetworkUsageDescription/);
   });
 });

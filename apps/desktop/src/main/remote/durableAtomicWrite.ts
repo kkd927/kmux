@@ -3,6 +3,8 @@ import {
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -17,6 +19,8 @@ import { basename, dirname, join, resolve } from "node:path";
 export interface DurableAtomicWriteFileSystem {
   closeSync(fd: number): void;
   existsSync(path: string): boolean;
+  fchmodSync(fd: number, mode: number): void;
+  fstatSync(fd: number): Stats;
   fsyncSync(fd: number): void;
   lstatSync(path: string): Stats;
   mkdirSync(path: string, options: { recursive: true; mode: number }): unknown;
@@ -34,6 +38,8 @@ export interface DurableAtomicWriteFileSystem {
 const nodeFileSystem: DurableAtomicWriteFileSystem = {
   closeSync,
   existsSync,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -47,6 +53,13 @@ export interface DurableAtomicWriteOptions {
   fileSystem?: DurableAtomicWriteFileSystem;
   randomSuffix?: () => string;
   uid?: number;
+}
+
+class SecureStorageAccessError extends Error {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(message, options);
+    this.name = "SecureStorageAccessError";
+  }
 }
 
 /**
@@ -63,7 +76,7 @@ export function durableAtomicReplace(
   const root = resolve(rootDirectory);
   assertLeafFileName(fileName);
   fileSystem.mkdirSync(root, { recursive: true, mode: 0o700 });
-  assertPrivateDirectory(root, fileSystem, options.uid ?? currentUid());
+  ensurePrivateDirectory(root, fileSystem, options.uid ?? currentUid());
 
   const targetPath = join(root, fileName);
   const targetStats = tryLstat(fileSystem, targetPath);
@@ -151,16 +164,68 @@ function assertLeafFileName(fileName: string): void {
   }
 }
 
-function assertPrivateDirectory(
+function ensurePrivateDirectory(
   path: string,
   fileSystem: DurableAtomicWriteFileSystem,
   uid: number | undefined
 ): void {
   const stats = fileSystem.lstatSync(path);
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error("durable store root must be a real directory");
+    throw new SecureStorageAccessError(
+      "kmux cannot use its secure storage folder because it is a symbolic link or not a directory"
+    );
   }
-  assertOwnerAndMode(stats, uid, 0o077, "durable store root");
+  if (uid !== undefined && stats.uid !== uid) {
+    throw new SecureStorageAccessError(
+      "kmux cannot use its secure storage folder because it is owned by another user"
+    );
+  }
+
+  let descriptor: number | undefined;
+  try {
+    descriptor = fileSystem.openSync(
+      path,
+      constants.O_RDONLY |
+        (constants.O_DIRECTORY ?? 0) |
+        (constants.O_NOFOLLOW ?? 0)
+    );
+    const opened = fileSystem.fstatSync(descriptor);
+    if (!opened.isDirectory()) {
+      throw new SecureStorageAccessError(
+        "kmux cannot use its secure storage folder because it is not a directory"
+      );
+    }
+    if (uid !== undefined && opened.uid !== uid) {
+      throw new SecureStorageAccessError(
+        "kmux cannot use its secure storage folder because it is owned by another user"
+      );
+    }
+    if ((opened.mode & 0o777) !== 0o700) {
+      fileSystem.fchmodSync(descriptor, 0o700);
+      const corrected = fileSystem.fstatSync(descriptor);
+      if (
+        !corrected.isDirectory() ||
+        (uid !== undefined && corrected.uid !== uid) ||
+        (corrected.mode & 0o777) !== 0o700
+      ) {
+        throw new SecureStorageAccessError(
+          "kmux could not make its secure storage folder private"
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof SecureStorageAccessError) throw error;
+    throw new SecureStorageAccessError(
+      "kmux could not secure its local storage folder",
+      {
+        cause: error
+      }
+    );
+  } finally {
+    if (descriptor !== undefined) {
+      safelyClose(fileSystem, descriptor);
+    }
+  }
 }
 
 function assertPrivateRegularFile(stats: Stats, uid: number | undefined): void {

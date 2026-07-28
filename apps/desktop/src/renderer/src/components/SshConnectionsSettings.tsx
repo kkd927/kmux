@@ -8,6 +8,7 @@ import type {
 } from "@kmux/proto";
 
 import styles from "../styles/App.module.css";
+import { describeSshConnectionError } from "./sshConnectionError";
 
 type EditorDraft = {
   id?: string;
@@ -155,7 +156,7 @@ export function SshConnectionsSettings(): JSX.Element {
       );
       setError(null);
     } catch (cause) {
-      setError(describeError(cause));
+      setError(describeSshConnectionError(cause));
     }
   }
 
@@ -167,7 +168,7 @@ export function SshConnectionsSettings(): JSX.Element {
     try {
       await action();
     } catch (cause) {
-      setError(describeError(cause));
+      setError(describeSshConnectionError(cause));
     } finally {
       setBusy(null);
     }
@@ -969,8 +970,4 @@ function editorToProfile(editor: EditorDraft): SshProfileDraftDto {
     ...(Object.keys(env).length === 0 ? {} : { env }),
     forwardAgent: editor.forwardAgent
   };
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

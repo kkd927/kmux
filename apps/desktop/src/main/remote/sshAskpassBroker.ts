@@ -297,7 +297,7 @@ function decodeClientRequest(
   }
   return {
     contextId: requireId(record.contextId, "askpass contextId"),
-    prompt: requireSingleLine(record.prompt, "askpass prompt", 4_096)
+    prompt: requirePrompt(record.prompt)
   };
 }
 
@@ -363,6 +363,35 @@ function requireSingleLine(
     throw new TypeError(`${field} is invalid`);
   }
   return value;
+}
+
+function requirePrompt(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError("askpass prompt is invalid");
+  }
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  if (
+    normalized.length === 0 ||
+    Buffer.byteLength(normalized, "utf8") > 4_096 ||
+    containsDisallowedPromptControl(normalized)
+  ) {
+    throw new TypeError("askpass prompt is invalid");
+  }
+  return normalized;
+}
+
+function containsDisallowedPromptControl(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint <= 0x09 ||
+      (codePoint >= 0x0b && codePoint <= 0x1f) ||
+      codePoint === 0x7f
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function quotePosixWord(value: string): string {

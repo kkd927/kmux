@@ -71,6 +71,10 @@ import type {
 import * as terminalInstanceStore from "./terminalInstanceStore";
 import { clearRendererDiagnosticLog } from "./smoothnessProfile";
 import { terminalStreamClient } from "./terminalStreamClient";
+import {
+  classifySshAskpassPrompt,
+  type SshAskpassPromptKind
+} from "./sshAskpassPrompt";
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
@@ -144,6 +148,7 @@ type SshWorkspaceDialog = {
 };
 
 type SshAskpassDialog = SshAskpassPrompt & {
+  kind: SshAskpassPromptKind;
   response: string;
 };
 
@@ -325,7 +330,15 @@ export function App(): JSX.Element {
           });
           return current;
         }
-        return [...current, { ...prompt, response: "" }];
+        const kind = classifySshAskpassPrompt(prompt.prompt);
+        return [
+          ...current,
+          {
+            ...prompt,
+            kind,
+            response: kind === "host-authenticity" ? "yes" : ""
+          }
+        ];
       });
     });
   }, []);

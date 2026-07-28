@@ -989,6 +989,10 @@
   overflow: auto;
 }
 
+.sshAskpassOverlay {
+  z-index: 31;
+}
+
 .menuOverlay {
   position: fixed;
   inset: 0;
@@ -1615,6 +1619,19 @@
   padding: 16px 12px;
   color: var(--text-secondary);
   font-size: 0.846rem;
+  line-height: 1.5;
+}
+
+.sshAskpassPromptText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.sshHostVerificationNotice {
+  margin: 0 12px 12px;
+  color: var(--text-secondary);
+  font-size: 0.769rem;
   line-height: 1.5;
 }
 
