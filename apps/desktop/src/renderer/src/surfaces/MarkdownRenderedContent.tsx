@@ -23,18 +23,6 @@ const plugins = { code, mermaid, math, cjk };
 const streamdownPrefix = "kmuxsd";
 const streamdownLinkClassName =
   "kmuxsd:wrap-anywhere kmuxsd:font-medium kmuxsd:text-primary kmuxsd:underline";
-const rehypePlugins: NonNullable<StreamdownProps["rehypePlugins"]> = [
-  defaultRehypePlugins.sanitize,
-  [
-    harden,
-    {
-      allowedProtocols: ["http", "https", "mailto"],
-      allowedLinkPrefixes: ["*"],
-      allowedImagePrefixes: [],
-      allowDataImages: false
-    }
-  ]
-];
 
 export type MarkdownUrl =
   | { kind: "external"; url: string }
@@ -44,6 +32,7 @@ export type MarkdownUrl =
 export interface MarkdownRenderedContentProps {
   colorTheme: ColorTheme;
   markdown: string;
+  imageSources?: Readonly<Record<string, string>>;
   onReady: () => void;
   surfaceId: string;
   viewportRef: RefObject<HTMLDivElement>;
@@ -52,11 +41,42 @@ export interface MarkdownRenderedContentProps {
 export function MarkdownRenderedContent({
   colorTheme,
   markdown,
+  imageSources,
   onReady,
   surfaceId,
   viewportRef
 }: MarkdownRenderedContentProps): JSX.Element {
   useEffect(onReady, [onReady]);
+  const hasBundledImages =
+    imageSources !== undefined && Object.keys(imageSources).length > 0;
+  const allowedBundledImageUrls = useMemo(
+    () => new Set(Object.values(imageSources ?? {})),
+    [imageSources]
+  );
+  const rehypePlugins = useMemo<NonNullable<StreamdownProps["rehypePlugins"]>>(
+    () => [
+      defaultRehypePlugins.sanitize,
+      addMarkdownHeadingIds,
+      ...(hasBundledImages
+        ? [
+            [rewriteBundledImageSources, imageSources] as [
+              typeof rewriteBundledImageSources,
+              Readonly<Record<string, string>>
+            ]
+          ]
+        : []),
+      [
+        harden,
+        {
+          allowedProtocols: ["http", "https", "mailto"],
+          allowedLinkPrefixes: ["*"],
+          allowedImagePrefixes: hasBundledImages ? ["*"] : [],
+          allowDataImages: hasBundledImages
+        }
+      ]
+    ],
+    [hasBundledImages, imageSources]
+  );
 
   const components = useMemo<Components>(
     () => ({
@@ -66,9 +86,17 @@ export function MarkdownRenderedContent({
           surfaceId={surfaceId}
           viewportRef={viewportRef}
         />
-      )
+      ),
+      ...(hasBundledImages
+        ? {
+            img: ({ node: _node, src, ...props }) =>
+              typeof src === "string" && allowedBundledImageUrls.has(src) ? (
+                <img {...props} src={src} />
+              ) : null
+          }
+        : {})
     }),
-    [surfaceId, viewportRef]
+    [allowedBundledImageUrls, hasBundledImages, surfaceId, viewportRef]
   );
 
   return (
@@ -86,7 +114,7 @@ export function MarkdownRenderedContent({
           table: { copy: true, download: true, fullscreen: true }
         }}
         dir="auto"
-        disallowedElements={["img"]}
+        disallowedElements={hasBundledImages ? undefined : ["img"]}
         isAnimating={false}
         lineNumbers
         mermaid={{
@@ -103,16 +131,94 @@ export function MarkdownRenderedContent({
         rehypePlugins={rehypePlugins}
         shikiTheme={["github-light", "github-dark"]}
         skipHtml
-        urlTransform={(url, key) =>
-          key === "src" || classifyMarkdownUrl(url).kind === "blocked"
-            ? null
-            : url
-        }
+        urlTransform={(url, key) => {
+          if (key === "src") {
+            return allowedBundledImageUrls.has(url) ? url : null;
+          }
+          return classifyMarkdownUrl(url).kind === "blocked" ? null : url;
+        }}
       >
         {markdown}
       </Streamdown>
     </div>
   );
+}
+
+interface MarkdownHastNode {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: MarkdownHastNode[];
+}
+
+function addMarkdownHeadingIds(): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    const assignedIds = new Set<string>();
+    const nextSuffixes = new Map<string, number>();
+    visitMarkdownHast(tree, (node) => {
+      if (node.type !== "element" || !/^h[1-6]$/u.test(node.tagName ?? "")) {
+        return;
+      }
+      const baseId = markdownHeadingId(markdownNodeText(node));
+      if (!baseId) return;
+
+      let suffix = nextSuffixes.get(baseId) ?? 0;
+      let id = suffix === 0 ? baseId : `${baseId}-${suffix}`;
+      while (assignedIds.has(id)) {
+        suffix += 1;
+        id = `${baseId}-${suffix}`;
+      }
+      assignedIds.add(id);
+      nextSuffixes.set(baseId, suffix + 1);
+      node.properties ??= {};
+      node.properties.id = id;
+    });
+  };
+}
+
+function markdownNodeText(node: MarkdownHastNode): string {
+  if (node.type === "text") return node.value ?? "";
+  return (node.children ?? []).map(markdownNodeText).join("");
+}
+
+function markdownHeadingId(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s+/gu, "-");
+}
+
+function rewriteBundledImageSources(
+  imageSources: Readonly<Record<string, string>>
+): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    visitMarkdownHast(tree, (node) => {
+      if (
+        node.type !== "element" ||
+        node.tagName !== "img" ||
+        typeof node.properties?.src !== "string"
+      ) {
+        return;
+      }
+      const bundledSource = imageSources[node.properties.src];
+      if (bundledSource) {
+        node.properties.src = bundledSource;
+      }
+    });
+  };
+}
+
+function visitMarkdownHast(
+  node: MarkdownHastNode,
+  visitor: (node: MarkdownHastNode) => void
+): void {
+  visitor(node);
+  for (const child of node.children ?? []) {
+    visitMarkdownHast(child, visitor);
+  }
 }
 
 export function classifyMarkdownUrl(rawUrl: string): MarkdownUrl {

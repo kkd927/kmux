@@ -73,6 +73,24 @@ describe("terminal stream preload bridge", () => {
     );
   });
 
+  it("forwards and unsubscribes Release Notes menu requests", () => {
+    const listener = vi.fn();
+    const api = mocks.exposed.get("kmux") as {
+      subscribeReleaseNotesOpenRequest(listener: () => void): () => void;
+    };
+
+    const unsubscribe = api.subscribeReleaseNotesOpenRequest(listener);
+    const handler = mocks.listeners.get("kmux:release-notes-open-request");
+    handler?.({});
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    expect(mocks.off).toHaveBeenCalledWith(
+      "kmux:release-notes-open-request",
+      handler
+    );
+  });
+
   it("does not publish a capability without its transferred port", () => {
     const listener = mocks.listeners.get(KMUX_TERMINAL_PORT_CHANNEL);
 

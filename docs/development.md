@@ -83,6 +83,38 @@ Required repository secrets:
 
 The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes the path through the `APPLE_API_KEY` environment variable so electron-builder can notarize the build.
 
+## Release Notes
+
+Write desktop release notes in
+`docs/release-notes/v<apps/desktop package version>.md`. The filename must
+match the version exactly, including prerelease suffixes such as
+`v1.2.0-alpha.1.md`. A missing or whitespace-only file intentionally produces
+no first-run dialog and no Help → Release Notes item, so a patch version can
+ship without copying an earlier note.
+
+The desktop build bundles only the matching Markdown file and the images it
+references. Keep release-note images under the matching version directory:
+
+```text
+docs/release-notes/assets/v1.2.0/example.webp
+```
+
+Reference them with a document-relative path:
+
+```markdown
+![Description](./assets/v1.2.0/example.webp)
+```
+
+PNG, JPEG, WebP, and GIF are supported. Missing files, paths outside the
+matching version directory, SVG, and external, `data:`, or `file:` image URLs
+fail the build. Versioned notes and assets may remain in the repository; older
+versions are not bundled into the current app.
+
+The GitHub release workflow uses the same Markdown. It writes a temporary copy
+whose local image paths point to the tagged files on
+`raw.githubusercontent.com`, while leaving the source file unchanged and
+retaining GitHub's generated release notes.
+
 ## Smoothness Profiling
 
 Use smoothness profiling when investigating terminal output jank, React rerender churn, or sidebar/metadata patch flooding during Claude Code, Codex, Antigravity, or similar agent workloads.

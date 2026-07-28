@@ -5,8 +5,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
+import { loadBundledReleaseNotes } from "../../scripts/release-notes.mjs";
+import { createReleaseNotesPlugin } from "./build/releaseNotesPlugin";
+
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../..");
+const bundledReleaseNotes = loadBundledReleaseNotes({ repoRoot });
 const electronEsmCommonJsShim = `
 // -- CommonJS Shims --
 import __cjs_mod__ from 'node:module';
@@ -53,6 +57,11 @@ export default defineConfig({
     resolve: {
       alias
     },
+    define: {
+      "process.env.KMUX_BUNDLED_RELEASE_NOTES": JSON.stringify(
+        bundledReleaseNotes ? "1" : "0"
+      )
+    },
     build: {
       outDir: "out/main",
       rollupOptions: {
@@ -91,7 +100,14 @@ export default defineConfig({
     resolve: {
       alias
     },
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      createReleaseNotesPlugin({
+        repoRoot,
+        releaseNotes: bundledReleaseNotes
+      }),
+      react(),
+      tailwindcss()
+    ],
     build: {
       outDir: "out/renderer"
     }

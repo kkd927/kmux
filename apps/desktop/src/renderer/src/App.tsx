@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import bundledReleaseNotes from "virtual:kmux-release-notes";
 
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
@@ -57,6 +58,7 @@ import {
   useSidebarResize
 } from "./hooks/useSidebarResize";
 import { useWorkspaceContextMenu } from "./hooks/useWorkspaceContextMenu";
+import { useReleaseNotesModal } from "./releaseNotes";
 import {
   findWorkspaceContext,
   runWorkspaceContextAction as runSharedWorkspaceContextAction,
@@ -88,6 +90,7 @@ type DismissibleUiState = {
   worktreeDialogOpen: boolean;
   sshWorkspaceDialogOpen: boolean;
   sshAskpassPromptOpen: boolean;
+  releaseNotesOpen: boolean;
 };
 
 type PendingWorkspaceClose = {
@@ -153,6 +156,10 @@ const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" }
 ] as const;
+const LazyReleaseNotesModal = lazy(async () => {
+  const module = await import("./components/ReleaseNotesModal");
+  return { default: module.ReleaseNotesModal };
+});
 
 function createRendererRequestId(prefix: string): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
@@ -266,7 +273,8 @@ export function App(): JSX.Element {
     surfaceRestartConfirmOpen: false,
     worktreeDialogOpen: false,
     sshWorkspaceDialogOpen: false,
-    sshAskpassPromptOpen: false
+    sshAskpassPromptOpen: false,
+    releaseNotesOpen: false
   });
   useEffect(() => {
     void window.kmux.setUsageDashboardOpen(usageDashboardOpen);
@@ -524,6 +532,25 @@ export function App(): JSX.Element {
     beginWorkspaceRename
   });
 
+  const releaseNotesBlockingDialogOpen =
+    paletteOpen ||
+    notificationsOpen ||
+    settingsOpen ||
+    Boolean(pendingWorkspaceClose) ||
+    Boolean(pendingSurfaceRestart) ||
+    Boolean(worktreeDialog) ||
+    Boolean(sshWorkspaceDialog) ||
+    sshAskpassPrompts.length > 0;
+  const releaseNotesModal = useReleaseNotesModal({
+    releaseNotes: bundledReleaseNotes,
+    shellReady,
+    blockingDialogOpen: releaseNotesBlockingDialogOpen
+  });
+  const releaseNotesLinkSurfaceId = activeWorkspacePaneTree
+    ? activeWorkspacePaneTree.panes[activeWorkspacePaneTree.activePaneId]
+        ?.activeSurfaceId
+    : undefined;
+
   dismissibleUiStateRef.current = {
     paletteOpen,
     notificationsOpen,
@@ -534,7 +561,8 @@ export function App(): JSX.Element {
     surfaceRestartConfirmOpen: Boolean(pendingSurfaceRestart),
     worktreeDialogOpen: Boolean(worktreeDialog),
     sshWorkspaceDialogOpen: Boolean(sshWorkspaceDialog),
-    sshAskpassPromptOpen: sshAskpassPrompts.length > 0
+    sshAskpassPromptOpen: sshAskpassPrompts.length > 0,
+    releaseNotesOpen: releaseNotesModal.open
   };
 
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
@@ -555,6 +583,7 @@ export function App(): JSX.Element {
     closeWorktreeDialog,
     closeSshWorkspaceDialog,
     closeSshAskpassPrompt: () => void respondToSshAskpass(true),
+    closeReleaseNotes: releaseNotesModal.close,
     setSearchSurfaceId,
     closeSettingsModal,
     setNotificationsOpen,
@@ -1304,6 +1333,18 @@ export function App(): JSX.Element {
           }).then(closeSettingsModal);
         }}
       />
+      {releaseNotesModal.open &&
+      bundledReleaseNotes &&
+      releaseNotesLinkSurfaceId ? (
+        <Suspense fallback={null}>
+          <LazyReleaseNotesModal
+            colorTheme={resolvedColorTheme}
+            onClose={releaseNotesModal.close}
+            releaseNotes={bundledReleaseNotes}
+            surfaceId={releaseNotesLinkSurfaceId}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 

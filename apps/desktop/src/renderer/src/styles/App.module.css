@@ -1119,6 +1119,38 @@
   overflow: hidden;
 }
 
+.releaseNotesDialog {
+  display: flex;
+  align-self: center;
+  flex-direction: column;
+  width: min(820px, calc(100vw - 36px));
+  height: min(82vh, 920px);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--popup-border);
+  border-radius: 4px;
+  background: var(--popup-bg);
+  box-shadow: var(--shadow-strong);
+}
+
+.releaseNotesBody {
+  flex: 1;
+  min-height: 0;
+}
+
+.releaseNotesBody :global(.kmuxMarkdownSurface__content) {
+  min-height: auto;
+  padding-block: 24px 40px;
+}
+
+.releaseNotesBody :global(img) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+  border-radius: 6px;
+}
+
 .sshWorkspaceDialog {
   width: min(540px, calc(100vw - 36px));
 }

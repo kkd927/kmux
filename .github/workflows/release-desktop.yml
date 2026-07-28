@@ -276,6 +276,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@v8
         with:
           pattern: "*-release-assets"
@@ -363,8 +368,13 @@ jobs:
           else
             notes_args=(--generate-notes)
             release_notes_path="docs/release-notes/${GITHUB_REF_NAME}.md"
-            if [ -f "$release_notes_path" ]; then
-              notes_args+=(--notes "$(cat "$release_notes_path")")
+            if [ -f "$release_notes_path" ] && grep -q '[^[:space:]]' "$release_notes_path"; then
+              temporary_release_notes="$RUNNER_TEMP/${GITHUB_REF_NAME}-release-notes.md"
+              node scripts/release-notes.mjs \
+                --tag "$GITHUB_REF_NAME" \
+                --repository "$GITHUB_REPOSITORY" \
+                --output "$temporary_release_notes"
+              notes_args+=(--notes-file "$temporary_release_notes")
             fi
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --title "$GITHUB_REF_NAME" \

@@ -33,6 +33,7 @@ interface DismissibleUiState {
   worktreeDialogOpen: boolean;
   sshWorkspaceDialogOpen: boolean;
   sshAskpassPromptOpen: boolean;
+  releaseNotesOpen?: boolean;
 }
 
 interface ActiveShortcutContext {
@@ -52,6 +53,7 @@ interface UseGlobalShortcutsOptions {
   closeWorktreeDialog: () => void;
   closeSshWorkspaceDialog: () => void;
   closeSshAskpassPrompt: () => void;
+  closeReleaseNotes?: () => void;
   setSearchSurfaceId: Dispatch<SetStateAction<string | null>>;
   closeSettingsModal: () => void;
   setNotificationsOpen: Dispatch<SetStateAction<boolean>>;
@@ -111,7 +113,8 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         surfaceRestartConfirmOpen: currentSurfaceRestartConfirmOpen,
         worktreeDialogOpen: currentWorktreeDialogOpen,
         sshWorkspaceDialogOpen: currentSshWorkspaceDialogOpen,
-        sshAskpassPromptOpen: currentSshAskpassPromptOpen
+        sshAskpassPromptOpen: currentSshAskpassPromptOpen,
+        releaseNotesOpen: currentReleaseNotesOpen
       } = currentOptions.dismissibleUiStateRef.current;
       const target = event.target;
       const isShortcutRecorder =
@@ -129,6 +132,11 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         if (currentSshAskpassPromptOpen) {
           event.preventDefault();
           currentOptions.closeSshAskpassPrompt();
+          return;
+        }
+        if (currentReleaseNotesOpen) {
+          event.preventDefault();
+          currentOptions.closeReleaseNotes?.();
           return;
         }
         if (currentWorkspaceCloseConfirmOpen) {
@@ -184,7 +192,8 @@ export function useGlobalShortcuts(options: UseGlobalShortcutsOptions): void {
         currentSurfaceRestartConfirmOpen ||
         currentWorktreeDialogOpen ||
         currentSshWorkspaceDialogOpen ||
-        currentSshAskpassPromptOpen
+        currentSshAskpassPromptOpen ||
+        currentReleaseNotesOpen
       ) {
         return;
       }

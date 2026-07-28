@@ -118,6 +118,73 @@ describe("useGlobalShortcuts", () => {
     expect(setRightPanelKind).not.toHaveBeenCalled();
   });
 
+  it("closes release notes on Escape before routing workspace shortcuts", () => {
+    const closeReleaseNotes = vi.fn();
+    const dispatch = vi.fn(async () => undefined);
+
+    function Harness(): null {
+      const viewRef = useRef(createViewSnapshot());
+      const dismissibleUiStateRef = useRef({
+        paletteOpen: false,
+        notificationsOpen: false,
+        settingsOpen: false,
+        searchSurfaceId: null,
+        workspaceContextMenuOpen: false,
+        workspaceCloseConfirmOpen: false,
+        surfaceRestartConfirmOpen: false,
+        worktreeDialogOpen: false,
+        sshWorkspaceDialogOpen: false,
+        sshAskpassPromptOpen: false,
+        releaseNotesOpen: true
+      });
+
+      useGlobalShortcuts({
+        keyboardPolicy: linuxKeyboardPolicy,
+        viewRef,
+        dismissibleUiStateRef,
+        setShowWorkspaceShortcutHints: vi.fn(),
+        closeWorkspaceContextMenu: vi.fn(),
+        closeWorkspaceCloseConfirm: vi.fn(),
+        closeSurfaceRestartConfirm: vi.fn(),
+        closeWorktreeDialog: vi.fn(),
+        closeSshWorkspaceDialog: vi.fn(),
+        closeSshAskpassPrompt: vi.fn(),
+        closeReleaseNotes,
+        setSearchSurfaceId: vi.fn(),
+        closeSettingsModal: vi.fn(),
+        setNotificationsOpen: vi.fn(),
+        setRightPanelKind: vi.fn(),
+        closePalette: vi.fn(),
+        openPalette: vi.fn(),
+        openSettingsModal: vi.fn(),
+        beginWorkspaceRename: vi.fn(),
+        dispatch,
+        requestWorkspaceClose: vi.fn(async () => undefined),
+        requestPaneClose: vi.fn(async () => undefined),
+        requestSurfaceClose: vi.fn(async () => undefined),
+        withLatestActiveShortcutContext: vi.fn(async () => undefined)
+      });
+
+      return null;
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    expect(closeReleaseNotes).toHaveBeenCalledTimes(1);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("uses the settings discard close path for Escape and the settings toggle shortcut", () => {
     const closeSettingsModal = vi.fn();
 

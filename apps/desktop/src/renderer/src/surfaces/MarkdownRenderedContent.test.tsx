@@ -59,6 +59,31 @@ describe("MarkdownRenderedContent security boundary", () => {
     ).not.toBe(true);
   });
 
+  it("allows only images registered by the release-note bundle", async () => {
+    await renderMarkdown(
+      [
+        "![bundled](./assets/v1.2.0/example.webp)",
+        "![unregistered](./assets/v1.2.0/other.png)",
+        "![different path](/assets/v1.2.0/example.webp)",
+        "![remote](https://example.com/image.png)",
+        "![data](data:image/png;base64,AAAA)"
+      ].join("\n\n"),
+      {
+        "./assets/v1.2.0/example.webp":
+          "/assets/release-note-example.abc123.webp"
+      }
+    );
+
+    const images = [...container.querySelectorAll<HTMLImageElement>("img")];
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({
+      alt: "bundled"
+    });
+    expect(images[0]?.getAttribute("src")).toBe(
+      "/assets/release-note-example.abc123.webp"
+    );
+  });
+
   it("cancels renderer navigation and delegates external links", async () => {
     await renderMarkdown(
       "[website](https://example.com/docs) [email](mailto:docs@example.com)"
@@ -84,11 +109,11 @@ describe("MarkdownRenderedContent security boundary", () => {
   });
 
   it("resolves fragments only inside the current document viewport", async () => {
-    const target = document.createElement("div");
-    target.id = "details";
+    await renderMarkdown("[Details](#details)\n\n## Details");
+
+    const target = container.querySelector<HTMLElement>("h2")!;
     target.scrollIntoView = vi.fn();
-    viewport.prepend(target);
-    await renderMarkdown("[Details](#details)");
+    expect(target.id).toBe("details");
 
     const link = container.querySelector<HTMLAnchorElement>("a")!;
     expect(
@@ -100,11 +125,41 @@ describe("MarkdownRenderedContent security boundary", () => {
     expect(openExternalUrl).not.toHaveBeenCalled();
   });
 
-  async function renderMarkdown(markdown: string): Promise<void> {
+  it("keeps heading IDs unique when generated suffixes collide with later headings", async () => {
+    await renderMarkdown(
+      "[Last heading](#foo-1-1)\n\n# Foo\n\n# Foo\n\n# Foo-1"
+    );
+
+    const headings = [...container.querySelectorAll<HTMLElement>("h1")];
+    expect(headings.map((heading) => heading.id)).toEqual([
+      "foo",
+      "foo-1",
+      "foo-1-1"
+    ]);
+    headings[1]!.scrollIntoView = vi.fn();
+    headings[2]!.scrollIntoView = vi.fn();
+
+    const link = container.querySelector<HTMLAnchorElement>("a")!;
+    expect(
+      link.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true })
+      )
+    ).toBe(false);
+    expect(headings[1]!.scrollIntoView).not.toHaveBeenCalled();
+    expect(headings[2]!.scrollIntoView).toHaveBeenCalledWith({
+      block: "start"
+    });
+  });
+
+  async function renderMarkdown(
+    markdown: string,
+    imageSources?: Readonly<Record<string, string>>
+  ): Promise<void> {
     await act(async () => {
       root.render(
         <MarkdownRenderedContent
           colorTheme="dark"
+          imageSources={imageSources}
           markdown={markdown}
           onReady={() => {}}
           surfaceId="surface_markdown"

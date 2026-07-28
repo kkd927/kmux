@@ -7,17 +7,19 @@ import type { UpdaterState } from "./updater";
 
 function buildTemplate(
   updaterState: UpdaterState,
-  options: { isMac?: boolean } = {}
+  options: { isMac?: boolean; hasReleaseNotes?: boolean } = {}
 ): MenuItemConstructorOptions[] {
   return buildApplicationMenuTemplate({
     appName: "kmux",
     isMac: options.isMac ?? true,
     isDevelopment: false,
+    hasReleaseNotes: options.hasReleaseNotes ?? false,
     updaterState,
     actions: {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     }
   });
 }
@@ -54,12 +56,14 @@ describe("application menu", () => {
     const actions = {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     };
     const template = buildApplicationMenuTemplate({
       appName: "kmux",
       isMac: true,
       isDevelopment: false,
+      hasReleaseNotes: false,
       updaterState: { status: "available", version: "0.1.12" },
       actions
     });
@@ -80,12 +84,14 @@ describe("application menu", () => {
     const actions = {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     };
     const template = buildApplicationMenuTemplate({
       appName: "kmux",
       isMac: true,
       isDevelopment: false,
+      hasReleaseNotes: false,
       updaterState: { status: "downloaded", version: "0.1.12" },
       actions
     });
@@ -105,12 +111,14 @@ describe("application menu", () => {
     const actions = {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     };
     const template = buildApplicationMenuTemplate({
       appName: "kmux",
       isMac: false,
       isDevelopment: false,
+      hasReleaseNotes: false,
       updaterState: { status: "idle" },
       actions
     });
@@ -136,12 +144,14 @@ describe("application menu", () => {
     const availableActions = {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     };
     const availableTemplate = buildApplicationMenuTemplate({
       appName: "kmux",
       isMac: false,
       isDevelopment: false,
+      hasReleaseNotes: false,
       updaterState: { status: "available", version: "0.1.12" },
       actions: availableActions
     });
@@ -158,12 +168,14 @@ describe("application menu", () => {
     const downloadedActions = {
       checkForUpdates: vi.fn(async () => undefined),
       downloadUpdate: vi.fn(async () => undefined),
-      quitAndInstall: vi.fn(() => undefined)
+      quitAndInstall: vi.fn(() => undefined),
+      showReleaseNotes: vi.fn(() => undefined)
     };
     const downloadedTemplate = buildApplicationMenuTemplate({
       appName: "kmux",
       isMac: false,
       isDevelopment: false,
+      hasReleaseNotes: false,
       updaterState: { status: "downloaded", version: "0.1.12" },
       actions: downloadedActions
     });
@@ -196,6 +208,38 @@ describe("application menu", () => {
       label: "Check for Updates…",
       enabled: false
     });
+  });
+
+  it("shows Release Notes only when the current build has non-empty notes", () => {
+    const withoutNotes = buildTemplate(
+      { status: "idle" },
+      { hasReleaseNotes: false }
+    );
+    const showReleaseNotes = vi.fn();
+    const withNotes = buildApplicationMenuTemplate({
+      appName: "kmux",
+      isMac: true,
+      isDevelopment: false,
+      hasReleaseNotes: true,
+      updaterState: { status: "idle" },
+      actions: {
+        checkForUpdates: vi.fn(async () => undefined),
+        downloadUpdate: vi.fn(async () => undefined),
+        quitAndInstall: vi.fn(),
+        showReleaseNotes
+      }
+    });
+
+    expect(withoutNotes.some((item) => item.label === "Help")).toBe(false);
+    const helpMenu = withNotes.find((item) => item.label === "Help");
+    const releaseNotesItem = (
+      helpMenu?.submenu as MenuItemConstructorOptions[]
+    )[0];
+    expect(releaseNotesItem).toMatchObject({ label: "Release Notes" });
+
+    releaseNotesItem.click?.({} as never, undefined, {} as never);
+
+    expect(showReleaseNotes).toHaveBeenCalledTimes(1);
   });
 
   it("uses the default label for idle and error states", () => {

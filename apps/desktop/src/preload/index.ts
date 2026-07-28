@@ -408,6 +408,11 @@ const api = {
     ipcRenderer.on("kmux:ssh-workspace-open-request", handler);
     return () => ipcRenderer.off("kmux:ssh-workspace-open-request", handler);
   },
+  subscribeReleaseNotesOpenRequest(listener: () => void): () => void {
+    const handler = () => listener();
+    ipcRenderer.on("kmux:release-notes-open-request", handler);
+    return () => ipcRenderer.off("kmux:release-notes-open-request", handler);
+  },
   subscribeWorkspaceCloseRequest(
     listener: (workspaceId: string) => void
   ): () => void {

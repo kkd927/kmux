@@ -179,6 +179,7 @@ declare global {
       subscribeSshWorkspaceOpenRequest(
         listener: (workspaceId: string) => void
       ): () => void;
+      subscribeReleaseNotesOpenRequest(listener: () => void): () => void;
       subscribeWorkspaceCloseRequest(
         listener: (workspaceId: string) => void
       ): () => void;

@@ -1899,11 +1899,17 @@ async function bootstrap(): Promise<void> {
       appName: app.getName(),
       isMac: platformRuntime.desktop.isMac,
       isDevelopment: !app.isPackaged,
+      hasReleaseNotes: process.env.KMUX_BUNDLED_RELEASE_NOTES === "1",
       updaterState: updater.getState(),
       actions: {
         checkForUpdates: () => updater.checkForUpdates("foreground"),
         downloadUpdate: () => updater.downloadUpdate("inline"),
-        quitAndInstall: () => updater.quitAndInstall()
+        quitAndInstall: () => updater.quitAndInstall(),
+        showReleaseNotes: () => {
+          getCurrentWindow()?.webContents.send(
+            "kmux:release-notes-open-request"
+          );
+        }
       }
     });
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));

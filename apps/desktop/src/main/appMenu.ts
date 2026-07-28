@@ -11,12 +11,14 @@ interface AppMenuActions {
   checkForUpdates(): Promise<void>;
   downloadUpdate(): Promise<void>;
   quitAndInstall(): void;
+  showReleaseNotes(): void;
 }
 
 interface BuildApplicationMenuTemplateOptions {
   appName: string;
   isMac: boolean;
   isDevelopment: boolean;
+  hasReleaseNotes: boolean;
   updaterState: UpdaterState;
   actions: AppMenuActions;
 }
@@ -67,6 +69,18 @@ export function buildApplicationMenuTemplate(
       submenu: buildWindowMenu(options.isMac)
     }
   );
+
+  if (options.hasReleaseNotes) {
+    template.push({
+      label: "Help",
+      submenu: [
+        {
+          label: "Release Notes",
+          click: options.actions.showReleaseNotes
+        }
+      ]
+    });
+  }
 
   return template;
 }
