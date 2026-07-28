@@ -5,11 +5,13 @@ import {
   readSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   watch,
   type FSWatcher
 } from "node:fs";
 import {
+  basename,
   delimiter,
   dirname,
   extname,
@@ -19,6 +21,8 @@ import {
 } from "node:path";
 import {
   type AgentStorageRoots,
+  type AdditionalAgentSessionRoots,
+  resolveAgentSessionRoots,
   resolveAgentStorageRoots
 } from "./agentStorage";
 import { readAntigravityWorkspaceByConversationFromRoot } from "./antigravityStorage";
@@ -85,10 +89,11 @@ export interface UsageAdapter {
   close(): void;
 }
 
-interface CreateUsageAdaptersOptions {
+export interface CreateUsageAdaptersOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
+  additionalSessionRoots?: AdditionalAgentSessionRoots;
   platform?: NodeJS.Platform;
 }
 
@@ -471,9 +476,10 @@ class FileUsageAdapter implements UsageAdapter {
     }
 
     const absolutePath = resolve(root, filename.toString());
-    const stats = safeStat(absolutePath);
+    const canonicalPath = canonicalUsageSourcePath(absolutePath);
+    const stats = safeStat(canonicalPath);
     if (!stats) {
-      this.removeTrackedSource(absolutePath);
+      this.removeTrackedSource(canonicalPath);
       return;
     }
     if (stats.isDirectory()) {
@@ -483,7 +489,7 @@ class FileUsageAdapter implements UsageAdapter {
     if (!stats.isFile()) {
       return;
     }
-    const source = describeUsageSource(this.vendor, absolutePath, {
+    const source = describeUsageSource(this.vendor, canonicalPath, {
       includeJson: this.includeJson,
       includeHiddenDirs: this.includeHiddenDirs
     });
@@ -727,33 +733,53 @@ export function createUsageAdapters(
       homeDir: options.homeDir,
       env
     });
-  const antigravityRoots = resolveRoots(
-    env.KMUX_ANTIGRAVITY_USAGE_DIR,
-    agentStorageRoots.antigravity.brainDir
-  );
+  const sessionRoots = resolveAgentSessionRoots({
+    agentStorageRoots,
+    additionalSessionRoots: options.additionalSessionRoots
+  });
+  const antigravityRoots = env.KMUX_ANTIGRAVITY_USAGE_DIR?.trim()
+    ? resolveRoots(
+        env.KMUX_ANTIGRAVITY_USAGE_DIR,
+        agentStorageRoots.antigravity.brainDir
+      )
+    : sessionRoots.antigravity.map((root) => join(root, "brain"));
 
   return [
     new FileUsageAdapter(
       "claude",
-      resolveRoots(
-        env.KMUX_CLAUDE_USAGE_DIR,
-        agentStorageRoots.claude.projectsDir
-      ),
+      env.KMUX_CLAUDE_USAGE_DIR?.trim()
+        ? resolveRoots(
+            env.KMUX_CLAUDE_USAGE_DIR,
+            agentStorageRoots.claude.projectsDir
+          )
+        : sessionRoots.claude,
       { watchRecursive }
     ),
     new FileUsageAdapter(
       "codex",
-      resolveRoots(
-        env.KMUX_CODEX_USAGE_DIR,
-        agentStorageRoots.codex.sessionsDir
-      ),
+      env.KMUX_CODEX_USAGE_DIR?.trim()
+        ? resolveRoots(
+            env.KMUX_CODEX_USAGE_DIR,
+            agentStorageRoots.codex.sessionsDir
+          )
+        : sessionRoots.codex,
       { watchRecursive }
     ),
     new FileUsageAdapter("antigravity", antigravityRoots, {
-      antigravityWorkspaceByConversationLoader: () =>
-        readAntigravityWorkspaceByConversationFromRoot(
-          agentStorageRoots.antigravity.root
-        ),
+      antigravityWorkspaceByConversationLoader: () => {
+        const workspaces = new Map<string, string>();
+        for (const root of sessionRoots.antigravity) {
+          for (const [
+            conversationId,
+            workspace
+          ] of readAntigravityWorkspaceByConversationFromRoot(root)) {
+            if (!workspaces.has(conversationId)) {
+              workspaces.set(conversationId, workspace);
+            }
+          }
+        }
+        return workspaces;
+      },
       includeHiddenDirs: true,
       watchRecursive
     })
@@ -809,6 +835,7 @@ export async function scanUsageHistoryDays(options: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
+  additionalSessionRoots?: AdditionalAgentSessionRoots;
   platform?: NodeJS.Platform;
   fromMs: number;
   toMs: number;
@@ -817,6 +844,7 @@ export async function scanUsageHistoryDays(options: {
     env: options.env,
     homeDir: options.homeDir,
     agentStorageRoots: options.agentStorageRoots,
+    additionalSessionRoots: options.additionalSessionRoots,
     platform: options.platform
   });
   const historySamples = new Map<string, UsageEventSample>();
@@ -969,26 +997,62 @@ function collectUsageSources(
   options: { includeJson: boolean; includeHiddenDirs: boolean }
 ): SourceDescriptor[] {
   const sources: SourceDescriptor[] = [];
-  const seen = new Set<string>();
+  const seenPaths = new Set<string>();
+  const seenIdentities = new Set<string>();
 
   for (const root of roots) {
     if (!root || !existsSync(root)) {
       continue;
     }
     for (const filePath of walkFiles(root, 0, options.includeHiddenDirs)) {
-      if (seen.has(filePath)) {
+      const actual = actualUsageSource(filePath);
+      if (
+        seenPaths.has(actual.path) ||
+        (actual.identity !== undefined && seenIdentities.has(actual.identity))
+      ) {
         continue;
       }
-      const source = describeUsageSource(vendor, filePath, options);
+      const source = describeUsageSource(vendor, actual.path, options);
       if (!source) {
         continue;
       }
-      seen.add(filePath);
+      seenPaths.add(actual.path);
+      if (actual.identity !== undefined) {
+        seenIdentities.add(actual.identity);
+      }
       sources.push(source);
     }
   }
 
   return sources.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function actualUsageSource(filePath: string): {
+  path: string;
+  identity?: string;
+} {
+  const path = canonicalUsageSourcePath(filePath);
+  try {
+    const stats = statSync(path);
+    return {
+      path,
+      identity: `${String(stats.dev)}:${String(stats.ino)}`
+    };
+  } catch {
+    return { path: filePath };
+  }
+}
+
+function canonicalUsageSourcePath(filePath: string): string {
+  try {
+    return realpathSync.native(filePath);
+  } catch {
+    try {
+      return join(realpathSync.native(dirname(filePath)), basename(filePath));
+    } catch {
+      return filePath;
+    }
+  }
 }
 
 function describeUsageSource(
@@ -2048,6 +2112,12 @@ export function usageSampleIdentity(sample: UsageEventSample): string {
       sample.cacheWriteTokens ?? 0,
       sample.totalTokens
     ].join(":");
+  if (
+    (sample.vendor === "codex" || sample.vendor === "antigravity") &&
+    (sample.eventId || sample.threadId)
+  ) {
+    return [sample.vendor, sample.sessionId ?? "", eventKey].join("\t");
+  }
   return [sample.vendor, sample.sourcePath, eventKey].join("\t");
 }
 

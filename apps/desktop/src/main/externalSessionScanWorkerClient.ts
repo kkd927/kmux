@@ -4,41 +4,22 @@ import { constants as osConstants, setPriority } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type {
-  AgentStorageRoots,
-  AdditionalAgentSessionRoots,
-  UsageAdapterDirtyOptions,
-  UsageAdapterReadResult,
-  UsageHistoryDay,
-  UsageVendor
-} from "@kmux/metadata";
+import type { AgentStorageRoots } from "@kmux/metadata";
+import type { ExternalAgentSessionsSnapshot, KmuxSettings } from "@kmux/proto";
 
 import type {
-  UsageScanWorkerConfig,
-  UsageScanWorkerRequest,
-  UsageScanWorkerResponse
-} from "./usageScanProtocol";
+  ExternalSessionIndexer,
+  ExternalSessionResumeSpec
+} from "./externalSessions";
+import type {
+  ExternalSessionScanWorkerConfig,
+  ExternalSessionScanWorkerRequest,
+  ExternalSessionScanWorkerResponse
+} from "./externalSessionScanProtocol";
 
-export interface UsageScanResult {
-  reads: UsageAdapterReadResult[];
-  historyDays?: UsageHistoryDay[];
-}
+const EXTERNAL_SESSION_SCAN_TIMEOUT_MS = 10_000;
 
-export interface UsageScanService {
-  watch(onChange: (vendor: UsageVendor) => void): () => void;
-  scan(options: {
-    startOfDayMs: number;
-    initial: boolean;
-    historyRange?: { fromMs: number; toMs: number };
-  }): Promise<UsageScanResult>;
-  markDirty(
-    vendor: Exclude<UsageVendor, "unknown">,
-    options?: UsageAdapterDirtyOptions
-  ): void;
-  close(): void;
-}
-
-export interface UsageScanWorkerLaunchOptions {
+export interface ExternalSessionScanWorkerLaunchOptions {
   entry: string;
   cwd: string;
   execArgv: string[];
@@ -51,38 +32,35 @@ type ForkWorker = (
 ) => ChildProcess;
 
 interface PendingRequest {
-  resolve: (message: UsageScanWorkerResponse) => void;
+  resolve: (message: ExternalSessionScanWorkerResponse) => void;
   reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
 }
 
-export interface UsageScanWorkerError extends Error {
-  workerStack?: string;
-  workerContext?: string;
-}
-
-interface CreateUsageScanWorkerClientOptions {
+interface CreateExternalSessionScanWorkerClientOptions {
+  homeDir: string;
   env?: NodeJS.ProcessEnv;
-  homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
-  platform?: NodeJS.Platform;
+  settings?: Pick<KmuxSettings, "agents">;
+  antigravitySessionIndexPath?: string;
   currentDir?: string;
   nodeEnv?: string;
   resourcesPath?: string;
   forkWorker?: ForkWorker;
+  requestTimeoutMs?: number;
 }
 
-export function resolveUsageScanWorkerLaunchOptions(
+export function resolveExternalSessionScanWorkerLaunchOptions(
   currentDir: string,
   nodeEnv: string | undefined = process.env.NODE_ENV,
   resourcesPath: string | undefined = process.resourcesPath
-): UsageScanWorkerLaunchOptions {
+): ExternalSessionScanWorkerLaunchOptions {
   const asarSegment = `${sep}app.asar${sep}`;
   if (currentDir.includes(asarSegment)) {
     const packagedResourcesPath =
       resourcesPath ?? resolve(currentDir, "../../../..");
     return {
-      entry: join(currentDir, "usageScanWorker.js"),
+      entry: join(currentDir, "externalSessionScanWorker.js"),
       cwd: join(packagedResourcesPath, "app.asar.unpacked"),
       execArgv: []
     };
@@ -91,49 +69,56 @@ export function resolveUsageScanWorkerLaunchOptions(
   const repoRoot = resolve(currentDir, "../../../..");
   if (nodeEnv === "production") {
     return {
-      entry: resolve(currentDir, "usageScanWorker.js"),
+      entry: resolve(currentDir, "externalSessionScanWorker.js"),
       cwd: repoRoot,
       execArgv: []
     };
   }
 
   return {
-    entry: resolve(repoRoot, "apps/desktop/src/main/usageScanWorker.ts"),
+    entry: resolve(
+      repoRoot,
+      "apps/desktop/src/main/externalSessionScanWorker.ts"
+    ),
     cwd: repoRoot,
     execArgv: ["--import", "tsx"]
   };
 }
 
-export function createUsageScanWorkerClient(
-  options: CreateUsageScanWorkerClientOptions = {}
-): UsageScanService {
+export function createExternalSessionScanWorkerClient(
+  options: CreateExternalSessionScanWorkerClientOptions
+): ExternalSessionIndexer {
   const currentDir =
     options.currentDir ?? dirname(fileURLToPath(import.meta.url));
-  const launchOptions = resolveUsageScanWorkerLaunchOptions(
+  const launchOptions = resolveExternalSessionScanWorkerLaunchOptions(
     currentDir,
     options.nodeEnv,
     options.resourcesPath
   );
-  const config: UsageScanWorkerConfig = {
+  const config: ExternalSessionScanWorkerConfig = {
+    homeDir: options.homeDir,
     env: normalizeEnv(options.env ?? process.env),
-    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     ...(options.agentStorageRoots
       ? { agentStorageRoots: options.agentStorageRoots }
       : {}),
-    ...(options.additionalSessionRoots
-      ? { additionalSessionRoots: options.additionalSessionRoots }
-      : {}),
-    platform: options.platform ?? process.platform
+    ...(options.settings ? { settings: options.settings } : {}),
+    ...(options.antigravitySessionIndexPath
+      ? { antigravitySessionIndexPath: options.antigravitySessionIndexPath }
+      : {})
   };
+  const requestTimeoutMs =
+    options.requestTimeoutMs ?? EXTERNAL_SESSION_SCAN_TIMEOUT_MS;
   const forkWorker = options.forkWorker ?? fork;
-  const listeners = new Set<(vendor: UsageVendor) => void>();
   const pending = new Map<string, PendingRequest>();
+  const resumeSpecs = new Map<string, ExternalSessionResumeSpec>();
   let child: ChildProcess | null = null;
   let startPromise: Promise<void> | null = null;
+  let scanPromise: Promise<ExternalAgentSessionsSnapshot> | null = null;
   let closed = false;
 
   function rejectPending(error: Error): void {
     for (const request of pending.values()) {
+      clearTimeout(request.timeout);
       request.reject(error);
     }
     pending.clear();
@@ -145,17 +130,21 @@ export function createUsageScanWorkerClient(
     }
     child = null;
     startPromise = null;
+    scanPromise = null;
     rejectPending(error);
   }
 
-  function handleMessage(message: UsageScanWorkerResponse): void {
-    if (!message || typeof message !== "object" || !("type" in message)) {
-      return;
+  function terminateChild(target: ChildProcess, error: Error): void {
+    disposeChild(target, error);
+    try {
+      target.kill("SIGTERM");
+    } catch {
+      // Ignore a worker that already exited.
     }
-    if (message.type === "changed") {
-      for (const listener of listeners) {
-        listener(message.vendor);
-      }
+  }
+
+  function handleMessage(message: ExternalSessionScanWorkerResponse): void {
+    if (!message || typeof message !== "object" || !("requestId" in message)) {
       return;
     }
     const request = pending.get(message.requestId);
@@ -163,14 +152,12 @@ export function createUsageScanWorkerClient(
       return;
     }
     pending.delete(message.requestId);
+    clearTimeout(request.timeout);
     if (message.type === "error") {
-      const error = new Error(message.message) as UsageScanWorkerError;
-      error.name = "UsageScanWorkerError";
+      const error = new Error(message.message);
+      error.name = "ExternalSessionScanWorkerError";
       if (message.stack) {
-        error.workerStack = message.stack;
-      }
-      if (message.context) {
-        error.workerContext = message.context;
+        error.stack = message.stack;
       }
       request.reject(error);
       return;
@@ -180,12 +167,24 @@ export function createUsageScanWorkerClient(
 
   function sendRequest(
     target: ChildProcess,
-    request: Extract<UsageScanWorkerRequest, { requestId: string }>
-  ): Promise<UsageScanWorkerResponse> {
+    request: Extract<ExternalSessionScanWorkerRequest, { requestId: string }>
+  ): Promise<ExternalSessionScanWorkerResponse> {
     return new Promise((resolvePromise, rejectPromise) => {
+      const timeout = setTimeout(() => {
+        if (!pending.delete(request.requestId)) {
+          return;
+        }
+        const error = new Error(
+          `external session scan worker timed out after ${requestTimeoutMs}ms`
+        );
+        error.name = "ExternalSessionScanTimeoutError";
+        rejectPromise(error);
+        terminateChild(target, error);
+      }, requestTimeoutMs);
       pending.set(request.requestId, {
         resolve: resolvePromise,
-        reject: rejectPromise
+        reject: rejectPromise,
+        timeout
       });
       try {
         target.send(request, (error) => {
@@ -197,10 +196,12 @@ export function createUsageScanWorkerClient(
             return;
           }
           pending.delete(request.requestId);
+          clearTimeout(pendingRequest.timeout);
           pendingRequest.reject(error);
         });
       } catch (error) {
         pending.delete(request.requestId);
+        clearTimeout(timeout);
         rejectPromise(
           error instanceof Error ? error : new Error(String(error))
         );
@@ -210,7 +211,9 @@ export function createUsageScanWorkerClient(
 
   function ensureWorker(): Promise<void> {
     if (closed) {
-      return Promise.reject(new Error("usage scan worker is closed"));
+      return Promise.reject(
+        new Error("external session scan worker is closed")
+      );
     }
     if (child && !startPromise) {
       return Promise.resolve();
@@ -241,7 +244,7 @@ export function createUsageScanWorkerClient(
       disposeChild(
         nextChild,
         new Error(
-          `usage scan worker exited (code ${code ?? "null"}, signal ${signal ?? "none"})`
+          `external session scan worker exited (code ${code ?? "null"}, signal ${signal ?? "none"})`
         )
       );
     });
@@ -255,7 +258,7 @@ export function createUsageScanWorkerClient(
       .then((message) => {
         if (message.type !== "ready") {
           throw new Error(
-            "usage scan worker returned an invalid init response"
+            "external session scan worker returned an invalid init response"
           );
         }
         if (child === nextChild) {
@@ -263,79 +266,64 @@ export function createUsageScanWorkerClient(
         }
       })
       .catch((error) => {
-        disposeChild(
+        terminateChild(
           nextChild,
           error instanceof Error ? error : new Error(String(error))
         );
-        try {
-          nextChild.kill("SIGTERM");
-        } catch {
-          // Ignore a worker that already exited.
-        }
         throw error;
       });
     return startPromise;
   }
 
-  return {
-    watch(onChange) {
-      listeners.add(onChange);
-      return () => {
-        listeners.delete(onChange);
-      };
-    },
-    async scan(scanOptions) {
-      await ensureWorker();
-      const target = child;
-      if (!target) {
-        throw new Error("usage scan worker is unavailable");
-      }
-      const requestId = randomUUID();
-      const message = await sendRequest(target, {
-        type: "scan",
-        requestId,
-        startOfDayMs: scanOptions.startOfDayMs,
-        initial: scanOptions.initial,
-        ...(scanOptions.historyRange
-          ? { historyRange: scanOptions.historyRange }
-          : {})
-      });
-      if (message.type !== "scan-result") {
-        throw new Error("usage scan worker returned an invalid scan response");
-      }
-      return {
-        reads: message.reads,
-        ...(message.historyDays ? { historyDays: message.historyDays } : {})
-      };
-    },
-    markDirty(vendor, dirtyOptions) {
-      void ensureWorker()
-        .then(() => {
-          child?.send({
-            type: "mark-dirty",
-            vendor,
-            ...(dirtyOptions ? { options: dirtyOptions } : {})
-          } satisfies UsageScanWorkerRequest);
-        })
-        .catch(() => {
-          // A later scan restarts the worker and performs a full initial read.
+  const indexer: ExternalSessionIndexer = {
+    listExternalAgentSessions() {
+      scanPromise ??= (async () => {
+        await ensureWorker();
+        const target = child;
+        if (!target) {
+          throw new Error("external session scan worker is unavailable");
+        }
+        const requestId = randomUUID();
+        const message = await sendRequest(target, {
+          type: "scan",
+          requestId
         });
+        if (message.type !== "scan-result") {
+          throw new Error(
+            "external session scan worker returned an invalid scan response"
+          );
+        }
+        resumeSpecs.clear();
+        for (const spec of message.resumeSpecs) {
+          resumeSpecs.set(spec.key, spec);
+        }
+        return message.snapshot;
+      })().finally(() => {
+        scanPromise = null;
+      });
+      return scanPromise;
+    },
+    resolveExternalAgentSession(key) {
+      return resumeSpecs.get(key) ?? null;
     },
     close() {
       if (closed) {
         return;
       }
       closed = true;
-      listeners.clear();
+      resumeSpecs.clear();
       const target = child;
       child = null;
       startPromise = null;
-      rejectPending(new Error("usage scan worker closed"));
+      scanPromise = null;
+      rejectPending(new Error("external session scan worker closed"));
       if (!target) {
         return;
       }
       try {
-        target.send({ type: "shutdown" } satisfies UsageScanWorkerRequest);
+        target.send({
+          type: "shutdown"
+        } satisfies ExternalSessionScanWorkerRequest);
       } catch {
         // Fall through to termination.
       }
@@ -346,6 +334,8 @@ export function createUsageScanWorkerClient(
       }
     }
   };
+
+  return Object.freeze(indexer);
 }
 
 function normalizeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

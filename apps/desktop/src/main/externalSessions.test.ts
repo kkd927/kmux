@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -15,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveAgentStorageRoots } from "@kmux/metadata";
 
 import { createExternalSessionIndexer } from "./externalSessions";
+import type { ExternalSessionInventoryLimitError } from "./externalSessions";
 
 const sandboxDirs: string[] = [];
 const nodeRequire = createRequire(import.meta.url);
@@ -1901,5 +1903,211 @@ describe("external session indexer", () => {
         title: "Fix terminal focus"
       }
     });
+  });
+
+  it("merges additional roots by newest session and uses the configured launcher", () => {
+    const homeDir = createSandboxHome();
+    const additionalRoot = join(homeDir, "wrapper-sessions");
+    const older = new Date("2026-04-26T10:00:00.000Z");
+    const newer = new Date("2026-04-26T11:00:00.000Z");
+    const writeSession = (
+      root: string,
+      timestamp: Date,
+      message: string,
+      sessionId = "shared-session"
+    ) =>
+      writeJsonl(
+        join(
+          root,
+          "2026",
+          "04",
+          "26",
+          `rollout-${timestamp.getTime()}-${sessionId}.jsonl`
+        ),
+        [
+          {
+            type: "session_meta",
+            timestamp: timestamp.toISOString(),
+            payload: {
+              id: sessionId,
+              cwd: "/Users/test/shared-project"
+            }
+          },
+          {
+            type: "event_msg",
+            timestamp: timestamp.toISOString(),
+            payload: { type: "user_message", message }
+          }
+        ],
+        timestamp
+      );
+    writeSession(
+      join(homeDir, ".codex", "sessions"),
+      older,
+      "Default root title"
+    );
+    writeSession(additionalRoot, newer, "Additional root title");
+    const tied = new Date("2026-04-26T09:00:00.000Z");
+    writeSession(
+      join(homeDir, ".codex", "sessions"),
+      tied,
+      "Default tie winner",
+      "tie-session"
+    );
+    writeSession(additionalRoot, tied, "Additional tie loser", "tie-session");
+
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => new Date("2026-04-26T12:00:00.000Z"),
+      commandAvailability: (command) => command === "ccsxp",
+      settings: {
+        agents: {
+          local: {
+            codex: {
+              command: "ccsxp",
+              args: ["shared profile"],
+              additionalSessionRoots: [
+                additionalRoot,
+                join(homeDir, "missing-sessions")
+              ]
+            }
+          }
+        }
+      }
+    });
+
+    const sessions = indexer.listExternalAgentSessions().sessions;
+    expect(sessions).toHaveLength(2);
+    expect(
+      sessions.find((session) => session.key === "codex:shared-session")
+    ).toMatchObject({
+      title: "Additional root title",
+      canResume: true,
+      resumeCommandPreview: "ccsxp 'shared profile' resume shared-session"
+    });
+    expect(
+      sessions.find((session) => session.key === "codex:tie-session")
+    ).toMatchObject({
+      title: "Default tie winner"
+    });
+    expect(
+      indexer.resolveExternalAgentSession("codex:shared-session")?.launch
+        .initialInput
+    ).toBe("ccsxp 'shared profile' resume shared-session\r");
+  });
+
+  it("does not fall back to a native command when a configured launcher is missing", () => {
+    const homeDir = createSandboxHome();
+    const mtime = new Date("2026-04-26T11:00:00.000Z");
+    writeJsonl(
+      join(
+        homeDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "04",
+        "26",
+        "rollout-configured-launcher.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: { id: "configured-launcher", cwd: "/Users/test/project" }
+        }
+      ],
+      mtime
+    );
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => new Date("2026-04-26T12:00:00.000Z"),
+      commandAvailability: (command) => command === "codex",
+      settings: {
+        agents: {
+          local: {
+            codex: { command: "missing-wrapper" }
+          }
+        }
+      }
+    });
+
+    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+      canResume: false,
+      resumeCommandPreview: "missing-wrapper resume configured-launcher"
+    });
+    expect(
+      indexer.resolveExternalAgentSession("codex:configured-launcher")
+    ).toBeNull();
+  });
+
+  it("skips symlinked directories instead of following recursive inventory loops", () => {
+    const homeDir = createSandboxHome();
+    const additionalRoot = join(homeDir, "wrapper-sessions");
+    const mtime = new Date("2026-04-26T11:00:00.000Z");
+    writeJsonl(
+      join(additionalRoot, "2026", "04", "26", "rollout-safe-session.jsonl"),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: { id: "safe-session", cwd: "/tmp/safe" }
+        }
+      ],
+      mtime
+    );
+    symlinkSync(additionalRoot, join(additionalRoot, "recursive-link"));
+
+    const snapshot = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => new Date("2026-04-26T12:00:00.000Z"),
+      settings: {
+        agents: {
+          local: {
+            codex: {
+              additionalSessionRoots: [additionalRoot]
+            }
+          }
+        }
+      },
+      scanLimits: {
+        maxDirectories: 8,
+        maxEntries: 16
+      }
+    }).listExternalAgentSessions();
+
+    expect(snapshot.sessions.map((session) => session.key)).toEqual([
+      "codex:safe-session"
+    ]);
+  });
+
+  it("aborts oversized inventories at the configured hard entry bound", () => {
+    const homeDir = createSandboxHome();
+    const additionalRoot = join(homeDir, "oversized-sessions");
+    mkdirSync(additionalRoot, { recursive: true });
+    writeFileSync(join(additionalRoot, "first.txt"), "first", "utf8");
+    writeFileSync(join(additionalRoot, "second.txt"), "second", "utf8");
+
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      settings: {
+        agents: {
+          local: {
+            codex: {
+              additionalSessionRoots: [additionalRoot]
+            }
+          }
+        }
+      },
+      scanLimits: {
+        maxEntries: 1
+      }
+    });
+
+    expect(() => indexer.listExternalAgentSessions()).toThrowError(
+      expect.objectContaining<Partial<ExternalSessionInventoryLimitError>>({
+        name: "ExternalSessionInventoryLimitError",
+        limit: "maxEntries"
+      })
+    );
   });
 });

@@ -26,7 +26,10 @@ export function createRemoteHistoryProvider(options: {
       const scan = await options.host.scanHistory({
         targetId: options.targetId,
         desktopInstallationId: options.desktopInstallationId,
-        maxRecords: request.maxRecords
+        maxRecords: request.maxRecords,
+        ...(request.agentSettings === undefined
+          ? {}
+          : { agentSettings: request.agentSettings })
       });
       if (scan.targetId !== options.targetId) {
         throw new Error("remote history scan escaped its target binding");

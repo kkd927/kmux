@@ -78,6 +78,18 @@ export type NotificationSource =
   | "system";
 export type NotificationKind = "generic" | "needs_input" | "turn_complete";
 export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
+export type AgentVendor = "claude" | "codex" | "antigravity";
+export type AgentScope = "local" | "ssh";
+
+export interface AgentSettings {
+  command?: string;
+  args?: string[];
+  additionalSessionRoots?: string[];
+}
+
+export type AgentScopeSettings = Partial<Record<AgentVendor, AgentSettings>>;
+export type AgentsSettings = Partial<Record<AgentScope, AgentScopeSettings>>;
+
 export type SubscriptionUsageProvider = Exclude<UsageVendor, "unknown">;
 export type ImageAttachmentMimeType =
   | "image/png"
@@ -988,6 +1000,7 @@ export type SurfaceDiagnosticCaptureMode = "default" | "enabled" | "disabled";
 
 export interface KmuxSettings {
   settingsVersion?: number;
+  agents?: AgentsSettings;
   socketMode: SocketMode;
   warnBeforeQuit: boolean;
   restoreWorkspacesAfterQuit: boolean;

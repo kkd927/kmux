@@ -1,5 +1,5 @@
 import { parseUint64Decimal } from "./uint64";
-import type { Id, RemotePersistenceLevel } from "./index";
+import type { AgentScopeSettings, Id, RemotePersistenceLevel } from "./index";
 
 export const REMOTE_PROTOCOL_VERSION = 1 as const;
 
@@ -121,6 +121,7 @@ export type RemoteBridgeRequestBody =
       desktopInstallationId: Id;
       targetId: Id;
       maxRecords: number;
+      agentSettings?: AgentScopeSettings;
     }
   | {
       type: "usage.scan";
@@ -128,6 +129,7 @@ export type RemoteBridgeRequestBody =
       targetId: Id;
       startAtUnixMs: string;
       maxRecords: number;
+      agentSettings?: AgentScopeSettings;
     }
   | {
       type: "forwards.observe";

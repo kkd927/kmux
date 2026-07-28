@@ -654,7 +654,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       ? cloneState(snapshot)
       : createInitialState(options.defaultShellPath);
 
-    initial.settings = mergeSettings(initial.settings, settings ?? {});
+    initial.settings = mergeSettings(
+      { ...initial.settings, agents: undefined },
+      settings ?? {}
+    );
 
     if (shouldRestoreSnapshot) {
       resetRestoredSessions(initial);

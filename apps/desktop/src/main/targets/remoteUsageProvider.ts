@@ -23,7 +23,10 @@ export function createRemoteUsageProvider(options: {
         desktopInstallationId: options.desktopInstallationId,
         targetId: options.targetId,
         startAtUnixMs: request.startAtUnixMs,
-        maxRecords: Math.min(request.maxRecords, MAX_REMOTE_USAGE_RECORDS)
+        maxRecords: Math.min(request.maxRecords, MAX_REMOTE_USAGE_RECORDS),
+        ...(request.agentSettings === undefined
+          ? {}
+          : { agentSettings: request.agentSettings })
       });
       if (scan.targetId !== options.targetId) {
         throw new Error("remote usage scan crossed its bound target");

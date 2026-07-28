@@ -1,5 +1,7 @@
 import {
   decodeLocalPath,
+  formatAgentCommandForShell,
+  resolveAgentResumeCommand,
   type AppState,
   type LocatedPath,
   type LocalPath,
@@ -12,8 +14,8 @@ import type {
 } from "@kmux/proto";
 
 import type {
-  ExternalSessionResumeSpec,
-  createExternalSessionIndexer
+  ExternalSessionIndexer,
+  ExternalSessionResumeSpec
 } from "./externalSessions";
 import type {
   HistoryProvider,
@@ -23,8 +25,6 @@ import type {
 
 const MAX_HISTORY_RECORDS = 100;
 
-type ExternalSessionIndexer = ReturnType<typeof createExternalSessionIndexer>;
-
 export function createLocalHistoryProvider(options: {
   indexer: ExternalSessionIndexer;
   refreshUsage: () => Promise<void>;
@@ -33,7 +33,7 @@ export function createLocalHistoryProvider(options: {
     async refresh(request) {
       requireHistoryBound(request.maxRecords);
       await options.refreshUsage();
-      const snapshot = options.indexer.listExternalAgentSessions();
+      const snapshot = await options.indexer.listExternalAgentSessions();
       return snapshot.sessions
         .slice(0, request.maxRecords)
         .map((session) => localHistoryRecord(session, snapshot.updatedAt));
@@ -70,7 +70,17 @@ export function createTargetHistoryRuntime(options: {
         try {
           const services = options.targetServices.resolveLocated(target);
           const records = await services.history.refresh({
-            maxRecords: MAX_HISTORY_RECORDS
+            maxRecords: MAX_HISTORY_RECORDS,
+            ...(options.getState().settings.agents?.[
+              target.kind === "local" ? "local" : "ssh"
+            ] === undefined
+              ? {}
+              : {
+                  agentSettings:
+                    options.getState().settings.agents?.[
+                      target.kind === "local" ? "local" : "ssh"
+                    ]
+                })
           });
           if (
             target.kind === "ssh" &&
@@ -115,8 +125,9 @@ export function createTargetHistoryRuntime(options: {
       )
       .slice(0, MAX_HISTORY_RECORDS);
     const nextResumeByKey = new Map<string, ExternalSessionResumeSpec>();
+    const commandSettings = options.getState().settings;
     const sessions = currentRecords.map((entry) =>
-      toExternalSession(entry, now(), nextResumeByKey)
+      toExternalSession(entry, now(), nextResumeByKey, commandSettings)
     );
     resumeByKey.clear();
     for (const [key, spec] of nextResumeByKey) resumeByKey.set(key, spec);
@@ -186,7 +197,8 @@ function localHistoryRecord(
 function toExternalSession(
   entry: TargetHistoryRecordWithTarget,
   currentNow: Date,
-  resumeByKey: Map<string, ExternalSessionResumeSpec>
+  resumeByKey: Map<string, ExternalSessionResumeSpec>,
+  settings: Pick<AppState["settings"], "agents">
 ): ExternalAgentSessionVm {
   const record = entry.record;
   const key = externalKey(entry.target, record.vendor, record.sessionId);
@@ -196,7 +208,12 @@ function toExternalSession(
   const cwd = record.cwd ? entry.services.files.display(record.cwd) : undefined;
   const updatedAt =
     record.updatedAt ?? new Date(record.updatedAtUnixMs).toISOString();
-  const command = resumeCommand(record.vendor, record.sessionId);
+  const command = resolveAgentResumeCommand(
+    settings,
+    entry.target.kind === "local" ? "local" : "ssh",
+    record.vendor,
+    record.sessionId
+  );
   if (record.canResume) {
     resumeByKey.set(key, {
       key,
@@ -211,7 +228,7 @@ function toExternalSession(
       ...(cwd === undefined ? {} : { cwd }),
       launch: {
         ...(cwd === undefined ? {} : { cwd }),
-        initialInput: `${command.map(shellQuote).join(" ")}\r`,
+        initialInput: `${formatAgentCommandForShell(command)}\r`,
         title
       }
     });
@@ -238,7 +255,7 @@ function toExternalSession(
     updatedAt,
     relativeTimeLabel: formatRelativeTime(currentNow, record.updatedAtUnixMs),
     canResume: record.canResume,
-    resumeCommandPreview: command.join(" ")
+    resumeCommandPreview: formatAgentCommandForShell(command)
   };
 }
 
@@ -293,26 +310,6 @@ function vendorLabel(
 
 function vendorTitle(vendor: ExternalAgentSessionVendor): string {
   return vendor === "antigravity" ? "Antigravity" : vendorLabel(vendor);
-}
-
-function resumeCommand(
-  vendor: ExternalAgentSessionVendor,
-  sessionId: string
-): string[] {
-  switch (vendor) {
-    case "codex":
-      return ["codex", "resume", sessionId];
-    case "claude":
-      return ["claude", "--resume", sessionId];
-    case "antigravity":
-      return ["agy", "--conversation", sessionId];
-  }
-}
-
-function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_./:@%+=,-]+$/u.test(value)
-    ? value
-    : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function formatRelativeTime(now: Date, updatedAtUnixMs: number): string {

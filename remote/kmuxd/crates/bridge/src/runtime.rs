@@ -12,9 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kmux_compat::{
-    AttachAuthorizedResponse, AttachmentAccess, BridgeRequest, BridgeRequestEnvelope,
-    BridgeResponseBody, BridgeResponseEnvelope, BridgeResponseStatus, CohortProxyRequest,
-    CohortProxyResponse, ConversionPreparedResponse, ConversionPromotedResponse,
+    AgentScopeSettings, AgentSettings, AttachAuthorizedResponse, AttachmentAccess, BridgeRequest,
+    BridgeRequestEnvelope, BridgeResponseBody, BridgeResponseEnvelope, BridgeResponseStatus,
+    CohortProxyRequest, CohortProxyResponse, ConversionPreparedResponse, ConversionPromotedResponse,
     DesiredForwardResponse, EventsAcknowledgedResponse, EventsReplayedResponse,
     ForwardsObservedResponse, GitInspectedResponse, GitRepositoryResponse, HelloResponse,
     HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse,
@@ -39,7 +39,10 @@ use kmux_keeper::{
     resource_key_digest, session_descriptor_path, session_journal_path, write_attach_capability,
     write_session_descriptor,
 };
-use kmux_metadata::{scan_external_history, scan_external_usage};
+use kmux_metadata::{
+    scan_external_history_with_settings, scan_external_usage_with_settings,
+    ExternalAgentScanSettings, ExternalAgentSettings,
+};
 use kmux_platform::{
     current_authenticated_home, current_authenticated_principal, effective_uid, spawn_detached,
     spawn_reparented,
@@ -1094,15 +1097,17 @@ fn handle_single_request(
         BridgeRequest::HistoryScan {
             target_id,
             max_records,
+            agent_settings,
             ..
-        } => inspect_external_history(&target_id, max_records)
+        } => inspect_external_history(&target_id, max_records, agent_settings)
             .map(BridgeResponseBody::HistoryScanned),
         BridgeRequest::UsageScan {
             target_id,
             start_at_unix_ms,
             max_records,
+            agent_settings,
             ..
-        } => inspect_external_usage(&target_id, &start_at_unix_ms, max_records)
+        } => inspect_external_usage(&target_id, &start_at_unix_ms, max_records, agent_settings)
             .map(BridgeResponseBody::UsageScanned),
         BridgeRequest::ForwardsObserve {
             desktop_installation_id,
@@ -1248,6 +1253,7 @@ fn hello(
             "ports.inspect-bounded-v1".to_owned(),
             "history.scan-bounded-v1".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
+            "agents.settings-scan-v1".to_owned(),
             "worktree.durable-v1".to_owned(),
             "forward.desired-state-v1".to_owned(),
         ],
@@ -2129,6 +2135,7 @@ fn inspect_session_ports(
 fn inspect_external_history(
     target_id: &str,
     max_records: usize,
+    agent_settings: Option<AgentScopeSettings>,
 ) -> Result<HistoryScannedResponse, BridgeRuntimeError> {
     validate_id(target_id, "targetId")?;
     let principal = current_authenticated_principal().map_err(|error| {
@@ -2137,7 +2144,8 @@ fn inspect_external_history(
     let home = current_authenticated_home().map_err(|error| {
         BridgeRuntimeError::Invalid(format!("history home is unavailable: {error}"))
     })?;
-    let records = scan_external_history(&home, max_records)
+    let settings = metadata_agent_scan_settings(agent_settings);
+    let records = scan_external_history_with_settings(&home, max_records, &settings)
         .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?
         .into_iter()
         .map(|record| RemoteHistoryRecord {
@@ -2167,6 +2175,7 @@ fn inspect_external_usage(
     target_id: &str,
     start_at_unix_ms: &str,
     max_records: usize,
+    agent_settings: Option<AgentScopeSettings>,
 ) -> Result<UsageScannedResponse, BridgeRuntimeError> {
     validate_id(target_id, "targetId")?;
     let start_at_unix_ms = parse_u64(start_at_unix_ms)?;
@@ -2176,7 +2185,8 @@ fn inspect_external_usage(
     let home = current_authenticated_home().map_err(|error| {
         BridgeRuntimeError::Invalid(format!("usage home is unavailable: {error}"))
     })?;
-    let scan = scan_external_usage(&home, start_at_unix_ms, max_records)
+    let settings = metadata_agent_scan_settings(agent_settings);
+    let scan = scan_external_usage_with_settings(&home, start_at_unix_ms, max_records, &settings)
         .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
     let records = scan
         .records
@@ -2207,6 +2217,23 @@ fn inspect_external_usage(
         truncated: scan.truncated,
         records,
     })
+}
+
+fn metadata_agent_scan_settings(settings: Option<AgentScopeSettings>) -> ExternalAgentScanSettings {
+    let settings = settings.unwrap_or_default();
+    ExternalAgentScanSettings {
+        claude: settings.claude.map(metadata_agent_settings),
+        codex: settings.codex.map(metadata_agent_settings),
+        antigravity: settings.antigravity.map(metadata_agent_settings),
+    }
+}
+
+fn metadata_agent_settings(settings: AgentSettings) -> ExternalAgentSettings {
+    ExternalAgentSettings {
+        command: settings.command,
+        args: settings.args,
+        additional_session_roots: settings.additional_session_roots,
+    }
 }
 
 fn inspect_process_listeners(pid: u32) -> Result<Vec<u16>, BridgeRuntimeError> {

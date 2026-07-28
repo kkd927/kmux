@@ -493,6 +493,8 @@ pub enum BridgeRequest {
         target_id: String,
         #[serde(rename = "maxRecords")]
         max_records: usize,
+        #[serde(rename = "agentSettings")]
+        agent_settings: Option<AgentScopeSettings>,
     },
     #[serde(rename = "usage.scan")]
     UsageScan {
@@ -504,6 +506,8 @@ pub enum BridgeRequest {
         start_at_unix_ms: String,
         #[serde(rename = "maxRecords")]
         max_records: usize,
+        #[serde(rename = "agentSettings")]
+        agent_settings: Option<AgentScopeSettings>,
     },
     #[serde(rename = "forwards.observe")]
     ForwardsObserve {
@@ -610,6 +614,24 @@ pub enum BridgeRequest {
         protected_transaction_ids: Vec<String>,
         now: String,
     },
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSettings {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub additional_session_roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentScopeSettings {
+    pub claude: Option<AgentSettings>,
+    pub codex: Option<AgentSettings>,
+    pub antigravity: Option<AgentSettings>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

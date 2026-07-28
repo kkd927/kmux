@@ -30,6 +30,7 @@ import {
 import {
   resolveAiCliProcessMatches,
   isProcessAlive,
+  type AdditionalAgentSessionRoots,
   type AgentStorageRoots,
   type AiCliProcessMatch,
   type AiCliProcessProbe,
@@ -274,6 +275,7 @@ interface UsageRuntimeOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
+  additionalSessionRoots?: AdditionalAgentSessionRoots;
   platform?: NodeJS.Platform;
   now?: () => number;
   emitSnapshot?: (snapshot: UsageViewSnapshot) => void;
@@ -309,6 +311,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
               env: options.env,
               homeDir: options.homeDir,
               agentStorageRoots: options.agentStorageRoots,
+              additionalSessionRoots: options.additionalSessionRoots,
               platform: options.platform
             })
           : null))
@@ -950,6 +953,16 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             startAtUnixMs: startOfLocalDay(now()),
             initial: !initializedUsageTargets.has(key),
             maxRecords: target.kind === "local" ? 4_096 : 64,
+            ...(options.getState().settings.agents?.[
+              target.kind === "local" ? "local" : "ssh"
+            ] === undefined
+              ? {}
+              : {
+                  agentSettings:
+                    options.getState().settings.agents?.[
+                      target.kind === "local" ? "local" : "ssh"
+                    ]
+                }),
             ...(target.kind === "local" && historyRange ? { historyRange } : {})
           });
           const incoming = scan.records.map((record) =>
@@ -1050,6 +1063,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         env: options.env,
         homeDir: options.homeDir,
         agentStorageRoots: options.agentStorageRoots,
+        additionalSessionRoots: options.additionalSessionRoots,
         platform: options.platform,
         fromMs: rangeStartMs,
         toMs: endOfLocalDay(now())

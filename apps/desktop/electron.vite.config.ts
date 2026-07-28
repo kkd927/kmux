@@ -62,6 +62,10 @@ export default defineConfig({
             currentDir,
             "src/main/shellEnvProbeWorker.ts"
           ),
+          externalSessionScanWorker: resolve(
+            currentDir,
+            "src/main/externalSessionScanWorker.ts"
+          ),
           usageScanWorker: resolve(currentDir, "src/main/usageScanWorker.ts"),
           remoteHost: resolve(currentDir, "src/remote-host/index.ts"),
           askpassClient: resolve(currentDir, "src/askpass-client/index.ts")

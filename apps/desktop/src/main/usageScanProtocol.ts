@@ -1,5 +1,6 @@
 import type {
   AgentStorageRoots,
+  AdditionalAgentSessionRoots,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
   UsageHistoryDay,
@@ -10,6 +11,7 @@ export interface UsageScanWorkerConfig {
   env: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
+  additionalSessionRoots?: AdditionalAgentSessionRoots;
   platform: NodeJS.Platform;
 }
 

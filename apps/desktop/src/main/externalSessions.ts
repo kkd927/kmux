@@ -2,27 +2,33 @@ import {
   accessSync,
   closeSync,
   constants,
-  existsSync,
+  lstatSync,
   openSync,
+  opendirSync,
   readSync,
-  readdirSync,
   statSync
 } from "node:fs";
 import { basename, delimiter, dirname, join } from "node:path";
 
-import type { WorkspaceTarget } from "@kmux/core";
+import {
+  formatAgentCommandForShell,
+  resolveAgentResumeCommand,
+  type WorkspaceTarget
+} from "@kmux/core";
 
 import type {
   ExternalAgentSessionRef,
   ExternalAgentSessionVendor,
   ExternalAgentSessionVm,
   ExternalAgentSessionsSnapshot,
+  KmuxSettings,
   SessionLaunchConfig
 } from "@kmux/proto";
 import {
   type AgentStorageRoots,
   isCodexSubagentSessionMetadata,
   readAntigravityConversationMetadataFromRoot,
+  resolveAgentSessionRoots,
   resolveAgentStorageRoots
 } from "@kmux/metadata";
 import {
@@ -37,7 +43,38 @@ export interface ExternalSessionIndexerOptions {
   env?: NodeJS.ProcessEnv;
   commandAvailability?: (command: string) => boolean;
   agentStorageRoots?: AgentStorageRoots;
+  settings?: Pick<KmuxSettings, "agents">;
   antigravitySessionIndexPath?: string;
+  scanLimits?: Partial<ExternalSessionScanLimits>;
+}
+
+export interface ExternalSessionScanLimits {
+  maxCandidates: number;
+  maxDepth: number;
+  maxDirectories: number;
+  maxEntries: number;
+}
+
+export interface ExternalSessionIndexer {
+  listExternalAgentSessions():
+    | ExternalAgentSessionsSnapshot
+    | Promise<ExternalAgentSessionsSnapshot>;
+  resolveExternalAgentSession(key: string): ExternalSessionResumeSpec | null;
+  close?(): void;
+}
+
+export interface SynchronousExternalSessionIndexer extends ExternalSessionIndexer {
+  listExternalAgentSessions(): ExternalAgentSessionsSnapshot;
+}
+
+export class ExternalSessionInventoryLimitError extends Error {
+  constructor(
+    readonly root: string,
+    readonly limit: keyof ExternalSessionScanLimits
+  ) {
+    super(`External session inventory at ${root} exceeds ${limit}`);
+    this.name = "ExternalSessionInventoryLimitError";
+  }
 }
 
 export interface ExternalSessionResumeSpec {
@@ -81,16 +118,20 @@ const MAX_CONVERSATION_PREVIEW_LENGTH = 220;
 const MAX_JSONL_SCAN_BYTES = 256 * 1024;
 const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
 const MAX_SESSION_FILE_CACHE_ENTRIES = 512;
+const DEFAULT_SESSION_SCAN_LIMITS: ExternalSessionScanLimits = {
+  maxCandidates: 4_096,
+  maxDepth: 32,
+  maxDirectories: 4_096,
+  maxEntries: 65_536
+};
 
 export function createExternalSessionIndexer(
   options: ExternalSessionIndexerOptions
-): {
-  listExternalAgentSessions(): ExternalAgentSessionsSnapshot;
-  resolveExternalAgentSession(key: string): ExternalSessionResumeSpec | null;
-} {
+): SynchronousExternalSessionIndexer {
   const now = options.now ?? (() => new Date());
   const maxFilesPerVendor =
     options.maxFilesPerVendor ?? DEFAULT_MAX_FILES_PER_VENDOR;
+  const scanLimits = resolveSessionScanLimits(options.scanLimits);
   const canRunCommand = createCommandAvailability(options);
   const sessionFileCache = new Map<string, SessionFileCacheEntry>();
   const agentStorageRoots =
@@ -99,25 +140,42 @@ export function createExternalSessionIndexer(
       homeDir: options.homeDir,
       env: options.env
     });
+  const sessionRoots = resolveAgentSessionRoots({
+    agentStorageRoots,
+    additionalSessionRoots: {
+      claude: options.settings?.agents?.local?.claude?.additionalSessionRoots,
+      codex: options.settings?.agents?.local?.codex?.additionalSessionRoots,
+      antigravity:
+        options.settings?.agents?.local?.antigravity?.additionalSessionRoots
+    }
+  });
 
   function listRecords(currentNow: Date): ExternalSessionRecord[] {
     const cutoffMs = currentNow.getTime() - SESSION_LOOKBACK_MS;
     const records = dedupeLatestSessionRecords(
       [
-        ...listCodexSessions(
-          agentStorageRoots.codex.sessionsDir,
-          maxFilesPerVendor,
-          sessionFileCache
+        ...sessionRoots.codex.flatMap((root) =>
+          listCodexSessions(
+            root,
+            maxFilesPerVendor,
+            sessionFileCache,
+            scanLimits
+          )
         ),
-        ...listClaudeSessions(
-          agentStorageRoots.claude.projectsDir,
-          maxFilesPerVendor,
-          sessionFileCache
+        ...sessionRoots.claude.flatMap((root) =>
+          listClaudeSessions(
+            root,
+            maxFilesPerVendor,
+            sessionFileCache,
+            scanLimits
+          )
         ),
-        ...listAntigravitySessions(
-          agentStorageRoots.antigravity.root,
-          resolveAntigravityIndexPath(options),
-          maxFilesPerVendor
+        ...sessionRoots.antigravity.flatMap((root, index) =>
+          listAntigravitySessions(
+            root,
+            index === 0 ? resolveAntigravityIndexPath(options) : undefined,
+            maxFilesPerVendor
+          )
         )
       ].filter((record) => record.updatedAtMs >= cutoffMs)
     );
@@ -125,24 +183,34 @@ export function createExternalSessionIndexer(
     return records;
   }
 
+  let cachedRecords: ExternalSessionRecord[] | null = null;
+  const refreshRecords = (): ExternalSessionRecord[] => {
+    cachedRecords = listRecords(now());
+    return cachedRecords;
+  };
+
   return {
     listExternalAgentSessions() {
       const currentNow = now();
+      cachedRecords = listRecords(currentNow);
       return {
-        sessions: listRecords(currentNow).map((record) =>
+        sessions: cachedRecords.map((record) =>
           toViewModel(
             record,
             currentNow,
-            canResumeRecord(record, canRunCommand)
+            canResumeRecord(record, canRunCommand, options.settings),
+            options.settings
           )
         ),
         updatedAt: currentNow.toISOString()
       };
     },
     resolveExternalAgentSession(key) {
-      const record = listRecords(now()).find((entry) => entry.key === key);
-      return record && canResumeRecord(record, canRunCommand)
-        ? toResumeSpec(record)
+      const record = (cachedRecords ?? refreshRecords()).find(
+        (entry) => entry.key === key
+      );
+      return record && canResumeRecord(record, canRunCommand, options.settings)
+        ? toResumeSpec(record, options.settings)
         : null;
     }
   };
@@ -172,7 +240,7 @@ function dedupeLatestSessionRecords(
 
 function listAntigravitySessions(
   antigravityRoot: string,
-  indexPath: string,
+  indexPath: string | undefined,
   maxFiles: number
 ): ExternalSessionRecord[] {
   const merged = new Map<
@@ -230,7 +298,9 @@ function listAntigravitySessions(
       mtimeMs: session.mtimeMs
     });
   }
-  for (const session of readAntigravitySessionIndex(indexPath).sessions) {
+  for (const session of indexPath
+    ? readAntigravitySessionIndex(indexPath).sessions
+    : []) {
     const updatedAtMs = Date.parse(session.updatedAt);
     upsert({
       conversationId: session.conversationId,
@@ -258,12 +328,14 @@ function listAntigravitySessions(
 function listCodexSessions(
   root: string,
   maxSessions: number,
-  cache: Map<string, SessionFileCacheEntry>
+  cache: Map<string, SessionFileCacheEntry>,
+  scanLimits: ExternalSessionScanLimits
 ): ExternalSessionRecord[] {
   const recordsByKey = new Map<string, ExternalSessionRecord>();
   const candidates = collectCandidateFiles(
     root,
-    (path) => basename(path).startsWith("rollout-") && path.endsWith(".jsonl")
+    (path) => basename(path).startsWith("rollout-") && path.endsWith(".jsonl"),
+    scanLimits
   );
 
   for (const candidate of candidates) {
@@ -383,11 +455,13 @@ function firstCodexSessionMetadata(
 function listClaudeSessions(
   root: string,
   maxFiles: number,
-  cache: Map<string, SessionFileCacheEntry>
+  cache: Map<string, SessionFileCacheEntry>,
+  scanLimits: ExternalSessionScanLimits
 ): ExternalSessionRecord[] {
   return collectCandidateFiles(
     root,
-    (path) => path.endsWith(".jsonl") && dirname(dirname(path)) === root
+    (path) => path.endsWith(".jsonl") && dirname(dirname(path)) === root,
+    scanLimits
   )
     .slice(0, maxFiles)
     .flatMap((candidate) => {
@@ -707,7 +781,8 @@ function vendorTitleLabelFor(
 function toViewModel(
   record: ExternalSessionRecord,
   now: Date,
-  canResume: boolean
+  canResume: boolean,
+  settings: Pick<KmuxSettings, "agents"> | undefined
 ): ExternalAgentSessionVm {
   return {
     key: record.key,
@@ -722,14 +797,15 @@ function toViewModel(
     updatedAt: record.updatedAt,
     relativeTimeLabel: formatRelativeTime(now, record.updatedAtMs),
     canResume,
-    resumeCommandPreview: buildResumeCommandPreview(record)
+    resumeCommandPreview: buildResumeCommandPreview(record, settings)
   };
 }
 
 function toResumeSpec(
-  record: ExternalSessionRecord
+  record: ExternalSessionRecord,
+  settings: Pick<KmuxSettings, "agents"> | undefined
 ): ExternalSessionResumeSpec {
-  const launch = buildResumeLaunch(record);
+  const launch = buildResumeLaunch(record, settings);
   return {
     key: record.key,
     vendor: record.vendor,
@@ -745,42 +821,43 @@ function toResumeSpec(
   };
 }
 
-function buildResumeLaunch(record: ExternalSessionRecord): SessionLaunchConfig {
-  const command = resumeCommandParts(record);
+function buildResumeLaunch(
+  record: ExternalSessionRecord,
+  settings: Pick<KmuxSettings, "agents"> | undefined
+): SessionLaunchConfig {
+  const command = resumeCommandParts(record, settings);
   return {
     cwd: record.cwd,
-    initialInput: `${command.map(shellQuote).join(" ")}\r`,
+    initialInput: `${formatAgentCommandForShell(command)}\r`,
     title: record.title
   };
 }
 
-function buildResumeCommandPreview(record: ExternalSessionRecord): string {
-  return resumeCommandParts(record).join(" ");
+function buildResumeCommandPreview(
+  record: ExternalSessionRecord,
+  settings: Pick<KmuxSettings, "agents"> | undefined
+): string {
+  return formatAgentCommandForShell(resumeCommandParts(record, settings));
 }
 
-function resumeCommandParts(record: ExternalSessionRecord): string[] {
-  switch (record.vendor) {
-    case "codex":
-      return ["codex", "resume", record.sessionId];
-    case "claude":
-      return ["claude", "--resume", record.sessionId];
-    case "antigravity":
-      return ["agy", "--conversation", record.sessionId];
-  }
-}
-
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
-    return value;
-  }
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+function resumeCommandParts(
+  record: ExternalSessionRecord,
+  settings: Pick<KmuxSettings, "agents"> | undefined
+): string[] {
+  return resolveAgentResumeCommand(
+    settings,
+    "local",
+    record.vendor,
+    record.sessionId
+  );
 }
 
 function canResumeRecord(
   record: ExternalSessionRecord,
-  canRunCommand: (command: string) => boolean
+  canRunCommand: (command: string) => boolean,
+  settings: Pick<KmuxSettings, "agents"> | undefined
 ): boolean {
-  return canRunCommand(resumeCommandParts(record)[0]);
+  return canRunCommand(resumeCommandParts(record, settings)[0]);
 }
 
 function createCommandAvailability(
@@ -882,45 +959,139 @@ function sessionFileSignature(candidate: CandidateFile): string {
 
 function collectCandidateFiles(
   root: string,
-  include: (path: string) => boolean
+  include: (path: string) => boolean,
+  limits: ExternalSessionScanLimits
 ): CandidateFile[] {
-  if (!existsSync(root)) {
-    return [];
-  }
   const candidates: CandidateFile[] = [];
-  const pending = [root];
+  const pending = [{ path: root, depth: 0 }];
+  const visitedDirectories = new Set<string>();
+  let discoveredDirectories = 1;
+  let visitedEntries = 0;
+
   while (pending.length > 0) {
-    const dir = pending.pop();
-    if (!dir) {
+    const directory = pending.pop();
+    if (!directory) {
       continue;
     }
-    let entries: string[];
+
+    let directoryStats;
     try {
-      entries = readdirSync(dir);
+      directoryStats = lstatSync(directory.path);
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      const path = join(dir, entry);
-      let stats;
-      try {
-        stats = statSync(path);
-      } catch {
-        continue;
+    const identity = fileIdentity(directoryStats, directory.path);
+    if (
+      directoryStats.isSymbolicLink() ||
+      !directoryStats.isDirectory() ||
+      visitedDirectories.has(identity)
+    ) {
+      continue;
+    }
+    visitedDirectories.add(identity);
+
+    let handle;
+    try {
+      handle = opendirSync(directory.path);
+    } catch {
+      continue;
+    }
+    try {
+      for (
+        let entry = handle.readSync();
+        entry !== null;
+        entry = handle.readSync()
+      ) {
+        visitedEntries += 1;
+        if (visitedEntries > limits.maxEntries) {
+          throw new ExternalSessionInventoryLimitError(root, "maxEntries");
+        }
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+        const path = join(directory.path, entry.name);
+        let stats;
+        try {
+          stats = lstatSync(path);
+        } catch {
+          continue;
+        }
+        if (stats.isSymbolicLink()) {
+          continue;
+        }
+        if (stats.isDirectory()) {
+          if (directory.depth >= limits.maxDepth) {
+            throw new ExternalSessionInventoryLimitError(root, "maxDepth");
+          }
+          discoveredDirectories += 1;
+          if (discoveredDirectories > limits.maxDirectories) {
+            throw new ExternalSessionInventoryLimitError(
+              root,
+              "maxDirectories"
+            );
+          }
+          pending.push({ path, depth: directory.depth + 1 });
+          continue;
+        }
+        if (stats.isFile() && include(path)) {
+          candidates.push({
+            path,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size
+          });
+          if (candidates.length > limits.maxCandidates) {
+            throw new ExternalSessionInventoryLimitError(root, "maxCandidates");
+          }
+        }
       }
-      if (stats.isDirectory()) {
-        pending.push(path);
-      } else if (stats.isFile() && include(path)) {
-        candidates.push({
-          path,
-          mtimeMs: stats.mtimeMs,
-          size: stats.size
-        });
-      }
+    } finally {
+      handle.closeSync();
     }
   }
   candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
   return candidates;
+}
+
+function resolveSessionScanLimits(
+  limits: Partial<ExternalSessionScanLimits> | undefined
+): ExternalSessionScanLimits {
+  return {
+    maxCandidates: positiveSafeInteger(
+      limits?.maxCandidates,
+      DEFAULT_SESSION_SCAN_LIMITS.maxCandidates
+    ),
+    maxDepth: positiveSafeInteger(
+      limits?.maxDepth,
+      DEFAULT_SESSION_SCAN_LIMITS.maxDepth
+    ),
+    maxDirectories: positiveSafeInteger(
+      limits?.maxDirectories,
+      DEFAULT_SESSION_SCAN_LIMITS.maxDirectories
+    ),
+    maxEntries: positiveSafeInteger(
+      limits?.maxEntries,
+      DEFAULT_SESSION_SCAN_LIMITS.maxEntries
+    )
+  };
+}
+
+function positiveSafeInteger(
+  value: number | undefined,
+  fallback: number
+): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+function fileIdentity(
+  stats: { dev: number | bigint; ino: number | bigint },
+  fallbackPath: string
+): string {
+  if (stats.dev === 0 && stats.ino === 0) {
+    return `path:${fallbackPath}`;
+  }
+  return `${String(stats.dev)}:${String(stats.ino)}`;
 }
 
 function parseJsonlEdges(path: string): unknown[] {

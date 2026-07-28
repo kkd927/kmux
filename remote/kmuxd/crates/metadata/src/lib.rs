@@ -5,7 +5,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -73,6 +73,20 @@ pub struct ExternalUsageScan {
     pub truncated: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExternalAgentSettings {
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub additional_session_roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExternalAgentScanSettings {
+    pub claude: Option<ExternalAgentSettings>,
+    pub codex: Option<ExternalAgentSettings>,
+    pub antigravity: Option<ExternalAgentSettings>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TokenMetrics {
     input_tokens: u64,
@@ -134,35 +148,58 @@ pub fn scan_external_history(
     home: &Path,
     max_records: usize,
 ) -> Result<Vec<ExternalHistoryRecord>, MetadataScanError> {
+    scan_external_history_with_settings(home, max_records, &ExternalAgentScanSettings::default())
+}
+
+pub fn scan_external_history_with_settings(
+    home: &Path,
+    max_records: usize,
+    settings: &ExternalAgentScanSettings,
+) -> Result<Vec<ExternalHistoryRecord>, MetadataScanError> {
     if !home.is_absolute() || max_records == 0 || max_records > MAX_HISTORY_RECORDS {
         return Err(MetadataScanError::InvalidRequest);
     }
+    validate_agent_scan_settings(settings)?;
     let mut by_identity = BTreeMap::<String, ExternalHistoryRecord>::new();
-    scan_jsonl_vendor(
-        "codex",
-        "codex",
-        &home.join(".codex/sessions"),
-        |path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-        },
-        max_records,
-        &mut by_identity,
-    )?;
-    scan_jsonl_vendor(
-        "claude",
-        "claude",
-        &home.join(".claude/projects"),
-        |path| path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
-        max_records,
-        &mut by_identity,
-    )?;
-    scan_antigravity(
-        &home.join(".gemini/antigravity-cli/history.jsonl"),
-        max_records,
-        &mut by_identity,
-    );
+    let codex_command = configured_command(settings.codex.as_ref(), "codex");
+    for root in session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref()) {
+        scan_jsonl_vendor(
+            "codex",
+            codex_command,
+            &root,
+            |path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+            },
+            max_records,
+            &mut by_identity,
+        )?;
+    }
+    let claude_command = configured_command(settings.claude.as_ref(), "claude");
+    for root in session_roots(home, &home.join(".claude/projects"), settings.claude.as_ref()) {
+        scan_jsonl_vendor(
+            "claude",
+            claude_command,
+            &root,
+            |path| path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
+            max_records,
+            &mut by_identity,
+        )?;
+    }
+    let antigravity_command = configured_command(settings.antigravity.as_ref(), "agy");
+    for root in session_roots(
+        home,
+        &home.join(".gemini/antigravity-cli"),
+        settings.antigravity.as_ref(),
+    ) {
+        scan_antigravity(
+            &root.join("history.jsonl"),
+            antigravity_command,
+            max_records,
+            &mut by_identity,
+        );
+    }
 
     let mut records = by_identity.into_values().collect::<Vec<_>>();
     records.sort_by(|left, right| {
@@ -181,60 +218,87 @@ pub fn scan_external_usage(
     start_at_unix_ms: u64,
     max_records: usize,
 ) -> Result<ExternalUsageScan, MetadataScanError> {
+    scan_external_usage_with_settings(
+        home,
+        start_at_unix_ms,
+        max_records,
+        &ExternalAgentScanSettings::default(),
+    )
+}
+
+pub fn scan_external_usage_with_settings(
+    home: &Path,
+    start_at_unix_ms: u64,
+    max_records: usize,
+    settings: &ExternalAgentScanSettings,
+) -> Result<ExternalUsageScan, MetadataScanError> {
     if !home.is_absolute() || max_records == 0 || max_records > MAX_USAGE_RECORDS {
         return Err(MetadataScanError::InvalidRequest);
     }
+    validate_agent_scan_settings(settings)?;
     let mut records = BTreeMap::<String, ExternalUsageRecord>::new();
     let mut truncated = false;
     let candidate_limit = max_records.saturating_mul(8);
 
-    let codex_candidates = collect_candidates(&home.join(".codex/sessions"), |path| {
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-    })?;
-    truncated |= codex_candidates.len() > candidate_limit;
-    for candidate in codex_candidates.into_iter().take(candidate_limit) {
-        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-        if let Some(record) = parse_codex_usage(&candidate, start_at_unix_ms) {
-            upsert_usage_record(&mut records, record);
+    for root in session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref()) {
+        let codex_candidates = collect_candidates(&root, |path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        })?;
+        truncated |= codex_candidates.len() > candidate_limit;
+        for candidate in codex_candidates.into_iter().take(candidate_limit) {
+            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+            if let Some(record) = parse_codex_usage(&candidate, start_at_unix_ms) {
+                upsert_usage_record(&mut records, record);
+            }
         }
     }
 
-    let mut claude_candidates = collect_candidates(&home.join(".claude/projects"), |path| {
-        path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-    })?;
-    truncated |= claude_candidates.len() > candidate_limit;
-    claude_candidates.truncate(candidate_limit);
-    claude_candidates.sort_by(|left, right| {
-        is_claude_subagent_path(&left.path)
-            .cmp(&is_claude_subagent_path(&right.path))
-            .then_with(|| right.modified_unix_ms.cmp(&left.modified_unix_ms))
-            .then_with(|| left.path.cmp(&right.path))
-    });
     let mut seen_claude_requests = BTreeSet::new();
-    for candidate in claude_candidates {
-        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-        if let Some(record) =
-            parse_claude_usage(&candidate, start_at_unix_ms, &mut seen_claude_requests)
-        {
-            upsert_usage_record(&mut records, record);
+    for root in session_roots(
+        home,
+        &home.join(".claude/projects"),
+        settings.claude.as_ref(),
+    ) {
+        let mut claude_candidates = collect_candidates(&root, |path| {
+            path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+        })?;
+        truncated |= claude_candidates.len() > candidate_limit;
+        claude_candidates.truncate(candidate_limit);
+        claude_candidates.sort_by(|left, right| {
+            is_claude_subagent_path(&left.path)
+                .cmp(&is_claude_subagent_path(&right.path))
+                .then_with(|| right.modified_unix_ms.cmp(&left.modified_unix_ms))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        for candidate in claude_candidates {
+            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+            if let Some(record) =
+                parse_claude_usage(&candidate, start_at_unix_ms, &mut seen_claude_requests)
+            {
+                upsert_usage_record(&mut records, record);
+            }
         }
     }
 
-    let antigravity_workspaces =
-        antigravity_workspace_index(&home.join(".gemini/antigravity-cli/history.jsonl"));
-    let antigravity_candidates =
-        collect_candidates(&home.join(".gemini/antigravity-cli/brain"), |path| {
+    for root in session_roots(
+        home,
+        &home.join(".gemini/antigravity-cli"),
+        settings.antigravity.as_ref(),
+    ) {
+        let antigravity_workspaces = antigravity_workspace_index(&root.join("history.jsonl"));
+        let antigravity_candidates = collect_candidates(&root.join("brain"), |path| {
             path.file_name().and_then(|value| value.to_str()) == Some("transcript.jsonl")
         })?;
-    truncated |= antigravity_candidates.len() > candidate_limit;
-    for candidate in antigravity_candidates.into_iter().take(candidate_limit) {
-        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-        if let Some(record) =
-            parse_antigravity_usage(&candidate, start_at_unix_ms, &antigravity_workspaces)
-        {
-            upsert_usage_record(&mut records, record);
+        truncated |= antigravity_candidates.len() > candidate_limit;
+        for candidate in antigravity_candidates.into_iter().take(candidate_limit) {
+            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+            if let Some(record) =
+                parse_antigravity_usage(&candidate, start_at_unix_ms, &antigravity_workspaces)
+            {
+                upsert_usage_record(&mut records, record);
+            }
         }
     }
 
@@ -626,6 +690,7 @@ fn scan_jsonl_vendor(
 
 fn scan_antigravity(
     path: &Path,
+    command: &str,
     max_records: usize,
     records: &mut BTreeMap<String, ExternalHistoryRecord>,
 ) {
@@ -649,7 +714,7 @@ fn scan_antigravity(
                 vendor: "antigravity",
                 session_id,
                 updated_at_unix_ms: candidate.modified_unix_ms,
-                can_resume: command_available("agy"),
+                can_resume: command_available(command),
                 cwd: sanitize_absolute_path(first_string(
                     object.get("workspace").or_else(|| object.get("cwd")),
                 )),
@@ -1253,6 +1318,15 @@ fn upsert_usage_record(
     candidate: ExternalUsageRecord,
 ) {
     let key = candidate.sample_id.clone();
+    if candidate.vendor != "claude" {
+        if records
+            .get(&key)
+            .is_none_or(|existing| candidate.timestamp_unix_ms > existing.timestamp_unix_ms)
+        {
+            records.insert(key, candidate);
+        }
+        return;
+    }
     if let Some(existing) = records.get_mut(&key) {
         existing.input_tokens = existing.input_tokens.saturating_add(candidate.input_tokens);
         existing.output_tokens = existing
@@ -1294,7 +1368,7 @@ fn upsert_record(
     let key = format!("{}:{}", candidate.vendor, candidate.session_id);
     if records
         .get(&key)
-        .is_none_or(|existing| candidate.updated_at_unix_ms >= existing.updated_at_unix_ms)
+        .is_none_or(|existing| candidate.updated_at_unix_ms > existing.updated_at_unix_ms)
     {
         records.insert(key, candidate);
     }
@@ -1345,6 +1419,9 @@ fn sanitize_text(value: Option<String>, maximum_chars: usize) -> Option<String> 
 }
 
 fn command_available(command: &str) -> bool {
+    if command.contains('/') {
+        return executable_file(Path::new(command));
+    }
     let Some(path_value) = env::var_os("PATH") else {
         return false;
     };
@@ -1352,11 +1429,96 @@ fn command_available(command: &str) -> bool {
 }
 
 fn command_available_in_path(command: &str, path_value: &OsStr) -> bool {
-    env::split_paths(path_value).any(|directory| {
-        let path = directory.join(command);
-        fs::metadata(path)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    })
+    env::split_paths(path_value).any(|directory| executable_file(&directory.join(command)))
+}
+
+fn executable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn configured_command<'a>(
+    settings: Option<&'a ExternalAgentSettings>,
+    native: &'a str,
+) -> &'a str {
+    settings
+        .and_then(|settings| settings.command.as_deref())
+        .unwrap_or(native)
+}
+
+fn validate_agent_scan_settings(
+    settings: &ExternalAgentScanSettings,
+) -> Result<(), MetadataScanError> {
+    for setting in [
+        settings.claude.as_ref(),
+        settings.codex.as_ref(),
+        settings.antigravity.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if setting
+            .command
+            .as_ref()
+            .is_some_and(|command| !valid_agent_setting_string(command, false))
+            || setting.args.len() > 256
+            || setting
+                .args
+                .iter()
+                .any(|argument| !valid_agent_setting_string(argument, true))
+            || setting.additional_session_roots.len() > 256
+            || setting.additional_session_roots.iter().any(|root| {
+                !valid_agent_setting_string(root, false)
+                    || (!root.starts_with('/') && !root.starts_with("~/"))
+            })
+        {
+            return Err(MetadataScanError::InvalidRequest);
+        }
+    }
+    Ok(())
+}
+
+fn valid_agent_setting_string(value: &str, allow_empty: bool) -> bool {
+    value.len() <= MAX_PATH_BYTES
+        && (allow_empty || !value.trim().is_empty())
+        && !value.contains(['\0', '\r', '\n'])
+}
+
+fn session_roots(
+    home: &Path,
+    default_root: &Path,
+    settings: Option<&ExternalAgentSettings>,
+) -> Vec<PathBuf> {
+    let configured = settings
+        .into_iter()
+        .flat_map(|settings| settings.additional_session_roots.iter())
+        .filter_map(|root| expand_session_root(home, root));
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_identities = BTreeSet::new();
+    [default_root.to_owned()]
+        .into_iter()
+        .chain(configured)
+        .filter_map(|root| {
+            let canonical = fs::canonicalize(root).ok()?;
+            let metadata = fs::metadata(&canonical).ok()?;
+            if !metadata.is_dir() {
+                return None;
+            }
+            let identity = (metadata.dev(), metadata.ino());
+            if !seen_paths.insert(canonical.clone()) || !seen_identities.insert(identity) {
+                return None;
+            }
+            Some(canonical)
+        })
+        .collect()
+}
+
+fn expand_session_root(home: &Path, value: &str) -> Option<PathBuf> {
+    if let Some(relative) = value.strip_prefix("~/") {
+        return Some(home.join(relative));
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
 }
 
 #[cfg(test)]
@@ -1452,6 +1614,64 @@ mod tests {
             "codex",
             temporary.path().as_os_str()
         ));
+    }
+
+    #[test]
+    fn scans_home_relative_additional_roots_and_configured_executables() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let additional = home.join("wrapper-sessions");
+        let session_dir = additional.join("2026/07/18");
+        create_dir_all(&session_dir).unwrap();
+        write(
+            session_dir.join("rollout-wrapper.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-07-18T09:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"wrapper-session\",\"cwd\":\"/srv/wrapper\"}}\n",
+                "{\"timestamp\":\"2026-07-18T09:01:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}}\n"
+            ),
+        )
+        .unwrap();
+        let default_session_dir = home.join(".codex/sessions/2026/07/18");
+        create_dir_all(&default_session_dir).unwrap();
+        write(
+            default_session_dir.join("rollout-wrapper-copy.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-07-18T08:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"wrapper-session\",\"cwd\":\"/srv/wrapper\"}}\n",
+                "{\"timestamp\":\"2026-07-18T08:01:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}}\n"
+            ),
+        )
+        .unwrap();
+        symlink(&additional, home.join("wrapper-sessions-link")).unwrap();
+        let executable = home.join("ccsxp");
+        write(&executable, "#!/bin/sh\n").unwrap();
+        set_permissions(&executable, Permissions::from_mode(0o700)).unwrap();
+        let settings = ExternalAgentScanSettings {
+            codex: Some(ExternalAgentSettings {
+                command: Some(executable.to_string_lossy().into_owned()),
+                additional_session_roots: vec![
+                    "~/wrapper-sessions".to_owned(),
+                    home.join("wrapper-sessions-link")
+                        .to_string_lossy()
+                        .into_owned(),
+                    home.join("missing").to_string_lossy().into_owned(),
+                ],
+                ..ExternalAgentSettings::default()
+            }),
+            ..ExternalAgentScanSettings::default()
+        };
+
+        let history = scan_external_history_with_settings(home, 10, &settings).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].session_id, "wrapper-session");
+        assert!(history[0].can_resume);
+
+        let usage = scan_external_usage_with_settings(home, 0, 64, &settings).unwrap();
+        assert_eq!(usage.records.len(), 1);
+        assert_eq!(
+            usage.records[0].session_id.as_deref(),
+            Some("wrapper-session")
+        );
+        assert_eq!(usage.records[0].total_tokens, 15);
     }
 
     #[test]

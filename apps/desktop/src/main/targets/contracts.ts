@@ -6,6 +6,7 @@ import type {
   WorkspaceTarget
 } from "@kmux/core";
 import type {
+  AgentScopeSettings,
   Id,
   TerminalKeyInput,
   WorkspaceWorktreeMetadata
@@ -175,6 +176,7 @@ export interface MetadataProvider<TPath extends LocalPath | RemotePath> {
 export interface HistoryProvider<TPath extends LocalPath | RemotePath> {
   refresh(request: {
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
   }): Promise<TargetHistoryRecord<TPath>[]>;
 }
 
@@ -183,6 +185,7 @@ export interface UsageProvider<TPath extends LocalPath | RemotePath> {
     startAtUnixMs: number;
     initial: boolean;
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
     historyRange?: { fromMs: number; toMs: number };
   }): Promise<TargetUsageScan<TPath>>;
   watch?(onChange: (vendor: UsageVendor) => void): () => void;
@@ -314,6 +317,7 @@ export interface LocatedTargetServiceSet {
   history: {
     refresh(request: {
       maxRecords: number;
+      agentSettings?: AgentScopeSettings;
     }): Promise<TargetHistoryRecord<LocatedPath>[]>;
   };
   usage: {
@@ -321,6 +325,7 @@ export interface LocatedTargetServiceSet {
       startAtUnixMs: number;
       initial: boolean;
       maxRecords: number;
+      agentSettings?: AgentScopeSettings;
       historyRange?: { fromMs: number; toMs: number };
     }): Promise<TargetUsageScan<LocatedPath>>;
     watch?(onChange: (vendor: UsageVendor) => void): () => void;

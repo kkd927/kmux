@@ -18,6 +18,7 @@ import {
   makeId,
   parseUint64Decimal,
   uint64,
+  type AgentScopeSettings,
   type Id,
   type RemoteBridgeResponseBody,
   type RemoteConversionPrepareRequestDto,
@@ -449,6 +450,7 @@ export class RemoteHostManager extends EventEmitter {
     targetId: Id;
     desktopInstallationId: Id;
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
   }): Promise<RemoteHistoryScan> {
     const body = await this.request({ type: "history.scan", ...options });
     const record = requireBodyRecord(body, "history.scanned");
@@ -467,6 +469,7 @@ export class RemoteHostManager extends EventEmitter {
     desktopInstallationId: Id;
     startAtUnixMs: number;
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
   }): Promise<RemoteUsageScan> {
     const body = await this.request({ type: "usage.scan", ...options });
     const record = requireBodyRecord(body, "usage.scanned");
@@ -1089,6 +1092,7 @@ export class RemoteHostManager extends EventEmitter {
           targetId: Id;
           desktopInstallationId: Id;
           maxRecords: number;
+          agentSettings?: AgentScopeSettings;
         }
       | {
           type: "usage.scan";
@@ -1096,6 +1100,7 @@ export class RemoteHostManager extends EventEmitter {
           desktopInstallationId: Id;
           startAtUnixMs: number;
           maxRecords: number;
+          agentSettings?: AgentScopeSettings;
         }
       | {
           type: "forwards.observe";

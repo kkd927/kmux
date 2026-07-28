@@ -2191,6 +2191,65 @@ describe("core reducer", () => {
     expect(settings.shortcutDefaultsPlatform).toBe("darwin");
     expect(settings.surfaceDiagnosticCaptureMode).toBe("default");
     expect(settings.diagnosticLoggingEnabled).toBe(false);
+    expect(settings.agents).toBeUndefined();
+  });
+
+  it("migrates agent settings to v5 while sanitizing each field independently", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 4,
+      agents: {
+        local: {
+          claude: {
+            command: "  ccs  ",
+            args: ["enterprise", 7, "--profile"],
+            additionalSessionRoots: [
+              "~/.ccs/shared/projects",
+              "relative/projects",
+              "/srv/claude",
+              9
+            ]
+          },
+          codex: {
+            command: "   ",
+            args: [],
+            additionalSessionRoots: []
+          },
+          unknown: { command: "ignored" }
+        },
+        ssh: {
+          codex: {
+            command: "/opt/bin/ccsxp",
+            args: "resume",
+            additionalSessionRoots: ["$HOME/sessions", "/srv/codex"]
+          }
+        },
+        container: {
+          claude: { command: "ignored" }
+        }
+      }
+    } as unknown as ReturnType<typeof createDefaultSettings>);
+
+    expect(restored.settingsVersion).toBe(5);
+    expect(restored.agents).toEqual({
+      local: {
+        claude: {
+          command: "ccs",
+          args: ["enterprise", "--profile"],
+          additionalSessionRoots: ["~/.ccs/shared/projects", "/srv/claude"]
+        },
+        codex: {
+          args: [],
+          additionalSessionRoots: []
+        }
+      },
+      ssh: {
+        codex: {
+          command: "/opt/bin/ccsxp",
+          additionalSessionRoots: ["/srv/codex"]
+        }
+      }
+    });
   });
 
   it("stores explicit diagnostic logging preferences", () => {
@@ -2387,6 +2446,21 @@ describe("core reducer", () => {
     );
     expect(restored.terminalTypography.fontSize).toBe(17);
     expect(restored.terminalTypography.lineHeight).toBe(1.35);
+  });
+
+  it("does not rerun the legacy terminal font migration for v4 settings", () => {
+    const restored = sanitizeSettings({
+      ...createDefaultSettings(),
+      settingsVersion: 4,
+      terminalTypography: {
+        ...createDefaultSettings().terminalTypography,
+        preferredTextFontFamily: legacyTerminalTextFontFamily
+      }
+    });
+
+    expect(restored.terminalTypography.preferredTextFontFamily).toBe(
+      legacyTerminalTextFontFamily
+    );
   });
 
   it("normalizes restored shortcut bindings to the matcher modifier order", () => {

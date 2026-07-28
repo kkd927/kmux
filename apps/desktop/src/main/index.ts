@@ -41,7 +41,7 @@ import { DocumentService } from "./documentService";
 import { ResourceOpenCoordinator } from "./resourceOpenCoordinator";
 import { ensureClaudeHooksInstalled } from "./claudeIntegration";
 import { createMainClipboardService } from "./clipboard";
-import { createExternalSessionIndexer } from "./externalSessions";
+import { createExternalSessionScanWorkerClient } from "./externalSessionScanWorkerClient";
 import {
   createImageAttachmentService,
   IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS,
@@ -440,12 +440,19 @@ async function bootstrap(): Promise<void> {
   let worktreeRuntime!: ReturnType<typeof createWorktreeRuntime>;
   let targetServices: TargetServiceRegistry | undefined;
   let targetHistoryRuntime: TargetHistoryRuntime | undefined;
-  const localExternalSessionIndexer = createExternalSessionIndexer({
+  const localExternalSessionIndexer = createExternalSessionScanWorkerClient({
     homeDir: userHomeDir,
     env: resolvedShellEnv.baseEnv,
     agentStorageRoots,
+    settings: savedSettings ?? undefined,
     antigravitySessionIndexPath: paths.antigravitySessionsPath
   });
+  const localAdditionalSessionRoots = {
+    claude: savedSettings?.agents?.local?.claude?.additionalSessionRoots,
+    codex: savedSettings?.agents?.local?.codex?.additionalSessionRoots,
+    antigravity:
+      savedSettings?.agents?.local?.antigravity?.additionalSessionRoots
+  };
 
   const runtime = createAppRuntime({
     paths: {
@@ -553,6 +560,7 @@ async function bootstrap(): Promise<void> {
       env: resolvedShellEnv.baseEnv,
       homeDir: userHomeDir,
       agentStorageRoots,
+      additionalSessionRoots: localAdditionalSessionRoots,
       platform: platformRuntime.platformId
     })
   });
@@ -563,6 +571,7 @@ async function bootstrap(): Promise<void> {
     historyStore: usageHistoryStore,
     homeDir: userHomeDir,
     agentStorageRoots,
+    additionalSessionRoots: localAdditionalSessionRoots,
     platform: platformRuntime.platformId,
     resolveLocalPath,
     targetServices: () => targetServices,
@@ -586,6 +595,19 @@ async function bootstrap(): Promise<void> {
 
   const initial = runtime.restoreInitialState();
   runtime.setStore(new AppStore(initial));
+  const localExternalSessionWarmup = Object.values(initial.sessions).some(
+    (session) =>
+      session.runtimeStatus.processState !== "exited" &&
+      Boolean(session.agentSessionRef?.externalKey)
+  )
+    ? Promise.resolve(
+        localExternalSessionIndexer.listExternalAgentSessions()
+      ).catch((error) => {
+        logDiagnostics("main.external-sessions.warmup-failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      })
+    : Promise.resolve();
   const desktopInstallationId = loadOrCreateDesktopInstallationId(
     paths.desktopInstallationIdentityPath
   );
@@ -1754,6 +1776,7 @@ async function bootstrap(): Promise<void> {
         });
         metadataRuntime.dispose();
         usageRuntime.shutdown();
+        localExternalSessionIndexer.close?.();
         documentService.close();
 
         await diagnosticConfiguration;
@@ -1892,6 +1915,7 @@ async function bootstrap(): Promise<void> {
   updateApplicationMenu();
   broadcastUpdaterState();
   runtime.syncWindowTitles();
+  await localExternalSessionWarmup;
   runtime.respawnRestoredSessions();
   app.on("before-quit", (event) => {
     logDiagnostics("main.before-quit", {});

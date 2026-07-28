@@ -1,8 +1,27 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveAgentStorageRoots } from "./agentStorage";
+import {
+  resolveAgentSessionRoots,
+  resolveAgentStorageRoots
+} from "./agentStorage";
+
+const cleanupPaths: string[] = [];
+
+afterEach(() => {
+  while (cleanupPaths.length > 0) {
+    rmSync(cleanupPaths.pop()!, { force: true, recursive: true });
+  }
+});
 
 describe("agent storage roots", () => {
   it("keeps Linux vendor roots at verified home-directory defaults", () => {
@@ -76,5 +95,34 @@ describe("agent storage roots", () => {
     expect(envFallbackRoots.codex.authPath).not.toBe(
       join("relative-home", ".codex", "auth.json")
     );
+  });
+
+  it("expands home roots and deduplicates roots by real path and file identity", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "kmux-agent-roots-"));
+    cleanupPaths.push(homeDir);
+    const roots = resolveAgentStorageRoots({ homeDir });
+    const sharedRoot = join(homeDir, "shared", "claude-projects");
+    const symlinkRoot = join(homeDir, "shared", "claude-link");
+    mkdirSync(roots.claude.projectsDir, { recursive: true });
+    mkdirSync(sharedRoot, { recursive: true });
+    symlinkSync(sharedRoot, symlinkRoot);
+
+    const resolved = resolveAgentSessionRoots({
+      agentStorageRoots: roots,
+      additionalSessionRoots: {
+        claude: [
+          "~/shared/claude-projects",
+          symlinkRoot,
+          roots.claude.projectsDir,
+          join(homeDir, "missing")
+        ]
+      }
+    });
+
+    expect(resolved.claude).toEqual([
+      realpathSync(roots.claude.projectsDir),
+      realpathSync(sharedRoot),
+      join(homeDir, "missing")
+    ]);
   });
 });

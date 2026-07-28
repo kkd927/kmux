@@ -8,6 +8,8 @@ import {
 } from "@kmux/ui";
 import {
   type AgentEventName,
+  type AgentScopeSettings,
+  type AgentSettings,
   type ActiveWorkspaceActivityVm,
   type ActiveWorkspacePaneTreeVm,
   type ActiveWorkspaceVm,
@@ -91,6 +93,14 @@ export type {
   TerminalSurfaceInit
 } from "./surfaces/contracts";
 import { surfaceCoreModule } from "./surfaces/registry";
+
+export {
+  agentResumeOperationArgs,
+  formatAgentCommandForShell,
+  resolveAgentCommand,
+  resolveAgentResumeCommand,
+  shellQuoteAgentCommandPart
+} from "./agentCommands";
 
 export {
   LocalPath,
@@ -260,7 +270,7 @@ const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
-export const CURRENT_SETTINGS_VERSION = 4;
+export const CURRENT_SETTINGS_VERSION = 5;
 const TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION = 4;
 
 export interface SessionSpawnEffect {
@@ -610,6 +620,7 @@ export function mergeSettings(
 
   return {
     settingsVersion: CURRENT_SETTINGS_VERSION,
+    ...mergeAgentsSettings(current, nextPatch),
     socketMode: nextPatch.socketMode ?? current.socketMode,
     warnBeforeQuit:
       typeof nextPatch.warnBeforeQuit === "boolean"
@@ -651,6 +662,83 @@ export function mergeSettings(
     ),
     shortcuts
   };
+}
+
+function mergeAgentsSettings(
+  current: KmuxSettings,
+  patch: SettingsPatch
+): Pick<KmuxSettings, "agents"> {
+  if (patch.agents === undefined) {
+    return current.agents === undefined
+      ? {}
+      : { agents: structuredClone(current.agents) };
+  }
+  const agents = sanitizeAgentsSettings(patch.agents);
+  return agents === undefined ? {} : { agents };
+}
+
+export function sanitizeAgentsSettings(
+  value: unknown
+): KmuxSettings["agents"] | undefined {
+  if (!isUnknownRecord(value)) {
+    return undefined;
+  }
+  const agents: NonNullable<KmuxSettings["agents"]> = {};
+  for (const scope of ["local", "ssh"] as const) {
+    const rawScope = value[scope];
+    if (!isUnknownRecord(rawScope)) {
+      continue;
+    }
+    const sanitizedScope: AgentScopeSettings = {};
+    for (const vendor of ["claude", "codex", "antigravity"] as const) {
+      const sanitized = sanitizeAgentSettings(rawScope[vendor]);
+      if (sanitized !== undefined) {
+        sanitizedScope[vendor] = sanitized;
+      }
+    }
+    if (Object.keys(sanitizedScope).length > 0) {
+      agents[scope] = sanitizedScope;
+    }
+  }
+  return Object.keys(agents).length > 0 ? agents : undefined;
+}
+
+function sanitizeAgentSettings(value: unknown): AgentSettings | undefined {
+  if (!isUnknownRecord(value)) {
+    return undefined;
+  }
+  const command =
+    typeof value.command === "string" && value.command.trim()
+      ? value.command.trim()
+      : undefined;
+  const args = Array.isArray(value.args)
+    ? value.args.filter(
+        (argument): argument is string => typeof argument === "string"
+      )
+    : undefined;
+  const additionalSessionRoots = Array.isArray(value.additionalSessionRoots)
+    ? value.additionalSessionRoots.flatMap((root): string[] => {
+        if (typeof root !== "string") {
+          return [];
+        }
+        const trimmed = root.trim();
+        return isSupportedAgentSessionRoot(trimmed) ? [trimmed] : [];
+      })
+    : undefined;
+  const sanitized = {
+    ...(command === undefined ? {} : { command }),
+    ...(args === undefined ? {} : { args }),
+    ...(additionalSessionRoots === undefined ? {} : { additionalSessionRoots })
+  };
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function isSupportedAgentSessionRoot(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("~/");
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function sanitizeSettings(
@@ -727,7 +815,8 @@ function migrateSettingsAfterSanitize(
   }
 
   if (
-    sourceSettingsVersion >= CURRENT_SETTINGS_VERSION &&
+    sourceSettingsVersion >=
+      TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION &&
     textFontFamily !== PREVIOUS_BUNDLED_TERMINAL_TEXT_FONT_FAMILY
   ) {
     return settings;

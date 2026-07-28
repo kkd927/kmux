@@ -93,6 +93,83 @@ describe("usage adapters", () => {
     ]);
   });
 
+  it("scans default and additional session roots while skipping missing roots", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-multi-"));
+    const additionalRoot = mkdtempSync(
+      path.join(tmpdir(), "kmux-usage-additional-")
+    );
+    cleanupPaths.push(homeDir, additionalRoot);
+    const roots = resolveAgentStorageRoots({ homeDir });
+    const timestamp = "2026-04-17T09:00:00.000Z";
+    const writeCodexUsage = (
+      root: string,
+      sessionId: string,
+      inputTokens: number
+    ) => {
+      const usageDir = path.join(root, "2026", "04", "17");
+      mkdirSync(usageDir, { recursive: true });
+      writeFileSync(
+        path.join(usageDir, `rollout-${sessionId}.jsonl`),
+        `${JSON.stringify({
+          timestamp,
+          type: "session_meta",
+          payload: { id: sessionId, cwd: `/work/${sessionId}` }
+        })}\n${JSON.stringify({
+          timestamp,
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: inputTokens,
+                output_tokens: 1,
+                total_tokens: inputTokens + 1
+              }
+            }
+          }
+        })}\n`,
+        "utf8"
+      );
+    };
+    writeCodexUsage(roots.codex.sessionsDir, "default-session", 5);
+    writeCodexUsage(additionalRoot, "additional-session", 7);
+
+    const adapter = createUsageAdapters({
+      homeDir,
+      agentStorageRoots: roots,
+      additionalSessionRoots: {
+        codex: [additionalRoot, path.join(homeDir, "missing")]
+      }
+    }).find((candidate) => candidate.vendor === "codex")!;
+    const result = await adapter.initialScan(
+      startOfLocalDay(new Date(timestamp).getTime())
+    );
+
+    expect(result.samples.map((sample) => sample.sessionId).sort()).toEqual([
+      "additional-session",
+      "default-session"
+    ]);
+    adapter.close();
+
+    writeCodexUsage(roots.codex.sessionsDir, "shared-session", 11);
+    writeCodexUsage(additionalRoot, "shared-session", 11);
+    const days = await scanUsageHistoryDays({
+      homeDir,
+      agentStorageRoots: roots,
+      additionalSessionRoots: {
+        codex: [additionalRoot, path.join(homeDir, "missing")]
+      },
+      fromMs: startOfLocalDay(new Date(timestamp).getTime()),
+      toMs: new Date(timestamp).getTime()
+    });
+
+    expect(days).toEqual([
+      expect.objectContaining({
+        totalTokens: 26
+      })
+    ]);
+  });
+
   it("ignores blank or relative usage root overrides", async () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-home-"));
     cleanupPaths.push(homeDir);

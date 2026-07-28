@@ -24,6 +24,14 @@ describe("target history runtime", () => {
       target: { kind: "ssh", targetId: "target_1" },
       cwd: "/srv/repo"
     });
+    state.settings.agents = {
+      local: {
+        codex: { command: "local-codex" }
+      },
+      ssh: {
+        codex: { command: "ccsxp", args: ["remote profile"] }
+      }
+    };
     const localHistory = vi.fn(async () => [
       {
         vendor: "codex" as const,
@@ -85,7 +93,7 @@ describe("target history runtime", () => {
         principal: { uid: 1_000, accountName: "kmux" }
       },
       cwd: "/srv/repo",
-      resumeCommandPreview: "codex resume same-session"
+      resumeCommandPreview: "ccsxp 'remote profile' resume same-session"
     });
     expect(
       runtime.resolveExternalAgentSession(snapshot.sessions[0].key)
@@ -94,7 +102,19 @@ describe("target history runtime", () => {
       cwd: "/srv/repo",
       launch: {
         cwd: "/srv/repo",
-        initialInput: "codex resume same-session\r"
+        initialInput: "ccsxp 'remote profile' resume same-session\r"
+      }
+    });
+    expect(localHistory).toHaveBeenCalledWith({
+      maxRecords: 100,
+      agentSettings: {
+        codex: { command: "local-codex" }
+      }
+    });
+    expect(remoteHistory).toHaveBeenCalledWith({
+      maxRecords: 100,
+      agentSettings: {
+        codex: { command: "ccsxp", args: ["remote profile"] }
       }
     });
     expect(

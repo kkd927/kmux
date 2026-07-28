@@ -16,8 +16,34 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BridgeConnection,
   RemoteTerminalAttachment,
+  requireAgentSettingsScanCapability,
   resolveTerminalProxyCommand
 } from "./linuxX64RemoteRuntime";
+
+describe("remote agent settings scan capability", () => {
+  it("requires an upgraded runtime only when SSH agent settings are configured", () => {
+    expect(() =>
+      requireAgentSettingsScanCapability(undefined, new Set())
+    ).not.toThrow();
+    expect(() =>
+      requireAgentSettingsScanCapability(
+        { claude: { additionalSessionRoots: ["/srv/claude"] } },
+        new Set()
+      )
+    ).toThrowError(
+      expect.objectContaining({
+        code: "upgrade-required",
+        retryable: false
+      })
+    );
+    expect(() =>
+      requireAgentSettingsScanCapability(
+        { claude: { command: "ccs" } },
+        new Set(["agents.settings-scan-v1"])
+      )
+    ).not.toThrow();
+  });
+});
 
 describe("Linux x64 remote terminal attachment", () => {
   it("uses the current proxy directly and a pinned cohort endpoint for incompatible keepers", () => {

@@ -360,7 +360,10 @@ export class RemoteHostService {
         const scan = await target.runtime.scanHistory({
           desktopInstallationId: request.desktopInstallationId,
           targetId: request.targetId,
-          maxRecords: request.maxRecords
+          maxRecords: request.maxRecords,
+          ...(request.agentSettings === undefined
+            ? {}
+            : { agentSettings: request.agentSettings })
         });
         this.respondOk(request.requestId, {
           type: "history.scanned",
@@ -375,7 +378,10 @@ export class RemoteHostService {
           desktopInstallationId: request.desktopInstallationId,
           targetId: request.targetId,
           startAtUnixMs: request.startAtUnixMs,
-          maxRecords: request.maxRecords
+          maxRecords: request.maxRecords,
+          ...(request.agentSettings === undefined
+            ? {}
+            : { agentSettings: request.agentSettings })
         });
         this.respondOk(request.requestId, {
           type: "usage.scanned",

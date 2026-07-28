@@ -25,6 +25,7 @@ import {
   makeId,
   parseUint64Decimal,
   uint64,
+  type AgentScopeSettings,
   type Id,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
@@ -71,6 +72,7 @@ const TERMINAL_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PENDING_TERMINAL_MUTATIONS = 4_096;
 const MAX_PENDING_TERMINAL_MUTATION_BYTES = 4 * 1024 * 1024;
 const MAX_CHANNEL_STDERR_TAIL_BYTES = 64 * 1024;
+const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v1";
 
 export class RemoteRuntimeError extends Error {
   constructor(
@@ -81,6 +83,23 @@ export class RemoteRuntimeError extends Error {
   ) {
     super(message, options);
     this.name = "RemoteRuntimeError";
+  }
+}
+
+export function requireAgentSettingsScanCapability(
+  settings: AgentScopeSettings | undefined,
+  capabilities: ReadonlySet<string>
+): void {
+  if (
+    settings !== undefined &&
+    Object.keys(settings).length > 0 &&
+    !capabilities.has(AGENT_SETTINGS_SCAN_CAPABILITY)
+  ) {
+    throw new RemoteRuntimeError(
+      "upgrade-required",
+      "The remote kmux runtime must be upgraded before configured agent commands or session roots can be scanned.",
+      false
+    );
   }
 }
 
@@ -202,6 +221,7 @@ export class LinuxX64RemoteRuntime {
   private bridge: BridgeConnection | undefined;
   private metadataBridge: BridgeConnection | undefined;
   private metadataBridgeOpening: Promise<BridgeConnection> | undefined;
+  private metadataCapabilities = new Set<string>();
   private readonly sftp: MuxOnlyRemoteSftpClient;
   private readonly forwards: MuxOnlyRemoteForwardManager;
 
@@ -365,6 +385,7 @@ export class LinuxX64RemoteRuntime {
     desktopInstallationId: Id;
     targetId: Id;
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
   }): Promise<RemoteHistoryScan> {
     if (
       options.targetId !== this.options.assigned.targetId ||
@@ -378,9 +399,15 @@ export class LinuxX64RemoteRuntime {
         false
       );
     }
-    const body = await (
-      await this.requireMetadataBridge()
-    ).request({ type: "history.scan", ...structuredClone(options) });
+    const bridge = await this.requireMetadataBridge();
+    requireAgentSettingsScanCapability(
+      options.agentSettings,
+      this.metadataCapabilities
+    );
+    const body = await bridge.request({
+      type: "history.scan",
+      ...structuredClone(options)
+    });
     if (body.type !== "history.scanned" || body.targetId !== options.targetId) {
       throw new RemoteRuntimeError(
         "protocol-error",
@@ -396,6 +423,7 @@ export class LinuxX64RemoteRuntime {
     targetId: Id;
     startAtUnixMs: number;
     maxRecords: number;
+    agentSettings?: AgentScopeSettings;
   }): Promise<RemoteUsageScan> {
     if (
       options.targetId !== this.options.assigned.targetId ||
@@ -411,14 +439,20 @@ export class LinuxX64RemoteRuntime {
         false
       );
     }
-    const body = await (
-      await this.requireMetadataBridge()
-    ).request({
+    const bridge = await this.requireMetadataBridge();
+    requireAgentSettingsScanCapability(
+      options.agentSettings,
+      this.metadataCapabilities
+    );
+    const body = await bridge.request({
       type: "usage.scan",
       desktopInstallationId: options.desktopInstallationId,
       targetId: options.targetId,
       startAtUnixMs: options.startAtUnixMs.toString(10),
-      maxRecords: options.maxRecords
+      maxRecords: options.maxRecords,
+      ...(options.agentSettings === undefined
+        ? {}
+        : { agentSettings: structuredClone(options.agentSettings) })
     });
     if (body.type !== "usage.scanned" || body.targetId !== options.targetId) {
       throw new RemoteRuntimeError(
@@ -774,6 +808,7 @@ export class LinuxX64RemoteRuntime {
     this.bridge = undefined;
     this.metadataBridge = undefined;
     this.metadataBridgeOpening = undefined;
+    this.metadataCapabilities.clear();
     await Promise.allSettled([
       bridge?.close(),
       metadataBridge?.close(),
@@ -873,6 +908,7 @@ export class LinuxX64RemoteRuntime {
           false
         );
       }
+      this.metadataCapabilities = new Set(hello.capabilities);
       return bridge;
     } catch (error) {
       await bridge.close().catch(() => undefined);

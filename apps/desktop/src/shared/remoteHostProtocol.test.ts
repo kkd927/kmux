@@ -275,9 +275,30 @@ describe("remote-host Phase 7 metadata request boundary", () => {
         requestId: "request_history",
         targetId: "target_1",
         desktopInstallationId: "desktop_1",
-        maxRecords: 100
+        maxRecords: 100,
+        agentSettings: {
+          claude: {
+            command: "ccs",
+            args: ["enterprise"],
+            additionalSessionRoots: [
+              "~/.ccs/shared/context-groups/default/projects"
+            ]
+          }
+        }
       })
-    ).toMatchObject({ type: "history.scan", maxRecords: 100 });
+    ).toMatchObject({
+      type: "history.scan",
+      maxRecords: 100,
+      agentSettings: {
+        claude: {
+          command: "ccs",
+          args: ["enterprise"],
+          additionalSessionRoots: [
+            "~/.ccs/shared/context-groups/default/projects"
+          ]
+        }
+      }
+    });
     expect(
       decodeRemoteHostRequest({
         type: "usage.scan",
@@ -318,6 +339,20 @@ describe("remote-host Phase 7 metadata request boundary", () => {
         maxRecords: 64
       })
     ).toThrow(/startAtUnixMs/u);
+    expect(() =>
+      decodeRemoteHostRequest({
+        type: "history.scan",
+        requestId: "request_history",
+        targetId: "target_1",
+        desktopInstallationId: "desktop_1",
+        maxRecords: 100,
+        agentSettings: {
+          claude: {
+            additionalSessionRoots: ["$HOME/projects"]
+          }
+        }
+      })
+    ).toThrow(/absolute or home-relative/u);
   });
 });
 

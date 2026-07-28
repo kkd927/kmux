@@ -12,6 +12,7 @@ import {
   IncrementalSha256,
   parseUint64Decimal,
   uint64,
+  type AgentScopeSettings,
   type Id,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
@@ -169,6 +170,7 @@ export interface RemoteHostHistoryScanRequest {
   targetId: Id;
   desktopInstallationId: Id;
   maxRecords: number;
+  agentSettings?: AgentScopeSettings;
 }
 
 export interface RemoteHostUsageScanRequest {
@@ -178,6 +180,7 @@ export interface RemoteHostUsageScanRequest {
   desktopInstallationId: Id;
   startAtUnixMs: number;
   maxRecords: number;
+  agentSettings?: AgentScopeSettings;
 }
 
 export interface RemoteHostForwardsObserveRequest {
@@ -655,7 +658,8 @@ export function decodeRemoteHostRequest(
         "requestId",
         "targetId",
         "desktopInstallationId",
-        "maxRecords"
+        "maxRecords",
+        "agentSettings"
       ]);
       return {
         type: record.type,
@@ -669,7 +673,10 @@ export function decodeRemoteHostRequest(
           record.maxRecords,
           "maxRecords",
           100
-        )
+        ),
+        ...(record.agentSettings === undefined
+          ? {}
+          : { agentSettings: decodeAgentScopeSettings(record.agentSettings) })
       };
     case "usage.scan":
       assertExactKeys(record, [
@@ -678,7 +685,8 @@ export function decodeRemoteHostRequest(
         "targetId",
         "desktopInstallationId",
         "startAtUnixMs",
-        "maxRecords"
+        "maxRecords",
+        "agentSettings"
       ]);
       return {
         type: record.type,
@@ -697,7 +705,10 @@ export function decodeRemoteHostRequest(
           record.maxRecords,
           "maxRecords",
           64
-        )
+        ),
+        ...(record.agentSettings === undefined
+          ? {}
+          : { agentSettings: decodeAgentScopeSettings(record.agentSettings) })
       };
     case "forwards.observe":
       assertExactKeys(record, [
@@ -1156,6 +1167,100 @@ function decodeProvisionalReclaim(
     protectedTransactionIds,
     now: requireTimestamp(record.now, "now")
   };
+}
+
+function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
+  const record = requireRecord(value, "agentSettings");
+  assertExactKeys(record, ["claude", "codex", "antigravity"]);
+  return Object.fromEntries(
+    (["claude", "codex", "antigravity"] as const).flatMap((vendor) => {
+      const raw = record[vendor];
+      if (raw === undefined) {
+        return [];
+      }
+      const settings = requireRecord(raw, `agentSettings.${vendor}`);
+      assertExactKeys(settings, ["command", "args", "additionalSessionRoots"]);
+      if (
+        settings.args !== undefined &&
+        (!Array.isArray(settings.args) || settings.args.length > 256)
+      ) {
+        throw new TypeError(`agentSettings.${vendor}.args is invalid`);
+      }
+      if (
+        settings.additionalSessionRoots !== undefined &&
+        (!Array.isArray(settings.additionalSessionRoots) ||
+          settings.additionalSessionRoots.length > 256)
+      ) {
+        throw new TypeError(
+          `agentSettings.${vendor}.additionalSessionRoots is invalid`
+        );
+      }
+      return [
+        [
+          vendor,
+          {
+            ...(settings.command === undefined
+              ? {}
+              : {
+                  command: requireString(
+                    settings.command,
+                    `agentSettings.${vendor}.command`,
+                    MAX_PATH_BYTES
+                  )
+                }),
+            ...(settings.args === undefined
+              ? {}
+              : {
+                  args: settings.args.map((argument) =>
+                    requireAgentSettingString(
+                      argument,
+                      `agentSettings.${vendor}.args`,
+                      MAX_PATH_BYTES,
+                      true
+                    )
+                  )
+                }),
+            ...(settings.additionalSessionRoots === undefined
+              ? {}
+              : {
+                  additionalSessionRoots: settings.additionalSessionRoots.map(
+                    (root) => {
+                      const path = requireString(
+                        root,
+                        `agentSettings.${vendor}.additionalSessionRoots`,
+                        MAX_PATH_BYTES
+                      );
+                      if (!path.startsWith("/") && !path.startsWith("~/")) {
+                        throw new TypeError(
+                          `agentSettings.${vendor}.additionalSessionRoots must contain only absolute or home-relative paths`
+                        );
+                      }
+                      return path;
+                    }
+                  )
+                })
+          }
+        ] as const
+      ];
+    })
+  );
+}
+
+function requireAgentSettingString(
+  value: unknown,
+  field: string,
+  maxBytes: number,
+  allowEmpty = false
+): string {
+  if (
+    typeof value !== "string" ||
+    (!allowEmpty && value.length === 0) ||
+    new TextEncoder().encode(value).byteLength > maxBytes ||
+    /\0/u.test(value)
+  ) {
+    throw new TypeError(`${field} must be a bounded string`);
+  }
+  return value;
 }
 
 function decodeConversionLaunch(
