@@ -3,11 +3,16 @@ export interface ReleaseNoteImage {
   absolutePath: string;
 }
 
-export interface BundledReleaseNotesSource {
-  version: string;
+export interface BundledReleaseNoteDocumentSource {
   markdown: string;
   notePath: string;
   images: ReleaseNoteImage[];
+}
+
+export interface BundledReleaseNotesSource {
+  version: string;
+  default: BundledReleaseNoteDocumentSource;
+  localized: Record<string, BundledReleaseNoteDocumentSource>;
 }
 
 export function loadBundledReleaseNotes(options: {

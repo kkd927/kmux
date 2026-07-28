@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   releaseNotesSeenStorageKey,
-  type BundledReleaseNotes,
+  selectReleaseNotes,
+  type BundledReleaseNotesCatalog,
   useReleaseNotesModal
 } from "./releaseNotes";
 
@@ -14,17 +15,85 @@ import {
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const releaseNotes: BundledReleaseNotes = {
+const releaseNotes: BundledReleaseNotesCatalog = {
   version: "1.2.0",
-  markdown: "# Release",
-  imageSources: {}
+  default: {
+    markdown: "# Default release",
+    imageSources: {}
+  },
+  localized: {
+    ko: {
+      markdown: "# 한국어 릴리즈",
+      imageSources: {}
+    }
+  }
 };
+
+describe("release note language selection", () => {
+  const document = (markdown: string) => ({
+    markdown,
+    imageSources: {}
+  });
+
+  it("matches a general language note from a regional OS preference", () => {
+    expect(selectReleaseNotes(releaseNotes, ["ko-KR"]).markdown).toBe(
+      "# 한국어 릴리즈"
+    );
+  });
+
+  it("prefers exact, script, and region matches before general language", () => {
+    const catalog: BundledReleaseNotesCatalog = {
+      version: "1.2.0",
+      default: document("default"),
+      localized: {
+        zh: document("language"),
+        "zh-CN": document("region"),
+        "zh-Hans": document("script"),
+        "pt-BR": document("exact region"),
+        pt: document("generic Portuguese")
+      }
+    };
+
+    expect(selectReleaseNotes(catalog, ["zh-Hans-CN"]).markdown).toBe("script");
+    expect(selectReleaseNotes(catalog, ["pt-BR"]).markdown).toBe(
+      "exact region"
+    );
+  });
+
+  it("checks OS preferred languages in order", () => {
+    const catalog: BundledReleaseNotesCatalog = {
+      version: "1.2.0",
+      default: document("default"),
+      localized: {
+        fr: document("French"),
+        ko: document("Korean")
+      }
+    };
+
+    expect(
+      selectReleaseNotes(catalog, ["de-DE", "fr-CA", "ko-KR"]).markdown
+    ).toBe("French");
+  });
+
+  it("normalizes casing and ignores invalid or unknown language values", () => {
+    expect(
+      selectReleaseNotes(releaseNotes, ["not_a_locale", 42, "KO-kr"]).markdown
+    ).toBe("# 한국어 릴리즈");
+    expect(selectReleaseNotes(releaseNotes, ["xx-ZZ"]).markdown).toBe(
+      "# Default release"
+    );
+    expect(selectReleaseNotes(releaseNotes, null).markdown).toBe(
+      "# Default release"
+    );
+  });
+});
 
 describe("useReleaseNotesModal", () => {
   let container: HTMLDivElement;
   let root: ReactDOMClient.Root;
   let openRequest: (() => void) | undefined;
   let stored: Map<string, string>;
+  let getPreferredSystemLanguages: () => Promise<string[]>;
   const storage = {
     getItem: vi.fn((key: string) => stored.get(key) ?? null),
     setItem: vi.fn((key: string, value: string) => {
@@ -38,19 +107,10 @@ describe("useReleaseNotesModal", () => {
     root = ReactDOMClient.createRoot(container);
     openRequest = undefined;
     stored = new Map();
+    getPreferredSystemLanguages = vi.fn(async () => ["en-US"]);
     storage.getItem.mockClear();
     storage.setItem.mockClear();
-    Object.defineProperty(window, "kmux", {
-      configurable: true,
-      value: {
-        subscribeReleaseNotesOpenRequest(listener: () => void) {
-          openRequest = listener;
-          return () => {
-            openRequest = undefined;
-          };
-        }
-      }
-    });
+    exposeKmuxBridge();
   });
 
   afterEach(() => {
@@ -59,12 +119,13 @@ describe("useReleaseNotesModal", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens unseen notes only after shell restore and remembers them on close", () => {
-    render({ shellReady: false });
+  it("opens unseen notes only after shell restore and remembers the version on close", async () => {
+    await render({ shellReady: false });
     expect(isOpen()).toBe(false);
 
-    render({ shellReady: true });
+    await render({ shellReady: true });
     expect(isOpen()).toBe(true);
+    expect(selectedMarkdown()).toBe("# Default release");
     act(() => {
       container.querySelector<HTMLButtonElement>("button")?.click();
     });
@@ -77,35 +138,76 @@ describe("useReleaseNotesModal", () => {
 
     act(() => root.unmount());
     root = ReactDOMClient.createRoot(container);
-    render({ shellReady: true });
+    getPreferredSystemLanguages = vi.fn(async () => ["ko-KR"]);
+    exposeKmuxBridge();
+    await render({ shellReady: true });
     expect(isOpen()).toBe(false);
   });
 
-  it("opens seen notes from Help after another dialog closes", () => {
-    stored.set(releaseNotesSeenStorageKey("1.2.0"), "1");
-    render({ shellReady: true, blockingDialogOpen: true });
+  it("preserves a Help request made while language selection is pending", async () => {
+    let resolveLanguages: ((languages: string[]) => void) | undefined;
+    const languages = new Promise<string[]>((resolve) => {
+      resolveLanguages = resolve;
+    });
+    getPreferredSystemLanguages = vi.fn(() => languages);
+    exposeKmuxBridge();
+
+    await render({ shellReady: true });
+    expect(isOpen()).toBe(false);
 
     act(() => openRequest?.());
     expect(isOpen()).toBe(false);
 
-    render({ shellReady: true, blockingDialogOpen: false });
+    await act(async () => {
+      resolveLanguages?.(["ko-KR"]);
+      await languages;
+    });
+    expect(isOpen()).toBe(true);
+    expect(selectedMarkdown()).toBe("# 한국어 릴리즈");
+  });
+
+  it("falls back to the default note when language lookup fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    getPreferredSystemLanguages = vi.fn(async () => {
+      throw new Error("language service unavailable");
+    });
+    exposeKmuxBridge();
+
+    await render({ shellReady: true });
+
+    expect(isOpen()).toBe(true);
+    expect(selectedMarkdown()).toBe("# Default release");
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to read preferred system languages",
+      expect.any(Error)
+    );
+  });
+
+  it("opens seen notes from Help after another dialog closes", async () => {
+    stored.set(releaseNotesSeenStorageKey("1.2.0"), "1");
+    await render({ shellReady: true, blockingDialogOpen: true });
+
+    act(() => openRequest?.());
+    expect(isOpen()).toBe(false);
+
+    await render({ shellReady: true, blockingDialogOpen: false });
     expect(isOpen()).toBe(true);
   });
 
-  it("temporarily yields a Help-opened modal to a higher-priority dialog", () => {
+  it("temporarily yields a Help-opened modal to a higher-priority dialog", async () => {
     stored.set(releaseNotesSeenStorageKey("1.2.0"), "1");
-    render({ shellReady: true });
+    await render({ shellReady: true });
     act(() => openRequest?.());
     expect(isOpen()).toBe(true);
 
-    render({ shellReady: true, blockingDialogOpen: true });
+    await render({ shellReady: true, blockingDialogOpen: true });
     expect(isOpen()).toBe(false);
 
-    render({ shellReady: true, blockingDialogOpen: false });
+    await render({ shellReady: true, blockingDialogOpen: false });
     expect(isOpen()).toBe(true);
   });
 
-  it("keeps notes dismissed in memory when storage writes fail", () => {
+  it("keeps notes dismissed in memory when storage writes fail", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const failingStorage = {
       getItem: vi.fn(() => null),
@@ -114,7 +216,7 @@ describe("useReleaseNotesModal", () => {
       })
     };
 
-    render({ shellReady: true, storage: failingStorage });
+    await render({ shellReady: true, storage: failingStorage });
     expect(isOpen()).toBe(true);
     act(() => {
       container.querySelector<HTMLButtonElement>("button")?.click();
@@ -127,7 +229,7 @@ describe("useReleaseNotesModal", () => {
     warn.mockRestore();
   });
 
-  it("keeps notes dismissed in memory when storage reads fail", () => {
+  it("keeps notes dismissed in memory when storage reads fail", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const failingStorage = {
       getItem: vi.fn(() => {
@@ -136,7 +238,7 @@ describe("useReleaseNotesModal", () => {
       setItem: vi.fn()
     };
 
-    render({ shellReady: true, storage: failingStorage });
+    await render({ shellReady: true, storage: failingStorage });
     expect(isOpen()).toBe(true);
     act(() => {
       container.querySelector<HTMLButtonElement>("button")?.click();
@@ -147,12 +249,27 @@ describe("useReleaseNotesModal", () => {
     warn.mockRestore();
   });
 
-  function render(options: {
+  function exposeKmuxBridge(): void {
+    Object.defineProperty(window, "kmux", {
+      configurable: true,
+      value: {
+        getPreferredSystemLanguages,
+        subscribeReleaseNotesOpenRequest(listener: () => void) {
+          openRequest = listener;
+          return () => {
+            openRequest = undefined;
+          };
+        }
+      }
+    });
+  }
+
+  async function render(options: {
     shellReady: boolean;
     blockingDialogOpen?: boolean;
     storage?: Pick<Storage, "getItem" | "setItem">;
-  }): void {
-    act(() => {
+  }): Promise<void> {
+    await act(async () => {
       root.render(
         <Harness
           blockingDialogOpen={options.blockingDialogOpen ?? false}
@@ -160,11 +277,17 @@ describe("useReleaseNotesModal", () => {
           storage={options.storage ?? storage}
         />
       );
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
 
   function isOpen(): boolean {
     return container.querySelector("[data-release-notes-open]") !== null;
+  }
+
+  function selectedMarkdown(): string | undefined {
+    return container.querySelector<HTMLElement>("[data-release-notes-open]")
+      ?.dataset.markdown;
   }
 
   function Harness(props: {
@@ -179,7 +302,11 @@ describe("useReleaseNotesModal", () => {
       storage: props.storage
     });
     return modal.open ? (
-      <button data-release-notes-open onClick={modal.close}>
+      <button
+        data-markdown={modal.releaseNotes?.markdown}
+        data-release-notes-open
+        onClick={modal.close}
+      >
         Close
       </button>
     ) : (

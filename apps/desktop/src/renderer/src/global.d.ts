@@ -55,6 +55,7 @@ declare global {
     __kmuxLastShellPublishAt?: number;
     kmux: {
       getPlatform(): Promise<RendererPlatformDescriptor>;
+      getPreferredSystemLanguages(): Promise<string[]>;
       getPathForFile(file: File): string;
       subscribeDocument(surfaceId: string): Promise<void>;
       unsubscribeDocument(surfaceId: string): Promise<void>;

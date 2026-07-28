@@ -66,6 +66,7 @@ import {
 
 interface IpcHandlersOptions {
   getPlatformDescriptor: () => RendererPlatformDescriptor;
+  getPreferredSystemLanguages: () => string[];
   getShellState: () => ShellStoreSnapshot;
   getWorkspaceContextView: () => WorkspaceContextView;
   getUsageView: () => UsageViewSnapshot;
@@ -190,6 +191,9 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   const clipboardService = options.clipboard ?? createMainClipboardService();
 
   ipcMain.handle("kmux:platform:get", () => options.getPlatformDescriptor());
+  ipcMain.handle("kmux:system-languages:get", () =>
+    options.getPreferredSystemLanguages()
+  );
   ipcMain.handle("kmux:shell:get", () => options.getShellState());
   ipcMain.handle("kmux:usage:get", () => options.getUsageView());
   ipcMain.handle("kmux:external-sessions:get", () =>

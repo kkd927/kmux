@@ -31,9 +31,15 @@ export function createReleaseNotesPlugin(options: {
       if (!releaseNotes) {
         return "export default null;";
       }
-      this.addWatchFile(releaseNotes.notePath);
-      for (const image of releaseNotes.images) {
-        this.addWatchFile(image.absolutePath);
+      const documents = [
+        releaseNotes.default,
+        ...Object.values(releaseNotes.localized)
+      ];
+      for (const document of documents) {
+        this.addWatchFile(document.notePath);
+        for (const image of document.images) {
+          this.addWatchFile(image.absolutePath);
+        }
       }
       return renderReleaseNotesVirtualModule(releaseNotes);
     }
@@ -46,20 +52,51 @@ export function renderReleaseNotesVirtualModule(
   if (!releaseNotes) {
     return "export default null;";
   }
-  const imports = releaseNotes.images.map(
-    (image, index) =>
-      `import releaseNoteImage${index} from ${JSON.stringify(`${image.absolutePath}?url`)};`
+
+  const imports: string[] = [];
+  let imageIndex = 0;
+  const renderDocument = (
+    document: BundledReleaseNotesSource["default"],
+    indentation: string
+  ): string[] => {
+    const imageSources = document.images.map((image) => {
+      const importName = `releaseNoteImage${imageIndex}`;
+      imageIndex += 1;
+      imports.push(
+        `import ${importName} from ${JSON.stringify(`${image.absolutePath}?url`)};`
+      );
+      return `${JSON.stringify(image.source)}: ${importName}`;
+    });
+    return [
+      `${indentation}{`,
+      `${indentation}  markdown: ${JSON.stringify(document.markdown)},`,
+      `${indentation}  imageSources: {${imageSources.join(",")}}`,
+      `${indentation}}`
+    ];
+  };
+
+  const defaultDocument = renderDocument(releaseNotes.default, "  ");
+  const localizedDocuments = Object.entries(releaseNotes.localized).flatMap(
+    ([locale, document], index, entries) => {
+      const rendered = renderDocument(document, "    ");
+      rendered[0] = `    ${JSON.stringify(locale)}: {`;
+      rendered[rendered.length - 1] =
+        `    }${index === entries.length - 1 ? "" : ","}`;
+      return rendered;
+    }
   );
-  const imageSources = releaseNotes.images.map(
-    (image, index) =>
-      `${JSON.stringify(image.source)}: releaseNoteImage${index}`
-  );
+
   return [
     ...imports,
     "const releaseNotes = {",
     `  version: ${JSON.stringify(releaseNotes.version)},`,
-    `  markdown: ${JSON.stringify(releaseNotes.markdown)},`,
-    `  imageSources: {${imageSources.join(",")}}`,
+    "  default:",
+    ...defaultDocument.map((line, index) =>
+      index === defaultDocument.length - 1 ? `${line},` : line
+    ),
+    "  localized: {",
+    ...localizedDocuments,
+    "  }",
     "};",
     "export default releaseNotes;"
   ].join("\n");

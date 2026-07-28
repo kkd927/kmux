@@ -24,9 +24,10 @@ describe("release note bundle source", () => {
     }
   });
 
-  it("selects only the exact desktop version and ignores missing or blank notes", () => {
+  it("loads the default and localized notes only for the exact desktop version", () => {
     const root = createRepository("1.2.0");
     writeNote(root, "v1.1.0.md", "# Old release");
+    writeNote(root, "v1.1.0.ko.md", "# 이전 릴리즈");
 
     expect(loadBundledReleaseNotes({ repoRoot: root })).toBeNull();
 
@@ -34,17 +35,48 @@ describe("release note bundle source", () => {
     expect(loadBundledReleaseNotes({ repoRoot: root })).toBeNull();
 
     writeNote(root, "v1.2.0.md", "# Current release\n");
+    writeNote(root, "v1.2.0.ko.md", "# 현재 릴리즈\n");
+    writeNote(root, "v1.2.0.zh-CN.md", " \n");
     expect(loadBundledReleaseNotes({ repoRoot: root })).toMatchObject({
       version: "1.2.0",
-      markdown: "# Current release\n",
-      images: []
+      default: {
+        markdown: "# Current release\n",
+        images: []
+      },
+      localized: {
+        ko: {
+          markdown: "# 현재 릴리즈\n",
+          images: []
+        }
+      }
     });
+    expect(
+      loadBundledReleaseNotes({ repoRoot: root })?.localized["zh-CN"]
+    ).toBeUndefined();
   });
 
-  it("includes only referenced current-version images", () => {
+  it("requires a non-empty default note when a translation exists", () => {
+    const missingDefaultRoot = createRepository("1.2.0");
+    writeNote(missingDefaultRoot, "v1.2.0.ko.md", "# 번역");
+
+    expect(() =>
+      loadBundledReleaseNotes({ repoRoot: missingDefaultRoot })
+    ).toThrow(/require a non-empty default/);
+
+    const blankDefaultRoot = createRepository("1.2.0");
+    writeNote(blankDefaultRoot, "v1.2.0.md", " \n");
+    writeNote(blankDefaultRoot, "v1.2.0.ko.md", "# 번역");
+
+    expect(() =>
+      loadBundledReleaseNotes({ repoRoot: blankDefaultRoot })
+    ).toThrow(/require a non-empty default/);
+  });
+
+  it("collects and validates images independently for every language", () => {
     const root = createRepository("1.2.0");
     writeImage(root, "v1.1.0/old.png");
     writeImage(root, "v1.2.0/current.webp");
+    writeImage(root, "v1.2.0/localized.png");
     writeImage(root, "v1.2.0/unreferenced.gif");
     writeNote(
       root,
@@ -57,15 +89,57 @@ describe("release note bundle source", () => {
         "[screenshot]: ./assets/v1.2.0/current.webp"
       ].join("\n")
     );
+    writeNote(
+      root,
+      "v1.2.0.ko.md",
+      "![Localized](./assets/v1.2.0/localized.png)"
+    );
 
     const releaseNotes = loadBundledReleaseNotes({ repoRoot: root });
 
-    expect(releaseNotes?.images).toHaveLength(1);
-    expect(releaseNotes?.images[0]).toMatchObject({
+    expect(releaseNotes?.default.images).toHaveLength(1);
+    expect(releaseNotes?.default.images[0]).toMatchObject({
       source: "./assets/v1.2.0/current.webp"
     });
-    expect(releaseNotes?.images[0]?.absolutePath).toMatch(
+    expect(releaseNotes?.default.images[0]?.absolutePath).toMatch(
       /\/docs\/release-notes\/assets\/v1\.2\.0\/current\.webp$/u
+    );
+    expect(releaseNotes?.localized.ko?.images).toHaveLength(1);
+    expect(releaseNotes?.localized.ko?.images[0]).toMatchObject({
+      source: "./assets/v1.2.0/localized.png"
+    });
+  });
+
+  it("applies image security validation to localized notes", () => {
+    const root = createRepository("1.2.0");
+    writeNote(root, "v1.2.0.md", "# Default");
+    writeNote(
+      root,
+      "v1.2.0.ko.md",
+      "![Invalid](https://example.com/localized.png)"
+    );
+
+    expect(() => loadBundledReleaseNotes({ repoRoot: root })).toThrow(
+      /Invalid release note image/
+    );
+  });
+
+  it("rejects invalid or duplicate normalized locale suffixes", () => {
+    const invalidRoot = createRepository("1.2.0");
+    writeNote(invalidRoot, "v1.2.0.md", "# Default");
+    writeNote(invalidRoot, "v1.2.0.en_US.md", "# Invalid");
+
+    expect(() => loadBundledReleaseNotes({ repoRoot: invalidRoot })).toThrow(
+      /Invalid release note locale suffix/
+    );
+
+    const duplicateRoot = createRepository("1.2.0");
+    writeNote(duplicateRoot, "v1.2.0.md", "# Default");
+    writeNote(duplicateRoot, "v1.2.0.he.md", "# Hebrew");
+    writeNote(duplicateRoot, "v1.2.0.iw.md", "# Legacy Hebrew");
+
+    expect(() => loadBundledReleaseNotes({ repoRoot: duplicateRoot })).toThrow(
+      /both normalize to "he"/
     );
   });
 
@@ -115,6 +189,7 @@ describe("release note bundle source", () => {
     ].join("\n");
     writeImage(root, "v1.2.0/current image.png");
     const sourcePath = writeNote(root, "v1.2.0.md", markdown);
+    writeNote(root, "v1.2.0.ko.md", "# GitHub에서 사용하지 않는 번역");
     const outputPath = path.join(root, "temporary-notes.md");
 
     expect(
@@ -135,6 +210,9 @@ describe("release note bundle source", () => {
     );
     expect(readFileSync(outputPath, "utf8")).toContain(
       "[Ordinary link](<./assets/v1.2.0/current image.png>)"
+    );
+    expect(readFileSync(outputPath, "utf8")).not.toContain(
+      "GitHub에서 사용하지 않는 번역"
     );
   });
 

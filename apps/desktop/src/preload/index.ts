@@ -101,6 +101,9 @@ const api = {
   getPlatform(): Promise<RendererPlatformDescriptor> {
     return ipcRenderer.invoke("kmux:platform:get");
   },
+  getPreferredSystemLanguages(): Promise<string[]> {
+    return ipcRenderer.invoke("kmux:system-languages:get");
+  },
   getPathForFile(file: File): string {
     return webUtils.getPathForFile(file);
   },

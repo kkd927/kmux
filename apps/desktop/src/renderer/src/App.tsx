@@ -1347,13 +1347,13 @@ export function App(): JSX.Element {
         }}
       />
       {releaseNotesModal.open &&
-      bundledReleaseNotes &&
+      releaseNotesModal.releaseNotes &&
       releaseNotesLinkSurfaceId ? (
         <Suspense fallback={null}>
           <LazyReleaseNotesModal
             colorTheme={resolvedColorTheme}
             onClose={releaseNotesModal.close}
-            releaseNotes={bundledReleaseNotes}
+            releaseNotes={releaseNotesModal.releaseNotes}
             surfaceId={releaseNotesLinkSurfaceId}
           />
         </Suspense>

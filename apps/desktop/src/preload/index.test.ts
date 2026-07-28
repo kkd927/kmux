@@ -91,6 +91,19 @@ describe("terminal stream preload bridge", () => {
     );
   });
 
+  it("gets the OS preferred UI languages through the main process", async () => {
+    mocks.invoke.mockResolvedValue(["ko-KR", "en-US"]);
+    const api = mocks.exposed.get("kmux") as {
+      getPreferredSystemLanguages(): Promise<string[]>;
+    };
+
+    await expect(api.getPreferredSystemLanguages()).resolves.toEqual([
+      "ko-KR",
+      "en-US"
+    ]);
+    expect(mocks.invoke).toHaveBeenCalledWith("kmux:system-languages:get");
+  });
+
   it("does not publish a capability without its transferred port", () => {
     const listener = mocks.listeners.get(KMUX_TERMINAL_PORT_CHANNEL);
 

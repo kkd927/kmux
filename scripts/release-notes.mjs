@@ -1,4 +1,10 @@
-import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -25,27 +31,90 @@ export function loadBundledReleaseNotes({
     );
   }
 
-  const notePath = path.join(
-    repoRoot,
-    "docs",
-    "release-notes",
-    `v${version}.md`
-  );
-  let markdown;
+  const noteDirectory = path.join(repoRoot, "docs", "release-notes");
+  const defaultFileName = `v${version}.md`;
+  const localizedFilePrefix = `v${version}.`;
+  let fileNames;
   try {
-    markdown = readFileSync(notePath, "utf8");
+    fileNames = readdirSync(noteDirectory);
   } catch (error) {
     if (error?.code === "ENOENT") {
       return null;
     }
     throw error;
   }
-  if (!markdown.trim()) {
+
+  const localizedSources = [];
+  const normalizedLocales = new Map();
+  for (const fileName of fileNames.sort()) {
+    if (
+      fileName === defaultFileName ||
+      !fileName.startsWith(localizedFilePrefix) ||
+      !fileName.endsWith(".md")
+    ) {
+      continue;
+    }
+    const locale = fileName.slice(localizedFilePrefix.length, -".md".length);
+    const normalizedLocale = normalizeReleaseNoteLocale(locale, fileName);
+    const duplicateFileName = normalizedLocales.get(normalizedLocale);
+    if (duplicateFileName) {
+      throw new Error(
+        `Release note locales ${JSON.stringify(duplicateFileName)} and ${JSON.stringify(fileName)} both normalize to ${JSON.stringify(normalizedLocale)}.`
+      );
+    }
+    normalizedLocales.set(normalizedLocale, fileName);
+    localizedSources.push({
+      locale: normalizedLocale,
+      notePath: path.join(noteDirectory, fileName)
+    });
+  }
+
+  const defaultNotePath = path.join(noteDirectory, defaultFileName);
+  let defaultMarkdown = null;
+  try {
+    defaultMarkdown = readFileSync(defaultNotePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  if (!defaultMarkdown?.trim()) {
+    if (localizedSources.length > 0) {
+      throw new Error(
+        `Localized release notes for v${version} require a non-empty default ${defaultFileName}.`
+      );
+    }
     return null;
+  }
+
+  const defaultReleaseNotes = loadReleaseNoteDocument({
+    markdown: defaultMarkdown,
+    notePath: defaultNotePath,
+    version
+  });
+  const localized = {};
+  for (const source of localizedSources) {
+    const markdown = readFileSync(source.notePath, "utf8");
+    if (!markdown.trim()) {
+      continue;
+    }
+    localized[source.locale] = loadReleaseNoteDocument({
+      markdown,
+      notePath: source.notePath,
+      version
+    });
   }
 
   return {
     version,
+    default: defaultReleaseNotes,
+    localized
+  };
+}
+
+function loadReleaseNoteDocument({ markdown, notePath, version }) {
+  return {
     markdown,
     notePath,
     images: resolveReleaseNoteImages({
@@ -54,6 +123,23 @@ export function loadBundledReleaseNotes({
       version
     })
   };
+}
+
+function normalizeReleaseNoteLocale(locale, fileName) {
+  let normalized;
+  try {
+    [normalized] = Intl.getCanonicalLocales(locale);
+  } catch {
+    throw new Error(
+      `Invalid release note locale suffix in ${JSON.stringify(fileName)}.`
+    );
+  }
+  if (!normalized) {
+    throw new Error(
+      `Invalid release note locale suffix in ${JSON.stringify(fileName)}.`
+    );
+  }
+  return normalized;
 }
 
 export function resolveReleaseNoteImages({ markdown, notePath, version }) {
@@ -203,12 +289,15 @@ export function prepareGitHubReleaseNotes({
   if (!releaseNotes) {
     return false;
   }
-  const rewritten = rewriteReleaseNoteImagesForGitHub(releaseNotes.markdown, {
-    notePath: releaseNotes.notePath,
-    repository,
-    tag,
-    version
-  });
+  const rewritten = rewriteReleaseNoteImagesForGitHub(
+    releaseNotes.default.markdown,
+    {
+      notePath: releaseNotes.default.notePath,
+      repository,
+      tag,
+      version
+    }
+  );
   writeFileSync(outputPath, rewritten, "utf8");
   return true;
 }

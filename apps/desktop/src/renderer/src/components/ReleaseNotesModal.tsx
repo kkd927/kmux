@@ -2,7 +2,7 @@ import { useCallback, useRef } from "react";
 
 import type { ColorTheme } from "@kmux/ui";
 
-import type { BundledReleaseNotes } from "../releaseNotes";
+import type { SelectedReleaseNotes } from "../releaseNotes";
 import { MarkdownRenderedContent } from "../surfaces/MarkdownRenderedContent";
 import styles from "../styles/App.module.css";
 import "../styles/MarkdownSurface.css";
@@ -10,7 +10,7 @@ import "../styles/MarkdownSurface.css";
 interface ReleaseNotesModalProps {
   colorTheme: ColorTheme;
   onClose: () => void;
-  releaseNotes: BundledReleaseNotes;
+  releaseNotes: SelectedReleaseNotes;
   surfaceId: string;
 }
 

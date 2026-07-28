@@ -1302,6 +1302,7 @@ async function bootstrap(): Promise<void> {
         diagnosticLogPath: settingsDiagnosticsLogPath
       }
     }),
+    getPreferredSystemLanguages: () => app.getPreferredSystemLanguages(),
     getShellState: runtime.getShellState,
     getWorkspaceContextView: () => {
       const shellState = runtime.getShellState();

@@ -85,15 +85,27 @@ The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes t
 
 ## Release Notes
 
-Write desktop release notes in
-`docs/release-notes/v<apps/desktop package version>.md`. The filename must
-match the version exactly, including prerelease suffixes such as
-`v1.2.0-alpha.1.md`. A missing or whitespace-only file intentionally produces
-no first-run dialog and no Help → Release Notes item, so a patch version can
-ship without copying an earlier note.
+Write the default English desktop release notes in
+`docs/release-notes/v<apps/desktop package version>.md`. Add translations with
+a BCP 47 locale suffix, such as `v1.2.0.ko.md` or, when a regional distinction
+is needed, `v1.2.0.zh-CN.md`. The version must match exactly, including
+prerelease suffixes such as `v1.2.0-alpha.1.md`.
 
-The desktop build bundles only the matching Markdown file and the images it
-references. Keep release-note images under the matching version directory:
+At runtime, kmux checks the OS preferred UI languages in order. For each
+language, it tries the exact tag, language and script, language and region,
+then the general language. For example, `zh-Hans-CN` tries `zh-Hans-CN`,
+`zh-Hans`, `zh-CN`, and `zh`. If no translation matches or the OS language
+lookup fails, kmux shows the default English document.
+
+A translation always requires a non-empty default document. A localized file
+without `v<version>.md`, or with a whitespace-only default, fails the build.
+Whitespace-only translations are ignored. If there is no localized file and
+the default is missing or whitespace-only, the build intentionally produces
+no first-run dialog and no Help → Release Notes item.
+
+The desktop build bundles the matching default document, every non-empty
+translation, and the images each document references. Keep release-note images
+under the matching version directory:
 
 ```text
 docs/release-notes/assets/v1.2.0/example.webp
@@ -110,10 +122,10 @@ matching version directory, SVG, and external, `data:`, or `file:` image URLs
 fail the build. Versioned notes and assets may remain in the repository; older
 versions are not bundled into the current app.
 
-The GitHub release workflow uses the same Markdown. It writes a temporary copy
-whose local image paths point to the tagged files on
-`raw.githubusercontent.com`, while leaving the source file unchanged and
-retaining GitHub's generated release notes.
+The GitHub release workflow uses only the default
+`v<version>.md`. It writes a temporary copy whose local image paths point to
+the tagged files on `raw.githubusercontent.com`, while leaving the source file
+unchanged and retaining GitHub's generated release notes.
 
 ## Smoothness Profiling
 

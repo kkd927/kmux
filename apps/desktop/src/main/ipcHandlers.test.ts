@@ -65,6 +65,7 @@ import { registerIpcHandlers } from "./ipcHandlers";
 function registerTestHandlers(options: {
   snapshot: ExternalAgentSessionsSnapshot;
   resumeResult: ExternalAgentSessionResumeResult;
+  getPreferredSystemLanguages?: () => string[];
   attachmentResult?: CreateImageAttachmentsResult;
   attachTerminalStream?: (
     event: IpcMainInvokeEvent,
@@ -125,6 +126,8 @@ function registerTestHandlers(options: {
         supportsDock: true,
         keepProcessAliveWhenLastWindowCloses: true
       }),
+    getPreferredSystemLanguages:
+      options.getPreferredSystemLanguages ?? vi.fn(() => ["en-US"]),
     getShellState: vi.fn(),
     getWorkspaceContextView: vi.fn(),
     getUsageView: vi.fn(),
@@ -584,6 +587,29 @@ describe("ipc handlers", () => {
         keepProcessAliveWhenLastWindowCloses: true
       }
     });
+  });
+
+  it("returns the current OS preferred UI languages", async () => {
+    const getPreferredSystemLanguages = vi.fn(() => ["ko-KR", "en-US"]);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      getPreferredSystemLanguages
+    });
+
+    const handler = handlers.get("kmux:system-languages:get");
+
+    await expect(Promise.resolve(handler?.({}))).resolves.toEqual([
+      "ko-KR",
+      "en-US"
+    ]);
+    expect(getPreferredSystemLanguages).toHaveBeenCalledOnce();
   });
 
   it("passes the invoking frame through when requesting a terminal stream", () => {
