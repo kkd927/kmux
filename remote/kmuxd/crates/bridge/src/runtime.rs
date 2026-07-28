@@ -14,10 +14,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use kmux_compat::{
     AgentScopeSettings, AgentSettings, AttachAuthorizedResponse, AttachmentAccess, BridgeRequest,
     BridgeRequestEnvelope, BridgeResponseBody, BridgeResponseEnvelope, BridgeResponseStatus,
-    CohortProxyRequest, CohortProxyResponse, ConversionPreparedResponse, ConversionPromotedResponse,
-    DesiredForwardResponse, EventsAcknowledgedResponse, EventsReplayedResponse,
-    ForwardsObservedResponse, GitInspectedResponse, GitRepositoryResponse, HelloResponse,
-    HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse,
+    CohortProxyRequest, CohortProxyResponse, ConversionPreparedResponse,
+    ConversionPromotedResponse, DesiredForwardResponse, EventsAcknowledgedResponse,
+    EventsReplayedResponse, ForwardsObservedResponse, GitInspectedResponse, GitRepositoryResponse,
+    HelloResponse, HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse,
     ObservedWorkspace, OperationResult, PortsInspectedResponse, ProvisionalReclaimedResponse,
     REMOTE_PROTOCOL_VERSION, RemoteAuthority, RemoteControlError, RemoteFrameKind,
     RemoteHistoryRecord, RemoteOperationIntent, RemoteOperationPayload, RemotePersistenceLevel,
@@ -40,8 +40,8 @@ use kmux_keeper::{
     write_session_descriptor,
 };
 use kmux_metadata::{
-    scan_external_history_with_settings, scan_external_usage_with_settings,
-    ExternalAgentScanSettings, ExternalAgentSettings,
+    ExternalAgentScanSettings, ExternalAgentSettings, scan_external_history_with_settings,
+    scan_external_usage_with_settings,
 };
 use kmux_platform::{
     current_authenticated_home, current_authenticated_principal, effective_uid, spawn_detached,

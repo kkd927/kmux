@@ -177,7 +177,11 @@ pub fn scan_external_history_with_settings(
         )?;
     }
     let claude_command = configured_command(settings.claude.as_ref(), "claude");
-    for root in session_roots(home, &home.join(".claude/projects"), settings.claude.as_ref()) {
+    for root in session_roots(
+        home,
+        &home.join(".claude/projects"),
+        settings.claude.as_ref(),
+    ) {
         scan_jsonl_vendor(
             "claude",
             claude_command,
@@ -1437,10 +1441,7 @@ fn executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-fn configured_command<'a>(
-    settings: Option<&'a ExternalAgentSettings>,
-    native: &'a str,
-) -> &'a str {
+fn configured_command<'a>(settings: Option<&'a ExternalAgentSettings>, native: &'a str) -> &'a str {
     settings
         .and_then(|settings| settings.command.as_deref())
         .unwrap_or(native)
