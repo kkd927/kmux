@@ -208,6 +208,7 @@ export interface RemoteTerminalAttachReady {
   keeperGeneration: Id;
   attachmentId: Id;
   writerLeaseId?: Id;
+  title?: string;
   checkpointAvailable: boolean;
   cols: number;
   rows: number;
@@ -1611,6 +1612,7 @@ export class RemoteTerminalAttachment {
           ...(control.writerLeaseId === undefined
             ? {}
             : { writerLeaseId: control.writerLeaseId }),
+          ...(control.title === undefined ? {} : { title: control.title }),
           checkpointAvailable: control.checkpointAvailable,
           cols: control.cols,
           rows: control.rows,

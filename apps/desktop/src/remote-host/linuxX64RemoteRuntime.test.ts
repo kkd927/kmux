@@ -83,12 +83,14 @@ describe("Linux x64 remote terminal attachment", () => {
     );
     child.sendControl(
       attachReady({
+        title: "devbox:~/project",
         replayFromSequence: "5",
         liveStartsAfterSequence: "4"
       })
     );
     await expect(attachment.ready).resolves.toMatchObject({
-      replayFromSequence: 5n
+      replayFromSequence: 5n,
+      title: "devbox:~/project"
     });
     child.sendMutation({
       kind: "output",
@@ -509,6 +511,7 @@ function response(requestId: string, body: unknown) {
 function attachReady(
   overrides: Partial<{
     writerLeaseId: string;
+    title: string;
     checkpointAvailable: boolean;
     cols: number;
     rows: number;

@@ -347,7 +347,7 @@ export interface SshAskpassResponseRequest {
 export interface SshWorkspaceConversionRequest {
   workspaceId: Id;
   targetId: Id;
-  connectionName: string;
+  initialWorkspaceName: string;
   defaultCwd: string;
   launch?: {
     cwd?: string;

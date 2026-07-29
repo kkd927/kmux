@@ -168,7 +168,8 @@ describe("terminal data plane host validation", () => {
       resumedFromSequence: u(4),
       sequence: u(8),
       cols: 120,
-      rows: 40
+      rows: 40,
+      title: "devbox:~/project"
     };
 
     expect(validateTerminalDataPlaneHostMessage(cold)).toEqual({
@@ -178,6 +179,12 @@ describe("terminal data plane host validation", () => {
     expect(validateTerminalDataPlaneHostMessage(warm)).toEqual({
       ok: true,
       value: warm
+    });
+    expect(
+      validateTerminalDataPlaneHostMessage({ ...warm, title: "" })
+    ).toEqual({
+      ok: false,
+      error: "attached.title must not be empty"
     });
 
     const emptyCheckpoint: TerminalDataPlaneHostMessage = {

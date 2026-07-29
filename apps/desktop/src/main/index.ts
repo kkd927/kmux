@@ -1451,6 +1451,7 @@ async function bootstrap(): Promise<void> {
         ...error
       });
     },
+    reportTerminalTitle: terminalBridge.reportTerminalTitle,
     snapshotSurface: terminalBridge.snapshotSurface,
     sendText: terminalBridge.sendText,
     sendKeyInput: terminalBridge.sendKeyInput,

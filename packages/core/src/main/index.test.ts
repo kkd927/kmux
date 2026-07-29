@@ -62,7 +62,7 @@ describe("Main-only SSH workspace replacement patch", () => {
     const patch = createSshWorkspaceReplacementPatch(state, {
       workspaceId,
       targetId: "target_1",
-      connectionName: "devbox",
+      initialWorkspaceName: "kmux@devbox",
       defaultCwd: "/srv/project",
       paneId: "pane_converted",
       nodeId: "node_converted",
@@ -107,6 +107,10 @@ describe("Main-only SSH workspace replacement patch", () => {
       }
     });
     expect(state.sessions.session_converted.launch.shell).toBeUndefined();
+    expect(state.surfaces.surface_converted).toMatchObject({
+      title: "new terminal",
+      titleLocked: false
+    });
     expect(state.sessions.session_converted.shellInputReady).toBe(true);
     expect(
       encodeLocatedPathDto(state.sessions.session_converted.launch.cwd)
@@ -127,7 +131,7 @@ describe("Main-only SSH workspace replacement patch", () => {
     const patch = createSshWorkspaceReplacementPatch(state, {
       workspaceId,
       targetId: "target_1",
-      connectionName: "devbox",
+      initialWorkspaceName: "kmux@devbox",
       defaultCwd: "/srv/project",
       paneId: "pane_converted",
       nodeId: "node_converted",
@@ -164,7 +168,7 @@ describe("Main-only SSH workspace addition patch", () => {
       sourceWorkspaceId,
       workspaceId: "workspace_remote",
       targetId: "target_1",
-      connectionName: "devbox",
+      initialWorkspaceName: "kmux@devbox",
       defaultCwd: "/srv/project",
       paneId: "pane_remote",
       nodeId: "node_remote",
@@ -179,9 +183,13 @@ describe("Main-only SSH workspace addition patch", () => {
     expect(applySshWorkspaceAdditionPatch(state, patch).applied).toBe(true);
     expect(state.workspaces[sourceWorkspaceId]).toEqual(sourceBefore);
     expect(state.workspaces.workspace_remote).toMatchObject({
-      name: "SSH: devbox",
+      name: "kmux@devbox",
       location: { target: { kind: "ssh", targetId: "target_1" } },
       activePaneId: "pane_remote"
+    });
+    expect(state.surfaces.surface_remote).toMatchObject({
+      title: "new terminal",
+      titleLocked: false
     });
     expect(state.sessions.session_remote).toMatchObject({
       surfaceId: "surface_remote",
@@ -212,7 +220,7 @@ describe("Main-only SSH workspace addition patch", () => {
       sourceWorkspaceId,
       workspaceId: "workspace_remote",
       targetId: "target_1",
-      connectionName: "devbox",
+      initialWorkspaceName: "kmux@devbox",
       defaultCwd: "/srv/project",
       paneId: "pane_remote",
       nodeId: "node_remote",

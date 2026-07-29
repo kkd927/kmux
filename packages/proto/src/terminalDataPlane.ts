@@ -1,7 +1,7 @@
 import type { Id, TerminalKeyInput } from "./index";
 import { UINT64_MAX, type Uint64 } from "./uint64";
 
-export const TERMINAL_DATA_PLANE_PROTOCOL_VERSION = 3 as const;
+export const TERMINAL_DATA_PLANE_PROTOCOL_VERSION = 4 as const;
 export const TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES = 128 * 1024;
 export const TERMINAL_DATA_PLANE_MAX_CREDIT_BYTES =
   TERMINAL_DATA_PLANE_INITIAL_CREDIT_BYTES;
@@ -190,6 +190,7 @@ export type TerminalDataPlaneHostMessage =
       sequence: Uint64;
       cols: number;
       rows: number;
+      title?: string;
     })
   | (TerminalDataPlaneHostEnvelope & {
       type: "checkpoint:begin";
@@ -376,7 +377,7 @@ export function validateTerminalDataPlaneHostMessage(
     case "attached": {
       const shapeError = validateMessageShape(
         message,
-        ["mode", "resumedFromSequence", "sequence", "cols", "rows"],
+        ["mode", "resumedFromSequence", "sequence", "cols", "rows", "title"],
         true
       );
       if (shapeError) return invalid(shapeError);
@@ -391,6 +392,14 @@ export function validateTerminalDataPlaneHostMessage(
       const dimensionError = validateDimensions(message.cols, message.rows);
       if (resumedError || sequenceError || dimensionError) {
         return invalid(resumedError ?? sequenceError ?? dimensionError ?? "");
+      }
+      if (message.title !== undefined) {
+        const titleError = validateBoundedString(
+          message.title,
+          "attached.title",
+          TERMINAL_DATA_PLANE_MAX_METADATA_STRING_BYTES
+        );
+        if (titleError) return invalid(titleError);
       }
       if (
         (message.resumedFromSequence as bigint) > (message.sequence as bigint)

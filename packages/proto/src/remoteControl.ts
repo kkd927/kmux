@@ -429,6 +429,7 @@ export type RemoteKeeperControlMessage =
       keeperGeneration: Id;
       attachmentId: Id;
       writerLeaseId?: Id;
+      title?: string;
       checkpointAvailable: boolean;
       cols: number;
       rows: number;
@@ -527,6 +528,7 @@ export function decodeRemoteKeeperControlMessage(
         "keeperGeneration",
         "attachmentId",
         "writerLeaseId",
+        "title",
         "checkpointAvailable",
         "cols",
         "rows",
@@ -547,6 +549,9 @@ export function decodeRemoteKeeperControlMessage(
           : {
               writerLeaseId: requireId(record.writerLeaseId, "writerLeaseId")
             }),
+        ...(record.title === undefined
+          ? {}
+          : { title: requireString(record.title, "title", 4 * 1024) }),
         checkpointAvailable: requireBoolean(
           record.checkpointAvailable,
           "checkpointAvailable"

@@ -274,7 +274,7 @@ export interface SshWorkspaceAdditionPatchDto {
 export interface CreateSshWorkspaceReplacementPatchOptions {
   workspaceId: Id;
   targetId: Id;
-  connectionName: string;
+  initialWorkspaceName: string;
   defaultCwd: string;
   paneId: Id;
   nodeId: Id;
@@ -322,17 +322,15 @@ export function createSshWorkspaceReplacementPatch(
       "workspace conversion requires a local source workspace"
     );
   }
-  const connectionName = requireConversionText(
-    options.connectionName,
-    "connectionName",
+  const initialWorkspaceName = requireConversionText(
+    options.initialWorkspaceName,
+    "initialWorkspaceName",
     4 * 1024
   );
   const target = { kind: "ssh" as const, targetId: options.targetId };
   const cwd = locatedPathForTarget(target, options.launch.cwd);
-  const workspaceName = source.nameLocked
-    ? source.name
-    : `SSH: ${connectionName}`;
-  const title = options.launch.title?.trim() || workspaceName;
+  const workspaceName = source.nameLocked ? source.name : initialWorkspaceName;
+  const title = options.launch.title?.trim() || "new terminal";
   const graph = workspaceGraphIds(state, source.id);
   const notificationIdsToRemove = state.notifications
     .filter((notification) => notification.workspaceId === source.id)
@@ -475,9 +473,9 @@ export function createSshWorkspaceAdditionPatch(
       "SSH workspace creation source window changed"
     );
   }
-  const connectionName = requireConversionText(
-    options.connectionName,
-    "connectionName",
+  const initialWorkspaceName = requireConversionText(
+    options.initialWorkspaceName,
+    "initialWorkspaceName",
     4 * 1024
   );
   const graphIds = [
@@ -499,8 +497,8 @@ export function createSshWorkspaceAdditionPatch(
   }
   const target = { kind: "ssh" as const, targetId: options.targetId };
   const cwd = locatedPathForTarget(target, options.launch.cwd);
-  const workspaceName = `SSH: ${connectionName}`;
-  const title = options.launch.title?.trim() || workspaceName;
+  const workspaceName = initialWorkspaceName;
+  const title = options.launch.title?.trim() || "new terminal";
   const additionState = decodeAppStateDto(encodeAppStateDto(state));
   additionState.workspaces[options.workspaceId] = {
     id: options.workspaceId,

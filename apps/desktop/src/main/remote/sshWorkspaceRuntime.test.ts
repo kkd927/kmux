@@ -85,7 +85,7 @@ describe("SSH workspace runtime", () => {
       workspaceId: sourceWorkspaceId,
       targetId: "target_1",
       effectiveConnectionPolicyHash: "a".repeat(64),
-      connectionName: "dev-gpu",
+      initialWorkspaceName: "kmux@dev-gpu",
       defaultCwd: "/home/kmux",
       continuation: "convert",
       launch: {

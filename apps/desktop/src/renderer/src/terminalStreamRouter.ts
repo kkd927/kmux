@@ -60,6 +60,7 @@ export interface TerminalStreamResume {
   availableSequence: Uint64;
   cols: number;
   rows: number;
+  title?: string;
 }
 
 export interface TerminalResumeCursor {
@@ -963,7 +964,8 @@ export class TerminalStreamRouter {
       resumedFromSequence: message.resumedFromSequence,
       availableSequence: message.sequence,
       cols: message.cols,
-      rows: message.rows
+      rows: message.rows,
+      ...(message.title === undefined ? {} : { title: message.title })
     });
     if (attachment.closed) {
       return;

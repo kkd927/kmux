@@ -728,6 +728,10 @@
   color: var(--text-primary);
 }
 
+.workspaceTitlePrefix {
+  font-weight: 500;
+}
+
 .workspaceSummaryRow {
   display: flex;
   position: relative;

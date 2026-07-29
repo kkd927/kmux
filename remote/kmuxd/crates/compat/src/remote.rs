@@ -1306,6 +1306,8 @@ pub enum KeeperControlMessage {
         attachment_id: String,
         #[serde(rename = "writerLeaseId", skip_serializing_if = "Option::is_none")]
         writer_lease_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
         #[serde(rename = "checkpointAvailable")]
         checkpoint_available: bool,
         cols: u16,

@@ -37,7 +37,11 @@ describe("conversion WAL", () => {
     const store = createConversionWalStore(root);
     const patch = replacementPatch();
     const preparing = store.begin(preparingRecord(patch));
-    expect(preparing.state).toBe("preparing");
+    expect(preparing).toMatchObject({
+      version: 2,
+      state: "preparing",
+      initialWorkspaceName: "kmux@devbox"
+    });
 
     const remoteCreated = store.recordRemoteCreated("conversion_1", {
       remoteSnapshotHash: "b".repeat(64),
@@ -162,7 +166,7 @@ function preparingRecord(
         runtimeEpoch: "epoch_local"
       }
     ],
-    connectionName: "devbox",
+    initialWorkspaceName: "kmux@devbox",
     defaultCwd: "/srv/project",
     launch: { cwd: "/srv/project", shell: "/bin/sh" },
     preparedAt: "2026-07-18T00:00:00.000Z"
@@ -222,7 +226,7 @@ function replacementPatch() {
   return createSshWorkspaceReplacementPatch(state, {
     workspaceId: "workspace_1",
     targetId: "target_1",
-    connectionName: "devbox",
+    initialWorkspaceName: "kmux@devbox",
     defaultCwd: "/srv/project",
     paneId: "pane_remote",
     nodeId: "node_remote",

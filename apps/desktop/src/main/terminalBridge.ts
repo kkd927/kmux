@@ -26,6 +26,9 @@ interface TerminalBridgeOptions {
   isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
 }
 const TITLE_METADATA_COALESCE_MS = 1000;
+const MAX_TERMINAL_TITLE_BYTES = 4 * 1024;
+const MAX_TERMINAL_TITLE_REPORT_ID_BYTES = 512;
+const terminalTitleTextEncoder = new TextEncoder();
 type CodexInputAttentionMatch = {
   reason:
     | "plan-mode-prompt"
@@ -49,6 +52,7 @@ export interface TerminalBridge {
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
   ): Promise<SurfaceSnapshotPayload | null>;
+  reportTerminalTitle(report: unknown): void;
   handlePtyEvent(event: PtyEvent): void;
 }
 
@@ -231,6 +235,31 @@ export function createTerminalBridge(
     if (payload.title !== undefined) {
       queueTitleMetadata(payload.surfaceId, payload.sessionId, payload.title);
     }
+  }
+
+  function reportTerminalTitle(report: unknown): void {
+    const normalized = normalizeTerminalTitleReport(report);
+    if (!normalized) {
+      return;
+    }
+    const state = options.getState();
+    const surface = state.surfaces[normalized.surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    if (
+      !surface ||
+      workspace?.location.target.kind !== "ssh" ||
+      terminalSessionForSurface(state, normalized.surfaceId)?.id !==
+        normalized.sessionId ||
+      surface.titleLocked
+    ) {
+      return;
+    }
+    queueTitleMetadata(
+      normalized.surfaceId,
+      normalized.sessionId,
+      normalized.title
+    );
   }
 
   function queueTitleMetadata(
@@ -612,8 +641,62 @@ export function createTerminalBridge(
     sendKey,
     sendKeyInput,
     snapshotSurface,
+    reportTerminalTitle,
     handlePtyEvent
   };
+}
+
+function normalizeTerminalTitleReport(value: unknown): {
+  surfaceId: Id;
+  sessionId: Id;
+  title: string;
+} | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("terminal title report must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "sessionId" ||
+    keys[1] !== "surfaceId" ||
+    keys[2] !== "title"
+  ) {
+    throw new TypeError("terminal title report has unexpected fields");
+  }
+  const surfaceId = normalizeTerminalTitleReportId(
+    record.surfaceId,
+    "surfaceId"
+  );
+  const sessionId = normalizeTerminalTitleReportId(
+    record.sessionId,
+    "sessionId"
+  );
+  if (typeof record.title !== "string") {
+    throw new TypeError("terminal title report title is invalid");
+  }
+  const title = record.title.trim();
+  if (
+    !title ||
+    terminalTitleTextEncoder.encode(record.title).byteLength >
+      MAX_TERMINAL_TITLE_BYTES
+  ) {
+    return null;
+  }
+  return { surfaceId, sessionId, title };
+}
+
+function normalizeTerminalTitleReportId(value: unknown, field: string): Id {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    terminalTitleTextEncoder.encode(value).byteLength >
+      MAX_TERMINAL_TITLE_REPORT_ID_BYTES ||
+    /\p{Cc}/u.test(value)
+  ) {
+    throw new TypeError(`terminal title report ${field} is invalid`);
+  }
+  return value;
 }
 
 function matchCodexInputAttentionForVendor(

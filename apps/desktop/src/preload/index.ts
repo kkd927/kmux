@@ -264,6 +264,13 @@ const api = {
   reportTerminalStreamError(report: TerminalStreamErrorReport): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal-stream:report-error", report);
   },
+  reportTerminalTitle(report: {
+    surfaceId: string;
+    sessionId: string;
+    title: string;
+  }): Promise<void> {
+    return ipcRenderer.invoke("kmux:terminal:title", report);
+  },
   sendText(surfaceId: string, text: string): Promise<void> {
     return ipcRenderer.invoke("kmux:terminal:text", surfaceId, text);
   },

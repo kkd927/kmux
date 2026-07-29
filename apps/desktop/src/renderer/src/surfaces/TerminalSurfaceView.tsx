@@ -629,8 +629,11 @@ export function TerminalSurfaceView(
   copyModeSelectAllShortcutRef.current = props.copyModeSelectAllShortcut;
   onToggleSearchRef.current = props.onToggleSearch;
   searchDecorationsRef.current = terminalSearchDecorations;
-  createTerminalBundleRef.current = (surfaceId: string): TerminalBundle =>
-    createTerminalBundle({
+  createTerminalBundleRef.current = (surfaceId: string): TerminalBundle => {
+    const sessionId =
+      props.surfaces.find((surface) => surface.id === surfaceId)?.content
+        .sessionId ?? null;
+    const bundle = createTerminalBundle({
       createTerminal: () =>
         new Terminal({
           allowProposedApi: true,
@@ -664,6 +667,13 @@ export function TerminalSurfaceView(
         });
       }
     });
+    if (sessionId) {
+      bundle.terminal.onTitleChange((title) => {
+        reportTerminalTitle(surfaceId, sessionId, title);
+      });
+    }
+    return bundle;
+  };
 
   function rejectPendingDirectResizeAcknowledgements(
     attachId: string | null,
@@ -772,6 +782,18 @@ export function TerminalSurfaceView(
       return activeSurfaceRef.current.content.sessionId;
     }
     return surfaceSessionIdsRef.current.get(surfaceId) ?? null;
+  }
+
+  function reportTerminalTitle(
+    surfaceId: string,
+    sessionId: string,
+    title: string
+  ): void {
+    void window.kmux
+      .reportTerminalTitle({ surfaceId, sessionId, title })
+      .catch((error) => {
+        console.warn("Failed to report terminal title", error);
+      });
   }
 
   function readyAttachIdForSurface(surfaceId: string): string | null {
@@ -2737,6 +2759,9 @@ export function TerminalSurfaceView(
             updateTerminalDiagnostics(surfaceId, currentTerminal, {
               attachAvailableSequence: metadata.sequence
             });
+            if (metadata.title !== undefined) {
+              reportTerminalTitle(surfaceId, sessionId, metadata.title);
+            }
             return result;
           }
         };
@@ -2776,6 +2801,9 @@ export function TerminalSurfaceView(
           renderedSequence: resume.resumedFromSequence,
           attachAvailableSequence: resume.availableSequence
         });
+        if (resume.title !== undefined) {
+          reportTerminalTitle(surfaceId, sessionId, resume.title);
+        }
       },
       outputReceived(delta, receivedAt) {
         if (terminalDiagnosticsEnabledRef.current && receivedAt !== null) {

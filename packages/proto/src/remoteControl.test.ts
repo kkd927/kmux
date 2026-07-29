@@ -637,6 +637,7 @@ describe("remote control v1", () => {
           keeperGeneration: "keeper_1",
           attachmentId: "attachment_1",
           writerLeaseId: "lease_1",
+          title: "devbox:~/project",
           checkpointAvailable: false,
           cols: 120,
           rows: 40,
@@ -649,8 +650,58 @@ describe("remote control v1", () => {
       type: "attach.ready",
       cols: 120,
       rows: 40,
+      title: "devbox:~/project",
       replayFromSequence: "8"
     });
+
+    expect(
+      decodeRemoteKeeperControlMessage(
+        encodeRemoteControlJson({
+          type: "attach.ready",
+          keeperGeneration: "keeper_1",
+          attachmentId: "attachment_1",
+          checkpointAvailable: false,
+          cols: 120,
+          rows: 40,
+          earliestAvailableSequence: "1",
+          replayFromSequence: "8",
+          liveStartsAfterSequence: "9"
+        })
+      )
+    ).not.toHaveProperty("title");
+
+    expect(() =>
+      decodeRemoteKeeperControlMessage(
+        encodeRemoteControlJson({
+          type: "attach.ready",
+          keeperGeneration: "keeper_1",
+          attachmentId: "attachment_1",
+          title: "",
+          checkpointAvailable: false,
+          cols: 120,
+          rows: 40,
+          earliestAvailableSequence: "1",
+          replayFromSequence: "8",
+          liveStartsAfterSequence: "9"
+        })
+      )
+    ).toThrow(/title/u);
+    expect(() =>
+      decodeRemoteKeeperControlMessage(
+        encodeRemoteControlJson({
+          type: "attach.ready",
+          keeperGeneration: "keeper_1",
+          attachmentId: "attachment_1",
+          title: "가".repeat(1_366),
+          checkpointAvailable: false,
+          cols: 120,
+          rows: 40,
+          earliestAvailableSequence: "1",
+          replayFromSequence: "8",
+          liveStartsAfterSequence: "9"
+        })
+      )
+    ).toThrow(/title/u);
 
     expect(
       decodeRemoteKeeperControlMessage(

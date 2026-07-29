@@ -7,7 +7,7 @@ import {
   useRef
 } from "react";
 
-import type {ActiveWorkspaceActivityVm, WorkspaceRowVm} from "@kmux/proto";
+import type { ActiveWorkspaceActivityVm, WorkspaceRowVm } from "@kmux/proto";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
@@ -141,7 +141,14 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar(
                       <WorkspaceCard
                         row={row}
                         displayName={
-                          row.nameLocked ? row.name : "new workspace"
+                          row.targetKind === "ssh"
+                            ? row.name
+                            : row.nameLocked
+                              ? row.name
+                              : "new workspace"
+                        }
+                        displayPrefix={
+                          row.targetKind === "ssh" ? "ssh: " : undefined
                         }
                         shortcutHint={
                           props.showWorkspaceShortcutHints && item.index < 9
@@ -243,7 +250,8 @@ function areWorkspaceSidebarPropsEqual(
     left.sidebarElementRef === right.sidebarElementRef &&
     left.showWorkspaceShortcutHints === right.showWorkspaceShortcutHints &&
     left.editingWorkspaceId === right.editingWorkspaceId &&
-    left.workspaceContextMenuWorkspaceId === right.workspaceContextMenuWorkspaceId &&
+    left.workspaceContextMenuWorkspaceId ===
+      right.workspaceContextMenuWorkspaceId &&
     left.dragWorkspaceId === right.dragWorkspaceId &&
     left.dropWorkspaceId === right.dropWorkspaceId &&
     left.dropPosition === right.dropPosition &&

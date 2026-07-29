@@ -85,6 +85,104 @@ describe("terminal bridge", () => {
     expect(dispatchAppAction).not.toHaveBeenCalled();
   });
 
+  it("accepts bounded titles only for the current unlocked SSH session", () => {
+    const state = createInitialState();
+    const localSurfaceId = Object.keys(state.surfaces)[0];
+    const remote = addSshWorkspace(state);
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    bridge.reportTerminalTitle({
+      surfaceId: localSurfaceId,
+      sessionId: requireTerminalSurfaceContent(state.surfaces[localSurfaceId])
+        .sessionId,
+      title: "local title"
+    });
+    bridge.reportTerminalTitle({
+      surfaceId: remote.surfaceId,
+      sessionId: "session_stale",
+      title: "stale title"
+    });
+    state.surfaces[remote.surfaceId].titleLocked = true;
+    bridge.reportTerminalTitle({
+      surfaceId: remote.surfaceId,
+      sessionId: remote.sessionId,
+      title: "locked title"
+    });
+    expect(dispatchAppAction).not.toHaveBeenCalled();
+
+    state.surfaces[remote.surfaceId].titleLocked = false;
+    bridge.reportTerminalTitle({
+      surfaceId: remote.surfaceId,
+      sessionId: remote.sessionId,
+      title: "  devbox:~/project  "
+    });
+    expect(dispatchAppAction).toHaveBeenCalledWith({
+      type: "surface.metadata",
+      surfaceId: remote.surfaceId,
+      title: "devbox:~/project"
+    });
+
+    expect(() =>
+      bridge.reportTerminalTitle({
+        surfaceId: remote.surfaceId,
+        sessionId: remote.sessionId,
+        title: "valid",
+        unexpected: true
+      })
+    ).toThrow(/unexpected fields/u);
+    expect(() =>
+      bridge.reportTerminalTitle({
+        surfaceId: remote.surfaceId,
+        sessionId: remote.sessionId,
+        title: "가".repeat(1_366)
+      })
+    ).not.toThrow();
+    expect(dispatchAppAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces rapid SSH title reports to the latest value", () => {
+    vi.useFakeTimers();
+    const state = createInitialState();
+    const remote = addSshWorkspace(state);
+    const dispatchAppAction = vi.fn((action: AppAction) => {
+      applyAction(state, action);
+    });
+    const bridge = createTerminalBridge({
+      getState: () => state,
+      dispatchAppAction,
+      getPtyHost: () => null
+    });
+
+    for (const title of ["first", "second", "latest"]) {
+      bridge.reportTerminalTitle({
+        surfaceId: remote.surfaceId,
+        sessionId: remote.sessionId,
+        title
+      });
+    }
+
+    expect(dispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId: remote.surfaceId,
+      title: "first"
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(dispatchAppAction).toHaveBeenCalledTimes(2);
+    expect(dispatchAppAction).toHaveBeenLastCalledWith({
+      type: "surface.metadata",
+      surfaceId: remote.surfaceId,
+      title: "latest"
+    });
+  });
+
   it("routes BEL events to the terminal bell action", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -1480,3 +1578,28 @@ describe("terminal bridge", () => {
     );
   });
 });
+
+function addSshWorkspace(state: ReturnType<typeof createInitialState>): {
+  surfaceId: string;
+  sessionId: string;
+} {
+  const existingWorkspaceIds = new Set(Object.keys(state.workspaces));
+  applyAction(state, {
+    type: "workspace.create",
+    target: { kind: "ssh", targetId: "target_1" },
+    cwd: "/srv/app"
+  });
+  const workspaceId = Object.keys(state.workspaces).find(
+    (id) => !existingWorkspaceIds.has(id)
+  );
+  if (!workspaceId) {
+    throw new Error("SSH workspace was not created");
+  }
+  const pane = state.panes[state.workspaces[workspaceId].activePaneId];
+  const surfaceId = pane.activeSurfaceId;
+  return {
+    surfaceId,
+    sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+      .sessionId
+  };
+}

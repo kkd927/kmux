@@ -48,7 +48,7 @@ describe("transactional workspace conversion", () => {
       workspaceId: "workspace_1",
       targetId: "target_1",
       effectiveConnectionPolicyHash: policyHash,
-      connectionName: "dev",
+      initialWorkspaceName: "kmux@dev",
       defaultCwd: "/srv/app",
       launch: {
         shell: "/bin/sh",
@@ -74,6 +74,27 @@ describe("transactional workspace conversion", () => {
     ).toThrow(/lowercase SHA-256/u);
   });
 
+  it("uses the v2 workspace name field in the remote snapshot identity", async () => {
+    const fixture = createFixture(sandbox);
+
+    await fixture.createRuntime().start({
+      workspaceId: fixture.workspaceId,
+      targetId: "target_1",
+      effectiveConnectionPolicyHash: policyHash,
+      initialWorkspaceName: "kmux@devbox",
+      defaultCwd: "/srv/project"
+    });
+
+    const remoteSnapshot = JSON.parse(
+      fixture.remote.remoteSnapshot ?? "null"
+    ) as Record<string, unknown> | null;
+    expect(remoteSnapshot).toMatchObject({
+      version: 2,
+      initialWorkspaceName: "kmux@devbox"
+    });
+    expect(remoteSnapshot).not.toHaveProperty("connectionName");
+  });
+
   for (const faultPoint of FAULT_POINTS) {
     it(`recovers the same transaction after forced termination at ${faultPoint}`, async () => {
       const fixture = createFixture(sandbox);
@@ -90,7 +111,7 @@ describe("transactional workspace conversion", () => {
           workspaceId: fixture.workspaceId,
           targetId: "target_1",
           effectiveConnectionPolicyHash: policyHash,
-          connectionName: "devbox",
+          initialWorkspaceName: "kmux@devbox",
           defaultCwd: "/srv/project",
           launch: { shell: "/bin/sh" }
         })
@@ -119,7 +140,7 @@ describe("transactional workspace conversion", () => {
         fixture.currentState().workspaces[fixture.workspaceId].location.target
       ).toEqual({ kind: "ssh", targetId: "target_1" });
       expect(fixture.currentState().workspaces[fixture.workspaceId].name).toBe(
-        "SSH: devbox"
+        "kmux@devbox"
       );
       expect(Object.keys(fixture.currentState().sessions)).toHaveLength(1);
       expect(fixture.wal.get("conversion_1")?.state).toBe("cleanup-complete");
@@ -136,7 +157,7 @@ describe("transactional workspace conversion", () => {
         workspaceId: fixture.workspaceId,
         targetId: "target_1",
         effectiveConnectionPolicyHash: policyHash,
-        connectionName: "devbox",
+        initialWorkspaceName: "kmux@devbox",
         defaultCwd: "/srv/project"
       })
     ).rejects.toThrow(/prepare failure/u);
@@ -162,7 +183,7 @@ describe("transactional workspace conversion", () => {
           workspaceId: fixture.workspaceId,
           targetId: "target_1",
           effectiveConnectionPolicyHash: policyHash,
-          connectionName: "devbox",
+          initialWorkspaceName: "kmux@devbox",
           defaultCwd: "/srv/project",
           continuation: "create",
           launch: { shell: "/bin/sh" }
@@ -180,7 +201,7 @@ describe("transactional workspace conversion", () => {
     expect(createdWorkspaceId).not.toBe(fixture.workspaceId);
     expect(fixture.currentState().workspaces[createdWorkspaceId]).toMatchObject(
       {
-        name: "SSH: devbox",
+        name: "kmux@devbox",
         location: { target: { kind: "ssh", targetId: "target_1" } }
       }
     );
@@ -201,7 +222,7 @@ describe("transactional workspace conversion", () => {
         workspaceId: fixture.workspaceId,
         targetId: "target_1",
         effectiveConnectionPolicyHash: policyHash,
-        connectionName: "devbox",
+        initialWorkspaceName: "kmux@devbox",
         defaultCwd: "/srv/project",
         continuation: "create"
       })
@@ -220,7 +241,7 @@ describe("transactional workspace conversion", () => {
         workspaceId: fixture.workspaceId,
         targetId: "target_1",
         effectiveConnectionPolicyHash: policyHash,
-        connectionName: "devbox",
+        initialWorkspaceName: "kmux@devbox",
         defaultCwd: "/srv/project"
       })
     ).rejects.toThrow(/without a fenced local runtime generation/u);
@@ -241,7 +262,7 @@ describe("transactional workspace conversion", () => {
           workspaceId: fixture.workspaceId,
           targetId: "target_1",
           effectiveConnectionPolicyHash: policyHash,
-          connectionName: "devbox",
+          initialWorkspaceName: "kmux@devbox",
           defaultCwd: "/srv/project"
         })
     ).rejects.toThrow(/injected admission crash/u);
@@ -251,7 +272,7 @@ describe("transactional workspace conversion", () => {
         workspaceId: fixture.workspaceId,
         targetId: "target_1",
         effectiveConnectionPolicyHash: policyHash,
-        connectionName: "other",
+        initialWorkspaceName: "kmux@other",
         defaultCwd: "/srv/other"
       })
     ).rejects.toThrow(/unfinished transaction/u);
@@ -268,7 +289,7 @@ describe("transactional workspace conversion", () => {
         workspaceId: fixture.workspaceId,
         targetId: "target_1",
         effectiveConnectionPolicyHash: policyHash,
-        connectionName: "devbox",
+        initialWorkspaceName: "kmux@devbox",
         defaultCwd: "/srv/project"
       })
     ).rejects.toThrow(/connection policy changed/u);
@@ -289,7 +310,7 @@ describe("transactional workspace conversion", () => {
           workspaceId: fixture.workspaceId,
           targetId: "target_1",
           effectiveConnectionPolicyHash: policyHash,
-          connectionName: "devbox",
+          initialWorkspaceName: "kmux@devbox",
           defaultCwd: "/srv/project"
         })
     ).rejects.toThrow(/injected crash/u);
@@ -378,6 +399,7 @@ class FakeConversionRemote implements ConversionRemoteGateway {
   state: "absent" | "provisional" | "committed" = "absent";
   createdKeeperCount = 0;
   failPrepare = false;
+  remoteSnapshot?: string;
   private transactionId?: string;
   private snapshotHash?: string;
 
@@ -387,11 +409,13 @@ class FakeConversionRemote implements ConversionRemoteGateway {
       this.state = "provisional";
       this.transactionId = request.record.transactionId;
       this.snapshotHash = request.remoteSnapshotHash;
+      this.remoteSnapshot = request.remoteSnapshot;
       this.createdKeeperCount += 1;
     }
     if (
       this.transactionId !== request.record.transactionId ||
-      this.snapshotHash !== request.remoteSnapshotHash
+      this.snapshotHash !== request.remoteSnapshotHash ||
+      this.remoteSnapshot !== request.remoteSnapshot
     ) {
       throw new Error("fake remote idempotency conflict");
     }

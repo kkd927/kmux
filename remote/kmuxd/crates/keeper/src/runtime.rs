@@ -630,6 +630,7 @@ impl Drop for AttachmentRegistration {
 
 struct AttachSnapshot {
     writer_lease_id: Option<String>,
+    title: Option<String>,
     cols: u16,
     rows: u16,
     earliest_available_sequence: u64,
@@ -1106,6 +1107,15 @@ pub fn run_keeper_server(
 
 fn keeper_launch_env(env: Option<&BTreeMap<String, String>>) -> BTreeMap<String, String> {
     let mut resolved = env.cloned().unwrap_or_default();
+    resolved
+        .entry("TERM".to_owned())
+        .or_insert_with(|| "xterm-256color".to_owned());
+    resolved
+        .entry("COLORTERM".to_owned())
+        .or_insert_with(|| "truecolor".to_owned());
+    resolved
+        .entry("TERM_PROGRAM".to_owned())
+        .or_insert_with(|| "kmux".to_owned());
     if let Some(bin_directory) = resolved.get("KMUX_AGENT_BIN_DIR").cloned() {
         let inherited_path = resolved
             .get("PATH")
@@ -1664,6 +1674,7 @@ fn owner_loop(
                     subscribers.insert(attachment_id.clone(), Subscriber { outbound, closed });
                     let _ = response.send(Ok(AttachSnapshot {
                         writer_lease_id,
+                        title: side_effect_scanner.title().map(str::to_owned),
                         cols: size.cols,
                         rows: size.rows,
                         earliest_available_sequence: earliest,
@@ -4376,6 +4387,7 @@ fn handle_attachment(
         keeper_generation: descriptor.keeper_generation.clone(),
         attachment_id: request.attachment_id.clone(),
         writer_lease_id: snapshot.writer_lease_id,
+        title: snapshot.title,
         checkpoint_available: snapshot.checkpoint.is_some(),
         cols: snapshot.cols,
         rows: snapshot.rows,
@@ -5355,8 +5367,41 @@ mod tests {
             Some("preserved")
         );
         assert_eq!(
+            spawned.get("TERM").map(String::as_str),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            spawned.get("COLORTERM").map(String::as_str),
+            Some("truecolor")
+        );
+        assert_eq!(
+            spawned.get("TERM_PROGRAM").map(String::as_str),
+            Some("kmux")
+        );
+        assert_eq!(
             descriptor_env.get("PATH").map(String::as_str),
             Some("/custom/bin:/usr/bin")
+        );
+        assert!(!descriptor_env.contains_key("TERM"));
+    }
+
+    #[test]
+    fn keeper_preserves_explicit_terminal_capabilities() {
+        let descriptor_env = BTreeMap::from([
+            ("TERM".to_owned(), "screen-256color".to_owned()),
+            ("COLORTERM".to_owned(), "24bit".to_owned()),
+            ("TERM_PROGRAM".to_owned(), "custom-terminal".to_owned()),
+        ]);
+
+        let spawned = keeper_launch_env(Some(&descriptor_env));
+        assert_eq!(
+            spawned.get("TERM").map(String::as_str),
+            Some("screen-256color")
+        );
+        assert_eq!(spawned.get("COLORTERM").map(String::as_str), Some("24bit"));
+        assert_eq!(
+            spawned.get("TERM_PROGRAM").map(String::as_str),
+            Some("custom-terminal")
         );
     }
 

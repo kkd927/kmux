@@ -103,6 +103,7 @@ vi.mock("@xterm/addon-web-links", () => ({
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => {
     let onDataListener: ((data: string) => void) | undefined;
+    let onTitleChangeListener: ((title: string) => void) | undefined;
     let compositionStartIndex = 0;
     let compositionActive = false;
     const cell = {
@@ -208,6 +209,13 @@ vi.mock("@xterm/xterm", () => ({
         onDataListener?.(data);
       }),
       onBinary: vi.fn(() => ({ dispose: vi.fn() })),
+      onTitleChange: vi.fn((listener: (title: string) => void) => {
+        onTitleChangeListener = listener;
+        return { dispose: vi.fn() };
+      }),
+      _emitTitleChange(title: string) {
+        onTitleChangeListener?.(title);
+      },
       onRender: vi.fn(() => ({ dispose: vi.fn() })),
       onWriteParsed: vi.fn(() => ({ dispose: vi.fn() })),
       onScroll: vi.fn(() => ({ dispose: vi.fn() })),
@@ -446,6 +454,7 @@ function sendCheckpoint(
     cols?: number;
     rows?: number;
     cwdRanges?: Array<{ startLine: number; endLine: number; cwd: string }>;
+    title?: string;
   } = {}
 ): void {
   const data = overrides.data ?? "";
@@ -471,7 +480,8 @@ function sendCheckpoint(
       rows: overrides.rows ?? 40,
       ...(overrides.cwdRanges === undefined
         ? {}
-        : { cwdRanges: overrides.cwdRanges })
+        : { cwdRanges: overrides.cwdRanges }),
+      ...(overrides.title === undefined ? {} : { title: overrides.title })
     },
     totalBytes: bytes.byteLength
   });
@@ -647,6 +657,7 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       showSurfaceContextMenu: vi.fn(async () => {}),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
       reportTerminalStreamError: vi.fn(async () => {}),
+      reportTerminalTitle: vi.fn(async () => {}),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
     };
     container = document.createElement("div");
@@ -758,8 +769,15 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       reset: ReturnType<typeof vi.fn>;
       dispose: ReturnType<typeof vi.fn>;
       onData: ReturnType<typeof vi.fn>;
+      _emitTitleChange(title: string): void;
     };
     oldTerminal.write("old-visible");
+    oldTerminal._emitTitleChange("initial live title");
+    expect(window.kmux.reportTerminalTitle).toHaveBeenCalledWith({
+      surfaceId: "surface_1",
+      sessionId: "session_surface_1",
+      title: "initial live title"
+    });
     terminalBufferText = "";
     expect(port.sent[0]).toMatchObject({
       type: "attach",
@@ -778,7 +796,10 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       .mockImplementation(() => {});
     try {
       await act(async () => {
-        sendCheckpoint({ grant, port }, 0, { data: "snapshot-v2" });
+        sendCheckpoint({ grant, port }, 0, {
+          data: "snapshot-v2",
+          title: "attach title"
+        });
         await flushMicrotasks();
       });
 
@@ -787,6 +808,7 @@ describe("TerminalSurfaceView visibility cleanup", () => {
         onData: { mock: { calls: Array<[(data: string) => void]> } };
         onBinary: { mock: { calls: Array<[(data: string) => void]> } };
         onRender: { mock: { calls: Array<[() => void]> } };
+        _emitTitleChange(title: string): void;
       };
       expect(vi.mocked(Terminal)).toHaveBeenCalledTimes(2);
       expect(oldTerminal._bufferText).toBe("old-visible");
@@ -812,9 +834,20 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       expect(
         oldTerminal.onData.mock.results[0]?.value.dispose
       ).toHaveBeenCalledOnce();
+      expect(window.kmux.reportTerminalTitle).toHaveBeenCalledWith({
+        surfaceId: "surface_1",
+        sessionId: "session_surface_1",
+        title: "attach title"
+      });
 
       stagedTerminal.onData.mock.calls[0]?.[0]("text-v2");
       stagedTerminal.onBinary.mock.calls[0]?.[0]("\u0001");
+      stagedTerminal._emitTitleChange("live title");
+      expect(window.kmux.reportTerminalTitle).toHaveBeenCalledWith({
+        surfaceId: "surface_1",
+        sessionId: "session_surface_1",
+        title: "live title"
+      });
       stagedTerminal.onRender.mock.calls.at(-1)?.[0]();
       const wrapper = container.querySelector<HTMLElement>(
         "[data-testid='terminal-surface_1']"

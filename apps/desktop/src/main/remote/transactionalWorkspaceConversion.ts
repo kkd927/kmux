@@ -45,7 +45,7 @@ export interface StartWorkspaceConversionRequest {
   workspaceId: Id;
   targetId: Id;
   effectiveConnectionPolicyHash: string;
-  connectionName: string;
+  initialWorkspaceName: string;
   defaultCwd: string;
   continuation?: "convert" | "create";
   launch?: {
@@ -65,7 +65,7 @@ export function decodeStartWorkspaceConversionRequest(
     "workspaceId",
     "targetId",
     "effectiveConnectionPolicyHash",
-    "connectionName",
+    "initialWorkspaceName",
     "defaultCwd",
     "continuation",
     "launch"
@@ -84,9 +84,9 @@ export function decodeStartWorkspaceConversionRequest(
     effectiveConnectionPolicyHash: requirePolicyHash(
       record.effectiveConnectionPolicyHash
     ),
-    connectionName: requireConversionRequestText(
-      record.connectionName,
-      "connectionName",
+    initialWorkspaceName: requireConversionRequestText(
+      record.initialWorkspaceName,
+      "initialWorkspaceName",
       4 * 1024
     ),
     defaultCwd: requireConversionRequestText(
@@ -393,7 +393,7 @@ export function createTransactionalWorkspaceConversionRuntime(
           pinned: workspace.pinned
         },
         cleanupSet,
-        connectionName: request.connectionName,
+        initialWorkspaceName: request.initialWorkspaceName,
         defaultCwd: request.defaultCwd,
         launch,
         preparedAt: now()
@@ -447,7 +447,7 @@ function createPatch(record: ConversionRemoteCreatedRecord, state: AppState) {
   const ids = conversionIds(record.transactionId);
   const common = {
     targetId: record.workspaceResourceKey.targetId,
-    connectionName: record.connectionName,
+    initialWorkspaceName: record.initialWorkspaceName,
     defaultCwd: record.defaultCwd,
     paneId: ids.paneId,
     nodeId: ids.nodeId,
@@ -554,14 +554,14 @@ function conversionIds(transactionId: Id): {
 
 function buildRemoteSnapshot(record: ConversionPreparingRecord): string {
   return canonicalJson({
-    version: 1,
+    version: 2,
     continuation: record.continuation,
     transactionId: record.transactionId,
     workspaceCreateOperationId: record.workspaceCreateOperationId,
     sessionCreateOperationId: record.sessionCreateOperationId,
     workspaceResourceKey: record.workspaceResourceKey,
     sessionResourceKey: record.sessionResourceKey,
-    connectionName: record.connectionName,
+    initialWorkspaceName: record.initialWorkspaceName,
     defaultCwd: record.defaultCwd,
     launch: record.launch
   });

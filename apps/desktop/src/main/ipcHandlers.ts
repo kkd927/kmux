@@ -114,6 +114,7 @@ interface IpcHandlersOptions {
     expectedSessionId: Id
   ) => TerminalStreamAttachResult;
   reportTerminalStreamError: (report: TerminalStreamErrorReport) => void;
+  reportTerminalTitle: (report: unknown) => void;
   snapshotSurface: (
     surfaceId: Id,
     options?: SurfaceSnapshotOptions
@@ -383,6 +384,10 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       options.reportTerminalStreamError(normalized);
     }
   );
+  ipcMain.handle("kmux:terminal:title", (event, report: unknown) => {
+    assertTrustedMainFrame(event, "terminal title report");
+    options.reportTerminalTitle(report);
+  });
   ipcMain.handle(
     "kmux:snapshot-surface",
     async (

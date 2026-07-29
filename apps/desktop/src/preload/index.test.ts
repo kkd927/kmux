@@ -422,6 +422,21 @@ describe("terminal stream preload bridge", () => {
     );
   });
 
+  it("reports session-scoped terminal titles through the dedicated IPC channel", async () => {
+    const report = {
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      title: "devbox:~/project"
+    };
+    mocks.invoke.mockResolvedValue(undefined);
+    const api = mocks.exposed.get("kmux") as {
+      reportTerminalTitle(value: typeof report): Promise<void>;
+    };
+
+    await expect(api.reportTerminalTitle(report)).resolves.toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledWith("kmux:terminal:title", report);
+  });
+
   it("exposes diagnostics log clearing without accepting a renderer path", async () => {
     mocks.invoke.mockResolvedValue(true);
     const api = mocks.exposed.get("kmux") as {

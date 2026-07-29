@@ -115,6 +115,11 @@ declare global {
       reportTerminalStreamError(
         report: TerminalStreamErrorReport
       ): Promise<void>;
+      reportTerminalTitle(report: {
+        surfaceId: string;
+        sessionId: string;
+        title: string;
+      }): Promise<void>;
       sendText(surfaceId: string, text: string): Promise<void>;
       sendKey(surfaceId: string, input: TerminalKeyInput): Promise<void>;
       openExternalUrl(surfaceId: string, url: string): Promise<void>;

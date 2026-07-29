@@ -159,12 +159,13 @@ export function createSshWorkspaceRuntime(options: {
       );
       const defaultCwd =
         connected.profile.defaultRemoteCwd ?? connected.verification.remoteHome;
+      const initialWorkspaceName = `${connected.binding.authority.authenticatedPrincipal.accountName}@${connected.profile.name}`;
       const record = await options.lifecycle.startWorkspaceConversion({
         workspaceId: openRequest.sourceWorkspaceId,
         targetId: connected.binding.id,
         effectiveConnectionPolicyHash:
           connected.binding.locator.effectiveConnectionPolicyHash,
-        connectionName: connected.profile.name,
+        initialWorkspaceName,
         defaultCwd,
         continuation: openRequest.continuation,
         launch: {

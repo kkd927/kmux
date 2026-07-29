@@ -330,7 +330,8 @@ export class RemoteTerminalDataPlaneAdapter {
       resumedFromSequence: message.resumeFromSequence,
       sequence: ready.liveStartsAfterSequence,
       cols: ready.cols,
-      rows: ready.rows
+      rows: ready.rows,
+      ...(ready.title === undefined ? {} : { title: ready.title })
     });
     this.readyForMutations = true;
     this.scheduleMutationPump();
@@ -381,7 +382,8 @@ export class RemoteTerminalDataPlaneAdapter {
         session: this.options.session,
         sequence,
         cols: transfer.metadata.cols,
-        rows: transfer.metadata.rows
+        rows: transfer.metadata.rows,
+        ...(ready.title === undefined ? {} : { title: ready.title })
       },
       totalBytes
     });
@@ -409,7 +411,8 @@ export class RemoteTerminalDataPlaneAdapter {
         session: this.options.session,
         sequence,
         cols: ready.cols,
-        rows: ready.rows
+        rows: ready.rows,
+        ...(ready.title === undefined ? {} : { title: ready.title })
       },
       totalBytes: 0
     });

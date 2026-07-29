@@ -63,7 +63,12 @@ describe("remote terminal data-plane adapter", () => {
     ]);
     expect(port.sent[0]).toMatchObject({
       type: "checkpoint:begin",
-      metadata: { sequence: 2n, cols: 80, rows: 24 },
+      metadata: {
+        sequence: 2n,
+        cols: 80,
+        rows: 24,
+        title: "devbox:~/project"
+      },
       totalBytes: checkpointBytes.byteLength
     });
 
@@ -178,7 +183,8 @@ describe("remote terminal data-plane adapter", () => {
       resumedFromSequence: 4n,
       sequence: 6n,
       cols: 80,
-      rows: 24
+      rows: 24,
+      title: "devbox:~/project"
     });
 
     attachment.pushMutation({
@@ -285,7 +291,12 @@ describe("remote terminal data-plane adapter", () => {
       {
         type: "checkpoint:begin",
         totalBytes: 0,
-        metadata: { sequence: 6n, cols: 80, rows: 24 }
+        metadata: {
+          sequence: 6n,
+          cols: 80,
+          rows: 24,
+          title: "devbox:~/project"
+        }
       },
       {
         type: "checkpoint:end",
@@ -545,6 +556,7 @@ function attachReady(
     keeperGeneration: "keeper_1",
     attachmentId: "remote_attachment_1",
     writerLeaseId: "lease_1",
+    title: "devbox:~/project",
     checkpointAvailable: false,
     cols: 80,
     rows: 24,

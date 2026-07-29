@@ -1141,14 +1141,16 @@ describe("TerminalStreamRouter", () => {
       resumedFromSequence: u(7),
       sequence: u(9),
       cols: 100,
-      rows: 30
+      rows: 30,
+      title: "devbox:~/project"
     });
     await vi.waitFor(() => expect(harness.registration.sequence).toBe(u(7)));
     expect(harness.sink.applyResume).toHaveBeenCalledWith({
       resumedFromSequence: u(7),
       availableSequence: u(9),
       cols: 100,
-      rows: 30
+      rows: 30,
+      title: "devbox:~/project"
     });
 
     sendCheckpoint(

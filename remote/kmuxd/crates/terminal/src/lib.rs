@@ -378,6 +378,11 @@ impl TerminalSideEffectScanner {
         self.oversized_osc_count
     }
 
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
     fn push_osc_byte(&mut self, byte: u8) {
         if self.osc.len() >= MAX_OSC_SIDE_EFFECT_BYTES {
             self.osc.clear();
@@ -397,7 +402,11 @@ impl TerminalSideEffectScanner {
             return;
         };
         match command.trim() {
-            "0" | "2" => self.title = normalize_notification_text(payload),
+            "0" | "2" => {
+                if let Some(title) = normalize_terminal_title(payload) {
+                    self.title = Some(title);
+                }
+            }
             "7" => self.cwd = normalize_notification_text(payload),
             "9" => {
                 if let Some((title, message)) = parse_osc9_notification(payload, &self.title) {
@@ -531,6 +540,12 @@ fn normalize_notification_text(value: &str) -> Option<String> {
         end = end.saturating_sub(1);
     }
     Some(trimmed[..end].to_owned())
+}
+
+fn normalize_terminal_title(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty() && trimmed.len() <= MAX_NOTIFICATION_TEXT_BYTES)
+        .then(|| trimmed.to_owned())
 }
 
 enum ParserCommand {
@@ -1126,6 +1141,33 @@ mod tests {
                 message: Some("Padded subtype".to_owned()),
             }
         );
+    }
+
+    #[test]
+    fn side_effect_scanner_retains_the_latest_valid_osc_title() {
+        let mut scanner = TerminalSideEffectScanner::default();
+        assert!(
+            scanner
+                .scan(&TerminalMutation::Output {
+                    sequence: 1,
+                    data: b"\x1b]0;first title\x07\x1b]2;latest title\x1b\\".to_vec(),
+                })
+                .is_empty()
+        );
+        assert_eq!(scanner.title(), Some("latest title"));
+
+        let mut invalid_titles = b"\x1b]2;   \x07\x1b]0;".to_vec();
+        invalid_titles.extend(std::iter::repeat_n(b'x', MAX_NOTIFICATION_TEXT_BYTES + 1));
+        invalid_titles.push(0x07);
+        assert!(
+            scanner
+                .scan(&TerminalMutation::Output {
+                    sequence: 2,
+                    data: invalid_titles,
+                })
+                .is_empty()
+        );
+        assert_eq!(scanner.title(), Some("latest title"));
     }
 
     #[test]

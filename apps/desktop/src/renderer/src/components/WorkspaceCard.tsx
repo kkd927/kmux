@@ -11,6 +11,7 @@ import { Codicon } from "./Codicon";
 interface WorkspaceCardProps {
   row: WorkspaceRowVm;
   displayName: string;
+  displayPrefix?: string;
   shortcutHint?: string;
   editing: boolean;
   expanded: boolean;
@@ -126,7 +127,14 @@ export function WorkspaceCard(props: WorkspaceCardProps): JSX.Element {
                 }}
               />
             ) : (
-              <span className={styles.workspaceTitle}>{props.displayName}</span>
+              <span className={styles.workspaceTitle}>
+                {props.displayPrefix ? (
+                  <span className={styles.workspaceTitlePrefix}>
+                    {props.displayPrefix}
+                  </span>
+                ) : null}
+                {props.displayName}
+              </span>
             )}
             <div className={styles.workspaceMetrics}>
               {props.row.pinned ? (

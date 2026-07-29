@@ -74,6 +74,7 @@ function registerTestHandlers(options: {
     expectedSessionId: string
   ) => TerminalStreamAttachResult;
   reportTerminalStreamError?: (report: TerminalStreamErrorReport) => void;
+  reportTerminalTitle?: (report: unknown) => void;
   openExternalUrl?: (surfaceId: string, url: string) => Promise<void>;
   openTerminalFilePath?: (
     surfaceId: string,
@@ -198,6 +199,7 @@ function registerTestHandlers(options: {
     closeOtherWorkspacesSafely: options.closeOtherWorkspacesSafely ?? vi.fn(),
     attachTerminalStream: options.attachTerminalStream ?? vi.fn(),
     reportTerminalStreamError: options.reportTerminalStreamError ?? vi.fn(),
+    reportTerminalTitle: options.reportTerminalTitle ?? vi.fn(),
     snapshotSurface: vi.fn(),
     sendText: vi.fn(),
     sendKeyInput: vi.fn(),
@@ -762,6 +764,45 @@ describe("ipc handlers", () => {
       )
     ).toThrow("Invalid terminal stream error report");
     expect(reportTerminalStreamError).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts terminal title reports only from the trusted main frame", () => {
+    const reportTerminalTitle = vi.fn();
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      reportTerminalTitle
+    });
+    const handler = handlers.get("kmux:terminal:title");
+    const mainFrame = { detached: false, isDestroyed: () => false };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { id: 7, mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const report = {
+      surfaceId: "surface_1",
+      sessionId: "session_1",
+      title: "devbox:~/project"
+    };
+
+    expect(handler?.(event, report)).toBeUndefined();
+    expect(reportTerminalTitle).toHaveBeenCalledWith(report);
+    expect(() =>
+      handler?.(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { id: 7, mainFrame }
+        },
+        report
+      )
+    ).toThrow(/trusted main frame/u);
+    expect(reportTerminalTitle).toHaveBeenCalledTimes(1);
   });
 
   it("registers external session list and resume handlers", async () => {

@@ -25,7 +25,7 @@ import type { Id } from "@kmux/proto";
 
 import { durableAtomicReplace } from "./durableAtomicWrite";
 
-const CONVERSION_WAL_VERSION = 1;
+const CONVERSION_WAL_VERSION = 2;
 const MAX_CONVERSION_RECORD_BYTES = 1024 * 1024;
 const MAX_CONVERSION_RECORDS = 64;
 const MAX_CONVERSION_DIRECTORY_ENTRIES = MAX_CONVERSION_RECORDS * 2;
@@ -53,7 +53,7 @@ export interface ConversionLocalCleanupTarget {
 }
 
 export interface ConversionPreparingRecord {
-  version: 1;
+  version: 2;
   state: "preparing";
   continuation: "convert" | "create";
   transactionId: Id;
@@ -65,7 +65,7 @@ export interface ConversionPreparingRecord {
   effectiveConnectionPolicyHash: string;
   preservation: ConversionPreservationWhitelist;
   cleanupSet: ConversionLocalCleanupTarget[];
-  connectionName: string;
+  initialWorkspaceName: string;
   defaultCwd: string;
   launch: {
     cwd: string;
@@ -227,7 +227,7 @@ export function createConversionWalStore(
       candidate: Omit<ConversionPreparingRecord, "version" | "state">
     ): ConversionPreparingRecord {
       const record = decodeConversionWalRecord({
-        version: 1,
+        version: CONVERSION_WAL_VERSION,
         state: "preparing",
         ...candidate
       });
@@ -378,6 +378,9 @@ function advance(
 export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   const record = requireRecord(value, "conversion WAL record");
   const state = requireStateName(record.state);
+  if (record.version !== CONVERSION_WAL_VERSION) {
+    throw new TypeError("unsupported conversion WAL version");
+  }
   const commonKeys = [
     "version",
     "state",
@@ -391,7 +394,7 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     "effectiveConnectionPolicyHash",
     "preservation",
     "cleanupSet",
-    "connectionName",
+    "initialWorkspaceName",
     "defaultCwd",
     "launch",
     "preparedAt"
@@ -429,9 +432,6 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     ...(state === "cleanup-complete" ? cleanupKeys : [])
   ];
   assertExactKeys(record, allowed);
-  if (record.version !== CONVERSION_WAL_VERSION) {
-    throw new TypeError("unsupported conversion WAL version");
-  }
   const workspaceResourceKey = decodeResourceKey(
     record.workspaceResourceKey,
     false
@@ -484,7 +484,7 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   }
   const launch = decodeLaunch(record.launch);
   const common: ConversionPreparingRecord = {
-    version: 1,
+    version: CONVERSION_WAL_VERSION,
     state: "preparing",
     continuation,
     transactionId: validateId(record.transactionId, "transactionId"),
@@ -508,9 +508,9 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     ),
     preservation,
     cleanupSet,
-    connectionName: requireText(
-      record.connectionName,
-      "connectionName",
+    initialWorkspaceName: requireText(
+      record.initialWorkspaceName,
+      "initialWorkspaceName",
       4 * 1024
     ),
     defaultCwd: requirePath(record.defaultCwd, "defaultCwd"),
