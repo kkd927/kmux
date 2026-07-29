@@ -17,6 +17,7 @@ import type {
   RetainedRemoteSessionResourceKey,
   RetainedRemoteSessionsSnapshot,
   SshAskpassResponseRequest,
+  SshProfileVm,
   SurfaceCapturePayload,
   TerminalFileLinkResolveCandidate,
   TerminalFileLinkResolveResult
@@ -94,6 +95,7 @@ function registerTestHandlers(options: {
   terminateRetainedRemoteSession?: (
     resourceKey: RetainedRemoteSessionResourceKey
   ) => Promise<RemoteOperationCommandResult>;
+  resolveSshProfile?: (profileId: string) => Promise<SshProfileVm | null>;
   respondSshAskpass?: (request: SshAskpassResponseRequest) => void;
   cleanSshRuntime?: (profileId: string) => Promise<{
     inspected: number;
@@ -151,6 +153,7 @@ function registerTestHandlers(options: {
       profiles: [],
       updatedAt: "2026-07-19T00:00:00.000Z"
     })),
+    resolveSshProfile: options.resolveSshProfile ?? vi.fn(async () => null),
     listSshConfigAliases: vi.fn(() => []),
     importSshConfigAliases: vi.fn(async () => ({
       profiles: [],
@@ -483,6 +486,62 @@ describe("ipc handlers", () => {
 
     expect(() =>
       handlers.get("kmux:ssh-connections:runtime-reset")!(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        "profile_1"
+      )
+    ).toThrow(/trusted main frame/u);
+  });
+
+  it("resolves only the requested SSH profile for the trusted main frame", async () => {
+    const resolved = {
+      id: "profile_1",
+      name: "Development",
+      host: "dev.example.com",
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      effectiveConnection: {
+        hostName: "dev.internal",
+        user: "kmux",
+        port: 22,
+        identityFiles: [],
+        policyHash: "a".repeat(64)
+      }
+    };
+    const resolveSshProfile = vi.fn(async () => resolved);
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      resolveSshProfile
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const trustedEvent = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-connections:resolve-profile")!(
+          trustedEvent,
+          "profile_1"
+        )
+      )
+    ).resolves.toBe(resolved);
+    expect(resolveSshProfile).toHaveBeenCalledWith("profile_1");
+    expect(() =>
+      handlers.get("kmux:ssh-connections:resolve-profile")!(
         {
           senderFrame: { ...mainFrame },
           sender: { mainFrame }

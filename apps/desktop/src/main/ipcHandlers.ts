@@ -18,6 +18,7 @@ import type {
   SshConnectionsSnapshot,
   SshAskpassResponseRequest,
   SshProfileDto,
+  SshProfileVm,
   SshProfileSaveRequest,
   SshRuntimeCleanReport,
   SshRuntimeResetReport,
@@ -84,9 +85,8 @@ interface IpcHandlersOptions {
   terminateRetainedRemoteSession: (
     resourceKey: RetainedRemoteSessionResourceKey
   ) => Promise<RemoteOperationCommandResult>;
-  getSshConnections: (
-    resolveEffective: boolean
-  ) => Promise<SshConnectionsSnapshot>;
+  getSshConnections: () => Promise<SshConnectionsSnapshot>;
+  resolveSshProfile: (profileId: Id) => Promise<SshProfileVm | null>;
   listSshConfigAliases: () => string[] | Promise<string[]>;
   importSshConfigAliases: (
     aliases: string[]
@@ -247,11 +247,15 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
       return options.terminateRetainedRemoteSession(resourceKey);
     }
   );
+  ipcMain.handle("kmux:ssh-connections:get", (event) => {
+    assertTrustedMainFrame(event, "SSH connection listing");
+    return options.getSshConnections();
+  });
   ipcMain.handle(
-    "kmux:ssh-connections:get",
-    (event, resolveEffective: boolean) => {
-      assertTrustedMainFrame(event, "SSH connection listing");
-      return options.getSshConnections(resolveEffective === true);
+    "kmux:ssh-connections:resolve-profile",
+    (event, profileId: Id) => {
+      assertTrustedMainFrame(event, "SSH profile resolution");
+      return options.resolveSshProfile(profileId);
     }
   );
   ipcMain.handle("kmux:ssh-connections:aliases", (event) => {

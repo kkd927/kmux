@@ -658,7 +658,8 @@ async function bootstrap(): Promise<void> {
             dirname(fileURLToPath(import.meta.url)),
             "../../../../remote/kmuxd/dist"
           ),
-      transferRoot: join(paths.cacheDir, "remote-transfers")
+      transferRoot: join(paths.cacheDir, "remote-transfers"),
+      env: resolvedShellEnv.baseEnv
     }
   );
   remoteHost.on("error", (error: Error) => {
@@ -671,7 +672,6 @@ async function bootstrap(): Promise<void> {
     desktopInstallationId,
     operationStore: remoteOperationStore,
     host: remoteHost,
-    hostEnv: resolvedShellEnv.baseEnv,
     getState: runtime.getState,
     getTargetBinding: remoteTargetBindings.get,
     replaceTargetBinding: remoteTargetBindings.replace,
@@ -737,10 +737,6 @@ async function bootstrap(): Promise<void> {
       configRoot: join(paths.cacheDir, "ssh-config"),
       env: resolvedShellEnv.baseEnv,
       resolveEffective: async ({ sshPath, configPath, host }) => {
-        providerRemoteHost.start(resolvedShellEnv.baseEnv);
-        if (!providerRemoteHost.isRunning()) {
-          throw new Error("remote-host failed to start for OpenSSH resolution");
-        }
         return await providerRemoteHost.resolveSshConfig({
           sshPath,
           configPath,
@@ -750,7 +746,6 @@ async function bootstrap(): Promise<void> {
     }),
     host: providerRemoteHost,
     lifecycle: providerRemoteLifecycle,
-    hostEnv: resolvedShellEnv.baseEnv,
     askpassBroker: sshAskpass,
     isTargetReferenced: (targetId) => {
       if (
@@ -1351,8 +1346,8 @@ async function bootstrap(): Promise<void> {
       }
       return control.terminateRetainedSession(resourceKey);
     },
-    getSshConnections: (resolveEffective) =>
-      sshConnections.getSnapshot({ resolveEffective }),
+    getSshConnections: () => sshConnections.getSnapshot(),
+    resolveSshProfile: (profileId) => sshConnections.resolveProfile(profileId),
     listSshConfigAliases: () =>
       listOpenSshAliases({
         homeDir: userHomeDir,
@@ -1389,7 +1384,7 @@ async function bootstrap(): Promise<void> {
           });
         }
       }
-      return sshConnections.getSnapshot({ resolveEffective: true });
+      return sshConnections.getSnapshot();
     },
     saveSshProfile: (request) =>
       sshConnections.saveProfile(request.id, request.profile),
@@ -1398,11 +1393,11 @@ async function bootstrap(): Promise<void> {
     deleteSshProfile: (profileId) => sshConnections.deleteProfile(profileId),
     testSshProfile: async (profileId) => {
       await sshConnections.connectProfile(profileId);
-      return sshConnections.getSnapshot({ resolveEffective: true });
+      return sshConnections.getSnapshot();
     },
     rebindSshProfile: async (profileId) => {
       await sshConnections.rebindProfile(profileId);
-      return sshConnections.getSnapshot({ resolveEffective: true });
+      return sshConnections.getSnapshot();
     },
     cleanSshRuntime: (profileId) =>
       sshConnections.cleanRemoteRuntime(profileId),

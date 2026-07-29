@@ -277,6 +277,33 @@ describe("terminal stream preload bridge", () => {
     );
   });
 
+  it("resolves one SSH profile through the dedicated IPC command", async () => {
+    const resolved = {
+      id: "profile_1",
+      name: "Development",
+      host: "dev.example.com",
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      effectiveConnection: {
+        hostName: "dev.internal",
+        user: "kmux",
+        port: 22,
+        identityFiles: [],
+        policyHash: "a".repeat(64)
+      }
+    };
+    const api = mocks.exposed.get("kmux") as {
+      resolveSshProfile(profileId: string): Promise<unknown>;
+    };
+    mocks.invoke.mockResolvedValue(resolved);
+
+    await expect(api.resolveSshProfile("profile_1")).resolves.toBe(resolved);
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "kmux:ssh-connections:resolve-profile",
+      "profile_1"
+    );
+  });
+
   it("keeps runtime clean and reset on explicit maintenance IPC", async () => {
     const cleanReport = {
       inspected: 2,

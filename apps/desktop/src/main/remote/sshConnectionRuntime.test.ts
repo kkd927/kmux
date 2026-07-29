@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import type { SshProfileDto } from "@kmux/proto";
 
 import type { RemoteHostManager } from "../remoteHost";
 import type { RemoteLifecycleRuntime } from "./remoteLifecycleRuntime";
@@ -15,6 +16,302 @@ const NOW = "2026-07-19T00:00:00.000Z";
 const POLICY = "a".repeat(64);
 
 describe("SSH connection runtime", () => {
+  it("returns the local profile snapshot without invoking effective resolution", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_local"
+      });
+      profiles.save(undefined, {
+        name: "local-listing",
+        host: "127.0.0.1"
+      });
+      const resolve = vi.fn();
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings: createRemoteTargetBindingStore(
+          join(sandbox, "bindings.json")
+        ),
+        resolver: { resolve },
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          createRemoteTargetBindingStore(join(sandbox, "lifecycle.json"))
+        ) as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        now: () => NOW
+      });
+
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: [
+          {
+            id: "profile_local",
+            name: "local-listing",
+            host: "127.0.0.1"
+          }
+        ]
+      });
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates concurrent resolution of the same stored profile definition", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_dedupe"
+      });
+      const profile = profiles.save(undefined, {
+        name: "deduped",
+        sshConfigHost: "deduped"
+      });
+      const pending = deferred<ReturnType<typeof resolvedConnection>>();
+      const resolve = vi.fn(async () => pending.promise);
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: { resolve },
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          bindings
+        ) as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        now: () => NOW
+      });
+
+      const first = runtime.resolveProfile(profile.id);
+      const second = runtime.resolveProfile(profile.id);
+      expect(resolve).toHaveBeenCalledOnce();
+      pending.resolve(resolvedConnection(profile));
+
+      await expect(first).resolves.toMatchObject({
+        id: profile.id,
+        effectiveConnection: { hostName: "dev.internal" }
+      });
+      await expect(second).resolves.toMatchObject({
+        id: profile.id,
+        effectiveConnection: { hostName: "dev.internal" }
+      });
+      expect(resolve).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes a completed profile resolution instead of reusing its display cache", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      let resolution = 0;
+      const resolve = vi.fn(async (profile: SshProfileDto) => {
+        resolution += 1;
+        return resolvedConnection(
+          profile,
+          resolution === 1 ? "old.internal" : "new.internal"
+        );
+      });
+      const { profile, runtime } = createResolutionFixture(sandbox, resolve);
+
+      await expect(runtime.resolveProfile(profile.id)).resolves.toMatchObject({
+        effectiveConnection: { hostName: "old.internal" }
+      });
+      await expect(runtime.resolveProfile(profile.id)).resolves.toMatchObject({
+        effectiveConnection: { hostName: "new.internal" }
+      });
+
+      expect(resolve).toHaveBeenCalledTimes(2);
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: [
+          {
+            id: profile.id,
+            effectiveConnection: { hostName: "new.internal" }
+          }
+        ]
+      });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let an older background success overwrite a newer connection resolution", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const background = deferred<ReturnType<typeof resolvedConnection>>();
+      const resolve = vi
+        .fn()
+        .mockImplementationOnce(async () => background.promise)
+        .mockImplementationOnce(async (profile: SshProfileDto) =>
+          resolvedConnection(profile, "connected.internal")
+        );
+      const { profile, runtime } = createResolutionFixture(sandbox, resolve);
+
+      const staleResolution = runtime.resolveProfile(profile.id);
+      await runtime.connectProfile(profile.id);
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: [
+          {
+            id: profile.id,
+            effectiveConnection: { hostName: "connected.internal" }
+          }
+        ]
+      });
+
+      background.resolve(resolvedConnection(profile, "stale.internal"));
+      await expect(staleResolution).resolves.toBeNull();
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: [
+          {
+            id: profile.id,
+            effectiveConnection: { hostName: "connected.internal" }
+          }
+        ]
+      });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let an older background failure clear a newer connection resolution", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const background = deferred<ReturnType<typeof resolvedConnection>>();
+      const resolve = vi
+        .fn()
+        .mockImplementationOnce(async () => background.promise)
+        .mockImplementationOnce(async (profile: SshProfileDto) =>
+          resolvedConnection(profile, "connected.internal")
+        );
+      const { profile, runtime } = createResolutionFixture(sandbox, resolve);
+
+      const staleResolution = runtime.resolveProfile(profile.id);
+      await runtime.connectProfile(profile.id);
+      background.reject(new Error("stale background failure"));
+
+      await expect(staleResolution).resolves.toBeNull();
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: [
+          {
+            id: profile.id,
+            effectiveConnection: { hostName: "connected.internal" }
+          }
+        ]
+      });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("discards resolution results after the stored profile is changed or deleted", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_stale"
+      });
+      const profile = profiles.save(undefined, {
+        name: "before",
+        host: "before.example.com"
+      });
+      const firstPending = deferred<ReturnType<typeof resolvedConnection>>();
+      const secondPending = deferred<ReturnType<typeof resolvedConnection>>();
+      const resolve = vi
+        .fn()
+        .mockImplementationOnce(async () => firstPending.promise)
+        .mockImplementationOnce(async () => secondPending.promise);
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: { resolve },
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          bindings
+        ) as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        now: () => NOW
+      });
+
+      const staleAfterSave = runtime.resolveProfile(profile.id);
+      runtime.saveProfile(profile.id, {
+        name: "after",
+        host: "after.example.com"
+      });
+      firstPending.resolve(resolvedConnection(profile));
+      await expect(staleAfterSave).resolves.toBeNull();
+      expect(
+        (await runtime.getSnapshot()).profiles[0]?.effectiveConnection
+      ).toBeUndefined();
+
+      const current = profiles.get(profile.id)!;
+      const staleAfterDelete = runtime.resolveProfile(profile.id);
+      runtime.deleteProfile(profile.id);
+      secondPending.resolve(resolvedConnection(current));
+      await expect(staleAfterDelete).resolves.toBeNull();
+      await expect(runtime.getSnapshot()).resolves.toMatchObject({
+        profiles: []
+      });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the last explicit connection error when background resolution fails", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_failure"
+      });
+      const profile = profiles.save(undefined, {
+        name: "failure",
+        host: "failure.example.com"
+      });
+      profiles.recordError(profile.id, new Error("explicit connection failed"));
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: {
+          async resolve() {
+            throw new Error("background route failed");
+          }
+        },
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          bindings
+        ) as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        now: () => NOW
+      });
+
+      await expect(runtime.resolveProfile(profile.id)).resolves.toMatchObject({
+        id: profile.id,
+        lastError: { message: "explicit connection failed" }
+      });
+      expect(
+        (await runtime.getSnapshot()).profiles[0]?.effectiveConnection
+      ).toBeUndefined();
+      expect(
+        (await runtime.getSnapshot()).profiles[0]?.lastError?.message
+      ).toBe("explicit connection failed");
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("persists an immutable authority binding only after provisional promotion", async () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
     try {
@@ -623,7 +920,6 @@ describe("SSH connection runtime", () => {
 });
 
 class FakeHost {
-  running = false;
   discarded: string[] = [];
   verifyRequests: Array<Record<string, unknown>> = [];
   verified: Promise<void>;
@@ -640,14 +936,6 @@ class FakeHost {
     this.verified = new Promise<void>((resolve) => {
       this.resolveVerified = resolve;
     });
-  }
-
-  start(): void {
-    this.running = true;
-  }
-
-  isRunning(): boolean {
-    return this.running;
   }
 
   async verifyTarget(options: { verificationId: string }) {
@@ -802,6 +1090,69 @@ function resolver(
       };
     }
   };
+}
+
+function createResolutionFixture(
+  sandbox: string,
+  resolve: SshProfileConnectionResolver["resolve"]
+) {
+  const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+    now: () => NOW,
+    makeProfileId: () => "profile_resolution"
+  });
+  const profile = profiles.save(undefined, {
+    name: "resolution",
+    sshConfigHost: "resolution"
+  });
+  const bindings = createRemoteTargetBindingStore(
+    join(sandbox, "bindings.json")
+  );
+  const runtime = createSshConnectionRuntime({
+    desktopInstallationId: "desktop_1",
+    profiles,
+    bindings,
+    resolver: { resolve },
+    host: new FakeHost() as unknown as RemoteHostManager,
+    lifecycle: new FakeLifecycle(bindings) as unknown as RemoteLifecycleRuntime,
+    isTargetReferenced: () => false,
+    now: () => NOW,
+    makeTargetId: () => "target_resolution",
+    makeVerificationId: () => "verification_resolution",
+    makeToken: () => "a".repeat(64)
+  });
+  return { profile, runtime };
+}
+
+function resolvedConnection(profile: SshProfileDto, hostName = "dev.internal") {
+  return {
+    profile,
+    sshPath: "/usr/bin/ssh",
+    configPath: "/tmp/ssh_config",
+    hostKeyObservationPath: `/tmp/kmux-missing-host-key-${profile.id}`,
+    host: profile.sshConfigHost ?? profile.host ?? "internal-profile",
+    effective: {
+      hostName,
+      user: "kmux",
+      port: 22,
+      identityFiles: ["/keys/test"],
+      policyHash: POLICY
+    },
+    rootOverrides: {}
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function binding(targetId: string, profileId: string) {

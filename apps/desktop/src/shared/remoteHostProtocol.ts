@@ -26,6 +26,7 @@ import {
 import type { TerminalSessionRef } from "@kmux/proto";
 
 export const REMOTE_ATTACHMENT_FILE_PREFIX = "kmux-attachment-v1-";
+export const REMOTE_HOST_PROTOCOL_VERSION = 1;
 
 export interface RemoteHostEffectiveSshConfig {
   hostName: string;
@@ -372,6 +373,10 @@ export type RemoteHostRequest =
   | RemoteHostShutdownRequest;
 
 export type RemoteHostResponse =
+  | {
+      type: "remote-host.ready";
+      protocolVersion: typeof REMOTE_HOST_PROTOCOL_VERSION;
+    }
   | {
       type: "response";
       requestId: Id;
@@ -1353,6 +1358,17 @@ export function encodeRemoteHostOperationRequest(options: {
 export function decodeRemoteHostResponse(value: unknown): RemoteHostResponse {
   const record = requireRecord(value, "remote-host response");
   switch (record.type) {
+    case "remote-host.ready":
+      assertExactKeys(record, ["type", "protocolVersion"]);
+      if (record.protocolVersion !== REMOTE_HOST_PROTOCOL_VERSION) {
+        throw new TypeError(
+          `unsupported remote-host protocol version ${String(record.protocolVersion)}`
+        );
+      }
+      return {
+        type: record.type,
+        protocolVersion: REMOTE_HOST_PROTOCOL_VERSION
+      };
     case "response": {
       const requestId = requireId(record.requestId, "requestId");
       if (record.status === "ok") {

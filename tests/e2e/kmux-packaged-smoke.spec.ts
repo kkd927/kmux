@@ -50,6 +50,20 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       expect(runtimeEnv.APPIMAGE_EXTRACT_AND_RUN).toBe("");
     }
 
+    const packagedSshResolution = await page.evaluate(async () => {
+      const saved = await window.kmux.saveSshProfile({
+        profile: {
+          name: "Packaged helper smoke",
+          host: "127.0.0.1"
+        }
+      });
+      return await window.kmux.resolveSshProfile(saved.id);
+    });
+    expect(packagedSshResolution?.effectiveConnection).toMatchObject({
+      hostName: "127.0.0.1",
+      port: 22
+    });
+
     const initial = await getView(page);
     expect(initial.workspaceRows.length).toBeGreaterThan(0);
 

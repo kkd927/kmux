@@ -2,6 +2,7 @@ import { parseUint64Decimal, type Id, type Uint64 } from "@kmux/proto";
 
 import {
   decodeRemoteHostRequest,
+  REMOTE_HOST_PROTOCOL_VERSION,
   type DecodedRemoteHostRequest,
   type RemoteHostEffectiveSshConfig,
   type RemoteHostResponse,
@@ -171,6 +172,10 @@ export class RemoteHostService {
     if (this.subscription) return;
     this.subscription = this.transport.onMessage((message, ports) => {
       this.receive(message, ports);
+    });
+    this.transport.postMessage({
+      type: "remote-host.ready",
+      protocolVersion: REMOTE_HOST_PROTOCOL_VERSION
     });
   }
 

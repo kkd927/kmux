@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   RetainedRemoteSessionsSnapshot,
   SshConnectionsSnapshot,
   SshProfileDraftDto,
+  SshProfileDto,
   SshProfileVm
 } from "@kmux/proto";
 
 import styles from "../styles/App.module.css";
+import {
+  mergeSshProfileResolution,
+  sameSshProfileDefinition
+} from "../sshProfileResolution";
 import { describeSshConnectionError } from "./sshConnectionError";
 
 type EditorDraft = {
@@ -126,7 +131,14 @@ export function SshConnectionsSettings(): JSX.Element {
   const [editor, setEditor] = useState<EditorDraft | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connectionsError, setConnectionsError] = useState<string | null>(null);
+  const [routeUnavailableIds, setRouteUnavailableIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [runtimeResult, setRuntimeResult] = useState<string | null>(null);
+  const snapshotRef = useRef<SshConnectionsSnapshot | null>(null);
+  const connectionsRequestRef = useRef(0);
+  const mountedRef = useRef(true);
   const selected = useMemo(
     () =>
       snapshot?.profiles.find((profile) => profile.id === selectedId) ?? null,
@@ -134,30 +146,116 @@ export function SshConnectionsSettings(): JSX.Element {
   );
 
   useEffect(() => {
-    void reload(true);
+    mountedRef.current = true;
+    void reloadConnections();
+    void reloadAliases();
+    void reloadRetained();
+    return () => {
+      mountedRef.current = false;
+      connectionsRequestRef.current += 1;
+    };
   }, []);
 
-  async function reload(resolveEffective = false, preferredId?: string) {
+  async function reloadConnections(preferredId?: string): Promise<void> {
+    const requestId = ++connectionsRequestRef.current;
     try {
-      const [connections, retainedSessions, aliases] = await Promise.all([
-        window.kmux.getSshConnections(resolveEffective),
-        window.kmux.getRetainedRemoteSessions(),
-        window.kmux.listSshConfigAliases()
-      ]);
-      setSnapshot(connections);
-      setRetained(retainedSessions);
-      setAvailableAliases(aliases);
-      const nextId =
-        preferredId ?? selectedId ?? connections.profiles[0]?.id ?? null;
-      setSelectedId(
-        nextId && connections.profiles.some((profile) => profile.id === nextId)
-          ? nextId
-          : (connections.profiles[0]?.id ?? null)
-      );
-      setError(null);
+      const connections = await window.kmux.getSshConnections();
+      if (!mountedRef.current || connectionsRequestRef.current !== requestId) {
+        return;
+      }
+      installConnections(connections, preferredId, true);
     } catch (cause) {
-      setError(describeSshConnectionError(cause));
+      if (mountedRef.current && connectionsRequestRef.current === requestId) {
+        setConnectionsError(describeSshConnectionError(cause));
+      }
     }
+  }
+
+  async function reloadAliases(): Promise<void> {
+    try {
+      const aliases = await window.kmux.listSshConfigAliases();
+      if (mountedRef.current) setAvailableAliases(aliases);
+    } catch (cause) {
+      if (mountedRef.current) setError(describeSshConnectionError(cause));
+    }
+  }
+
+  async function reloadRetained(): Promise<void> {
+    try {
+      const retainedSessions = await window.kmux.getRetainedRemoteSessions();
+      if (mountedRef.current) setRetained(retainedSessions);
+    } catch (cause) {
+      if (mountedRef.current) setError(describeSshConnectionError(cause));
+    }
+  }
+
+  function installConnections(
+    connections: SshConnectionsSnapshot,
+    preferredId?: string,
+    resolveProfiles = false
+  ): void {
+    snapshotRef.current = connections;
+    setSnapshot(connections);
+    setConnectionsError(null);
+    setRouteUnavailableIds(new Set());
+    setSelectedId((currentId) => {
+      const nextId =
+        preferredId ?? currentId ?? connections.profiles[0]?.id ?? null;
+      return nextId &&
+        connections.profiles.some((profile) => profile.id === nextId)
+        ? nextId
+        : (connections.profiles[0]?.id ?? null);
+    });
+    if (resolveProfiles) {
+      for (const profile of connections.profiles) {
+        void resolveProfileInBackground(profile);
+      }
+    }
+  }
+
+  async function resolveProfileInBackground(
+    requestedProfile: SshProfileDto
+  ): Promise<void> {
+    let resolved: SshProfileVm | null;
+    try {
+      resolved = await window.kmux.resolveSshProfile(requestedProfile.id);
+    } catch {
+      resolved = {
+        ...structuredClone(requestedProfile)
+      };
+    }
+    if (!mountedRef.current || !resolved) return;
+    const currentSnapshot = snapshotRef.current;
+    const currentProfile = currentSnapshot?.profiles.find(
+      (profile) => profile.id === requestedProfile.id
+    );
+    if (
+      !currentSnapshot ||
+      !currentProfile ||
+      !sameSshProfileDefinition(currentProfile, requestedProfile)
+    ) {
+      return;
+    }
+    const merged = mergeSshProfileResolution(
+      currentProfile,
+      requestedProfile,
+      resolved
+    );
+    if (!merged) return;
+    const nextSnapshot = {
+      ...currentSnapshot,
+      profiles: currentSnapshot.profiles.map((profile) =>
+        profile.id === merged.id ? merged : profile
+      )
+    };
+    snapshotRef.current = nextSnapshot;
+    setSnapshot(nextSnapshot);
+    setRouteUnavailableIds((current) => {
+      const next = new Set(current);
+      if (merged.effectiveConnection) next.delete(merged.id);
+      else next.add(merged.id);
+      return next;
+    });
   }
 
   async function run(name: string, action: () => Promise<void>): Promise<void> {
@@ -182,7 +280,7 @@ export function SshConnectionsSettings(): JSX.Element {
         profile: editorToProfile(editor)
       });
       setEditor(null);
-      await reload(true, saved.id);
+      await reloadConnections(saved.id);
     });
   }
 
@@ -208,10 +306,22 @@ export function SshConnectionsSettings(): JSX.Element {
             <span>
               {snapshot
                 ? `${snapshot.profiles.length} saved · ${snapshot.profiles.filter((profile) => profile.verifiedTarget).length} verified`
-                : "Loading connections…"}
+                : connectionsError
+                  ? "Connections unavailable"
+                  : "Loading connections…"}
             </span>
           </div>
           <div className={styles.sshToolbarActions}>
+            {connectionsError ? (
+              <button
+                type="button"
+                className={styles.sshActionButton}
+                disabled={Boolean(busy)}
+                onClick={() => void reloadConnections()}
+              >
+                Retry
+              </button>
+            ) : null}
             <button
               type="button"
               className={styles.sshActionButton}
@@ -222,8 +332,7 @@ export function SshConnectionsSettings(): JSX.Element {
                 void run("import", async () => {
                   const imported =
                     await window.kmux.importSshConfigAliases(availableAliases);
-                  setSnapshot(imported);
-                  setSelectedId(imported.profiles[0]?.id ?? null);
+                  installConnections(imported, imported.profiles[0]?.id, true);
                 })
               }
             >
@@ -272,9 +381,19 @@ export function SshConnectionsSettings(): JSX.Element {
                       <strong>{profile.name}</strong>
                       <span
                         className={styles.sshConnectionState}
-                        data-status={profileStatus(profile).status}
+                        data-status={
+                          profileStatus(
+                            profile,
+                            routeUnavailableIds.has(profile.id)
+                          ).status
+                        }
                       >
-                        {profileStatus(profile).label}
+                        {
+                          profileStatus(
+                            profile,
+                            routeUnavailableIds.has(profile.id)
+                          ).label
+                        }
                       </span>
                     </span>
                     <span className={styles.sshConnectionEndpoint}>
@@ -300,7 +419,10 @@ export function SshConnectionsSettings(): JSX.Element {
                 />
               ) : selected ? (
                 <div className={styles.sshSelectedProfile}>
-                  <SshProfileDetails profile={selected} />
+                  <SshProfileDetails
+                    profile={selected}
+                    routeUnavailable={routeUnavailableIds.has(selected.id)}
+                  />
                   <div className={styles.sshDetailsActions}>
                     <button
                       type="button"
@@ -318,7 +440,7 @@ export function SshConnectionsSettings(): JSX.Element {
                         void run("duplicate", async () => {
                           const duplicate =
                             await window.kmux.duplicateSshProfile(selected.id);
-                          await reload(true, duplicate.id);
+                          await reloadConnections(duplicate.id);
                         })
                       }
                     >
@@ -330,11 +452,21 @@ export function SshConnectionsSettings(): JSX.Element {
                       disabled={Boolean(busy)}
                       onClick={() =>
                         void run("test", async () => {
-                          const tested = await window.kmux.testSshProfile(
-                            selected.id
-                          );
-                          setSnapshot(tested);
-                          setSelectedId(selected.id);
+                          try {
+                            const tested = await window.kmux.testSshProfile(
+                              selected.id
+                            );
+                            installConnections(tested, selected.id);
+                          } catch (cause) {
+                            try {
+                              const local =
+                                await window.kmux.getSshConnections();
+                              installConnections(local, selected.id);
+                            } catch {
+                              // Keep the explicit connection failure.
+                            }
+                            throw cause;
+                          }
                         })
                       }
                     >
@@ -369,8 +501,7 @@ export function SshConnectionsSettings(): JSX.Element {
                             void run("rebind", async () => {
                               const rebound =
                                 await window.kmux.rebindSshProfile(selected.id);
-                              setSnapshot(rebound);
-                              setSelectedId(selected.id);
+                              installConnections(rebound, selected.id);
                             });
                           }}
                         >
@@ -415,7 +546,7 @@ export function SshConnectionsSettings(): JSX.Element {
                                   ? `Runtime generation ${report.generation} was reset.`
                                   : `Runtime generation ${report.generation} was already absent.`
                               );
-                              await reload(true, selected.id);
+                              await reloadConnections(selected.id);
                             });
                           }}
                         >
@@ -430,7 +561,7 @@ export function SshConnectionsSettings(): JSX.Element {
                           onClick={() =>
                             void run("delete", async () => {
                               await window.kmux.deleteSshProfile(selected.id);
-                              await reload(false);
+                              await reloadConnections();
                             })
                           }
                         >
@@ -451,9 +582,9 @@ export function SshConnectionsSettings(): JSX.Element {
             </div>
           </div>
         )}
-        {error ? (
+        {connectionsError || error ? (
           <div className={styles.sshFeedback} data-tone="error" role="alert">
-            {error}
+            {connectionsError ?? error}
           </div>
         ) : null}
         {runtimeResult ? (
@@ -496,7 +627,7 @@ export function SshConnectionsSettings(): JSX.Element {
                       await window.kmux.terminateRetainedRemoteSession(
                         session.resourceKey
                       );
-                      await reload(false);
+                      await reloadRetained();
                     })
                   }
                 >
@@ -516,16 +647,20 @@ export function SshConnectionsSettings(): JSX.Element {
 }
 
 function SshProfileDetails({
-  profile
+  profile,
+  routeUnavailable
 }: {
   profile: SshProfileVm;
+  routeUnavailable: boolean;
 }): JSX.Element {
   const effective = profile.effectiveConnection;
   const target = profile.verifiedTarget;
-  const status = profileStatus(profile);
+  const status = profileStatus(profile, routeUnavailable);
   const effectiveRoute = effective
     ? `${effective.user}@${effective.hostName}:${effective.port}`
-    : "Not resolved";
+    : routeUnavailable
+      ? "Route unavailable"
+      : "Not resolved";
   return (
     <div className={styles.sshConnectionFacts}>
       <header>
@@ -853,12 +988,18 @@ function SshProfileEditor(props: {
   );
 }
 
-function profileStatus(profile: SshProfileVm): {
+function profileStatus(
+  profile: SshProfileVm,
+  routeUnavailable = false
+): {
   status: "verified" | "error" | "resolved" | "untested";
   label: string;
 } {
   if (profile.lastError) {
     return { status: "error", label: "Needs attention" };
+  }
+  if (routeUnavailable) {
+    return { status: "error", label: "Route unavailable" };
   }
   if (profile.verifiedTarget) {
     return { status: "verified", label: "Verified" };

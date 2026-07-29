@@ -141,6 +141,7 @@ interface AppOverlaysProps {
     selectedProfileId: string | null;
     continuation: "convert" | "create";
     phase: "idle" | "preparing" | "committing";
+    routeUnavailableProfileId?: string;
     requestId?: string;
     error?: string | null;
   } | null;
@@ -1019,8 +1020,11 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                     <code className={styles.sshWorkspaceConnectionRoute}>
                       {selectedSshProfile.effectiveConnection
                         ? `${selectedSshProfile.effectiveConnection.user}@${selectedSshProfile.effectiveConnection.hostName}:${selectedSshProfile.effectiveConnection.port}`
-                        : (selectedSshProfile.sshConfigHost ??
-                          selectedSshProfile.host)}
+                        : props.sshWorkspaceDialog.routeUnavailableProfileId ===
+                            selectedSshProfile.id
+                          ? "Route unavailable"
+                          : (selectedSshProfile.sshConfigHost ??
+                            selectedSshProfile.host)}
                     </code>
                   ) : null}
                 </div>

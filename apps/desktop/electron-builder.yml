@@ -13,6 +13,7 @@ npmRebuild: false
 asarUnpack:
   - "**/*.node"
   - "dist/pty-host/**"
+  - "dist/remote-host/**"
 extraResources:
   - from: ../../packages/cli/dist
     to: cli

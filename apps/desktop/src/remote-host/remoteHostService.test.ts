@@ -43,6 +43,10 @@ describe("RemoteHostService", () => {
       createRuntime: () => new FakeRuntime(new FakeAttachment()) as never
     });
     service.start();
+    service.start();
+    expect(transport.ready).toEqual([
+      { type: "remote-host.ready", protocolVersion: 1 }
+    ]);
 
     transport.receive({
       type: "ssh-config.resolve",
@@ -762,12 +766,17 @@ describe("RemoteHostService", () => {
 
 class FakeControlTransport implements RemoteHostControlTransport {
   readonly sent: RemoteHostResponse[] = [];
+  readonly ready: RemoteHostResponse[] = [];
   private listener:
     | ((message: unknown, ports: RemoteTerminalDataPortLike[]) => void)
     | null = null;
 
   postMessage(message: RemoteHostResponse): void {
-    this.sent.push(message);
+    if (message.type === "remote-host.ready") {
+      this.ready.push(message);
+    } else {
+      this.sent.push(message);
+    }
   }
 
   onMessage(

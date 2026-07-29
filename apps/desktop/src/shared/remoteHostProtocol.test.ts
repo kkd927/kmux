@@ -8,6 +8,33 @@ import {
   resolveRemoteRetentionPolicyForSshProfile
 } from "./remoteHostProtocol";
 
+describe("remote-host ready handshake", () => {
+  it("accepts only the exact supported protocol v1 message", () => {
+    expect(
+      decodeRemoteHostResponse({
+        type: "remote-host.ready",
+        protocolVersion: 1
+      })
+    ).toEqual({ type: "remote-host.ready", protocolVersion: 1 });
+    expect(() =>
+      decodeRemoteHostResponse({ type: "remote-host.ready" })
+    ).toThrow(/unsupported remote-host protocol version/u);
+    expect(() =>
+      decodeRemoteHostResponse({
+        type: "remote-host.ready",
+        protocolVersion: 2
+      })
+    ).toThrow(/unsupported remote-host protocol version/u);
+    expect(() =>
+      decodeRemoteHostResponse({
+        type: "remote-host.ready",
+        protocolVersion: 1,
+        extra: true
+      })
+    ).toThrow(/unexpected remote-host field extra/u);
+  });
+});
+
 describe("remote retention profile policy", () => {
   it("resolves defaults and exact bounded SSH profile overrides", () => {
     expect(resolveRemoteRetentionPolicyForSshProfile({})).toEqual(

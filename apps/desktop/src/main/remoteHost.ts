@@ -1,6 +1,14 @@
 import { lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 
@@ -69,6 +77,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const TARGET_CONNECT_TIMEOUT_MS = 5 * 60_000;
+const READY_TIMEOUT_MS = 5_000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 const MAX_PENDING_REQUESTS = 1_024;
 const FILE_TRANSFER_TIMEOUT_MS = 16 * 60_000;
@@ -85,11 +94,32 @@ export interface RemoteHostLaunchOptions {
 }
 
 export function resolveRemoteHostLaunchOptions(
-  currentDir: string
+  currentDir: string,
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+  resourcesPath: string | undefined = process.resourcesPath
 ): RemoteHostLaunchOptions {
+  const asarSegment = `${sep}app.asar${sep}`;
+  if (currentDir.includes(asarSegment) && resourcesPath) {
+    return {
+      entry: join(
+        resourcesPath,
+        "app.asar.unpacked/dist/remote-host/index.cjs"
+      ),
+      cwd: resourcesPath
+    };
+  }
+
+  const repoRoot = resolve(currentDir, "../../../..");
+  if (nodeEnv === "production") {
+    return {
+      entry: resolve(repoRoot, "apps/desktop/dist/remote-host/index.cjs"),
+      cwd: repoRoot
+    };
+  }
+
   return {
-    entry: resolve(currentDir, "remoteHost.js"),
-    cwd: currentDir
+    entry: resolve(repoRoot, "apps/desktop/src/remote-host/dev-entry.cjs"),
+    cwd: repoRoot
   };
 }
 
@@ -140,6 +170,7 @@ export interface RemoteHostManagerOptions {
   runtimeArtifactRoot: string;
   transferRoot: string;
   sftpPath?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RemoteHostCursorEvent {
@@ -162,19 +193,31 @@ export type RemoteHostTargetLostEvent = Extract<
 >;
 
 interface PendingRequest {
+  child: UtilityProcess;
   resolve: (body: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
 
+type RemoteHostManagerState = "stopped" | "starting" | "ready" | "stopping";
+
 export class RemoteHostManager extends EventEmitter {
   private child: UtilityProcess | null = null;
-  private intentionallyStopped = false;
+  private state: RemoteHostManagerState = "stopped";
+  private generationWasReady = false;
+  private startPromise: Promise<UtilityProcess> | null = null;
+  private resolveStart: ((child: UtilityProcess) => void) | null = null;
+  private rejectStart: ((error: Error) => void) | null = null;
+  private readyTimeout: ReturnType<typeof setTimeout> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private resolveStoppingExit: (() => void) | null = null;
   private readonly pending = new Map<Id, PendingRequest>();
+  private readonly options: Omit<RemoteHostManagerOptions, "env">;
+  private readonly launchEnv: Record<string, string>;
 
   constructor(
     private readonly forkProcess: ForkRemoteHostProcess,
-    private readonly options: RemoteHostManagerOptions = defaultRemoteHostManagerOptions()
+    options: RemoteHostManagerOptions = defaultRemoteHostManagerOptions()
   ) {
     super();
     assertLocalAbsolutePath(
@@ -185,47 +228,90 @@ export class RemoteHostManager extends EventEmitter {
     if (options.sftpPath !== undefined) {
       assertLocalAbsolutePath(options.sftpPath, "system SFTP path");
     }
+    this.options = {
+      runtimeArtifactRoot: options.runtimeArtifactRoot,
+      transferRoot: options.transferRoot,
+      ...(options.sftpPath === undefined ? {} : { sftpPath: options.sftpPath })
+    };
+    this.launchEnv = copyProcessEnv(options.env ?? process.env);
   }
 
-  start(env: NodeJS.ProcessEnv = process.env): void {
-    if (this.child) return;
-    this.intentionallyStopped = false;
+  isReady(): boolean {
+    return this.state === "ready" && this.child !== null;
+  }
+
+  private ensureReady(): Promise<UtilityProcess> {
+    if (this.state === "ready" && this.child) {
+      return Promise.resolve(this.child);
+    }
+    if (this.state === "starting" && this.startPromise) {
+      return this.startPromise;
+    }
+    if (this.state === "stopping") {
+      return Promise.reject(new Error("remote-host is stopping"));
+    }
+
+    this.state = "starting";
+    this.generationWasReady = false;
+    let resolveStart!: (child: UtilityProcess) => void;
+    let rejectStart!: (error: Error) => void;
+    const startPromise = new Promise<UtilityProcess>((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    this.startPromise = startPromise;
+    this.resolveStart = resolveStart;
+    this.rejectStart = rejectStart;
+
     const currentDir = dirname(fileURLToPath(import.meta.url));
-    const launch = resolveRemoteHostLaunchOptions(currentDir);
+    const launch = resolveRemoteHostLaunchOptions(
+      currentDir,
+      process.env.NODE_ENV,
+      process.resourcesPath
+    );
     let child: UtilityProcess;
     try {
       child = this.forkProcess(launch.entry, [], {
         cwd: launch.cwd,
-        env: env as Record<string, string>,
+        env: { ...this.launchEnv },
         stdio: ["ignore", "inherit", "inherit"],
         serviceName: "kmux Remote Transport"
       });
     } catch (error) {
-      this.emit(
-        "error",
-        new Error(
-          `remote-host failed to start: ${error instanceof Error ? error.message : String(error)}`
-        )
+      const failure = new Error(
+        `remote-host failed to start: ${error instanceof Error ? error.message : String(error)}`
       );
-      return;
+      this.state = "stopped";
+      this.startPromise = null;
+      this.resolveStart = null;
+      this.rejectStart = null;
+      rejectStart(failure);
+      this.reportError(failure);
+      return startPromise;
     }
     this.child = child;
+    this.readyTimeout = setTimeout(() => {
+      this.failGeneration(
+        child,
+        new Error(`remote-host ready timeout after ${READY_TIMEOUT_MS}ms`),
+        true
+      );
+    }, READY_TIMEOUT_MS);
+    this.readyTimeout.unref();
     child.on("message", (rawMessage: unknown) =>
       this.receive(child, rawMessage)
     );
     child.on("exit", () => this.childExited(child));
     child.on("error", (type, location) => {
-      this.emit(
-        "error",
+      this.failGeneration(
+        child,
         new Error(
           `remote-host utility process failed: ${type}${location ? ` at ${location}` : ""}`
-        )
+        ),
+        true
       );
     });
-  }
-
-  isRunning(): boolean {
-    return this.child !== null;
+    return startPromise;
   }
 
   async resolveSshConfig(options: {
@@ -1033,35 +1119,62 @@ export class RemoteHostManager extends EventEmitter {
     port: MessagePortMain
   ): boolean {
     const child = this.child;
-    if (!child) return false;
+    if (!child || this.state !== "ready") return false;
     try {
       child.postMessage({ type: "terminal.bind", ...request }, [port]);
       return true;
     } catch (error) {
-      this.emit(
-        "error",
+      this.failGeneration(
+        child,
         new Error(
           `remote-host terminal bind failed: ${error instanceof Error ? error.message : String(error)}`
-        )
+        ),
+        true
       );
       return false;
     }
   }
 
-  async stop(): Promise<void> {
-    const child = this.child;
-    if (!child) return;
-    this.intentionallyStopped = true;
-    try {
-      await Promise.race([
-        this.request({ type: "shutdown" }),
-        delay(SHUTDOWN_TIMEOUT_MS).then(() => {
-          throw new Error("remote-host shutdown timed out");
-        })
-      ]);
-    } catch {
-      if (this.child === child) child.kill();
+  stop(): Promise<void> {
+    if (this.state === "stopped") return Promise.resolve();
+    if (this.state === "stopping") {
+      return this.stopPromise ?? Promise.resolve();
     }
+
+    const child = this.child;
+    if (!child) {
+      this.state = "stopped";
+      return Promise.resolve();
+    }
+
+    if (this.state === "starting") {
+      this.state = "stopping";
+      this.cancelStartingGeneration(
+        child,
+        new Error("remote-host startup was cancelled during shutdown")
+      );
+      this.stopPromise = Promise.resolve().finally(() => {
+        this.stopPromise = null;
+      });
+      return this.stopPromise;
+    }
+
+    this.state = "stopping";
+    const stopping = this.stopReadyGeneration(child).finally(() => {
+      if (this.child === child) {
+        this.detachGeneration(
+          child,
+          new Error("remote-host was killed during shutdown")
+        );
+        child.kill();
+      }
+      this.state = "stopped";
+      this.generationWasReady = false;
+      this.resolveStoppingExit = null;
+      if (this.stopPromise === stopping) this.stopPromise = null;
+    });
+    this.stopPromise = stopping;
+    return stopping;
   }
 
   private request(
@@ -1124,9 +1237,32 @@ export class RemoteHostManager extends EventEmitter {
       type: string;
     }
   >(request: T, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
-    const child = this.child;
-    if (!child) {
-      return Promise.reject(new Error("remote-host is not running"));
+    const readiness = this.ensureReady();
+    const readyChild = this.child;
+    if (this.state === "ready" && readyChild) {
+      return this.sendRequestToChild(readyChild, request, timeoutMs);
+    }
+    return readiness.then((child) =>
+      this.sendRequestToChild(child, request, timeoutMs)
+    );
+  }
+
+  private sendRequestToChild<
+    T extends {
+      requestId: Id;
+      type: string;
+    }
+  >(
+    child: UtilityProcess,
+    request: T,
+    timeoutMs: number,
+    allowStopping = false
+  ): Promise<unknown> {
+    if (
+      this.child !== child ||
+      (this.state !== "ready" && !(allowStopping && this.state === "stopping"))
+    ) {
+      return Promise.reject(new Error("remote-host is not ready"));
     }
     if (this.pending.size >= MAX_PENDING_REQUESTS) {
       return Promise.reject(new Error("remote-host request limit is full"));
@@ -1139,23 +1275,32 @@ export class RemoteHostManager extends EventEmitter {
     return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (this.pending.delete(request.requestId)) {
-          reject(new Error("remote-host request timed out"));
+          const failure = new Error("remote-host request timed out");
+          reject(failure);
           // The UtilityProcess may still be executing the timed-out request.
           // Retiring the whole control generation prevents a late response
           // from becoming an unknown-response protocol fault and, more
           // importantly, prevents callers from retrying alongside stale
           // bootstrap, file-transfer, or maintenance work.
-          if (this.child === child) child.kill();
+          this.failGeneration(child, failure, true);
         }
       }, timeoutMs);
       timeout.unref();
-      this.pending.set(request.requestId, { resolve, reject, timeout });
+      this.pending.set(request.requestId, {
+        child,
+        resolve,
+        reject,
+        timeout
+      });
       try {
         child.postMessage(request);
       } catch (error) {
         clearTimeout(timeout);
         this.pending.delete(request.requestId);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        reject(failure);
+        this.failGeneration(child, failure, true);
       }
     });
   }
@@ -1166,34 +1311,72 @@ export class RemoteHostManager extends EventEmitter {
     try {
       message = decodeRemoteHostResponse(rawMessage);
     } catch (error) {
-      this.emit(
-        "error",
+      this.failGeneration(
+        child,
         new Error(
-          `remote-host emitted an invalid control message: ${error instanceof Error ? error.message : String(error)}`
-        )
+          `remote-host protocol failure: ${error instanceof Error ? error.message : String(error)}`
+        ),
+        true
       );
-      child.kill();
+      return;
+    }
+    if (message.type === "remote-host.ready") {
+      if (this.state !== "starting") {
+        this.failGeneration(
+          child,
+          new Error("remote-host protocol failure: duplicate ready message"),
+          true
+        );
+        return;
+      }
+      if (this.readyTimeout) clearTimeout(this.readyTimeout);
+      this.readyTimeout = null;
+      this.state = "ready";
+      this.generationWasReady = true;
+      const resolveStart = this.resolveStart;
+      this.startPromise = null;
+      this.resolveStart = null;
+      this.rejectStart = null;
+      resolveStart?.(child);
+      return;
+    }
+    if (this.state === "starting") {
+      this.failGeneration(
+        child,
+        new Error(
+          "remote-host protocol failure: message received before ready"
+        ),
+        true
+      );
+      return;
+    }
+    if (this.state !== "ready" && this.state !== "stopping") {
       return;
     }
     if (message.type === "terminal.cursor") {
+      if (this.state !== "ready") return;
       this.emit("cursor", message satisfies RemoteHostCursorEvent);
       return;
     }
     if (message.type === "terminal.bind-failed") {
+      if (this.state !== "ready") return;
       this.emit("bind-failed", message);
       return;
     }
     if (message.type === "target.lost") {
+      if (this.state !== "ready") return;
       this.emit("target-lost", message satisfies RemoteHostTargetLostEvent);
       return;
     }
     const pending = this.pending.get(message.requestId);
-    if (!pending) {
-      this.emit(
-        "error",
-        new Error("remote-host emitted an unknown or duplicate response")
+    if (!pending || pending.child !== child) {
+      this.failGeneration(
+        child,
+        new Error(
+          "remote-host protocol failure: unknown or duplicate response"
+        ),
+        true
       );
-      child.kill();
       return;
     }
     clearTimeout(pending.timeout);
@@ -1213,17 +1396,90 @@ export class RemoteHostManager extends EventEmitter {
 
   private childExited(child: UtilityProcess): void {
     if (this.child !== child) return;
-    this.child = null;
     const error = new Error("remote-host exited before its requests completed");
-    for (const pending of this.pending.values()) {
+    if (this.state === "stopping") {
+      this.detachGeneration(child, error);
+      this.resolveStoppingExit?.();
+      return;
+    }
+    this.failGeneration(child, error, false);
+  }
+
+  private async stopReadyGeneration(child: UtilityProcess): Promise<void> {
+    const exitPromise = new Promise<void>((resolveExit) => {
+      this.resolveStoppingExit = resolveExit;
+    });
+    const shutdownRequest = {
+      type: "shutdown",
+      requestId: makeId("remote-host-request")
+    } as const;
+    const acknowledgement = this.sendRequestToChild(
+      child,
+      shutdownRequest,
+      SHUTDOWN_TIMEOUT_MS,
+      true
+    );
+    await Promise.race([
+      Promise.allSettled([acknowledgement, exitPromise]),
+      delay(SHUTDOWN_TIMEOUT_MS)
+    ]);
+  }
+
+  private cancelStartingGeneration(child: UtilityProcess, error: Error): void {
+    if (this.child !== child) return;
+    if (this.readyTimeout) clearTimeout(this.readyTimeout);
+    this.readyTimeout = null;
+    const rejectStart = this.rejectStart;
+    this.startPromise = null;
+    this.resolveStart = null;
+    this.rejectStart = null;
+    this.child = null;
+    this.generationWasReady = false;
+    rejectStart?.(error);
+    child.kill();
+    this.state = "stopped";
+  }
+
+  private failGeneration(
+    child: UtilityProcess,
+    error: Error,
+    kill: boolean
+  ): void {
+    if (this.child !== child) return;
+    const wasReady = this.generationWasReady;
+    const wasStopping = this.state === "stopping";
+    if (this.readyTimeout) clearTimeout(this.readyTimeout);
+    this.readyTimeout = null;
+    const rejectStart = this.rejectStart;
+    this.startPromise = null;
+    this.resolveStart = null;
+    this.rejectStart = null;
+    this.detachGeneration(child, error);
+    rejectStart?.(error);
+    if (wasStopping) {
+      this.resolveStoppingExit?.();
+    } else {
+      this.state = "stopped";
+      if (wasReady) this.emit("runtime-lost");
+      this.reportError(error);
+    }
+    if (kill) child.kill();
+  }
+
+  private detachGeneration(child: UtilityProcess, error: Error): void {
+    if (this.child !== child) return;
+    this.child = null;
+    this.generationWasReady = false;
+    for (const [requestId, pending] of this.pending) {
+      if (pending.child !== child) continue;
       clearTimeout(pending.timeout);
+      this.pending.delete(requestId);
       pending.reject(error);
     }
-    this.pending.clear();
-    if (!this.intentionallyStopped) {
-      this.emit("runtime-lost");
-      this.emit("error", error);
-    }
+  }
+
+  private reportError(error: Error): void {
+    if (this.listenerCount("error") > 0) this.emit("error", error);
   }
 }
 
@@ -1754,6 +2010,14 @@ function defaultRemoteHostManagerOptions(): RemoteHostManagerOptions {
       `kmux-remote-transfers-${process.getuid?.() ?? "user"}`
     )
   };
+}
+
+function copyProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string"
+    )
+  );
 }
 
 async function delay(durationMs: number): Promise<void> {

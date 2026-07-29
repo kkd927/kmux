@@ -11,6 +11,8 @@ import type {
   ShellStoreSnapshot,
   SshAskpassPrompt,
   SshConnectionsSnapshot,
+  SshProfileDto,
+  SshProfileVm,
   TerminalThemeProfile,
   TerminalThemeVariant,
   WorktreeConversionPreview,
@@ -75,6 +77,10 @@ import {
   classifySshAskpassPrompt,
   type SshAskpassPromptKind
 } from "./sshAskpassPrompt";
+import {
+  mergeSshProfileResolution,
+  sameSshProfileDefinition
+} from "./sshProfileResolution";
 import styles from "./styles/App.module.css";
 
 type ActiveShortcutContext = {
@@ -143,6 +149,7 @@ type SshWorkspaceDialog = {
   selectedProfileId: string | null;
   continuation: "convert" | "create";
   phase: "idle" | "preparing" | "committing";
+  routeUnavailableProfileId?: string;
   requestId?: string;
   error?: string | null;
 };
@@ -1296,11 +1303,7 @@ export function App(): JSX.Element {
         onSubmitSshAskpass={() => void respondToSshAskpass(false)}
         onCloseSshWorkspaceDialog={closeSshWorkspaceDialog}
         onSelectSshProfile={(profileId) =>
-          setSshWorkspaceDialog((current) =>
-            current
-              ? { ...current, selectedProfileId: profileId, error: null }
-              : current
-          )
+          void selectSshWorkspaceProfile(profileId)
         }
         onSelectSshContinuation={(continuation) =>
           setSshWorkspaceDialog((current) =>
@@ -1746,17 +1749,21 @@ export function App(): JSX.Element {
       phase: "idle"
     });
     try {
-      const connections = await window.kmux.getSshConnections(true);
+      const connections = await window.kmux.getSshConnections();
+      const selectedProfile = connections.profiles[0];
       setSshWorkspaceDialog((current) =>
         current?.workspaceId === workspaceId
           ? {
               ...current,
               connections,
               selectedProfileId:
-                current.selectedProfileId ?? connections.profiles[0]?.id ?? null
+                current.selectedProfileId ?? selectedProfile?.id ?? null
             }
           : current
       );
+      if (selectedProfile) {
+        void resolveSshWorkspaceProfile(workspaceId, selectedProfile);
+      }
     } catch (error) {
       setSshWorkspaceDialog((current) =>
         current?.workspaceId === workspaceId
@@ -1764,6 +1771,75 @@ export function App(): JSX.Element {
           : current
       );
     }
+  }
+
+  async function selectSshWorkspaceProfile(profileId: string): Promise<void> {
+    const dialog = sshWorkspaceDialog;
+    const profile = dialog?.connections?.profiles.find(
+      (candidate) => candidate.id === profileId
+    );
+    setSshWorkspaceDialog((current) =>
+      current
+        ? {
+            ...current,
+            selectedProfileId: profileId,
+            routeUnavailableProfileId: undefined,
+            error: null
+          }
+        : current
+    );
+    if (dialog && profile) {
+      await resolveSshWorkspaceProfile(dialog.workspaceId, profile);
+    }
+  }
+
+  async function resolveSshWorkspaceProfile(
+    workspaceId: string,
+    requestedProfile: SshProfileDto
+  ): Promise<void> {
+    let resolved: SshProfileVm | null;
+    try {
+      resolved = await window.kmux.resolveSshProfile(requestedProfile.id);
+    } catch {
+      resolved = { ...structuredClone(requestedProfile) };
+    }
+    if (!resolved) return;
+    setSshWorkspaceDialog((current) => {
+      if (
+        current?.workspaceId !== workspaceId ||
+        current.selectedProfileId !== requestedProfile.id ||
+        !current.connections
+      ) {
+        return current;
+      }
+      const currentProfile = current.connections.profiles.find(
+        (profile) => profile.id === requestedProfile.id
+      );
+      if (
+        !currentProfile ||
+        !sameSshProfileDefinition(currentProfile, requestedProfile)
+      ) {
+        return current;
+      }
+      const merged = mergeSshProfileResolution(
+        currentProfile,
+        requestedProfile,
+        resolved
+      );
+      if (!merged) return current;
+      return {
+        ...current,
+        connections: {
+          ...current.connections,
+          profiles: current.connections.profiles.map((profile) =>
+            profile.id === merged.id ? merged : profile
+          )
+        },
+        routeUnavailableProfileId: merged.effectiveConnection
+          ? undefined
+          : merged.id
+      };
+    });
   }
 
   async function confirmSshWorkspaceDialog(): Promise<void> {

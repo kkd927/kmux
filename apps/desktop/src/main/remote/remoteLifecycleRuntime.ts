@@ -88,7 +88,6 @@ export interface CreateRemoteLifecycleRuntimeOptions {
   desktopInstallationId: Id;
   operationStore: DurableRemoteOperationStore;
   host: RemoteHostManager;
-  hostEnv?: NodeJS.ProcessEnv;
   getState: () => AppState;
   getTargetBinding: (targetId: Id) => RemoteTargetBinding | undefined;
   replaceTargetBinding: (binding: RemoteTargetBinding) => void;
@@ -187,6 +186,10 @@ export class RemoteLifecycleRuntime {
     for (const connection of this.connections.values()) {
       this.markObservationUnknown(connection.targetId);
     }
+    this.scheduleRuntimeReconnect();
+  };
+
+  private scheduleRuntimeReconnect(): void {
     if (this.runtimeReconnectTimer || this.connections.size === 0) return;
     const delayMs =
       this.consecutiveRuntimeLosses === 0
@@ -208,12 +211,19 @@ export class RemoteLifecycleRuntime {
             await this.connectTargetNow(connection);
           } catch (error) {
             this.report(error);
+            // A replacement UtilityProcess that fails before ready must not
+            // emit runtime-lost: it never owned a usable runtime generation.
+            // Keep this recovery loop alive here instead, where we know there
+            // are previously connected targets waiting to be restored.
+            if (!this.options.host.isReady()) {
+              this.scheduleRuntimeReconnect();
+            }
           }
         });
       }
     }, delayMs);
     this.runtimeReconnectTimer.unref();
-  };
+  }
 
   private readonly onTargetLost = (event: RemoteHostTargetLostEvent): void => {
     if (this.stopping) return;
@@ -330,10 +340,6 @@ export class RemoteLifecycleRuntime {
       if (this.stopping) {
         throw new Error("remote lifecycle is stopping");
       }
-      this.options.host.start(this.options.hostEnv);
-      if (!this.options.host.isRunning()) {
-        throw new Error("remote-host failed to start");
-      }
       let hello: Extract<RemoteBridgeResponseBody, { type: "hello" }>;
       try {
         hello = decodeHello(
@@ -368,7 +374,7 @@ export class RemoteLifecycleRuntime {
       this.connectedTargets.delete(targetId);
       this.targetPersistenceLevels.delete(targetId);
       this.markObservationUnknown(targetId);
-      if (this.options.host.isRunning()) {
+      if (this.options.host.isReady()) {
         await this.options.host.disconnectTarget(targetId);
       }
     });
@@ -378,7 +384,7 @@ export class RemoteLifecycleRuntime {
     return await this.enqueueTarget(targetId, async () => {
       if (
         !this.connectedTargets.has(targetId) ||
-        !this.options.host.isRunning()
+        !this.options.host.isReady()
       ) {
         throw new Error("remote target must be connected before runtime clean");
       }
@@ -394,7 +400,7 @@ export class RemoteLifecycleRuntime {
       assertTargetUnreferenced?.();
       if (
         !this.connectedTargets.has(targetId) ||
-        !this.options.host.isRunning()
+        !this.options.host.isReady()
       ) {
         throw new Error("remote target must be connected before runtime reset");
       }
@@ -1053,10 +1059,6 @@ export class RemoteLifecycleRuntime {
       throw new Error(
         "remote target connection policy differs from its verified binding"
       );
-    }
-    this.options.host.start(this.options.hostEnv);
-    if (!this.options.host.isRunning()) {
-      throw new Error("remote-host failed to start");
     }
     const connectionAttemptId = makeId("ssh-reconnect-attempt");
     const verificationId = makeId("ssh-reconnect-verification");

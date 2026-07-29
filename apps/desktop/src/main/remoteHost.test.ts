@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { MessagePortMain, UtilityProcess } from "electron";
+import type { ForkOptions, MessagePortMain, UtilityProcess } from "electron";
 
 import { parseUint64Decimal } from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
@@ -10,10 +10,232 @@ import {
 } from "./remoteHost";
 
 describe("RemoteHostManager", () => {
-  it("resolves the sibling utility entry from the bundled Main directory", () => {
-    expect(resolveRemoteHostLaunchOptions("/app/out/main")).toEqual({
-      entry: "/app/out/main/remoteHost.js",
-      cwd: "/app/out/main"
+  it("resolves physical remote-host entries for dev, production, and packaged apps", () => {
+    expect(
+      resolveRemoteHostLaunchOptions(
+        "/repo/apps/desktop/out/main",
+        "development"
+      )
+    ).toEqual({
+      entry: "/repo/apps/desktop/src/remote-host/dev-entry.cjs",
+      cwd: "/repo"
+    });
+    expect(
+      resolveRemoteHostLaunchOptions(
+        "/repo/apps/desktop/out/main",
+        "production"
+      )
+    ).toEqual({
+      entry: "/repo/apps/desktop/dist/remote-host/index.cjs",
+      cwd: "/repo"
+    });
+    expect(
+      resolveRemoteHostLaunchOptions(
+        "/Applications/kmux.app/Contents/Resources/app.asar/out/main",
+        "production",
+        "/Applications/kmux.app/Contents/Resources"
+      )
+    ).toEqual({
+      entry:
+        "/Applications/kmux.app/Contents/Resources/app.asar.unpacked/dist/remote-host/index.cjs",
+      cwd: "/Applications/kmux.app/Contents/Resources"
+    });
+  });
+
+  it("holds concurrent requests until one shared process reports ready", async () => {
+    const child = new FakeUtilityProcess(false);
+    const fork = vi.fn(
+      (_modulePath: string, _args?: string[], _options?: ForkOptions) =>
+        child as unknown as UtilityProcess
+    );
+    const sourceEnv = { PATH: "/opt/kmux/bin", LANG: "en_US.UTF-8" };
+    const manager = new RemoteHostManager(fork, {
+      runtimeArtifactRoot: "/opt/kmux/remote-runtime",
+      transferRoot: "/tmp/kmux-remote-transfers",
+      env: sourceEnv
+    });
+    manager.on("error", vi.fn());
+    sourceEnv.PATH = "/mutated";
+
+    const first = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "first"
+    });
+    const second = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "second"
+    });
+
+    expect(fork).toHaveBeenCalledOnce();
+    expect(child.messages).toEqual([]);
+    expect(fork.mock.calls[0]?.[2]?.env).toMatchObject({
+      PATH: "/opt/kmux/bin",
+      LANG: "en_US.UTF-8"
+    });
+
+    child.emit("message", {
+      type: "remote-host.ready",
+      protocolVersion: 1
+    });
+    await Promise.resolve();
+    expect(child.messages).toHaveLength(2);
+    for (const { message } of child.messages) {
+      const request = message as {
+        requestId: string;
+        sshPath: string;
+        configPath: string;
+        host: string;
+      };
+      child.emit("message", {
+        type: "response",
+        requestId: request.requestId,
+        status: "ok",
+        body: {
+          type: "ssh-config.resolved",
+          sshPath: request.sshPath,
+          configPath: request.configPath,
+          host: request.host,
+          effective: effectiveSshConfig()
+        }
+      });
+    }
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+  });
+
+  it("retires a ready-timeout generation and starts a fresh one on retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const firstChild = new FakeUtilityProcess(false);
+      const secondChild = new FakeUtilityProcess();
+      const fork = vi
+        .fn()
+        .mockReturnValueOnce(firstChild as unknown as UtilityProcess)
+        .mockReturnValueOnce(secondChild as unknown as UtilityProcess);
+      const manager = new RemoteHostManager(fork);
+      manager.on("error", vi.fn());
+
+      const first = manager.resolveSshConfig({
+        sshPath: "/usr/bin/ssh",
+        configPath: "/tmp/ssh_config",
+        host: "timeout"
+      });
+      const rejected = expect(first).rejects.toThrow(/ready timeout/u);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(firstChild.killed).toBe(true);
+      expect(manager.isReady()).toBe(false);
+
+      const retry = manager.resolveSshConfig({
+        sshPath: "/usr/bin/ssh",
+        configPath: "/tmp/ssh_config",
+        host: "retry"
+      });
+      respondToLastSshConfigRequest(secondChild);
+      await expect(retry).resolves.toMatchObject({
+        hostName: "target.internal"
+      });
+      expect(fork).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires pre-ready exit, error, and protocol mismatch without runtime-lost", async () => {
+    const children = [
+      new FakeUtilityProcess(false),
+      new FakeUtilityProcess(false),
+      new FakeUtilityProcess(false),
+      new FakeUtilityProcess()
+    ];
+    const fork = vi.fn(() => children.shift() as unknown as UtilityProcess);
+    const manager = new RemoteHostManager(fork);
+    manager.on("error", vi.fn());
+    const lost = vi.fn();
+    manager.on("runtime-lost", lost);
+
+    const exited = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "exit"
+    });
+    const exitedRejection = expect(exited).rejects.toThrow(/exited/u);
+    (fork.mock.results[0]?.value as unknown as FakeUtilityProcess).emit(
+      "exit",
+      1
+    );
+    await exitedRejection;
+
+    const errored = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "error"
+    });
+    const errorRejection = expect(errored).rejects.toThrow(
+      /utility process failed/u
+    );
+    (fork.mock.results[1]?.value as unknown as FakeUtilityProcess).emit(
+      "error",
+      "launch",
+      "/remote-host"
+    );
+    await errorRejection;
+
+    const mismatched = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "mismatch"
+    });
+    const mismatchRejection =
+      expect(mismatched).rejects.toThrow(/protocol failure/u);
+    (fork.mock.results[2]?.value as unknown as FakeUtilityProcess).emit(
+      "message",
+      { type: "remote-host.ready", protocolVersion: 2 }
+    );
+    await mismatchRejection;
+
+    const retry = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "healthy"
+    });
+    const healthy = fork.mock.results[3]
+      ?.value as unknown as FakeUtilityProcess;
+    respondToLastSshConfigRequest(healthy);
+    await expect(retry).resolves.toMatchObject({
+      hostName: "target.internal"
+    });
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a synchronous fork failure and retries on the next request", async () => {
+    const child = new FakeUtilityProcess();
+    const fork = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("bundle is missing");
+      })
+      .mockReturnValueOnce(child as unknown as UtilityProcess);
+    const manager = new RemoteHostManager(fork);
+    manager.on("error", vi.fn());
+
+    await expect(
+      manager.resolveSshConfig({
+        sshPath: "/usr/bin/ssh",
+        configPath: "/tmp/ssh_config",
+        host: "missing"
+      })
+    ).rejects.toThrow(/failed to start: bundle is missing/u);
+
+    const retry = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "healthy"
+    });
+    respondToLastSshConfigRequest(child);
+    await expect(retry).resolves.toMatchObject({
+      hostName: "target.internal"
     });
   });
 
@@ -23,8 +245,6 @@ describe("RemoteHostManager", () => {
       () => child as unknown as UtilityProcess
     );
     manager.on("error", vi.fn());
-    manager.start();
-
     const resolving = manager.resolveSshConfig({
       sshPath: "/usr/bin/ssh",
       configPath: "/tmp/ssh_config",
@@ -94,8 +314,6 @@ describe("RemoteHostManager", () => {
       () => child as unknown as UtilityProcess
     );
     manager.on("error", vi.fn());
-    manager.start();
-
     const inspection = manager.inspectGit({
       targetId: "target_1",
       desktopInstallationId: "desktop_1",
@@ -130,10 +348,32 @@ describe("RemoteHostManager", () => {
     const errors: Error[] = [];
     const cursors: unknown[] = [];
     const targetLosses: unknown[] = [];
+    const lost = vi.fn();
     manager.on("error", (error: Error) => errors.push(error));
     manager.on("cursor", (cursor) => cursors.push(cursor));
     manager.on("target-lost", (event) => targetLosses.push(event));
-    manager.start({ PATH: "/usr/bin" });
+    manager.on("runtime-lost", lost);
+    const readying = manager.resolveSshConfig({
+      sshPath: "/usr/bin/ssh",
+      configPath: "/tmp/ssh_config",
+      host: "target-alias"
+    });
+    const readyRequest = child.messages.at(-1)?.message as {
+      requestId: string;
+    };
+    child.emit("message", {
+      type: "response",
+      requestId: readyRequest.requestId,
+      status: "ok",
+      body: {
+        type: "ssh-config.resolved",
+        sshPath: "/usr/bin/ssh",
+        configPath: "/tmp/ssh_config",
+        host: "target-alias",
+        effective: effectiveSshConfig()
+      }
+    });
+    await readying;
 
     const rendererPort = new EventEmitter() as unknown as MessagePortMain;
     expect(
@@ -169,7 +409,7 @@ describe("RemoteHostManager", () => {
       }
     });
     expect(cursors).toEqual([]);
-    expect(child.messages).toHaveLength(1);
+    expect(child.messages).toHaveLength(2);
 
     child.emit("message", {
       type: "terminal.cursor",
@@ -210,9 +450,10 @@ describe("RemoteHostManager", () => {
       status: "ok",
       body: { type: "shutdown.complete" }
     });
-    await stopped;
     child.emit("exit", 0);
+    await stopped;
     expect(errors).toEqual([]);
+    expect(lost).not.toHaveBeenCalled();
   });
 
   it("validates provisional authority evidence before promoting an immutable target", async () => {
@@ -225,7 +466,6 @@ describe("RemoteHostManager", () => {
       }
     );
     manager.on("error", vi.fn());
-    manager.start();
     const roots = {
       installRoot: "/home/kmux/.kmux",
       authorityRoot: "/home/kmux/.kmux/state/authority",
@@ -315,14 +555,13 @@ describe("RemoteHostManager", () => {
     manager.on("error", vi.fn());
     const lost = vi.fn();
     manager.on("runtime-lost", lost);
-    manager.start();
     const observation = manager.observe("target_1", "desktop_1");
 
     child.emit("exit", 1);
 
     await expect(observation).rejects.toThrow(/exited/u);
     expect(lost).toHaveBeenCalledOnce();
-    expect(manager.isRunning()).toBe(false);
+    expect(manager.isReady()).toBe(false);
   });
 
   it("retires the utility generation when a request times out", async () => {
@@ -333,8 +572,6 @@ describe("RemoteHostManager", () => {
         () => child as unknown as UtilityProcess
       );
       manager.on("error", vi.fn());
-      manager.start();
-
       const observation = manager.observe("target_1", "desktop_1");
       const rejection = expect(observation).rejects.toThrow(/timed out/u);
       await vi.advanceTimersByTimeAsync(30_000);
@@ -342,7 +579,7 @@ describe("RemoteHostManager", () => {
       await rejection;
       expect(child.killed).toBe(true);
       await vi.runAllTimersAsync();
-      expect(manager.isRunning()).toBe(false);
+      expect(manager.isReady()).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -354,7 +591,6 @@ describe("RemoteHostManager", () => {
       () => child as unknown as UtilityProcess
     );
     manager.on("error", vi.fn());
-    manager.start();
     const resourceKey = {
       desktopInstallationId: "desktop_1",
       targetId: "target_1",
@@ -545,7 +781,6 @@ describe("RemoteHostManager", () => {
       () => child as unknown as UtilityProcess
     );
     manager.on("error", vi.fn());
-    manager.start();
     const generation = `1+${"c".repeat(64)}`;
 
     const cleaning = manager.cleanTargetRuntime("target_1");
@@ -599,6 +834,26 @@ describe("RemoteHostManager", () => {
 class FakeUtilityProcess extends EventEmitter {
   readonly messages: Array<{ message: unknown; ports: unknown[] }> = [];
   killed = false;
+  private readySent = false;
+
+  constructor(private readonly autoReady = true) {
+    super();
+  }
+
+  override on(
+    eventName: string | symbol,
+    listener: (...args: any[]) => void
+  ): this {
+    super.on(eventName, listener);
+    if (eventName === "message" && this.autoReady && !this.readySent) {
+      this.readySent = true;
+      this.emit("message", {
+        type: "remote-host.ready",
+        protocolVersion: 1
+      });
+    }
+    return this;
+  }
 
   postMessage(message: unknown, ports: unknown[] = []): void {
     this.messages.push({ message, ports });
@@ -610,6 +865,38 @@ class FakeUtilityProcess extends EventEmitter {
     queueMicrotask(() => this.emit("exit", null));
     return true;
   }
+}
+
+function effectiveSshConfig() {
+  return {
+    hostName: "target.internal",
+    user: "kmux",
+    port: 22,
+    identityFiles: [],
+    canonicalLines: ["hostname target.internal", "user kmux"],
+    policyHash: "a".repeat(64)
+  };
+}
+
+function respondToLastSshConfigRequest(child: FakeUtilityProcess): void {
+  const request = child.messages.at(-1)?.message as {
+    requestId: string;
+    sshPath: string;
+    configPath: string;
+    host: string;
+  };
+  child.emit("message", {
+    type: "response",
+    requestId: request.requestId,
+    status: "ok",
+    body: {
+      type: "ssh-config.resolved",
+      sshPath: request.sshPath,
+      configPath: request.configPath,
+      host: request.host,
+      effective: effectiveSshConfig()
+    }
+  });
 }
 
 function hello() {

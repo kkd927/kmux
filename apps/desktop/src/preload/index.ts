@@ -39,6 +39,7 @@ import type {
   SshAskpassPrompt,
   SshAskpassResponseRequest,
   SshProfileDto,
+  SshProfileVm,
   SshProfileSaveRequest,
   SshRuntimeCleanReport,
   SshRuntimeResetReport,
@@ -157,10 +158,13 @@ const api = {
       resourceKey
     );
   },
-  getSshConnections(resolveEffective = false): Promise<SshConnectionsSnapshot> {
+  getSshConnections(): Promise<SshConnectionsSnapshot> {
+    return ipcRenderer.invoke("kmux:ssh-connections:get");
+  },
+  resolveSshProfile(profileId: string): Promise<SshProfileVm | null> {
     return ipcRenderer.invoke(
-      "kmux:ssh-connections:get",
-      resolveEffective === true
+      "kmux:ssh-connections:resolve-profile",
+      profileId
     );
   },
   listSshConfigAliases(): Promise<string[]> {

@@ -24,6 +24,7 @@ import type {
   SshAskpassPrompt,
   SshAskpassResponseRequest,
   SshProfileDto,
+  SshProfileVm,
   SshProfileSaveRequest,
   SshRuntimeCleanReport,
   SshRuntimeResetReport,
@@ -74,9 +75,8 @@ declare global {
       terminateRetainedRemoteSession(
         resourceKey: RetainedRemoteSessionResourceKey
       ): Promise<RemoteOperationCommandResult>;
-      getSshConnections(
-        resolveEffective?: boolean
-      ): Promise<SshConnectionsSnapshot>;
+      getSshConnections(): Promise<SshConnectionsSnapshot>;
+      resolveSshProfile(profileId: string): Promise<SshProfileVm | null>;
       listSshConfigAliases(): Promise<string[]>;
       importSshConfigAliases(
         aliases: string[]

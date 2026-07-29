@@ -730,15 +730,22 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
-  it("backs off repeated remote-host crashes instead of spinning UtilityProcess restarts", async () => {
+  it("backs off and continues recovery when a replacement exits before ready", async () => {
     vi.useFakeTimers();
     const fixture = remoteFixture();
     const children: ScriptedUtilityProcess[] = [];
     let runtime: RemoteLifecycleRuntime | undefined;
     try {
       const host = new RemoteHostManager(() => {
-        const child = new ScriptedUtilityProcess(new Map());
-        const index = children.push(child) - 1;
+        const index = children.length;
+        const child = new ScriptedUtilityProcess(
+          new Map(),
+          hello(),
+          false,
+          [],
+          index !== 1
+        );
+        children.push(child);
         if (index === 1) queueMicrotask(() => child.crash());
         return child as unknown as UtilityProcess;
       });
@@ -750,6 +757,7 @@ describe("RemoteLifecycleRuntime", () => {
       children[0].crash();
       await vi.advanceTimersByTimeAsync(0);
       expect(children).toHaveLength(2);
+      expect(children[1].messages).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(249);
       expect(children).toHaveLength(2);
@@ -1257,7 +1265,6 @@ function createRuntime(
     desktopInstallationId: "desktop_1",
     operationStore,
     host,
-    hostEnv: { PATH: "/usr/bin" },
     getState: () => state,
     getTargetBinding: (targetId) =>
       targetId === targetBinding.id ? targetBinding : undefined,
@@ -1392,14 +1399,31 @@ class ScriptedUtilityProcess extends EventEmitter {
   readonly messages: Array<Record<string, unknown>> = [];
   acknowledgedThrough = 0n;
   private exited = false;
+  private readySent = false;
 
   constructor(
     private readonly keepers: Map<string, ScriptedKeeper>,
     private readonly handshake = hello(),
     private readonly failObserve = false,
-    private readonly events: RemoteSpoolEventDto[] = []
+    private readonly events: RemoteSpoolEventDto[] = [],
+    private readonly sendReady = true
   ) {
     super();
+  }
+
+  override on(
+    eventName: string | symbol,
+    listener: (...args: any[]) => void
+  ): this {
+    super.on(eventName, listener);
+    if (eventName === "message" && this.sendReady && !this.readySent) {
+      this.readySent = true;
+      this.emit("message", {
+        type: "remote-host.ready",
+        protocolVersion: 1
+      });
+    }
+    return this;
   }
 
   postMessage(value: unknown): void {

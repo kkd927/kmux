@@ -76,7 +76,6 @@ export default defineConfig({
             "src/main/externalSessionScanWorker.ts"
           ),
           usageScanWorker: resolve(currentDir, "src/main/usageScanWorker.ts"),
-          remoteHost: resolve(currentDir, "src/remote-host/index.ts"),
           askpassClient: resolve(currentDir, "src/askpass-client/index.ts")
         }
       }

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   validateRemoteTargetBinding,
@@ -51,9 +52,8 @@ export interface ConnectedSshProfile {
 }
 
 export interface SshConnectionRuntime {
-  getSnapshot(options?: {
-    resolveEffective?: boolean;
-  }): Promise<SshConnectionsSnapshot>;
+  getSnapshot(): Promise<SshConnectionsSnapshot>;
+  resolveProfile(profileId: Id): Promise<SshProfileVm | null>;
   saveProfile(
     profileId: Id | undefined,
     draft: SshProfileDraftDto
@@ -86,7 +86,6 @@ export function createSshConnectionRuntime(options: {
   host: RemoteHostManager;
   lifecycle: RemoteLifecycleRuntime;
   platform?: NodeJS.Platform;
-  hostEnv?: NodeJS.ProcessEnv;
   controlRoot?: string;
   askpassPath?: string;
   askpassBroker?: SshAskpassBroker;
@@ -108,7 +107,18 @@ export function createSshConnectionRuntime(options: {
     options.makeToken ?? (() => randomBytes(32).toString("hex"));
   const effectiveCache = new Map<
     Id,
-    ResolvedSshProfileConnection["effective"]
+    {
+      profile: SshProfileDto;
+      effective: ResolvedSshProfileConnection["effective"];
+    }
+  >();
+  const effectiveResolutionTokens = new Map<Id, symbol>();
+  const profileResolutions = new Map<
+    Id,
+    {
+      profile: SshProfileDto;
+      promise: Promise<SshProfileVm | null>;
+    }
   >();
   // Authority verification may run concurrently, but choosing the immutable
   // target ID and persisting the promoted binding is one Main-owned
@@ -137,42 +147,120 @@ export function createSshConnectionRuntime(options: {
     updatedAt = now();
   };
 
+  const profileVm = (profile: SshProfileDto): SshProfileVm => {
+    const cached = effectiveCache.get(profile.id);
+    const effective =
+      cached && isDeepStrictEqual(cached.profile, profile)
+        ? cached.effective
+        : undefined;
+    if (cached && effective === undefined) effectiveCache.delete(profile.id);
+    return buildProfileVm(
+      profile,
+      effective,
+      newestProfileBinding(options.bindings.list(), profile.id),
+      options.profiles.getError(profile.id)
+    );
+  };
+
+  const beginEffectiveResolution = (profileId: Id): symbol => {
+    const token = Symbol(profileId);
+    effectiveResolutionTokens.set(profileId, token);
+    return token;
+  };
+
+  const invalidateEffectiveResolution = (profileId: Id): void => {
+    beginEffectiveResolution(profileId);
+    effectiveCache.delete(profileId);
+  };
+
+  const cacheEffective = (
+    profile: SshProfileDto,
+    effective: ResolvedSshProfileConnection["effective"],
+    token: symbol
+  ): boolean => {
+    const current = options.profiles.get(profile.id);
+    if (
+      effectiveResolutionTokens.get(profile.id) !== token ||
+      !current ||
+      !isDeepStrictEqual(current, profile)
+    ) {
+      return false;
+    }
+    effectiveCache.set(profile.id, {
+      profile: structuredClone(current),
+      effective: structuredClone(effective)
+    });
+    return true;
+  };
+
   const snapshot = (): SshConnectionsSnapshot => ({
-    profiles: options.profiles
-      .list()
-      .map((profile) =>
-        buildProfileVm(
-          profile,
-          effectiveCache.get(profile.id),
-          newestProfileBinding(options.bindings.list(), profile.id),
-          options.profiles.getError(profile.id)
-        )
-      ),
+    profiles: options.profiles.list().map(profileVm),
     updatedAt
   });
 
   return Object.freeze({
-    async getSnapshot(
-      request: { resolveEffective?: boolean } = {}
-    ): Promise<SshConnectionsSnapshot> {
-      if (request.resolveEffective) {
-        await Promise.all(
-          options.profiles.list().map(async (profile) => {
-            try {
-              const resolved = await options.resolver.resolve(
-                profile,
-                makeConnectionAttemptId()
-              );
-              effectiveCache.set(profile.id, resolved.effective);
-            } catch {
-              // Config resolution diagnostics are returned by explicit test or
-              // connect. Listing settings must not overwrite the last actual
-              // connection/bootstrap error.
-            }
-          })
-        );
-      }
+    async getSnapshot(): Promise<SshConnectionsSnapshot> {
       return snapshot();
+    },
+
+    async resolveProfile(profileId: Id): Promise<SshProfileVm | null> {
+      const profile = options.profiles.get(profileId);
+      if (!profile) return null;
+
+      const cached = effectiveCache.get(profileId);
+      if (cached && !isDeepStrictEqual(cached.profile, profile)) {
+        effectiveCache.delete(profileId);
+      }
+
+      const pending = profileResolutions.get(profileId);
+      if (pending && isDeepStrictEqual(pending.profile, profile)) {
+        return pending.promise;
+      }
+
+      const requestedProfile = structuredClone(profile);
+      const token = beginEffectiveResolution(profileId);
+      const promise = (async (): Promise<SshProfileVm | null> => {
+        try {
+          const resolved = await options.resolver.resolve(
+            requestedProfile,
+            makeConnectionAttemptId()
+          );
+          if (!cacheEffective(requestedProfile, resolved.effective, token)) {
+            return null;
+          }
+          const current = options.profiles.get(profileId);
+          if (!current) return null;
+          return profileVm(current);
+        } catch {
+          const current = options.profiles.get(profileId);
+          if (
+            effectiveResolutionTokens.get(profileId) !== token ||
+            !current ||
+            !isDeepStrictEqual(current, requestedProfile)
+          ) {
+            return null;
+          }
+          effectiveCache.delete(profileId);
+          return profileVm(current);
+        }
+      })();
+      profileResolutions.set(profileId, {
+        profile: requestedProfile,
+        promise
+      });
+      void promise.then(
+        () => {
+          if (profileResolutions.get(profileId)?.promise === promise) {
+            profileResolutions.delete(profileId);
+          }
+        },
+        () => {
+          if (profileResolutions.get(profileId)?.promise === promise) {
+            profileResolutions.delete(profileId);
+          }
+        }
+      );
+      return promise;
     },
 
     saveProfile(
@@ -180,7 +268,7 @@ export function createSshConnectionRuntime(options: {
       draft: SshProfileDraftDto
     ): SshProfileDto {
       const saved = options.profiles.save(profileId, draft);
-      effectiveCache.delete(saved.id);
+      invalidateEffectiveResolution(saved.id);
       touch();
       return saved;
     },
@@ -202,7 +290,7 @@ export function createSshConnectionRuntime(options: {
       }
       for (const binding of bindings) options.bindings.remove(binding.id);
       options.profiles.remove(profileId);
-      effectiveCache.delete(profileId);
+      invalidateEffectiveResolution(profileId);
       touch();
     },
 
@@ -222,15 +310,12 @@ export function createSshConnectionRuntime(options: {
           throw new Error("SSH authentication was cancelled");
         }
         const connectionAttemptId = makeConnectionAttemptId();
+        const effectiveResolutionToken = beginEffectiveResolution(profile.id);
         const resolved = await options.resolver.resolve(
           profile,
           connectionAttemptId
         );
-        effectiveCache.set(profile.id, resolved.effective);
-        options.host.start(options.hostEnv);
-        if (!options.host.isRunning()) {
-          throw new Error("remote-host failed to start");
-        }
+        cacheEffective(profile, resolved.effective, effectiveResolutionToken);
         const verificationId = makeVerificationId();
         askpassContext = await options.askpassBroker?.createContext(profile);
         internal.signal?.addEventListener("abort", cancelAskpass, {
@@ -399,11 +484,12 @@ export function createSshConnectionRuntime(options: {
       let verification: RemoteHostTargetVerification | undefined;
       try {
         const connectionAttemptId = makeConnectionAttemptId();
+        const effectiveResolutionToken = beginEffectiveResolution(profile.id);
         const resolved = await options.resolver.resolve(
           profile,
           connectionAttemptId
         );
-        effectiveCache.set(profile.id, resolved.effective);
+        cacheEffective(profile, resolved.effective, effectiveResolutionToken);
         if (
           resolved.effective.policyHash !==
           binding.locator.effectiveConnectionPolicyHash
@@ -411,10 +497,6 @@ export function createSshConnectionRuntime(options: {
           throw new Error(
             "restored SSH profile policy changed; explicit verification or rebind is required"
           );
-        }
-        options.host.start(options.hostEnv);
-        if (!options.host.isRunning()) {
-          throw new Error("remote-host failed to start");
         }
         const verificationId = makeVerificationId();
         // Automatic restore deliberately has no askpass context. OpenSSH may
