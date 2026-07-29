@@ -164,6 +164,7 @@ export interface ExternalAgentSessionVm {
 export interface ExternalAgentSessionsSnapshot {
   sessions: ExternalAgentSessionVm[];
   updatedAt: string;
+  truncated?: boolean;
   unavailableTargets?: Array<
     | { kind: "local"; message: string }
     | { kind: "ssh"; targetId: Id; message: string }
@@ -1131,15 +1132,6 @@ export interface WorkspaceUsageVm {
   costSource?: UsageCostSource;
 }
 
-export interface DirectoryHotspotVm {
-  target: UsageTargetIdentityVm;
-  directoryPath: string;
-  directoryLabel: string;
-  todayCostUsd: number;
-  todayTokens: number;
-  costSource?: UsageCostSource;
-}
-
 export type UsageTargetIdentityVm =
   | { kind: "local" }
   | {
@@ -1153,12 +1145,7 @@ export interface UsageTargetSummaryVm {
   todayCostUsd: number;
   todayTokens: number;
   costSource?: UsageCostSource;
-  truncated: boolean;
 }
-
-export type UsageUnavailableTargetVm =
-  | { kind: "local"; message: string }
-  | { kind: "ssh"; targetId: Id; message: string };
 
 export interface VendorUsageVm {
   vendor: UsageVendor;
@@ -1264,9 +1251,7 @@ export interface UsageViewSnapshot {
   unattributedTodayTokens: number;
   surfaces: Record<Id, SurfaceUsageVm>;
   workspaces: WorkspaceUsageVm[];
-  directoryHotspots: DirectoryHotspotVm[];
   targets: UsageTargetSummaryVm[];
-  unavailableTargets: UsageUnavailableTargetVm[];
   vendors: VendorUsageVm[];
   topSessions: SurfaceUsageVm[];
   models?: ModelUsageVm[];
@@ -1345,9 +1330,7 @@ export function createEmptyUsageViewSnapshot(
     unattributedTodayTokens: 0,
     surfaces: {},
     workspaces: [],
-    directoryHotspots: [],
     targets: [],
-    unavailableTargets: [],
     vendors: [],
     topSessions: [],
     models: [],

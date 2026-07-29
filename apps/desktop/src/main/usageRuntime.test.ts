@@ -80,7 +80,7 @@ describe("usage runtime", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps identical usage samples target-scoped and retains unavailable target caches", async () => {
+  it("transitions SSH usage caches across partial, full, failed, and removed targets", async () => {
     const state = createInitialState();
     const localWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
@@ -95,10 +95,20 @@ describe("usage runtime", () => {
       target: { kind: "ssh", targetId: "target_1" },
       cwd: "/srv/remote"
     });
-    let failRemote = false;
-    let remoteTokens = 20;
-    let includeStaleRemoteRecord = true;
-    let removeRemoteDuringRefresh = false;
+    const targetOneWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_2" },
+      cwd: "/srv/unavailable"
+    });
+    const targetTwoWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    let targetOneMode:
+      | "initial-partial"
+      | "partial"
+      | "full"
+      | "failed" = "initial-partial";
     const localRefresh = vi.fn(async () => ({
       truncated: false,
       records: [
@@ -117,35 +127,44 @@ describe("usage runtime", () => {
         }
       ]
     }));
-    const remoteRefresh = vi.fn(async () => {
-      if (failRemote) throw new Error("remote usage unavailable");
-      if (removeRemoteDuringRefresh) {
-        const remoteWorkspace = Object.values(state.workspaces).find(
-          (workspace) => workspace.location.target.kind === "ssh"
-        );
-        if (remoteWorkspace) delete state.workspaces[remoteWorkspace.id];
+    const targetOneRefresh = vi.fn(async () => {
+      if (targetOneMode === "failed") {
+        throw new Error("remote usage unavailable");
       }
+      const currentTokens =
+        targetOneMode === "initial-partial"
+          ? 20
+          : targetOneMode === "partial"
+            ? 25
+            : 30;
+      const timestampUnixMs =
+        targetOneMode === "initial-partial"
+          ? 2_000
+          : targetOneMode === "partial"
+            ? 2_500
+            : 3_000;
       return {
         principal: { uid: 1_000, accountName: "kmux" },
-        truncated: false,
+        truncated:
+          targetOneMode === "initial-partial" || targetOneMode === "partial",
         records: [
           {
             vendor: "codex" as const,
             sampleId: "same-sample",
-            timestampUnixMs: 2_000,
+            timestampUnixMs,
             sessionId: "same-session",
             cwd: locatedPathForTarget(
               { kind: "ssh", targetId: "target_1" },
               "/srv/remote"
             ),
-            inputTokens: remoteTokens,
+            inputTokens: currentTokens,
             outputTokens: 0,
             cacheTokens: 0,
-            totalTokens: remoteTokens,
+            totalTokens: currentTokens,
             estimatedCostUsd: 0,
             costSource: "unavailable" as const
           },
-          ...(includeStaleRemoteRecord
+          ...(targetOneMode === "initial-partial"
             ? [
                 {
                   vendor: "codex" as const,
@@ -168,6 +187,9 @@ describe("usage runtime", () => {
         ]
       };
     });
+    const targetTwoRefresh = vi.fn(async () => {
+      throw new Error("initial remote usage unavailable");
+    });
     const targetServices = {
       resolve: vi.fn(),
       resolveLocated: (
@@ -175,15 +197,22 @@ describe("usage runtime", () => {
       ) =>
         ({
           usage: {
-            refresh: target.kind === "local" ? localRefresh : remoteRefresh
+            refresh:
+              target.kind === "local"
+                ? localRefresh
+                : target.targetId === "target_1"
+                  ? targetOneRefresh
+                  : targetTwoRefresh
           }
         }) as never
     } as unknown as TargetServiceRegistry;
+    const reportTargetUsageError = vi.fn();
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
       emitSnapshot: vi.fn(),
       targetServices: () => targetServices,
+      reportTargetUsageError,
       now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
     });
 
@@ -201,56 +230,216 @@ describe("usage runtime", () => {
           todayTokens: 27
         },
         { target: { kind: "local" }, todayTokens: 10 }
-      ],
-      unavailableTargets: []
+      ]
     });
-    expect(runtime.getSnapshot().directoryHotspots).toEqual(
+    expect(runtime.getSnapshot().targets).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          target: { kind: "local" },
-          directoryPath: "/tmp/local"
-        }),
-        expect.objectContaining({
-          target: expect.objectContaining({
-            kind: "ssh",
-            targetId: "target_1"
-          }),
-          directoryPath: "/srv/remote"
+          target: { kind: "ssh", targetId: "target_2" }
         })
       ])
     );
+    expect(reportTargetUsageError).toHaveBeenCalledWith(
+      { kind: "ssh", targetId: "target_2" },
+      expect.objectContaining({ message: "initial remote usage unavailable" })
+    );
 
-    remoteTokens = 25;
-    includeStaleRemoteRecord = false;
+    applyAction(state, {
+      type: "workspace.close",
+      workspaceId: targetTwoWorkspaceId
+    });
+    targetOneMode = "partial";
     await runtime.refreshNow();
 
-    expect(runtime.getSnapshot().totalTodayTokens).toBe(35);
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(42);
     expect(
       runtime.getSnapshot().targets.find((entry) => entry.target.kind === "ssh")
         ?.todayTokens
-    ).toBe(25);
+    ).toBe(32);
+    expect(reportTargetUsageError).toHaveBeenCalledWith(
+      { kind: "ssh", targetId: "target_1" },
+      expect.objectContaining({
+        message: "usage scan reached its bound; merged partial results"
+      })
+    );
 
-    failRemote = true;
+    targetOneMode = "full";
     await runtime.refreshNow();
 
-    expect(runtime.getSnapshot().totalTodayTokens).toBe(35);
-    expect(runtime.getSnapshot().unavailableTargets).toEqual([
-      {
-        kind: "ssh",
-        targetId: "target_1",
-        message: "remote usage unavailable"
-      }
-    ]);
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(40);
+    expect(
+      runtime.getSnapshot().targets.find((entry) => entry.target.kind === "ssh")
+        ?.todayTokens
+    ).toBe(30);
 
-    failRemote = false;
-    removeRemoteDuringRefresh = true;
+    targetOneMode = "failed";
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().totalTodayTokens).toBe(40);
+    expect(
+      runtime.getSnapshot().targets.find((entry) => entry.target.kind === "ssh")
+        ?.todayTokens
+    ).toBe(30);
+    expect(reportTargetUsageError).toHaveBeenCalledWith(
+      { kind: "ssh", targetId: "target_1" },
+      expect.objectContaining({ message: "remote usage unavailable" })
+    );
+
+    applyAction(state, {
+      type: "workspace.close",
+      workspaceId: targetOneWorkspaceId
+    });
     await runtime.refreshNow();
 
     expect(runtime.getSnapshot().totalTodayTokens).toBe(10);
     expect(runtime.getSnapshot().targets).toEqual([
       expect.objectContaining({ target: { kind: "local" }, todayTokens: 10 })
     ]);
-    expect(runtime.getSnapshot().unavailableTargets).toEqual([]);
+  });
+
+  it("retries partial history backfills without replacing persisted daily totals", async () => {
+    const state = createInitialState();
+    const persistedDay = {
+      dayKey: "2026-07-17",
+      totalCostUsd: 1,
+      reportedCostUsd: 1,
+      estimatedCostUsd: 0,
+      unknownCostTokens: 0,
+      totalTokens: 100,
+      vendors: [
+        {
+          vendor: "codex" as const,
+          totalCostUsd: 1,
+          totalTokens: 100
+        }
+      ]
+    };
+    const replacementDay = {
+      ...persistedDay,
+      totalCostUsd: 2,
+      reportedCostUsd: 2,
+      totalTokens: 200,
+      vendors: [
+        {
+          vendor: "codex" as const,
+          totalCostUsd: 2,
+          totalTokens: 200
+        }
+      ]
+    };
+    let partial = true;
+    const refresh = vi.fn(async () => ({
+      records: [],
+      truncated: partial,
+      ...(partial ? {} : { historyDays: [replacementDay] })
+    }));
+    const historyStore = {
+      path: "/tmp/kmux-usage-history.json",
+      load: vi.fn(() => [persistedDay]),
+      save: vi.fn()
+    };
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: vi.fn(
+        () =>
+          ({
+            usage: { refresh }
+          }) as never
+      )
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      historyStore,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    expect(historyStore.save).not.toHaveBeenCalled();
+    expect(
+      runtime
+        .getSnapshot()
+        .dailyActivity?.find((day) => day.dayKey === persistedDay.dayKey)
+    ).toMatchObject({ totalTokens: 100 });
+
+    partial = false;
+    await runtime.refreshNow();
+
+    expect(historyStore.save).toHaveBeenCalledWith([
+      expect.objectContaining({
+        dayKey: replacementDay.dayKey,
+        totalCostUsd: 2,
+        totalTokens: 200
+      })
+    ]);
+    expect(refresh).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ historyRange: expect.any(Object) })
+    );
+  });
+
+  it("persists complete history backfill when only live records are truncated", async () => {
+    const state = createInitialState();
+    const historyDay = {
+      dayKey: "2026-07-17",
+      totalCostUsd: 1,
+      reportedCostUsd: 1,
+      estimatedCostUsd: 0,
+      unknownCostTokens: 0,
+      totalTokens: 100,
+      vendors: [
+        {
+          vendor: "codex" as const,
+          totalCostUsd: 1,
+          totalTokens: 100
+        }
+      ]
+    };
+    const refresh = vi.fn(
+      async (_request: {
+        historyRange?: { fromMs: number; toMs: number };
+      }) => ({
+        records: [],
+        truncated: true,
+        historyDays: [historyDay]
+      })
+    );
+    const historyStore = {
+      path: "/tmp/kmux-usage-history.json",
+      load: vi.fn(() => []),
+      save: vi.fn()
+    };
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: vi.fn(
+        () =>
+          ({
+            usage: { refresh }
+          }) as never
+      )
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      historyStore,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+    await runtime.refreshNow();
+
+    expect(historyStore.save).toHaveBeenCalledWith([
+      expect.objectContaining({ dayKey: historyDay.dayKey, totalTokens: 100 })
+    ]);
+    expect(refresh.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ historyRange: expect.any(Object) })
+    );
+    expect(refresh.mock.calls[1]?.[0]).not.toHaveProperty("historyRange");
   });
 
   it("starts without awaiting the scan worker and recovers from a worker error", async () => {
@@ -955,13 +1144,6 @@ describe("usage runtime", () => {
         todayCostUsd: 0.0057
       })
     );
-    expect(runtime.getSnapshot().directoryHotspots).toEqual([
-      expect.objectContaining({
-        directoryPath: "/tmp/kmux-antigravity-usage",
-        todayTokens: 2300,
-        todayCostUsd: 0.0057
-      })
-    ]);
   });
 
   it("builds model, daily activity, and pricing coverage aggregates for the dashboard", async () => {
@@ -1045,15 +1227,6 @@ describe("usage runtime", () => {
         vendor: "codex",
         modelId: "gpt-5.4",
         totalTokens: 1280,
-        todayCostUsd: expect.closeTo(0.00375, 8),
-        costSource: "estimated"
-      })
-    ]);
-    expect(snapshot.directoryHotspots).toEqual([
-      expect.objectContaining({
-        directoryPath: "/tmp/kmux-dashboard",
-        directoryLabel: "kmux-dashboard",
-        todayTokens: 1280,
         todayCostUsd: expect.closeTo(0.00375, 8),
         costSource: "estimated"
       })

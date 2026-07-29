@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "name": "known-layouts-order-depth-ten-and-symlink",
+      "roots": ["root"],
+      "entries": [
+        {
+          "kind": "file",
+          "path": "root/codex/2026/07/30/rollout-standard.jsonl",
+          "mtimeMs": 4000
+        },
+        {
+          "kind": "file",
+          "path": "root/codex/phase7-run/rollout-phase7.jsonl",
+          "mtimeMs": 5000
+        },
+        {
+          "kind": "file",
+          "path": "root/claude/project/session.jsonl",
+          "mtimeMs": 3000
+        },
+        {
+          "kind": "file",
+          "path": "root/claude/project/subagents/child.jsonl",
+          "mtimeMs": 3000
+        },
+        {
+          "kind": "file",
+          "path": "root/antigravity/history.jsonl",
+          "mtimeMs": 2000
+        },
+        {
+          "kind": "file",
+          "path": "root/antigravity/brain/conversation/.system_generated/logs/transcript.jsonl",
+          "mtimeMs": 1000
+        },
+        {
+          "kind": "file",
+          "path": "root/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/depth-ten.jsonl",
+          "mtimeMs": 1500
+        },
+        {
+          "kind": "symlink",
+          "path": "root/codex/linked.jsonl",
+          "target": "root/codex/2026/07/30/rollout-standard.jsonl"
+        }
+      ],
+      "expectedCandidates": [
+        "root/codex/phase7-run/rollout-phase7.jsonl",
+        "root/codex/2026/07/30/rollout-standard.jsonl",
+        "root/claude/project/session.jsonl",
+        "root/claude/project/subagents/child.jsonl",
+        "root/antigravity/history.jsonl",
+        "root/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/depth-ten.jsonl",
+        "root/antigravity/brain/conversation/.system_generated/logs/transcript.jsonl"
+      ],
+      "truncated": false,
+      "classifications": [
+        {
+          "vendor": "codex",
+          "root": "root/codex",
+          "path": "root/codex/2026/07/30/rollout-standard.jsonl",
+          "role": "codex-session"
+        },
+        {
+          "vendor": "codex",
+          "root": "root/codex",
+          "path": "root/codex/phase7-run/rollout-phase7.jsonl",
+          "role": "codex-session"
+        },
+        {
+          "vendor": "claude",
+          "root": "root/claude",
+          "path": "root/claude/project/session.jsonl",
+          "role": "claude-session"
+        },
+        {
+          "vendor": "claude",
+          "root": "root/claude",
+          "path": "root/claude/project/subagents/child.jsonl",
+          "role": "claude-subagent"
+        },
+        {
+          "vendor": "antigravity",
+          "root": "root/antigravity",
+          "path": "root/antigravity/history.jsonl",
+          "role": "antigravity-history"
+        },
+        {
+          "vendor": "antigravity",
+          "root": "root/antigravity",
+          "path": "root/antigravity/brain/conversation/.system_generated/logs/transcript.jsonl",
+          "role": "antigravity-transcript"
+        }
+      ]
+    },
+    {
+      "name": "depth-eleven-is-partial-and-next-root-continues",
+      "roots": ["root-a", "root-b"],
+      "entries": [
+        {
+          "kind": "file",
+          "path": "root-a/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/too-deep.jsonl",
+          "mtimeMs": 9000
+        },
+        {
+          "kind": "file",
+          "path": "root-b/phase7-run/rollout-visible.jsonl",
+          "mtimeMs": 1000
+        }
+      ],
+      "expectedCandidates": [
+        "root-b/phase7-run/rollout-visible.jsonl"
+      ],
+      "truncated": true,
+      "classifications": [
+        {
+          "vendor": "codex",
+          "root": "root-b",
+          "path": "root-b/phase7-run/rollout-visible.jsonl",
+          "role": "codex-session"
+        }
+      ]
+    },
+    {
+      "name": "directory-bound-is-root-local",
+      "roots": ["root-a", "root-b"],
+      "limits": {
+        "maxDepth": 10,
+        "maxDirectories": 2,
+        "maxEntries": 16
+      },
+      "entries": [
+        { "kind": "directory", "path": "root-a/one" },
+        { "kind": "directory", "path": "root-a/two" },
+        { "kind": "directory", "path": "root-a/three" },
+        {
+          "kind": "file",
+          "path": "root-b/rollout-visible.jsonl",
+          "mtimeMs": 1000
+        }
+      ],
+      "expectedCandidates": ["root-b/rollout-visible.jsonl"],
+      "truncated": true,
+      "classifications": []
+    },
+    {
+      "name": "entry-bound-is-root-local",
+      "roots": ["root-a", "root-b"],
+      "limits": {
+        "maxDepth": 10,
+        "maxDirectories": 16,
+        "maxEntries": 2
+      },
+      "entries": [
+        { "kind": "directory", "path": "root-a/one" },
+        { "kind": "directory", "path": "root-a/two" },
+        { "kind": "directory", "path": "root-a/three" },
+        {
+          "kind": "file",
+          "path": "root-b/rollout-visible.jsonl",
+          "mtimeMs": 1000
+        }
+      ],
+      "expectedCandidates": ["root-b/rollout-visible.jsonl"],
+      "truncated": true,
+      "classifications": []
+    },
+    {
+      "name": "matching-candidates-have-no-separate-hard-cap",
+      "roots": ["root"],
+      "limits": {
+        "maxDepth": 10,
+        "maxDirectories": 16,
+        "maxEntries": 8
+      },
+      "entries": [
+        { "kind": "file", "path": "root/e.jsonl", "mtimeMs": 1000 },
+        { "kind": "file", "path": "root/d.jsonl", "mtimeMs": 1000 },
+        { "kind": "file", "path": "root/c.jsonl", "mtimeMs": 1000 },
+        { "kind": "file", "path": "root/b.jsonl", "mtimeMs": 1000 },
+        { "kind": "file", "path": "root/a.jsonl", "mtimeMs": 1000 }
+      ],
+      "expectedCandidates": [
+        "root/a.jsonl",
+        "root/b.jsonl",
+        "root/c.jsonl",
+        "root/d.jsonl",
+        "root/e.jsonl"
+      ],
+      "truncated": false,
+      "classifications": []
+    },
+    {
+      "name": "canonical-and-inode-equivalent-roots-are-deduplicated",
+      "roots": ["root", "root-alias"],
+      "entries": [
+        { "kind": "file", "path": "root/session.jsonl", "mtimeMs": 1000 },
+        { "kind": "symlink", "path": "root-alias", "target": "root" }
+      ],
+      "expectedCandidates": ["root/session.jsonl"],
+      "truncated": false,
+      "classifications": []
+    }
+  ]
+}

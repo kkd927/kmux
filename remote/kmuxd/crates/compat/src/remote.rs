@@ -1022,6 +1022,7 @@ pub struct PortsInspectedResponse {
 pub struct HistoryScannedResponse {
     pub target_id: String,
     pub principal: RemotePrincipal,
+    pub truncated: bool,
     pub records: Vec<RemoteHistoryRecord>,
 }
 

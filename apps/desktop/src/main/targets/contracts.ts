@@ -98,8 +98,17 @@ export interface TargetUsageScan<
 > {
   records: TargetUsageRecord<TPath>[];
   truncated: boolean;
+  incremental?: boolean;
   principal?: { uid: number; accountName: string };
+  /** Present only when the requested history range was scanned completely. */
   historyDays?: UsageHistoryDay[];
+}
+
+export interface TargetHistoryScan<
+  TPath extends LocalPath | RemotePath | LocatedPath
+> {
+  records: TargetHistoryRecord<TPath>[];
+  truncated: boolean;
 }
 
 export interface StoredAttachment<TPath extends LocalPath | RemotePath> {
@@ -177,7 +186,7 @@ export interface HistoryProvider<TPath extends LocalPath | RemotePath> {
   refresh(request: {
     maxRecords: number;
     agentSettings?: AgentScopeSettings;
-  }): Promise<TargetHistoryRecord<TPath>[]>;
+  }): Promise<TargetHistoryScan<TPath>>;
 }
 
 export interface UsageProvider<TPath extends LocalPath | RemotePath> {
@@ -318,7 +327,7 @@ export interface LocatedTargetServiceSet {
     refresh(request: {
       maxRecords: number;
       agentSettings?: AgentScopeSettings;
-    }): Promise<TargetHistoryRecord<LocatedPath>[]>;
+    }): Promise<TargetHistoryScan<LocatedPath>>;
   };
   usage: {
     refresh(request: {

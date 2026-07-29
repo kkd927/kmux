@@ -24,6 +24,7 @@ test("usage right sidebar stays docked when Escape is pressed and closes only vi
   try {
     const { page } = launched;
     const initialView = await getView(page);
+    await dismissReleaseNotes(page);
     const paneId = initialView.activeWorkspace.activePaneId;
     const surfaceId = initialView.activeWorkspace.panes[paneId].activeSurfaceId;
     const terminal = page.getByTestId(`terminal-${surfaceId}`);
@@ -80,6 +81,7 @@ printf 'DONE\\n'
   try {
     const { page } = launched;
     const initialView = await getView(page);
+    await dismissReleaseNotes(page);
     const paneId = initialView.activeWorkspace.activePaneId;
     const surfaceId = initialView.activeWorkspace.panes[paneId].activeSurfaceId;
     const terminal = page.getByTestId(`terminal-${surfaceId}`);
@@ -110,7 +112,6 @@ printf 'DONE\\n'
     await expect(dashboard).toBeVisible();
     await expect(dashboard).toContainText("gpt-5.4");
     await expect(dashboard).toContainText("544");
-    await expect(dashboard).toContainText("Project Hotspots");
 
     await waitForSurfaceSnapshotContains(page, surfaceId, "DONE", 8000);
   } finally {
@@ -146,6 +147,7 @@ test("hook-bound surfaces keep usage details out of the tab header and open a do
     expect(initialUsage.unattributedTodayCostUsd).toBeGreaterThan(0);
 
     const initialView = await getView(page);
+    await dismissReleaseNotes(page);
     const paneId = initialView.activeWorkspace.activePaneId;
     const surfaceId = initialView.activeWorkspace.panes[paneId].activeSurfaceId;
     const terminal = page.getByTestId(`terminal-${surfaceId}`);
@@ -198,6 +200,7 @@ test("unique cwd usage stays in the dashboard but does not show a pane HUD befor
   try {
     const { page } = launched;
     const view = await getView(page);
+    await dismissReleaseNotes(page);
     const activeSurfaceId =
       view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
         .activeSurfaceId;
@@ -239,125 +242,6 @@ test("unique cwd usage stays in the dashboard but does not show a pane HUD befor
     );
     await expect(dashboard).toContainText("claude-sonnet-4");
     await expect(dashboard).toContainText("$0.55");
-    await expect(dashboard).toContainText("Project Hotspots");
-  } finally {
-    await closeKmux(launched);
-  }
-});
-
-test("usage dashboard shows directory hotspot rows as informational summaries", async () => {
-  const sandbox = createSandbox("kmux-e2e-usage-jump-");
-  const usageDir = join(sandbox.profileRoot, "usage", "claude");
-  const alphaProjectPath = join(sandbox.shellHomeDir, "alpha-project");
-  const betaProjectPath = join(sandbox.shellHomeDir, "beta-project");
-  writeUsageFixture(usageDir, [
-    buildClaudeUsageRecord({
-      sessionId: "claude-alpha-session",
-      inputTokens: 900,
-      outputTokens: 150,
-      estimatedCost: 1.1,
-      projectPath: alphaProjectPath,
-      cwd: alphaProjectPath
-    }),
-    buildClaudeUsageRecord({
-      sessionId: "claude-beta-session",
-      inputTokens: 1600,
-      outputTokens: 400,
-      estimatedCost: 2.6,
-      projectPath: betaProjectPath,
-      cwd: betaProjectPath
-    })
-  ]);
-
-  const launched = await launchKmuxWithSandbox(sandbox, {
-    env: {
-      KMUX_CLAUDE_USAGE_DIR: usageDir
-    }
-  });
-
-  try {
-    const { page } = launched;
-    await waitForUsageView(
-      page,
-      (snapshot) => snapshot.totalTodayCostUsd >= 3.7,
-      "usage fixtures should load before we bind them to workspaces"
-    );
-
-    const alphaView = await getView(page);
-    const alphaWorkspaceId = alphaView.activeWorkspace.id;
-    const alphaPaneId = alphaView.activeWorkspace.activePaneId;
-    const alphaSurfaceId =
-      alphaView.activeWorkspace.panes[alphaPaneId].activeSurfaceId;
-
-    await dispatch(page, {
-      type: "workspace.rename",
-      workspaceId: alphaWorkspaceId,
-      name: "Alpha Workspace"
-    });
-    await dispatch(page, {
-      type: "surface.rename",
-      surfaceId: alphaSurfaceId,
-      title: "Alpha Agent"
-    });
-
-    const afterCreate = await dispatch(page, {
-      type: "workspace.create"
-    });
-    const betaWorkspaceId = afterCreate.activeWorkspace.id;
-    const betaPaneId = afterCreate.activeWorkspace.activePaneId;
-    const betaSurfaceId =
-      afterCreate.activeWorkspace.panes[betaPaneId].activeSurfaceId;
-
-    await dispatch(page, {
-      type: "workspace.rename",
-      workspaceId: betaWorkspaceId,
-      name: "Beta Workspace"
-    });
-    await dispatch(page, {
-      type: "surface.rename",
-      surfaceId: betaSurfaceId,
-      title: "Beta Agent"
-    });
-
-    await dispatch(page, {
-      type: "agent.event",
-      workspaceId: alphaWorkspaceId,
-      paneId: alphaPaneId,
-      surfaceId: alphaSurfaceId,
-      sessionId: "claude-alpha-session",
-      agent: "claude",
-      event: "session_start"
-    });
-    await dispatch(page, {
-      type: "agent.event",
-      workspaceId: betaWorkspaceId,
-      paneId: betaPaneId,
-      surfaceId: betaSurfaceId,
-      sessionId: "claude-beta-session",
-      agent: "claude",
-      event: "session_start"
-    });
-
-    await waitForUsageView(
-      page,
-      (snapshot) =>
-        snapshot.surfaces[alphaSurfaceId]?.todayCostUsd === 1.1 &&
-        snapshot.surfaces[betaSurfaceId]?.todayCostUsd === 2.6,
-      "both workspaces should receive their attributed usage totals"
-    );
-
-    await page.keyboard.press("Meta+Shift+U");
-    const dashboard = page.getByTestId("usage-dashboard");
-    await expect(dashboard).toBeVisible();
-    await expect(dashboard).toContainText("Project Hotspots");
-    await expect(dashboard).toContainText("alpha-project");
-    await expect(dashboard).toContainText("beta-project");
-    await expect(
-      dashboard.getByTestId(`usage-session-row-${betaSurfaceId}`)
-    ).toHaveCount(0);
-    await expect(
-      dashboard.getByTestId(`usage-workspace-row-${alphaWorkspaceId}`)
-    ).toHaveCount(0);
   } finally {
     await closeKmux(launched);
   }
@@ -390,6 +274,7 @@ test("moderate daily spend does not create budget alerts, sidebar statuses, or t
     );
 
     const initialView = await getView(page);
+    await dismissReleaseNotes(page);
     const paneId = initialView.activeWorkspace.activePaneId;
     const surfaceId = initialView.activeWorkspace.panes[paneId].activeSurfaceId;
 
@@ -487,6 +372,20 @@ async function getUsageView(page: Page): Promise<UsageViewSnapshot> {
       }
     ).kmux.getUsageView()
   );
+}
+
+async function dismissReleaseNotes(page: Page): Promise<void> {
+  const overlay = page.getByTestId("release-notes-overlay");
+  await overlay
+    .waitFor({ state: "visible", timeout: 2_000 })
+    .catch(() => undefined);
+  if (!(await overlay.isVisible())) {
+    return;
+  }
+  await overlay
+    .getByRole("button", { name: "Close release notes" })
+    .click();
+  await expect(overlay).toHaveCount(0);
 }
 
 async function waitForUsageView(

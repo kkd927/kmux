@@ -34,9 +34,12 @@ export function createRemoteHistoryProvider(options: {
       if (scan.targetId !== options.targetId) {
         throw new Error("remote history scan escaped its target binding");
       }
-      return scan.records.map((record) =>
-        decodeHistoryRecord(record, scan.principal, options.decodeRemotePath)
-      );
+      return {
+        records: scan.records.map((record) =>
+          decodeHistoryRecord(record, scan.principal, options.decodeRemotePath)
+        ),
+        truncated: scan.truncated ?? false
+      };
     }
   };
   return Object.freeze(provider);

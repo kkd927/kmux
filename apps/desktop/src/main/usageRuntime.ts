@@ -1,4 +1,3 @@
-import { basename, dirname } from "node:path";
 import { BrowserWindow } from "electron";
 
 import {
@@ -21,7 +20,6 @@ import {
   type UsageAttributionState,
   type UsagePricingCoverageVm,
   type UsageTargetIdentityVm,
-  type UsageUnavailableTargetVm,
   type UsageTokenCostBreakdownVm,
   type UsageTokenBreakdownVm,
   type UsageVendor,
@@ -134,17 +132,6 @@ type DerivedWorkspace = {
   unknownCostTokens: number;
 };
 
-type DerivedDirectory = {
-  target: UsageTargetIdentityVm;
-  directoryPath: string;
-  todayCostUsd: number;
-  todayTokens: number;
-  costSource: UsageCostSource;
-  reportedCostUsd: number;
-  estimatedCostUsd: number;
-  unknownCostTokens: number;
-};
-
 type DerivedTarget = {
   target: UsageTargetIdentityVm;
   todayCostUsd: number;
@@ -153,7 +140,6 @@ type DerivedTarget = {
   reportedCostUsd: number;
   estimatedCostUsd: number;
   unknownCostTokens: number;
-  truncated: boolean;
 };
 
 type ScopedUsageEventSample = UsageEventSample & {
@@ -366,12 +352,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     {
       target: WorkspaceTarget;
       principal?: { uid: number; accountName: string };
-      truncated: boolean;
       records: ScopedUsageEventSample[];
     }
   >();
   const initializedUsageTargets = new Set<string>();
-  let unavailableUsageTargets: UsageUnavailableTargetVm[] = [];
   let dayKey = dayKeyFor(now());
   let historyDays = normalizeHistoryDays(options.historyStore?.load() ?? []);
   let historyBackfillPromise: Promise<void> | null = null;
@@ -871,6 +855,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     const startOfDayMs = startOfLocalDay(now());
     let reads: UsageAdapterReadResult[];
+    const requestedInitialScan = !initialScanComplete;
     if (scanService) {
       const historyRange = workerHistoryBackfillComplete
         ? undefined
@@ -878,15 +863,16 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       try {
         const result = await scanService.scan({
           startOfDayMs,
-          initial: !initialScanComplete,
+          initial: requestedInitialScan,
           ...(historyRange ? { historyRange } : {})
         });
         reads = result.reads;
-        if (result.historyDays) {
+        const truncated = reads.some((read) => read.truncated === true);
+        if (result.historyDays && !truncated) {
           historyDays = normalizeHistoryDays(result.historyDays);
           options.historyStore?.save(historyDays);
         }
-        workerHistoryBackfillComplete = true;
+        workerHistoryBackfillComplete = !truncated;
       } catch (error) {
         const hasWorkerDiagnostic =
           error instanceof Error &&
@@ -916,13 +902,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     } else {
       reads = await Promise.all(
         adapters.map((adapter) =>
-          initialScanComplete
-            ? adapter.readIncremental(startOfDayMs)
-            : adapter.initialScan(startOfDayMs)
+          requestedInitialScan
+            ? adapter.initialScan(startOfDayMs)
+            : adapter.readIncremental(startOfDayMs)
         )
       );
     }
-    initialScanComplete = true;
+    const truncated = reads.some((read) => read.truncated === true);
+    if (requestedInitialScan && !truncated) {
+      daySamples = [];
+      daySampleIndexes.clear();
+    }
+    initialScanComplete = !truncated;
 
     for (const read of reads) {
       if (read.samples.length === 0) {
@@ -940,7 +931,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
     const targets = currentUsageTargets(options.getState());
-    const failures: UsageUnavailableTargetVm[] = [];
     const historyRange = workerHistoryBackfillComplete
       ? undefined
       : resolveHistoryBackfillRange();
@@ -974,13 +964,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             ...(scan.principal === undefined
               ? {}
               : { principal: { ...scan.principal } }),
-            truncated: scan.truncated,
             records:
-              target.kind === "ssh"
-                ? incoming
-                : mergeScopedUsageSamples(previous, incoming)
+              scan.incremental === true || scan.truncated
+                ? mergeScopedUsageSamples(previous, incoming)
+                : incoming
           });
           initializedUsageTargets.add(key);
+          if (scan.truncated) {
+            options.reportTargetUsageError?.(
+              target,
+              new Error("usage scan reached its bound; merged partial results")
+            );
+          }
           if (target.kind === "local" && scan.historyDays) {
             historyDays = normalizeHistoryDays(scan.historyDays);
             options.historyStore?.save(historyDays);
@@ -990,15 +985,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           const failure =
             error instanceof Error ? error : new Error(String(error));
           options.reportTargetUsageError?.(target, failure);
-          failures.push(
-            target.kind === "local"
-              ? { kind: "local", message: failure.message }
-              : {
-                  kind: "ssh",
-                  targetId: target.targetId,
-                  message: failure.message
-                }
-          );
         }
       })
     );
@@ -1011,13 +997,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     for (const key of initializedUsageTargets) {
       if (!currentKeys.has(key)) initializedUsageTargets.delete(key);
     }
-    unavailableUsageTargets = failures
-      .filter((target) => currentKeys.has(usageUnavailableTargetKey(target)))
-      .sort((left, right) =>
-        usageUnavailableTargetKey(left).localeCompare(
-          usageUnavailableTargetKey(right)
-        )
-      );
     daySamples = [];
     daySampleIndexes.clear();
     for (const scan of targetUsageScans.values()) {
@@ -1416,7 +1395,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     const state = options.getState();
     const derivedSurfaces = new Map<Id, DerivedSurface>();
     const workspaceTotals = new Map<Id, DerivedWorkspace>();
-    const directoryTotals = new Map<string, DerivedDirectory>();
     const vendorTotals = new Map<
       Exclude<UsageVendor, "unknown">,
       DerivedVendor
@@ -1525,8 +1503,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
-        unknownCostTokens: 0,
-        truncated: targetUsageScans.get(sampleTargetKey)?.truncated ?? false
+        unknownCostTokens: 0
       };
       targetTotal.todayCostUsd += sampleCostUsd;
       targetTotal.todayTokens += sample.totalTokens;
@@ -1565,36 +1542,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         bindings,
         unboundSurfacePathIndex
       );
-      const matchedBinding = sampleMatch
-        ? bindings.get(sampleMatch.surfaceId)
-        : undefined;
-      const fallbackSurfaceCwd = sampleMatch
-        ? terminalRuntimeMetadataForSurface(state, sampleMatch.surfaceId)?.cwd
-        : undefined;
-      const directoryPath = resolveDirectoryHotspotPath(
-        sample,
-        rawUsagePath(
-          sample.usageTarget,
-          matchedBinding?.cwd ?? fallbackSurfaceCwd
-        )
-      );
-      if (directoryPath) {
-        const directoryKey = `${sampleTargetKey}\0${directoryPath}`;
-        const directoryTotal = directoryTotals.get(directoryKey) ?? {
-          target: usageTargetIdentity(sample.usageTarget, sample.principal),
-          directoryPath,
-          todayCostUsd: 0,
-          todayTokens: 0,
-          costSource: "reported",
-          reportedCostUsd: 0,
-          estimatedCostUsd: 0,
-          unknownCostTokens: 0
-        };
-        directoryTotal.todayCostUsd += sampleCostUsd;
-        directoryTotal.todayTokens += sample.totalTokens;
-        applyCostBreakdown(directoryTotal, sample, sampleCostSource);
-        directoryTotals.set(directoryKey, directoryTotal);
-      }
       if (!sampleMatch) {
         unattributedTodayCostUsd += sampleCostUsd;
         unattributedTodayTokens += sample.totalTokens;
@@ -1700,8 +1647,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         costSource: "reported",
         reportedCostUsd: 0,
         estimatedCostUsd: 0,
-        unknownCostTokens: 0,
-        truncated: scan.truncated
+        unknownCostTokens: 0
       });
     }
 
@@ -1710,9 +1656,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
     for (const workspace of workspaceTotals.values()) {
       workspace.costSource = resolveCostSource(workspace);
-    }
-    for (const directory of directoryTotals.values()) {
-      directory.costSource = resolveCostSource(directory);
     }
     for (const vendor of vendorTotals.values()) {
       vendor.costSource = resolveCostSource(vendor);
@@ -1813,16 +1756,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           ];
         })
         .sort((left, right) => right.todayCostUsd - left.todayCostUsd),
-      directoryHotspots: buildDirectoryHotspots(
-        Array.from(directoryTotals.values())
-      ),
       targets: Array.from(targetTotals.values())
         .map((target) => ({
           target: target.target,
           todayCostUsd: roundUsd(target.todayCostUsd),
           todayTokens: Math.round(target.todayTokens),
-          costSource: target.costSource,
-          truncated: target.truncated
+          costSource: target.costSource
         }))
         .sort(
           (left, right) =>
@@ -1832,9 +1771,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
               usageTargetIdentityKey(right.target)
             )
         ),
-      unavailableTargets: unavailableUsageTargets.map((target) => ({
-        ...target
-      })),
       vendors: Array.from(vendorTotals.values())
         .filter(
           (vendorTotal) =>
@@ -2174,10 +2110,6 @@ function usageTargetIdentityKey(target: UsageTargetIdentityVm): string {
   return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
 }
 
-function usageUnavailableTargetKey(target: UsageUnavailableTargetVm): string {
-  return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
-}
-
 function scopedUsageSample(
   target: WorkspaceTarget,
   principal: { uid: number; accountName: string } | undefined,
@@ -2323,15 +2255,6 @@ function matchSampleToSurface(
 function normalizeComparablePath(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized.replace(/\/+$/, "") : null;
-}
-
-function resolveDirectoryHotspotPath(
-  sample: UsageEventSample,
-  fallbackCwd?: string
-): string | null {
-  return normalizeComparablePath(
-    sample.projectPath ?? sample.cwd ?? fallbackCwd
-  );
 }
 
 function buildUnboundSurfacePathIndex(
@@ -2590,65 +2513,6 @@ function costedUsageSampleUsd(
   costSource = normalizeUsageSampleCostSource(sample)
 ): number {
   return costSource === "unavailable" ? 0 : sample.estimatedCostUsd;
-}
-
-function buildDirectoryHotspots(
-  directoryTotals: DerivedDirectory[]
-): UsageViewSnapshot["directoryHotspots"] {
-  const seenNames = new Set<string>();
-  const duplicateNames = new Set<string>();
-
-  for (const directory of directoryTotals) {
-    const leaf = basename(directory.directoryPath);
-    if (!leaf) {
-      continue;
-    }
-    if (seenNames.has(leaf)) {
-      duplicateNames.add(leaf);
-      continue;
-    }
-    seenNames.add(leaf);
-  }
-
-  return directoryTotals
-    .filter(
-      (directory) => directory.todayCostUsd > 0 || directory.todayTokens > 0
-    )
-    .map((directory) => ({
-      target: directory.target,
-      directoryPath: directory.directoryPath,
-      directoryLabel: buildDirectoryHotspotLabel(
-        directory.directoryPath,
-        duplicateNames
-      ),
-      todayCostUsd: roundUsd(directory.todayCostUsd),
-      todayTokens: Math.round(directory.todayTokens),
-      costSource: directory.costSource
-    }))
-    .sort(
-      (left, right) =>
-        right.todayCostUsd - left.todayCostUsd ||
-        right.todayTokens - left.todayTokens
-    )
-    .slice(0, 8);
-}
-
-function buildDirectoryHotspotLabel(
-  directoryPath: string,
-  duplicateNames: Set<string>
-): string {
-  const leaf = basename(directoryPath);
-  if (!leaf) {
-    return directoryPath;
-  }
-  if (!duplicateNames.has(leaf)) {
-    return leaf;
-  }
-  const parent = basename(dirname(directoryPath));
-  if (!parent || parent === "." || parent === leaf) {
-    return directoryPath;
-  }
-  return `${parent}/${leaf}`;
 }
 
 function applyCostBreakdown(

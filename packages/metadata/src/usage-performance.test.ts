@@ -16,7 +16,7 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual: typeof NodeFs = await importOriginal();
   return {
     ...actual,
-    readdirSync: vi.fn(actual.readdirSync),
+    opendirSync: vi.fn(actual.opendirSync),
     readFileSync: vi.fn(actual.readFileSync),
     watch: vi.fn(
       () =>
@@ -68,9 +68,11 @@ describe("usage adapter performance", () => {
       homeDir: root
     });
     const unwatch = adapter.watch(() => undefined);
-    await adapter.initialScan(startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime()));
+    await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
 
-    vi.mocked(fs.readdirSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
     vi.mocked(fs.readFileSync).mockClear();
 
     const incremental = await adapter.readIncremental(
@@ -78,14 +80,74 @@ describe("usage adapter performance", () => {
     );
 
     expect(incremental.samples).toEqual([]);
-    expect(fs.readdirSync).not.toHaveBeenCalled();
+    expect(fs.opendirSync).not.toHaveBeenCalled();
     expect(fs.readFileSync).not.toHaveBeenCalled();
 
     unwatch();
     adapter.close();
   });
 
-  it("does not walk the full source tree when a watched usage file appends", async () => {
+  it("does not rescan unchanged Antigravity workspace metadata on every usage read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T09:00:00.000Z"));
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-agy-clean-"));
+    cleanupPaths.push(root);
+    const antigravityRoot = path.join(root, ".gemini", "antigravity-cli");
+    const conversationId = "8ea8b3f8-e50d-42d0-9e9f-8fe1079e80a2";
+    const transcriptDir = path.join(
+      antigravityRoot,
+      "brain",
+      conversationId,
+      ".system_generated",
+      "logs"
+    );
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(
+      path.join(antigravityRoot, "history.jsonl"),
+      `${JSON.stringify({
+        conversationId,
+        workspace: "/tmp/kmux-antigravity-clean",
+        timestamp: Date.parse("2026-04-17T09:00:00.000Z")
+      })}\n`,
+      "utf8"
+    );
+    writeFileSync(
+      path.join(transcriptDir, "transcript.jsonl"),
+      `${JSON.stringify({
+        step_index: 0,
+        source: "USER_EXPLICIT",
+        type: "USER_INPUT",
+        status: "DONE",
+        created_at: "2026-04-17T09:00:00.000Z",
+        content: "<USER_REQUEST>hello</USER_REQUEST>"
+      })}\n`,
+      "utf8"
+    );
+
+    const [, , adapter] = createUsageAdapters({ homeDir: root });
+    const startOfDayMs = startOfLocalDay(
+      Date.parse("2026-04-17T09:00:00.000Z")
+    );
+    await adapter.initialScan(startOfDayMs);
+
+    vi.mocked(fs.opendirSync).mockClear();
+
+    const incremental = await adapter.readIncremental(startOfDayMs);
+
+    expect(incremental.samples).toEqual([]);
+    expect(fs.opendirSync).not.toHaveBeenCalled();
+
+    vi.mocked(fs.readFileSync).mockClear();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await adapter.readIncremental(startOfDayMs);
+
+    expect(fs.opendirSync).toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+    adapter.close();
+  });
+
+  it("revalidates a watched usage file through the bounded inventory before reading it", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-append-"));
     cleanupPaths.push(root);
     const usageDir = path.join(root, "claude");
@@ -110,7 +172,9 @@ describe("usage adapter performance", () => {
       homeDir: root
     });
     const unwatch = adapter.watch(() => undefined);
-    await adapter.initialScan(startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime()));
+    await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
 
     appendFileSync(
       usagePath,
@@ -123,7 +187,7 @@ describe("usage adapter performance", () => {
       })}\n`,
       "utf8"
     );
-    vi.mocked(fs.readdirSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
     const watchCall = vi.mocked(fs.watch).mock.calls.at(-1);
     const watchListener = watchCall?.[watchCall.length - 1] as
       | NodeFs.WatchListener<string>
@@ -143,7 +207,7 @@ describe("usage adapter performance", () => {
         estimatedCostUsd: 0.42
       })
     ]);
-    expect(fs.readdirSync).not.toHaveBeenCalled();
+    expect(fs.opendirSync).toHaveBeenCalledTimes(1);
 
     unwatch();
     adapter.close();
@@ -249,7 +313,7 @@ describe("usage adapter performance", () => {
     const beforeResync = await adapter.readIncremental(startOfDayMs);
     expect(beforeResync.samples).toEqual([]);
 
-    vi.mocked(fs.readdirSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
     await vi.advanceTimersByTimeAsync(60_000);
 
     const afterResync = await adapter.readIncremental(startOfDayMs);
@@ -261,7 +325,7 @@ describe("usage adapter performance", () => {
         totalTokens: 544
       })
     ]);
-    expect(fs.readdirSync).toHaveBeenCalled();
+    expect(fs.opendirSync).toHaveBeenCalled();
 
     unwatch();
     adapter.close();
@@ -349,7 +413,7 @@ describe("usage adapter performance", () => {
     const beforeResync = await adapter.readIncremental(startOfDayMs);
     expect(beforeResync.samples).toEqual([]);
 
-    vi.mocked(fs.readdirSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
     await vi.advanceTimersByTimeAsync(60_000);
 
     const afterResync = await adapter.readIncremental(startOfDayMs);
@@ -364,7 +428,7 @@ describe("usage adapter performance", () => {
         outputTokens: 28
       })
     ]);
-    expect(fs.readdirSync).toHaveBeenCalled();
+    expect(fs.opendirSync).toHaveBeenCalled();
 
     unwatch();
     adapter.close();
@@ -373,7 +437,9 @@ describe("usage adapter performance", () => {
   it("replays appended claude usage on a low-frequency resync even when a watch event is missed", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-17T09:00:00.000Z"));
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-claude-append-miss-"));
+    const root = mkdtempSync(
+      path.join(tmpdir(), "kmux-usage-claude-append-miss-")
+    );
     cleanupPaths.push(root);
     const usageDir = path.join(root, "claude");
     mkdirSync(usageDir, { recursive: true });
@@ -428,7 +494,7 @@ describe("usage adapter performance", () => {
     const beforeResync = await adapter.readIncremental(startOfDayMs);
     expect(beforeResync.samples).toEqual([]);
 
-    vi.mocked(fs.readdirSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
     await vi.advanceTimersByTimeAsync(60_000);
 
     const afterResync = await adapter.readIncremental(startOfDayMs);
@@ -441,7 +507,7 @@ describe("usage adapter performance", () => {
         estimatedCostUsd: 0.24
       })
     ]);
-    expect(fs.readdirSync).toHaveBeenCalled();
+    expect(fs.opendirSync).toHaveBeenCalled();
 
     unwatch();
     adapter.close();

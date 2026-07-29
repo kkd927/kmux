@@ -10,6 +10,11 @@ import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
+import {
+  classifySessionInventoryCandidate,
+  type SessionInventoryCandidate
+} from "./sessionInventory";
+
 const MAX_BINARY_SCAN_BYTES = 512 * 1024;
 const MAX_TITLE_LENGTH = 96;
 const MAX_PROMPT_PAYLOAD_BYTES = 1024 * 1024;
@@ -76,6 +81,105 @@ export function readAntigravityConversationMetadataFromRoot(
     records
   });
   return cloneConversationMetadata(records);
+}
+
+export function readAntigravityConversationMetadataFromInventory(
+  antigravityRoot: string,
+  candidates: readonly SessionInventoryCandidate[],
+  options: { maxConversationFiles?: number } = {}
+): AntigravityConversationMetadata[] {
+  const conversations = new Map<string, AntigravityConversationMetadata>();
+  const classified = candidates.flatMap((candidate) => {
+    const role = classifySessionInventoryCandidate(
+      "antigravity",
+      antigravityRoot,
+      candidate.path
+    );
+    return role ? [{ candidate, role }] : [];
+  });
+
+  for (const { candidate, role } of classified) {
+    if (role !== "antigravity-history") {
+      continue;
+    }
+    for (const value of parseJsonlFile(candidate.path)) {
+      if (!isRecord(value)) {
+        continue;
+      }
+      const workspace = normalizePathValue(
+        pickFirstString(value, ["workspace"])
+      );
+      const conversationId = pickFirstString(value, ["conversationId"]);
+      if (!conversationId) {
+        continue;
+      }
+      upsertConversation(
+        conversations,
+        buildHistoryConversationRecord(conversationId, value, workspace)
+      );
+    }
+  }
+
+  const projectIndex = classified.find(
+    ({ role }) => role === "antigravity-project-index"
+  )?.candidate;
+  const projectWorkspaces = projectIndex
+    ? new Map(
+        Array.from(readStringMap(projectIndex.path).entries()).map(
+          ([workspace, projectId]) => [projectId, workspace] as const
+        )
+      )
+    : new Map<string, string>();
+  const conversationCandidates = classified
+    .filter(({ role }) => role === "antigravity-conversation")
+    .map(({ candidate }) => candidate)
+    .map((candidate) => ({
+      ...candidate,
+      mtimeMs: sqliteEffectiveMtimeMs(candidate.path, candidate.mtimeMs)
+    }))
+    .sort(
+      (left, right) =>
+        right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path)
+    )
+    .slice(0, options.maxConversationFiles);
+
+  for (const candidate of conversationCandidates) {
+    const conversationId = basename(candidate.path, ".db");
+    if (!isUuidLike(conversationId)) {
+      continue;
+    }
+    const effectiveMtimeMs = candidate.mtimeMs;
+    const details = extractConversationDetailsFromDb(candidate.path);
+    let createdAt: string | undefined;
+    try {
+      createdAt = new Date(statSync(candidate.path).birthtimeMs).toISOString();
+    } catch {
+      // The database can disappear between inventory and parsing.
+    }
+    upsertConversation(conversations, {
+      conversationId,
+      ...optionalStringProperty(
+        "workspace",
+        inferAntigravityConversationWorkspace(
+          candidate.path,
+          projectWorkspaces
+        )
+      ),
+      ...(details.title ? { title: details.title } : {}),
+      ...(details.recentConversation
+        ? { recentConversation: details.recentConversation }
+        : {}),
+      ...(createdAt ? { createdAt } : {}),
+      updatedAt: new Date(effectiveMtimeMs).toISOString(),
+      mtimeMs: effectiveMtimeMs
+    });
+  }
+
+  return Array.from(conversations.values()).sort(
+    (left, right) =>
+      right.mtimeMs - left.mtimeMs ||
+      left.conversationId.localeCompare(right.conversationId)
+  );
 }
 
 function readAntigravityConversationMetadataUncached(

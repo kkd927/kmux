@@ -11,24 +11,33 @@ const MAX_LOCAL_USAGE_RECORDS = 4_096;
 export function createLocalUsageProvider(options: {
   scanService: UsageScanService;
 }): UsageProvider<LocalPath> {
+  let requiresFullRescan = false;
   const provider: UsageProvider<LocalPath> = {
     async refresh(request) {
       requireUsageRequest(request);
+      const initial = request.initial || requiresFullRescan;
       const result = await options.scanService.scan({
         startOfDayMs: request.startAtUnixMs,
-        initial: request.initial,
+        initial,
         ...(request.historyRange === undefined
           ? {}
           : { historyRange: { ...request.historyRange } })
       });
       const samples = result.reads.flatMap((read) => read.samples);
+      const inventoryTruncated = result.reads.some(
+        (read) => read.truncated === true
+      );
+      const truncated =
+        inventoryTruncated || samples.length > request.maxRecords;
+      requiresFullRescan = inventoryTruncated;
       return {
         records: samples.slice(0, request.maxRecords).flatMap((sample) => {
           const record = toTargetUsageRecord(sample);
           return record ? [record] : [];
         }),
-        truncated: samples.length > request.maxRecords,
-        ...(result.historyDays === undefined
+        truncated,
+        incremental: !initial,
+        ...(result.historyDays === undefined || inventoryTruncated
           ? {}
           : {
               historyDays: result.historyDays.map((day) => structuredClone(day))

@@ -4,7 +4,6 @@ import {
   openSync,
   readSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   statSync,
   watch,
@@ -25,17 +24,23 @@ import {
   resolveAgentSessionRoots,
   resolveAgentStorageRoots
 } from "./agentStorage";
-import { readAntigravityWorkspaceByConversationFromRoot } from "./antigravityStorage";
+import { readAntigravityConversationMetadataFromInventory } from "./antigravityStorage";
 import { isCodexSubagentSessionMetadata } from "./codexSession";
 import { estimateModelCost } from "./modelPricing";
+import {
+  classifySessionInventoryCandidate,
+  collectSessionInventory,
+  type SessionInventoryCandidate,
+  type SessionInventoryDiagnostic
+} from "./sessionInventory";
 
 const JSON_EXTENSIONS = new Set([".json"]);
 const JSONL_EXTENSIONS = new Set([".jsonl", ".ndjson"]);
-const MAX_RECURSION_DEPTH = 6;
 const WATCH_DEBOUNCE_MS = 180;
 const SOURCE_INDEX_RESYNC_MS = 60_000;
 const WATCH_ROOT_RETRY_MS = 60_000;
 const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
+const MAX_USAGE_PARSE_CANDIDATES = 4_096 * 8;
 
 export const USAGE_AGGREGATION_REVISION = "codex-root-authoritative-v2";
 
@@ -69,6 +74,8 @@ export interface UsageEventSample {
 export interface UsageAdapterReadResult {
   samples: UsageEventSample[];
   sourceCount: number;
+  truncated?: boolean;
+  diagnostics?: SessionInventoryDiagnostic[];
 }
 
 export interface UsageAdapterDirtyOptions {
@@ -188,12 +195,32 @@ type CodexSourceIdentity = {
   isSubagent: boolean;
 };
 
+interface AntigravityWorkspaceInventory {
+  workspaces: Map<string, string>;
+  truncated: boolean;
+  diagnostics: SessionInventoryDiagnostic[];
+}
+
+interface CachedAntigravityWorkspaceInventory {
+  candidateSignature: string;
+  fastProbeSignature: string;
+  inventory: AntigravityWorkspaceInventory;
+  lastFullScanAtMs: number;
+}
+
+interface AntigravityWorkspaceCandidateInventory {
+  candidates: SessionInventoryCandidate[];
+  diagnostics: SessionInventoryDiagnostic[];
+  signature: string;
+  truncated: boolean;
+}
+
 interface FileUsageAdapterOptions {
   includeJson?: boolean;
   includeHiddenDirs?: boolean;
   watchRecursive?: boolean;
   antigravityWorkspaceByConversation?: Map<string, string>;
-  antigravityWorkspaceByConversationLoader?: () => Map<string, string>;
+  antigravityWorkspaceByConversationLoader?: () => AntigravityWorkspaceInventory;
 }
 
 class FileUsageAdapter implements UsageAdapter {
@@ -210,10 +237,7 @@ class FileUsageAdapter implements UsageAdapter {
     AntigravitySessionContext
   >();
   private readonly antigravityWorkspaceByConversation: Map<string, string>;
-  private readonly antigravityWorkspaceByConversationLoader?: () => Map<
-    string,
-    string
-  >;
+  private readonly antigravityWorkspaceByConversationLoader?: () => AntigravityWorkspaceInventory;
   private readonly includeJson: boolean;
   private readonly includeHiddenDirs: boolean;
   private readonly watchRecursive: boolean;
@@ -227,6 +251,10 @@ class FileUsageAdapter implements UsageAdapter {
   private dirtySourceIndex = true;
   private dayKey: string | null = null;
   private lastSourceIndexRefreshAtMs = 0;
+  private inventoryTruncated = false;
+  private inventoryDiagnostics: SessionInventoryDiagnostic[] = [];
+  private workspaceInventoryTruncated = false;
+  private workspaceInventoryDiagnostics: SessionInventoryDiagnostic[] = [];
 
   constructor(
     vendor: UsageVendor,
@@ -238,9 +266,7 @@ class FileUsageAdapter implements UsageAdapter {
     this.antigravityWorkspaceByConversationLoader =
       options.antigravityWorkspaceByConversationLoader;
     this.antigravityWorkspaceByConversation =
-      options.antigravityWorkspaceByConversation ??
-      options.antigravityWorkspaceByConversationLoader?.() ??
-      new Map();
+      options.antigravityWorkspaceByConversation ?? new Map();
     this.includeJson = options.includeJson ?? false;
     this.includeHiddenDirs = options.includeHiddenDirs ?? false;
     this.watchRecursive = options.watchRecursive ?? false;
@@ -381,7 +407,17 @@ class FileUsageAdapter implements UsageAdapter {
 
     return {
       samples,
-      sourceCount: this.sources.size
+      sourceCount: this.sources.size,
+      truncated: this.inventoryTruncated || this.workspaceInventoryTruncated,
+      ...([...this.inventoryDiagnostics, ...this.workspaceInventoryDiagnostics]
+        .length === 0
+        ? {}
+        : {
+            diagnostics: [
+              ...this.inventoryDiagnostics,
+              ...this.workspaceInventoryDiagnostics
+            ].map((diagnostic) => ({ ...diagnostic }))
+          })
     };
   }
 
@@ -392,7 +428,10 @@ class FileUsageAdapter implements UsageAdapter {
     ) {
       return;
     }
-    const nextWorkspaces = this.antigravityWorkspaceByConversationLoader();
+    const workspaceInventory = this.antigravityWorkspaceByConversationLoader();
+    this.workspaceInventoryTruncated = workspaceInventory.truncated;
+    this.workspaceInventoryDiagnostics = workspaceInventory.diagnostics;
+    const nextWorkspaces = workspaceInventory.workspaces;
     if (
       stringMapEquals(this.antigravityWorkspaceByConversation, nextWorkspaces)
     ) {
@@ -439,10 +478,11 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   private refreshSourceIndex(markAllDirty: boolean): void {
-    const nextSources = collectUsageSources(this.vendor, this.roots, {
+    const inventory = collectUsageSources(this.vendor, this.roots, {
       includeJson: this.includeJson,
       includeHiddenDirs: this.includeHiddenDirs
     });
+    const nextSources = inventory.sources;
     const nextSourceMap = new Map(
       nextSources.map((source) => [source.path, source] as const)
     );
@@ -462,7 +502,9 @@ class FileUsageAdapter implements UsageAdapter {
       }
     }
 
-    this.sourceIndexDirty = false;
+    this.inventoryTruncated = inventory.truncated;
+    this.inventoryDiagnostics = inventory.diagnostics;
+    this.sourceIndexDirty = inventory.truncated;
     this.lastSourceIndexRefreshAtMs = Date.now();
   }
 
@@ -470,8 +512,8 @@ class FileUsageAdapter implements UsageAdapter {
     root: string,
     filename: string | Buffer | null
   ): void {
+    this.sourceIndexDirty = true;
     if (!filename) {
-      this.sourceIndexDirty = true;
       return;
     }
 
@@ -483,21 +525,14 @@ class FileUsageAdapter implements UsageAdapter {
       return;
     }
     if (stats.isDirectory()) {
-      this.sourceIndexDirty = true;
       return;
     }
     if (!stats.isFile()) {
       return;
     }
-    const source = describeUsageSource(this.vendor, canonicalPath, {
-      includeJson: this.includeJson,
-      includeHiddenDirs: this.includeHiddenDirs
-    });
-    if (!source) {
-      return;
+    if (this.sources.has(canonicalPath)) {
+      this.dirtyPaths.add(canonicalPath);
     }
-    this.sources.set(source.path, source);
-    this.dirtyPaths.add(source.path);
   }
 
   private shouldResyncSourceIndex(): boolean {
@@ -743,6 +778,8 @@ export function createUsageAdapters(
         agentStorageRoots.antigravity.brainDir
       )
     : sessionRoots.antigravity.map((root) => join(root, "brain"));
+  const antigravityWorkspaceInventoryLoader =
+    createAntigravityWorkspaceInventoryLoader(sessionRoots.antigravity);
 
   return [
     new FileUsageAdapter(
@@ -766,24 +803,210 @@ export function createUsageAdapters(
       { watchRecursive }
     ),
     new FileUsageAdapter("antigravity", antigravityRoots, {
-      antigravityWorkspaceByConversationLoader: () => {
-        const workspaces = new Map<string, string>();
-        for (const root of sessionRoots.antigravity) {
-          for (const [
-            conversationId,
-            workspace
-          ] of readAntigravityWorkspaceByConversationFromRoot(root)) {
-            if (!workspaces.has(conversationId)) {
-              workspaces.set(conversationId, workspace);
-            }
-          }
-        }
-        return workspaces;
-      },
+      antigravityWorkspaceByConversationLoader:
+        antigravityWorkspaceInventoryLoader,
       includeHiddenDirs: true,
       watchRecursive
     })
   ];
+}
+
+function createAntigravityWorkspaceInventoryLoader(
+  roots: string[]
+): () => AntigravityWorkspaceInventory {
+  let cached: CachedAntigravityWorkspaceInventory | undefined;
+  const fastProbePaths = antigravityWorkspaceFastProbePaths(roots);
+  return () => {
+    // Workspace metadata lives outside the watched brain roots. Probe its
+    // stable entry points on each read, then revalidate every candidate only
+    // on the same low-frequency interval used by the usage source inventory.
+    const fastProbeSignature =
+      antigravityWorkspaceProbeSignature(fastProbePaths);
+    if (
+      cached &&
+      fastProbeSignature === cached.fastProbeSignature &&
+      Date.now() - cached.lastFullScanAtMs < SOURCE_INDEX_RESYNC_MS
+    ) {
+      return cloneAntigravityWorkspaceInventory(cached.inventory);
+    }
+
+    const collected = collectAntigravityWorkspaceCandidates(roots);
+    const inventory =
+      cached?.candidateSignature === collected.signature
+        ? cached.inventory
+        : buildAntigravityWorkspaceInventory(roots, collected);
+    cached = {
+      candidateSignature: collected.signature,
+      fastProbeSignature,
+      inventory,
+      lastFullScanAtMs: Date.now()
+    };
+    return cloneAntigravityWorkspaceInventory(inventory);
+  };
+}
+
+function collectAntigravityWorkspaceCandidates(
+  roots: string[]
+): AntigravityWorkspaceCandidateInventory {
+  const inventory = collectSessionInventory(roots);
+  const candidateByPath = new Map(
+    inventory.candidates.map(
+      (candidate) => [candidate.path, candidate] as const
+    )
+  );
+  const candidates = inventory.candidates
+    .filter((candidate) =>
+      roots.some((root) => {
+        const role = classifySessionInventoryCandidate(
+          "antigravity",
+          root,
+          candidate.path
+        );
+        return (
+          role === "antigravity-history" ||
+          role === "antigravity-conversation" ||
+          role === "antigravity-project-index"
+        );
+      })
+    )
+    .map((candidate) =>
+      candidate.path.endsWith(".db")
+        ? {
+            ...candidate,
+            mtimeMs: Math.max(
+              candidate.mtimeMs,
+              candidateByPath.get(`${candidate.path}-wal`)?.mtimeMs ?? 0
+            )
+          }
+        : candidate
+    )
+    .sort(
+      (left, right) =>
+        right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path)
+    );
+  const parsingTruncated = candidates.length > MAX_USAGE_PARSE_CANDIDATES;
+  if (parsingTruncated) {
+    candidates.length = MAX_USAGE_PARSE_CANDIDATES;
+  }
+  const signature = antigravityWorkspaceCandidateSignature(
+    candidates,
+    candidateByPath,
+    inventory.truncated || parsingTruncated,
+    inventory.diagnostics
+  );
+
+  return {
+    candidates,
+    diagnostics: inventory.diagnostics,
+    signature,
+    truncated: inventory.truncated || parsingTruncated
+  };
+}
+
+function buildAntigravityWorkspaceInventory(
+  roots: readonly string[],
+  collected: AntigravityWorkspaceCandidateInventory
+): AntigravityWorkspaceInventory {
+  const workspaces = new Map<string, string>();
+  for (const root of roots) {
+    for (const conversation of readAntigravityConversationMetadataFromInventory(
+      root,
+      collected.candidates,
+      { maxConversationFiles: MAX_USAGE_PARSE_CANDIDATES }
+    )) {
+      if (
+        conversation.workspace &&
+        !workspaces.has(conversation.conversationId)
+      ) {
+        workspaces.set(conversation.conversationId, conversation.workspace);
+      }
+    }
+  }
+  return {
+    workspaces,
+    truncated: collected.truncated,
+    diagnostics: collected.diagnostics
+  };
+}
+
+function antigravityWorkspaceCandidateSignature(
+  candidates: readonly SessionInventoryCandidate[],
+  candidateByPath: ReadonlyMap<string, SessionInventoryCandidate>,
+  truncated: boolean,
+  diagnostics: readonly SessionInventoryDiagnostic[]
+): string {
+  const candidateSignatures = candidates.map((candidate) => {
+    const rawCandidate = candidateByPath.get(candidate.path) ?? candidate;
+    const wal = candidate.path.endsWith(".db")
+      ? candidateByPath.get(`${candidate.path}-wal`)
+      : undefined;
+    return [
+      candidate.path,
+      rawCandidate.size,
+      rawCandidate.mtimeMs,
+      candidate.mtimeMs,
+      wal?.path ?? "",
+      wal?.size ?? "",
+      wal?.mtimeMs ?? ""
+    ].join("\0");
+  });
+  const diagnosticSignatures = diagnostics.map((diagnostic) =>
+    [
+      diagnostic.root,
+      diagnostic.path,
+      diagnostic.kind,
+      diagnostic.message ?? ""
+    ].join("\0")
+  );
+  return [
+    truncated ? "truncated" : "complete",
+    ...candidateSignatures,
+    ...diagnosticSignatures
+  ].join("\n");
+}
+
+function antigravityWorkspaceFastProbePaths(
+  roots: readonly string[]
+): string[] {
+  const paths = new Set<string>();
+  for (const root of roots) {
+    paths.add(resolve(root));
+    paths.add(resolve(root, "cache"));
+    paths.add(resolve(root, "cache", "projects.json"));
+    paths.add(resolve(root, "conversations"));
+    paths.add(resolve(root, "history.jsonl"));
+  }
+  return Array.from(paths).sort();
+}
+
+function antigravityWorkspaceProbeSignature(paths: readonly string[]): string {
+  return paths
+    .map((path) => {
+      try {
+        const stats = statSync(path);
+        return [
+          path,
+          stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other",
+          Number(stats.size),
+          Number(stats.mtimeMs)
+        ].join("\0");
+      } catch {
+        return `${path}\0missing`;
+      }
+    })
+    .join("\n");
+}
+
+function cloneAntigravityWorkspaceInventory(
+  inventory: AntigravityWorkspaceInventory
+): AntigravityWorkspaceInventory {
+  return {
+    workspaces: new Map(inventory.workspaces),
+    truncated: inventory.truncated,
+    diagnostics: inventory.diagnostics.map((diagnostic) => ({
+      ...diagnostic
+    }))
+  };
 }
 
 export async function scanUsageAdaptersAtStartup(
@@ -814,6 +1037,14 @@ export async function scanUsageAdaptersAtStartup(
       return {
         read: {
           sourceCount: historyRead.sourceCount,
+          truncated: historyRead.truncated,
+          ...(historyRead.diagnostics === undefined
+            ? {}
+            : {
+                diagnostics: historyRead.diagnostics.map((diagnostic) => ({
+                  ...diagnostic
+                }))
+              }),
           samples: historyRead.samples.filter(
             (sample) => sample.timestampMs >= options.startOfDayMs
           )
@@ -995,52 +1226,48 @@ function collectUsageSources(
   vendor: UsageVendor,
   roots: string[],
   options: { includeJson: boolean; includeHiddenDirs: boolean }
-): SourceDescriptor[] {
+): {
+  sources: SourceDescriptor[];
+  truncated: boolean;
+  diagnostics: SessionInventoryDiagnostic[];
+} {
   const sources: SourceDescriptor[] = [];
-  const seenPaths = new Set<string>();
-  const seenIdentities = new Set<string>();
+  const inventory = collectSessionInventory(roots);
+  let truncated = inventory.truncated;
 
-  for (const root of roots) {
-    if (!root || !existsSync(root)) {
-      continue;
-    }
-    for (const filePath of walkFiles(root, 0, options.includeHiddenDirs)) {
-      const actual = actualUsageSource(filePath);
-      if (
-        seenPaths.has(actual.path) ||
-        (actual.identity !== undefined && seenIdentities.has(actual.identity))
-      ) {
-        continue;
-      }
-      const source = describeUsageSource(vendor, actual.path, options);
-      if (!source) {
-        continue;
-      }
-      seenPaths.add(actual.path);
-      if (actual.identity !== undefined) {
-        seenIdentities.add(actual.identity);
-      }
+  if (vendor === "unknown") {
+    return {
+      sources,
+      truncated,
+      diagnostics: inventory.diagnostics
+    };
+  }
+  const matching = inventory.candidates.filter(
+    (candidate) =>
+      roots.some(
+        (root) =>
+          classifySessionInventoryCandidate(vendor, root, candidate.path) !==
+          null
+      ) ||
+      ((vendor === "codex" || vendor === "claude") &&
+        extname(candidate.path).toLowerCase() === ".ndjson")
+  );
+  if (matching.length > MAX_USAGE_PARSE_CANDIDATES) {
+    matching.length = MAX_USAGE_PARSE_CANDIDATES;
+    truncated = true;
+  }
+  for (const candidate of matching) {
+    const source = describeUsageSource(vendor, candidate.path, options);
+    if (source) {
       sources.push(source);
     }
   }
 
-  return sources.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function actualUsageSource(filePath: string): {
-  path: string;
-  identity?: string;
-} {
-  const path = canonicalUsageSourcePath(filePath);
-  try {
-    const stats = statSync(path);
-    return {
-      path,
-      identity: `${String(stats.dev)}:${String(stats.ino)}`
-    };
-  } catch {
-    return { path: filePath };
-  }
+  return {
+    sources,
+    truncated,
+    diagnostics: inventory.diagnostics
+  };
 }
 
 function canonicalUsageSourcePath(filePath: string): string {
@@ -1095,44 +1322,6 @@ function shouldCollectJsonSource(
   _filePath: string
 ): boolean {
   return true;
-}
-
-function walkFiles(
-  rootPath: string,
-  depth: number,
-  includeHiddenDirs = false
-): string[] {
-  const stats = safeStat(rootPath);
-  if (!stats) {
-    return [];
-  }
-  if (stats.isFile()) {
-    return [rootPath];
-  }
-  if (!stats.isDirectory() || depth > MAX_RECURSION_DEPTH) {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) {
-      const hiddenException = entry.name.endsWith(".jsonl");
-      if (!hiddenException && depth > 0 && !includeHiddenDirs) {
-        continue;
-      }
-    }
-    const nextPath = join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      for (const file of walkFiles(nextPath, depth + 1, includeHiddenDirs)) {
-        files.push(file);
-      }
-      continue;
-    }
-    if (entry.isFile()) {
-      files.push(nextPath);
-    }
-  }
-  return files;
 }
 
 function safeStat(filePath: string): ReturnType<typeof statSync> | null {

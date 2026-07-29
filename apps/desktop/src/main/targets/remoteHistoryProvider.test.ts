@@ -28,16 +28,19 @@ describe("remote history provider", () => {
       decodeRemotePath: decodePath
     });
 
-    await expect(provider.refresh({ maxRecords: 10 })).resolves.toMatchObject([
-      {
-        vendor: "codex",
-        sessionId: "session-1",
-        updatedAtUnixMs: 1,
-        canResume: true,
-        title: "Remote session",
-        principal: { uid: 1_000, accountName: "kmux" }
-      }
-    ]);
+    await expect(provider.refresh({ maxRecords: 10 })).resolves.toMatchObject({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex",
+          sessionId: "session-1",
+          updatedAtUnixMs: 1,
+          canResume: true,
+          title: "Remote session",
+          principal: { uid: 1_000, accountName: "kmux" }
+        }
+      ]
+    });
     expect(scanHistory).toHaveBeenCalledWith({
       desktopInstallationId: "desktop_1",
       targetId: "target_1",

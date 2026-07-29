@@ -2,13 +2,11 @@ import {
   accessSync,
   closeSync,
   constants,
-  lstatSync,
   openSync,
-  opendirSync,
   readSync,
   statSync
 } from "node:fs";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 
 import {
   formatAgentCommandForShell,
@@ -26,10 +24,15 @@ import type {
 } from "@kmux/proto";
 import {
   type AgentStorageRoots,
+  classifySessionInventoryCandidate,
+  collectSessionInventory,
   isCodexSubagentSessionMetadata,
-  readAntigravityConversationMetadataFromRoot,
+  readAntigravityConversationMetadataFromInventory,
   resolveAgentSessionRoots,
-  resolveAgentStorageRoots
+  resolveAgentStorageRoots,
+  type SessionInventoryCandidate,
+  type SessionInventoryLimits,
+  type SessionInventoryVendor
 } from "@kmux/metadata";
 import {
   antigravitySessionIndexPath,
@@ -45,14 +48,7 @@ export interface ExternalSessionIndexerOptions {
   agentStorageRoots?: AgentStorageRoots;
   settings?: Pick<KmuxSettings, "agents">;
   antigravitySessionIndexPath?: string;
-  scanLimits?: Partial<ExternalSessionScanLimits>;
-}
-
-export interface ExternalSessionScanLimits {
-  maxCandidates: number;
-  maxDepth: number;
-  maxDirectories: number;
-  maxEntries: number;
+  scanLimits?: Partial<SessionInventoryLimits>;
 }
 
 export interface ExternalSessionIndexer {
@@ -65,16 +61,6 @@ export interface ExternalSessionIndexer {
 
 export interface SynchronousExternalSessionIndexer extends ExternalSessionIndexer {
   listExternalAgentSessions(): ExternalAgentSessionsSnapshot;
-}
-
-export class ExternalSessionInventoryLimitError extends Error {
-  constructor(
-    readonly root: string,
-    readonly limit: keyof ExternalSessionScanLimits
-  ) {
-    super(`External session inventory at ${root} exceeds ${limit}`);
-    this.name = "ExternalSessionInventoryLimitError";
-  }
 }
 
 export interface ExternalSessionResumeSpec {
@@ -100,11 +86,7 @@ interface ExternalSessionRecord {
   updatedAtMs: number;
 }
 
-interface CandidateFile {
-  path: string;
-  mtimeMs: number;
-  size: number;
-}
+type CandidateFile = SessionInventoryCandidate;
 
 interface SessionFileCacheEntry {
   signature: string;
@@ -118,12 +100,7 @@ const MAX_CONVERSATION_PREVIEW_LENGTH = 220;
 const MAX_JSONL_SCAN_BYTES = 256 * 1024;
 const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
 const MAX_SESSION_FILE_CACHE_ENTRIES = 512;
-const DEFAULT_SESSION_SCAN_LIMITS: ExternalSessionScanLimits = {
-  maxCandidates: 4_096,
-  maxDepth: 32,
-  maxDirectories: 4_096,
-  maxEntries: 65_536
-};
+const HISTORY_PARSE_CANDIDATE_MULTIPLIER = 4;
 
 export function createExternalSessionIndexer(
   options: ExternalSessionIndexerOptions
@@ -131,7 +108,7 @@ export function createExternalSessionIndexer(
   const now = options.now ?? (() => new Date());
   const maxFilesPerVendor =
     options.maxFilesPerVendor ?? DEFAULT_MAX_FILES_PER_VENDOR;
-  const scanLimits = resolveSessionScanLimits(options.scanLimits);
+  const scanLimits = options.scanLimits;
   const canRunCommand = createCommandAvailability(options);
   const sessionFileCache = new Map<string, SessionFileCacheEntry>();
   const agentStorageRoots =
@@ -150,49 +127,72 @@ export function createExternalSessionIndexer(
     }
   });
 
-  function listRecords(currentNow: Date): ExternalSessionRecord[] {
+  function listRecords(currentNow: Date): {
+    records: ExternalSessionRecord[];
+    truncated: boolean;
+  } {
     const cutoffMs = currentNow.getTime() - SESSION_LOOKBACK_MS;
+    const codexInventory = collectVendorCandidates(
+      "codex",
+      sessionRoots.codex,
+      maxFilesPerVendor * HISTORY_PARSE_CANDIDATE_MULTIPLIER,
+      scanLimits
+    );
+    const claudeInventory = collectVendorCandidates(
+      "claude",
+      sessionRoots.claude,
+      maxFilesPerVendor * HISTORY_PARSE_CANDIDATE_MULTIPLIER,
+      scanLimits
+    );
+    const antigravityInventory = collectVendorCandidates(
+      "antigravity",
+      sessionRoots.antigravity,
+      maxFilesPerVendor * HISTORY_PARSE_CANDIDATE_MULTIPLIER,
+      scanLimits
+    );
     const records = dedupeLatestSessionRecords(
       [
-        ...sessionRoots.codex.flatMap((root) =>
-          listCodexSessions(
-            root,
-            maxFilesPerVendor,
-            sessionFileCache,
-            scanLimits
-          )
+        ...listCodexSessions(
+          codexInventory.candidates,
+          maxFilesPerVendor,
+          sessionFileCache
         ),
-        ...sessionRoots.claude.flatMap((root) =>
-          listClaudeSessions(
-            root,
-            maxFilesPerVendor,
-            sessionFileCache,
-            scanLimits
-          )
+        ...listClaudeSessions(
+          claudeInventory.candidates,
+          maxFilesPerVendor,
+          sessionFileCache
         ),
         ...sessionRoots.antigravity.flatMap((root, index) =>
           listAntigravitySessions(
             root,
             index === 0 ? resolveAntigravityIndexPath(options) : undefined,
-            maxFilesPerVendor
+            maxFilesPerVendor,
+            antigravityInventory.candidates
           )
         )
       ].filter((record) => record.updatedAtMs >= cutoffMs)
     );
     records.sort((left, right) => right.updatedAtMs - left.updatedAtMs);
-    return records;
+    return {
+      records,
+      truncated:
+        codexInventory.truncated ||
+        claudeInventory.truncated ||
+        antigravityInventory.truncated
+    };
   }
 
   let cachedRecords: ExternalSessionRecord[] | null = null;
   const refreshRecords = (): ExternalSessionRecord[] => {
-    cachedRecords = listRecords(now());
+    cachedRecords = listRecords(now()).records;
     return cachedRecords;
   };
 
   return {
     listExternalAgentSessions() {
       const currentNow = now();
-      cachedRecords = listRecords(currentNow);
+      const result = listRecords(currentNow);
+      cachedRecords = result.records;
       return {
         sessions: cachedRecords.map((record) =>
           toViewModel(
@@ -202,7 +202,8 @@ export function createExternalSessionIndexer(
             options.settings
           )
         ),
-        updatedAt: currentNow.toISOString()
+        updatedAt: currentNow.toISOString(),
+        truncated: result.truncated
       };
     },
     resolveExternalAgentSession(key) {
@@ -238,10 +239,72 @@ function dedupeLatestSessionRecords(
   return Array.from(latestByKey.values());
 }
 
+function collectVendorCandidates(
+  vendor: SessionInventoryVendor,
+  roots: readonly string[],
+  parsingBudget: number,
+  limits: Partial<SessionInventoryLimits> | undefined
+): {
+  candidates: CandidateFile[];
+  truncated: boolean;
+} {
+  const inventory = collectSessionInventory(roots, limits);
+  const candidateByPath = new Map(
+    inventory.candidates.map((candidate) => [candidate.path, candidate] as const)
+  );
+  const candidates = inventory.candidates
+    .filter((candidate) => {
+      const roles = roots.flatMap((root) => {
+        const role = classifySessionInventoryCandidate(
+          vendor,
+          root,
+          candidate.path
+        );
+        return role ? [role] : [];
+      });
+      if (vendor === "codex") {
+        return roles.includes("codex-session");
+      }
+      if (vendor === "claude") {
+        return roles.includes("claude-session");
+      }
+      return roles.some(
+        (role) =>
+          role === "antigravity-history" ||
+          role === "antigravity-conversation" ||
+          role === "antigravity-project-index"
+      );
+    })
+    .map((candidate) =>
+      vendor === "antigravity" && candidate.path.endsWith(".db")
+        ? {
+            ...candidate,
+            mtimeMs: Math.max(
+              candidate.mtimeMs,
+              candidateByPath.get(`${candidate.path}-wal`)?.mtimeMs ?? 0
+            )
+          }
+        : candidate
+    )
+    .sort(
+      (left, right) =>
+        right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path)
+    );
+  const parsingTruncated = candidates.length > parsingBudget;
+  if (parsingTruncated) {
+    candidates.length = parsingBudget;
+  }
+  return {
+    candidates,
+    truncated: inventory.truncated || parsingTruncated
+  };
+}
+
 function listAntigravitySessions(
   antigravityRoot: string,
   indexPath: string | undefined,
-  maxFiles: number
+  maxFiles: number,
+  candidates: readonly CandidateFile[]
 ): ExternalSessionRecord[] {
   const merged = new Map<
     string,
@@ -282,8 +345,9 @@ function listAntigravitySessions(
     });
   };
 
-  for (const session of readAntigravityConversationMetadataFromRoot(
+  for (const session of readAntigravityConversationMetadataFromInventory(
     antigravityRoot,
+    candidates,
     {
       maxConversationFiles: maxFiles
     }
@@ -326,17 +390,11 @@ function listAntigravitySessions(
 }
 
 function listCodexSessions(
-  root: string,
+  candidates: readonly CandidateFile[],
   maxSessions: number,
-  cache: Map<string, SessionFileCacheEntry>,
-  scanLimits: ExternalSessionScanLimits
+  cache: Map<string, SessionFileCacheEntry>
 ): ExternalSessionRecord[] {
   const recordsByKey = new Map<string, ExternalSessionRecord>();
-  const candidates = collectCandidateFiles(
-    root,
-    (path) => basename(path).startsWith("rollout-") && path.endsWith(".jsonl"),
-    scanLimits
-  );
 
   for (const candidate of candidates) {
     const cached = readCachedSessionRecord(cache, candidate);
@@ -453,16 +511,11 @@ function firstCodexSessionMetadata(
 }
 
 function listClaudeSessions(
-  root: string,
+  candidates: readonly CandidateFile[],
   maxFiles: number,
-  cache: Map<string, SessionFileCacheEntry>,
-  scanLimits: ExternalSessionScanLimits
+  cache: Map<string, SessionFileCacheEntry>
 ): ExternalSessionRecord[] {
-  return collectCandidateFiles(
-    root,
-    (path) => path.endsWith(".jsonl") && dirname(dirname(path)) === root,
-    scanLimits
-  )
+  return candidates
     .slice(0, maxFiles)
     .flatMap((candidate) => {
       const cached = readCachedSessionRecord(cache, candidate);
@@ -955,143 +1008,6 @@ function cacheSessionRecord(
 
 function sessionFileSignature(candidate: CandidateFile): string {
   return `${candidate.mtimeMs}:${candidate.size}`;
-}
-
-function collectCandidateFiles(
-  root: string,
-  include: (path: string) => boolean,
-  limits: ExternalSessionScanLimits
-): CandidateFile[] {
-  const candidates: CandidateFile[] = [];
-  const pending = [{ path: root, depth: 0 }];
-  const visitedDirectories = new Set<string>();
-  let discoveredDirectories = 1;
-  let visitedEntries = 0;
-
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    if (!directory) {
-      continue;
-    }
-
-    let directoryStats;
-    try {
-      directoryStats = lstatSync(directory.path);
-    } catch {
-      continue;
-    }
-    const identity = fileIdentity(directoryStats, directory.path);
-    if (
-      directoryStats.isSymbolicLink() ||
-      !directoryStats.isDirectory() ||
-      visitedDirectories.has(identity)
-    ) {
-      continue;
-    }
-    visitedDirectories.add(identity);
-
-    let handle;
-    try {
-      handle = opendirSync(directory.path);
-    } catch {
-      continue;
-    }
-    try {
-      for (
-        let entry = handle.readSync();
-        entry !== null;
-        entry = handle.readSync()
-      ) {
-        visitedEntries += 1;
-        if (visitedEntries > limits.maxEntries) {
-          throw new ExternalSessionInventoryLimitError(root, "maxEntries");
-        }
-        if (entry.isSymbolicLink()) {
-          continue;
-        }
-        const path = join(directory.path, entry.name);
-        let stats;
-        try {
-          stats = lstatSync(path);
-        } catch {
-          continue;
-        }
-        if (stats.isSymbolicLink()) {
-          continue;
-        }
-        if (stats.isDirectory()) {
-          if (directory.depth >= limits.maxDepth) {
-            throw new ExternalSessionInventoryLimitError(root, "maxDepth");
-          }
-          discoveredDirectories += 1;
-          if (discoveredDirectories > limits.maxDirectories) {
-            throw new ExternalSessionInventoryLimitError(
-              root,
-              "maxDirectories"
-            );
-          }
-          pending.push({ path, depth: directory.depth + 1 });
-          continue;
-        }
-        if (stats.isFile() && include(path)) {
-          candidates.push({
-            path,
-            mtimeMs: stats.mtimeMs,
-            size: stats.size
-          });
-          if (candidates.length > limits.maxCandidates) {
-            throw new ExternalSessionInventoryLimitError(root, "maxCandidates");
-          }
-        }
-      }
-    } finally {
-      handle.closeSync();
-    }
-  }
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  return candidates;
-}
-
-function resolveSessionScanLimits(
-  limits: Partial<ExternalSessionScanLimits> | undefined
-): ExternalSessionScanLimits {
-  return {
-    maxCandidates: positiveSafeInteger(
-      limits?.maxCandidates,
-      DEFAULT_SESSION_SCAN_LIMITS.maxCandidates
-    ),
-    maxDepth: positiveSafeInteger(
-      limits?.maxDepth,
-      DEFAULT_SESSION_SCAN_LIMITS.maxDepth
-    ),
-    maxDirectories: positiveSafeInteger(
-      limits?.maxDirectories,
-      DEFAULT_SESSION_SCAN_LIMITS.maxDirectories
-    ),
-    maxEntries: positiveSafeInteger(
-      limits?.maxEntries,
-      DEFAULT_SESSION_SCAN_LIMITS.maxEntries
-    )
-  };
-}
-
-function positiveSafeInteger(
-  value: number | undefined,
-  fallback: number
-): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : fallback;
-}
-
-function fileIdentity(
-  stats: { dev: number | bigint; ino: number | bigint },
-  fallbackPath: string
-): string {
-  if (stats.dev === 0 && stats.ino === 0) {
-    return `path:${fallbackPath}`;
-  }
-  return `${String(stats.dev)}:${String(stats.ino)}`;
 }
 
 function parseJsonlEdges(path: string): unknown[] {

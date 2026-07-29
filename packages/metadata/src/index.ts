@@ -7,6 +7,7 @@ export * from "./agentStorage";
 export * from "./antigravityStorage";
 export * from "./codexSession";
 export * from "./modelPricing";
+export * from "./sessionInventory";
 export * from "./usage";
 
 const execFileAsync = promisify(execFile);

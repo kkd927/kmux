@@ -1252,6 +1252,7 @@ fn hello(
             "git.inspect-bounded-v1".to_owned(),
             "ports.inspect-bounded-v1".to_owned(),
             "history.scan-bounded-v1".to_owned(),
+            "history.scan-partial-v2".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
             "agents.settings-scan-v1".to_owned(),
             "worktree.durable-v1".to_owned(),
@@ -2145,8 +2146,10 @@ fn inspect_external_history(
         BridgeRuntimeError::Invalid(format!("history home is unavailable: {error}"))
     })?;
     let settings = metadata_agent_scan_settings(agent_settings);
-    let records = scan_external_history_with_settings(&home, max_records, &settings)
-        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?
+    let scan = scan_external_history_with_settings(&home, max_records, &settings)
+        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
+    let records = scan
+        .records
         .into_iter()
         .map(|record| RemoteHistoryRecord {
             vendor: record.vendor.to_owned(),
@@ -2167,6 +2170,7 @@ fn inspect_external_history(
             uid: principal.uid,
             account_name: principal.account_name,
         },
+        truncated: scan.truncated,
         records,
     })
 }

@@ -263,6 +263,7 @@ export type RemoteBridgeResponseBody =
       type: "history.scanned";
       targetId: Id;
       principal: { uid: number; accountName: string };
+      truncated?: boolean;
       records: Array<{
         vendor: "codex" | "claude" | "antigravity";
         sessionId: string;
@@ -875,7 +876,13 @@ export function decodeRemoteBridgeResponseBody(
       };
     }
     case "history.scanned": {
-      assertExactKeys(record, ["type", "targetId", "principal", "records"]);
+      assertExactKeys(record, [
+        "type",
+        "targetId",
+        "principal",
+        "truncated",
+        "records"
+      ]);
       const principal = requireRecord(record.principal, "history principal");
       assertExactKeys(principal, ["uid", "accountName"]);
       const principalUid = principal.uid;
@@ -901,6 +908,10 @@ export function decodeRemoteBridgeResponseBody(
             4 * 1024
           )
         },
+        truncated:
+          record.truncated === undefined
+            ? false
+            : requireBoolean(record.truncated, "history.truncated"),
         records: record.records.map(decodeRemoteHistoryRecord)
       };
     }

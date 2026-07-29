@@ -34,9 +34,14 @@ export function createLocalHistoryProvider(options: {
       requireHistoryBound(request.maxRecords);
       await options.refreshUsage();
       const snapshot = await options.indexer.listExternalAgentSessions();
-      return snapshot.sessions
-        .slice(0, request.maxRecords)
-        .map((session) => localHistoryRecord(session, snapshot.updatedAt));
+      return {
+        records: snapshot.sessions
+          .slice(0, request.maxRecords)
+          .map((session) => localHistoryRecord(session, snapshot.updatedAt)),
+        truncated:
+          snapshot.truncated === true ||
+          snapshot.sessions.length > request.maxRecords
+      };
     }
   };
   return Object.freeze(provider);
@@ -56,6 +61,7 @@ export function createTargetHistoryRuntime(options: {
 }): TargetHistoryRuntime {
   const now = options.now ?? (() => new Date());
   const recordsByTarget = new Map<string, TargetHistoryRecordWithTarget[]>();
+  const partialTargetKeys = new Set<string>();
   const resumeByKey = new Map<string, ExternalSessionResumeSpec>();
   let refreshInFlight: Promise<ExternalAgentSessionsSnapshot> | null = null;
 
@@ -69,7 +75,7 @@ export function createTargetHistoryRuntime(options: {
         const key = targetKey(target);
         try {
           const services = options.targetServices.resolveLocated(target);
-          const records = await services.history.refresh({
+          const scan = await services.history.refresh({
             maxRecords: MAX_HISTORY_RECORDS,
             ...(options.getState().settings.agents?.[
               target.kind === "local" ? "local" : "ssh"
@@ -84,16 +90,34 @@ export function createTargetHistoryRuntime(options: {
           });
           if (
             target.kind === "ssh" &&
-            records.some((record) => record.principal === undefined)
+            scan.records.some((record) => record.principal === undefined)
           ) {
             throw new Error(
               "remote history record lacks its authenticated principal"
             );
           }
+          const incoming = scan.records.map((record) => ({
+            target,
+            services,
+            record
+          }));
           recordsByTarget.set(
             key,
-            records.map((record) => ({ target, services, record }))
+            scan.truncated
+              ? mergeHistoryRecords(recordsByTarget.get(key) ?? [], incoming)
+              : incoming
           );
+          if (scan.truncated) {
+            partialTargetKeys.add(key);
+            options.reportError?.(
+              target,
+              new Error(
+                "history scan reached its bound; merged partial results"
+              )
+            );
+          } else {
+            partialTargetKeys.delete(key);
+          }
         } catch (error) {
           const failure =
             error instanceof Error ? error : new Error(String(error));
@@ -117,13 +141,19 @@ export function createTargetHistoryRuntime(options: {
     for (const key of recordsByTarget.keys()) {
       if (!currentTargetKeys.has(key)) recordsByTarget.delete(key);
     }
-    const currentRecords = [...recordsByTarget]
+    for (const key of partialTargetKeys) {
+      if (!currentTargetKeys.has(key)) partialTargetKeys.delete(key);
+    }
+    const allCurrentRecords = [...recordsByTarget]
       .flatMap(([, records]) => records)
       .sort(
         (left, right) =>
           right.record.updatedAtUnixMs - left.record.updatedAtUnixMs
-      )
-      .slice(0, MAX_HISTORY_RECORDS);
+      );
+    const truncated =
+      allCurrentRecords.length > MAX_HISTORY_RECORDS ||
+      Array.from(partialTargetKeys).some((key) => currentTargetKeys.has(key));
+    const currentRecords = allCurrentRecords.slice(0, MAX_HISTORY_RECORDS);
     const nextResumeByKey = new Map<string, ExternalSessionResumeSpec>();
     const commandSettings = options.getState().settings;
     const sessions = currentRecords.map((entry) =>
@@ -139,6 +169,7 @@ export function createTargetHistoryRuntime(options: {
     return {
       sessions,
       updatedAt: now().toISOString(),
+      ...(truncated ? { truncated: true } : {}),
       ...(currentUnavailableTargets.length === 0
         ? {}
         : { unavailableTargets: currentUnavailableTargets })
@@ -166,6 +197,25 @@ interface TargetHistoryRecordWithTarget {
   target: WorkspaceTarget;
   services: ReturnType<TargetServiceRegistry["resolveLocated"]>;
   record: TargetHistoryRecord<LocatedPath>;
+}
+
+function mergeHistoryRecords(
+  previous: TargetHistoryRecordWithTarget[],
+  incoming: TargetHistoryRecordWithTarget[]
+): TargetHistoryRecordWithTarget[] {
+  const merged = new Map(
+    previous.map((entry) => [historyRecordIdentity(entry.record), entry])
+  );
+  for (const entry of incoming) {
+    merged.set(historyRecordIdentity(entry.record), entry);
+  }
+  return Array.from(merged.values());
+}
+
+function historyRecordIdentity(
+  record: TargetHistoryRecord<LocatedPath>
+): string {
+  return `${record.vendor}\0${record.sessionId}`;
 }
 
 function localHistoryRecord(

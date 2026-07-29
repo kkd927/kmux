@@ -15,7 +15,7 @@ use thiserror::Error;
 pub const MAX_METADATA_CHUNK_BYTES: usize = 256 * 1024;
 pub const MAX_HISTORY_RECORDS: usize = 100;
 pub const MAX_USAGE_RECORDS: usize = 64;
-const MAX_HISTORY_CANDIDATES: usize = 4_096;
+const MAX_SESSION_DEPTH: usize = 10;
 const MAX_HISTORY_DIRECTORIES: usize = 4_096;
 const MAX_HISTORY_ENTRIES: usize = 65_536;
 const MAX_HISTORY_EDGE_BYTES: usize = 256 * 1024;
@@ -25,6 +25,19 @@ const MAX_MODEL_CHARS: usize = 128;
 const MAX_SESSION_ID_BYTES: usize = 4 * 1024;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 
+#[derive(Clone, Copy)]
+struct SessionInventoryLimits {
+    max_depth: usize,
+    max_directories: usize,
+    max_entries: usize,
+}
+
+const SESSION_INVENTORY_LIMITS: SessionInventoryLimits = SessionInventoryLimits {
+    max_depth: MAX_SESSION_DEPTH,
+    max_directories: MAX_HISTORY_DIRECTORIES,
+    max_entries: MAX_HISTORY_ENTRIES,
+};
+
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("metadata chunk exceeds {MAX_METADATA_CHUNK_BYTES} bytes")]
 pub struct MetadataChunkTooLarge;
@@ -33,8 +46,6 @@ pub struct MetadataChunkTooLarge;
 pub enum MetadataScanError {
     #[error("history scan root or bound is invalid")]
     InvalidRequest,
-    #[error("history inventory exceeds its hard bound")]
-    InventoryLimit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +58,12 @@ pub struct ExternalHistoryRecord {
     pub title: Option<String>,
     pub recent_conversation: Option<String>,
     pub model: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalHistoryScan {
+    pub records: Vec<ExternalHistoryRecord>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +144,52 @@ struct CandidateFile {
     size: u64,
 }
 
+struct CandidateInventory {
+    candidates: Vec<CandidateFile>,
+    truncated: bool,
+    diagnostics: Vec<InventoryDiagnostic>,
+}
+
+impl CandidateInventory {
+    fn is_partial(&self) -> bool {
+        self.truncated || !self.diagnostics.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryDiagnosticKind {
+    MaxDepth,
+    MaxDirectories,
+    MaxEntries,
+    RootUnavailable,
+    DirectoryUnreadable,
+    EntryUnreadable,
+}
+
+#[derive(Clone, Debug)]
+struct InventoryDiagnostic {
+    _root: PathBuf,
+    _path: PathBuf,
+    _kind: InventoryDiagnosticKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionVendor {
+    Codex,
+    Claude,
+    Antigravity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCandidateRole {
+    CodexSession,
+    ClaudeSession,
+    ClaudeSubagent,
+    AntigravityHistory,
+    AntigravityTranscript,
+    AntigravityConversation,
+}
+
 #[derive(Default)]
 struct ParsedRecord {
     session_id: Option<String>,
@@ -147,7 +210,7 @@ pub fn validate_metadata_chunk(bytes: &[u8]) -> Result<(), MetadataChunkTooLarge
 pub fn scan_external_history(
     home: &Path,
     max_records: usize,
-) -> Result<Vec<ExternalHistoryRecord>, MetadataScanError> {
+) -> Result<ExternalHistoryScan, MetadataScanError> {
     scan_external_history_with_settings(home, max_records, &ExternalAgentScanSettings::default())
 }
 
@@ -155,50 +218,64 @@ pub fn scan_external_history_with_settings(
     home: &Path,
     max_records: usize,
     settings: &ExternalAgentScanSettings,
-) -> Result<Vec<ExternalHistoryRecord>, MetadataScanError> {
+) -> Result<ExternalHistoryScan, MetadataScanError> {
     if !home.is_absolute() || max_records == 0 || max_records > MAX_HISTORY_RECORDS {
         return Err(MetadataScanError::InvalidRequest);
     }
     validate_agent_scan_settings(settings)?;
     let mut by_identity = BTreeMap::<String, ExternalHistoryRecord>::new();
+    let mut truncated = false;
+    let candidate_limit = max_records.saturating_mul(4);
     let codex_command = configured_command(settings.codex.as_ref(), "codex");
-    for root in session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref()) {
-        scan_jsonl_vendor(
-            "codex",
-            codex_command,
-            &root,
-            |path| {
-                path.file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-            },
-            max_records,
-            &mut by_identity,
-        )?;
-    }
+    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref());
+    let inventory = collect_session_inventory(&codex_roots);
+    truncated |= inventory.is_partial();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &codex_roots,
+        SessionVendor::Codex,
+        |role| role == SessionCandidateRole::CodexSession,
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    scan_jsonl_vendor("codex", codex_command, candidates, &mut by_identity);
     let claude_command = configured_command(settings.claude.as_ref(), "claude");
-    for root in session_roots(
+    let claude_roots = session_roots(
         home,
         &home.join(".claude/projects"),
         settings.claude.as_ref(),
-    ) {
-        scan_jsonl_vendor(
-            "claude",
-            claude_command,
-            &root,
-            |path| path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
-            max_records,
-            &mut by_identity,
-        )?;
-    }
+    );
+    let inventory = collect_session_inventory(&claude_roots);
+    truncated |= inventory.is_partial();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &claude_roots,
+        SessionVendor::Claude,
+        |role| role == SessionCandidateRole::ClaudeSession,
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    scan_jsonl_vendor("claude", claude_command, candidates, &mut by_identity);
     let antigravity_command = configured_command(settings.antigravity.as_ref(), "agy");
-    for root in session_roots(
+    let antigravity_roots = session_roots(
         home,
         &home.join(".gemini/antigravity-cli"),
         settings.antigravity.as_ref(),
-    ) {
-        scan_antigravity(
-            &root.join("history.jsonl"),
+    );
+    let inventory = collect_session_inventory(&antigravity_roots);
+    truncated |= inventory.is_partial();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &antigravity_roots,
+        SessionVendor::Antigravity,
+        |role| role == SessionCandidateRole::AntigravityHistory,
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    for candidate in candidates {
+        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+        truncated |= scan_antigravity_candidate(
+            &candidate,
             antigravity_command,
             max_records,
             &mut by_identity,
@@ -213,8 +290,11 @@ pub fn scan_external_history_with_settings(
             .then_with(|| left.vendor.cmp(right.vendor))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
-    records.truncate(max_records);
-    Ok(records)
+    if records.len() > max_records {
+        records.truncate(max_records);
+        truncated = true;
+    }
+    Ok(ExternalHistoryScan { records, truncated })
 }
 
 pub fn scan_external_usage(
@@ -244,65 +324,90 @@ pub fn scan_external_usage_with_settings(
     let mut truncated = false;
     let candidate_limit = max_records.saturating_mul(8);
 
-    for root in session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref()) {
-        let codex_candidates = collect_candidates(&root, |path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-        })?;
-        truncated |= codex_candidates.len() > candidate_limit;
-        for candidate in codex_candidates.into_iter().take(candidate_limit) {
-            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-            if let Some(record) = parse_codex_usage(&candidate, start_at_unix_ms) {
-                upsert_usage_record(&mut records, record);
-            }
+    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref());
+    let inventory = collect_session_inventory(&codex_roots);
+    truncated |= inventory.is_partial();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &codex_roots,
+        SessionVendor::Codex,
+        |role| role == SessionCandidateRole::CodexSession,
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    for candidate in candidates {
+        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+        if let Some(record) = parse_codex_usage(&candidate, start_at_unix_ms) {
+            upsert_usage_record(&mut records, record);
         }
     }
 
     let mut seen_claude_requests = BTreeSet::new();
-    for root in session_roots(
+    let claude_roots = session_roots(
         home,
         &home.join(".claude/projects"),
         settings.claude.as_ref(),
-    ) {
-        let mut claude_candidates = collect_candidates(&root, |path| {
-            path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-        })?;
-        truncated |= claude_candidates.len() > candidate_limit;
-        claude_candidates.truncate(candidate_limit);
-        claude_candidates.sort_by(|left, right| {
-            is_claude_subagent_path(&left.path)
-                .cmp(&is_claude_subagent_path(&right.path))
-                .then_with(|| right.modified_unix_ms.cmp(&left.modified_unix_ms))
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        for candidate in claude_candidates {
-            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-            if let Some(record) =
-                parse_claude_usage(&candidate, start_at_unix_ms, &mut seen_claude_requests)
-            {
-                upsert_usage_record(&mut records, record);
-            }
+    );
+    let inventory = collect_session_inventory(&claude_roots);
+    truncated |= inventory.is_partial();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &claude_roots,
+        SessionVendor::Claude,
+        |role| {
+            matches!(
+                role,
+                SessionCandidateRole::ClaudeSession | SessionCandidateRole::ClaudeSubagent
+            )
+        },
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    let (parent_candidates, subagent_candidates): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|candidate| !is_claude_subagent_path(&candidate.path));
+    for candidate in parent_candidates.into_iter().chain(subagent_candidates) {
+        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+        if let Some(record) =
+            parse_claude_usage(&candidate, start_at_unix_ms, &mut seen_claude_requests)
+        {
+            upsert_usage_record(&mut records, record);
         }
     }
 
-    for root in session_roots(
+    let antigravity_roots = session_roots(
         home,
         &home.join(".gemini/antigravity-cli"),
         settings.antigravity.as_ref(),
-    ) {
-        let antigravity_workspaces = antigravity_workspace_index(&root.join("history.jsonl"));
-        let antigravity_candidates = collect_candidates(&root.join("brain"), |path| {
-            path.file_name().and_then(|value| value.to_str()) == Some("transcript.jsonl")
-        })?;
-        truncated |= antigravity_candidates.len() > candidate_limit;
-        for candidate in antigravity_candidates.into_iter().take(candidate_limit) {
-            truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
-            if let Some(record) =
-                parse_antigravity_usage(&candidate, start_at_unix_ms, &antigravity_workspaces)
-            {
-                upsert_usage_record(&mut records, record);
-            }
+    );
+    let inventory = collect_session_inventory(&antigravity_roots);
+    truncated |= inventory.is_partial();
+    let antigravity_workspaces = inventory
+        .candidates
+        .iter()
+        .find(|candidate| {
+            classify_session_candidate_for_roots(
+                &antigravity_roots,
+                &candidate.path,
+                SessionVendor::Antigravity,
+            ) == Some(SessionCandidateRole::AntigravityHistory)
+        })
+        .map(antigravity_workspace_index)
+        .unwrap_or_default();
+    let (candidates, parsing_truncated) = matching_candidates(
+        inventory.candidates,
+        &antigravity_roots,
+        SessionVendor::Antigravity,
+        |role| role == SessionCandidateRole::AntigravityTranscript,
+        candidate_limit,
+    );
+    truncated |= parsing_truncated;
+    for candidate in candidates {
+        truncated |= candidate.size > (MAX_HISTORY_EDGE_BYTES * 2) as u64;
+        if let Some(record) =
+            parse_antigravity_usage(&candidate, start_at_unix_ms, &antigravity_workspaces)
+        {
+            upsert_usage_record(&mut records, record);
         }
     }
 
@@ -657,13 +762,10 @@ fn usage_record(
 fn scan_jsonl_vendor(
     vendor: &'static str,
     command: &str,
-    root: &Path,
-    include: impl Fn(&Path) -> bool,
-    max_records: usize,
+    candidates: Vec<CandidateFile>,
     records: &mut BTreeMap<String, ExternalHistoryRecord>,
-) -> Result<(), MetadataScanError> {
-    let candidates = collect_candidates(root, include)?;
-    for candidate in candidates.into_iter().take(max_records.saturating_mul(4)) {
+) {
+    for candidate in candidates {
         let parsed = if vendor == "codex" {
             parse_codex_candidate(&candidate)
         } else {
@@ -689,19 +791,19 @@ fn scan_jsonl_vendor(
             },
         );
     }
-    Ok(())
 }
 
-fn scan_antigravity(
-    path: &Path,
+fn scan_antigravity_candidate(
+    candidate: &CandidateFile,
     command: &str,
     max_records: usize,
     records: &mut BTreeMap<String, ExternalHistoryRecord>,
-) {
-    let Some(candidate) = candidate_file(path) else {
-        return;
-    };
-    for value in parse_jsonl_edges(&candidate) {
+) -> bool {
+    let mut antigravity_records = records
+        .values()
+        .filter(|record| record.vendor == "antigravity")
+        .count();
+    for value in parse_jsonl_edges(candidate) {
         let Some(object) = value.as_object() else {
             continue;
         };
@@ -712,6 +814,11 @@ fn scan_antigravity(
         )) else {
             continue;
         };
+        let identity = format!("antigravity:{session_id}");
+        let is_new_identity = !records.contains_key(&identity);
+        if is_new_identity && antigravity_records >= max_records {
+            return true;
+        }
         upsert_record(
             records,
             ExternalHistoryRecord {
@@ -737,15 +844,9 @@ fn scan_antigravity(
                 model: sanitize_text(first_string(object.get("model")), MAX_MODEL_CHARS),
             },
         );
-        if records
-            .values()
-            .filter(|record| record.vendor == "antigravity")
-            .count()
-            >= max_records
-        {
-            break;
-        }
+        antigravity_records += usize::from(is_new_identity);
     }
+    false
 }
 
 fn parse_codex_candidate(candidate: &CandidateFile) -> ParsedRecord {
@@ -912,56 +1013,202 @@ fn extract_text(value: Option<&Value>, depth: usize) -> Option<String> {
     }
 }
 
-fn collect_candidates(
+fn collect_session_inventory(roots: &[PathBuf]) -> CandidateInventory {
+    collect_session_inventory_with_limits(roots, SESSION_INVENTORY_LIMITS)
+}
+
+fn collect_session_inventory_with_limits(
+    roots: &[PathBuf],
+    limits: SessionInventoryLimits,
+) -> CandidateInventory {
+    let mut candidates_by_path = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_identities = BTreeSet::new();
+    let mut truncated = false;
+
+    for configured_root in roots {
+        let canonical = match fs::canonicalize(configured_root) {
+            Ok(canonical) => canonical,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => {
+                diagnostics.push(InventoryDiagnostic {
+                    _root: configured_root.clone(),
+                    _path: configured_root.clone(),
+                    _kind: InventoryDiagnosticKind::RootUnavailable,
+                });
+                truncated = true;
+                continue;
+            }
+        };
+        let metadata = match fs::metadata(&canonical) {
+            Ok(metadata) if metadata.is_dir() => metadata,
+            Ok(_) => continue,
+            Err(_) => {
+                diagnostics.push(InventoryDiagnostic {
+                    _root: configured_root.clone(),
+                    _path: canonical,
+                    _kind: InventoryDiagnosticKind::RootUnavailable,
+                });
+                truncated = true;
+                continue;
+            }
+        };
+        if !seen_paths.insert(canonical.clone())
+            || !seen_identities.insert((metadata.dev(), metadata.ino()))
+        {
+            continue;
+        }
+        let inventory = collect_session_inventory_root(&canonical, limits);
+        truncated |= inventory.is_partial();
+        diagnostics.extend(inventory.diagnostics);
+        for candidate in inventory.candidates {
+            candidates_by_path
+                .entry(candidate.path.clone())
+                .or_insert(candidate);
+        }
+    }
+    let mut candidates = candidates_by_path.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .modified_unix_ms
+            .cmp(&left.modified_unix_ms)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    CandidateInventory {
+        candidates,
+        truncated,
+        diagnostics,
+    }
+}
+
+fn collect_session_inventory_root(
     root: &Path,
-    include: impl Fn(&Path) -> bool,
-) -> Result<Vec<CandidateFile>, MetadataScanError> {
-    let Ok(root_metadata) = fs::symlink_metadata(root) else {
-        return Ok(Vec::new());
+    limits: SessionInventoryLimits,
+) -> CandidateInventory {
+    let root_metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return CandidateInventory {
+                candidates: Vec::new(),
+                truncated: true,
+                diagnostics: vec![InventoryDiagnostic {
+                    _root: root.to_owned(),
+                    _path: root.to_owned(),
+                    _kind: InventoryDiagnosticKind::RootUnavailable,
+                }],
+            };
+        }
     };
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
-        return Ok(Vec::new());
+        return CandidateInventory {
+            candidates: Vec::new(),
+            truncated: false,
+            diagnostics: Vec::new(),
+        };
     }
-    let mut directories = VecDeque::from([root.to_owned()]);
-    let mut visited_directories = 0_usize;
+    let mut directories = VecDeque::from([(root.to_owned(), 0_usize)]);
+    let mut discovered_directories = 1_usize;
     let mut visited_entries = 0_usize;
     let mut candidates = Vec::new();
-    while let Some(directory) = directories.pop_front() {
-        visited_directories = visited_directories.saturating_add(1);
-        if visited_directories > MAX_HISTORY_DIRECTORIES {
-            return Err(MetadataScanError::InventoryLimit);
-        }
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
+    let mut diagnostics = Vec::new();
+    let mut truncated = false;
+
+    'inventory: while let Some((directory, depth)) = directories.pop_front() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => {
+                diagnostics.push(InventoryDiagnostic {
+                    _root: root.to_owned(),
+                    _path: directory,
+                    _kind: InventoryDiagnosticKind::DirectoryUnreadable,
+                });
+                truncated = true;
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(_) => {
+                    diagnostics.push(InventoryDiagnostic {
+                        _root: root.to_owned(),
+                        _path: directory.clone(),
+                        _kind: InventoryDiagnosticKind::EntryUnreadable,
+                    });
+                    truncated = true;
+                    continue;
+                }
+            };
             visited_entries = visited_entries.saturating_add(1);
-            if visited_entries > MAX_HISTORY_ENTRIES {
-                return Err(MetadataScanError::InventoryLimit);
+            if visited_entries > limits.max_entries {
+                diagnostics.push(InventoryDiagnostic {
+                    _root: root.to_owned(),
+                    _path: directory.clone(),
+                    _kind: InventoryDiagnosticKind::MaxEntries,
+                });
+                truncated = true;
+                break 'inventory;
             }
             let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    diagnostics.push(InventoryDiagnostic {
+                        _root: root.to_owned(),
+                        _path: path,
+                        _kind: InventoryDiagnosticKind::EntryUnreadable,
+                    });
+                    truncated = true;
+                    continue;
+                }
             };
             if metadata.file_type().is_symlink() {
                 continue;
             }
             if metadata.is_dir() {
-                if visited_directories.saturating_add(directories.len()) >= MAX_HISTORY_DIRECTORIES
-                {
-                    return Err(MetadataScanError::InventoryLimit);
+                if depth >= limits.max_depth {
+                    diagnostics.push(InventoryDiagnostic {
+                        _root: root.to_owned(),
+                        _path: path,
+                        _kind: InventoryDiagnosticKind::MaxDepth,
+                    });
+                    truncated = true;
+                    continue;
                 }
-                directories.push_back(path);
+                if discovered_directories >= limits.max_directories {
+                    diagnostics.push(InventoryDiagnostic {
+                        _root: root.to_owned(),
+                        _path: path,
+                        _kind: InventoryDiagnosticKind::MaxDirectories,
+                    });
+                    truncated = true;
+                    continue;
+                }
+                discovered_directories = discovered_directories.saturating_add(1);
+                directories.push_back((path, depth.saturating_add(1)));
                 continue;
             }
-            if metadata.is_file() && include(&path) {
-                if let Some(candidate) = candidate_from_metadata(path, &metadata) {
-                    candidates.push(candidate);
-                }
-                if candidates.len() > MAX_HISTORY_CANDIDATES {
-                    return Err(MetadataScanError::InventoryLimit);
-                }
+            if !metadata.is_file() {
+                continue;
             }
+            let Some(candidate) = candidate_from_metadata(path.clone(), &metadata) else {
+                diagnostics.push(InventoryDiagnostic {
+                    _root: root.to_owned(),
+                    _path: path,
+                    _kind: InventoryDiagnosticKind::EntryUnreadable,
+                });
+                truncated = true;
+                continue;
+            };
+            candidates.push(candidate);
         }
     }
     candidates.sort_by(|left, right| {
@@ -970,15 +1217,88 @@ fn collect_candidates(
             .cmp(&left.modified_unix_ms)
             .then_with(|| left.path.cmp(&right.path))
     });
-    Ok(candidates)
+    CandidateInventory {
+        candidates,
+        truncated,
+        diagnostics,
+    }
 }
 
-fn candidate_file(path: &Path) -> Option<CandidateFile> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return None;
+fn matching_candidates(
+    candidates: Vec<CandidateFile>,
+    roots: &[PathBuf],
+    vendor: SessionVendor,
+    include: impl Fn(SessionCandidateRole) -> bool,
+    parsing_budget: usize,
+) -> (Vec<CandidateFile>, bool) {
+    let mut matching = candidates
+        .into_iter()
+        .filter(|candidate| {
+            classify_session_candidate_for_roots(roots, &candidate.path, vendor)
+                .is_some_and(&include)
+        })
+        .collect::<Vec<_>>();
+    let truncated = matching.len() > parsing_budget;
+    if truncated {
+        matching.truncate(parsing_budget);
     }
-    candidate_from_metadata(path.to_owned(), &metadata)
+    (matching, truncated)
+}
+
+fn classify_session_candidate_for_roots(
+    roots: &[PathBuf],
+    path: &Path,
+    vendor: SessionVendor,
+) -> Option<SessionCandidateRole> {
+    roots
+        .iter()
+        .find_map(|root| classify_session_candidate(root, path, vendor))
+}
+
+fn classify_session_candidate(
+    root: &Path,
+    path: &Path,
+    vendor: SessionVendor,
+) -> Option<SessionCandidateRole> {
+    let relative = path.strip_prefix(root).ok()?;
+    let components = relative.iter().collect::<Vec<_>>();
+    let file_name = path.file_name().and_then(OsStr::to_str)?;
+
+    match vendor {
+        SessionVendor::Codex => file_name
+            .ends_with(".jsonl")
+            .then_some(SessionCandidateRole::CodexSession),
+        SessionVendor::Claude => {
+            if path.extension().and_then(OsStr::to_str) != Some("jsonl") {
+                return None;
+            }
+            if components
+                .iter()
+                .take(components.len().saturating_sub(1))
+                .any(|component| *component == OsStr::new("subagents"))
+            {
+                Some(SessionCandidateRole::ClaudeSubagent)
+            } else {
+                Some(SessionCandidateRole::ClaudeSession)
+            }
+        }
+        SessionVendor::Antigravity => {
+            if components.as_slice() == [OsStr::new("history.jsonl")] {
+                return Some(SessionCandidateRole::AntigravityHistory);
+            }
+            if components.len() >= 4
+                && components[components.len() - 3] == OsStr::new(".system_generated")
+                && components[components.len() - 2] == OsStr::new("logs")
+                && components[components.len() - 1] == OsStr::new("transcript.jsonl")
+            {
+                return Some(SessionCandidateRole::AntigravityTranscript);
+            }
+            (components.len() == 2
+                && components[0] == OsStr::new("conversations")
+                && path.extension().and_then(OsStr::to_str) == Some("db"))
+            .then_some(SessionCandidateRole::AntigravityConversation)
+        }
+    }
 }
 
 fn candidate_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> Option<CandidateFile> {
@@ -1263,12 +1583,9 @@ fn first_nested_string(value: &Value, keys: &[&str], depth: usize) -> Option<Str
     })
 }
 
-fn antigravity_workspace_index(path: &Path) -> BTreeMap<String, String> {
+fn antigravity_workspace_index(candidate: &CandidateFile) -> BTreeMap<String, String> {
     let mut workspaces = BTreeMap::new();
-    let Some(candidate) = candidate_file(path) else {
-        return workspaces;
-    };
-    for value in parse_jsonl_edges(&candidate) {
+    for value in parse_jsonl_edges(candidate) {
         let Some(object) = value.as_object() else {
             continue;
         };
@@ -1524,12 +1841,180 @@ fn expand_session_root(home: &Path, value: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{Permissions, create_dir_all, set_permissions, write};
+    use std::fs::{FileTimes, Permissions, create_dir_all, set_permissions, write};
     use std::os::unix::fs::symlink;
+    use std::time::{Duration, SystemTime};
 
+    use serde::Deserialize;
     use tempfile::tempdir;
 
     use super::*;
+
+    #[derive(Deserialize)]
+    struct InventoryContractFixture {
+        version: u64,
+        scenarios: Vec<InventoryContractScenario>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct InventoryContractScenario {
+        name: String,
+        roots: Vec<String>,
+        limits: Option<InventoryContractLimits>,
+        entries: Vec<InventoryContractEntry>,
+        expected_candidates: Vec<String>,
+        truncated: bool,
+        classifications: Vec<InventoryContractClassification>,
+    }
+
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct InventoryContractLimits {
+        max_depth: usize,
+        max_directories: usize,
+        max_entries: usize,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", rename_all = "lowercase")]
+    enum InventoryContractEntry {
+        Directory {
+            path: String,
+        },
+        File {
+            path: String,
+            #[serde(rename = "mtimeMs")]
+            mtime_ms: u64,
+        },
+        Symlink {
+            path: String,
+            target: String,
+        },
+    }
+
+    #[derive(Deserialize)]
+    struct InventoryContractClassification {
+        vendor: String,
+        root: String,
+        path: String,
+        role: String,
+    }
+
+    #[test]
+    fn matches_the_cross_language_session_inventory_contract() {
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../fixtures/session-inventory-contract.json");
+        let fixture: InventoryContractFixture =
+            serde_json::from_slice(&fs::read(fixture_path).unwrap()).unwrap();
+        assert_eq!(fixture.version, 1);
+
+        for scenario in fixture.scenarios {
+            let temporary = tempdir().unwrap();
+            let sandbox_path = fs::canonicalize(temporary.path()).unwrap();
+            let sandbox = sandbox_path.as_path();
+            for root in &scenario.roots {
+                let root_is_symlink = scenario.entries.iter().any(|entry| {
+                    matches!(
+                        entry,
+                        InventoryContractEntry::Symlink { path, .. } if path == root
+                    )
+                });
+                if !root_is_symlink {
+                    create_dir_all(sandbox.join(root)).unwrap();
+                }
+            }
+            for entry in &scenario.entries {
+                match entry {
+                    InventoryContractEntry::Directory { path } => {
+                        create_dir_all(sandbox.join(path)).unwrap();
+                    }
+                    InventoryContractEntry::File { path, mtime_ms } => {
+                        let path = sandbox.join(path);
+                        create_dir_all(path.parent().unwrap()).unwrap();
+                        write(&path, path.to_string_lossy().as_bytes()).unwrap();
+                        let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(*mtime_ms);
+                        File::options()
+                            .write(true)
+                            .open(path)
+                            .unwrap()
+                            .set_times(FileTimes::new().set_modified(modified))
+                            .unwrap();
+                    }
+                    InventoryContractEntry::Symlink { .. } => {}
+                }
+            }
+            for entry in &scenario.entries {
+                let InventoryContractEntry::Symlink { path, target } = entry else {
+                    continue;
+                };
+                let path = sandbox.join(path);
+                create_dir_all(path.parent().unwrap()).unwrap();
+                symlink(sandbox.join(target), path).unwrap();
+            }
+
+            let roots = scenario
+                .roots
+                .iter()
+                .map(|root| sandbox.join(root))
+                .collect::<Vec<_>>();
+            let limits = scenario
+                .limits
+                .map(|limits| SessionInventoryLimits {
+                    max_depth: limits.max_depth,
+                    max_directories: limits.max_directories,
+                    max_entries: limits.max_entries,
+                })
+                .unwrap_or(SESSION_INVENTORY_LIMITS);
+            let inventory = collect_session_inventory_with_limits(&roots, limits);
+            let actual = inventory
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    candidate
+                        .path
+                        .strip_prefix(sandbox)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, scenario.expected_candidates, "{}", scenario.name);
+            assert_eq!(
+                inventory.is_partial(),
+                scenario.truncated,
+                "{}",
+                scenario.name
+            );
+
+            for classification in scenario.classifications {
+                let vendor = match classification.vendor.as_str() {
+                    "codex" => SessionVendor::Codex,
+                    "claude" => SessionVendor::Claude,
+                    "antigravity" => SessionVendor::Antigravity,
+                    other => panic!("unknown contract vendor {other}"),
+                };
+                let actual = classify_session_candidate(
+                    &sandbox.join(classification.root),
+                    &sandbox.join(classification.path),
+                    vendor,
+                )
+                .map(session_candidate_role_name);
+                assert_eq!(actual, Some(classification.role.as_str()));
+            }
+        }
+    }
+
+    fn session_candidate_role_name(role: SessionCandidateRole) -> &'static str {
+        match role {
+            SessionCandidateRole::CodexSession => "codex-session",
+            SessionCandidateRole::ClaudeSession => "claude-session",
+            SessionCandidateRole::ClaudeSubagent => "claude-subagent",
+            SessionCandidateRole::AntigravityHistory => "antigravity-history",
+            SessionCandidateRole::AntigravityTranscript => "antigravity-transcript",
+            SessionCandidateRole::AntigravityConversation => "antigravity-conversation",
+        }
+    }
 
     #[test]
     fn scans_bounded_codex_claude_and_antigravity_history() {
@@ -1561,8 +2046,9 @@ mod tests {
         .unwrap();
 
         let records = scan_external_history(home, 10).unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(records.iter().any(|record| {
+        assert!(!records.truncated);
+        assert_eq!(records.records.len(), 3);
+        assert!(records.records.iter().any(|record| {
             record.vendor == "codex"
                 && record.session_id == "codex-1"
                 && record.cwd.as_deref() == Some("/srv/repo")
@@ -1570,13 +2056,58 @@ mod tests {
         }));
         assert!(
             records
+                .records
                 .iter()
                 .any(|record| record.vendor == "claude" && record.session_id == "claude-1")
         );
         assert!(
             records
+                .records
                 .iter()
                 .any(|record| { record.vendor == "antigravity" && record.session_id == "agy-1" })
+        );
+    }
+
+    #[test]
+    fn marks_antigravity_history_partial_at_record_and_edge_bounds() {
+        let temporary = tempdir().unwrap();
+        let history = temporary
+            .path()
+            .join(".gemini/antigravity-cli/history.jsonl");
+        create_dir_all(history.parent().unwrap()).unwrap();
+        write(
+            &history,
+            concat!(
+                "{\"conversationId\":\"agy-1\",\"workspace\":\"/srv/one\"}\n",
+                "{\"conversationId\":\"agy-2\",\"workspace\":\"/srv/two\"}\n",
+                "{\"conversationId\":\"agy-3\",\"workspace\":\"/srv/three\"}\n"
+            ),
+        )
+        .unwrap();
+
+        let record_bounded = scan_external_history(temporary.path(), 2).unwrap();
+        assert_eq!(record_bounded.records.len(), 2);
+        assert!(record_bounded.truncated);
+
+        let oversized = format!(
+            "{}\n{}\n{}\n",
+            "{\"conversationId\":\"agy-prefix\",\"workspace\":\"/srv/prefix\"}",
+            "x".repeat(MAX_HISTORY_EDGE_BYTES * 2),
+            "{\"conversationId\":\"agy-suffix\",\"workspace\":\"/srv/suffix\"}"
+        );
+        write(&history, oversized).unwrap();
+
+        let edge_bounded = scan_external_history(temporary.path(), 10).unwrap();
+        assert!(edge_bounded.truncated);
+        assert!(
+            edge_bounded.records.iter().any(|record| {
+                record.vendor == "antigravity" && record.session_id == "agy-prefix"
+            })
+        );
+        assert!(
+            edge_bounded.records.iter().any(|record| {
+                record.vendor == "antigravity" && record.session_id == "agy-suffix"
+            })
         );
     }
 
@@ -1599,6 +2130,7 @@ mod tests {
         assert!(
             scan_external_history(temporary.path(), 10)
                 .unwrap()
+                .records
                 .is_empty()
         );
     }
@@ -1662,9 +2194,9 @@ mod tests {
         };
 
         let history = scan_external_history_with_settings(home, 10, &settings).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].session_id, "wrapper-session");
-        assert!(history[0].can_resume);
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.records[0].session_id, "wrapper-session");
+        assert!(history.records[0].can_resume);
 
         let usage = scan_external_usage_with_settings(home, 0, 64, &settings).unwrap();
         assert_eq!(usage.records.len(), 1);
@@ -1676,7 +2208,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_history_inventories_that_overfill_the_directory_queue() {
+    fn returns_partial_history_inventories_that_overfill_the_directory_queue() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("inventory");
         create_dir_all(&root).unwrap();
@@ -1684,10 +2216,35 @@ mod tests {
             create_dir_all(root.join(format!("directory-{index}"))).unwrap();
         }
 
-        assert!(matches!(
-            collect_candidates(&root, |_| true),
-            Err(MetadataScanError::InventoryLimit)
-        ));
+        let inventory = collect_session_inventory(&[root]);
+        assert!(inventory.truncated);
+        assert!(!inventory.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn returns_partial_usage_and_continues_after_a_vendor_directory_bound() {
+        let temporary = tempdir().unwrap();
+        let codex = temporary.path().join(".codex/sessions");
+        create_dir_all(&codex).unwrap();
+        for index in 0..MAX_HISTORY_DIRECTORIES {
+            create_dir_all(codex.join(format!("{index:04}"))).unwrap();
+        }
+        let claude = temporary.path().join(".claude/projects/repo");
+        create_dir_all(&claude).unwrap();
+        write(
+            claude.join("session.jsonl"),
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-partial\",\"timestamp\":\"2026-07-18T00:00:03.000Z\",\"message\":{\"id\":\"message-partial\",\"usage\":{\"input_tokens\":21,\"output_tokens\":5}}}\n",
+        )
+        .unwrap();
+
+        let scan = scan_external_usage(temporary.path(), 0, 64).unwrap();
+
+        assert!(scan.truncated);
+        assert!(scan.records.iter().any(|record| {
+            record.vendor == "claude"
+                && record.session_id.as_deref() == Some("claude-partial")
+                && record.total_tokens == 26
+        }));
     }
 
     #[test]

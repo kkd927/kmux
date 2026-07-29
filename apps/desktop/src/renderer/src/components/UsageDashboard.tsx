@@ -8,7 +8,6 @@ import {
 
 import type {
   SubscriptionUsageRowVm,
-  UsageTargetIdentityVm,
   UsageViewSnapshot
 } from "@kmux/proto";
 
@@ -93,37 +92,12 @@ export function UsageDashboard(props: UsageDashboardProps): JSX.Element {
   };
   const summaryCards = useMemo(() => buildSummaryCards(snapshot), [snapshot]);
   const subtitle = buildSubtitle(snapshot.updatedAt, pricingCoverage);
-  const unavailableTargets = snapshot.unavailableTargets ?? [];
-  const truncatedTargets = (snapshot.targets ?? []).filter(
-    (target) => target.truncated
-  );
 
   const content = (
     <div className={styles.usageDashboard} data-testid="usage-dashboard">
       {props.embedded ? (
         <div className={styles.usageDashboardStatus}>
           <span className={styles.usageDashboardStatusText}>{subtitle}</span>
-        </div>
-      ) : null}
-
-      {unavailableTargets.length > 0 || truncatedTargets.length > 0 ? (
-        <div
-          className={styles.usageDashboardStatus}
-          data-testid="usage-target-status"
-        >
-          <span className={styles.usageDashboardStatusText}>
-            {[
-              ...unavailableTargets.map((target) =>
-                target.kind === "local"
-                  ? `Local usage unavailable: ${target.message}`
-                  : `SSH ${target.targetId} usage unavailable: ${target.message}`
-              ),
-              ...truncatedTargets.map(
-                ({ target }) =>
-                  `${usageTargetLabel(target)} usage is truncated at its scan bound.`
-              )
-            ].join(" ")}
-          </span>
         </div>
       ) : null}
 
@@ -174,19 +148,6 @@ export function UsageDashboard(props: UsageDashboardProps): JSX.Element {
         />
       </section>
 
-      <section className={styles.usageCard}>
-        <CardHeader
-          title="Project Hotspots"
-          description="Current-day AI usage by tracked projects"
-        />
-        {(snapshot.directoryHotspots?.length ?? 0) === 0 ? (
-          <EmptyState text="No project usage is attributed yet." />
-        ) : (
-          <DirectoryHotspotsCard
-            directories={snapshot.directoryHotspots ?? []}
-          />
-        )}
-      </section>
     </div>
   );
 
@@ -550,57 +511,6 @@ function TopModelsCard(props: {
       }))}
     />
   );
-}
-
-function DirectoryHotspotsCard(props: {
-  directories: Array<{
-    target: UsageTargetIdentityVm;
-    directoryPath: string;
-    directoryLabel: string;
-    todayCostUsd: number;
-    todayTokens: number;
-    costSource?: string;
-  }>;
-}): JSX.Element {
-  const metric = resolveBreakdownMetric(
-    props.directories.map((directory) => ({
-      tokens: directory.todayTokens,
-      costUsd: directory.todayCostUsd
-    }))
-  );
-
-  return (
-    <LinearBreakdownCard
-      labelColumn="Directory"
-      barTestId="directory-hotspots-linear-bar"
-      rows={props.directories.map((directory) => ({
-        key: `${usageTargetIdentityKey(directory.target)}\0${directory.directoryPath}`,
-        label: `${directory.directoryLabel} · ${usageTargetLabel(directory.target)}`,
-        title: `${directory.directoryPath} (${usageTargetLabel(directory.target)})`,
-        tokens: directory.todayTokens,
-        costUsd: directory.todayCostUsd,
-        hasUnknownCost: hasPartialZeroCost(
-          directory.todayCostUsd,
-          directory.costSource
-        ),
-        barValue:
-          metric === "cost" ? directory.todayCostUsd : directory.todayTokens
-      }))}
-      rowTestId={(row, index) => `directory-hotspot-row-${index}`}
-      costTestId={(row, index) => `directory-hotspot-cost-${index}`}
-    />
-  );
-}
-
-function usageTargetIdentityKey(target: UsageTargetIdentityVm): string {
-  return target.kind === "local" ? "local" : `ssh:${target.targetId}`;
-}
-
-function usageTargetLabel(target: UsageTargetIdentityVm): string {
-  if (target.kind === "local") return "Local";
-  return target.principal
-    ? `${target.principal.accountName}@${target.targetId}`
-    : `SSH ${target.targetId}`;
 }
 
 function SalesCategoryCard(props: {

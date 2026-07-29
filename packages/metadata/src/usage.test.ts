@@ -353,6 +353,41 @@ describe("usage adapters", () => {
     expect(nextDay.samples).toEqual([]);
   });
 
+  it("keeps legacy NDJSON usage sources in full inventory scans", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-ndjson-"));
+    cleanupPaths.push(root);
+    const usageDir = path.join(root, "claude");
+    mkdirSync(usageDir, { recursive: true });
+    writeFileSync(
+      path.join(usageDir, "usage.ndjson"),
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        session_id: "claude-ndjson-session",
+        input_tokens: 12,
+        output_tokens: 3
+      })}\n`,
+      "utf8"
+    );
+
+    const [adapter] = createUsageAdapters({
+      env: { KMUX_CLAUDE_USAGE_DIR: usageDir },
+      homeDir: root
+    });
+
+    const result = await adapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+
+    expect(result.sourceCount).toBe(1);
+    expect(result.samples).toEqual([
+      expect.objectContaining({
+        vendor: "claude",
+        sessionId: "claude-ndjson-session",
+        totalTokens: 15
+      })
+    ]);
+  });
+
   it("keeps Claude cache usage separate from uncached input tokens", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-claude-cache-"));
     cleanupPaths.push(root);

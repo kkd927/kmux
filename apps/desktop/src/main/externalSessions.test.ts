@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveAgentStorageRoots } from "@kmux/metadata";
 
 import { createExternalSessionIndexer } from "./externalSessions";
-import type { ExternalSessionInventoryLimitError } from "./externalSessions";
 
 const sandboxDirs: string[] = [];
 const nodeRequire = createRequire(import.meta.url);
@@ -2080,7 +2079,7 @@ describe("external session indexer", () => {
     ]);
   });
 
-  it("aborts oversized inventories at the configured hard entry bound", () => {
+  it("returns partial history at the configured hard entry bound", () => {
     const homeDir = createSandboxHome();
     const additionalRoot = join(homeDir, "oversized-sessions");
     mkdirSync(additionalRoot, { recursive: true });
@@ -2103,11 +2102,9 @@ describe("external session indexer", () => {
       }
     });
 
-    expect(() => indexer.listExternalAgentSessions()).toThrowError(
-      expect.objectContaining<Partial<ExternalSessionInventoryLimitError>>({
-        name: "ExternalSessionInventoryLimitError",
-        limit: "maxEntries"
-      })
-    );
+    expect(indexer.listExternalAgentSessions()).toMatchObject({
+      sessions: [],
+      truncated: true
+    });
   });
 });

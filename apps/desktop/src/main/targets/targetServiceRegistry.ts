@@ -265,11 +265,16 @@ function bindLocatedHistory<TPath extends LocalPath | RemotePath>(
   wrap: (value: TPath) => LocatedPath
 ): LocatedTargetServiceSet["history"] {
   return {
-    refresh: async (request) =>
-      (await history.refresh(request)).map(({ cwd, ...record }) => ({
-        ...record,
-        ...(cwd === undefined ? {} : { cwd: wrap(cwd) })
-      }))
+    refresh: async (request) => {
+      const scan = await history.refresh(request);
+      return {
+        records: scan.records.map(({ cwd, ...record }) => ({
+          ...record,
+          ...(cwd === undefined ? {} : { cwd: wrap(cwd) })
+        })),
+        truncated: scan.truncated
+      };
+    }
   };
 }
 

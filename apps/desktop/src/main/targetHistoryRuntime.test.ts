@@ -32,28 +32,34 @@ describe("target history runtime", () => {
         codex: { command: "ccsxp", args: ["remote profile"] }
       }
     };
-    const localHistory = vi.fn(async () => [
-      {
-        vendor: "codex" as const,
-        sessionId: "same-session",
-        updatedAtUnixMs: 1_000,
-        canResume: true,
-        cwd: locatedPathForTarget({ kind: "local" }, "/tmp/local")
-      }
-    ]);
-    const remoteHistory = vi.fn(async () => [
-      {
-        vendor: "codex" as const,
-        sessionId: "same-session",
-        updatedAtUnixMs: 2_000,
-        canResume: true,
-        cwd: locatedPathForTarget(
-          { kind: "ssh", targetId: "target_1" },
-          "/srv/repo"
-        ),
-        principal: { uid: 1_000, accountName: "kmux" }
-      }
-    ]);
+    const localHistory = vi.fn(async () => ({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex" as const,
+          sessionId: "same-session",
+          updatedAtUnixMs: 1_000,
+          canResume: true,
+          cwd: locatedPathForTarget({ kind: "local" }, "/tmp/local")
+        }
+      ]
+    }));
+    const remoteHistory = vi.fn(async () => ({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex" as const,
+          sessionId: "same-session",
+          updatedAtUnixMs: 2_000,
+          canResume: true,
+          cwd: locatedPathForTarget(
+            { kind: "ssh", targetId: "target_1" },
+            "/srv/repo"
+          ),
+          principal: { uid: 1_000, accountName: "kmux" }
+        }
+      ]
+    }));
     const registry = registryWithHistory(localHistory, remoteHistory);
     const localFallback: ExternalSessionResumeSpec = {
       key: "codex:same-session",
@@ -126,6 +132,45 @@ describe("target history runtime", () => {
     });
   });
 
+  it("marks the merged snapshot partial when the final record limit is applied", async () => {
+    const state = createInitialState("/bin/zsh");
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/repo"
+    });
+    const localHistory = vi.fn(async () => ({
+      truncated: false,
+      records: Array.from({ length: 60 }, (_, index) => ({
+        vendor: "codex" as const,
+        sessionId: `local-${index}`,
+        updatedAtUnixMs: 1_000 + index,
+        canResume: true
+      }))
+    }));
+    const remoteHistory = vi.fn(async () => ({
+      truncated: false,
+      records: Array.from({ length: 60 }, (_, index) => ({
+        vendor: "claude" as const,
+        sessionId: `remote-${index}`,
+        updatedAtUnixMs: 2_000 + index,
+        canResume: true,
+        principal: { uid: 1_000, accountName: "kmux" }
+      }))
+    }));
+    const runtime = createTargetHistoryRuntime({
+      targetServices: registryWithHistory(localHistory, remoteHistory),
+      getState: () => state,
+      localIndexer: { resolveExternalAgentSession: () => null } as never,
+      now: () => new Date(10_000)
+    });
+
+    const snapshot = await runtime.listExternalAgentSessions();
+
+    expect(snapshot.sessions).toHaveLength(100);
+    expect(snapshot.truncated).toBe(true);
+  });
+
   it("retains a target cache and reports typed unavailability without local fallback", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
@@ -136,21 +181,21 @@ describe("target history runtime", () => {
     let failRemote = false;
     const remoteHistory = vi.fn(async () => {
       if (failRemote) throw new Error("metadata channel unavailable");
-      return [
-        {
-          vendor: "claude" as const,
-          sessionId: "remote-only",
-          updatedAtUnixMs: 2_000,
-          canResume: true,
-          principal: { uid: 1_000, accountName: "kmux" }
-        }
-      ];
+      return {
+        truncated: false,
+        records: [
+          {
+            vendor: "claude" as const,
+            sessionId: "remote-only",
+            updatedAtUnixMs: 2_000,
+            canResume: true,
+            principal: { uid: 1_000, accountName: "kmux" }
+          }
+        ]
+      };
     });
     const runtime = createTargetHistoryRuntime({
-      targetServices: registryWithHistory(
-        vi.fn(async () => []),
-        remoteHistory
-      ),
+      targetServices: registryWithHistory(emptyHistoryRefresh(), remoteHistory),
       getState: () => state,
       localIndexer: {
         resolveExternalAgentSession: () => null
@@ -174,6 +219,105 @@ describe("target history runtime", () => {
     ]);
   });
 
+  it("merges partial history, replaces it on a full scan, and preserves the last full cache on failure", async () => {
+    const state = createInitialState("/bin/zsh");
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/repo"
+    });
+    const remoteWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    let mode: "initial-partial" | "partial" | "full" | "failed" =
+      "initial-partial";
+    const remoteHistory = vi.fn(async () => {
+      if (mode === "failed") {
+        throw new Error("history unavailable");
+      }
+      return {
+        truncated: mode !== "full",
+        records: [
+          {
+            vendor: "codex" as const,
+            sessionId: "current",
+            updatedAtUnixMs: mode === "initial-partial" ? 2_000 : 3_000,
+            canResume: true,
+            principal: { uid: 1_000, accountName: "kmux" }
+          },
+          ...(mode === "initial-partial"
+            ? [
+                {
+                  vendor: "claude" as const,
+                  sessionId: "stale",
+                  updatedAtUnixMs: 1_000,
+                  canResume: true,
+                  principal: { uid: 1_000, accountName: "kmux" }
+                }
+              ]
+            : [])
+        ]
+      };
+    });
+    const reportError = vi.fn();
+    const runtime = createTargetHistoryRuntime({
+      targetServices: registryWithHistory(emptyHistoryRefresh(), remoteHistory),
+      getState: () => state,
+      localIndexer: { resolveExternalAgentSession: () => null } as never,
+      now: () => new Date(10_000),
+      reportError
+    });
+
+    const initialPartial = await runtime.listExternalAgentSessions();
+    expect(initialPartial.sessions.map((session) => session.key)).toEqual([
+      "ssh:target_1:codex:current",
+      "ssh:target_1:claude:stale"
+    ]);
+    expect(initialPartial.truncated).toBe(true);
+
+    mode = "partial";
+    const nextPartial = await runtime.listExternalAgentSessions();
+    expect(nextPartial.sessions.map((session) => session.key)).toEqual([
+      "ssh:target_1:codex:current",
+      "ssh:target_1:claude:stale"
+    ]);
+    expect(nextPartial.truncated).toBe(true);
+
+    mode = "full";
+    const full = await runtime.listExternalAgentSessions();
+    expect(full.sessions.map((session) => session.key)).toEqual([
+      "ssh:target_1:codex:current"
+    ]);
+    expect(full.truncated).toBeUndefined();
+
+    mode = "failed";
+    const failed = await runtime.listExternalAgentSessions();
+    expect(failed.sessions.map((session) => session.key)).toEqual([
+      "ssh:target_1:codex:current"
+    ]);
+    expect(failed.truncated).toBeUndefined();
+    expect(failed.unavailableTargets).toEqual([
+      {
+        kind: "ssh",
+        targetId: "target_1",
+        message: "history unavailable"
+      }
+    ]);
+    expect(reportError).toHaveBeenCalledWith(
+      { kind: "ssh", targetId: "target_1" },
+      expect.objectContaining({
+        message: "history scan reached its bound; merged partial results"
+      })
+    );
+
+    applyAction(state, {
+      type: "workspace.close",
+      workspaceId: remoteWorkspaceId
+    });
+    expect((await runtime.listExternalAgentSessions()).sessions).toHaveLength(
+      0
+    );
+  });
+
   it("degrades one target instead of rejecting the snapshot when principal identity is missing", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
@@ -183,15 +327,18 @@ describe("target history runtime", () => {
     });
     const runtime = createTargetHistoryRuntime({
       targetServices: registryWithHistory(
-        vi.fn(async () => []),
-        vi.fn(async () => [
-          {
-            vendor: "codex" as const,
-            sessionId: "unscoped",
-            updatedAtUnixMs: 2_000,
-            canResume: true
-          }
-        ])
+        emptyHistoryRefresh(),
+        vi.fn(async () => ({
+          truncated: false,
+          records: [
+            {
+              vendor: "codex" as const,
+              sessionId: "unscoped",
+              updatedAtUnixMs: 2_000,
+              canResume: true
+            }
+          ]
+        }))
       ),
       getState: () => state,
       localIndexer: { resolveExternalAgentSession: () => null } as never,
@@ -223,21 +370,21 @@ describe("target history runtime", () => {
         (workspace) => workspace.location.target.kind === "ssh"
       );
       if (remoteWorkspace) delete state.workspaces[remoteWorkspace.id];
-      return [
-        {
-          vendor: "codex" as const,
-          sessionId: "removed-target-session",
-          updatedAtUnixMs: 2_000,
-          canResume: true,
-          principal: { uid: 1_000, accountName: "kmux" }
-        }
-      ];
+      return {
+        truncated: true,
+        records: [
+          {
+            vendor: "codex" as const,
+            sessionId: "removed-target-session",
+            updatedAtUnixMs: 2_000,
+            canResume: true,
+            principal: { uid: 1_000, accountName: "kmux" }
+          }
+        ]
+      };
     });
     const runtime = createTargetHistoryRuntime({
-      targetServices: registryWithHistory(
-        vi.fn(async () => []),
-        remoteHistory
-      ),
+      targetServices: registryWithHistory(emptyHistoryRefresh(), remoteHistory),
       getState: () => state,
       localIndexer: { resolveExternalAgentSession: () => null } as never,
       now: () => new Date(10_000)
@@ -285,14 +432,17 @@ describe("local history provider", () => {
     const records = await provider.refresh({ maxRecords: 10 });
 
     expect(refreshUsage).toHaveBeenCalledOnce();
-    expect(records).toMatchObject([
-      {
-        vendor: "codex",
-        sessionId: "session-1",
-        canResume: true,
-        title: "Local session"
-      }
-    ]);
+    expect(records).toMatchObject({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex",
+          sessionId: "session-1",
+          canResume: true,
+          title: "Local session"
+        }
+      ]
+    });
   });
 });
 
@@ -316,4 +466,8 @@ function registryWithHistory(
     resolveLocated: (target) =>
       target.kind === "local" ? services(localRefresh) : services(remoteRefresh)
   } as TargetServiceRegistry;
+}
+
+function emptyHistoryRefresh(): LocatedTargetServiceSet["history"]["refresh"] {
+  return vi.fn(async () => ({ records: [], truncated: false }));
 }

@@ -34,6 +34,7 @@ export function createRemoteUsageProvider(options: {
       return {
         principal: { ...scan.principal },
         truncated: scan.truncated,
+        incremental: false,
         records: scan.records.map((record) =>
           decodeUsageRecord(record, options.decodeRemotePath)
         )
