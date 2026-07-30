@@ -108,6 +108,7 @@ for (const shellCase of shellCases) {
         join(fixture.shellHomeDir, ".zshrc"),
         [
           "fpath=()",
+          "setopt nounset",
           "function _kmux_e2e_existing_precmd() {",
           `  print -r -- invoked >> ${shellQuote(zshPrecmdSentinelPath)}`,
           "}",

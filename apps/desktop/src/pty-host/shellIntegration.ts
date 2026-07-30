@@ -676,12 +676,17 @@ function buildZshIntegrationScript(): string {
     "_kmux_prepend_agent_bin",
     "unfunction _kmux_prepend_agent_bin",
     "",
-    'if [[ -z "${precmd_functions[(r)_kmux_emit_osc7]}" ]]; then',
-    "  precmd_functions+=(_kmux_emit_osc7)",
-    "fi",
-    'if [[ -z "${precmd_functions[(r)_kmux_emit_shell_ready]}" ]]; then',
-    "  precmd_functions+=(_kmux_emit_shell_ready)",
-    "fi",
+    "function {",
+    "  emulate -L zsh",
+    "  typeset -ga precmd_functions",
+    "",
+    '  if (( ${precmd_functions[(I)_kmux_emit_osc7]} == 0 )); then',
+    "    precmd_functions+=(_kmux_emit_osc7)",
+    "  fi",
+    '  if (( ${precmd_functions[(I)_kmux_emit_shell_ready]} == 0 )); then',
+    "    precmd_functions+=(_kmux_emit_shell_ready)",
+    "  fi",
+    "}",
     ""
   ].join("\n");
 }
