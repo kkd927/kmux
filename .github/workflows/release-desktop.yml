@@ -395,6 +395,8 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: read
+    env:
+      HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
