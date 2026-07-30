@@ -105,6 +105,12 @@ for (const shellCase of shellCases) {
           "${_kmux_e2e_existing_precmd_calls:-0} > 0 )) && "
         : "";
     if (shellName === "zsh") {
+      // Ubuntu runs global compinit before .zshrc and may prompt on hosted-runner paths.
+      writeFileSync(
+        join(fixture.shellHomeDir, ".zshenv"),
+        "skip_global_compinit=1\n",
+        "utf8"
+      );
       writeFileSync(
         join(fixture.shellHomeDir, ".zshrc"),
         [
