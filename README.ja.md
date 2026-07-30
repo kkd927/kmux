@@ -126,7 +126,7 @@ kmuxは、ブランチ状態、変更状況、削除時の安全確認など、�
 
 ```bash
 brew tap kkd927/kmux
-brew install --cask kmux
+brew install --cask kkd927/kmux/kmux
 ```
 
 kmuxには自動アップデーターが組み込まれており、新しいバージョンが利用可能になるとアプリ内でお知らせします。

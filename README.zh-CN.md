@@ -126,7 +126,7 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 
 ```bash
 brew tap kkd927/kmux
-brew install --cask kmux
+brew install --cask kkd927/kmux/kmux
 ```
 
 kmux 内置自动更新功能，新版本可用时会在应用内提示。

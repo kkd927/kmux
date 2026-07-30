@@ -129,7 +129,7 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 
 ```bash
 brew tap kkd927/kmux
-brew install --cask kmux
+brew install --cask kkd927/kmux/kmux
 ```
 
 kmux includes a built-in updater and will let you know when a new version is available.

@@ -126,7 +126,7 @@ kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de
 
 ```bash
 brew tap kkd927/kmux
-brew install --cask kmux
+brew install --cask kkd927/kmux/kmux
 ```
 
 kmux incluye un actualizador integrado y te avisará cuando haya una nueva versión disponible.

@@ -126,7 +126,7 @@ kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 �
 
 ```bash
 brew tap kkd927/kmux
-brew install --cask kmux
+brew install --cask kkd927/kmux/kmux
 ```
 
 kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나오면 앱에서 안내합니다.
