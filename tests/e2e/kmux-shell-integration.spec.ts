@@ -1,7 +1,7 @@
 import { terminalSurfaceVmContent } from "@kmux/proto";
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -99,18 +99,20 @@ for (const shellCase of shellCases) {
     );
     const repoLeft = shellCompletionMarker("__KMUX_REPO_", "LEFT__");
     const fixture = createSandbox(`kmux-e2e-shell-integration-${shellName}-`);
-    const zshPrecmdSentinelPath =
+    const existingZshPrecmdHookCheck =
       shellName === "zsh"
-        ? join(fixture.profileRoot, "zsh-existing-precmd-hook")
-        : undefined;
-    if (zshPrecmdSentinelPath) {
+        ? "(( ${precmd_functions[(I)_kmux_e2e_existing_precmd]} > 0 && " +
+          "${_kmux_e2e_existing_precmd_calls:-0} > 0 )) && "
+        : "";
+    if (shellName === "zsh") {
       writeFileSync(
         join(fixture.shellHomeDir, ".zshrc"),
         [
           "fpath=()",
           "setopt nounset",
+          "typeset -gi _kmux_e2e_existing_precmd_calls=0",
           "function _kmux_e2e_existing_precmd() {",
-          `  print -r -- invoked >> ${shellQuote(zshPrecmdSentinelPath)}`,
+          "  (( _kmux_e2e_existing_precmd_calls += 1 ))",
           "}",
           "precmd_functions+=(_kmux_e2e_existing_precmd)",
           ""
@@ -162,20 +164,14 @@ for (const shellCase of shellCases) {
       const activeSurfaceId =
         runningView.activeWorkspace.panes[activePaneId].activeSurfaceId;
 
-      if (zshPrecmdSentinelPath) {
-        await expect
-          .poll(() => existsSync(zshPrecmdSentinelPath), {
-            message: "existing zsh precmd hook should remain registered",
-            timeout: 10_000
-          })
-          .toBe(true);
-      }
-
       await page.evaluate(
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
         {
           surfaceId: activeSurfaceId,
-          text: `cd ${shellQuote(repoDir)} && ` + `${repoEntered.command}\r`
+          text:
+            `cd ${shellQuote(repoDir)} && ` +
+            existingZshPrecmdHookCheck +
+            `${repoEntered.command}\r`
         }
       );
 
