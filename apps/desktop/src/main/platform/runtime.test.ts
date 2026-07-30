@@ -176,6 +176,15 @@ describe("platform runtime", () => {
         }
       }).updater.enabled
     ).toBe(false);
+    expect(
+      requirePlatformRuntime({
+        platform: "linux",
+        isPackaged: true,
+        env: {
+          APPIMAGE: "kmux-0.3.12-linux-x64.AppImage"
+        }
+      }).updater.enabled
+    ).toBe(false);
   });
 
   it("reports unsupported platforms with a clear message", () => {

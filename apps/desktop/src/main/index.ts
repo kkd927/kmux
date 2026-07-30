@@ -1,5 +1,6 @@
 import {
   app,
+  autoUpdater as electronAutoUpdater,
   BrowserWindow,
   dialog,
   Menu,
@@ -69,6 +70,7 @@ import {
   resolveTargetTerminalFileLinks
 } from "./terminalFileOpen";
 import { createUpdaterController } from "./updater";
+import { createAppImageUpdateRelaunchCoordinator } from "./appImageUpdateRelaunch";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
 import { createUsageScanWorkerClient } from "./usageScanWorkerClient";
@@ -1779,6 +1781,14 @@ async function bootstrap(): Promise<void> {
     autoUpdater.channel = autoUpdaterChannel;
   }
   autoUpdater.allowDowngrade = false;
+  const appImageUpdateRelaunch = createAppImageUpdateRelaunchCoordinator({
+    enabled: platformRuntime.updater.enabled,
+    platform: process.platform,
+    env: process.env,
+    updater: autoUpdater,
+    updateQuitEmitter: electronAutoUpdater,
+    app
+  });
   const pendingUpdateStore = createPendingUpdateStore(
     join(dirname(paths.settingsPath), "pending-update.json")
   );
@@ -1799,6 +1809,7 @@ async function bootstrap(): Promise<void> {
     env: process.env,
     beforeQuitAndInstall: (version) => {
       lifecycle.allowQuit();
+      appImageUpdateRelaunch.requestRelaunchAfterInstall();
       if (version) {
         pendingUpdateStore.record(version);
       }
@@ -1815,6 +1826,7 @@ async function bootstrap(): Promise<void> {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
         logDiagnostics("main.shutdown.begin", {});
+        appImageUpdateRelaunch.dispose();
         unsubscribeUpdater();
         updater.dispose();
         clearInterval(diagnosticsSampleTimer);
