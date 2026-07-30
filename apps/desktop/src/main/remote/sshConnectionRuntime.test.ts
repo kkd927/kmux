@@ -770,6 +770,38 @@ describe("SSH connection runtime", () => {
         expect.objectContaining({ askpassPath: "/tmp/kmux-askpass" })
       );
       expect(dispose).toHaveBeenCalledOnce();
+
+      await runtime.restoreTarget("target_restore", {
+        authentication: "interactive",
+        purpose: "session-resume"
+      });
+      expect(createContext).toHaveBeenLastCalledWith(profile, "session-resume");
+      expect(host.verifyRequests[2]).toEqual(
+        expect.objectContaining({ askpassPath: "/tmp/kmux-askpass" })
+      );
+
+      const active = runtime.getActiveTarget("target_restore");
+      expect(active?.remoteHome).toBe("/home/kmux");
+      bindings.replace({
+        ...active!.binding,
+        locator: {
+          ...active!.binding.locator,
+          lastVerifiedAt: "2026-07-30T00:00:00.000Z"
+        }
+      });
+      expect(
+        runtime.getActiveTarget("target_restore")?.binding.locator
+          .lastVerifiedAt
+      ).toBe("2026-07-30T00:00:00.000Z");
+      bindings.replace({
+        ...active!.binding,
+        locator: {
+          ...active!.binding.locator,
+          effectiveConnectionPolicyHash: "9".repeat(64),
+          lastVerifiedAt: "2026-07-31T00:00:00.000Z"
+        }
+      });
+      expect(runtime.getActiveTarget("target_restore")).toBeNull();
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -836,8 +868,7 @@ describe("SSH connection runtime", () => {
         join(sandbox, "bindings.json")
       );
       bindings.replace(binding("target_shared", profile.id));
-      const staleResolution =
-        deferred<ReturnType<typeof resolvedConnection>>();
+      const staleResolution = deferred<ReturnType<typeof resolvedConnection>>();
       const resolve = vi
         .fn()
         .mockImplementationOnce(async () => staleResolution.promise)

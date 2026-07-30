@@ -9,6 +9,7 @@ import type {
 import type {
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
+  ExternalAgentSessionResumeRequest,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
@@ -68,7 +69,7 @@ declare global {
       getUsageView(): Promise<UsageViewSnapshot>;
       getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
       resumeExternalAgentSession(
-        key: string
+        request: ExternalAgentSessionResumeRequest
       ): Promise<ExternalAgentSessionResumeResult>;
       getUpdaterState(): Promise<UpdaterState>;
       dispatch(action: AppAction): Promise<void>;

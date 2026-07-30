@@ -2592,7 +2592,6 @@ describe("real system OpenSSH transport spike", () => {
           workspaceId: leasedWorkspaceId,
           sessionId: leasedSessionId
         },
-        sourceWorkspaceRevision: "a".repeat(64),
         remoteSnapshot: leasedSnapshot,
         remoteSnapshotHash: leasedSnapshotHash,
         launch: {
@@ -2655,7 +2654,6 @@ describe("real system OpenSSH transport spike", () => {
           workspaceId: unleasedWorkspaceId,
           sessionId: unleasedSessionId
         },
-        sourceWorkspaceRevision: "b".repeat(64),
         remoteSnapshot: unleasedSnapshot,
         remoteSnapshotHash: unleasedSnapshotHash,
         launch: {

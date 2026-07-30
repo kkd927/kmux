@@ -247,7 +247,6 @@
                 "sessionCreateOperationId",
                 "workspaceResourceKey",
                 "sessionResourceKey",
-                "sourceWorkspaceRevision",
                 "remoteSnapshot",
                 "remoteSnapshotHash",
                 "launch",
@@ -262,7 +261,6 @@
                 "sessionResourceKey": {
                   "$ref": "#/$defs/sessionResourceKey"
                 },
-                "sourceWorkspaceRevision": { "$ref": "#/$defs/sha256" },
                 "remoteSnapshot": {
                   "type": "string",
                   "maxLength": 1048576

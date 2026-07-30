@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import type { RemoteOperationCommandResult } from "@kmux/core";
 
 import type {
+  ExternalAgentSessionResumeRequest,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   CreateImageAttachmentPayload,
@@ -76,7 +77,9 @@ interface IpcHandlersOptions {
   getExternalAgentSessions: () =>
     | ExternalAgentSessionsSnapshot
     | Promise<ExternalAgentSessionsSnapshot>;
-  resumeExternalAgentSession: (key: string) => ExternalAgentSessionResumeResult;
+  resumeExternalAgentSession: (
+    request: ExternalAgentSessionResumeRequest
+  ) => Promise<ExternalAgentSessionResumeResult>;
   createImageAttachments: (
     surfaceId: Id,
     payloads: CreateImageAttachmentPayload[]
@@ -206,8 +209,10 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   ipcMain.handle("kmux:external-sessions:get", () =>
     options.getExternalAgentSessions()
   );
-  ipcMain.handle("kmux:external-sessions:resume", (_event, key: string) =>
-    options.resumeExternalAgentSession(key)
+  ipcMain.handle(
+    "kmux:external-sessions:resume",
+    (_event, request: ExternalAgentSessionResumeRequest) =>
+      options.resumeExternalAgentSession(request)
   );
   ipcMain.handle(
     "kmux:image-attachments:create",

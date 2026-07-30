@@ -3,9 +3,9 @@ import type {
   ConversionRemoteGateway,
   ConversionRemotePrepareRequest
 } from "./transactionalWorkspaceConversion";
-import type { ConversionCommitDecidedRecord } from "./conversionWal";
+import type { ConversionProductInstalledRecord } from "./conversionWal";
 
-export function createRemoteHostConversionGateway(
+export function createRemoteHostSshWorkspaceTransactionGateway(
   host: RemoteHostManager
 ): ConversionRemoteGateway {
   return Object.freeze({
@@ -19,7 +19,6 @@ export function createRemoteHostConversionGateway(
           sessionCreateOperationId: record.sessionCreateOperationId,
           workspaceResourceKey: record.workspaceResourceKey,
           sessionResourceKey: record.sessionResourceKey,
-          sourceWorkspaceRevision: record.sourceWorkspaceRevision,
           remoteSnapshot: request.remoteSnapshot,
           remoteSnapshotHash: request.remoteSnapshotHash,
           launch: record.launch,
@@ -36,7 +35,7 @@ export function createRemoteHostConversionGateway(
       };
     },
 
-    async promote(record: ConversionCommitDecidedRecord) {
+    async promote(record: ConversionProductInstalledRecord) {
       const promoted = await host.promoteConversion(
         record.workspaceResourceKey.targetId,
         {
@@ -56,3 +55,7 @@ export function createRemoteHostConversionGateway(
     }
   });
 }
+
+/** @deprecated Use createRemoteHostSshWorkspaceTransactionGateway. */
+export const createRemoteHostConversionGateway =
+  createRemoteHostSshWorkspaceTransactionGateway;

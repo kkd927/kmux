@@ -9,11 +9,11 @@ import type {
   SshWorkspacePrepareResult
 } from "@kmux/proto";
 
-import type { RemoteLifecycleRuntime } from "./remoteLifecycleRuntime";
 import type {
   ConnectedSshProfile,
   SshConnectionRuntime
 } from "./sshConnectionRuntime";
+import type { SshWorkspaceCreationRuntime } from "./sshWorkspaceCreationRuntime";
 
 export interface SshWorkspaceRuntime {
   prepare(
@@ -25,7 +25,7 @@ export interface SshWorkspaceRuntime {
 
 export function createSshWorkspaceRuntime(options: {
   connections: SshConnectionRuntime;
-  lifecycle: RemoteLifecycleRuntime;
+  creator: SshWorkspaceCreationRuntime;
   getState: () => AppState;
   now?: () => number;
   makePreparationId?: () => string;
@@ -80,11 +80,7 @@ export function createSshWorkspaceRuntime(options: {
       if (preparations.size >= maxPreparations) {
         throw new Error("too many SSH workspace preparations are active");
       }
-      requireSource(
-        options.getState(),
-        request.sourceWorkspaceId,
-        request.continuation
-      );
+      requireTransactionDestination(options.getState(), request);
 
       const preparationId = createUniquePreparationId(
         makePreparationId,
@@ -117,11 +113,7 @@ export function createSshWorkspaceRuntime(options: {
         // Authentication/bootstrap can outlive the renderer snapshot that
         // authorized it. Recheck Main-owned state before making the verified
         // preparation available for commit.
-        requireSource(
-          options.getState(),
-          request.sourceWorkspaceId,
-          request.continuation
-        );
+        requireTransactionDestination(options.getState(), request);
         preparation.connected = connected;
         return { preparationId };
       } catch (error) {
@@ -152,39 +144,28 @@ export function createSshWorkspaceRuntime(options: {
       removePreparation(preparation);
       const connected = preparation.connected;
       const openRequest = preparation.request;
-      requireSource(
-        options.getState(),
-        openRequest.sourceWorkspaceId,
-        openRequest.continuation
-      );
-      const defaultCwd =
-        connected.profile.defaultRemoteCwd ?? connected.verification.remoteHome;
-      const initialWorkspaceName = `${connected.binding.authority.authenticatedPrincipal.accountName}@${connected.profile.name}`;
-      const record = await options.lifecycle.startWorkspaceConversion({
-        workspaceId: openRequest.sourceWorkspaceId,
-        targetId: connected.binding.id,
-        effectiveConnectionPolicyHash:
-          connected.binding.locator.effectiveConnectionPolicyHash,
-        initialWorkspaceName,
-        defaultCwd,
-        continuation: openRequest.continuation,
-        launch: {
-          cwd: defaultCwd,
-          ...(connected.profile.shellOverride === undefined
-            ? {}
-            : { shell: connected.profile.shellOverride }),
-          ...(connected.profile.env === undefined
-            ? {}
-            : { env: { ...connected.profile.env } })
+      requireTransactionDestination(options.getState(), openRequest);
+      const result = await options.creator.create({
+        ...(openRequest.kind === "convert-existing"
+          ? {
+              kind: openRequest.kind,
+              sourceWorkspaceId: openRequest.sourceWorkspaceId
+            }
+          : {
+              kind: openRequest.kind,
+              destinationWindowId: openRequest.destinationWindowId
+            }),
+        target: {
+          profile: structuredClone(connected.profile),
+          binding: structuredClone(connected.binding),
+          remoteHome: connected.verification.remoteHome
         }
       });
-      if (record.state !== "cleanup-complete") {
-        throw new Error("SSH workspace transaction did not finish cleanup");
-      }
       return {
-        workspaceId: record.workspaceResourceKey.workspaceId,
-        targetId: record.workspaceResourceKey.targetId,
-        continuation: openRequest.continuation
+        workspaceId: result.workspaceId,
+        targetId: result.targetId,
+        continuation:
+          openRequest.kind === "convert-existing" ? "convert" : "create"
       };
     },
 
@@ -204,20 +185,40 @@ export function decodeSshWorkspacePrepareRequest(
   value: unknown
 ): SshWorkspacePrepareRequest {
   const record = requireRecord(value, "SSH workspace request");
-  assertExactKeys(record, [
-    "requestId",
-    "sourceWorkspaceId",
-    "profileId",
-    "continuation"
-  ]);
-  if (record.continuation !== "convert" && record.continuation !== "create") {
-    throw new TypeError("SSH workspace continuation is invalid");
+  if (record.kind === "convert-existing") {
+    assertExactKeys(record, [
+      "kind",
+      "requestId",
+      "sourceWorkspaceId",
+      "profileId"
+    ]);
+    return {
+      kind: record.kind,
+      requestId: requireId(record.requestId, "requestId"),
+      sourceWorkspaceId: requireId(
+        record.sourceWorkspaceId,
+        "sourceWorkspaceId"
+      ),
+      profileId: requireId(record.profileId, "profileId")
+    };
   }
+  if (record.kind !== "create-new") {
+    throw new TypeError("SSH workspace transaction kind is invalid");
+  }
+  assertExactKeys(record, [
+    "kind",
+    "requestId",
+    "destinationWindowId",
+    "profileId"
+  ]);
   return {
+    kind: record.kind,
     requestId: requireId(record.requestId, "requestId"),
-    sourceWorkspaceId: requireId(record.sourceWorkspaceId, "sourceWorkspaceId"),
-    profileId: requireId(record.profileId, "profileId"),
-    continuation: record.continuation
+    destinationWindowId: requireId(
+      record.destinationWindowId,
+      "destinationWindowId"
+    ),
+    profileId: requireId(record.profileId, "profileId")
   };
 }
 
@@ -266,17 +267,19 @@ function requirePositiveInteger(value: number, field: string): number {
   return value;
 }
 
-function requireSource(
+function requireTransactionDestination(
   state: AppState,
-  workspaceId: string,
-  continuation: "convert" | "create"
+  request: SshWorkspacePrepareRequest
 ): void {
-  const workspace = state.workspaces[workspaceId];
+  if (request.kind === "create-new") {
+    if (!state.windows[request.destinationWindowId]) {
+      throw new Error("SSH workspace destination window no longer exists");
+    }
+    return;
+  }
+  const workspace = state.workspaces[request.sourceWorkspaceId];
   if (!workspace) throw new Error("SSH workspace source no longer exists");
-  if (
-    continuation === "convert" &&
-    workspace.location.target.kind !== "local"
-  ) {
+  if (workspace.location.target.kind !== "local") {
     throw new Error("SSH workspace source must be local");
   }
 }

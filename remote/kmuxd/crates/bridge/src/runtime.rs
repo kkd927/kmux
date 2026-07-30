@@ -1163,7 +1163,6 @@ fn handle_single_request(
             session_create_operation_id,
             workspace_resource_key,
             session_resource_key,
-            source_workspace_revision,
             remote_snapshot,
             remote_snapshot_hash,
             launch,
@@ -1178,7 +1177,6 @@ fn handle_single_request(
                 session_create_operation_id,
                 workspace_resource_key,
                 session_resource_key,
-                source_workspace_revision,
                 remote_snapshot,
                 remote_snapshot_hash,
                 launch,
@@ -3310,7 +3308,6 @@ struct ConversionPrepareInput {
     session_create_operation_id: String,
     workspace_resource_key: RemoteResourceKey,
     session_resource_key: RemoteResourceKey,
-    source_workspace_revision: String,
     remote_snapshot: String,
     remote_snapshot_hash: String,
     launch: RemoteSessionLaunchPayload,
@@ -3331,8 +3328,7 @@ fn prepare_conversion(
         &input.session_resource_key,
         &input.remote_snapshot_hash,
     )?;
-    if !is_sha256(&input.source_workspace_revision)
-        || input.remote_snapshot.len() > MAX_CONVERSION_SNAPSHOT_BYTES
+    if input.remote_snapshot.len() > MAX_CONVERSION_SNAPSHOT_BYTES
         || format!("{:x}", Sha256::digest(input.remote_snapshot.as_bytes()))
             != input.remote_snapshot_hash
         || parse_fixed_rfc3339_millis(&input.prepared_at).is_none()
@@ -3381,8 +3377,6 @@ fn prepare_conversion(
                         != Some(input.transaction_id.as_str())
                     || existing.remote_snapshot_hash.as_deref()
                         != Some(input.remote_snapshot_hash.as_str())
-                    || existing.source_workspace_revision.as_deref()
-                        != Some(input.source_workspace_revision.as_str())
                     || !matches!(existing.state.as_str(), "provisional" | "active")
                 {
                     return Err(BridgeRuntimeError::Invalid(
@@ -3407,7 +3401,7 @@ fn prepare_conversion(
                     conversion_transaction_id: Some(input.transaction_id.clone()),
                     remote_snapshot_hash: Some(input.remote_snapshot_hash.clone()),
                     provisional_created_at: Some(input.prepared_at.clone()),
-                    source_workspace_revision: Some(input.source_workspace_revision.clone()),
+                    source_workspace_revision: None,
                     pending_operation: None,
                     failed_operation: None,
                 },
@@ -3422,7 +3416,7 @@ fn prepare_conversion(
         operation_id: input.session_create_operation_id.clone(),
         kind: "session.create".to_owned(),
         resource_key: input.session_resource_key.clone(),
-        expected_workspace_revision: input.source_workspace_revision.clone(),
+        expected_workspace_revision: input.remote_snapshot_hash.clone(),
         expected_remote_resource_revision: "0".to_owned(),
         next_remote_resource_revision: "1".to_owned(),
         conversion_transaction_id: Some(input.transaction_id.clone()),

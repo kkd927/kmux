@@ -1057,7 +1057,6 @@ function decodeConversionPrepare(
     "sessionCreateOperationId",
     "workspaceResourceKey",
     "sessionResourceKey",
-    "sourceWorkspaceRevision",
     "remoteSnapshot",
     "remoteSnapshotHash",
     "launch",
@@ -1087,10 +1086,6 @@ function decodeConversionPrepare(
     ),
     workspaceResourceKey,
     sessionResourceKey,
-    sourceWorkspaceRevision: requireHash(
-      record.sourceWorkspaceRevision,
-      "sourceWorkspaceRevision"
-    ),
     remoteSnapshot,
     remoteSnapshotHash: requireHash(
       record.remoteSnapshotHash,

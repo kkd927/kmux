@@ -47,6 +47,7 @@ const MAX_PRESENTED_SSH_ERROR_BYTES = 1_024;
 export type SshTargetRestorePurpose =
   | "startup-restore"
   | "manual-reconnect"
+  | "session-resume"
   | "runtime-reconnect";
 
 export interface SshTargetRestoreRequest {
@@ -77,6 +78,12 @@ export interface ConnectedSshProfile {
   hello: Extract<RemoteBridgeResponseBody, { type: "hello" }>;
 }
 
+export interface ActiveSshTarget {
+  profile: SshProfileDto;
+  binding: RemoteTargetBinding;
+  remoteHome: string;
+}
+
 export interface SshConnectionRuntime {
   getSnapshot(): Promise<SshConnectionsSnapshot>;
   resolveProfile(profileId: Id): Promise<SshProfileVm | null>;
@@ -94,6 +101,7 @@ export interface SshConnectionRuntime {
     targetId: Id,
     request: SshTargetRestoreRequest
   ): Promise<ConnectedSshProfile>;
+  getActiveTarget(targetId: Id): ActiveSshTarget | null;
   rebindProfile(
     profileId: Id,
     request?: { signal?: AbortSignal }
@@ -144,6 +152,7 @@ export function createSshConnectionRuntime(options: {
       promise: Promise<SshProfileVm | null>;
     }
   >();
+  const activeTargets = new Map<Id, ActiveSshTarget>();
   // Authority verification may run concurrently, but choosing the immutable
   // target ID and persisting the promoted binding is one Main-owned
   // transaction. Without this boundary, two aliases that verify as the same
@@ -201,6 +210,28 @@ export function createSshConnectionRuntime(options: {
       throw new SshConnectionAttemptSupersededError();
     }
   };
+
+  const rememberActiveTarget = (
+    connected: ConnectedSshProfile
+  ): ConnectedSshProfile => {
+    activeTargets.set(connected.binding.id, {
+      profile: structuredClone(connected.profile),
+      binding: structuredClone(connected.binding),
+      remoteHome: connected.verification.remoteHome
+    });
+    return connected;
+  };
+
+  const sameActiveTargetBinding = (
+    left: RemoteTargetBinding,
+    right: RemoteTargetBinding
+  ): boolean =>
+    left.id === right.id &&
+    isDeepStrictEqual(left.authority, right.authority) &&
+    left.locator.profileId === right.locator.profileId &&
+    left.locator.effectiveConnectionPolicyHash ===
+      right.locator.effectiveConnectionPolicyHash &&
+    left.firstVerifiedAt === right.firstVerifiedAt;
 
   const profileVm = (profile: SshProfileDto): SshProfileVm => {
     const cached = effectiveCache.get(profile.id);
@@ -323,6 +354,11 @@ export function createSshConnectionRuntime(options: {
       draft: SshProfileDraftDto
     ): SshProfileDto {
       const saved = options.profiles.save(profileId, draft);
+      if (profileId !== undefined) {
+        for (const [targetId, target] of activeTargets) {
+          if (target.profile.id === profileId) activeTargets.delete(targetId);
+        }
+      }
       invalidateEffectiveResolution(saved.id);
       touch();
       return saved;
@@ -344,6 +380,7 @@ export function createSshConnectionRuntime(options: {
         );
       }
       for (const binding of bindings) options.bindings.remove(binding.id);
+      for (const binding of bindings) activeTargets.delete(binding.id);
       options.profiles.remove(profileId);
       invalidateEffectiveResolution(profileId);
       touch();
@@ -498,8 +535,7 @@ export function createSshConnectionRuntime(options: {
             connection,
             token,
             retentionPolicy,
-            assertPromotionCurrent: () =>
-              assertStoredProfileCurrent(profile)
+            assertPromotionCurrent: () => assertStoredProfileCurrent(profile)
           });
           const binding = options.bindings.get(candidate.id);
           if (!binding) {
@@ -511,13 +547,13 @@ export function createSshConnectionRuntime(options: {
         touch();
         internal.signal?.removeEventListener("abort", cancelAskpass);
         await askpassContext?.dispose();
-        return {
+        return rememberActiveTarget({
           profile,
           binding: promoted.binding,
           connection: promoted.connection,
           verification: verified,
           hello: promoted.hello
-        };
+        });
       } catch (error) {
         internal.signal?.removeEventListener("abort", cancelAskpass);
         await askpassContext?.dispose().catch(() => undefined);
@@ -561,7 +597,11 @@ export function createSshConnectionRuntime(options: {
         if (request.signal?.aborted) {
           throw new SshAuthenticationCancelledError();
         }
-        let askpassPurpose: "startup-restore" | "manual-reconnect" | undefined;
+        let askpassPurpose:
+          | "startup-restore"
+          | "manual-reconnect"
+          | "session-resume"
+          | undefined;
         if (request.authentication === "interactive") {
           if (request.purpose === "runtime-reconnect") {
             throw new Error(
@@ -694,13 +734,13 @@ export function createSshConnectionRuntime(options: {
         touch();
         request.signal?.removeEventListener("abort", cancelAskpass);
         await askpassContext?.dispose();
-        return {
+        return rememberActiveTarget({
           profile,
           binding: restoredBinding,
           connection,
           verification,
           hello
-        };
+        });
       } catch (error) {
         request.signal?.removeEventListener("abort", cancelAskpass);
         const authenticationCancelled =
@@ -727,6 +767,28 @@ export function createSshConnectionRuntime(options: {
         touch();
         throw failure;
       }
+    },
+
+    getActiveTarget(targetId: Id): ActiveSshTarget | null {
+      const active = activeTargets.get(targetId);
+      if (!active) return null;
+      const profile = options.profiles.get(active.profile.id);
+      const binding = options.bindings.get(targetId);
+      if (
+        !profile ||
+        !binding ||
+        !isDeepStrictEqual(profile, active.profile) ||
+        !sameActiveTargetBinding(binding, active.binding)
+      ) {
+        activeTargets.delete(targetId);
+        return null;
+      }
+      const refreshed = {
+        ...active,
+        binding: structuredClone(binding)
+      };
+      activeTargets.set(targetId, refreshed);
+      return structuredClone(refreshed);
     },
 
     async rebindProfile(

@@ -60,6 +60,7 @@ import type { DurableRemoteOperationStore } from "./durableRemoteOperationStore"
 import type {
   ConversionCleanupAcknowledgement,
   ConversionLocalCleanupTarget,
+  ConversionWalRecord,
   ConversionWalStore
 } from "./conversionWal";
 import type {
@@ -68,7 +69,7 @@ import type {
 } from "./retainedSessionInventory";
 import type { RemoteEventReceiptStore } from "./remoteEventReceiptStore";
 import { createBoundRemoteTerminalControlProvider } from "./remoteTerminalControlProvider";
-import { createRemoteHostConversionGateway } from "./remoteConversionGateway";
+import { createRemoteHostSshWorkspaceTransactionGateway } from "./remoteConversionGateway";
 import {
   createRemoteOperationCoordinator,
   type RemoteOperationExecutionOutcome,
@@ -79,9 +80,9 @@ import {
   type RemoteObservedState
 } from "./remoteReconciler";
 import {
-  createTransactionalWorkspaceConversionRuntime,
-  decodeStartWorkspaceConversionRequest,
-  type StartWorkspaceConversionRequest
+  createTransactionalSshWorkspaceRuntime,
+  decodeStartSshWorkspaceTransactionRequest,
+  type StartSshWorkspaceTransactionRequest
 } from "./transactionalWorkspaceConversion";
 
 export interface CreateRemoteLifecycleRuntimeOptions {
@@ -100,7 +101,7 @@ export interface CreateRemoteLifecycleRuntimeOptions {
   retainedInventory?: RetainedSessionInventoryStore;
   closeWorkspaceProduct?: (workspaceId: Id) => void;
   persistDurableProductSnapshot?: (state: AppState) => void;
-  conversion?: {
+  sshWorkspaceTransactions?: {
     wal: ConversionWalStore;
     getLocalRuntimeEpoch: (surfaceId: Id, sessionId: Id) => Id | null;
     forceDesktopSnapshot: (
@@ -112,6 +113,8 @@ export interface CreateRemoteLifecycleRuntimeOptions {
       target: ConversionLocalCleanupTarget
     ) => Promise<ConversionCleanupAcknowledgement>;
   };
+  /** @deprecated Use sshWorkspaceTransactions. */
+  conversion?: CreateRemoteLifecycleRuntimeOptions["sshWorkspaceTransactions"];
 }
 
 export type RemoteRendererLifecycleAction = Extract<
@@ -136,7 +139,12 @@ export type RemoteRendererLifecycleAction = Extract<
 export class RemoteLifecycleRuntime {
   private readonly coordinator;
   private readonly reconciler;
-  private readonly conversionRuntime;
+  private readonly sshWorkspaceTransactionRuntime;
+  private readonly sshWorkspaceTransactionOptions;
+  private readonly sshWorkspaceLaunchInputResults = new Map<
+    Id,
+    RemoteOperationCommandResult | null
+  >();
   private readonly connections = new Map<Id, RemoteHostTargetConnectOptions>();
   private readonly connectedTargets = new Set<Id>();
   private readonly targetPersistenceLevels = new Map<
@@ -261,6 +269,8 @@ export class RemoteLifecycleRuntime {
   };
 
   constructor(private readonly options: CreateRemoteLifecycleRuntimeOptions) {
+    this.sshWorkspaceTransactionOptions =
+      options.sshWorkspaceTransactions ?? options.conversion;
     this.coordinator = createRemoteOperationCoordinator({
       desktopInstallationId: options.desktopInstallationId,
       store: options.operationStore,
@@ -277,17 +287,28 @@ export class RemoteLifecycleRuntime {
         ? {}
         : { retainedInventory: options.retainedInventory })
     });
-    this.conversionRuntime = options.conversion
-      ? createTransactionalWorkspaceConversionRuntime({
+    this.sshWorkspaceTransactionRuntime = this.sshWorkspaceTransactionOptions
+      ? createTransactionalSshWorkspaceRuntime({
           desktopInstallationId: options.desktopInstallationId,
-          wal: options.conversion.wal,
-          remote: createRemoteHostConversionGateway(options.host),
+          wal: this.sshWorkspaceTransactionOptions.wal,
+          remote: createRemoteHostSshWorkspaceTransactionGateway(options.host),
           getState: options.getState,
           getTargetBinding: options.getTargetBinding,
-          getLocalRuntimeEpoch: options.conversion.getLocalRuntimeEpoch,
-          forceDesktopSnapshot: options.conversion.forceDesktopSnapshot,
-          installDesktopState: options.conversion.installDesktopState,
-          terminateLocalSession: options.conversion.terminateLocalSession
+          getLocalRuntimeEpoch:
+            this.sshWorkspaceTransactionOptions.getLocalRuntimeEpoch,
+          forceDesktopSnapshot:
+            this.sshWorkspaceTransactionOptions.forceDesktopSnapshot,
+          installDesktopState:
+            this.sshWorkspaceTransactionOptions.installDesktopState,
+          terminateLocalSession:
+            this.sshWorkspaceTransactionOptions.terminateLocalSession,
+          afterCommit: async (record) => {
+            const result = await this.executeSshWorkspaceLaunchInput(record);
+            this.sshWorkspaceLaunchInputResults.set(
+              record.transactionId,
+              result
+            );
+          }
         })
       : undefined;
     options.host.on("cursor", this.onCursor);
@@ -466,9 +487,10 @@ export class RemoteLifecycleRuntime {
 
   async executeCommand(
     command: RemoteOperationAdmissionCommand,
-    product: RemoteOperationProductMetadata = {}
+    product: RemoteOperationProductMetadata = {},
+    operationId?: Id
   ): Promise<RemoteOperationCommandResult> {
-    const operation = this.coordinator.admit(command, product);
+    const operation = this.coordinator.admit(command, product, operationId);
     const outcome = await this.executeOperation(operation.intent.operationId);
     if (
       outcome.status === "pending" &&
@@ -479,6 +501,49 @@ export class RemoteLifecycleRuntime {
       ).catch((error: unknown) => this.report(error));
     }
     return { operationId: operation.intent.operationId, outcome };
+  }
+
+  async executeSshWorkspaceLaunchInput(
+    record: ConversionWalRecord
+  ): Promise<RemoteOperationCommandResult | null> {
+    if (
+      record.initialInput === undefined ||
+      (record.state !== "committed" && record.state !== "cleanup-complete")
+    ) {
+      return null;
+    }
+    return await this.executeCommand(
+      {
+        type: "remote-operation.command",
+        workspaceId: record.workspaceResourceKey.workspaceId,
+        expectedRemoteResourceRevision: parseUint64Decimal(
+          record.remoteResourceRevision
+        ),
+        payload: {
+          kind: "launch-input",
+          sessionId: record.sessionResourceKey.sessionId,
+          input: record.initialInput
+        }
+      },
+      {},
+      record.launchInputOperationId
+    );
+  }
+
+  takeSshWorkspaceLaunchInputResult(
+    transactionId: Id
+  ): RemoteOperationCommandResult | null {
+    const result =
+      this.sshWorkspaceLaunchInputResults.get(transactionId) ?? null;
+    this.sshWorkspaceLaunchInputResults.delete(transactionId);
+    return result;
+  }
+
+  /** @deprecated Use executeSshWorkspaceLaunchInput. */
+  async executeConversionLaunchInput(
+    record: ConversionWalRecord
+  ): Promise<RemoteOperationCommandResult | null> {
+    return await this.executeSshWorkspaceLaunchInput(record);
   }
 
   async executeRendererLifecycleAction(
@@ -688,22 +753,31 @@ export class RemoteLifecycleRuntime {
     await this.terminateProductSurface(surfaceId);
   }
 
-  async startWorkspaceConversion(request: StartWorkspaceConversionRequest) {
-    const validated = decodeStartWorkspaceConversionRequest(request);
+  async startSshWorkspaceTransaction(
+    request: StartSshWorkspaceTransactionRequest
+  ) {
+    const validated = decodeStartSshWorkspaceTransactionRequest(request);
     if (
-      !this.conversionRuntime ||
+      !this.sshWorkspaceTransactionRuntime ||
       !this.connectedTargets.has(validated.targetId)
     ) {
       throw new Error(
         "workspace conversion requires a connected conversion runtime"
       );
     }
-    const record = await this.conversionRuntime.start(validated);
+    const record = await this.sshWorkspaceTransactionRuntime.start(validated);
     if (record.state === "cleanup-complete") {
       await this.tryReconcile(validated.targetId);
-      this.conversionRuntime.compactCompleted(record.transactionId);
+      this.sshWorkspaceTransactionRuntime.compactCompleted(
+        record.transactionId
+      );
     }
     return record;
+  }
+
+  /** @deprecated Use startSshWorkspaceTransaction. */
+  async startWorkspaceConversion(request: StartSshWorkspaceTransactionRequest) {
+    return await this.startSshWorkspaceTransaction(request);
   }
 
   listRetainedSessions(): RetainedSessionInventoryEntry[] {
@@ -1194,16 +1268,23 @@ export class RemoteLifecycleRuntime {
     this.connections.set(connection.targetId, structuredClone(connection));
     this.connectedTargets.add(connection.targetId);
     try {
-      if (this.conversionRuntime && this.options.conversion) {
-        const recovered = await this.conversionRuntime.recoverTarget(
-          connection.targetId
-        );
+      if (
+        this.sshWorkspaceTransactionRuntime &&
+        this.sshWorkspaceTransactionOptions
+      ) {
+        const recovered =
+          await this.sshWorkspaceTransactionRuntime.recoverTarget(
+            connection.targetId
+          );
         for (const record of recovered) {
+          this.sshWorkspaceLaunchInputResults.delete(record.transactionId);
           if (record.state === "cleanup-complete") {
-            this.conversionRuntime.compactCompleted(record.transactionId);
+            this.sshWorkspaceTransactionRuntime.compactCompleted(
+              record.transactionId
+            );
           }
         }
-        const protectedTransactionIds = this.options.conversion.wal
+        const protectedTransactionIds = this.sshWorkspaceTransactionOptions.wal
           .loadAll()
           .filter(
             (record) =>

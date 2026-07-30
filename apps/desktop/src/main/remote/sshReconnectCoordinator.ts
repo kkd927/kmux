@@ -3,6 +3,7 @@ import type { Id, SshWorkspaceReconnectResult } from "@kmux/proto";
 
 import {
   SshAuthenticationCancelledError,
+  type ActiveSshTarget,
   type ConnectedSshProfile,
   type SshConnectionRuntime,
   type SshTargetRestoreRequest
@@ -17,6 +18,10 @@ export interface SshReconnectCoordinator {
     request: SshTargetRestoreRequest
   ): Promise<ConnectedSshProfile>;
   reconnectWorkspace(workspaceId: Id): Promise<SshWorkspaceReconnectResult>;
+  ensureTargetConnected(
+    targetId: Id,
+    purpose: "session-resume"
+  ): Promise<ActiveSshTarget>;
   isTargetReconnecting(targetId: Id): boolean;
   targetConnected(targetId: Id): void;
 }
@@ -25,10 +30,13 @@ export function createSshReconnectCoordinator(options: {
   getState: () => AppState;
   dispatchAppAction: (action: AppAction) => void;
   restoreTarget: SshConnectionRuntime["restoreTarget"];
+  getActiveTarget?: SshConnectionRuntime["getActiveTarget"];
+  isTargetConnected?: (targetId: Id) => boolean;
   onConnected?: (targetId: Id) => void | Promise<void>;
   reportError?: (error: Error) => void;
 }): SshReconnectCoordinator {
   const attempts = new Map<Id, Promise<ConnectedSshProfile>>();
+  const ensureAttempts = new Map<Id, Promise<ActiveSshTarget>>();
   const successfulConnectionVersions = new Map<Id, number>();
 
   const updateTargetStatus = (
@@ -135,6 +143,56 @@ export function createSshReconnectCoordinator(options: {
               : "failed"
         };
       }
+    },
+
+    async ensureTargetConnected(
+      targetId: Id,
+      purpose: "session-resume"
+    ): Promise<ActiveSshTarget> {
+      const current = ensureAttempts.get(targetId);
+      if (current) return await current;
+      const ensure = (async (): Promise<ActiveSshTarget> => {
+        if (!options.getActiveTarget || !options.isTargetConnected) {
+          throw new Error("SSH target connection validation is not configured");
+        }
+        const active = options.getActiveTarget(targetId);
+        if (active && options.isTargetConnected(targetId)) {
+          return active;
+        }
+        const existingAttempt = attempts.get(targetId);
+        if (existingAttempt) {
+          try {
+            await existingAttempt;
+          } catch {
+            if (attempts.get(targetId) === existingAttempt) {
+              attempts.delete(targetId);
+            }
+            await coordinator.reconnectTarget(targetId, {
+              authentication: "interactive",
+              purpose
+            });
+          }
+        } else {
+          await coordinator.reconnectTarget(targetId, {
+            authentication: "interactive",
+            purpose
+          });
+        }
+        const restored = options.getActiveTarget(targetId);
+        if (restored) return restored;
+        throw new Error(
+          "restored SSH target no longer matches its saved binding"
+        );
+      })();
+      ensureAttempts.set(targetId, ensure);
+      void ensure
+        .finally(() => {
+          if (ensureAttempts.get(targetId) === ensure) {
+            ensureAttempts.delete(targetId);
+          }
+        })
+        .catch(() => undefined);
+      return await ensure;
     },
 
     isTargetReconnecting(targetId: Id): boolean {

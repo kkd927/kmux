@@ -144,6 +144,7 @@ type WorktreeConversionDialog =
 
 type SshWorkspaceDialog = {
   workspaceId: string;
+  destinationWindowId: string;
   sourceTargetKind: "local" | "ssh";
   connections: SshConnectionsSnapshot | null;
   selectedProfileId: string | null;
@@ -1788,6 +1789,7 @@ export function App(): JSX.Element {
       row.targetKind === "local" ? "convert" : "create";
     setSshWorkspaceDialog({
       workspaceId,
+      destinationWindowId: latest.windowId,
       sourceTargetKind: row.targetKind,
       connections: null,
       selectedProfileId: null,
@@ -1903,12 +1905,21 @@ export function App(): JSX.Element {
       error: null
     });
     try {
-      const prepared = await window.kmux.prepareSshWorkspace({
-        requestId,
-        sourceWorkspaceId: dialog.workspaceId,
-        profileId: dialog.selectedProfileId,
-        continuation: dialog.continuation
-      });
+      const prepared = await window.kmux.prepareSshWorkspace(
+        dialog.continuation === "convert"
+          ? {
+              kind: "convert-existing",
+              requestId,
+              sourceWorkspaceId: dialog.workspaceId,
+              profileId: dialog.selectedProfileId
+            }
+          : {
+              kind: "create-new",
+              requestId,
+              destinationWindowId: dialog.destinationWindowId,
+              profileId: dialog.selectedProfileId
+            }
+      );
       if (requestState.cancelled) {
         return;
       }

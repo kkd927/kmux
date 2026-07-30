@@ -28,7 +28,6 @@ import type { MainFact } from "@kmux/core/main";
 import { locatedPathForTarget } from "@kmux/core";
 import type {
   ExternalAgentSessionRef,
-  ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   Id,
   ResolvedTerminalTypographyVm,
@@ -115,7 +114,6 @@ export interface AppRuntime {
   ): Promise<ResolvedTerminalTypographyVm>;
   reportTerminalTypographyProbe(report: TerminalTypographyProbeReport): void;
   getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
-  resumeExternalAgentSession(key: string): ExternalAgentSessionResumeResult;
   respawnRestoredSessions(): void;
   shutdown(options?: { preserveWorkspaceLayout?: boolean }): void;
 }
@@ -765,111 +763,6 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     });
   }
 
-  function resumeExternalAgentSession(
-    key: string
-  ): ExternalAgentSessionResumeResult {
-    const spec =
-      options.externalSessionIndexer?.resolveExternalAgentSession(key);
-    if (!spec) {
-      throw new Error("External session not found");
-    }
-    const existing = findOpenExternalAgentSession(spec);
-    if (existing) {
-      dispatchAppAction({
-        type: "surface.focus",
-        surfaceId: existing.surfaceId
-      });
-      return existing;
-    }
-    dispatchAppAction({
-      type: "workspace.create",
-      name: spec.title,
-      cwd: spec.cwd,
-      target: spec.target,
-      launch: spec.launch,
-      agentSessionRef: spec.agentSessionRef
-    });
-    const state = getState();
-    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
-    const workspace = state.workspaces[workspaceId];
-    const paneId = workspace.activePaneId;
-    const surfaceId = state.panes[paneId].activeSurfaceId;
-    return { workspaceId, surfaceId };
-  }
-
-  function findOpenExternalAgentSession(
-    spec: ExternalSessionResumeSpec
-  ): ExternalAgentSessionResumeResult | null {
-    const state = getState();
-    for (const session of Object.values(state.sessions)) {
-      if (session.runtimeStatus.processState === "exited") {
-        continue;
-      }
-      const agentSessionRefMatches = externalAgentSessionRefsMatch(
-        session.agentSessionRef,
-        spec.agentSessionRef
-      );
-      if (
-        !agentSessionRefMatches &&
-        !launchCommandsMatch(session.launch, spec.launch)
-      ) {
-        continue;
-      }
-      const surface = state.surfaces[session.surfaceId];
-      if (!surface) {
-        continue;
-      }
-      const pane = state.panes[surface.paneId];
-      if (!pane) {
-        continue;
-      }
-      const workspace = state.workspaces[pane.workspaceId];
-      if (
-        !workspace ||
-        !sameWorkspaceTarget(workspace.location.target, spec.target)
-      ) {
-        continue;
-      }
-      return {
-        workspaceId: pane.workspaceId,
-        surfaceId: surface.id
-      };
-    }
-    return null;
-  }
-
-  function launchCommandsMatch(
-    left: StoredSessionLaunchConfig,
-    right: SessionLaunchConfig
-  ): boolean {
-    const defaultShell = getState().settings.shell || options.defaultShellPath;
-    return (
-      effectiveLaunchShell(left, defaultShell) ===
-        effectiveLaunchShell(right, defaultShell) &&
-      arrayShallowEqual(left.args, right.args) &&
-      (left.initialInput ?? "") === (right.initialInput ?? "")
-    );
-  }
-
-  function effectiveLaunchShell(
-    launch: { shell?: string },
-    defaultShell: string
-  ): string | undefined {
-    return launch.shell ?? defaultShell;
-  }
-
-  function arrayShallowEqual(
-    left: readonly string[] | undefined,
-    right: readonly string[] | undefined
-  ): boolean {
-    const leftItems = left ?? [];
-    const rightItems = right ?? [];
-    return (
-      leftItems.length === rightItems.length &&
-      leftItems.every((item, index) => item === rightItems[index])
-    );
-  }
-
   function resolveRestoredAgentSession(
     agentSessionRef: AgentSessionRef | undefined
   ): ExternalSessionResumeSpec | null {
@@ -1014,21 +907,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     previewTerminalTypography,
     reportTerminalTypographyProbe,
     getExternalAgentSessions,
-    resumeExternalAgentSession,
     respawnRestoredSessions,
     shutdown
   };
-}
-
-function sameWorkspaceTarget(
-  left: WorkspaceTarget,
-  right: WorkspaceTarget
-): boolean {
-  return (
-    left.kind === right.kind &&
-    (left.kind === "local" ||
-      (right.kind === "ssh" && left.targetId === right.targetId))
-  );
 }
 
 function agentSessionTargetMatches(

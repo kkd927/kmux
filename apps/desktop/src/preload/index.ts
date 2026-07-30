@@ -25,6 +25,7 @@ import {
 import type {
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
+  ExternalAgentSessionResumeRequest,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
   ImportedTerminalThemePalette,
@@ -138,9 +139,9 @@ const api = {
     return ipcRenderer.invoke("kmux:external-sessions:get");
   },
   resumeExternalAgentSession(
-    key: string
+    request: ExternalAgentSessionResumeRequest
   ): Promise<ExternalAgentSessionResumeResult> {
-    return ipcRenderer.invoke("kmux:external-sessions:resume", key);
+    return ipcRenderer.invoke("kmux:external-sessions:resume", request);
   },
   getUpdaterState(): Promise<UpdaterState> {
     return ipcRenderer.invoke("kmux:updater:get");

@@ -152,7 +152,7 @@ import {
 } from "./remote/rendererCommandAuthorization";
 import { loadOrCreateDesktopInstallationId } from "./remote/desktopInstallationIdentity";
 import { createDurableRemoteOperationStore } from "./remote/durableRemoteOperationStore";
-import { createConversionWalStore } from "./remote/conversionWal";
+import { createSshWorkspaceTransactionWalStore } from "./remote/conversionWal";
 import { createRetainedSessionInventoryStore } from "./remote/retainedSessionInventory";
 import { createRemoteEventReceiptStore } from "./remote/remoteEventReceiptStore";
 import { RemoteLifecycleRuntime } from "./remote/remoteLifecycleRuntime";
@@ -167,7 +167,9 @@ import {
   restoreSshStartupTargets
 } from "./remote/sshStartupRestore";
 import { createSshWorkspaceRuntime } from "./remote/sshWorkspaceRuntime";
+import { createSshWorkspaceCreationRuntime } from "./remote/sshWorkspaceCreationRuntime";
 import { createSshAskpassBroker } from "./remote/sshAskpassBroker";
+import { createExternalSessionResumeRuntime } from "./externalSessionResumeRuntime";
 import {
   createLocalPathResolver,
   createTargetServiceRegistry
@@ -622,7 +624,9 @@ async function bootstrap(): Promise<void> {
   const remoteEventReceiptStore = createRemoteEventReceiptStore(
     paths.remoteEventReceiptRoot
   );
-  const conversionWal = createConversionWalStore(paths.conversionWalRoot);
+  const sshWorkspaceTransactionWal = createSshWorkspaceTransactionWalStore(
+    paths.conversionWalRoot
+  );
   const retainedSessionInventory = createRetainedSessionInventoryStore(
     paths.retainedSessionInventoryPath
   );
@@ -683,6 +687,9 @@ async function bootstrap(): Promise<void> {
     dispatchAppAction: runtime.dispatchAppAction,
     restoreTarget: (targetId, request) =>
       sshConnections.restoreTarget(targetId, request),
+    getActiveTarget: (targetId) => sshConnections.getActiveTarget(targetId),
+    isTargetConnected: (targetId) =>
+      remoteLifecycle?.isTargetConnected(targetId) === true,
     onConnected: () => worktreeRuntime?.reconcileManagedSurfaces(),
     reportError: (error) => {
       logDiagnostics("main.ssh-target.post-connect-failed", {
@@ -712,8 +719,8 @@ async function bootstrap(): Promise<void> {
     closeWorkspaceProduct: (workspaceId) => {
       runtime.dispatchAppAction({ type: "workspace.close", workspaceId });
     },
-    conversion: {
-      wal: conversionWal,
+    sshWorkspaceTransactions: {
+      wal: sshWorkspaceTransactionWal,
       getLocalRuntimeEpoch: (surfaceId, sessionId) =>
         ptyHost?.sessionRef(surfaceId, sessionId)?.epoch ?? null,
       forceDesktopSnapshot: (state, expectedSnapshotHash) => {
@@ -793,7 +800,7 @@ async function bootstrap(): Promise<void> {
         return true;
       }
       if (
-        conversionWal
+        sshWorkspaceTransactionWal
           .loadAll()
           .some(
             (record) =>
@@ -812,10 +819,24 @@ async function bootstrap(): Promise<void> {
         );
     }
   });
-  const sshWorkspaces = createSshWorkspaceRuntime({
-    connections: sshConnections,
+  const sshWorkspaceCreator = createSshWorkspaceCreationRuntime({
     lifecycle: providerRemoteLifecycle,
     getState: runtime.getState
+  });
+  const sshWorkspaces = createSshWorkspaceRuntime({
+    connections: sshConnections,
+    creator: sshWorkspaceCreator,
+    getState: runtime.getState
+  });
+  const externalSessionResume = createExternalSessionResumeRuntime({
+    resolveExternalAgentSession: (key) =>
+      targetHistoryRuntime?.resolveExternalAgentSession(key) ??
+      localExternalSessionIndexer.resolveExternalAgentSession(key),
+    getState: runtime.getState,
+    dispatchAppAction: runtime.dispatchAppAction,
+    defaultShellPath: resolvedShellEnv.shellPath,
+    sshReconnect,
+    sshCreator: sshWorkspaceCreator
   });
 
   const localTargetServices: TargetServiceSet<LocalPath> = {
@@ -1336,7 +1357,7 @@ async function bootstrap(): Promise<void> {
     },
     getUsageView: usageRuntime.getSnapshot,
     getExternalAgentSessions: runtime.getExternalAgentSessions,
-    resumeExternalAgentSession: runtime.resumeExternalAgentSession,
+    resumeExternalAgentSession: externalSessionResume.resume,
     createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
     subscribeDocument: (sender, request) =>
@@ -1888,7 +1909,7 @@ async function bootstrap(): Promise<void> {
   const startupSshTargetIds = collectSshStartupTargetIds({
     state: runtime.getState(),
     retained: retainedSessionInventory.loadAll(),
-    conversions: conversionWal.loadAll(),
+    conversions: sshWorkspaceTransactionWal.loadAll(),
     operations: remoteOperationStore.loadAll()
   });
   let startupSshRestoreStarted = false;

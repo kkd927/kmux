@@ -44,7 +44,6 @@ export interface RemoteConversionPrepareRequestDto {
   sessionCreateOperationId: Id;
   workspaceResourceKey: RemoteResourceKeyDto;
   sessionResourceKey: RemoteResourceKeyDto & { sessionId: Id };
-  sourceWorkspaceRevision: string;
   remoteSnapshot: string;
   remoteSnapshotHash: string;
   launch: RemoteConversionSessionLaunchDto;

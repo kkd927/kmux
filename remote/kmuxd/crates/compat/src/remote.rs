@@ -579,8 +579,6 @@ pub enum BridgeRequest {
         workspace_resource_key: RemoteResourceKey,
         #[serde(rename = "sessionResourceKey")]
         session_resource_key: RemoteResourceKey,
-        #[serde(rename = "sourceWorkspaceRevision")]
-        source_workspace_revision: String,
         #[serde(rename = "remoteSnapshot")]
         remote_snapshot: String,
         #[serde(rename = "remoteSnapshotHash")]

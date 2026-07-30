@@ -29,6 +29,7 @@ import {
   formatUint64Decimal,
   incrementUint64,
   parseUint64Decimal,
+  type ExternalAgentSessionRef,
   type SplitDirection,
   type Id,
   type Uint64
@@ -257,11 +258,9 @@ export interface SshWorkspaceReplacementPatchDto {
 }
 
 export interface SshWorkspaceAdditionPatchDto {
-  version: 1;
-  sourceWorkspaceId: Id;
+  version: 2;
   workspaceId: Id;
   windowId: Id;
-  expectedSourceWorkspaceRevision: string;
   expectedWindowWorkspaceOrder: Id[];
   resultingWindowWorkspaceOrder: Id[];
   replacementWorkspaceRevision: string;
@@ -290,13 +289,15 @@ export interface CreateSshWorkspaceReplacementPatchOptions {
     env?: Record<string, string>;
     title?: string;
   };
+  initialInput?: string;
+  agentSessionRef?: ExternalAgentSessionRef;
 }
 
 export interface CreateSshWorkspaceAdditionPatchOptions extends Omit<
   CreateSshWorkspaceReplacementPatchOptions,
   "workspaceId"
 > {
-  sourceWorkspaceId: Id;
+  destinationWindowId: Id;
   workspaceId: Id;
 }
 
@@ -393,8 +394,22 @@ export function createSshWorkspaceReplacementPatch(
         : { env: { ...options.launch.env } }),
       ...(options.launch.title === undefined
         ? {}
-        : { title: options.launch.title })
+        : { title: options.launch.title }),
+      ...(options.initialInput === undefined
+        ? {}
+        : { initialInput: options.initialInput })
     },
+    ...(options.agentSessionRef === undefined
+      ? {}
+      : {
+          agentSessionRef: {
+            vendor: options.agentSessionRef.vendor,
+            id: options.agentSessionRef.sessionId,
+            targetId: options.targetId,
+            cwd,
+            externalKey: options.agentSessionRef.externalKey
+          }
+        }),
     authToken: options.authToken,
     runtimeStatus: {
       processState: "running",
@@ -446,31 +461,24 @@ export function createSshWorkspaceReplacementPatch(
 }
 
 /**
- * Builds the decided product patch for `Create new SSH workspace`. The source
- * workspace is only a concurrency fence and is never modified by the patch.
+ * Builds the decided product patch for `Create new SSH workspace`. It is
+ * window-scoped and deliberately has no source-workspace dependency.
  */
 export function createSshWorkspaceAdditionPatch(
   state: AppState,
   options: CreateSshWorkspaceAdditionPatchOptions
 ): SshWorkspaceAdditionPatchDto {
-  const source = state.workspaces[options.sourceWorkspaceId];
-  if (!source) {
-    throw new MainFactConflictError(
-      "workspace-missing",
-      `workspace ${options.sourceWorkspaceId} does not exist`
-    );
-  }
   if (state.workspaces[options.workspaceId]) {
     throw new MainFactConflictError(
       "operation-id-conflict",
       "SSH workspace creation ID already exists"
     );
   }
-  const window = state.windows[source.windowId];
-  if (!window || !window.workspaceOrder.includes(source.id)) {
+  const window = state.windows[options.destinationWindowId];
+  if (!window) {
     throw new MainFactConflictError(
       "workspace-revision-conflict",
-      "SSH workspace creation source window changed"
+      "SSH workspace destination window no longer exists"
     );
   }
   const initialWorkspaceName = requireConversionText(
@@ -502,7 +510,7 @@ export function createSshWorkspaceAdditionPatch(
   const additionState = decodeAppStateDto(encodeAppStateDto(state));
   additionState.workspaces[options.workspaceId] = {
     id: options.workspaceId,
-    windowId: source.windowId,
+    windowId: window.id,
     name: workspaceName,
     location: workspaceLocation(target, options.defaultCwd),
     rootNodeId: options.nodeId,
@@ -551,8 +559,22 @@ export function createSshWorkspaceAdditionPatch(
         : { env: { ...options.launch.env } }),
       ...(options.launch.title === undefined
         ? {}
-        : { title: options.launch.title })
+        : { title: options.launch.title }),
+      ...(options.initialInput === undefined
+        ? {}
+        : { initialInput: options.initialInput })
     },
+    ...(options.agentSessionRef === undefined
+      ? {}
+      : {
+          agentSessionRef: {
+            vendor: options.agentSessionRef.vendor,
+            id: options.agentSessionRef.sessionId,
+            targetId: options.targetId,
+            cwd,
+            externalKey: options.agentSessionRef.externalKey
+          }
+        }),
     authToken: options.authToken,
     runtimeStatus: {
       processState: "running",
@@ -571,10 +593,9 @@ export function createSshWorkspaceAdditionPatch(
     ...expectedWindowWorkspaceOrder,
     options.workspaceId
   ];
-  additionState.windows[source.windowId].workspaceOrder =
+  additionState.windows[window.id].workspaceOrder =
     resultingWindowWorkspaceOrder;
-  additionState.windows[source.windowId].activeWorkspaceId =
-    options.workspaceId;
+  additionState.windows[window.id].activeWorkspaceId = options.workspaceId;
 
   // The immutable addition patch must carry the same canonical session launch
   // that apply/recovery will hash; see the replacement path above.
@@ -590,11 +611,9 @@ export function createSshWorkspaceAdditionPatch(
   const surfaces = requireConversionRecord(encoded.surfaces, "surfaces");
   const sessions = requireConversionRecord(encoded.sessions, "sessions");
   return decodeSshWorkspaceAdditionPatch({
-    version: 1,
-    sourceWorkspaceId: source.id,
+    version: 2,
     workspaceId: options.workspaceId,
-    windowId: source.windowId,
-    expectedSourceWorkspaceRevision: computeWorkspaceRevision(state, source.id),
+    windowId: window.id,
     expectedWindowWorkspaceOrder,
     resultingWindowWorkspaceOrder,
     replacementWorkspaceRevision: computeWorkspaceRevision(
@@ -766,6 +785,23 @@ export function applySshWorkspaceAdditionPatch(
       computeWorkspaceRevision(state, patch.workspaceId) ===
       patch.replacementWorkspaceRevision
     ) {
+      const window = state.windows[patch.windowId];
+      if (
+        existing.windowId !== patch.windowId ||
+        !window ||
+        !sameOrderedIds(
+          window.workspaceOrder.slice(
+            0,
+            patch.resultingWindowWorkspaceOrder.length
+          ),
+          patch.resultingWindowWorkspaceOrder
+        )
+      ) {
+        throw new MainFactConflictError(
+          "workspace-revision-conflict",
+          "SSH workspace creation was installed into a different window order"
+        );
+      }
       return noChange();
     }
     throw new MainFactConflictError(
@@ -773,26 +809,14 @@ export function applySshWorkspaceAdditionPatch(
       "SSH workspace creation ID was installed differently"
     );
   }
-  if (
-    computeWorkspaceRevision(state, patch.sourceWorkspaceId) !==
-    patch.expectedSourceWorkspaceRevision
-  ) {
-    throw new MainFactConflictError(
-      "workspace-revision-conflict",
-      "SSH workspace creation source changed before commit"
-    );
-  }
-  const source = state.workspaces[patch.sourceWorkspaceId];
   const window = state.windows[patch.windowId];
   if (
-    !source ||
-    source.windowId !== patch.windowId ||
     !window ||
     !sameOrderedIds(window.workspaceOrder, patch.expectedWindowWorkspaceOrder)
   ) {
     throw new MainFactConflictError(
       "workspace-revision-conflict",
-      "SSH workspace creation source window changed before commit"
+      "SSH workspace creation destination window changed before commit"
     );
   }
   const paneId = requireConversionId(patch.pane.id, "pane.id");
@@ -848,10 +872,8 @@ export function decodeSshWorkspaceAdditionPatch(
   const record = requireConversionRecord(value, "SSH workspace addition patch");
   const expectedKeys = new Set([
     "version",
-    "sourceWorkspaceId",
     "workspaceId",
     "windowId",
-    "expectedSourceWorkspaceRevision",
     "expectedWindowWorkspaceOrder",
     "resultingWindowWorkspaceOrder",
     "replacementWorkspaceRevision",
@@ -861,21 +883,13 @@ export function decodeSshWorkspaceAdditionPatch(
     "session"
   ]);
   const unexpected = Object.keys(record).find((key) => !expectedKeys.has(key));
-  if (unexpected || record.version !== 1) {
+  if (unexpected || record.version !== 2) {
     throw new TypeError("SSH workspace addition patch schema is invalid");
   }
   const patch: SshWorkspaceAdditionPatchDto = {
-    version: 1,
-    sourceWorkspaceId: requireConversionId(
-      record.sourceWorkspaceId,
-      "sourceWorkspaceId"
-    ),
+    version: 2,
     workspaceId: requireConversionId(record.workspaceId, "workspaceId"),
     windowId: requireConversionId(record.windowId, "windowId"),
-    expectedSourceWorkspaceRevision: requireConversionDigest(
-      record.expectedSourceWorkspaceRevision,
-      "expectedSourceWorkspaceRevision"
-    ),
     expectedWindowWorkspaceOrder: requireConversionOrderedIdArray(
       record.expectedWindowWorkspaceOrder,
       "expectedWindowWorkspaceOrder"
@@ -902,8 +916,7 @@ export function decodeSshWorkspaceAdditionPatch(
     patch.workspaceId
   ];
   if (
-    patch.sourceWorkspaceId === patch.workspaceId ||
-    !patch.expectedWindowWorkspaceOrder.includes(patch.sourceWorkspaceId) ||
+    patch.expectedWindowWorkspaceOrder.includes(patch.workspaceId) ||
     !sameOrderedIds(
       patch.resultingWindowWorkspaceOrder,
       expectedResultingOrder

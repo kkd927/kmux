@@ -63,6 +63,47 @@ describe("remote retention profile policy", () => {
   });
 });
 
+describe("SSH workspace transaction remote request boundary", () => {
+  it("accepts source-free preparation and rejects the removed source revision field", () => {
+    const request = {
+      type: "conversion.prepare" as const,
+      requestId: "request_prepare",
+      targetId: "target_1",
+      conversion: {
+        transactionId: "transaction_1",
+        workspaceCreateOperationId: "operation_workspace",
+        sessionCreateOperationId: "operation_session",
+        workspaceResourceKey: {
+          desktopInstallationId: "desktop_1",
+          targetId: "target_1",
+          workspaceId: "workspace_1"
+        },
+        sessionResourceKey: {
+          desktopInstallationId: "desktop_1",
+          targetId: "target_1",
+          workspaceId: "workspace_1",
+          sessionId: "session_1"
+        },
+        remoteSnapshot: "{}",
+        remoteSnapshotHash: "a".repeat(64),
+        launch: { cwd: "/srv/project" },
+        preparedAt: "2026-07-30T00:00:00.000Z"
+      }
+    };
+
+    expect(decodeRemoteHostRequest(request)).toEqual(request);
+    expect(() =>
+      decodeRemoteHostRequest({
+        ...request,
+        conversion: {
+          ...request.conversion,
+          sourceWorkspaceRevision: "b".repeat(64)
+        }
+      })
+    ).toThrow(/unexpected remote-host field sourceWorkspaceRevision/u);
+  });
+});
+
 describe("remote-host UtilityProcess operation outcome boundary", () => {
   it("accepts only an exact target-bound file stat request", () => {
     expect(

@@ -9,6 +9,7 @@ import {
 
 import {
   SshAuthenticationCancelledError,
+  type ActiveSshTarget,
   type ConnectedSshProfile
 } from "./sshConnectionRuntime";
 import { createSshReconnectCoordinator } from "./sshReconnectCoordinator";
@@ -50,6 +51,112 @@ describe("SSH reconnect coordinator", () => {
         (workspace) => !workspace.statusEntries["ssh:connection"]
       )
     ).toBe(true);
+  });
+
+  it("reuses a validated active target without reconnecting", async () => {
+    const state = sshStateWithSharedTarget();
+    const active = activeTarget();
+    const restoreTarget = vi.fn();
+    const coordinator = createSshReconnectCoordinator({
+      getState: () => state,
+      dispatchAppAction: createStatusDispatcher(state),
+      restoreTarget,
+      getActiveTarget: () => active,
+      isTargetConnected: () => true
+    });
+
+    await expect(
+      coordinator.ensureTargetConnected("target_shared", "session-resume")
+    ).resolves.toEqual(active);
+    expect(restoreTarget).not.toHaveBeenCalled();
+  });
+
+  it("coalesces interactive session restore for a stale target", async () => {
+    const state = sshStateWithSharedTarget();
+    const pending = deferred<ConnectedSshProfile>();
+    let active: ActiveSshTarget | null = null;
+    const restoreTarget = vi.fn(() => pending.promise);
+    const coordinator = createSshReconnectCoordinator({
+      getState: () => state,
+      dispatchAppAction: createStatusDispatcher(state),
+      restoreTarget,
+      getActiveTarget: () => active,
+      isTargetConnected: () => false
+    });
+
+    const first = coordinator.ensureTargetConnected(
+      "target_shared",
+      "session-resume"
+    );
+    const second = coordinator.ensureTargetConnected(
+      "target_shared",
+      "session-resume"
+    );
+    active = activeTarget();
+    pending.resolve(connectedProfile());
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      active,
+      active
+    ]);
+    expect(restoreTarget).toHaveBeenCalledTimes(1);
+    expect(restoreTarget).toHaveBeenCalledWith("target_shared", {
+      authentication: "interactive",
+      purpose: "session-resume"
+    });
+  });
+
+  it("falls back to interactive restore after joining a failed runtime reconnect", async () => {
+    const state = sshStateWithSharedTarget();
+    const nonInteractive = deferred<ConnectedSshProfile>();
+    let active: ActiveSshTarget | null = null;
+    const restoreTarget = vi
+      .fn()
+      .mockImplementationOnce(() => nonInteractive.promise)
+      .mockImplementationOnce(async () => {
+        active = activeTarget();
+        return connectedProfile();
+      });
+    const coordinator = createSshReconnectCoordinator({
+      getState: () => state,
+      dispatchAppAction: createStatusDispatcher(state),
+      restoreTarget,
+      getActiveTarget: () => active,
+      isTargetConnected: () => false
+    });
+    void coordinator
+      .reconnectTarget("target_shared", {
+        authentication: "non-interactive",
+        purpose: "runtime-reconnect"
+      })
+      .catch(() => undefined);
+    const ensured = coordinator.ensureTargetConnected(
+      "target_shared",
+      "session-resume"
+    );
+    nonInteractive.reject(new Error("agent unavailable"));
+
+    await expect(ensured).resolves.toEqual(activeTarget());
+    expect(restoreTarget).toHaveBeenCalledTimes(2);
+    expect(restoreTarget).toHaveBeenLastCalledWith("target_shared", {
+      authentication: "interactive",
+      purpose: "session-resume"
+    });
+  });
+
+  it("rejects a restore that no longer has a validated active target", async () => {
+    const state = sshStateWithSharedTarget();
+    const coordinator = createSshReconnectCoordinator({
+      getState: () => state,
+      dispatchAppAction: createStatusDispatcher(state),
+      restoreTarget: vi.fn(async () => connectedProfile()),
+      getActiveTarget: () => null,
+      isTargetConnected: () => false
+    });
+
+    await expect(
+      coordinator.ensureTargetConnected("target_shared", "session-resume")
+    ).rejects.toThrow(/saved binding/u);
   });
 
   it("contains authentication cancellation until an explicit manual retry", async () => {
@@ -261,4 +368,43 @@ function deferred<T>(): {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+}
+
+function activeTarget(): ActiveSshTarget {
+  const connected = connectedProfile();
+  return {
+    profile: connected.profile,
+    binding: connected.binding,
+    remoteHome: connected.verification.remoteHome
+  };
+}
+
+function connectedProfile(): ConnectedSshProfile {
+  return {
+    profile: {
+      id: "profile_shared",
+      name: "shared",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      updatedAt: "2026-07-30T00:00:00.000Z"
+    },
+    binding: {
+      id: "target_shared",
+      authority: {
+        remoteInstallationId: "installation_shared",
+        executionNodeId: "node_shared",
+        authenticatedPrincipal: { uid: 1000, accountName: "kmux" }
+      },
+      locator: {
+        profileId: "profile_shared",
+        effectiveConnectionPolicyHash: "a".repeat(64),
+        lastVerifiedAt: "2026-07-30T00:00:00.000Z"
+      },
+      firstVerifiedAt: "2026-07-30T00:00:00.000Z"
+    },
+    connection: {} as ConnectedSshProfile["connection"],
+    verification: {
+      remoteHome: "/home/kmux"
+    } as ConnectedSshProfile["verification"],
+    hello: {} as ConnectedSshProfile["hello"]
+  };
 }

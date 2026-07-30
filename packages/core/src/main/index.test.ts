@@ -26,6 +26,7 @@ import {
   createSshWorkspaceAdditionPatch,
   createSshWorkspaceReplacementPatch,
   createRemoteOperationPendingFact,
+  decodeSshWorkspaceAdditionPatch,
   decodeSshWorkspaceReplacementPatch,
   decodeMainRemoteOperationFact,
   encodeMainRemoteOperationFact
@@ -163,9 +164,8 @@ describe("Main-only SSH workspace addition patch", () => {
   it("adds one ordinary remote surface without changing the source workspace", () => {
     const state = createInitialState("/bin/zsh");
     const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
-    const sourceBefore = cloneState(state).workspaces[sourceWorkspaceId];
     const patch = createSshWorkspaceAdditionPatch(state, {
-      sourceWorkspaceId,
+      destinationWindowId: state.activeWindowId,
       workspaceId: "workspace_remote",
       targetId: "target_1",
       initialWorkspaceName: "kmux@devbox",
@@ -179,6 +179,8 @@ describe("Main-only SSH workspace addition patch", () => {
       remoteResourceRevision: uint64(1n),
       launch: { cwd: "/srv/project" }
     });
+    state.workspaces[sourceWorkspaceId].name = "changed after decision";
+    const sourceBefore = cloneState(state).workspaces[sourceWorkspaceId];
 
     expect(applySshWorkspaceAdditionPatch(state, patch).applied).toBe(true);
     expect(state.workspaces[sourceWorkspaceId]).toEqual(sourceBefore);
@@ -211,13 +213,21 @@ describe("Main-only SSH workspace addition patch", () => {
     expect(window.workspaceOrder.at(-1)).toBe("workspace_remote");
     expect(window.activeWorkspaceId).toBe("workspace_remote");
     expect(applySshWorkspaceAdditionPatch(state, patch).applied).toBe(false);
+    expect(patch.version).toBe(2);
+    expect(patch).not.toHaveProperty("sourceWorkspaceId");
+    expect(patch).not.toHaveProperty("expectedSourceWorkspaceRevision");
+    expect(() =>
+      decodeSshWorkspaceAdditionPatch({
+        ...patch,
+        sourceWorkspaceId
+      })
+    ).toThrow(/schema is invalid/u);
   });
 
-  it("rejects creation when the source changes before the decision applies", () => {
+  it("rejects creation when the destination window order changes before apply", () => {
     const state = createInitialState("/bin/zsh");
-    const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
     const patch = createSshWorkspaceAdditionPatch(state, {
-      sourceWorkspaceId,
+      destinationWindowId: state.activeWindowId,
       workspaceId: "workspace_remote",
       targetId: "target_1",
       initialWorkspaceName: "kmux@devbox",
@@ -231,14 +241,15 @@ describe("Main-only SSH workspace addition patch", () => {
       remoteResourceRevision: uint64(1n),
       launch: { cwd: "/srv/project" }
     });
-    state.workspaces[sourceWorkspaceId].name = "changed";
-    const before = cloneState(state);
+    state.windows[state.activeWindowId].workspaceOrder = [];
 
     expectConflict(
       () => applySshWorkspaceAdditionPatch(state, patch),
       "workspace-revision-conflict"
     );
-    expect(state).toEqual(before);
+    expect(state.windows[state.activeWindowId].workspaceOrder).toEqual([]);
+    expect(state.workspaces.workspace_remote).toBeUndefined();
+    expect(state.sessions.session_remote).toBeUndefined();
   });
 });
 

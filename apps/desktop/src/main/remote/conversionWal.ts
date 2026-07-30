@@ -21,11 +21,11 @@ import {
   type SshWorkspaceAdditionPatchDto,
   type SshWorkspaceReplacementPatchDto
 } from "@kmux/core/main";
-import type { Id } from "@kmux/proto";
+import type { ExternalAgentSessionRef, Id } from "@kmux/proto";
 
 import { durableAtomicReplace } from "./durableAtomicWrite";
 
-const CONVERSION_WAL_VERSION = 2;
+const CONVERSION_WAL_VERSION = 3;
 const MAX_CONVERSION_RECORD_BYTES = 1024 * 1024;
 const MAX_CONVERSION_RECORDS = 64;
 const MAX_CONVERSION_DIRECTORY_ENTRIES = MAX_CONVERSION_RECORDS * 2;
@@ -35,6 +35,7 @@ export type ConversionWalState =
   | "preparing"
   | "remote-created"
   | "commit-decided"
+  | "product-installed"
   | "committed"
   | "cleanup-complete";
 
@@ -52,19 +53,30 @@ export interface ConversionLocalCleanupTarget {
   runtimeEpoch?: Id;
 }
 
+export type SshWorkspaceProductIntent =
+  | {
+      kind: "convert-existing";
+      sourceWorkspaceId: Id;
+      sourceWorkspaceRevision: string;
+      preservation: ConversionPreservationWhitelist;
+      cleanupSet: ConversionLocalCleanupTarget[];
+    }
+  | {
+      kind: "create-new";
+      destinationWindowId: Id;
+    };
+
 export interface ConversionPreparingRecord {
-  version: 2;
+  version: 3;
   state: "preparing";
-  continuation: "convert" | "create";
   transactionId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
+  launchInputOperationId: Id;
   workspaceResourceKey: RemoteResourceKey;
   sessionResourceKey: RemoteResourceKey & { sessionId: Id };
-  sourceWorkspaceRevision: string;
   effectiveConnectionPolicyHash: string;
-  preservation: ConversionPreservationWhitelist;
-  cleanupSet: ConversionLocalCleanupTarget[];
+  productIntent: SshWorkspaceProductIntent;
   initialWorkspaceName: string;
   defaultCwd: string;
   launch: {
@@ -74,6 +86,8 @@ export interface ConversionPreparingRecord {
     env?: Record<string, string>;
     title?: string;
   };
+  agentSessionRef?: ExternalAgentSessionRef;
+  initialInput?: string;
   preparedAt: string;
 }
 
@@ -108,15 +122,26 @@ export interface ConversionCommitDecidedRecord
   state: "commit-decided";
 }
 
-export interface ConversionCommittedEvidence {
+export interface ConversionProductInstalledEvidence {
   desktopSnapshotHash: string;
+  productInstalledAt: string;
+}
+
+export interface ConversionProductInstalledRecord
+  extends
+    Omit<ConversionCommitDecidedRecord, "state">,
+    ConversionProductInstalledEvidence {
+  state: "product-installed";
+}
+
+export interface ConversionCommittedEvidence {
   remotePromotionHash: string;
   committedAt: string;
 }
 
 export interface ConversionCommittedRecord
   extends
-    Omit<ConversionCommitDecidedRecord, "state">,
+    Omit<ConversionProductInstalledRecord, "state">,
     ConversionCommittedEvidence {
   state: "committed";
 }
@@ -141,6 +166,7 @@ export type ConversionWalRecord =
   | ConversionPreparingRecord
   | ConversionRemoteCreatedRecord
   | ConversionCommitDecidedRecord
+  | ConversionProductInstalledRecord
   | ConversionCommittedRecord
   | ConversionCleanupCompleteRecord;
 
@@ -169,6 +195,10 @@ export interface ConversionWalStore {
     transactionId: Id,
     decision: ConversionCommitDecision
   ): ConversionCommitDecidedRecord;
+  recordProductInstalled(
+    transactionId: Id,
+    evidence: ConversionProductInstalledEvidence
+  ): ConversionProductInstalledRecord;
   recordCommitted(
     transactionId: Id,
     evidence: ConversionCommittedEvidence
@@ -219,7 +249,13 @@ export function createConversionWalStore(
     const stats = tryLstat(path);
     if (!stats) return null;
     ensurePrivateRoot(root, uid);
-    return readRecord(path, uid, stats);
+    const record = readRecord(path, uid, stats);
+    if (!record) {
+      throw new Error(
+        `invalid conversion WAL record ${path}: unsupported conversion WAL version`
+      );
+    }
+    return record;
   };
 
   return Object.freeze({
@@ -282,11 +318,28 @@ export function createConversionWalStore(
       );
     },
 
-    recordCommitted(transactionId: Id, evidence: ConversionCommittedEvidence) {
+    recordProductInstalled(
+      transactionId: Id,
+      evidence: ConversionProductInstalledEvidence
+    ) {
       return requireState(
         advance(
           transactionId,
           "commit-decided",
+          "product-installed",
+          evidence,
+          get,
+          persist
+        ),
+        "product-installed"
+      );
+    },
+
+    recordCommitted(transactionId: Id, evidence: ConversionCommittedEvidence) {
+      return requireState(
+        advance(
+          transactionId,
+          "product-installed",
           "committed",
           evidence,
           get,
@@ -323,7 +376,10 @@ export function createConversionWalStore(
       if (names.length > maxRecords) {
         throw new RangeError("conversion WAL contains too many records");
       }
-      return names.map((name) => readRecord(join(root, name), uid));
+      return names.flatMap((name) => {
+        const record = readRecord(join(root, name), uid, undefined, true);
+        return record ? [record] : [];
+      });
     },
 
     compact(transactionId: Id): void {
@@ -384,19 +440,19 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   const commonKeys = [
     "version",
     "state",
-    "continuation",
     "transactionId",
     "workspaceCreateOperationId",
     "sessionCreateOperationId",
+    "launchInputOperationId",
     "workspaceResourceKey",
     "sessionResourceKey",
-    "sourceWorkspaceRevision",
     "effectiveConnectionPolicyHash",
-    "preservation",
-    "cleanupSet",
+    "productIntent",
     "initialWorkspaceName",
     "defaultCwd",
     "launch",
+    "agentSessionRef",
+    "initialInput",
     "preparedAt"
   ];
   const remoteKeys = [
@@ -412,19 +468,22 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     "replacementPatchHash",
     "decidedAt"
   ];
-  const committedKeys = [
-    "desktopSnapshotHash",
-    "remotePromotionHash",
-    "committedAt"
-  ];
+  const productInstalledKeys = ["desktopSnapshotHash", "productInstalledAt"];
+  const committedKeys = ["remotePromotionHash", "committedAt"];
   const cleanupKeys = ["cleanupAcknowledgements", "cleanupCompletedAt"];
   const allowed = [
     ...commonKeys,
     ...(state === "preparing" ? [] : remoteKeys),
     ...(state === "commit-decided" ||
+    state === "product-installed" ||
     state === "committed" ||
     state === "cleanup-complete"
       ? decisionKeys
+      : []),
+    ...(state === "product-installed" ||
+    state === "committed" ||
+    state === "cleanup-complete"
+      ? productInstalledKeys
       : []),
     ...(state === "committed" || state === "cleanup-complete"
       ? committedKeys
@@ -445,48 +504,23 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   ) {
     throw new TypeError("conversion resource keys do not share one scope");
   }
-  const preservationRecord = requireRecord(
-    record.preservation,
-    "conversion preservation whitelist"
-  );
-  assertExactKeys(preservationRecord, [
-    "workspaceId",
-    "windowId",
-    "name",
-    "nameLocked",
-    "pinned"
-  ]);
+  const productIntent = decodeProductIntent(record.productIntent);
   if (
-    typeof preservationRecord.nameLocked !== "boolean" ||
-    typeof preservationRecord.pinned !== "boolean"
-  ) {
-    throw new TypeError("conversion preservation flags are invalid");
-  }
-  const preservation: ConversionPreservationWhitelist = {
-    workspaceId: validateId(preservationRecord.workspaceId, "workspaceId"),
-    windowId: validateId(preservationRecord.windowId, "windowId"),
-    name: requireText(preservationRecord.name, "name", 4 * 1024),
-    nameLocked: preservationRecord.nameLocked,
-    pinned: preservationRecord.pinned
-  };
-  const continuation = requireContinuation(record.continuation);
-  if (
-    (continuation === "convert" &&
-      preservation.workspaceId !== workspaceResourceKey.workspaceId) ||
-    (continuation === "create" &&
-      preservation.workspaceId === workspaceResourceKey.workspaceId)
+    productIntent.kind === "convert-existing" &&
+    (productIntent.sourceWorkspaceId !== workspaceResourceKey.workspaceId ||
+      productIntent.preservation.workspaceId !==
+        productIntent.sourceWorkspaceId)
   ) {
     throw new TypeError("conversion preservation workspace does not match");
   }
-  const cleanupSet = decodeCleanupSet(record.cleanupSet);
-  if (continuation === "create" && cleanupSet.length !== 0) {
-    throw new TypeError("SSH workspace creation cannot clean local sessions");
-  }
   const launch = decodeLaunch(record.launch);
+  const agentSessionRef =
+    record.agentSessionRef === undefined
+      ? undefined
+      : decodeAgentSessionRef(record.agentSessionRef);
   const common: ConversionPreparingRecord = {
     version: CONVERSION_WAL_VERSION,
     state: "preparing",
-    continuation,
     transactionId: validateId(record.transactionId, "transactionId"),
     workspaceCreateOperationId: validateId(
       record.workspaceCreateOperationId,
@@ -496,18 +530,17 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
       record.sessionCreateOperationId,
       "sessionCreateOperationId"
     ),
+    launchInputOperationId: validateId(
+      record.launchInputOperationId,
+      "launchInputOperationId"
+    ),
     workspaceResourceKey,
     sessionResourceKey,
-    sourceWorkspaceRevision: requireDigest(
-      record.sourceWorkspaceRevision,
-      "sourceWorkspaceRevision"
-    ),
     effectiveConnectionPolicyHash: requireDigest(
       record.effectiveConnectionPolicyHash,
       "effectiveConnectionPolicyHash"
     ),
-    preservation,
-    cleanupSet,
+    productIntent,
     initialWorkspaceName: requireText(
       record.initialWorkspaceName,
       "initialWorkspaceName",
@@ -515,6 +548,12 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     ),
     defaultCwd: requirePath(record.defaultCwd, "defaultCwd"),
     launch,
+    ...(agentSessionRef === undefined ? {} : { agentSessionRef }),
+    ...(record.initialInput === undefined
+      ? {}
+      : {
+          initialInput: requireInitialInput(record.initialInput)
+        }),
     preparedAt: requireTimestamp(record.preparedAt, "preparedAt")
   };
   if (state === "preparing") return common;
@@ -544,7 +583,7 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   if (state === "remote-created") return remote;
 
   const replacementPatch =
-    continuation === "convert"
+    productIntent.kind === "convert-existing"
       ? decodeSshWorkspaceReplacementPatch(record.replacementPatch)
       : decodeSshWorkspaceAdditionPatch(record.replacementPatch);
   const replacementPatchHash = requireDigest(
@@ -554,17 +593,17 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   if (replacementPatchHash !== sha256(canonicalJson(replacementPatch))) {
     throw new TypeError("conversion replacement patch hash does not match");
   }
-  const patchSourceMatches =
-    continuation === "convert"
-      ? decodeSshWorkspaceReplacementPatch(replacementPatch).workspaceId ===
-        preservation.workspaceId
-      : decodeSshWorkspaceAdditionPatch(replacementPatch).sourceWorkspaceId ===
-        preservation.workspaceId;
+  const patchMatchesIntent =
+    productIntent.kind === "convert-existing"
+      ? replacementPatch.version === 1 &&
+        replacementPatch.workspaceId === productIntent.sourceWorkspaceId &&
+        replacementPatch.expectedSourceWorkspaceRevision ===
+          productIntent.sourceWorkspaceRevision
+      : replacementPatch.version === 2 &&
+        replacementPatch.windowId === productIntent.destinationWindowId;
   if (
     replacementPatch.workspaceId !== workspaceResourceKey.workspaceId ||
-    replacementPatch.expectedSourceWorkspaceRevision !==
-      common.sourceWorkspaceRevision ||
-    !patchSourceMatches
+    !patchMatchesIntent
   ) {
     throw new TypeError("conversion replacement patch source does not match");
   }
@@ -577,13 +616,23 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   };
   if (state === "commit-decided") return decided;
 
-  const committed: ConversionCommittedRecord = {
+  const productInstalled: ConversionProductInstalledRecord = {
     ...decided,
-    state: "committed",
+    state: "product-installed",
     desktopSnapshotHash: requireDigest(
       record.desktopSnapshotHash,
       "desktopSnapshotHash"
     ),
+    productInstalledAt: requireTimestamp(
+      record.productInstalledAt,
+      "productInstalledAt"
+    )
+  };
+  if (state === "product-installed") return productInstalled;
+
+  const committed: ConversionCommittedRecord = {
+    ...productInstalled,
+    state: "committed",
     remotePromotionHash: requireDigest(
       record.remotePromotionHash,
       "remotePromotionHash"
@@ -592,6 +641,8 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
   };
   if (state === "committed") return committed;
 
+  const cleanupSet =
+    productIntent.kind === "convert-existing" ? productIntent.cleanupSet : [];
   const cleanupAcknowledgements = decodeCleanupAcknowledgements(
     record.cleanupAcknowledgements,
     cleanupSet
@@ -611,9 +662,10 @@ export function conversionPatchHash(
   patch: SshWorkspaceReplacementPatchDto | SshWorkspaceAdditionPatchDto
 ): string {
   const record = requireRecord(patch, "conversion replacement patch");
-  const decoded = Object.hasOwn(record, "sourceWorkspaceId")
-    ? decodeSshWorkspaceAdditionPatch(structuredClone(patch))
-    : decodeSshWorkspaceReplacementPatch(structuredClone(patch));
+  const decoded =
+    record.version === 2
+      ? decodeSshWorkspaceAdditionPatch(structuredClone(patch))
+      : decodeSshWorkspaceReplacementPatch(structuredClone(patch));
   return sha256(canonicalJson(decoded));
 }
 
@@ -639,11 +691,42 @@ function decodeEnvelope(value: unknown): ConversionWalRecord {
   return record;
 }
 
+function decodeEnvelopeForLoad(
+  value: unknown
+):
+  | { kind: "supported"; record: ConversionWalRecord }
+  | { kind: "unsupported"; transactionId: Id } {
+  const envelope = requireRecord(value, "conversion WAL envelope");
+  assertExactKeys(envelope, ["version", "record", "recordDigest"]);
+  if (envelope.version !== 1) {
+    throw new TypeError("unsupported conversion WAL envelope version");
+  }
+  const candidate = requireRecord(envelope.record, "conversion WAL record");
+  if (candidate.version === CONVERSION_WAL_VERSION) {
+    return { kind: "supported", record: decodeEnvelope(value) };
+  }
+  if (
+    typeof candidate.version !== "number" ||
+    !Number.isSafeInteger(candidate.version) ||
+    candidate.version < 1
+  ) {
+    throw new TypeError("conversion WAL version is invalid");
+  }
+  if (envelope.recordDigest !== sha256(canonicalJson(candidate))) {
+    throw new TypeError("conversion WAL record digest mismatch");
+  }
+  return {
+    kind: "unsupported",
+    transactionId: validateId(candidate.transactionId, "transactionId")
+  };
+}
+
 function readRecord(
   path: string,
   uid: number | undefined,
-  knownStats?: Stats
-): ConversionWalRecord {
+  knownStats?: Stats,
+  skipUnsupportedVersion = false
+): ConversionWalRecord | null {
   const stats = knownStats ?? lstatSync(path);
   assertPrivateRegularFile(stats, uid);
   if (stats.size > MAX_CONVERSION_RECORD_BYTES) {
@@ -654,16 +737,91 @@ function readRecord(
     throw new RangeError("conversion WAL record exceeds its limit");
   }
   try {
-    const record = decodeEnvelope(JSON.parse(bytes.toString("utf8")));
-    if (basename(path) !== fileNameForTransaction(record.transactionId)) {
+    const envelope = JSON.parse(bytes.toString("utf8"));
+    const decoded = skipUnsupportedVersion
+      ? decodeEnvelopeForLoad(envelope)
+      : {
+          kind: "supported" as const,
+          record: decodeEnvelope(envelope)
+        };
+    const transactionId =
+      decoded.kind === "supported"
+        ? decoded.record.transactionId
+        : decoded.transactionId;
+    if (basename(path) !== fileNameForTransaction(transactionId)) {
       throw new Error("conversion WAL file name does not match transaction ID");
     }
-    return record;
+    return decoded.kind === "supported" ? decoded.record : null;
   } catch (error) {
     throw new Error(
       `invalid conversion WAL record ${path}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function decodeProductIntent(value: unknown): SshWorkspaceProductIntent {
+  const record = requireRecord(value, "SSH workspace product intent");
+  if (record.kind === "create-new") {
+    assertExactKeys(record, ["kind", "destinationWindowId"]);
+    return {
+      kind: record.kind,
+      destinationWindowId: validateId(
+        record.destinationWindowId,
+        "destinationWindowId"
+      )
+    };
+  }
+  if (record.kind !== "convert-existing") {
+    throw new TypeError("SSH workspace product intent kind is invalid");
+  }
+  assertExactKeys(record, [
+    "kind",
+    "sourceWorkspaceId",
+    "sourceWorkspaceRevision",
+    "preservation",
+    "cleanupSet"
+  ]);
+  const preservationRecord = requireRecord(
+    record.preservation,
+    "conversion preservation whitelist"
+  );
+  assertExactKeys(preservationRecord, [
+    "workspaceId",
+    "windowId",
+    "name",
+    "nameLocked",
+    "pinned"
+  ]);
+  if (
+    typeof preservationRecord.nameLocked !== "boolean" ||
+    typeof preservationRecord.pinned !== "boolean"
+  ) {
+    throw new TypeError("conversion preservation flags are invalid");
+  }
+  const sourceWorkspaceId = validateId(
+    record.sourceWorkspaceId,
+    "sourceWorkspaceId"
+  );
+  const preservation: ConversionPreservationWhitelist = {
+    workspaceId: validateId(preservationRecord.workspaceId, "workspaceId"),
+    windowId: validateId(preservationRecord.windowId, "windowId"),
+    name: requireText(preservationRecord.name, "name", 4 * 1024),
+    nameLocked: preservationRecord.nameLocked,
+    pinned: preservationRecord.pinned
+  };
+  if (preservation.workspaceId !== sourceWorkspaceId) {
+    throw new TypeError("conversion preservation workspace does not match");
+  }
+  return {
+    kind: record.kind,
+    sourceWorkspaceId,
+    sourceWorkspaceRevision: requireDigest(
+      record.sourceWorkspaceRevision,
+      "sourceWorkspaceRevision"
+    ),
+    preservation,
+    cleanupSet: decodeCleanupSet(record.cleanupSet)
+  };
 }
 
 function decodeCleanupSet(value: unknown): ConversionLocalCleanupTarget[] {
@@ -793,6 +951,41 @@ function decodeLaunch(value: unknown): ConversionPreparingRecord["launch"] {
   };
 }
 
+function decodeAgentSessionRef(value: unknown): ExternalAgentSessionRef {
+  const record = requireRecord(value, "conversion agentSessionRef");
+  assertExactKeys(record, ["vendor", "externalKey", "sessionId"]);
+  if (
+    record.vendor !== "codex" &&
+    record.vendor !== "claude" &&
+    record.vendor !== "antigravity"
+  ) {
+    throw new TypeError("conversion agent session vendor is invalid");
+  }
+  return {
+    vendor: record.vendor,
+    externalKey: requireText(
+      record.externalKey,
+      "agentSessionRef.externalKey",
+      4 * 1024,
+      true
+    ),
+    sessionId: requireText(
+      record.sessionId,
+      "agentSessionRef.sessionId",
+      4 * 1024,
+      true
+    )
+  };
+}
+
+function requireInitialInput(value: unknown): string {
+  const input = requireText(value, "initialInput", 64 * 1024);
+  if (/\0/u.test(input)) {
+    throw new TypeError("initialInput is invalid");
+  }
+  return input;
+}
+
 function decodeResourceKey<const RequireSession extends boolean>(
   value: unknown,
   requireSession: RequireSession
@@ -854,17 +1047,11 @@ function requireStateName(value: unknown): ConversionWalState {
     value !== "preparing" &&
     value !== "remote-created" &&
     value !== "commit-decided" &&
+    value !== "product-installed" &&
     value !== "committed" &&
     value !== "cleanup-complete"
   ) {
     throw new TypeError("conversion WAL state is invalid");
-  }
-  return value;
-}
-
-function requireContinuation(value: unknown): "convert" | "create" {
-  if (value !== "convert" && value !== "create") {
-    throw new TypeError("conversion continuation is invalid");
   }
   return value;
 }
@@ -950,6 +1137,13 @@ function fsyncDirectory(path: string): void {
     closeSync(descriptor);
   }
 }
+
+export type SshWorkspaceTransactionWalState = ConversionWalState;
+export type SshWorkspaceTransactionWalRecord = ConversionWalRecord;
+export type SshWorkspaceTransactionWalStore = ConversionWalStore;
+export const createSshWorkspaceTransactionWalStore = createConversionWalStore;
+export const decodeSshWorkspaceTransactionWalRecord = decodeConversionWalRecord;
+export const sshWorkspaceTransactionPatchHash = conversionPatchHash;
 
 function tryLstat(path: string): Stats | undefined {
   try {

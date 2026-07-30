@@ -15,7 +15,11 @@ import {
   createSshWorkspaceAdditionPatch,
   createSshWorkspaceReplacementPatch
 } from "@kmux/core/main";
-import { parseUint64Decimal, type Id } from "@kmux/proto";
+import {
+  parseUint64Decimal,
+  type ExternalAgentSessionRef,
+  type Id
+} from "@kmux/proto";
 
 import {
   conversionPatchHash,
@@ -23,6 +27,7 @@ import {
   type ConversionCommitDecidedRecord,
   type ConversionLocalCleanupTarget,
   type ConversionPreparingRecord,
+  type ConversionProductInstalledRecord,
   type ConversionRemoteCreatedEvidence,
   type ConversionRemoteCreatedRecord,
   type ConversionWalRecord,
@@ -36,18 +41,17 @@ export type ConversionFaultPoint =
   | "commit-decided-persisted"
   | "desktop-snapshot-forced"
   | "desktop-state-installed"
+  | "product-installed-persisted"
   | "remote-promoted"
   | "committed-persisted"
   | "local-cleanup-acknowledged"
   | "cleanup-complete-persisted";
 
-export interface StartWorkspaceConversionRequest {
-  workspaceId: Id;
+interface StartSshWorkspaceTransactionCommonRequest {
   targetId: Id;
   effectiveConnectionPolicyHash: string;
   initialWorkspaceName: string;
   defaultCwd: string;
-  continuation?: "convert" | "create";
   launch?: {
     cwd?: string;
     shell?: string;
@@ -55,31 +59,53 @@ export interface StartWorkspaceConversionRequest {
     env?: Record<string, string>;
     title?: string;
   };
+  agentSessionRef?: ExternalAgentSessionRef;
+  initialInput?: string;
 }
 
-export function decodeStartWorkspaceConversionRequest(
+export type StartSshWorkspaceTransactionRequest =
+  | (StartSshWorkspaceTransactionCommonRequest & {
+      kind: "convert-existing";
+      sourceWorkspaceId: Id;
+    })
+  | (StartSshWorkspaceTransactionCommonRequest & {
+      kind: "create-new";
+      destinationWindowId: Id;
+    });
+
+export function decodeStartSshWorkspaceTransactionRequest(
   value: unknown
-): StartWorkspaceConversionRequest {
-  const record = requireConversionRequestRecord(value, "conversion request");
-  assertConversionRequestKeys(record, [
-    "workspaceId",
+): StartSshWorkspaceTransactionRequest {
+  const record = requireConversionRequestRecord(
+    value,
+    "SSH workspace transaction request"
+  );
+  const commonKeys = [
+    "kind",
     "targetId",
     "effectiveConnectionPolicyHash",
     "initialWorkspaceName",
     "defaultCwd",
-    "continuation",
-    "launch"
-  ]);
+    "launch",
+    "agentSessionRef",
+    "initialInput"
+  ];
+  if (record.kind === "convert-existing") {
+    assertConversionRequestKeys(record, [...commonKeys, "sourceWorkspaceId"]);
+  } else if (record.kind === "create-new") {
+    assertConversionRequestKeys(record, [...commonKeys, "destinationWindowId"]);
+  } else {
+    throw new TypeError("SSH workspace transaction kind is invalid");
+  }
   const launch =
     record.launch === undefined
       ? undefined
       : decodeConversionLaunch(record.launch);
-  return {
-    workspaceId: requireConversionRequestText(
-      record.workspaceId,
-      "workspaceId",
-      256
-    ),
+  const agentSessionRef =
+    record.agentSessionRef === undefined
+      ? undefined
+      : decodeConversionAgentSessionRef(record.agentSessionRef);
+  const common: StartSshWorkspaceTransactionCommonRequest = {
     targetId: requireConversionRequestText(record.targetId, "targetId", 256),
     effectiveConnectionPolicyHash: requirePolicyHash(
       record.effectiveConnectionPolicyHash
@@ -94,12 +120,41 @@ export function decodeStartWorkspaceConversionRequest(
       "defaultCwd",
       32 * 1024
     ),
-    ...(record.continuation === undefined
+    ...(launch === undefined ? {} : { launch }),
+    ...(agentSessionRef === undefined ? {} : { agentSessionRef }),
+    ...(record.initialInput === undefined
       ? {}
-      : { continuation: requireContinuation(record.continuation) }),
-    ...(launch === undefined ? {} : { launch })
+      : {
+          initialInput: requireConversionInitialInput(record.initialInput)
+        })
   };
+  return record.kind === "convert-existing"
+    ? {
+        ...common,
+        kind: record.kind,
+        sourceWorkspaceId: requireConversionRequestText(
+          record.sourceWorkspaceId,
+          "sourceWorkspaceId",
+          256
+        )
+      }
+    : {
+        ...common,
+        kind: record.kind,
+        destinationWindowId: requireConversionRequestText(
+          record.destinationWindowId,
+          "destinationWindowId",
+          256
+        )
+      };
 }
+
+/** @deprecated Use the intent-discriminated transaction decoder. */
+export const decodeStartWorkspaceConversionRequest =
+  decodeStartSshWorkspaceTransactionRequest;
+/** @deprecated Use StartSshWorkspaceTransactionRequest. */
+export type StartWorkspaceConversionRequest =
+  StartSshWorkspaceTransactionRequest;
 
 export interface ConversionRemotePrepareRequest {
   record: ConversionPreparingRecord;
@@ -113,19 +168,21 @@ export interface ConversionRemotePromotionResult {
   remotePromotionHash: string;
 }
 
-export interface ConversionRemoteGateway {
+export interface SshWorkspaceTransactionRemoteGateway {
   prepare(
     request: ConversionRemotePrepareRequest
   ): Promise<ConversionRemoteCreatedEvidence>;
   promote(
-    record: ConversionCommitDecidedRecord
+    record: ConversionProductInstalledRecord
   ): Promise<ConversionRemotePromotionResult>;
 }
 
-export interface TransactionalWorkspaceConversionRuntimeOptions {
+export type ConversionRemoteGateway = SshWorkspaceTransactionRemoteGateway;
+
+export interface TransactionalSshWorkspaceRuntimeOptions {
   desktopInstallationId: Id;
   wal: ConversionWalStore;
-  remote: ConversionRemoteGateway;
+  remote: SshWorkspaceTransactionRemoteGateway;
   getState: () => AppState;
   getTargetBinding: (targetId: Id) => RemoteTargetBinding | undefined;
   getLocalRuntimeEpoch: (surfaceId: Id, sessionId: Id) => Id | null;
@@ -143,10 +200,13 @@ export interface TransactionalWorkspaceConversionRuntimeOptions {
     point: ConversionFaultPoint,
     record: ConversionWalRecord
   ) => void;
+  afterCommit?: (record: ConversionWalRecord) => Promise<void>;
 }
 
-export interface TransactionalWorkspaceConversionRuntime {
-  start(request: StartWorkspaceConversionRequest): Promise<ConversionWalRecord>;
+export interface TransactionalSshWorkspaceRuntime {
+  start(
+    request: StartSshWorkspaceTransactionRequest
+  ): Promise<ConversionWalRecord>;
   recover(): Promise<ConversionWalRecord[]>;
   recoverTarget(targetId: Id): Promise<ConversionWalRecord[]>;
   resume(transactionId: Id): Promise<ConversionWalRecord>;
@@ -157,13 +217,74 @@ export interface TransactionalWorkspaceConversionRuntime {
  * Main-owned low-frequency conversion coordinator. It never sends terminal
  * bytes and cannot terminate a local generation before `committed` is durable.
  */
-export function createTransactionalWorkspaceConversionRuntime(
-  options: TransactionalWorkspaceConversionRuntimeOptions
-): TransactionalWorkspaceConversionRuntime {
+export function createTransactionalSshWorkspaceRuntime(
+  options: TransactionalSshWorkspaceRuntimeOptions
+): TransactionalSshWorkspaceRuntime {
   const makeTransactionId =
     options.makeTransactionId ?? (() => stableId("conversion", cryptoSeed()));
   const now = options.now ?? (() => new Date().toISOString());
   const queues = new Map<Id, Promise<ConversionWalRecord>>();
+  const productCommitReservations = new Map<Id, ProductCommitReservation>();
+  const windowProductCommitTails = new Map<Id, Promise<void>>();
+  let globalProductCommitTail = Promise.resolve();
+
+  const reserveProductCommit = (record: ConversionWalRecord): void => {
+    if (
+      record.state === "product-installed" ||
+      record.state === "committed" ||
+      record.state === "cleanup-complete" ||
+      productCommitReservations.has(record.transactionId)
+    ) {
+      return;
+    }
+    const windowId = productIntentWindowId(record);
+    const predecessor =
+      windowProductCommitTails.get(windowId) ?? Promise.resolve();
+    let resolveCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const tail = predecessor.catch(() => undefined).then(() => completion);
+    windowProductCommitTails.set(windowId, tail);
+    void tail.finally(() => {
+      if (windowProductCommitTails.get(windowId) === tail) {
+        windowProductCommitTails.delete(windowId);
+      }
+    });
+    productCommitReservations.set(record.transactionId, {
+      predecessor: predecessor.catch(() => undefined),
+      release: resolveCompletion,
+      released: false
+    });
+  };
+
+  const releaseProductCommit = (transactionId: Id): void => {
+    const reservation = productCommitReservations.get(transactionId);
+    if (!reservation || reservation.released) return;
+    reservation.released = true;
+    reservation.release();
+    productCommitReservations.delete(transactionId);
+  };
+
+  const withGlobalProductCommit = async <T>(
+    task: () => Promise<T>
+  ): Promise<T> => {
+    const predecessor = globalProductCommitTail.catch(() => undefined);
+    let release!: () => void;
+    globalProductCommitTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await predecessor;
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+
+  const reserveRecordsInOrder = (records: ConversionWalRecord[]): void => {
+    for (const record of records) reserveProductCommit(record);
+  };
 
   const requireBinding = (
     targetId: Id,
@@ -216,49 +337,68 @@ export function createTransactionalWorkspaceConversionRuntime(
       notify("remote-created-persisted", record);
     }
 
-    if (record.state === "remote-created") {
-      const state = options.getState();
-      if (
-        computeWorkspaceRevision(state, record.preservation.workspaceId) !==
-        record.sourceWorkspaceRevision
-      ) {
-        throw new Error("conversion source workspace changed before commit");
+    if (
+      record.state === "remote-created" ||
+      record.state === "commit-decided"
+    ) {
+      reserveProductCommit(record);
+      const reservation = productCommitReservations.get(transactionId);
+      if (!reservation) {
+        throw new Error("SSH workspace product commit reservation is missing");
       }
-      const patch = createPatch(record, state);
-      record = options.wal.decideCommit(transactionId, {
-        replacementPatch: patch,
-        replacementPatchHash: conversionPatchHash(patch),
-        decidedAt: now()
+      await reservation.predecessor;
+      record = await withGlobalProductCommit(async () => {
+        let committing = options.wal.get(transactionId);
+        if (!committing) {
+          throw new Error(`conversion ${transactionId} is not durable`);
+        }
+        if (committing.state === "remote-created") {
+          assertProductIntentStillCurrent(committing, options.getState());
+          const patch = createPatch(committing, options.getState());
+          committing = options.wal.decideCommit(transactionId, {
+            replacementPatch: patch,
+            replacementPatchHash: conversionPatchHash(patch),
+            decidedAt: now()
+          });
+          notify("commit-decided-persisted", committing);
+        }
+        if (committing.state === "commit-decided") {
+          const candidate = cloneState(options.getState());
+          applyProductPatch(candidate, committing);
+          const expectedSnapshotHash = desktopSnapshotHash(candidate);
+          const persistedSnapshotHash = await options.forceDesktopSnapshot(
+            candidate,
+            expectedSnapshotHash
+          );
+          if (persistedSnapshotHash !== expectedSnapshotHash) {
+            throw new Error("forced desktop snapshot hash does not match");
+          }
+          notify("desktop-snapshot-forced", committing);
+          options.installDesktopState(candidate);
+          if (
+            computeWorkspaceRevision(
+              options.getState(),
+              committing.workspaceResourceKey.workspaceId
+            ) !== committing.replacementPatch.replacementWorkspaceRevision
+          ) {
+            throw new Error(
+              "installed desktop conversion patch does not match"
+            );
+          }
+          notify("desktop-state-installed", committing);
+          committing = options.wal.recordProductInstalled(transactionId, {
+            desktopSnapshotHash: persistedSnapshotHash,
+            productInstalledAt: now()
+          });
+          releaseProductCommit(transactionId);
+          notify("product-installed-persisted", committing);
+        }
+        return committing;
       });
-      notify("commit-decided-persisted", record);
     }
 
-    if (record.state === "commit-decided") {
-      const candidate = cloneState(options.getState());
-      if (record.continuation === "convert") {
-        applySshWorkspaceReplacementPatch(candidate, record.replacementPatch);
-      } else {
-        applySshWorkspaceAdditionPatch(candidate, record.replacementPatch);
-      }
-      const expectedSnapshotHash = desktopSnapshotHash(candidate);
-      const persistedSnapshotHash = await options.forceDesktopSnapshot(
-        candidate,
-        expectedSnapshotHash
-      );
-      if (persistedSnapshotHash !== expectedSnapshotHash) {
-        throw new Error("forced desktop snapshot hash does not match");
-      }
-      notify("desktop-snapshot-forced", record);
-      options.installDesktopState(candidate);
-      if (
-        computeWorkspaceRevision(
-          options.getState(),
-          record.workspaceResourceKey.workspaceId
-        ) !== record.replacementPatch.replacementWorkspaceRevision
-      ) {
-        throw new Error("installed desktop conversion patch does not match");
-      }
-      notify("desktop-state-installed", record);
+    if (record.state === "product-installed") {
+      releaseProductCommit(transactionId);
       const promotion = await options.remote.promote(record);
       if (
         promotion.transactionId !== record.transactionId ||
@@ -268,7 +408,6 @@ export function createTransactionalWorkspaceConversionRuntime(
       }
       notify("remote-promoted", record);
       record = options.wal.recordCommitted(transactionId, {
-        desktopSnapshotHash: persistedSnapshotHash,
         remotePromotionHash: promotion.remotePromotionHash,
         committedAt: now()
       });
@@ -277,7 +416,11 @@ export function createTransactionalWorkspaceConversionRuntime(
 
     if (record.state === "committed") {
       const acknowledgements: ConversionCleanupAcknowledgement[] = [];
-      for (const target of record.cleanupSet) {
+      const cleanupSet =
+        record.productIntent.kind === "convert-existing"
+          ? record.productIntent.cleanupSet
+          : [];
+      for (const target of cleanupSet) {
         const acknowledgement = await options.terminateLocalSession(target);
         assertCleanupAcknowledgement(target, acknowledgement);
         acknowledgements.push(acknowledgement);
@@ -289,6 +432,12 @@ export function createTransactionalWorkspaceConversionRuntime(
         now()
       );
       notify("cleanup-complete-persisted", record);
+    }
+    if (
+      record.state === "cleanup-complete" &&
+      record.initialInput !== undefined
+    ) {
+      await options.afterCommit?.(structuredClone(record));
     }
     return record;
   };
@@ -310,34 +459,38 @@ export function createTransactionalWorkspaceConversionRuntime(
 
   return Object.freeze({
     async start(
-      request: StartWorkspaceConversionRequest
+      request: StartSshWorkspaceTransactionRequest
     ): Promise<ConversionWalRecord> {
       const state = options.getState();
-      const workspace = state.workspaces[request.workspaceId];
-      const continuation = request.continuation ?? "convert";
-      if (!workspace) {
-        throw new Error("SSH workspace source must exist");
-      }
-      if (
-        continuation === "convert" &&
-        workspace.location.target.kind !== "local"
-      ) {
-        throw new Error(
-          "conversion source must be an existing local workspace"
-        );
-      }
-      if (
-        options.wal
-          .loadAll()
-          .some(
-            (record) =>
-              record.preservation.workspaceId === workspace.id &&
-              record.state !== "cleanup-complete"
-          )
-      ) {
-        throw new Error(
-          "conversion source workspace already has an unfinished transaction"
-        );
+      const sourceWorkspace =
+        request.kind === "convert-existing"
+          ? state.workspaces[request.sourceWorkspaceId]
+          : undefined;
+      if (request.kind === "convert-existing") {
+        if (!sourceWorkspace) {
+          throw new Error("SSH workspace source must exist");
+        }
+        if (sourceWorkspace.location.target.kind !== "local") {
+          throw new Error(
+            "conversion source must be an existing local workspace"
+          );
+        }
+        if (
+          options.wal
+            .loadAll()
+            .some(
+              (record) =>
+                record.productIntent.kind === "convert-existing" &&
+                record.productIntent.sourceWorkspaceId === sourceWorkspace.id &&
+                record.state !== "cleanup-complete"
+            )
+        ) {
+          throw new Error(
+            "conversion source workspace already has an unfinished transaction"
+          );
+        }
+      } else if (!state.windows[request.destinationWindowId]) {
+        throw new Error("SSH workspace destination window no longer exists");
       }
       const binding = requireBinding(
         request.targetId,
@@ -346,11 +499,9 @@ export function createTransactionalWorkspaceConversionRuntime(
       const transactionId = makeTransactionId();
       const ids = conversionIds(transactionId);
       const resourceWorkspaceId =
-        continuation === "convert" ? workspace.id : ids.workspaceId;
-      const cleanupSet =
-        continuation === "convert"
-          ? captureCleanupSet(state, workspace.id, options.getLocalRuntimeEpoch)
-          : [];
+        request.kind === "convert-existing"
+          ? request.sourceWorkspaceId
+          : ids.workspaceId;
       const launch = {
         cwd: request.launch?.cwd ?? request.defaultCwd,
         ...(request.launch?.shell === undefined
@@ -366,11 +517,37 @@ export function createTransactionalWorkspaceConversionRuntime(
           ? {}
           : { title: request.launch.title })
       };
+      const productIntent =
+        request.kind === "convert-existing"
+          ? {
+              kind: request.kind,
+              sourceWorkspaceId: request.sourceWorkspaceId,
+              sourceWorkspaceRevision: computeWorkspaceRevision(
+                state,
+                request.sourceWorkspaceId
+              ),
+              preservation: {
+                workspaceId: request.sourceWorkspaceId,
+                windowId: sourceWorkspace!.windowId,
+                name: sourceWorkspace!.name,
+                nameLocked: sourceWorkspace!.nameLocked === true,
+                pinned: sourceWorkspace!.pinned
+              },
+              cleanupSet: captureCleanupSet(
+                state,
+                request.sourceWorkspaceId,
+                options.getLocalRuntimeEpoch
+              )
+            }
+          : {
+              kind: request.kind,
+              destinationWindowId: request.destinationWindowId
+            };
       const record = options.wal.begin({
-        continuation,
         transactionId,
         workspaceCreateOperationId: ids.workspaceCreateOperationId,
         sessionCreateOperationId: ids.sessionCreateOperationId,
+        launchInputOperationId: ids.launchInputOperationId,
         workspaceResourceKey: {
           desktopInstallationId: options.desktopInstallationId,
           targetId: binding.id,
@@ -382,22 +559,21 @@ export function createTransactionalWorkspaceConversionRuntime(
           workspaceId: resourceWorkspaceId,
           sessionId: ids.sessionId
         },
-        sourceWorkspaceRevision: computeWorkspaceRevision(state, workspace.id),
         effectiveConnectionPolicyHash:
           binding.locator.effectiveConnectionPolicyHash,
-        preservation: {
-          workspaceId: workspace.id,
-          windowId: workspace.windowId,
-          name: workspace.name,
-          nameLocked: workspace.nameLocked === true,
-          pinned: workspace.pinned
-        },
-        cleanupSet,
+        productIntent,
         initialWorkspaceName: request.initialWorkspaceName,
         defaultCwd: request.defaultCwd,
         launch,
+        ...(request.agentSessionRef === undefined
+          ? {}
+          : { agentSessionRef: structuredClone(request.agentSessionRef) }),
+        ...(request.initialInput === undefined
+          ? {}
+          : { initialInput: request.initialInput }),
         preparedAt: now()
       });
+      reserveProductCommit(record);
       notify("preparing-persisted", record);
       return enqueue(transactionId, () => resumeNow(transactionId));
     },
@@ -410,6 +586,7 @@ export function createTransactionalWorkspaceConversionRuntime(
             left.preparedAt.localeCompare(right.preparedAt) ||
             left.transactionId.localeCompare(right.transactionId)
         );
+      reserveRecordsInOrder(records);
       return Promise.all(
         records.map((record) =>
           enqueue(record.transactionId, () => resumeNow(record.transactionId))
@@ -418,14 +595,17 @@ export function createTransactionalWorkspaceConversionRuntime(
     },
 
     recoverTarget(targetId: Id): Promise<ConversionWalRecord[]> {
-      const records = options.wal
+      const allRecords = options.wal
         .loadAll()
-        .filter((record) => record.workspaceResourceKey.targetId === targetId)
         .sort(
           (left, right) =>
             left.preparedAt.localeCompare(right.preparedAt) ||
             left.transactionId.localeCompare(right.transactionId)
         );
+      reserveRecordsInOrder(allRecords);
+      const records = allRecords.filter(
+        (record) => record.workspaceResourceKey.targetId === targetId
+      );
       return Promise.all(
         records.map((record) =>
           enqueue(record.transactionId, () => resumeNow(record.transactionId))
@@ -456,18 +636,63 @@ function createPatch(record: ConversionRemoteCreatedRecord, state: AppState) {
     authToken: ids.authToken,
     keeperGeneration: record.keeperGeneration,
     remoteResourceRevision: parseUint64Decimal(record.remoteResourceRevision),
-    launch: record.launch
+    launch: record.launch,
+    ...(record.initialInput === undefined
+      ? {}
+      : { initialInput: record.initialInput }),
+    ...(record.agentSessionRef === undefined
+      ? {}
+      : { agentSessionRef: record.agentSessionRef })
   };
-  return record.continuation === "convert"
+  return record.productIntent.kind === "convert-existing"
     ? createSshWorkspaceReplacementPatch(state, {
         ...common,
-        workspaceId: record.preservation.workspaceId
+        workspaceId: record.productIntent.sourceWorkspaceId
       })
     : createSshWorkspaceAdditionPatch(state, {
         ...common,
-        sourceWorkspaceId: record.preservation.workspaceId,
+        destinationWindowId: record.productIntent.destinationWindowId,
         workspaceId: record.workspaceResourceKey.workspaceId
       });
+}
+
+function assertProductIntentStillCurrent(
+  record: ConversionRemoteCreatedRecord,
+  state: AppState
+): void {
+  if (record.productIntent.kind === "convert-existing") {
+    if (
+      computeWorkspaceRevision(
+        state,
+        record.productIntent.sourceWorkspaceId
+      ) !== record.productIntent.sourceWorkspaceRevision
+    ) {
+      throw new Error("conversion source workspace changed before commit");
+    }
+    return;
+  }
+  if (!state.windows[record.productIntent.destinationWindowId]) {
+    throw new Error(
+      "SSH workspace transaction conflict: destination window no longer exists"
+    );
+  }
+}
+
+function applyProductPatch(
+  state: AppState,
+  record: ConversionCommitDecidedRecord
+): void {
+  if (record.productIntent.kind === "convert-existing") {
+    applySshWorkspaceReplacementPatch(state, record.replacementPatch);
+  } else {
+    applySshWorkspaceAdditionPatch(state, record.replacementPatch);
+  }
+}
+
+function productIntentWindowId(record: ConversionWalRecord): Id {
+  return record.productIntent.kind === "convert-existing"
+    ? record.productIntent.preservation.windowId
+    : record.productIntent.destinationWindowId;
 }
 
 function captureCleanupSet(
@@ -526,6 +751,7 @@ function conversionIds(transactionId: Id): {
   workspaceId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
+  launchInputOperationId: Id;
   paneId: Id;
   nodeId: Id;
   surfaceId: Id;
@@ -544,6 +770,11 @@ function conversionIds(transactionId: Id): {
       transactionId,
       "session-create"
     ),
+    launchInputOperationId: stableId(
+      "operation",
+      transactionId,
+      "launch-input"
+    ),
     paneId: stableId("pane", transactionId, "replacement"),
     nodeId: stableId("node", transactionId, "replacement"),
     surfaceId: stableId("surface", transactionId, "replacement"),
@@ -554,15 +785,12 @@ function conversionIds(transactionId: Id): {
 
 function buildRemoteSnapshot(record: ConversionPreparingRecord): string {
   return canonicalJson({
-    version: 2,
-    continuation: record.continuation,
+    version: 3,
     transactionId: record.transactionId,
     workspaceCreateOperationId: record.workspaceCreateOperationId,
     sessionCreateOperationId: record.sessionCreateOperationId,
     workspaceResourceKey: record.workspaceResourceKey,
     sessionResourceKey: record.sessionResourceKey,
-    initialWorkspaceName: record.initialWorkspaceName,
-    defaultCwd: record.defaultCwd,
     launch: record.launch
   });
 }
@@ -724,9 +952,55 @@ function requirePolicyHash(value: unknown): string {
   return hash;
 }
 
-function requireContinuation(value: unknown): "convert" | "create" {
-  if (value !== "convert" && value !== "create") {
-    throw new TypeError("conversion continuation is invalid");
+function decodeConversionAgentSessionRef(
+  value: unknown
+): ExternalAgentSessionRef {
+  const record = requireConversionRequestRecord(value, "agentSessionRef");
+  assertConversionRequestKeys(record, ["vendor", "externalKey", "sessionId"]);
+  if (
+    record.vendor !== "codex" &&
+    record.vendor !== "claude" &&
+    record.vendor !== "antigravity"
+  ) {
+    throw new TypeError("agentSessionRef vendor is invalid");
+  }
+  return {
+    vendor: record.vendor,
+    externalKey: requireConversionRequestText(
+      record.externalKey,
+      "agentSessionRef.externalKey",
+      4 * 1024
+    ),
+    sessionId: requireConversionRequestText(
+      record.sessionId,
+      "agentSessionRef.sessionId",
+      4 * 1024
+    )
+  };
+}
+
+function requireConversionInitialInput(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    new TextEncoder().encode(value).byteLength > 64 * 1024 ||
+    /\0/u.test(value)
+  ) {
+    throw new TypeError("initialInput is invalid");
   }
   return value;
 }
+
+interface ProductCommitReservation {
+  predecessor: Promise<void>;
+  release: () => void;
+  released: boolean;
+}
+
+export type TransactionalWorkspaceConversionRuntimeOptions =
+  TransactionalSshWorkspaceRuntimeOptions;
+export type TransactionalWorkspaceConversionRuntime =
+  TransactionalSshWorkspaceRuntime;
+/** @deprecated Use createTransactionalSshWorkspaceRuntime. */
+export const createTransactionalWorkspaceConversionRuntime =
+  createTransactionalSshWorkspaceRuntime;

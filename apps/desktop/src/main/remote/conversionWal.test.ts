@@ -1,5 +1,6 @@
 import { requireTerminalSurfaceContent } from "@kmux/core";
 
+import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import {
   ConversionWalConflictError,
   conversionPatchHash,
   createConversionWalStore,
+  decodeConversionWalRecord,
   type ConversionPreparingRecord
 } from "./conversionWal";
 
@@ -32,13 +34,13 @@ describe("conversion WAL", () => {
     rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it("durably advances the exact five-state transaction and compacts only after cleanup", () => {
+  it("durably advances the exact six-state transaction and compacts only after cleanup", () => {
     const root = join(sandbox, "wal");
     const store = createConversionWalStore(root);
     const patch = replacementPatch();
     const preparing = store.begin(preparingRecord(patch));
     expect(preparing).toMatchObject({
-      version: 2,
+      version: 3,
       state: "preparing",
       initialWorkspaceName: "kmux@devbox"
     });
@@ -63,10 +65,15 @@ describe("conversion WAL", () => {
     });
     expect(decided.state).toBe("commit-decided");
 
-    const committed = store.recordCommitted("conversion_1", {
+    const installed = store.recordProductInstalled("conversion_1", {
       desktopSnapshotHash: "e".repeat(64),
+      productInstalledAt: "2026-07-18T00:00:03.000Z"
+    });
+    expect(installed.state).toBe("product-installed");
+
+    const committed = store.recordCommitted("conversion_1", {
       remotePromotionHash: "f".repeat(64),
-      committedAt: "2026-07-18T00:00:03.000Z"
+      committedAt: "2026-07-18T00:00:04.000Z"
     });
     expect(committed.state).toBe("committed");
 
@@ -80,7 +87,7 @@ describe("conversion WAL", () => {
           outcome: "terminated"
         }
       ],
-      "2026-07-18T00:00:04.000Z"
+      "2026-07-18T00:00:05.000Z"
     );
     expect(complete.state).toBe("cleanup-complete");
     expect(createConversionWalStore(root).loadAll()).toEqual([complete]);
@@ -95,7 +102,6 @@ describe("conversion WAL", () => {
     store.begin(preparingRecord(replacementPatch()));
     expect(() =>
       store.recordCommitted("conversion_1", {
-        desktopSnapshotHash: "e".repeat(64),
         remotePromotionHash: "f".repeat(64),
         committedAt: "2026-07-18T00:00:03.000Z"
       })
@@ -129,16 +135,115 @@ describe("conversion WAL", () => {
       /digest mismatch/u
     );
   });
+
+  it("rejects V2 decoding but isolates legacy records during recovery loading", () => {
+    expect(() =>
+      decodeConversionWalRecord({
+        version: 2,
+        state: "preparing"
+      })
+    ).toThrow(/unsupported conversion WAL version/u);
+
+    const root = join(sandbox, "wal-legacy");
+    const store = createConversionWalStore(root);
+    const candidate = preparingRecord(replacementPatch());
+    const current = store.begin({
+      ...candidate,
+      transactionId: "conversion_current"
+    });
+    if (candidate.productIntent.kind !== "convert-existing") {
+      throw new Error("legacy fixture requires a conversion intent");
+    }
+    const legacyRecord = {
+      version: 2,
+      state: "preparing",
+      continuation: "convert",
+      transactionId: "conversion_legacy",
+      workspaceCreateOperationId: candidate.workspaceCreateOperationId,
+      sessionCreateOperationId: candidate.sessionCreateOperationId,
+      workspaceResourceKey: candidate.workspaceResourceKey,
+      sessionResourceKey: candidate.sessionResourceKey,
+      sourceWorkspaceRevision: candidate.productIntent.sourceWorkspaceRevision,
+      effectiveConnectionPolicyHash: candidate.effectiveConnectionPolicyHash,
+      preservation: candidate.productIntent.preservation,
+      cleanupSet: candidate.productIntent.cleanupSet,
+      initialWorkspaceName: candidate.initialWorkspaceName,
+      defaultCwd: candidate.defaultCwd,
+      launch: candidate.launch,
+      preparedAt: candidate.preparedAt
+    };
+    const legacyPath = join(
+      root,
+      `${sha256ForTest(legacyRecord.transactionId)}.json`
+    );
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        version: 1,
+        record: legacyRecord,
+        recordDigest: sha256ForTest(canonicalJsonForTest(legacyRecord))
+      }),
+      { mode: 0o600 }
+    );
+
+    expect(createConversionWalStore(root).loadAll()).toEqual([current]);
+    expect(readFileSync(legacyPath, "utf8")).toContain('"version":2');
+    expect(() => store.get("conversion_legacy")).toThrow(
+      /unsupported conversion WAL version/u
+    );
+  });
+
+  it("round-trips a source-free create-new V3 intent and rejects mixed intent fields", () => {
+    const root = join(sandbox, "wal-create");
+    const store = createConversionWalStore(root);
+    const candidate = preparingRecord(replacementPatch());
+    const createCandidate: Omit<
+      ConversionPreparingRecord,
+      "version" | "state"
+    > = {
+      ...candidate,
+      transactionId: "creation_1",
+      workspaceResourceKey: {
+        ...candidate.workspaceResourceKey,
+        workspaceId: "workspace_created"
+      },
+      sessionResourceKey: {
+        ...candidate.sessionResourceKey,
+        workspaceId: "workspace_created"
+      },
+      productIntent: {
+        kind: "create-new",
+        destinationWindowId: "window_1"
+      }
+    };
+
+    const created = store.begin(createCandidate);
+    expect(store.loadAll()).toEqual([created]);
+    expect(created.productIntent).toEqual({
+      kind: "create-new",
+      destinationWindowId: "window_1"
+    });
+    expect(created).not.toHaveProperty("sourceWorkspaceRevision");
+    expect(() =>
+      decodeConversionWalRecord({
+        ...created,
+        productIntent: {
+          ...created.productIntent,
+          sourceWorkspaceId: "workspace_1"
+        }
+      })
+    ).toThrow(/unexpected conversion WAL field/u);
+  });
 });
 
 function preparingRecord(
   patch: ReturnType<typeof replacementPatch>
 ): Omit<ConversionPreparingRecord, "version" | "state"> {
   return {
-    continuation: "convert",
     transactionId: "conversion_1",
     workspaceCreateOperationId: "operation_workspace_1",
     sessionCreateOperationId: "operation_session_1",
+    launchInputOperationId: "operation_launch_input_1",
     workspaceResourceKey: {
       desktopInstallationId: "desktop_1",
       targetId: "target_1",
@@ -150,22 +255,26 @@ function preparingRecord(
       workspaceId: "workspace_1",
       sessionId: "session_remote"
     },
-    sourceWorkspaceRevision: patch.expectedSourceWorkspaceRevision,
     effectiveConnectionPolicyHash: "a".repeat(64),
-    preservation: {
-      workspaceId: "workspace_1",
-      windowId: "window_1",
-      name: "local project",
-      nameLocked: false,
-      pinned: true
+    productIntent: {
+      kind: "convert-existing",
+      sourceWorkspaceId: "workspace_1",
+      sourceWorkspaceRevision: patch.expectedSourceWorkspaceRevision,
+      preservation: {
+        workspaceId: "workspace_1",
+        windowId: "window_1",
+        name: "local project",
+        nameLocked: false,
+        pinned: true
+      },
+      cleanupSet: [
+        {
+          sessionId: "session_local",
+          surfaceId: "surface_local",
+          runtimeEpoch: "epoch_local"
+        }
+      ]
     },
-    cleanupSet: [
-      {
-        sessionId: "session_local",
-        surfaceId: "surface_local",
-        runtimeEpoch: "epoch_local"
-      }
-    ],
     initialWorkspaceName: "kmux@devbox",
     defaultCwd: "/srv/project",
     launch: { cwd: "/srv/project", shell: "/bin/sh" },
@@ -237,6 +346,35 @@ function replacementPatch() {
     remoteResourceRevision: uint64(1n),
     launch: { cwd: "/srv/project", shell: "/bin/sh" }
   });
+}
+
+function canonicalJsonForTest(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string"
+  ) {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJsonForTest).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonicalJsonForTest(record[key])}`
+      )
+      .join(",")}}`;
+  }
+  throw new TypeError("test value cannot be canonicalized");
+}
+
+function sha256ForTest(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function readSingleRecordName(root: string): string {

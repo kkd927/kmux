@@ -272,7 +272,7 @@ function registerTestHandlers(options: {
     installDownloadedUpdate: vi.fn(),
     clipboard: options.clipboard,
     getExternalAgentSessions: () => options.snapshot,
-    resumeExternalAgentSession: () => options.resumeResult,
+    resumeExternalAgentSession: async () => options.resumeResult,
     createImageAttachments: async (
       _surfaceId: string,
       _payloads: CreateImageAttachmentPayload[]

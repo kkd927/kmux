@@ -172,6 +172,11 @@ export interface ExternalAgentSessionResumeResult {
   surfaceId: string;
 }
 
+export interface ExternalAgentSessionResumeRequest {
+  key: string;
+  destinationWindowId: Id;
+}
+
 export interface RetainedRemoteSessionResourceKey {
   desktopInstallationId: Id;
   targetId: Id;
@@ -303,12 +308,20 @@ export interface SshProfileSaveRequest {
   profile: SshProfileDraftDto;
 }
 
-export interface SshWorkspacePrepareRequest {
+interface SshWorkspacePrepareCommonRequest {
   requestId: Id;
-  sourceWorkspaceId: Id;
   profileId: Id;
-  continuation: "convert" | "create";
 }
+
+export type SshWorkspacePrepareRequest =
+  | (SshWorkspacePrepareCommonRequest & {
+      kind: "convert-existing";
+      sourceWorkspaceId: Id;
+    })
+  | (SshWorkspacePrepareCommonRequest & {
+      kind: "create-new";
+      destinationWindowId: Id;
+    });
 
 export interface SshWorkspacePrepareResult {
   preparationId: Id;
@@ -333,7 +346,11 @@ export interface SshAskpassPrompt {
   profileId: Id;
   profileName: string;
   prompt: string;
-  purpose: "explicit-connect" | "startup-restore" | "manual-reconnect";
+  purpose:
+    | "explicit-connect"
+    | "startup-restore"
+    | "manual-reconnect"
+    | "session-resume";
 }
 
 export interface SshAskpassResponseRequest {
@@ -346,8 +363,7 @@ export interface SshWorkspaceReconnectResult {
   status: "connected" | "cancelled" | "failed";
 }
 
-export interface SshWorkspaceConversionRequest {
-  workspaceId: Id;
+interface SshWorkspaceTransactionCommonRequest {
   targetId: Id;
   initialWorkspaceName: string;
   defaultCwd: string;
@@ -360,12 +376,28 @@ export interface SshWorkspaceConversionRequest {
   };
 }
 
-export interface SshWorkspaceConversionResult {
+export type SshWorkspaceTransactionRequest =
+  | (SshWorkspaceTransactionCommonRequest & {
+      kind: "convert-existing";
+      sourceWorkspaceId: Id;
+    })
+  | (SshWorkspaceTransactionCommonRequest & {
+      kind: "create-new";
+      destinationWindowId: Id;
+    });
+
+export interface SshWorkspaceTransactionResult {
   transactionId: Id;
   workspaceId: Id;
   targetId: Id;
   state: "cleanup-complete";
 }
+
+/** @deprecated Use the intent-discriminated transaction request. */
+export type SshWorkspaceConversionRequest = SshWorkspaceTransactionRequest;
+
+/** @deprecated Use SshWorkspaceTransactionResult. */
+export type SshWorkspaceConversionResult = SshWorkspaceTransactionResult;
 
 export interface CreateImageAttachmentPayload {
   source: ImageAttachmentSource;

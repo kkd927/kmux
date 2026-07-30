@@ -1,11 +1,11 @@
 import { createInitialState } from "@kmux/core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { RemoteLifecycleRuntime } from "./remoteLifecycleRuntime";
 import type {
   ConnectedSshProfile,
   SshConnectionRuntime
 } from "./sshConnectionRuntime";
+import type { SshWorkspaceCreationRuntime } from "./sshWorkspaceCreationRuntime";
 import {
   createSshWorkspaceRuntime,
   decodeSshWorkspaceCancelRequest,
@@ -16,10 +16,10 @@ import {
 describe("SSH workspace runtime", () => {
   it("strictly decodes each profile-backed renderer command", () => {
     const request = {
+      kind: "create-new" as const,
       requestId: "request_1",
-      sourceWorkspaceId: "workspace_1",
-      profileId: "profile_1",
-      continuation: "create" as const
+      destinationWindowId: "window_1",
+      profileId: "profile_1"
     };
     expect(decodeSshWorkspacePrepareRequest(request)).toEqual(request);
     expect(() =>
@@ -28,9 +28,15 @@ describe("SSH workspace runtime", () => {
     expect(() =>
       decodeSshWorkspacePrepareRequest({
         ...request,
-        continuation: "replace"
+        kind: "replace"
       })
-    ).toThrow(/continuation is invalid/u);
+    ).toThrow(/kind is invalid/u);
+    expect(() =>
+      decodeSshWorkspacePrepareRequest({
+        ...request,
+        sourceWorkspaceId: "workspace_1"
+      })
+    ).toThrow(/unexpected SSH workspace request field/u);
     expect(
       decodeSshWorkspaceCommitRequest({ preparationId: "preparation_1" })
     ).toEqual({ preparationId: "preparation_1" });
@@ -48,31 +54,33 @@ describe("SSH workspace runtime", () => {
   it("verifies a saved profile without creating a keeper until commit", async () => {
     const state = createInitialState("/bin/zsh");
     const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
-    const startWorkspaceConversion = vi.fn(async (request) =>
-      transactionRecord(request.workspaceId, request.targetId, "convert")
+    const create = vi.fn(async (request) =>
+      creationResult(
+        request.sourceWorkspaceId,
+        request.target.binding.id,
+        "convert"
+      )
     );
     const connectProfile = vi.fn(async () => connectedProfile());
     const runtime = createSshWorkspaceRuntime({
       connections: { connectProfile } as unknown as SshConnectionRuntime,
-      lifecycle: {
-        startWorkspaceConversion
-      } as unknown as RemoteLifecycleRuntime,
+      creator: { create } as unknown as SshWorkspaceCreationRuntime,
       getState: () => state,
       makePreparationId: () => "preparation_1"
     });
 
     await expect(
       runtime.prepare({
+        kind: "convert-existing",
         requestId: "request_1",
         sourceWorkspaceId,
-        profileId: "profile_1",
-        continuation: "convert"
+        profileId: "profile_1"
       })
     ).resolves.toEqual({ preparationId: "preparation_1" });
     expect(connectProfile).toHaveBeenCalledWith("profile_1", {
       signal: expect.any(AbortSignal)
     });
-    expect(startWorkspaceConversion).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
 
     await expect(
       runtime.commit({ preparationId: "preparation_1" })
@@ -81,17 +89,13 @@ describe("SSH workspace runtime", () => {
       targetId: "target_1",
       continuation: "convert"
     });
-    expect(startWorkspaceConversion).toHaveBeenCalledWith({
-      workspaceId: sourceWorkspaceId,
-      targetId: "target_1",
-      effectiveConnectionPolicyHash: "a".repeat(64),
-      initialWorkspaceName: "kmux@dev-gpu",
-      defaultCwd: "/home/kmux",
-      continuation: "convert",
-      launch: {
-        cwd: "/home/kmux",
-        shell: "/bin/zsh",
-        env: { KMUX_REMOTE: "1" }
+    expect(create).toHaveBeenCalledWith({
+      kind: "convert-existing",
+      sourceWorkspaceId,
+      target: {
+        profile: connectedProfile().profile,
+        binding: connectedProfile().binding,
+        remoteHome: "/home/kmux"
       }
     });
     await expect(
@@ -101,24 +105,23 @@ describe("SSH workspace runtime", () => {
 
   it("returns the separately-created workspace identity", async () => {
     const state = createInitialState("/bin/zsh");
-    const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
     const runtime = createSshWorkspaceRuntime({
       connections: {
         connectProfile: async () => connectedProfile("/srv/project")
       } as unknown as SshConnectionRuntime,
-      lifecycle: {
-        startWorkspaceConversion: async () =>
-          transactionRecord("workspace_created", "target_1", "create")
-      } as unknown as RemoteLifecycleRuntime,
+      creator: {
+        create: async () =>
+          creationResult("workspace_created", "target_1", "create")
+      } as unknown as SshWorkspaceCreationRuntime,
       getState: () => state,
       makePreparationId: () => "preparation_2"
     });
 
     const prepared = await runtime.prepare({
+      kind: "create-new",
       requestId: "request_2",
-      sourceWorkspaceId,
-      profileId: "profile_1",
-      continuation: "create"
+      destinationWindowId: state.activeWindowId,
+      profileId: "profile_1"
     });
     await expect(runtime.commit(prepared)).resolves.toEqual({
       workspaceId: "workspace_created",
@@ -131,29 +134,27 @@ describe("SSH workspace runtime", () => {
     const state = createInitialState("/bin/zsh");
     const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
     const connection = deferred<ConnectedSshProfile>();
-    const startWorkspaceConversion = vi.fn();
+    const create = vi.fn();
     const runtime = createSshWorkspaceRuntime({
       connections: {
         connectProfile: () => connection.promise
       } as unknown as SshConnectionRuntime,
-      lifecycle: {
-        startWorkspaceConversion
-      } as unknown as RemoteLifecycleRuntime,
+      creator: { create } as unknown as SshWorkspaceCreationRuntime,
       getState: () => state,
       makePreparationId: () => "preparation_cancelled"
     });
 
     const preparing = runtime.prepare({
+      kind: "convert-existing",
       requestId: "request_cancelled",
       sourceWorkspaceId,
-      profileId: "profile_1",
-      continuation: "convert"
+      profileId: "profile_1"
     });
     runtime.cancel({ requestId: "request_cancelled" });
     connection.resolve(connectedProfile());
 
     await expect(preparing).rejects.toThrow(/preparation was cancelled/u);
-    expect(startWorkspaceConversion).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
     expect(state.workspaces[sourceWorkspaceId]?.location.target.kind).toBe(
       "local"
     );
@@ -162,42 +163,39 @@ describe("SSH workspace runtime", () => {
   it("rechecks Main-owned source state after verification and before commit", async () => {
     const state = createInitialState("/bin/zsh");
     const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
-    const startWorkspaceConversion = vi.fn();
+    const create = vi.fn();
     const runtime = createSshWorkspaceRuntime({
       connections: {
         connectProfile: async () => connectedProfile()
       } as unknown as SshConnectionRuntime,
-      lifecycle: {
-        startWorkspaceConversion
-      } as unknown as RemoteLifecycleRuntime,
+      creator: { create } as unknown as SshWorkspaceCreationRuntime,
       getState: () => state,
       makePreparationId: () => "preparation_stale"
     });
 
     const prepared = await runtime.prepare({
+      kind: "convert-existing",
       requestId: "request_stale",
       sourceWorkspaceId,
-      profileId: "profile_1",
-      continuation: "convert"
+      profileId: "profile_1"
     });
     delete state.workspaces[sourceWorkspaceId];
 
     await expect(runtime.commit(prepared)).rejects.toThrow(
       /source no longer exists/u
     );
-    expect(startWorkspaceConversion).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("bounds and expires opaque preparations", async () => {
     const state = createInitialState("/bin/zsh");
-    const sourceWorkspaceId = Object.keys(state.workspaces)[0]!;
     let time = 1_000;
     let nextId = 0;
     const runtime = createSshWorkspaceRuntime({
       connections: {
         connectProfile: async () => connectedProfile()
       } as unknown as SshConnectionRuntime,
-      lifecycle: {} as RemoteLifecycleRuntime,
+      creator: {} as SshWorkspaceCreationRuntime,
       getState: () => state,
       now: () => time,
       preparationTtlMs: 100,
@@ -206,17 +204,17 @@ describe("SSH workspace runtime", () => {
     });
 
     const first = await runtime.prepare({
+      kind: "create-new",
       requestId: "request_first",
-      sourceWorkspaceId,
-      profileId: "profile_1",
-      continuation: "create"
+      destinationWindowId: state.activeWindowId,
+      profileId: "profile_1"
     });
     await expect(
       runtime.prepare({
+        kind: "create-new",
         requestId: "request_second",
-        sourceWorkspaceId,
-        profileId: "profile_1",
-        continuation: "create"
+        destinationWindowId: state.activeWindowId,
+        profileId: "profile_1"
       })
     ).rejects.toThrow(/too many SSH workspace preparations/u);
 
@@ -226,10 +224,10 @@ describe("SSH workspace runtime", () => {
     );
     await expect(
       runtime.prepare({
+        kind: "create-new",
         requestId: "request_second",
-        sourceWorkspaceId,
-        profileId: "profile_1",
-        continuation: "create"
+        destinationWindowId: state.activeWindowId,
+        profileId: "profile_1"
       })
     ).resolves.toEqual({ preparationId: "preparation_2" });
   });
@@ -269,18 +267,17 @@ function connectedProfile(defaultRemoteCwd?: string): ConnectedSshProfile {
   };
 }
 
-function transactionRecord(
+function creationResult(
   workspaceId: string,
   targetId: string,
   continuation: "convert" | "create"
 ) {
   return {
-    state: "cleanup-complete" as const,
+    workspaceId,
+    targetId,
     continuation,
-    workspaceResourceKey: {
-      workspaceId,
-      targetId
-    }
+    surfaceId: "surface_created",
+    sessionId: "session_created"
   };
 }
 

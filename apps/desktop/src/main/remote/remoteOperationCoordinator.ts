@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   canonicalizeRemoteOperationPayload,
@@ -43,7 +44,8 @@ export interface RemoteOperationProductMetadata {
 export interface RemoteOperationCoordinator {
   admit(
     command: RemoteOperationAdmissionCommand,
-    product?: RemoteOperationProductMetadata
+    product?: RemoteOperationProductMetadata,
+    operationId?: Id
   ): DurableRemoteOperationRecord;
   execute(
     operationId: Id,
@@ -114,13 +116,49 @@ export function createRemoteOperationCoordinator(
   return Object.freeze({
     admit(
       command: RemoteOperationAdmissionCommand,
-      product: RemoteOperationProductMetadata = {}
+      product: RemoteOperationProductMetadata = {},
+      requestedOperationId?: Id
     ): DurableRemoteOperationRecord {
       const validated = decodeRemoteOperationAdmissionCommand(command);
       const state = options.getState();
+      const operationId = requestedOperationId ?? operationIdFactory();
+      const canonicalPayload = canonicalizeRemoteOperationPayload(
+        validated.payload
+      );
+      const existing = options.store.get(operationId);
+      if (existing) {
+        assertDesktopInstallationScope(existing, options.desktopInstallationId);
+        const replayResourceKey: RemoteResourceKey = {
+          desktopInstallationId: options.desktopInstallationId,
+          targetId: existing.intent.resourceKey.targetId,
+          workspaceId: validated.workspaceId,
+          ...("sessionId" in validated.payload
+            ? { sessionId: validated.payload.sessionId }
+            : {})
+        };
+        const currentWorkspace = state.workspaces[validated.workspaceId];
+        if (
+          (currentWorkspace !== undefined &&
+            (currentWorkspace.location.target.kind !== "ssh" ||
+              currentWorkspace.location.target.targetId !==
+                existing.intent.resourceKey.targetId)) ||
+          existing.intent.kind !== validated.payload.kind ||
+          !isDeepStrictEqual(existing.intent.resourceKey, replayResourceKey) ||
+          existing.intent.expectedRemoteResourceRevision !==
+            validated.expectedRemoteResourceRevision ||
+          existing.intent.canonicalPayloadHash !== sha256(canonicalPayload) ||
+          !isDeepStrictEqual(existing.payload, validated.payload)
+        ) {
+          throw new Error(
+            `remote operation ${operationId} was already admitted with different intent`
+          );
+        }
+        requireVerifiedBinding(existing.intent.resourceKey.targetId);
+        authorizeRemotePaths(validated.payload);
+        return existing;
+      }
       const { workspace, targetId } = authorizeCommand(state, validated);
       requireVerifiedBinding(targetId);
-      const operationId = operationIdFactory();
       const resourceKey: RemoteResourceKey = {
         desktopInstallationId: options.desktopInstallationId,
         targetId,
@@ -129,9 +167,6 @@ export function createRemoteOperationCoordinator(
           ? { sessionId: validated.payload.sessionId }
           : {})
       };
-      const canonicalPayload = canonicalizeRemoteOperationPayload(
-        validated.payload
-      );
       const createdAt = now();
       const intent: RemoteOperationIntent = {
         operationId,

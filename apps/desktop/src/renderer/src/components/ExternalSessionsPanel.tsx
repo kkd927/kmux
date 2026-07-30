@@ -22,6 +22,7 @@ interface ExternalSessionsPanelProps {
   snapshot: ExternalAgentSessionsSnapshot;
   loading: boolean;
   error: string | null;
+  resumingKeys?: ReadonlySet<string>;
   onRefresh: () => void;
   onResume: (key: string) => void;
 }
@@ -29,25 +30,45 @@ interface ExternalSessionsPanelProps {
 export function ExternalSessionsPanelContainer(): JSX.Element {
   const { snapshot, loading, error, refresh } = useExternalAgentSessions();
   const [resumeError, setResumeError] = useState<string | null>(null);
+  const [resumingKeys, setResumingKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const resumeInFlightRef = useRef(new Set<string>());
 
   return (
     <ExternalSessionsPanel
       snapshot={snapshot}
       loading={loading}
       error={resumeError ?? error}
+      resumingKeys={resumingKeys}
       onRefresh={() => {
         setResumeError(null);
         void refresh();
       }}
       onResume={(key) => {
+        if (resumeInFlightRef.current.has(key)) return;
+        resumeInFlightRef.current.add(key);
+        setResumingKeys(new Set(resumeInFlightRef.current));
         setResumeError(null);
-        void window.kmux.resumeExternalAgentSession(key).catch((caught) => {
-          setResumeError(
-            caught instanceof Error
-              ? caught.message
-              : "Could not resume session"
-          );
-        });
+        void window.kmux
+          .getShellState()
+          .then((shell) =>
+            window.kmux.resumeExternalAgentSession({
+              key,
+              destinationWindowId: shell.windowId
+            })
+          )
+          .catch((caught) => {
+            setResumeError(
+              caught instanceof Error
+                ? caught.message
+                : "Could not resume session"
+            );
+          })
+          .finally(() => {
+            resumeInFlightRef.current.delete(key);
+            setResumingKeys(new Set(resumeInFlightRef.current));
+          });
       }}
     />
   );
@@ -270,6 +291,7 @@ export function ExternalSessionsPanel(
             <ExternalSessionRow
               key={session.key}
               session={session}
+              busy={props.resumingKeys?.has(session.key) === true}
               onResume={props.onResume}
             />
           ))}
@@ -293,9 +315,10 @@ export function ExternalSessionsPanel(
 
 function ExternalSessionRow(props: {
   session: ExternalAgentSessionVm;
+  busy: boolean;
   onResume: (key: string) => void;
 }): JSX.Element {
-  const canResume = props.session.canResume;
+  const canResume = props.session.canResume && !props.busy;
   const targetLabel = externalSessionTargetLabel(props.session);
   const resume = () => {
     if (canResume) {
@@ -310,8 +333,10 @@ function ExternalSessionRow(props: {
       data-testid="external-session-row"
       data-vendor={props.session.vendor}
       data-disabled={canResume ? "false" : "true"}
+      data-busy={props.busy ? "true" : "false"}
       tabIndex={canResume ? 0 : -1}
       aria-disabled={!canResume}
+      aria-busy={props.busy}
       title={props.session.resumeCommandPreview}
       aria-label={`Resume ${props.session.vendorLabel} session ${props.session.title}${targetLabel ? ` on ${targetLabel}` : ""}`}
       onClick={resume}

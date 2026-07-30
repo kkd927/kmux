@@ -67,6 +67,72 @@ describe("RemoteOperationCoordinator", () => {
     ).toBe("succeeded");
   });
 
+  it("reuses a caller-supplied operation ID only for the exact same intent", async () => {
+    const fixture = createRemoteFixture();
+    const store = createDurableRemoteOperationStore(join(sandbox, "ops"));
+    const coordinator = createRemoteOperationCoordinator(
+      coordinatorOptions(fixture.state, store)
+    );
+    const command = terminateCommand(fixture.workspaceId, fixture.sessionId);
+    const first = coordinator.admit(command, {}, "operation_stable");
+    const replay = coordinator.admit(command, {}, "operation_stable");
+
+    expect(replay.intent.operationId).toBe(first.intent.operationId);
+    expect(store.loadAll()).toHaveLength(1);
+    expect(() =>
+      coordinator.admit(
+        {
+          ...command,
+          expectedRemoteResourceRevision: uint64(1n)
+        },
+        {},
+        "operation_stable"
+      )
+    ).toThrow(/different intent/u);
+
+    const executor = vi.fn(async () => ({
+      status: "succeeded" as const,
+      remoteResourceRevision: uint64(1n),
+      resultDigest,
+      completedAt: "2026-07-17T00:00:01.000Z"
+    }));
+    await expect(
+      coordinator.execute("operation_stable", executor)
+    ).resolves.toMatchObject({ status: "succeeded" });
+    await expect(
+      coordinator.execute("operation_stable", executor)
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(executor).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses an exact create admission after its pending projection installs the identities", () => {
+    const fixture = createRemoteFixture();
+    const store = createDurableRemoteOperationStore(join(sandbox, "ops"));
+    const coordinator = createRemoteOperationCoordinator(
+      coordinatorOptions(fixture.state, store)
+    );
+    const paneId = fixture.state.workspaces[fixture.workspaceId].activePaneId;
+    const command: RemoteOperationAdmissionCommand = {
+      type: "remote-operation.command",
+      workspaceId: fixture.workspaceId,
+      expectedRemoteResourceRevision: uint64(0n),
+      payload: {
+        kind: "session.create",
+        sessionId: "session_stable",
+        surfaceId: "surface_stable",
+        paneId,
+        launch: { cwd: "/srv/app" }
+      }
+    };
+
+    const first = coordinator.admit(command, {}, "operation_stable_create");
+    expect(fixture.state.sessions.session_stable).toBeDefined();
+    expect(coordinator.admit(command, {}, "operation_stable_create")).toEqual(
+      first
+    );
+    expect(store.loadAll()).toHaveLength(1);
+  });
+
   it("rejects an authoritative result conflict before it can poison recovery", () => {
     const fixture = createRemoteFixture();
     const store = createDurableRemoteOperationStore(join(sandbox, "ops"));
