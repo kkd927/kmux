@@ -130,7 +130,7 @@ describe("ExternalSessionsPanel", () => {
     expect(container.textContent).toContain("Session 31");
   });
 
-  it("shows immutable target identity and target-local degradation", () => {
+  it("keeps immutable SSH target identity in the accessible session label", () => {
     act(() => {
       root.render(
         <ExternalSessionsPanel
@@ -151,13 +151,6 @@ describe("ExternalSessionsPanel", () => {
                 canResume: true,
                 resumeCommandPreview: "codex resume session-1"
               }
-            ],
-            unavailableTargets: [
-              {
-                kind: "ssh",
-                targetId: "target_2",
-                message: "metadata channel unavailable"
-              }
             ]
           }}
           loading={false}
@@ -168,17 +161,11 @@ describe("ExternalSessionsPanel", () => {
       );
     });
 
-    expect(container.textContent).toContain("kmux@target_1");
     expect(
       container
         .querySelector("[data-testid='external-session-row']")
         ?.getAttribute("aria-label")
     ).toContain("on kmux@target_1");
-    expect(
-      container.querySelector(
-        "[data-testid='external-sessions-target-unavailable']"
-      )?.textContent
-    ).toContain("SSH target_2 history unavailable");
   });
 
   it("filters sessions by agent and resets paging", () => {

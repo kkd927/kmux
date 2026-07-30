@@ -171,7 +171,7 @@ describe("target history runtime", () => {
     expect(snapshot.truncated).toBe(true);
   });
 
-  it("retains a target cache and reports typed unavailability without local fallback", async () => {
+  it("omits an unavailable target and clears its cached resume entries", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
       type: "workspace.create",
@@ -207,19 +207,13 @@ describe("target history runtime", () => {
 
     const degraded = await runtime.listExternalAgentSessions();
 
-    expect(degraded.sessions.map((session) => session.key)).toEqual([
-      "ssh:target_1:claude:remote-only"
-    ]);
-    expect(degraded.unavailableTargets).toEqual([
-      {
-        kind: "ssh",
-        targetId: "target_1",
-        message: "metadata channel unavailable"
-      }
-    ]);
+    expect(degraded.sessions).toEqual([]);
+    expect(
+      runtime.resolveExternalAgentSession("ssh:target_1:claude:remote-only")
+    ).toBeNull();
   });
 
-  it("merges partial history, replaces it on a full scan, and preserves the last full cache on failure", async () => {
+  it("merges partial history, replaces it on a full scan, and clears it on failure", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
       type: "workspace.create",
@@ -291,17 +285,8 @@ describe("target history runtime", () => {
 
     mode = "failed";
     const failed = await runtime.listExternalAgentSessions();
-    expect(failed.sessions.map((session) => session.key)).toEqual([
-      "ssh:target_1:codex:current"
-    ]);
+    expect(failed.sessions).toEqual([]);
     expect(failed.truncated).toBeUndefined();
-    expect(failed.unavailableTargets).toEqual([
-      {
-        kind: "ssh",
-        targetId: "target_1",
-        message: "history unavailable"
-      }
-    ]);
     expect(reportError).toHaveBeenCalledWith(
       { kind: "ssh", targetId: "target_1" },
       expect.objectContaining({
@@ -347,14 +332,7 @@ describe("target history runtime", () => {
 
     await expect(runtime.listExternalAgentSessions()).resolves.toEqual({
       sessions: [],
-      updatedAt: "1970-01-01T00:00:10.000Z",
-      unavailableTargets: [
-        {
-          kind: "ssh",
-          targetId: "target_1",
-          message: "remote history record lacks its authenticated principal"
-        }
-      ]
+      updatedAt: "1970-01-01T00:00:10.000Z"
     });
   });
 

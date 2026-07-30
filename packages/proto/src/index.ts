@@ -165,10 +165,6 @@ export interface ExternalAgentSessionsSnapshot {
   sessions: ExternalAgentSessionVm[];
   updatedAt: string;
   truncated?: boolean;
-  unavailableTargets?: Array<
-    | { kind: "local"; message: string }
-    | { kind: "ssh"; targetId: Id; message: string }
-  >;
 }
 
 export interface ExternalAgentSessionResumeResult {

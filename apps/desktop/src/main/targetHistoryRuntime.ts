@@ -67,9 +67,6 @@ export function createTargetHistoryRuntime(options: {
 
   async function refresh(): Promise<ExternalAgentSessionsSnapshot> {
     const targets = currentTargets(options.getState());
-    const unavailableTargets: NonNullable<
-      ExternalAgentSessionsSnapshot["unavailableTargets"]
-    > = [];
     await Promise.all(
       targets.map(async (target) => {
         const key = targetKey(target);
@@ -122,15 +119,8 @@ export function createTargetHistoryRuntime(options: {
           const failure =
             error instanceof Error ? error : new Error(String(error));
           options.reportError?.(target, failure);
-          unavailableTargets.push(
-            target.kind === "local"
-              ? { kind: "local", message: failure.message }
-              : {
-                  kind: "ssh",
-                  targetId: target.targetId,
-                  message: failure.message
-                }
-          );
+          recordsByTarget.delete(key);
+          partialTargetKeys.delete(key);
         }
       })
     );
@@ -161,18 +151,10 @@ export function createTargetHistoryRuntime(options: {
     );
     resumeByKey.clear();
     for (const [key, spec] of nextResumeByKey) resumeByKey.set(key, spec);
-    const currentUnavailableTargets = unavailableTargets.filter((target) =>
-      currentTargetKeys.has(
-        target.kind === "local" ? "local" : `ssh:${target.targetId}`
-      )
-    );
     return {
       sessions,
       updatedAt: now().toISOString(),
-      ...(truncated ? { truncated: true } : {}),
-      ...(currentUnavailableTargets.length === 0
-        ? {}
-        : { unavailableTargets: currentUnavailableTargets })
+      ...(truncated ? { truncated: true } : {})
     };
   }
 
