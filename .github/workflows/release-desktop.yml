@@ -382,3 +382,90 @@ jobs:
               "${release_args[@]}" \
               "${notes_args[@]}"
           fi
+
+  update-homebrew-cask:
+    name: Update Homebrew Cask
+    if: >-
+      github.event_name == 'push' &&
+      needs.release-metadata.outputs.release_kind == 'stable' &&
+      needs.release-metadata.outputs.is_prerelease == 'false'
+    needs:
+      - release-metadata
+      - publish-release
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: kmux
+      - name: Validate Homebrew Tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "Missing required GitHub secret: HOMEBREW_TAP_TOKEN" >&2
+            exit 1
+          fi
+      - name: Check out Homebrew Tap
+        uses: actions/checkout@v6
+        with:
+          repository: kkd927/homebrew-kmux
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          fetch-depth: 0
+      - name: Download macOS release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: macos-*-release-assets
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare Homebrew validation Tap
+        run: brew tap --custom-remote kkd927/kmux "$GITHUB_WORKSPACE/homebrew-tap"
+      - name: Update and push Homebrew Cask
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          arm64_dmg="../release-assets/kmux-${VERSION}-mac-arm64.dmg"
+          x64_dmg="../release-assets/kmux-${VERSION}-mac-x64.dmg"
+          test -f "$arm64_dmg"
+          test -f "$x64_dmg"
+          tap_cask="$(brew --repository kkd927/kmux)/Casks/kmux.rb"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for attempt in 1 2 3; do
+            node ../kmux/scripts/generate-homebrew-cask.mjs \
+              --version "$VERSION" \
+              --dmg "$arm64_dmg" \
+              --dmg "$x64_dmg" \
+              --current-cask Casks/kmux.rb \
+              --output Casks/kmux.rb
+
+            if git diff --quiet -- Casks/kmux.rb; then
+              echo "Homebrew Cask is already current for kmux ${VERSION}."
+              exit 0
+            fi
+
+            git diff --check -- Casks/kmux.rb
+            cp Casks/kmux.rb "$tap_cask"
+            brew style --cask "$tap_cask"
+            brew audit --cask --strict --online kkd927/kmux/kmux
+
+            git add Casks/kmux.rb
+            git commit -m "Update kmux to ${VERSION}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to push the Homebrew Cask after ${attempt} attempts." >&2
+              exit 1
+            fi
+
+            git fetch origin main:refs/remotes/origin/main
+            git switch --detach origin/main
+          done

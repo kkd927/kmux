@@ -120,26 +120,36 @@ kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 �
 
 ## 📦 설치 방법
 
+### macOS
+
+#### Homebrew(권장)
+
+```bash
+brew tap kkd927/kmux
+brew install --cask kmux
+```
+
+kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나오면 앱에서 안내합니다.
+
+#### DMG 직접 설치
+
 <p>
-  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Apple Silicon용 다운로드" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Intel Mac용 다운로드" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
 </p>
-<p>
-  <strong>Linux</strong><br>
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Linux x64용 다운로드" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
-  &nbsp;
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Linux ARM64용 다운로드" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
-</p>
-
-### macOS
 
 1. 사용 중인 Mac 사양에 맞는 버튼을 클릭합니다 (M1/M2/M3/M4 등 Apple Silicon 기기 → Apple Silicon, 구형 Intel Mac 기기 → Intel)
 2. 다운로드한 `.dmg` 파일을 열고 **kmux**를 `응용 프로그램(Applications)` 폴더로 끌어다 놓습니다.
 3. 최초 실행 시 macOS 보안 확인 팝업창이 뜨면 **열기**를 클릭해 진행합니다.
 
 ### Linux
+
+<p>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Linux x64용 다운로드" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Linux ARM64용 다운로드" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 1. Linux CPU에 맞는 AppImage를 선택합니다(x64 → Intel/AMD 64-bit, ARM64 → ARM 64-bit).
 2. 실행 권한을 부여합니다: `chmod +x kmux-linux-x64.AppImage` 또는 `chmod +x kmux-linux-arm64.AppImage`

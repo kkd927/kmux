@@ -120,26 +120,36 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 
 ## 📦 安装方法
 
+### macOS
+
+#### Homebrew（推荐）
+
+```bash
+brew tap kkd927/kmux
+brew install --cask kmux
+```
+
+kmux 内置自动更新功能，新版本可用时会在应用内提示。
+
+#### 通过 DMG 安装
+
 <p>
-  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="下载 Apple Silicon 版本" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="下载 Intel Mac 版本" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
 </p>
-<p>
-  <strong>Linux</strong><br>
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="下载 Linux x64 版本" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
-  &nbsp;
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="下载 Linux ARM64 版本" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
-</p>
-
-### macOS
 
 1. 点击符合您 Mac 配置的按钮（M1/M2/M3/M4 等 Apple Silicon 芯片设备 → 适合 Apple Silicon，旧款 Intel Mac 设备 → 适合 Intel）
 2. 打开下载的 `.dmg` 文件，将 **kmux** 拖入您的 `应用程序 (Applications)` 文件夹。
 3. 首次启动时，若 macOS 弹出安全确认提示，点击 **打开** 即可继续。
 
 ### Linux
+
+<p>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="下载 Linux x64 版本" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="下载 Linux ARM64 版本" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 1. 选择与你的 Linux CPU 匹配的 AppImage（x64 → Intel/AMD 64-bit，ARM64 → ARM 64-bit）。
 2. 授予执行权限：`chmod +x kmux-linux-x64.AppImage` 或 `chmod +x kmux-linux-arm64.AppImage`

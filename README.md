@@ -123,26 +123,36 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 
 ## 📦 Install
 
+### macOS
+
+#### Homebrew (recommended)
+
+```bash
+brew tap kkd927/kmux
+brew install --cask kmux
+```
+
+kmux includes a built-in updater and will let you know when a new version is available.
+
+#### DMG download
+
 <p>
-  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Download for Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Download for Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
 </p>
-<p>
-  <strong>Linux</strong><br>
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Download for Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
-  &nbsp;
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Download for Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
-</p>
-
-### macOS
 
 1. Click the button that matches your Mac (M1/M2/M3/M4 → Apple Silicon, older Intel Macs → Intel)
 2. Open the downloaded `.dmg` and drag **kmux** into your `Applications` folder
 3. On first launch, macOS may ask you to confirm — click **Open**
 
 ### Linux
+
+<p>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Download for Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Download for Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 1. Choose the AppImage for your Linux CPU (x64 → Intel/AMD 64-bit, ARM64 → ARM 64-bit)
 2. Make it executable: `chmod +x kmux-linux-x64.AppImage` or `chmod +x kmux-linux-arm64.AppImage`

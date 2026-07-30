@@ -120,26 +120,36 @@ kmux realiza un seguimiento de todo el ciclo de vida de los worktrees (estado de
 
 ## 📦 Instalación
 
+### macOS
+
+#### Homebrew (recomendado)
+
+```bash
+brew tap kkd927/kmux
+brew install --cask kmux
+```
+
+kmux incluye un actualizador integrado y te avisará cuando haya una nueva versión disponible.
+
+#### Instalación mediante DMG
+
 <p>
-  <strong>macOS</strong><br>
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-arm64.dmg"><img alt="Descarga para Apple Silicon" src="./docs/assets/readme/download-apple-silicon.svg" height="72"></a>
   &nbsp;
   <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-mac-x64.dmg"><img alt="Descarga para Intel Mac" src="./docs/assets/readme/download-intel-mac.svg" height="72"></a>
 </p>
-<p>
-  <strong>Linux</strong><br>
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
-  &nbsp;
-  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Descarga para Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
-</p>
-
-### macOS
 
 1. Haz clic en el botón correspondiente a la arquitectura de tu Mac (procesadores M1/M2/M3/M4 de Apple Silicon → Apple Silicon, Macs más antiguos con Intel → Intel).
 2. Abre el archivo `.dmg` descargado y arrastra **kmux** a tu carpeta de `Aplicaciones (Applications)`.
 3. En el primer inicio, si macOS solicita confirmación de seguridad, haz clic en **Abrir** para continuar.
 
 ### Linux
+
+<p>
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-x64.AppImage"><img alt="Descarga para Linux x64" src="./docs/assets/readme/download-linux-x64.svg" height="72"></a>
+  &nbsp;
+  <a href="https://github.com/kkd927/kmux/releases/latest/download/kmux-linux-arm64.AppImage"><img alt="Descarga para Linux ARM64" src="./docs/assets/readme/download-linux-arm64.svg" height="72"></a>
+</p>
 
 1. Elige la AppImage que coincida con tu CPU Linux (x64 → Intel/AMD 64-bit, ARM64 → ARM 64-bit).
 2. Dale permisos de ejecución: `chmod +x kmux-linux-x64.AppImage` o `chmod +x kmux-linux-arm64.AppImage`
