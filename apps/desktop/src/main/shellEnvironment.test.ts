@@ -34,6 +34,19 @@ import {
   type ShellPtyProbe,
   type ShellPtyProbeOptions
 } from "./shellEnvironment";
+import type { ShellLaunchProfile } from "../shared/ptyProtocol";
+
+const macOsShellLaunchProfile: ShellLaunchProfile = {
+  defaultArgs: "login",
+  stripManagedEnv: true,
+  integrationMode: "posix-wrapper"
+};
+
+const linuxShellLaunchProfile: ShellLaunchProfile = {
+  defaultArgs: "none",
+  stripManagedEnv: false,
+  integrationMode: "posix-wrapper"
+};
 
 describe("shell environment resolver", () => {
   let sandboxDir: string;
@@ -75,8 +88,7 @@ describe("shell environment resolver", () => {
   it("builds a macOS launch policy with login shell args and shell integration", () => {
     const policy = buildShellLaunchPolicy({
       defaultShellPath: "/bin/zsh",
-      platform: "darwin",
-      enableShellIntegration: true,
+      profile: macOsShellLaunchProfile,
       socketPath: "/tmp/kmux.sock",
       nodePath: "/Applications/kmux.app/Contents/MacOS/kmux",
       agentHookBinDir: "/Users/test/.local/share/kmux/hooks",
@@ -104,30 +116,55 @@ describe("shell environment resolver", () => {
     });
   });
 
-  it("builds a Linux launch policy without shell rc integration", () => {
-    const policy = buildShellLaunchPolicy({
-      defaultShellPath: "/bin/bash",
-      launchShell: "/usr/bin/fish",
-      platform: "linux",
-      enableShellIntegration: false,
+  it.each(["/bin/bash", "/usr/bin/zsh", "/usr/bin/fish"])(
+    "builds a Linux default launch policy that preserves env and wraps %s",
+    (defaultShellPath) => {
+      const policy = buildShellLaunchPolicy({
+        defaultShellPath,
+        profile: linuxShellLaunchProfile,
+        socketPath: "/run/user/1000/kmux/control.sock",
+        nodePath: "/opt/kmux/kmux",
+        agentHookBinDir: "/home/test/.local/share/kmux/hooks",
+        agentWrapperBinDir: "/home/test/.local/share/kmux/wrappers"
+      });
+
+      expect(policy.defaultShellPath).toBe(defaultShellPath);
+      expect(policy.defaultShellArgs).toEqual([]);
+      expect(policy.stripManagedEnv).toBe(false);
+      expect(policy.integration).toEqual({
+        enabled: true,
+        mode: "posix-wrapper"
+      });
+      expect(policy.hookEnv).toMatchObject({
+        KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
+        KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
+        KMUX_NODE_PATH: "/opt/kmux/kmux"
+      });
+    }
+  );
+
+  it("does not wrap Linux launches with explicit args or unsupported shells", () => {
+    const commonOptions = {
+      profile: linuxShellLaunchProfile,
       socketPath: "/run/user/1000/kmux/control.sock",
       nodePath: "/opt/kmux/kmux",
       agentHookBinDir: "/home/test/.local/share/kmux/hooks",
       agentWrapperBinDir: "/home/test/.local/share/kmux/wrappers"
-    });
+    };
 
-    expect(policy.defaultShellPath).toBe("/usr/bin/fish");
-    expect(policy.defaultShellArgs).toEqual([]);
-    expect(policy.stripManagedEnv).toBe(false);
-    expect(policy.integration).toEqual({
-      enabled: false,
-      mode: "none"
-    });
-    expect(policy.hookEnv).toMatchObject({
-      KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
-      KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
-      KMUX_NODE_PATH: "/opt/kmux/kmux"
-    });
+    expect(
+      buildShellLaunchPolicy({
+        ...commonOptions,
+        defaultShellPath: "/bin/bash",
+        launchArgs: ["--noprofile"]
+      }).integration
+    ).toEqual({ enabled: false, mode: "none" });
+    expect(
+      buildShellLaunchPolicy({
+        ...commonOptions,
+        defaultShellPath: "/bin/sh"
+      }).integration
+    ).toEqual({ enabled: false, mode: "none" });
   });
 
   it("extracts env json between markers even when shell noise surrounds it", () => {

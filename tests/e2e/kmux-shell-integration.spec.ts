@@ -16,8 +16,8 @@ import {
 } from "./helpers";
 
 test.skip(
-  process.platform !== "darwin",
-  "shell integration regression is macOS-specific"
+  process.platform !== "darwin" && process.platform !== "linux",
+  "shell integration regression requires a supported POSIX desktop"
 );
 
 function shellQuote(value: string): string {
@@ -61,9 +61,13 @@ function resolveOptionalShellPath(shellName: string): string | undefined {
   }
 }
 
+const zshPath = resolveOptionalShellPath("zsh");
 const fishPath = resolveOptionalShellPath("fish");
 const shellCases: Array<{ path: string; skipReason?: string }> = [
-  { path: "/bin/zsh" },
+  {
+    path: zshPath ?? "zsh",
+    skipReason: zshPath ? undefined : "zsh is not installed"
+  },
   { path: "/bin/bash" },
   {
     path: fishPath ?? "fish",
@@ -148,7 +152,11 @@ for (const shellCase of shellCases) {
               view.activeWorkspace.surfaces[activeSurfaceId]
             )?.runtimeMetadata.cwd === repoDir &&
             row?.cwd === repoDir &&
-            row?.branch === expectedBranch
+            row?.branch === expectedBranch &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeMetadata.gitRepository?.root === repoDir &&
+            row?.gitRepository?.root === repoDir
           );
         },
         "sidebar cwd and branch should follow repo navigation",
@@ -165,6 +173,16 @@ for (const shellCase of shellCases) {
           (entry) => entry.workspaceId === workspaceId
         )?.branch
       ).toBe(expectedBranch);
+      expect(
+        terminalSurfaceVmContent(
+          repoView.activeWorkspace.surfaces[activeSurfaceId]
+        )?.runtimeMetadata.gitRepository
+      ).toMatchObject({ root: repoDir, linkedWorktree: false });
+      expect(
+        repoView.workspaceRows.find(
+          (entry) => entry.workspaceId === workspaceId
+        )?.gitRepository
+      ).toMatchObject({ root: repoDir, linkedWorktree: false });
 
       const switchedBranch = "kmux-e2e-branch-refresh";
       await page.evaluate(
@@ -228,7 +246,11 @@ for (const shellCase of shellCases) {
               view.activeWorkspace.surfaces[activeSurfaceId]
             )?.runtimeMetadata.cwd === sandbox.shellHomeDir &&
             row?.cwd === sandbox.shellHomeDir &&
-            row?.branch === undefined
+            row?.branch === undefined &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.runtimeMetadata.gitRepository === undefined &&
+            row?.gitRepository === undefined
           );
         },
         "sidebar should clear branch after leaving the repo",
@@ -240,6 +262,11 @@ for (const shellCase of shellCases) {
           (entry) => entry.workspaceId === workspaceId
         )?.branch
       ).toBeUndefined();
+      expect(
+        homeView.workspaceRows.find(
+          (entry) => entry.workspaceId === workspaceId
+        )?.gitRepository
+      ).toBeUndefined();
     } finally {
       await closeKmux(launched);
     }
@@ -247,6 +274,10 @@ for (const shellCase of shellCases) {
 }
 
 test("kmux preserves zsh login startup files while wrapping zsh", async () => {
+  test.skip(
+    process.platform !== "darwin",
+    "zsh login startup preservation is macOS-specific"
+  );
   const sandbox = createSandbox("kmux-e2e-shell-integration-zlogin-");
   writeFileSync(
     join(sandbox.shellHomeDir, ".zlogin"),
@@ -304,6 +335,10 @@ test("kmux preserves zsh login startup files while wrapping zsh", async () => {
 });
 
 test("kmux restores zsh history before loading the user zshrc", async () => {
+  test.skip(
+    process.platform !== "darwin",
+    "zsh history restoration is macOS-specific"
+  );
   const sandbox = createSandbox("kmux-e2e-shell-integration-history-");
   writeFileSync(
     sandbox.shellHistoryPath,

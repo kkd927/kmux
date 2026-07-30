@@ -33,8 +33,11 @@ export function createDarwinPlatformRuntime(options: {
       useMacTextEditorFirst: true
     },
     shell: {
-      platform: "darwin",
-      enablePosixShellIntegration: true
+      profile: {
+        defaultArgs: "login",
+        stripManagedEnv: true,
+        integrationMode: "posix-wrapper"
+      }
     },
     updater: {
       enabled: isPackagedDesktopUpdaterEligible(options)

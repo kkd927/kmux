@@ -32,8 +32,11 @@ describe("platform runtime", () => {
         useMacTextEditorFirst: true
       },
       shell: {
-        platform: "darwin",
-        enablePosixShellIntegration: true
+        profile: {
+          defaultArgs: "login",
+          stripManagedEnv: true,
+          integrationMode: "posix-wrapper"
+        }
       },
       updater: {
         enabled: true
@@ -82,8 +85,11 @@ describe("platform runtime", () => {
         useMacTextEditorFirst: false
       },
       shell: {
-        platform: "linux",
-        enablePosixShellIntegration: false
+        profile: {
+          defaultArgs: "none",
+          stripManagedEnv: false,
+          integrationMode: "posix-wrapper"
+        }
       },
       updater: {
         enabled: true

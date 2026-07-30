@@ -1,4 +1,5 @@
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
+import type { ShellLaunchProfile } from "../../shared/ptyProtocol";
 import { createDarwinPlatformRuntime } from "./darwin";
 import { createLinuxPlatformRuntime } from "./linux";
 
@@ -25,8 +26,7 @@ export interface PlatformRuntime {
     useMacTextEditorFirst: boolean;
   };
   shell: {
-    platform: SupportedDesktopPlatform;
-    enablePosixShellIntegration: boolean;
+    profile: ShellLaunchProfile;
   };
   updater: {
     enabled: boolean;

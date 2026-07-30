@@ -1,5 +1,9 @@
 import { terminalSurfaceVmContent } from "@kmux/proto";
 
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
 import {
@@ -27,10 +31,47 @@ test.skip(
   "KMUX_PACKAGED_EXECUTABLE_PATH is required for packaged smoke tests"
 );
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function createGitFixtureRepo(root: string): string {
+  const repoDir = join(root, "packaged-shell-metadata-repo");
+  mkdirSync(repoDir, { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], {
+    cwd: repoDir,
+    stdio: "ignore"
+  });
+  writeFileSync(join(repoDir, "README.md"), "kmux\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=kmux",
+      "-c",
+      "user.email=kmux@example.invalid",
+      "commit",
+      "-m",
+      "initial"
+    ],
+    { cwd: repoDir, stdio: "ignore" }
+  );
+  return repoDir;
+}
+
 test("packaged kmux smoke flow validates launch, shell attach, CLI, notifications, and clean relaunch", async () => {
   const sandbox = createSandbox("kmux-packaged-smoke-");
   const launched = await launchKmuxWithSandbox(sandbox, {
-    executablePath: packagedExecutablePath
+    executablePath: packagedExecutablePath,
+    ...(process.platform === "linux"
+      ? {
+          env: {
+            PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+            SHELL: "/bin/bash"
+          }
+        }
+      : {})
   });
   let launchedCleanlyQuit = false;
   let relaunch: Awaited<ReturnType<typeof launchKmuxWithSandbox>> | undefined;
@@ -111,6 +152,62 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       "packaged shell should reach a running session state",
       15_000
     );
+
+    if (process.platform === "linux") {
+      const repoDir = createGitFixtureRepo(sandbox.profileRoot);
+      const expectedBranch = execFileSync(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        { cwd: repoDir, encoding: "utf8" }
+      ).trim();
+      const gitMarker = "__KMUX_PACKAGED_GIT_METADATA__";
+
+      runCliJson(cliPath, workspaceRoot, sandbox.socketPath, [
+        "surface",
+        "send-text",
+        "--surface",
+        activeSurfaceId,
+        "--text",
+        `cd ${shellQuote(repoDir)}; printf '${gitMarker}\\n'\r`
+      ]);
+      await waitForSurfaceSnapshotContains(
+        page,
+        activeSurfaceId,
+        gitMarker,
+        15_000
+      );
+
+      const gitMetadataView = await waitForView(
+        page,
+        (view) => {
+          const surface = terminalSurfaceVmContent(
+            view.activeWorkspace.surfaces[activeSurfaceId]
+          );
+          const row = view.workspaceRows.find(
+            (entry) => entry.workspaceId === targetWorkspaceId
+          );
+          return (
+            surface?.runtimeMetadata.cwd === repoDir &&
+            surface.runtimeMetadata.gitRepository?.root === repoDir &&
+            row?.cwd === repoDir &&
+            row.branch === expectedBranch &&
+            row.gitRepository?.root === repoDir
+          );
+        },
+        "packaged Linux bash should report Git cwd and repository metadata",
+        15_000
+      );
+      expect(
+        terminalSurfaceVmContent(
+          gitMetadataView.activeWorkspace.surfaces[activeSurfaceId]
+        )?.runtimeMetadata.gitRepository
+      ).toMatchObject({ root: repoDir, linkedWorktree: false });
+      expect(
+        gitMetadataView.workspaceRows.find(
+          (entry) => entry.workspaceId === targetWorkspaceId
+        )?.gitRepository
+      ).toMatchObject({ root: repoDir, linkedWorktree: false });
+    }
 
     const ping = runCliJson<{ pong: boolean }>(
       cliPath,

@@ -8,8 +8,8 @@ const linuxShellPolicy: ShellLaunchPolicy = {
   defaultShellArgs: [],
   stripManagedEnv: false,
   integration: {
-    enabled: false,
-    mode: "none"
+    enabled: true,
+    mode: "posix-wrapper"
   },
   agentPath: {
     helperBinDir: "/home/test/.local/share/kmux/hooks",
@@ -60,7 +60,7 @@ function createSpawnRequest(
 }
 
 describe("resolvePtySpawnLaunch", () => {
-  it("resolves a pty spawn through ShellLaunchPolicy with authoritative hook env", () => {
+  it("preserves the Linux wrapper env and shell-ready contract from ShellLaunchPolicy", () => {
     const launch = resolvePtySpawnLaunch(createSpawnRequest(), {
       HOME: "/home/test",
       ELECTRON_RUN_AS_NODE: "1",
@@ -73,7 +73,7 @@ describe("resolvePtySpawnLaunch", () => {
     expect(launch.shellPath).toBe("/bin/bash");
     expect(launch.args).toEqual([]);
     expect(launch.cwd).toBe("/home/test/project");
-    expect(launch.requiresShellReady).toBe(false);
+    expect(launch.requiresShellReady).toBe(true);
     expect(launch.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(launch.env.KMUX_SOCKET_PATH).toBe(
       "/run/user/1000/kmux/control.sock"
@@ -83,6 +83,11 @@ describe("resolvePtySpawnLaunch", () => {
     );
     expect(launch.env.KMUX_NODE_PATH).toBe("/opt/kmux/kmux");
     expect(launch.env.KMUX_WORKSPACE_ID).toBe("workspace_1");
+    expect(launch.env.KMUX_SHELL_INTEGRATION).toBe("1");
+    expect(launch.env.KMUX_ORIGINAL_HOME).toBe("/home/test");
+    expect(launch.env.KMUX_BASH_INTEGRATION_SCRIPT).toMatch(
+      /kmux-bash-.*\/kmux\.bash$/
+    );
     expect(launch.env.PATH).toBe(
       "/home/test/.local/share/kmux/wrappers:/opt/bin:/usr/bin"
     );

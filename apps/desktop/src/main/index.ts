@@ -325,7 +325,7 @@ async function bootstrap(): Promise<void> {
     USAGE_AGGREGATION_REVISION
   );
   const shellWrapperRuntime = createShellWrapperRuntime({
-    platform: platformRuntime.shell.platform,
+    platform: platformRuntime.platformId,
     tmpDir: join(paths.cacheDir, "shell-wrappers")
   });
   process.once("exit", () => {
@@ -334,7 +334,7 @@ async function bootstrap(): Promise<void> {
   const resolvedShellEnv = await resolveShellEnvironment({
     preferredShell: savedSettings?.shell,
     env: process.env,
-    platform: platformRuntime.shell.platform,
+    platform: platformRuntime.platformId,
     cachePath: paths.shellEnvCachePath
   });
   process.once("exit", cancelShellEnvironmentRefresh);
@@ -472,9 +472,7 @@ async function bootstrap(): Promise<void> {
         defaultShellPath: resolvedShellEnv.shellPath,
         launchShell: launch.shell,
         launchArgs: launch.args,
-        platform: platformRuntime.shell.platform,
-        enableShellIntegration:
-          platformRuntime.shell.enablePosixShellIntegration,
+        profile: platformRuntime.shell.profile,
         socketPath: paths.socketPath,
         nodePath: process.execPath,
         agentHookBinDir: paths.agentHookBinDir,

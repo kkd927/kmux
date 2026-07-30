@@ -11,18 +11,17 @@ import type {
 import type { DiagnosticsRecord } from "./diagnostics";
 
 export type ShellIntegrationMode = "none" | "posix-wrapper";
-export type ShellPolicyPlatform =
-  | "aix"
-  | "android"
-  | "darwin"
-  | "freebsd"
-  | "haiku"
-  | "linux"
-  | "openbsd"
-  | "sunos"
-  | "win32"
-  | "cygwin"
-  | "netbsd";
+
+/**
+ * Desktop platform shell behavior before the user has supplied launch args.
+ * Keep this data-only so the common policy builder, rather than platform
+ * conditionals, owns the per-session shell decision.
+ */
+export interface ShellLaunchProfile {
+  defaultArgs: "none" | "login";
+  stripManagedEnv: boolean;
+  integrationMode: ShellIntegrationMode;
+}
 
 export interface ShellLaunchPolicy {
   defaultShellPath: string;
@@ -149,9 +148,9 @@ export type PtyEvent =
 
 export function resolveDefaultShellArgs(
   shellPath: string | undefined,
-  platform: ShellPolicyPlatform
+  profile: ShellLaunchProfile
 ): string[] {
-  if (platform !== "darwin" || !shellPath) {
+  if (profile.defaultArgs !== "login" || !shellPath) {
     return [];
   }
 
@@ -173,27 +172,31 @@ export function resolveDefaultShellArgs(
 export function shouldStripShellManagedEnv(
   shellPath: string | undefined,
   launchArgs: string[] | undefined,
-  platform: ShellPolicyPlatform
+  profile: ShellLaunchProfile
 ): boolean {
   return (
-    platform === "darwin" &&
+    profile.stripManagedEnv &&
     launchArgs === undefined &&
-    resolveDefaultShellArgs(shellPath, platform).length > 0
+    resolveDefaultShellArgs(shellPath, profile).length > 0
   );
 }
 
 export function shouldApplyShellIntegration(
   shellPath: string | undefined,
   launchArgs: string[] | undefined,
-  platform: ShellPolicyPlatform
+  profile: ShellLaunchProfile
 ): boolean {
-  if (platform !== "darwin" || launchArgs !== undefined || !shellPath) {
+  if (
+    profile.integrationMode !== "posix-wrapper" ||
+    launchArgs !== undefined ||
+    !shellPath
+  ) {
     return false;
   }
   if (!isSupportedIntegrationShell(shellPath)) {
     return false;
   }
-  return resolveDefaultShellArgs(shellPath, platform).length > 0;
+  return true;
 }
 
 export function resolvePolicyShellPath(

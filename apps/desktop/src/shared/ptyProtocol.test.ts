@@ -11,8 +11,21 @@ import {
   shouldStripShellManagedEnv,
   type PtyEvent,
   type PtyRequest,
+  type ShellLaunchProfile,
   type ShellLaunchPolicy
 } from "./ptyProtocol";
+
+const macOsShellLaunchProfile: ShellLaunchProfile = {
+  defaultArgs: "login",
+  stripManagedEnv: true,
+  integrationMode: "posix-wrapper"
+};
+
+const linuxShellLaunchProfile: ShellLaunchProfile = {
+  defaultArgs: "none",
+  stripManagedEnv: false,
+  integrationMode: "posix-wrapper"
+};
 
 const shellLaunchPolicy: ShellLaunchPolicy = {
   defaultShellPath: "/bin/bash",
@@ -36,58 +49,102 @@ const shellLaunchPolicy: ShellLaunchPolicy = {
 
 describe("desktop pty protocol", () => {
   it("resolves shell policy defaults before pty-host launch", () => {
-    expect(resolveDefaultShellArgs("/bin/zsh", "darwin")).toEqual(["-l"]);
-    expect(resolveDefaultShellArgs("/bin/zsh/", "darwin")).toEqual(["-l"]);
-    expect(resolveDefaultShellArgs("/bin/sh", "darwin")).toEqual(["-l"]);
-    expect(resolveDefaultShellArgs("/opt/homebrew/bin/fish", "darwin")).toEqual(
+    expect(
+      resolveDefaultShellArgs("/bin/zsh", macOsShellLaunchProfile)
+    ).toEqual(["-l"]);
+    expect(
+      resolveDefaultShellArgs("/bin/zsh/", macOsShellLaunchProfile)
+    ).toEqual(["-l"]);
+    expect(resolveDefaultShellArgs("/bin/sh", macOsShellLaunchProfile)).toEqual(
       ["-l"]
     );
-    expect(resolveDefaultShellArgs("/bin/bash", "darwin")).toEqual(["--login"]);
-    expect(resolveDefaultShellArgs("/usr/local/bin/pwsh", "darwin")).toEqual([
-      "-Login"
-    ]);
+    expect(
+      resolveDefaultShellArgs("/opt/homebrew/bin/fish", macOsShellLaunchProfile)
+    ).toEqual(["-l"]);
+    expect(
+      resolveDefaultShellArgs("/bin/bash", macOsShellLaunchProfile)
+    ).toEqual(["--login"]);
+    expect(
+      resolveDefaultShellArgs("/usr/local/bin/pwsh", macOsShellLaunchProfile)
+    ).toEqual(["-Login"]);
     expect(
       resolveDefaultShellArgs(
         "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-        "darwin"
+        macOsShellLaunchProfile
       )
     ).toEqual(["-Login"]);
-    expect(resolveDefaultShellArgs("/usr/bin/env", "darwin")).toEqual([]);
-    expect(resolveDefaultShellArgs("/bin/zsh", "linux")).toEqual([]);
-    expect(resolveDefaultShellArgs("/bin/bash", "linux")).toEqual([]);
+    expect(
+      resolveDefaultShellArgs("/usr/bin/env", macOsShellLaunchProfile)
+    ).toEqual([]);
+    expect(
+      resolveDefaultShellArgs("/bin/zsh", linuxShellLaunchProfile)
+    ).toEqual([]);
+    expect(
+      resolveDefaultShellArgs("/bin/bash", linuxShellLaunchProfile)
+    ).toEqual([]);
   });
 
   it("keeps shell integration policy decisions outside pty-host runtime", () => {
-    expect(shouldApplyShellIntegration("/bin/zsh", undefined, "darwin")).toBe(
-      true
-    );
-    expect(shouldApplyShellIntegration("/bin/bash", undefined, "darwin")).toBe(
-      true
-    );
     expect(
-      shouldApplyShellIntegration("/opt/homebrew/bin/fish", undefined, "darwin")
+      shouldApplyShellIntegration(
+        "/bin/zsh",
+        undefined,
+        macOsShellLaunchProfile
+      )
     ).toBe(true);
-    expect(shouldApplyShellIntegration("/bin/zsh", ["-l"], "darwin")).toBe(
-      false
-    );
-    expect(shouldApplyShellIntegration("/bin/zsh", undefined, "linux")).toBe(
-      false
-    );
-    expect(shouldApplyShellIntegration("/bin/sh", undefined, "darwin")).toBe(
-      false
-    );
+    expect(
+      shouldApplyShellIntegration(
+        "/bin/bash",
+        undefined,
+        macOsShellLaunchProfile
+      )
+    ).toBe(true);
+    expect(
+      shouldApplyShellIntegration(
+        "/opt/homebrew/bin/fish",
+        undefined,
+        macOsShellLaunchProfile
+      )
+    ).toBe(true);
+    expect(
+      shouldApplyShellIntegration("/bin/zsh", ["-l"], macOsShellLaunchProfile)
+    ).toBe(false);
+    expect(
+      shouldApplyShellIntegration(
+        "/bin/zsh",
+        undefined,
+        linuxShellLaunchProfile
+      )
+    ).toBe(true);
+    expect(
+      shouldApplyShellIntegration(
+        "/bin/bash",
+        undefined,
+        linuxShellLaunchProfile
+      )
+    ).toBe(true);
+    expect(
+      shouldApplyShellIntegration(
+        "/usr/bin/fish",
+        undefined,
+        linuxShellLaunchProfile
+      )
+    ).toBe(true);
+    expect(
+      shouldApplyShellIntegration("/bin/sh", undefined, linuxShellLaunchProfile)
+    ).toBe(false);
   });
 
   it("strips shell-managed env only for default macOS login launches", () => {
-    expect(shouldStripShellManagedEnv("/bin/zsh", undefined, "darwin")).toBe(
-      true
-    );
-    expect(shouldStripShellManagedEnv("/bin/zsh", ["-l"], "darwin")).toBe(
-      false
-    );
-    expect(shouldStripShellManagedEnv("/bin/zsh", undefined, "linux")).toBe(
-      false
-    );
+    expect(
+      shouldStripShellManagedEnv("/bin/zsh", undefined, macOsShellLaunchProfile)
+    ).toBe(true);
+    expect(
+      shouldStripShellManagedEnv("/bin/zsh", ["-l"], macOsShellLaunchProfile)
+    ).toBe(false);
+    expect(
+      shouldStripShellManagedEnv("/bin/zsh", undefined, linuxShellLaunchProfile)
+    ).toBe(false);
   });
 
   it("resolves missing launch shells from the serialized policy", () => {

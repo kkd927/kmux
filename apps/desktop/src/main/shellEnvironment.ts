@@ -18,6 +18,7 @@ import {
   resolveDefaultShellArgs,
   shouldApplyShellIntegration,
   shouldStripShellManagedEnv,
+  type ShellLaunchProfile,
   type ShellLaunchPolicy
 } from "../shared/ptyProtocol";
 
@@ -218,8 +219,7 @@ export interface BuildShellLaunchPolicyOptions {
   defaultShellPath: string;
   launchShell?: string;
   launchArgs?: string[];
-  platform: NodeJS.Platform;
-  enableShellIntegration: boolean;
+  profile: ShellLaunchProfile;
   socketPath: string;
   nodePath: string;
   agentHookBinDir: string;
@@ -254,21 +254,19 @@ export function buildShellLaunchPolicy(
   options: BuildShellLaunchPolicyOptions
 ): ShellLaunchPolicy {
   const shellPath = options.launchShell?.trim() || options.defaultShellPath;
-  const integrationEnabled =
-    options.enableShellIntegration &&
-    shouldApplyShellIntegration(
-      shellPath,
-      options.launchArgs,
-      options.platform
-    );
+  const integrationEnabled = shouldApplyShellIntegration(
+    shellPath,
+    options.launchArgs,
+    options.profile
+  );
 
   return {
     defaultShellPath: shellPath,
-    defaultShellArgs: resolveDefaultShellArgs(shellPath, options.platform),
+    defaultShellArgs: resolveDefaultShellArgs(shellPath, options.profile),
     stripManagedEnv: shouldStripShellManagedEnv(
       shellPath,
       options.launchArgs,
-      options.platform
+      options.profile
     ),
     integration: {
       enabled: integrationEnabled,

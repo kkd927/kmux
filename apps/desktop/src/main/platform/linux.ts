@@ -37,8 +37,11 @@ export function createLinuxPlatformRuntime(options: {
       useMacTextEditorFirst: false
     },
     shell: {
-      platform: "linux",
-      enablePosixShellIntegration: false
+      profile: {
+        defaultArgs: "none",
+        stripManagedEnv: false,
+        integrationMode: "posix-wrapper"
+      }
     },
     updater: {
       enabled:
