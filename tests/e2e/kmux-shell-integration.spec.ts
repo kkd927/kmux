@@ -24,6 +24,17 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function shellCompletionMarker(
+  firstPart: string,
+  secondPart: string
+): { command: string; output: string } {
+  return {
+    command:
+      `printf '%s%s\\n' ${shellQuote(firstPart)} ` + shellQuote(secondPart),
+    output: `${firstPart}${secondPart}`
+  };
+}
+
 function createGitFixtureRepo(root: string): string {
   const repoDir = join(root, "branch-refresh-repo");
   mkdirSync(repoDir, { recursive: true });
@@ -82,6 +93,12 @@ for (const shellCase of shellCases) {
   test(`kmux tracks cwd and branch changes for ${shellPath}`, async () => {
     test.skip(!!shellCase.skipReason, shellCase.skipReason ?? "");
 
+    const repoEntered = shellCompletionMarker("__KMUX_REPO_", "ENTERED__");
+    const branchSwitched = shellCompletionMarker(
+      "__KMUX_BRANCH_",
+      "SWITCHED__"
+    );
+    const repoLeft = shellCompletionMarker("__KMUX_REPO_", "LEFT__");
     const launched = await launchKmux(
       `kmux-e2e-shell-integration-${shellName}-`,
       {
@@ -114,10 +131,13 @@ for (const shellCase of shellCases) {
             !!activeSurfaceId &&
             terminalSurfaceVmContent(
               view.activeWorkspace.surfaces[activeSurfaceId]
-            )?.runtimeStatus === "running"
+            )?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(
+              view.activeWorkspace.surfaces[activeSurfaceId]
+            )?.shellInputReady === true
           );
         },
-        "initial shell should reach a running session state",
+        "initial shell should be ready for terminal input",
         10_000
       );
 
@@ -130,14 +150,14 @@ for (const shellCase of shellCases) {
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
         {
           surfaceId: activeSurfaceId,
-          text: `cd ${shellQuote(repoDir)}; pwd\r`
+          text: `cd ${shellQuote(repoDir)}; ` + `${repoEntered.command}\r`
         }
       );
 
       await waitForSurfaceSnapshotContains(
         page,
         activeSurfaceId,
-        repoDir,
+        repoEntered.output,
         10_000
       );
 
@@ -191,14 +211,14 @@ for (const shellCase of shellCases) {
           surfaceId: activeSurfaceId,
           text:
             `git switch -c ${shellQuote(switchedBranch)}; ` +
-            "printf '__KMUX_BRANCH_SWITCHED__\\n'\r"
+            `${branchSwitched.command}\r`
         }
       );
 
       await waitForSurfaceSnapshotContains(
         page,
         activeSurfaceId,
-        "__KMUX_BRANCH_SWITCHED__",
+        branchSwitched.output,
         10_000
       );
 
@@ -224,14 +244,15 @@ for (const shellCase of shellCases) {
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
         {
           surfaceId: activeSurfaceId,
-          text: `cd ${shellQuote(sandbox.shellHomeDir)}; pwd\r`
+          text:
+            `cd ${shellQuote(sandbox.shellHomeDir)}; ` + `${repoLeft.command}\r`
         }
       );
 
       await waitForSurfaceSnapshotContains(
         page,
         activeSurfaceId,
-        sandbox.shellHomeDir,
+        repoLeft.output,
         10_000
       );
 
