@@ -4,6 +4,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   closeKmuxApp,
+  committedTerminalRows,
   createSandbox,
   descendantProcessIds,
   destroySandbox,
@@ -177,9 +178,8 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       (view) => Object.keys(view.activeWorkspace.panes).length === 2,
       "packaged smoke split should create a second pane"
     );
-    const originalRows = page.locator(
-      `[data-testid="terminal-${activeSurfaceId}"] .xterm-rows`
-    );
+    const originalRows = committedTerminalRows(page, activeSurfaceId);
+    await expect(originalRows).toHaveCount(1);
     await expect(originalRows).toContainText(marker);
 
     await dispatch(page, {
@@ -308,9 +308,9 @@ test("packaged kmux smoke flow validates launch, shell attach, CLI, notification
       15_000
     );
     expect(reloadSnapshot).toContain(reloadMarker);
-    await expect(reloadedTerminal.locator(".xterm-rows")).toContainText(
-      reloadMarker
-    );
+    const reloadedRows = committedTerminalRows(page, activeSurfaceId);
+    await expect(reloadedRows).toHaveCount(1);
+    await expect(reloadedRows).toContainText(reloadMarker);
 
     const appPid = launched.app.process()?.pid;
     expect(appPid).toBeTruthy();

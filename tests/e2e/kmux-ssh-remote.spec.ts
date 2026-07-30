@@ -8,6 +8,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { startSshTarget } from "../ssh/harness/sshTarget";
 import {
   closeKmuxApp,
+  committedTerminalHost,
+  committedTerminalRows,
   createSandbox,
   destroySandbox,
   forceKillKmuxApp,
@@ -536,16 +538,6 @@ async function submitSshPassword(page: Page, password: string): Promise<void> {
   await expect(authentication).toBeVisible({ timeout: 30_000 });
   await authentication.getByLabel("SSH password or passphrase").fill(password);
   await authentication.getByRole("button", { name: "Continue" }).click();
-}
-
-function committedTerminalHost(page: Page, surfaceId: string) {
-  return page
-    .getByTestId(`terminal-${surfaceId}`)
-    .locator(':scope > div:not([data-terminal-hydration-stage="true"])');
-}
-
-function committedTerminalRows(page: Page, surfaceId: string) {
-  return committedTerminalHost(page, surfaceId).locator(".xterm-rows");
 }
 
 async function readKeeperPids(target: {

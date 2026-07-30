@@ -506,6 +506,16 @@ export function terminalInputForSurface(page: Page, surfaceId: string) {
     .locator("textarea.xterm-helper-textarea:visible");
 }
 
+export function committedTerminalHost(page: Page, surfaceId: string) {
+  return page
+    .getByTestId(`terminal-${surfaceId}`)
+    .locator(':scope > div:not([data-terminal-hydration-stage="true"])');
+}
+
+export function committedTerminalRows(page: Page, surfaceId: string) {
+  return committedTerminalHost(page, surfaceId).locator(".xterm-rows");
+}
+
 export async function dispatch(
   page: Page,
   action: unknown
