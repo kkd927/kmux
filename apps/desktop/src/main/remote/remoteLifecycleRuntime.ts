@@ -95,6 +95,8 @@ export interface CreateRemoteLifecycleRuntimeOptions {
   dispatchAppAction?: (action: AppAction) => void;
   eventReceiptStore?: RemoteEventReceiptStore;
   reportError?: (error: Error) => void;
+  reconnectTarget?: (targetId: Id) => Promise<unknown>;
+  onTargetConnected?: (targetId: Id) => void;
   retainedInventory?: RetainedSessionInventoryStore;
   closeWorkspaceProduct?: (workspaceId: Id) => void;
   persistDurableProductSnapshot?: (state: AppState) => void;
@@ -206,9 +208,15 @@ export class RemoteLifecycleRuntime {
         structuredClone(connection)
       );
       for (const connection of reconnect) {
-        void this.enqueueTarget(connection.targetId, async () => {
+        void (async () => {
           try {
-            await this.connectTargetNow(connection);
+            if (this.options.reconnectTarget) {
+              await this.options.reconnectTarget(connection.targetId);
+            } else {
+              await this.enqueueTarget(connection.targetId, () =>
+                this.connectTargetNow(connection)
+              );
+            }
           } catch (error) {
             this.report(error);
             // A replacement UtilityProcess that fails before ready must not
@@ -219,7 +227,7 @@ export class RemoteLifecycleRuntime {
               this.scheduleRuntimeReconnect();
             }
           }
-        });
+        })();
       }
     }, delayMs);
     this.runtimeReconnectTimer.unref();
@@ -231,7 +239,7 @@ export class RemoteLifecycleRuntime {
     if (!connection) return;
     this.connectedTargets.delete(event.targetId);
     this.markObservationUnknown(event.targetId);
-    void this.enqueueTarget(event.targetId, async () => {
+    void (async () => {
       if (
         this.stopping ||
         this.connections.get(event.targetId) !== connection
@@ -239,11 +247,17 @@ export class RemoteLifecycleRuntime {
         return;
       }
       try {
-        await this.connectTargetNow(structuredClone(connection));
+        if (this.options.reconnectTarget) {
+          await this.options.reconnectTarget(event.targetId);
+        } else {
+          await this.enqueueTarget(event.targetId, () =>
+            this.connectTargetNow(structuredClone(connection))
+          );
+        }
       } catch (error) {
         this.report(error);
       }
-    });
+    })();
   };
 
   constructor(private readonly options: CreateRemoteLifecycleRuntimeOptions) {
@@ -321,6 +335,7 @@ export class RemoteLifecycleRuntime {
     connection: RemoteHostTargetConnectOptions;
     token: RemoteHostTargetPromoteOptions["token"];
     retentionPolicy?: RemoteHostTargetPromoteOptions["retentionPolicy"];
+    assertPromotionCurrent?: () => void;
   }): Promise<Extract<RemoteBridgeResponseBody, { type: "hello" }>> {
     const binding = validateRemoteTargetBinding(
       structuredClone(options.binding)
@@ -340,6 +355,14 @@ export class RemoteLifecycleRuntime {
       if (this.stopping) {
         throw new Error("remote lifecycle is stopping");
       }
+      try {
+        options.assertPromotionCurrent?.();
+      } catch (error) {
+        await this.options.host
+          .discardTargetVerification(options.verificationId)
+          .catch(() => undefined);
+        throw error;
+      }
       let hello: Extract<RemoteBridgeResponseBody, { type: "hello" }>;
       try {
         hello = decodeHello(
@@ -358,6 +381,21 @@ export class RemoteLifecycleRuntime {
       } catch (error) {
         await this.options.host
           .discardTargetVerification(options.verificationId)
+          .catch(() => undefined);
+        throw error;
+      }
+      try {
+        options.assertPromotionCurrent?.();
+      } catch (error) {
+        // A profile edit can happen while remote-host is promoting. The
+        // verification has already been consumed at that point, so tear down
+        // the stale target before a newer attempt enters this target queue.
+        this.connections.delete(binding.id);
+        this.connectedTargets.delete(binding.id);
+        this.targetPersistenceLevels.delete(binding.id);
+        this.markObservationUnknown(binding.id);
+        await this.options.host
+          .disconnectTarget(binding.id)
           .catch(() => undefined);
         throw error;
       }
@@ -1197,6 +1235,11 @@ export class RemoteLifecycleRuntime {
         .disconnectTarget(connection.targetId)
         .catch(() => undefined);
       throw error;
+    }
+    try {
+      this.options.onTargetConnected?.(connection.targetId);
+    } catch (error) {
+      this.report(error);
     }
     return hello;
   }

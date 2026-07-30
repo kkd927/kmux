@@ -16,6 +16,7 @@ import type {
   ExternalAgentSessionsSnapshot,
   RetainedRemoteSessionResourceKey,
   RetainedRemoteSessionsSnapshot,
+  SshAskpassPrompt,
   SshAskpassResponseRequest,
   SshProfileVm,
   SurfaceCapturePayload,
@@ -98,6 +99,10 @@ function registerTestHandlers(options: {
   ) => Promise<RemoteOperationCommandResult>;
   resolveSshProfile?: (profileId: string) => Promise<SshProfileVm | null>;
   respondSshAskpass?: (request: SshAskpassResponseRequest) => void;
+  claimSshAskpassPresenter?: (presenterId: number) => SshAskpassPrompt[];
+  reconnectSshWorkspace?: (workspaceId: string) => Promise<{
+    status: "connected" | "cancelled" | "failed";
+  }>;
   cleanSshRuntime?: (profileId: string) => Promise<{
     inspected: number;
     removed: string[];
@@ -194,7 +199,12 @@ function registerTestHandlers(options: {
       continuation: "convert" as const
     })),
     cancelSshWorkspacePreparation: vi.fn(),
+    claimSshAskpassPresenter:
+      options.claimSshAskpassPresenter ?? vi.fn(() => []),
     respondSshAskpass: options.respondSshAskpass ?? vi.fn(),
+    reconnectSshWorkspace:
+      options.reconnectSshWorkspace ??
+      vi.fn(async () => ({ status: "connected" as const })),
     closeWorkspaceSafely: options.closeWorkspaceSafely ?? vi.fn(),
     closeOtherWorkspacesSafely: options.closeOtherWorkspacesSafely ?? vi.fn(),
     attachTerminalStream: options.attachTerminalStream ?? vi.fn(),
@@ -553,8 +563,16 @@ describe("ipc handlers", () => {
     ).toThrow(/trusted main frame/u);
   });
 
-  it("accepts SSH askpass responses only from the trusted renderer", () => {
+  it("accepts SSH askpass presentation and responses only from the trusted renderer", () => {
     const respondSshAskpass = vi.fn();
+    const prompt: SshAskpassPrompt = {
+      requestId: "prompt_1",
+      profileId: "profile_1",
+      profileName: "Development",
+      prompt: "Password:",
+      purpose: "startup-restore"
+    };
+    const claimSshAskpassPresenter = vi.fn(() => [prompt]);
     registerTestHandlers({
       snapshot: {
         updatedAt: "2026-06-10T00:00:00.000Z",
@@ -564,7 +582,8 @@ describe("ipc handlers", () => {
         workspaceId: "workspace-1",
         surfaceId: "surface-1"
       },
-      respondSshAskpass
+      respondSshAskpass,
+      claimSshAskpassPresenter
     });
     const mainFrame = {
       detached: false,
@@ -572,7 +591,7 @@ describe("ipc handlers", () => {
     };
     const event = {
       senderFrame: mainFrame,
-      sender: { mainFrame }
+      sender: { id: 17, mainFrame }
     } as unknown as IpcMainInvokeEvent;
     const response: SshAskpassResponseRequest = {
       requestId: "prompt_1",
@@ -580,10 +599,20 @@ describe("ipc handlers", () => {
       response: "one-time-secret"
     };
 
+    expect(handlers.get("kmux:ssh-askpass:claim-presenter")!(event)).toEqual([
+      prompt
+    ]);
+    expect(claimSshAskpassPresenter).toHaveBeenCalledWith(17);
     expect(
       handlers.get("kmux:ssh-askpass:respond")!(event, response)
     ).toBeUndefined();
     expect(respondSshAskpass).toHaveBeenCalledWith(response);
+    expect(() =>
+      handlers.get("kmux:ssh-askpass:claim-presenter")!({
+        senderFrame: { ...mainFrame },
+        sender: { id: 18, mainFrame }
+      } as unknown as IpcMainInvokeEvent)
+    ).toThrow(/trusted main frame/u);
     expect(() =>
       handlers.get("kmux:ssh-askpass:respond")!(
         {

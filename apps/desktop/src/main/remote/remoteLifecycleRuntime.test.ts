@@ -1052,6 +1052,7 @@ describe("RemoteLifecycleRuntime", () => {
       }
     };
     const observedBindings: RemoteTargetBinding[] = [];
+    const onTargetConnected = vi.fn();
     const runtime = createRuntime(
       fixture.state,
       host,
@@ -1062,20 +1063,26 @@ describe("RemoteLifecycleRuntime", () => {
       undefined,
       undefined,
       undefined,
-      observedBindings
+      observedBindings,
+      onTargetConnected
     );
     runtime.recover();
+    const assertPromotionCurrent = vi.fn();
 
     await runtime.promoteVerifiedTarget({
       verificationId: "verification_1",
       binding: candidate,
       connection: connection(),
-      token: "b".repeat(64)
+      token: "b".repeat(64),
+      assertPromotionCurrent
     });
 
     expect(observedBindings[0]?.locator.lastVerifiedAt).toBe(
       candidate.locator.lastVerifiedAt
     );
+    expect(assertPromotionCurrent).toHaveBeenCalledTimes(2);
+    expect(onTargetConnected).toHaveBeenCalledOnce();
+    expect(onTargetConnected).toHaveBeenCalledWith("target_1");
     await runtime.stop();
   });
 
@@ -1259,7 +1266,8 @@ function createRuntime(
     receiptStore: RemoteEventReceiptStore;
     persist: (state: AppState) => void;
   },
-  observedBindings: RemoteTargetBinding[] = []
+  observedBindings: RemoteTargetBinding[] = [],
+  onTargetConnected?: (targetId: string) => void
 ): RemoteLifecycleRuntime {
   return new RemoteLifecycleRuntime({
     desktopInstallationId: "desktop_1",
@@ -1289,6 +1297,7 @@ function createRuntime(
       : persistDurableProductSnapshot === undefined
         ? {}
         : { persistDurableProductSnapshot }),
+    ...(onTargetConnected === undefined ? {} : { onTargetConnected }),
     reportError: (error) => errors.push(error)
   });
 }

@@ -54,6 +54,7 @@ export function toElectronAccelerator(
 export function buildNativeWorkspaceContextMenu(params: {
   workspaceId: Id;
   getContextView(): WorkspaceContextView;
+  reconnectSshWorkspace(workspaceId: Id): void;
   openSshWorkspace(workspaceId: Id): void;
   convertToWorktree(workspaceId: Id): void;
   closeWorkspace(workspaceId: Id): void;
@@ -92,6 +93,7 @@ export function buildNativeWorkspaceContextMenu(params: {
                     params.workspaceId
                   ),
                 {
+                  reconnectSshWorkspace: params.reconnectSshWorkspace,
                   openSshWorkspace: params.openSshWorkspace,
                   convertToWorktree: params.convertToWorktree,
                   closeWorkspace: params.closeWorkspace,

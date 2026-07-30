@@ -76,6 +76,7 @@ describe("native workspace context menu", () => {
       workspaceId: "workspace_1",
       getContextView: () => view,
       reservedSystemChords: policy.reservedSystemChords,
+      reconnectSshWorkspace: vi.fn(),
       openSshWorkspace: vi.fn(),
       convertToWorktree: vi.fn(),
       closeWorkspace: vi.fn(),

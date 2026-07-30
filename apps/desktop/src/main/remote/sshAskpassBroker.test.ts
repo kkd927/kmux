@@ -32,11 +32,12 @@ describe("SSH askpass broker", () => {
     broker = createSshAskpassBroker({
       electronPath: process.execPath,
       clientPath: "/tmp/kmux-askpass-client.js",
-      publishPrompt: (prompt) => prompts.push(prompt),
+      publishPrompt: (_presenterId, prompt) => prompts.push(prompt),
       makePromptId: () => "prompt_1"
     });
     await broker.start();
-    const context = await broker.createContext(profile());
+    broker.claimPresenter(1);
+    const context = await broker.createContext(profile(), "explicit-connect");
     const metadata = statSync(context.askpassPath);
     expect(metadata.mode & 0o777).toBe(0o700);
     const helper = readFileSync(context.askpassPath, "utf8");
@@ -54,7 +55,8 @@ describe("SSH askpass broker", () => {
     expect(prompts[0]).toMatchObject({
       requestId: "prompt_1",
       profileId: "profile_1",
-      profileName: "Development"
+      profileName: "Development",
+      purpose: "explicit-connect"
     });
     broker.respond({
       requestId: "prompt_1",
@@ -99,14 +101,15 @@ describe("SSH askpass broker", () => {
       broker = createSshAskpassBroker({
         electronPath: process.execPath,
         clientPath,
-        publishPrompt: (prompt) => {
+        publishPrompt: (_presenterId, prompt) => {
           prompts.push(prompt);
           publishPrompt(prompt);
         },
         makePromptId: () => "prompt_product_client"
       });
       await broker.start();
-      const context = await broker.createContext(profile());
+      broker.claimPresenter(1);
+      const context = await broker.createContext(profile(), "startup-restore");
       const hostKeyPrompt = [
         "The authenticity of host '192.168.45.117 (192.168.45.117)' can't be established.",
         "ED25519 key fingerprint is: SHA256:UGsgm186h5zmAWGWQIkQhrVufyvy6vF7zso2i+Clx6k",
@@ -154,12 +157,13 @@ describe("SSH askpass broker", () => {
     broker = createSshAskpassBroker({
       electronPath: process.execPath,
       clientPath: "/tmp/kmux-askpass-client.js",
-      publishPrompt: (prompt) => {
+      publishPrompt: (_presenterId, prompt) => {
         published = prompt;
       }
     });
     await broker.start();
-    const context = await broker.createContext(profile());
+    broker.claimPresenter(1);
+    const context = await broker.createContext(profile(), "manual-reconnect");
     const helper = readFileSync(context.askpassPath, "utf8");
     const responsePromise = request(
       exportedValue(helper, "KMUX_SSH_ASKPASS_SOCKET"),
@@ -181,11 +185,12 @@ describe("SSH askpass broker", () => {
     broker = createSshAskpassBroker({
       electronPath: process.execPath,
       clientPath: "/tmp/kmux-askpass-client.js",
-      publishPrompt: (prompt) => prompts.push(prompt),
+      publishPrompt: (_presenterId, prompt) => prompts.push(prompt),
       makePromptId: () => "prompt_utf8"
     });
     await broker.start();
-    const context = await broker.createContext(profile());
+    broker.claimPresenter(1);
+    const context = await broker.createContext(profile(), "explicit-connect");
     const helper = readFileSync(context.askpassPath, "utf8");
     const body = {
       version: 1,
@@ -213,11 +218,12 @@ describe("SSH askpass broker", () => {
     broker = createSshAskpassBroker({
       electronPath: process.execPath,
       clientPath: "/tmp/kmux-askpass-client.js",
-      publishPrompt: (prompt) => prompts.push(prompt),
+      publishPrompt: (_presenterId, prompt) => prompts.push(prompt),
       makePromptId: () => "prompt_collision"
     });
     await broker.start();
-    const context = await broker.createContext(profile());
+    broker.claimPresenter(1);
+    const context = await broker.createContext(profile(), "explicit-connect");
     const helper = readFileSync(context.askpassPath, "utf8");
     const socketPath = exportedValue(helper, "KMUX_SSH_ASKPASS_SOCKET");
     const requestBody = {
@@ -260,6 +266,106 @@ describe("SSH askpass broker", () => {
     ).toThrow(/cannot contain a secret/u);
   });
 
+  it("replays pending prompts in FIFO order across presenter replacement and isolates cancellation by context", async () => {
+    const published = vi.fn();
+    const resolved = vi.fn();
+    let promptIndex = 0;
+    broker = createSshAskpassBroker({
+      electronPath: process.execPath,
+      clientPath: "/tmp/kmux-askpass-client.js",
+      publishPrompt: published,
+      publishResolution: resolved,
+      makePromptId: () => `prompt_${++promptIndex}`
+    });
+    await broker.start();
+    const firstContext = await broker.createContext(
+      profile(),
+      "startup-restore"
+    );
+    const secondContext = await broker.createContext(
+      { ...profile(), id: "profile_2", name: "Staging" },
+      "manual-reconnect"
+    );
+    const firstHelper = readFileSync(firstContext.askpassPath, "utf8");
+    const secondHelper = readFileSync(secondContext.askpassPath, "utf8");
+    const first = request(
+      exportedValue(firstHelper, "KMUX_SSH_ASKPASS_SOCKET"),
+      {
+        version: 1,
+        token: exportedValue(firstHelper, "KMUX_SSH_ASKPASS_TOKEN"),
+        contextId: exportedValue(firstHelper, "KMUX_SSH_ASKPASS_CONTEXT"),
+        prompt: "First password:"
+      }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = request(
+      exportedValue(secondHelper, "KMUX_SSH_ASKPASS_SOCKET"),
+      {
+        version: 1,
+        token: exportedValue(secondHelper, "KMUX_SSH_ASKPASS_TOKEN"),
+        contextId: exportedValue(secondHelper, "KMUX_SSH_ASKPASS_CONTEXT"),
+        prompt: "Second password:"
+      }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(published).not.toHaveBeenCalled();
+    expect(broker.claimPresenter(41)).toMatchObject([
+      { requestId: "prompt_1", purpose: "startup-restore" },
+      { requestId: "prompt_2", purpose: "manual-reconnect" }
+    ]);
+    broker.releasePresenter(41);
+    expect(broker.claimPresenter(42).map((prompt) => prompt.requestId)).toEqual(
+      ["prompt_1", "prompt_2"]
+    );
+
+    broker.respond({ requestId: "prompt_1", cancelled: true });
+    expect(firstContext.wasCancelled()).toBe(true);
+    expect(secondContext.wasCancelled()).toBe(false);
+    await expect(first).resolves.toEqual({ status: "cancelled" });
+    expect(resolved).toHaveBeenCalledWith(42, "prompt_1");
+
+    broker.respond({
+      requestId: "prompt_2",
+      cancelled: false,
+      response: "staging-secret"
+    });
+    await expect(second).resolves.toEqual({
+      status: "ok",
+      response: "staging-secret"
+    });
+    expect(resolved).toHaveBeenCalledWith(42, "prompt_2");
+    await secondContext.dispose();
+  });
+
+  it("expires an unanswered pending prompt and removes it from presenter snapshots", async () => {
+    const resolved = vi.fn();
+    broker = createSshAskpassBroker({
+      electronPath: process.execPath,
+      clientPath: "/tmp/kmux-askpass-client.js",
+      publishPrompt: () => undefined,
+      publishResolution: resolved,
+      makePromptId: () => "prompt_timeout",
+      promptTimeoutMs: 25
+    });
+    await broker.start();
+    broker.claimPresenter(7);
+    const context = await broker.createContext(profile(), "startup-restore");
+    const helper = readFileSync(context.askpassPath, "utf8");
+    const response = request(exportedValue(helper, "KMUX_SSH_ASKPASS_SOCKET"), {
+      version: 1,
+      token: exportedValue(helper, "KMUX_SSH_ASKPASS_TOKEN"),
+      contextId: exportedValue(helper, "KMUX_SSH_ASKPASS_CONTEXT"),
+      prompt: "Password:"
+    });
+
+    await expect(response).resolves.toEqual({ status: "cancelled" });
+    expect(broker.claimPresenter(7)).toEqual([]);
+    expect(resolved).toHaveBeenCalledWith(7, "prompt_timeout");
+    expect(context.wasCancelled()).toBe(false);
+    await context.dispose();
+  });
+
   it("closes an idle client without waiting for the prompt timeout", async () => {
     broker = createSshAskpassBroker({
       electronPath: process.execPath,
@@ -267,7 +373,7 @@ describe("SSH askpass broker", () => {
       publishPrompt: () => undefined
     });
     await broker.start();
-    const context = await broker.createContext(profile());
+    const context = await broker.createContext(profile(), "explicit-connect");
     const helper = readFileSync(context.askpassPath, "utf8");
     const socket = createConnection(
       exportedValue(helper, "KMUX_SSH_ASKPASS_SOCKET")

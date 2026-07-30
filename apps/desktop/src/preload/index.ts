@@ -48,6 +48,7 @@ import type {
   SshWorkspaceOpenResult,
   SshWorkspacePrepareRequest,
   SshWorkspacePrepareResult,
+  SshWorkspaceReconnectResult,
   UsageViewSnapshot,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
@@ -212,6 +213,14 @@ const api = {
   respondSshAskpass(request: SshAskpassResponseRequest): Promise<void> {
     return ipcRenderer.invoke("kmux:ssh-askpass:respond", request);
   },
+  claimSshAskpassPresenter(): Promise<SshAskpassPrompt[]> {
+    return ipcRenderer.invoke("kmux:ssh-askpass:claim-presenter");
+  },
+  reconnectSshWorkspace(
+    workspaceId: string
+  ): Promise<SshWorkspaceReconnectResult> {
+    return ipcRenderer.invoke("kmux:ssh-workspace:reconnect", workspaceId);
+  },
   closeWorkspaceSafely(workspaceId: string): Promise<void> {
     return ipcRenderer.invoke("kmux:workspace:close-safely", workspaceId);
   },
@@ -250,6 +259,14 @@ const api = {
     ) => listener(prompt);
     ipcRenderer.on("kmux:ssh-askpass-prompt", handler);
     return () => ipcRenderer.off("kmux:ssh-askpass-prompt", handler);
+  },
+  subscribeSshAskpassResolution(
+    listener: (requestId: string) => void
+  ): () => void {
+    const handler = (_event: Electron.IpcRendererEvent, requestId: string) =>
+      listener(requestId);
+    ipcRenderer.on("kmux:ssh-askpass-resolved", handler);
+    return () => ipcRenderer.off("kmux:ssh-askpass-resolved", handler);
   },
   attachTerminalStream(
     surfaceId: string,

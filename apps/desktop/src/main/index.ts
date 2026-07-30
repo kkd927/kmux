@@ -158,6 +158,7 @@ import { createRemoteEventReceiptStore } from "./remote/remoteEventReceiptStore"
 import { RemoteLifecycleRuntime } from "./remote/remoteLifecycleRuntime";
 import { createRemoteTargetBindingStore } from "./remote/remoteTargetBindingStore";
 import { createSshConnectionRuntime } from "./remote/sshConnectionRuntime";
+import { createSshReconnectCoordinator } from "./remote/sshReconnectCoordinator";
 import { listOpenSshAliases } from "./remote/openSshAliasCatalog";
 import { createSshProfileConnectionResolver } from "./remote/sshProfileConnection";
 import { createSshProfileStore } from "./remote/sshProfileStore";
@@ -631,19 +632,27 @@ async function bootstrap(): Promise<void> {
   const sshAskpass = createSshAskpassBroker({
     electronPath: process.execPath,
     clientPath: join(currentDir, "askpassClient.js"),
-    publishPrompt: (prompt) => {
-      const windows = BrowserWindow.getAllWindows().filter(
-        (window) => !window.isDestroyed()
+    publishPrompt: (presenterId, prompt) => {
+      const presenter = BrowserWindow.getAllWindows().find(
+        (window) =>
+          !window.isDestroyed() && window.webContents.id === presenterId
       );
-      if (windows.length === 0) {
-        throw new Error("no renderer is available for SSH authentication");
+      if (presenter && !presenter.webContents.isDestroyed()) {
+        presenter.webContents.send("kmux:ssh-askpass-prompt", prompt);
       }
-      for (const window of windows) {
-        window.webContents.send("kmux:ssh-askpass-prompt", prompt);
+    },
+    publishResolution: (presenterId, requestId) => {
+      const presenter = BrowserWindow.getAllWindows().find(
+        (window) =>
+          !window.isDestroyed() && window.webContents.id === presenterId
+      );
+      if (presenter && !presenter.webContents.isDestroyed()) {
+        presenter.webContents.send("kmux:ssh-askpass-resolved", requestId);
       }
     }
   });
   await sshAskpass.start();
+  let beginStartupSshRestore = (): void => undefined;
 
   ptyHost = new PtyHostManager((modulePath, args, options) =>
     utilityProcess.fork(modulePath, args, options)
@@ -667,6 +676,19 @@ async function bootstrap(): Promise<void> {
   });
   remoteHost.on("runtime-lost", () => {
     logDiagnostics("main.remote-host.runtime-lost", {});
+  });
+  let sshConnections!: ReturnType<typeof createSshConnectionRuntime>;
+  const sshReconnect = createSshReconnectCoordinator({
+    getState: runtime.getState,
+    dispatchAppAction: runtime.dispatchAppAction,
+    restoreTarget: (targetId, request) =>
+      sshConnections.restoreTarget(targetId, request),
+    onConnected: () => worktreeRuntime?.reconcileManagedSurfaces(),
+    reportError: (error) => {
+      logDiagnostics("main.ssh-target.post-connect-failed", {
+        message: error.message
+      });
+    }
   });
   remoteLifecycle = new RemoteLifecycleRuntime({
     desktopInstallationId,
@@ -723,12 +745,18 @@ async function bootstrap(): Promise<void> {
       logDiagnostics("main.remote-lifecycle.error", {
         message: error.message
       });
-    }
+    },
+    reconnectTarget: (targetId) =>
+      sshReconnect.reconnectTarget(targetId, {
+        authentication: "non-interactive",
+        purpose: "runtime-reconnect"
+      }),
+    onTargetConnected: (targetId) => sshReconnect.targetConnected(targetId)
   });
   remoteLifecycle.recover();
   const providerRemoteHost = remoteHost;
   const providerRemoteLifecycle = remoteLifecycle;
-  const sshConnections = createSshConnectionRuntime({
+  sshConnections = createSshConnectionRuntime({
     desktopInstallationId,
     profiles: sshProfiles,
     bindings: remoteTargetBindings,
@@ -1406,7 +1434,14 @@ async function bootstrap(): Promise<void> {
     prepareSshWorkspace: (request) => sshWorkspaces.prepare(request),
     commitSshWorkspace: (request) => sshWorkspaces.commit(request),
     cancelSshWorkspacePreparation: (request) => sshWorkspaces.cancel(request),
+    claimSshAskpassPresenter: (presenterId) => {
+      const pending = sshAskpass.claimPresenter(presenterId);
+      beginStartupSshRestore();
+      return pending;
+    },
     respondSshAskpass: (request) => sshAskpass.respond(request),
+    reconnectSshWorkspace: (workspaceId) =>
+      sshReconnect.reconnectWorkspace(workspaceId),
     closeWorkspaceSafely: (workspaceId) => {
       const workspace = runtime.getState().workspaces[workspaceId];
       if (!workspace) return;
@@ -1602,6 +1637,11 @@ async function bootstrap(): Promise<void> {
       }
     });
     currentMainWindow = window;
+    const presenterId = window.webContents.id;
+    const releaseSshAskpassPresenter = (): void => {
+      sshAskpass.releasePresenter(presenterId);
+    };
+    window.webContents.once("render-process-gone", releaseSshAskpassPresenter);
     runtime.setMainWindow(window);
     logDiagnostics("main.window.opened", {
       reason,
@@ -1627,6 +1667,7 @@ async function bootstrap(): Promise<void> {
       updater.startBackgroundChecks();
     });
     window.once("closed", () => {
+      releaseSshAskpassPresenter();
       if (currentMainWindow === window) {
         currentMainWindow = null;
         runtime.setMainWindow(null);
@@ -1850,24 +1891,32 @@ async function bootstrap(): Promise<void> {
     conversions: conversionWal.loadAll(),
     operations: remoteOperationStore.loadAll()
   });
-  void restoreSshStartupTargets({
-    targetIds: startupSshTargetIds,
-    restoreTarget: (targetId) => sshConnections.restoreTarget(targetId),
-    onConnected: () => worktreeRuntime?.reconcileManagedSurfaces(),
-    onFailure: (targetId, error) => {
-      logDiagnostics("main.ssh-target.restore-failed", {
-        targetId,
-        message: error.message
+  let startupSshRestoreStarted = false;
+  beginStartupSshRestore = (): void => {
+    if (startupSshRestoreStarted) return;
+    startupSshRestoreStarted = true;
+    void restoreSshStartupTargets({
+      targetIds: startupSshTargetIds,
+      restoreTarget: (targetId) =>
+        sshReconnect.reconnectTarget(targetId, {
+          authentication: "interactive",
+          purpose: "startup-restore"
+        }),
+      onFailure: (targetId, error) => {
+        logDiagnostics("main.ssh-target.restore-failed", {
+          targetId,
+          message: error.message
+        });
+      }
+    }).then((result) => {
+      if (startupSshTargetIds.length === 0) return;
+      logDiagnostics("main.ssh-target.restore-complete", {
+        requested: startupSshTargetIds.length,
+        connected: result.connected.length,
+        failed: result.failed.length
       });
-    }
-  }).then((result) => {
-    if (startupSshTargetIds.length === 0) return;
-    logDiagnostics("main.ssh-target.restore-complete", {
-      requested: startupSshTargetIds.length,
-      connected: result.connected.length,
-      failed: result.failed.length
     });
-  });
+  };
   rendererRecovery.registerWindow(openMainWindow("initial"));
   const pendingInstall = evaluatePendingInstall(
     app.getVersion(),

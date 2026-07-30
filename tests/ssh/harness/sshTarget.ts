@@ -70,6 +70,7 @@ export interface SshTargetOptions {
   sharedHomePath?: string;
   storageFixtureMiB?: number;
   pathFixtures?: boolean;
+  authentication?: "key" | "password";
 }
 
 export type SshFixtureUser = "kmux" | "kmux-alt";
@@ -283,7 +284,8 @@ export async function startSshTarget(
         port: proxy.port,
         identityPath: identity.privateKeyPath,
         knownHostsPath,
-        globalKnownHostsPath
+        globalKnownHostsPath,
+        authentication: options.authentication ?? "key"
       }),
       { mode: 0o600 }
     );
@@ -328,7 +330,8 @@ export async function startSshTarget(
             identityPath: identity.privateKeyPath,
             knownHostsPath,
             globalKnownHostsPath,
-            user
+            user,
+            authentication: options.authentication ?? "key"
           }),
           { mode: 0o600 }
         );
@@ -577,18 +580,34 @@ function buildSshConfig(options: {
   knownHostsPath: string;
   globalKnownHostsPath: string;
   user?: SshFixtureUser;
+  authentication: "key" | "password";
 }): string {
   const fields = Object.values(options);
   if (fields.some((value) => /[\r\n]/u.test(String(value)))) {
     throw new Error("SSH fixture configuration contains a newline");
   }
+  const authentication =
+    options.authentication === "password"
+      ? [
+          "  PubkeyAuthentication no",
+          "  PreferredAuthentications password",
+          "  BatchMode no",
+          "  PasswordAuthentication yes",
+          "  KbdInteractiveAuthentication no"
+        ]
+      : [
+          `  IdentityFile ${options.identityPath}`,
+          "  IdentitiesOnly yes",
+          "  BatchMode yes",
+          "  PasswordAuthentication no",
+          "  KbdInteractiveAuthentication no"
+        ];
   return [
     `Host ${options.hostAlias}`,
     `  HostName ${options.hostName}`,
     `  Port ${options.port}`,
     `  User ${options.user ?? "kmux"}`,
-    `  IdentityFile ${options.identityPath}`,
-    "  IdentitiesOnly yes",
+    ...authentication,
     `  UserKnownHostsFile ${options.knownHostsPath}`,
     `  GlobalKnownHostsFile ${options.globalKnownHostsPath}`,
     "  StrictHostKeyChecking yes",
@@ -596,9 +615,6 @@ function buildSshConfig(options: {
     "  HashKnownHosts no",
     "  ControlMaster no",
     "  ControlPersist no",
-    "  BatchMode yes",
-    "  PasswordAuthentication no",
-    "  KbdInteractiveAuthentication no",
     "  LogLevel ERROR",
     ""
   ].join("\n");

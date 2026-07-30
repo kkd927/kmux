@@ -46,6 +46,9 @@ interface SshWorkspaceTestApi {
     workspaceId: string;
     targetId: string;
   }>;
+  reconnectSshWorkspace(workspaceId: string): Promise<{
+    status: "connected" | "cancelled" | "failed";
+  }>;
 }
 
 test("real SSH workspace survives desktop loss and restores the same keeper", async () => {
@@ -123,6 +126,9 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
     );
     expect(restored.activeWorkspace.id).toBe(opened.workspaceId);
     await expect(
+      relaunched.page.getByRole("dialog", { name: "SSH Authentication" })
+    ).toBeHidden();
+    await expect(
       relaunched.page.getByTestId(`terminal-${surfaceId}`)
     ).toHaveAttribute("data-terminal-stream-ready", /^attach_/, {
       timeout: 30_000
@@ -147,6 +153,141 @@ test("real SSH workspace survives desktop loss and restores the same keeper", as
     throw error;
   } finally {
     if (relaunched) {
+      await closeKmuxApp(relaunched).catch(() => undefined);
+    } else if (first) {
+      await closeKmuxApp(first).catch(() => undefined);
+    }
+    destroySandbox(sandbox);
+    await target.stop();
+  }
+});
+
+test("password SSH restore waits for authentication and supports cancellation with manual retry", async () => {
+  test.setTimeout(360_000);
+  const target = await startSshTarget({ authentication: "password" });
+  const sandbox = createSandbox("kmux-ssh-password-e2e-");
+  let first: LaunchedKmux | undefined;
+  let relaunched: LaunchedKmux | undefined;
+  let cancelledRelaunch: LaunchedKmux | undefined;
+  const consoleMessages: string[] = [];
+  try {
+    enableSandboxDiagnostics(sandbox);
+    installSshFixtureConfig(sandbox, target.sshConfigPath, target.hostAlias);
+    first = await launchKmuxWithSandbox(sandbox);
+    recordPageConsole(first.page, consoleMessages);
+    const openWorkspace = createRemoteWorkspace(first.page, target.hostAlias);
+    const hostVerification = first.page.getByRole("dialog", {
+      name: "SSH Host Verification"
+    });
+    await expect(hostVerification).toBeVisible({ timeout: 30_000 });
+    await hostVerification
+      .getByRole("button", { name: "Trust and continue" })
+      .click();
+    await submitSshPassword(first.page, "kmux-password");
+    const opened = await openWorkspace;
+    const initial = await waitForView(
+      first.page,
+      (view) =>
+        view.activeWorkspace.id === opened.workspaceId &&
+        Object.values(view.activeWorkspace.surfaces).some(
+          (surface) =>
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(surface)?.shellInputReady === true
+        ),
+      "password SSH workspace should become ready",
+      90_000
+    );
+    const surfaceId = Object.keys(initial.activeWorkspace.surfaces)[0]!;
+    await sendMarker(first.page, surfaceId, "kmux_password_before_restore");
+    const keeperPids = await readKeeperPids(target.target);
+    expect(keeperPids.length).toBeGreaterThan(0);
+
+    await closeKmuxApp(first);
+    first = undefined;
+    relaunched = await launchKmuxWithSandbox(sandbox);
+    recordPageConsole(relaunched.page, consoleMessages);
+    await submitSshPassword(relaunched.page, "kmux-password");
+    await waitForSshRestore(
+      relaunched.page,
+      (view) =>
+        view.activeWorkspace.id === opened.workspaceId &&
+        Object.values(view.activeWorkspace.surfaces).some(
+          (surface) =>
+            surface.id === surfaceId &&
+            terminalSurfaceVmContent(surface)?.runtimeStatus === "running" &&
+            terminalSurfaceVmContent(surface)?.shellInputReady === true
+        ),
+      "password SSH relaunch should restore the existing keeper",
+      90_000
+    );
+    await expect(
+      committedTerminalRows(relaunched.page, surfaceId)
+    ).toContainText("kmux_password_before_restore", { timeout: 30_000 });
+    expect(await readKeeperPids(target.target)).toEqual(keeperPids);
+    await sendMarker(relaunched.page, surfaceId, "kmux_password_after_restore");
+
+    await closeKmuxApp(relaunched);
+    relaunched = undefined;
+    cancelledRelaunch = await launchKmuxWithSandbox(sandbox);
+    recordPageConsole(cancelledRelaunch.page, consoleMessages);
+    const authentication = cancelledRelaunch.page.getByRole("dialog", {
+      name: "SSH Authentication"
+    });
+    await expect(authentication).toBeVisible({ timeout: 30_000 });
+    await authentication
+      .getByRole("button", { name: "Cancel", exact: true })
+      .click();
+    await expect(authentication).toBeHidden();
+    await waitForView(
+      cancelledRelaunch.page,
+      (view) =>
+        view.workspaceRows
+          .find((row) => row.workspaceId === opened.workspaceId)
+          ?.statusEntries.some(
+            (entry) =>
+              entry.key === "ssh:connection" &&
+              entry.text === "SSH authentication cancelled"
+          ) === true,
+      "cancelled SSH restore should remain reconnectable",
+      30_000
+    );
+    await cancelledRelaunch.page.waitForTimeout(500);
+    await expect(authentication).toBeHidden();
+
+    const manualReconnect = cancelledRelaunch.page.evaluate(
+      async (workspaceId) => {
+        const api = (window as unknown as { kmux: SshWorkspaceTestApi }).kmux;
+        return await api.reconnectSshWorkspace(workspaceId);
+      },
+      opened.workspaceId
+    );
+    await submitSshPassword(cancelledRelaunch.page, "kmux-password");
+    expect(await manualReconnect).toEqual({ status: "connected" });
+    await waitForSshRestore(
+      cancelledRelaunch.page,
+      (view) =>
+        view.activeWorkspace.id === opened.workspaceId &&
+        Object.values(view.activeWorkspace.surfaces).some(
+          (surface) =>
+            surface.id === surfaceId &&
+            terminalSurfaceVmContent(surface)?.shellInputReady === true
+        ),
+      "manual password SSH reconnect should restore input",
+      90_000
+    );
+    expect(await readKeeperPids(target.target)).toEqual(keeperPids);
+  } catch (error) {
+    await attachFailureDiagnostics({
+      sandbox,
+      target: target.target,
+      page: cancelledRelaunch?.page ?? relaunched?.page ?? first?.page,
+      consoleMessages
+    });
+    throw error;
+  } finally {
+    if (cancelledRelaunch) {
+      await closeKmuxApp(cancelledRelaunch).catch(() => undefined);
+    } else if (relaunched) {
       await closeKmuxApp(relaunched).catch(() => undefined);
     } else if (first) {
       await closeKmuxApp(first).catch(() => undefined);
@@ -386,6 +527,15 @@ async function sendMarker(
   await expect(committedTerminalRows(page, surfaceId)).toContainText(marker, {
     timeout: 30_000
   });
+}
+
+async function submitSshPassword(page: Page, password: string): Promise<void> {
+  const authentication = page.getByRole("dialog", {
+    name: "SSH Authentication"
+  });
+  await expect(authentication).toBeVisible({ timeout: 30_000 });
+  await authentication.getByLabel("SSH password or passphrase").fill(password);
+  await authentication.getByRole("button", { name: "Continue" }).click();
 }
 
 function committedTerminalHost(page: Page, surfaceId: string) {

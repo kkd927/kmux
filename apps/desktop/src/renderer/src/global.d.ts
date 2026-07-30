@@ -33,6 +33,7 @@ import type {
   SshWorkspaceOpenResult,
   SshWorkspacePrepareRequest,
   SshWorkspacePrepareResult,
+  SshWorkspaceReconnectResult,
   UsageViewSnapshot,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
@@ -98,6 +99,10 @@ declare global {
         request: SshWorkspaceCancelRequest
       ): Promise<void>;
       respondSshAskpass(request: SshAskpassResponseRequest): Promise<void>;
+      claimSshAskpassPresenter(): Promise<SshAskpassPrompt[]>;
+      reconnectSshWorkspace(
+        workspaceId: string
+      ): Promise<SshWorkspaceReconnectResult>;
       closeWorkspaceSafely(workspaceId: string): Promise<void>;
       closeOtherWorkspacesSafely(workspaceId: string): Promise<void>;
       subscribeShellPatches(listener: (patch: ShellPatch) => void): () => void;
@@ -107,6 +112,9 @@ declare global {
       subscribeUpdater(listener: (state: UpdaterState) => void): () => void;
       subscribeSshAskpassPrompt(
         listener: (prompt: SshAskpassPrompt) => void
+      ): () => void;
+      subscribeSshAskpassResolution(
+        listener: (requestId: string) => void
       ): () => void;
       attachTerminalStream(
         surfaceId: string,

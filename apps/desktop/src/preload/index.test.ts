@@ -342,7 +342,8 @@ describe("terminal stream preload bridge", () => {
       requestId: "prompt_1",
       profileId: "profile_1",
       profileName: "Development",
-      prompt: "Password:"
+      prompt: "Password:",
+      purpose: "startup-restore"
     };
     const response = {
       requestId: "prompt_1",
@@ -350,27 +351,59 @@ describe("terminal stream preload bridge", () => {
       response: "one-time-secret"
     };
     const listener = vi.fn();
+    const resolutionListener = vi.fn();
     const api = mocks.exposed.get("kmux") as {
       respondSshAskpass(request: unknown): Promise<void>;
+      claimSshAskpassPresenter(): Promise<unknown[]>;
+      reconnectSshWorkspace(workspaceId: string): Promise<unknown>;
       subscribeSshAskpassPrompt(
         listener: (prompt: unknown) => void
       ): () => void;
+      subscribeSshAskpassResolution(
+        listener: (requestId: string) => void
+      ): () => void;
     };
-    mocks.invoke.mockResolvedValue(undefined);
+    mocks.invoke
+      .mockResolvedValueOnce([prompt])
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ status: "connected" });
 
     const unsubscribe = api.subscribeSshAskpassPrompt(listener);
+    const unsubscribeResolution =
+      api.subscribeSshAskpassResolution(resolutionListener);
     mocks.listeners.get("kmux:ssh-askpass-prompt")?.({}, prompt);
+    mocks.listeners.get("kmux:ssh-askpass-resolved")?.({}, prompt.requestId);
+    await expect(api.claimSshAskpassPresenter()).resolves.toEqual([prompt]);
     await expect(api.respondSshAskpass(response)).resolves.toBeUndefined();
+    await expect(api.reconnectSshWorkspace("workspace_1")).resolves.toEqual({
+      status: "connected"
+    });
 
     expect(listener).toHaveBeenCalledWith(prompt);
-    expect(mocks.invoke).toHaveBeenCalledWith(
+    expect(resolutionListener).toHaveBeenCalledWith(prompt.requestId);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      1,
+      "kmux:ssh-askpass:claim-presenter"
+    );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      2,
       "kmux:ssh-askpass:respond",
       response
     );
+    expect(mocks.invoke).toHaveBeenNthCalledWith(
+      3,
+      "kmux:ssh-workspace:reconnect",
+      "workspace_1"
+    );
     unsubscribe();
+    unsubscribeResolution();
     expect(mocks.off).toHaveBeenCalledWith(
       "kmux:ssh-askpass-prompt",
       mocks.listeners.get("kmux:ssh-askpass-prompt")
+    );
+    expect(mocks.off).toHaveBeenCalledWith(
+      "kmux:ssh-askpass-resolved",
+      mocks.listeners.get("kmux:ssh-askpass-resolved")
     );
   });
 

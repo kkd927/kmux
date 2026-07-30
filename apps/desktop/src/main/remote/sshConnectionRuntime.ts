@@ -42,6 +42,32 @@ import type { SshAskpassBroker, SshAskpassContext } from "./sshAskpassBroker";
 const MACOS_LOCAL_NETWORK_GUIDANCE =
   "If this SSH host is on your local network, macOS may be blocking kmux's Local Network access. Allow kmux in System Settings > Privacy & Security > Local Network, then retry.";
 const NO_ROUTE_TO_HOST_PATTERN = /\b(?:No route to host|EHOSTUNREACH)\b/iu;
+const MAX_PRESENTED_SSH_ERROR_BYTES = 1_024;
+
+export type SshTargetRestorePurpose =
+  | "startup-restore"
+  | "manual-reconnect"
+  | "runtime-reconnect";
+
+export interface SshTargetRestoreRequest {
+  authentication: "interactive" | "non-interactive";
+  purpose: SshTargetRestorePurpose;
+  signal?: AbortSignal;
+}
+
+export class SshAuthenticationCancelledError extends Error {
+  constructor() {
+    super("SSH authentication was cancelled");
+    this.name = "SshAuthenticationCancelledError";
+  }
+}
+
+export class SshConnectionAttemptSupersededError extends Error {
+  constructor() {
+    super("SSH connection attempt was superseded by newer connection state");
+    this.name = "SshConnectionAttemptSupersededError";
+  }
+}
 
 export interface ConnectedSshProfile {
   profile: SshProfileDto;
@@ -64,12 +90,10 @@ export interface SshConnectionRuntime {
     profileId: Id,
     request?: { signal?: AbortSignal; explicitRebind?: boolean }
   ): Promise<ConnectedSshProfile>;
-  /**
-   * Re-verifies and reconnects one persisted target without opening an
-   * authentication prompt. A failure leaves the target binding and product
-   * layout intact so the user can explicitly retry from Settings.
-   */
-  restoreTarget(targetId: Id): Promise<ConnectedSshProfile>;
+  restoreTarget(
+    targetId: Id,
+    request: SshTargetRestoreRequest
+  ): Promise<ConnectedSshProfile>;
   rebindProfile(
     profileId: Id,
     request?: { signal?: AbortSignal }
@@ -145,6 +169,37 @@ export function createSshConnectionRuntime(options: {
 
   const touch = (): void => {
     updatedAt = now();
+  };
+
+  const isStoredProfileCurrent = (profile: SshProfileDto): boolean => {
+    const current = options.profiles.get(profile.id);
+    return Boolean(current && isDeepStrictEqual(current, profile));
+  };
+
+  const assertStoredProfileCurrent = (profile: SshProfileDto): void => {
+    if (!isStoredProfileCurrent(profile)) {
+      throw new SshConnectionAttemptSupersededError();
+    }
+  };
+
+  const isRestoreSnapshotCurrent = (
+    binding: RemoteTargetBinding,
+    profile: SshProfileDto
+  ): boolean => {
+    const currentBinding = options.bindings.get(binding.id);
+    return (
+      isStoredProfileCurrent(profile) &&
+      Boolean(currentBinding && isDeepStrictEqual(currentBinding, binding))
+    );
+  };
+
+  const assertRestoreSnapshotCurrent = (
+    binding: RemoteTargetBinding,
+    profile: SshProfileDto
+  ): void => {
+    if (!isRestoreSnapshotCurrent(binding, profile)) {
+      throw new SshConnectionAttemptSupersededError();
+    }
   };
 
   const profileVm = (profile: SshProfileDto): SshProfileVm => {
@@ -316,8 +371,13 @@ export function createSshConnectionRuntime(options: {
           connectionAttemptId
         );
         cacheEffective(profile, resolved.effective, effectiveResolutionToken);
+        assertStoredProfileCurrent(profile);
         const verificationId = makeVerificationId();
-        askpassContext = await options.askpassBroker?.createContext(profile);
+        askpassContext = await options.askpassBroker?.createContext(
+          profile,
+          "explicit-connect"
+        );
+        assertStoredProfileCurrent(profile);
         internal.signal?.addEventListener("abort", cancelAskpass, {
           once: true
         });
@@ -437,7 +497,9 @@ export function createSshConnectionRuntime(options: {
             binding: candidate,
             connection,
             token,
-            retentionPolicy
+            retentionPolicy,
+            assertPromotionCurrent: () =>
+              assertStoredProfileCurrent(profile)
           });
           const binding = options.bindings.get(candidate.id);
           if (!binding) {
@@ -464,6 +526,12 @@ export function createSshConnectionRuntime(options: {
             .discardTargetVerification(verification.verificationId)
             .catch(() => undefined);
         }
+        if (
+          error instanceof SshConnectionAttemptSupersededError ||
+          !isStoredProfileCurrent(profile)
+        ) {
+          throw new SshConnectionAttemptSupersededError();
+        }
         const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profile.id, failure);
         touch();
@@ -471,7 +539,10 @@ export function createSshConnectionRuntime(options: {
       }
     },
 
-    async restoreTarget(targetId: Id): Promise<ConnectedSshProfile> {
+    async restoreTarget(
+      targetId: Id,
+      request: SshTargetRestoreRequest
+    ): Promise<ConnectedSshProfile> {
       const existing = options.bindings.get(targetId);
       if (!existing || existing.id !== targetId) {
         throw new Error("restored SSH target binding does not exist");
@@ -482,7 +553,23 @@ export function createSshConnectionRuntime(options: {
         throw new Error("restored SSH target locator profile does not exist");
       }
       let verification: RemoteHostTargetVerification | undefined;
+      let askpassContext: SshAskpassContext | undefined;
+      const cancelAskpass = (): void => {
+        void askpassContext?.dispose();
+      };
       try {
+        if (request.signal?.aborted) {
+          throw new SshAuthenticationCancelledError();
+        }
+        let askpassPurpose: "startup-restore" | "manual-reconnect" | undefined;
+        if (request.authentication === "interactive") {
+          if (request.purpose === "runtime-reconnect") {
+            throw new Error(
+              "runtime SSH recovery cannot request interactive authentication"
+            );
+          }
+          askpassPurpose = request.purpose;
+        }
         const connectionAttemptId = makeConnectionAttemptId();
         const effectiveResolutionToken = beginEffectiveResolution(profile.id);
         const resolved = await options.resolver.resolve(
@@ -490,6 +577,7 @@ export function createSshConnectionRuntime(options: {
           connectionAttemptId
         );
         cacheEffective(profile, resolved.effective, effectiveResolutionToken);
+        assertRestoreSnapshotCurrent(binding, profile);
         if (
           resolved.effective.policyHash !==
           binding.locator.effectiveConnectionPolicyHash
@@ -499,9 +587,19 @@ export function createSshConnectionRuntime(options: {
           );
         }
         const verificationId = makeVerificationId();
-        // Automatic restore deliberately has no askpass context. OpenSSH may
-        // use an already-available agent or credential facility, but kmux must
-        // not create a prompt loop after launch or authentication cancellation.
+        if (request.authentication === "interactive") {
+          if (!options.askpassBroker || !askpassPurpose) {
+            throw new Error("SSH askpass broker is unavailable");
+          }
+          askpassContext = await options.askpassBroker.createContext(
+            profile,
+            askpassPurpose
+          );
+          assertRestoreSnapshotCurrent(binding, profile);
+          request.signal?.addEventListener("abort", cancelAskpass, {
+            once: true
+          });
+        }
         verification = await options.host.verifyTarget({
           verificationId,
           connectionAttemptId,
@@ -512,11 +610,17 @@ export function createSshConnectionRuntime(options: {
           ...(options.controlRoot === undefined
             ? {}
             : { controlRoot: options.controlRoot }),
+          ...(askpassContext?.askpassPath === undefined
+            ? {}
+            : { askpassPath: askpassContext.askpassPath }),
           rootOverrides: structuredClone(resolved.rootOverrides),
           ...(profile.bootstrapShellOverride === undefined
             ? {}
             : { bootstrapShellOverride: profile.bootstrapShellOverride })
         });
+        if (request.signal?.aborted || askpassContext?.wasCancelled()) {
+          throw new SshAuthenticationCancelledError();
+        }
         if (
           verification.effectiveConnectionPolicyHash !==
             binding.locator.effectiveConnectionPolicyHash ||
@@ -578,7 +682,9 @@ export function createSshConnectionRuntime(options: {
           binding: candidate,
           connection,
           token,
-          retentionPolicy
+          retentionPolicy,
+          assertPromotionCurrent: () =>
+            assertRestoreSnapshotCurrent(binding, profile)
         });
         const restoredBinding = options.bindings.get(binding.id);
         if (!restoredBinding) {
@@ -586,6 +692,8 @@ export function createSshConnectionRuntime(options: {
         }
         options.profiles.clearError(profile.id);
         touch();
+        request.signal?.removeEventListener("abort", cancelAskpass);
+        await askpassContext?.dispose();
         return {
           profile,
           binding: restoredBinding,
@@ -594,12 +702,27 @@ export function createSshConnectionRuntime(options: {
           hello
         };
       } catch (error) {
+        request.signal?.removeEventListener("abort", cancelAskpass);
+        const authenticationCancelled =
+          request.signal?.aborted || askpassContext?.wasCancelled();
+        await askpassContext?.dispose().catch(() => undefined);
         if (verification) {
           await options.host
             .discardTargetVerification(verification.verificationId)
             .catch(() => undefined);
         }
-        const failure = presentSshConnectionFailure(error, platform);
+        if (
+          error instanceof SshConnectionAttemptSupersededError ||
+          !isRestoreSnapshotCurrent(binding, profile)
+        ) {
+          throw new SshConnectionAttemptSupersededError();
+        }
+        const failure = presentSshConnectionFailure(
+          authenticationCancelled
+            ? new SshAuthenticationCancelledError()
+            : error,
+          platform
+        );
         options.profiles.recordError(profile.id, failure);
         touch();
         throw failure;
@@ -711,17 +834,40 @@ function presentSshConnectionFailure(
   platform: NodeJS.Platform
 ): Error {
   const failure = error instanceof Error ? error : new Error(String(error));
+  let message = normalizeSshErrorMessage(failure.message);
   if (
-    platform !== "darwin" ||
-    !NO_ROUTE_TO_HOST_PATTERN.test(failure.message) ||
-    failure.message.includes(MACOS_LOCAL_NETWORK_GUIDANCE)
+    platform === "darwin" &&
+    NO_ROUTE_TO_HOST_PATTERN.test(message) &&
+    !message.includes(MACOS_LOCAL_NETWORK_GUIDANCE)
   ) {
-    return failure;
+    message = `${message}. ${MACOS_LOCAL_NETWORK_GUIDANCE}`;
   }
-
-  return new Error(`${failure.message}. ${MACOS_LOCAL_NETWORK_GUIDANCE}`, {
+  message = truncateUtf8(message, MAX_PRESENTED_SSH_ERROR_BYTES);
+  if (failure instanceof SshAuthenticationCancelledError) {
+    return new SshAuthenticationCancelledError();
+  }
+  return new Error(message, {
     cause: failure
   });
+}
+
+export function normalizeSshErrorMessage(message: string): string {
+  return message.replace(/\s+/gu, " ").trim() || "SSH connection failed";
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const suffix = "…";
+  const contentLimit = maxBytes - Buffer.byteLength(suffix, "utf8");
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const nextBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + nextBytes > contentLimit) break;
+    result += character;
+    bytes += nextBytes;
+  }
+  return `${result}${suffix}`;
 }
 
 function newestProfileBinding(

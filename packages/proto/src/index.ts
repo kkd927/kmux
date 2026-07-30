@@ -333,12 +333,17 @@ export interface SshAskpassPrompt {
   profileId: Id;
   profileName: string;
   prompt: string;
+  purpose: "explicit-connect" | "startup-restore" | "manual-reconnect";
 }
 
 export interface SshAskpassResponseRequest {
   requestId: Id;
   cancelled: boolean;
   response?: string;
+}
+
+export interface SshWorkspaceReconnectResult {
+  status: "connected" | "cancelled" | "failed";
 }
 
 export interface SshWorkspaceConversionRequest {

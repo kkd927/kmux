@@ -8,7 +8,10 @@ import type { SshProfileDto } from "@kmux/proto";
 import type { RemoteHostManager } from "../remoteHost";
 import type { RemoteLifecycleRuntime } from "./remoteLifecycleRuntime";
 import { createRemoteTargetBindingStore } from "./remoteTargetBindingStore";
-import { createSshConnectionRuntime } from "./sshConnectionRuntime";
+import {
+  createSshConnectionRuntime,
+  SshConnectionAttemptSupersededError
+} from "./sshConnectionRuntime";
 import type { SshProfileConnectionResolver } from "./sshProfileConnection";
 import { createSshProfileStore } from "./sshProfileStore";
 
@@ -390,6 +393,8 @@ describe("SSH connection runtime", () => {
       platform: "darwin" as const,
       message:
         "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
+      expectedMessage:
+        "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
       expectsLocalNetworkGuidance: true
     },
     {
@@ -397,61 +402,74 @@ describe("SSH connection runtime", () => {
       platform: "linux" as const,
       message:
         "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
+      expectedMessage:
+        "OpenSSH master exited before readiness: ssh: connect to host 192.168.45.117 port 22: No route to host",
       expectsLocalNetworkGuidance: false
     },
     {
       name: "preserves macOS authentication failures",
       platform: "darwin" as const,
-      message: "Permission denied (publickey).",
+      message: "Permission denied\n(publickey).",
+      expectedMessage: "Permission denied (publickey).",
       expectsLocalNetworkGuidance: false
     }
-  ])("$name", async ({ platform, message, expectsLocalNetworkGuidance }) => {
-    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
-    try {
-      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
-        now: () => NOW,
-        makeProfileId: () => "profile_1"
-      });
-      const profile = profiles.save(undefined, {
-        name: "private-lan",
-        host: "192.168.45.117"
-      });
-      const bindings = createRemoteTargetBindingStore(
-        join(sandbox, "bindings.json")
-      );
-      const runtime = createSshConnectionRuntime({
-        desktopInstallationId: "desktop_1",
-        profiles,
-        bindings,
-        resolver: resolver(profile.id),
-        host: new FakeHost(
-          undefined,
-          new Error(message)
-        ) as unknown as RemoteHostManager,
-        lifecycle: new FakeLifecycle(
-          bindings
-        ) as unknown as RemoteLifecycleRuntime,
-        platform,
-        isTargetReferenced: () => false,
-        now: () => NOW
-      });
-
-      await expect(runtime.connectProfile(profile.id)).rejects.toThrow(message);
-
-      const storedMessage = (await runtime.getSnapshot()).profiles[0]?.lastError
-        ?.message;
-      if (expectsLocalNetworkGuidance) {
-        expect(storedMessage).toContain(message);
-        expect(storedMessage).toContain(
-          "System Settings > Privacy & Security > Local Network"
+  ])(
+    "$name",
+    async ({
+      platform,
+      message,
+      expectedMessage,
+      expectsLocalNetworkGuidance
+    }) => {
+      const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+      try {
+        const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+          now: () => NOW,
+          makeProfileId: () => "profile_1"
+        });
+        const profile = profiles.save(undefined, {
+          name: "private-lan",
+          host: "192.168.45.117"
+        });
+        const bindings = createRemoteTargetBindingStore(
+          join(sandbox, "bindings.json")
         );
-      } else {
-        expect(storedMessage).toBe(message);
+        const runtime = createSshConnectionRuntime({
+          desktopInstallationId: "desktop_1",
+          profiles,
+          bindings,
+          resolver: resolver(profile.id),
+          host: new FakeHost(
+            undefined,
+            new Error(message)
+          ) as unknown as RemoteHostManager,
+          lifecycle: new FakeLifecycle(
+            bindings
+          ) as unknown as RemoteLifecycleRuntime,
+          platform,
+          isTargetReferenced: () => false,
+          now: () => NOW
+        });
+
+        await expect(runtime.connectProfile(profile.id)).rejects.toThrow(
+          expectedMessage
+        );
+
+        const storedMessage = (await runtime.getSnapshot()).profiles[0]
+          ?.lastError?.message;
+        if (expectsLocalNetworkGuidance) {
+          expect(storedMessage).toContain(expectedMessage);
+          expect(storedMessage).toContain(
+            "System Settings > Privacy & Security > Local Network"
+          );
+        } else {
+          expect(storedMessage).toBe(expectedMessage);
+        }
+      } finally {
+        rmSync(sandbox, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(sandbox, { recursive: true, force: true });
     }
-  });
+  );
 
   it("serializes concurrent aliases so one verified authority gets one target ID", async () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
@@ -673,7 +691,7 @@ describe("SSH connection runtime", () => {
     }
   });
 
-  it("restores the exact persisted target without creating an askpass prompt", async () => {
+  it("uses askpass only for interactive restore while preserving the exact persisted target", async () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
     try {
       const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
@@ -690,7 +708,12 @@ describe("SSH connection runtime", () => {
       bindings.replace(binding("target_restore", profile.id));
       const host = new FakeHost();
       const lifecycle = new FakeLifecycle(bindings);
-      const createContext = vi.fn();
+      const dispose = vi.fn();
+      const createContext = vi.fn(async () => ({
+        askpassPath: "/tmp/kmux-askpass",
+        wasCancelled: () => false,
+        dispose
+      }));
       const runtime = createSshConnectionRuntime({
         desktopInstallationId: "desktop_1",
         profiles,
@@ -702,6 +725,8 @@ describe("SSH connection runtime", () => {
           start: vi.fn(),
           stop: vi.fn(),
           createContext,
+          claimPresenter: vi.fn(),
+          releasePresenter: vi.fn(),
           respond: vi.fn()
         },
         isTargetReferenced: () => true,
@@ -711,7 +736,10 @@ describe("SSH connection runtime", () => {
         makeToken: () => "d".repeat(64)
       });
 
-      const restored = await runtime.restoreTarget("target_restore");
+      const restored = await runtime.restoreTarget("target_restore", {
+        authentication: "non-interactive",
+        purpose: "runtime-reconnect"
+      });
 
       expect(createContext).not.toHaveBeenCalled();
       expect(host.verifyRequests).toEqual([
@@ -732,6 +760,16 @@ describe("SSH connection runtime", () => {
         }
       });
       expect(restored.binding.id).toBe("target_restore");
+
+      await runtime.restoreTarget("target_restore", {
+        authentication: "interactive",
+        purpose: "startup-restore"
+      });
+      expect(createContext).toHaveBeenCalledWith(profile, "startup-restore");
+      expect(host.verifyRequests[1]).toEqual(
+        expect.objectContaining({ askpassPath: "/tmp/kmux-askpass" })
+      );
+      expect(dispose).toHaveBeenCalledOnce();
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -769,12 +807,81 @@ describe("SSH connection runtime", () => {
         makeVerificationId: () => "restore_verification_1"
       });
 
-      await expect(runtime.restoreTarget("target_restore")).rejects.toThrow(
-        /no longer matches its verified authority/u
-      );
+      await expect(
+        runtime.restoreTarget("target_restore", {
+          authentication: "non-interactive",
+          purpose: "runtime-reconnect"
+        })
+      ).rejects.toThrow(/no longer matches its verified authority/u);
       expect(lifecycle.promotions).toEqual([]);
       expect(host.discarded).toEqual(["restore_verification_1"]);
       expect(bindings.get("target_restore")).toEqual(original);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let an older restore replace a newer explicit connection", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "shared-target",
+        host: "shared.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      bindings.replace(binding("target_shared", profile.id));
+      const staleResolution =
+        deferred<ReturnType<typeof resolvedConnection>>();
+      const resolve = vi
+        .fn()
+        .mockImplementationOnce(async () => staleResolution.promise)
+        .mockImplementationOnce(async (currentProfile: SshProfileDto) =>
+          resolvedConnection(currentProfile)
+        );
+      const host = new FakeHost();
+      const lifecycle = new FakeLifecycle(bindings);
+      let attemptIndex = 0;
+      let verificationIndex = 0;
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: { resolve },
+        host: host as unknown as RemoteHostManager,
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => true,
+        now: () => NOW,
+        makeConnectionAttemptId: () => `attempt_${++attemptIndex}`,
+        makeVerificationId: () => `verification_${++verificationIndex}`,
+        makeToken: () => "d".repeat(64)
+      });
+
+      const staleRestore = runtime.restoreTarget("target_shared", {
+        authentication: "non-interactive",
+        purpose: "runtime-reconnect"
+      });
+      const connected = await runtime.connectProfile(profile.id);
+      const latestBinding = bindings.get("target_shared");
+
+      staleResolution.resolve(resolvedConnection(profile));
+
+      await expect(staleRestore).rejects.toBeInstanceOf(
+        SshConnectionAttemptSupersededError
+      );
+      expect(connected.binding.id).toBe("target_shared");
+      expect(bindings.get("target_shared")).toEqual(latestBinding);
+      expect(lifecycle.promotions).toHaveLength(1);
+      expect(host.verifyRequests).toHaveLength(1);
+      expect(host.discarded).toEqual([]);
+      expect(
+        (await runtime.getSnapshot()).profiles[0]?.lastError
+      ).toBeUndefined();
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -1022,6 +1129,7 @@ class FakeLifecycle {
 
   async promoteVerifiedTarget(options: {
     binding: ReturnType<typeof binding>;
+    assertPromotionCurrent?: () => void;
   }) {
     this.activePromotions += 1;
     this.maximumActivePromotions = Math.max(
@@ -1032,6 +1140,7 @@ class FakeLifecycle {
       if (this.delayPromotion) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
+      options.assertPromotionCurrent?.();
       this.promotions.push(options);
       this.bindings.replace({
         ...options.binding,

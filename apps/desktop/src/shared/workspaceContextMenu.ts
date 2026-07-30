@@ -2,6 +2,7 @@ import type { AppAction } from "@kmux/core";
 import type { Id, KmuxSettings, WorkspaceRowVm } from "@kmux/proto";
 
 export type WorkspaceContextAction =
+  | "reconnect-ssh"
   | "ssh-workspace"
   | "convert-worktree"
   | "rename"
@@ -43,6 +44,7 @@ export interface WorkspaceContext {
 }
 
 export interface WorkspaceContextActionRunner {
+  reconnectSshWorkspace?(workspaceId: Id): void | Promise<void>;
   openSshWorkspace?(workspaceId: Id): void | Promise<void>;
   convertToWorktree?(workspaceId: Id): void | Promise<void>;
   closeWorkspace?(workspaceId: Id): void | Promise<void>;
@@ -86,8 +88,22 @@ export function buildWorkspaceContextMenuEntries(
 ): WorkspaceContextMenuEntry[] {
   const { groupIndex, groupSize, row, totalRows, view } = context;
   const canConvertToWorktree = Boolean(row.gitRepository && !row.worktree);
+  const sshConnectionStatus = row.statusEntries.find(
+    (entry) => entry.key === "ssh:connection"
+  );
 
   return [
+    ...(row.targetKind === "ssh" && sshConnectionStatus
+      ? [
+          {
+            id: "reconnect-ssh",
+            kind: "action" as const,
+            label: "Reconnect SSH",
+            action: "reconnect-ssh" as const,
+            disabled: sshConnectionStatus.variant !== "error"
+          }
+        ]
+      : []),
     {
       id: "ssh-workspace",
       kind: "action",
@@ -175,6 +191,16 @@ export async function runWorkspaceContextAction(
   }
 
   switch (action) {
+    case "reconnect-ssh":
+      if (
+        context.row.targetKind === "ssh" &&
+        context.row.statusEntries.some(
+          (entry) => entry.key === "ssh:connection"
+        )
+      ) {
+        await runner.reconnectSshWorkspace?.(workspaceId);
+      }
+      return;
     case "ssh-workspace":
       await runner.openSshWorkspace?.(workspaceId);
       return;

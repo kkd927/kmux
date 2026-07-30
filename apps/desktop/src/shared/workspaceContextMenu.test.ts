@@ -1,4 +1,9 @@
-import { applyAction, buildViewModel, createInitialState } from "@kmux/core";
+import {
+  applyAction,
+  buildViewModel,
+  createInitialState,
+  workspaceLocation
+} from "@kmux/core";
 
 import {
   buildWorkspaceContextMenuEntries,
@@ -128,6 +133,56 @@ describe("workspace context menu helpers", () => {
     );
 
     expect(convertToWorktree).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it("shows failed SSH reconnect and disables it while the target is reconnecting", async () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    state.workspaces[workspaceId].location = workspaceLocation(
+      { kind: "ssh", targetId: "target_1" },
+      "/srv/project"
+    );
+    applyAction(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      key: "ssh:connection",
+      text: "Permission denied",
+      variant: "error"
+    });
+    let view = buildViewModel(state);
+    let context = findWorkspaceContext(view, workspaceId)!;
+    expect(
+      buildWorkspaceContextMenuEntries(context).find(
+        (entry) => entry.id === "reconnect-ssh"
+      )
+    ).toMatchObject({ label: "Reconnect SSH", disabled: false });
+
+    const reconnectSshWorkspace = vi.fn();
+    await runWorkspaceContextAction(
+      workspaceId,
+      "reconnect-ssh",
+      () => context,
+      {
+        reconnectSshWorkspace,
+        rename: vi.fn(),
+        dispatch: vi.fn()
+      }
+    );
+    expect(reconnectSshWorkspace).toHaveBeenCalledWith(workspaceId);
+
+    applyAction(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      key: "ssh:connection",
+      text: "Reconnecting SSH…"
+    });
+    view = buildViewModel(state);
+    context = findWorkspaceContext(view, workspaceId)!;
+    expect(
+      buildWorkspaceContextMenuEntries(context).find(
+        (entry) => entry.id === "reconnect-ssh"
+      )
+    ).toMatchObject({ disabled: true });
   });
 
   it("routes close actions to the specialized runner callback", async () => {

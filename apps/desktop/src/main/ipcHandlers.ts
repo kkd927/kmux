@@ -16,6 +16,7 @@ import type {
   ShellIdentity,
   ShellStoreSnapshot,
   SshConnectionsSnapshot,
+  SshAskpassPrompt,
   SshAskpassResponseRequest,
   SshProfileDto,
   SshProfileVm,
@@ -27,6 +28,7 @@ import type {
   SshWorkspaceOpenResult,
   SshWorkspacePrepareRequest,
   SshWorkspacePrepareResult,
+  SshWorkspaceReconnectResult,
   SurfaceCapturePayload,
   SurfaceSnapshotOptions,
   SurfaceSnapshotPayload,
@@ -105,7 +107,11 @@ interface IpcHandlersOptions {
     request: SshWorkspaceCommitRequest
   ) => Promise<SshWorkspaceOpenResult>;
   cancelSshWorkspacePreparation: (request: SshWorkspaceCancelRequest) => void;
+  claimSshAskpassPresenter: (presenterId: number) => SshAskpassPrompt[];
   respondSshAskpass: (request: SshAskpassResponseRequest) => void;
+  reconnectSshWorkspace: (
+    workspaceId: Id
+  ) => Promise<SshWorkspaceReconnectResult>;
   closeWorkspaceSafely: (workspaceId: Id) => void | Promise<void>;
   closeOtherWorkspacesSafely: (workspaceId: Id) => void | Promise<void>;
   attachTerminalStream: (
@@ -329,12 +335,23 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     }
   );
   ipcMain.handle(
+    "kmux:ssh-askpass:claim-presenter",
+    (event): SshAskpassPrompt[] => {
+      assertTrustedMainFrame(event, "SSH askpass presenter claim");
+      return options.claimSshAskpassPresenter(event.sender.id);
+    }
+  );
+  ipcMain.handle(
     "kmux:ssh-askpass:respond",
     (event, request: SshAskpassResponseRequest) => {
       assertTrustedMainFrame(event, "SSH askpass response");
       options.respondSshAskpass(request);
     }
   );
+  ipcMain.handle("kmux:ssh-workspace:reconnect", (event, workspaceId: Id) => {
+    assertTrustedMainFrame(event, "SSH workspace reconnect");
+    return options.reconnectSshWorkspace(workspaceId);
+  });
   ipcMain.handle("kmux:workspace:close-safely", (event, workspaceId: Id) => {
     assertTrustedMainFrame(event, "workspace close");
     return options.closeWorkspaceSafely(workspaceId);
@@ -573,6 +590,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
         workspaceId: payload.workspaceId,
         getContextView: options.getWorkspaceContextView,
         reservedSystemChords: keyboardPolicy.reservedSystemChords,
+        reconnectSshWorkspace: (workspaceId) => {
+          void options
+            .reconnectSshWorkspace(workspaceId)
+            .catch(() => undefined);
+        },
         openSshWorkspace: (workspaceId) => {
           event.sender.send("kmux:ssh-workspace-open-request", workspaceId);
         },

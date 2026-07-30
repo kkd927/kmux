@@ -323,31 +323,74 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    return window.kmux.subscribeSshAskpassPrompt((prompt) => {
+    let claimed = false;
+    let disposed = false;
+    const buffered: SshAskpassPrompt[] = [];
+    const resolvedBeforeClaim = new Set<string>();
+    const mergePrompts = (prompts: readonly SshAskpassPrompt[]): void => {
+      if (disposed || prompts.length === 0) return;
       setSshAskpassPrompts((current) => {
-        if (
-          current.some((candidate) => candidate.requestId === prompt.requestId)
-        ) {
-          return current;
-        }
-        if (current.length >= 16) {
-          void window.kmux.respondSshAskpass({
-            requestId: prompt.requestId,
-            cancelled: true
-          });
-          return current;
-        }
-        const kind = classifySshAskpassPrompt(prompt.prompt);
-        return [
-          ...current,
-          {
+        const known = new Set(current.map((candidate) => candidate.requestId));
+        const merged = [...current];
+        for (const prompt of prompts) {
+          if (known.has(prompt.requestId)) continue;
+          known.add(prompt.requestId);
+          const kind = classifySshAskpassPrompt(prompt.prompt);
+          merged.push({
             ...prompt,
             kind,
             response: kind === "host-authenticity" ? "yes" : ""
-          }
-        ];
+          });
+        }
+        return merged;
       });
+    };
+    const unsubscribe = window.kmux.subscribeSshAskpassPrompt((prompt) => {
+      if (!claimed) {
+        buffered.push(prompt);
+        return;
+      }
+      mergePrompts([prompt]);
     });
+    const unsubscribeResolution = window.kmux.subscribeSshAskpassResolution(
+      (requestId) => {
+        if (!claimed) {
+          resolvedBeforeClaim.add(requestId);
+          return;
+        }
+        setSshAskpassPrompts((current) =>
+          current.filter((prompt) => prompt.requestId !== requestId)
+        );
+      }
+    );
+    void window.kmux
+      .claimSshAskpassPresenter()
+      .then((pending) => {
+        if (disposed) return;
+        mergePrompts(
+          [...pending, ...buffered].filter(
+            (prompt) => !resolvedBeforeClaim.has(prompt.requestId)
+          )
+        );
+        buffered.length = 0;
+        resolvedBeforeClaim.clear();
+        claimed = true;
+      })
+      .catch(() => {
+        claimed = true;
+        mergePrompts(
+          buffered.filter(
+            (prompt) => !resolvedBeforeClaim.has(prompt.requestId)
+          )
+        );
+        buffered.length = 0;
+        resolvedBeforeClaim.clear();
+      });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      unsubscribeResolution();
+    };
   }, []);
 
   useEffect(() => {
@@ -1716,6 +1759,9 @@ export function App(): JSX.Element {
       action,
       resolveWorkspaceContext,
       {
+        reconnectSshWorkspace: async (targetWorkspaceId) => {
+          await window.kmux.reconnectSshWorkspace(targetWorkspaceId);
+        },
         openSshWorkspace: openSshWorkspaceDialog,
         rename: async (targetWorkspaceId) => {
           const latestShellState = await window.kmux.getShellState();

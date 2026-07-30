@@ -28,23 +28,33 @@ const MAX_PENDING_PROMPTS = 16;
 const MAX_REQUEST_BYTES = 16 * 1024;
 const PROMPT_TIMEOUT_MS = 2 * 60_000;
 
+export type SshAskpassPurpose = SshAskpassPrompt["purpose"];
+
 export interface SshAskpassContext {
   askpassPath: string;
+  wasCancelled(): boolean;
   dispose(): Promise<void>;
 }
 
 export interface SshAskpassBroker {
   start(): Promise<void>;
   stop(): Promise<void>;
-  createContext(profile: SshProfileDto): Promise<SshAskpassContext>;
+  createContext(
+    profile: SshProfileDto,
+    purpose: SshAskpassPurpose
+  ): Promise<SshAskpassContext>;
+  claimPresenter(presenterId: number): SshAskpassPrompt[];
+  releasePresenter(presenterId: number): void;
   respond(request: SshAskpassResponseRequest): void;
 }
 
 export function createSshAskpassBroker(options: {
   electronPath: string;
   clientPath: string;
-  publishPrompt: (prompt: SshAskpassPrompt) => void;
+  publishPrompt: (presenterId: number, prompt: SshAskpassPrompt) => void;
+  publishResolution?: (presenterId: number, requestId: string) => void;
   makePromptId?: () => string;
+  promptTimeoutMs?: number;
 }): SshAskpassBroker {
   assertAbsoluteProgramPath(options.electronPath, "Electron executable");
   assertAbsoluteProgramPath(options.clientPath, "askpass client");
@@ -56,18 +66,35 @@ export function createSshAskpassBroker(options: {
   const contexts = new Map<string, Context>();
   const pending = new Map<string, PendingPrompt>();
   const sockets = new Set<Socket>();
+  const promptTimeoutMs = options.promptTimeoutMs ?? PROMPT_TIMEOUT_MS;
   let server: Server | null = null;
+  let presenterId: number | null = null;
   let stopped = false;
 
-  const cancelContext = (contextId: string): void => {
+  const settlePrompt = (requestId: string, response: string | null): void => {
+    const prompt = pending.get(requestId);
+    if (!prompt) return;
+    pending.delete(requestId);
+    clearTimeout(prompt.timeout);
+    prompt.resolve(response);
+    if (presenterId !== null) {
+      try {
+        options.publishResolution?.(presenterId, requestId);
+      } catch {
+        // A replacement renderer will receive only still-pending prompts in
+        // its claim snapshot, so resolution delivery is best effort.
+      }
+    }
+  };
+
+  const cancelContext = (contextId: string, cancelled = false): void => {
     const context = contexts.get(contextId);
     if (!context) return;
+    if (cancelled) context.cancelled = true;
     contexts.delete(contextId);
     for (const [requestId, prompt] of pending) {
       if (prompt.contextId !== contextId) continue;
-      pending.delete(requestId);
-      clearTimeout(prompt.timeout);
-      prompt.resolve(null);
+      settlePrompt(requestId, null);
     }
     safelyUnlink(context.askpassPath);
   };
@@ -95,7 +122,10 @@ export function createSshAskpassBroker(options: {
       server = next;
     },
 
-    async createContext(profile: SshProfileDto): Promise<SshAskpassContext> {
+    async createContext(
+      profile: SshProfileDto,
+      purpose: SshAskpassPurpose
+    ): Promise<SshAskpassContext> {
       if (stopped || !server) {
         throw new Error("SSH askpass broker is unavailable");
       }
@@ -143,12 +173,17 @@ export function createSshAskpassBroker(options: {
         contextId,
         profileId: profile.id,
         profileName: profile.name,
-        askpassPath
+        askpassPath,
+        purpose,
+        cancelled: false
       };
       contexts.set(contextId, context);
       let disposed = false;
       return Object.freeze({
         askpassPath,
+        wasCancelled(): boolean {
+          return context.cancelled;
+        },
         async dispose(): Promise<void> {
           if (disposed) return;
           disposed = true;
@@ -157,24 +192,45 @@ export function createSshAskpassBroker(options: {
       });
     },
 
+    claimPresenter(nextPresenterId: number): SshAskpassPrompt[] {
+      if (
+        !Number.isSafeInteger(nextPresenterId) ||
+        nextPresenterId <= 0 ||
+        stopped
+      ) {
+        return [];
+      }
+      if (presenterId !== null && presenterId !== nextPresenterId) {
+        return [];
+      }
+      presenterId = nextPresenterId;
+      return [...pending.values()].map((entry) =>
+        structuredClone(entry.prompt)
+      );
+    },
+
+    releasePresenter(currentPresenterId: number): void {
+      if (presenterId === currentPresenterId) presenterId = null;
+    },
+
     respond(value: SshAskpassResponseRequest): void {
       const request = decodeResponse(value);
       const prompt = pending.get(request.requestId);
       if (!prompt) return;
-      pending.delete(request.requestId);
-      clearTimeout(prompt.timeout);
-      prompt.resolve(request.cancelled ? null : (request.response ?? null));
+      settlePrompt(
+        request.requestId,
+        request.cancelled ? null : (request.response ?? null)
+      );
+      if (request.cancelled) cancelContext(prompt.contextId, true);
     },
 
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
+      presenterId = null;
       for (const contextId of [...contexts.keys()]) cancelContext(contextId);
-      for (const [requestId, prompt] of pending) {
-        pending.delete(requestId);
-        clearTimeout(prompt.timeout);
-        prompt.resolve(null);
-      }
+      for (const requestId of [...pending.keys()])
+        settlePrompt(requestId, null);
       const current = server;
       server = null;
       if (current) {
@@ -192,7 +248,7 @@ export function createSshAskpassBroker(options: {
     }
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
-    socket.setTimeout(PROMPT_TIMEOUT_MS, () => socket.destroy());
+    socket.setTimeout(promptTimeoutMs + 1_000, () => socket.destroy());
     let bytes = 0;
     let payload = "";
     let handled = false;
@@ -230,26 +286,29 @@ export function createSshAskpassBroker(options: {
       }
       response = await new Promise<string | null>((resolve) => {
         const timeout = setTimeout(() => {
-          pending.delete(requestId);
-          resolve(null);
-        }, PROMPT_TIMEOUT_MS);
+          settlePrompt(requestId, null);
+        }, promptTimeoutMs);
         timeout.unref();
+        const published: SshAskpassPrompt = {
+          requestId,
+          profileId: context.profileId,
+          profileName: context.profileName,
+          prompt: request.prompt,
+          purpose: context.purpose
+        };
         pending.set(requestId, {
           contextId: context.contextId,
+          prompt: published,
           resolve,
           timeout
         });
-        try {
-          options.publishPrompt({
-            requestId,
-            profileId: context.profileId,
-            profileName: context.profileName,
-            prompt: request.prompt
-          });
-        } catch {
-          pending.delete(requestId);
-          clearTimeout(timeout);
-          resolve(null);
+        if (presenterId !== null) {
+          try {
+            options.publishPrompt(presenterId, published);
+          } catch {
+            // The prompt remains Main-owned and is replayed when a renderer
+            // claims presentation after a reload or window replacement.
+          }
         }
       });
     } catch {
@@ -272,10 +331,13 @@ interface Context {
   profileId: string;
   profileName: string;
   askpassPath: string;
+  purpose: SshAskpassPurpose;
+  cancelled: boolean;
 }
 
 interface PendingPrompt {
   contextId: string;
+  prompt: SshAskpassPrompt;
   resolve: (response: string | null) => void;
   timeout: NodeJS.Timeout;
 }
