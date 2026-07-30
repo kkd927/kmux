@@ -78,14 +78,17 @@ mod tests {
     fn reparented_process_is_not_owned_by_the_long_lived_caller() {
         let directory = tempdir().unwrap();
         let report = directory.path().join("process.txt");
+        let pending_report = directory.path().join("process.pending");
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(
-                "printf '%s %s %s\\n' \"$$\" \"$PPID\" \"$(ps -o pgid= -p $$)\" > \"$1\"; sleep 0.2",
+                "printf '%s %s %s\\n' \"$$\" \"$PPID\" \"$(ps -o pgid= -p $$)\" > \"$2\" \
+                 && mv \"$2\" \"$1\"; sleep 0.2",
             )
             .arg("kmux-reparented-test")
             .arg(&report)
+            .arg(&pending_report)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

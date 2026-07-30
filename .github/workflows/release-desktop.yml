@@ -65,6 +65,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     env:
+      RUSTUP_MAX_RETRIES: 5
       RUSTUP_TOOLCHAIN: 1.97.0
     steps:
       - uses: actions/checkout@v6
@@ -74,9 +75,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install pinned Rust toolchain and native target
-        run: |
-          rustup toolchain install 1.97.0 --profile minimal
-          rustup target add --toolchain 1.97.0 "${{ matrix.rust_target }}"
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.rust_target }}
       - name: Install native musl linker
         if: startsWith(matrix.target, 'linux-')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
