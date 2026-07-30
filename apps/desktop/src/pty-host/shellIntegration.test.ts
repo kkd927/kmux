@@ -170,11 +170,19 @@ describe("shell integration launch preparation", () => {
     expect(existsSync(integrationScript ?? "")).toBe(true);
     const integrationContents = readFileSync(integrationScript ?? "", "utf8");
     expect(integrationContents).toContain(
-      "add-zsh-hook precmd _kmux_emit_osc7"
+      'if [[ -z "${precmd_functions[(r)_kmux_emit_osc7]}" ]]; then'
     );
     expect(integrationContents).toContain(
-      "add-zsh-hook precmd _kmux_emit_shell_ready"
+      "precmd_functions+=(_kmux_emit_osc7)"
     );
+    expect(integrationContents).toContain(
+      'if [[ -z "${precmd_functions[(r)_kmux_emit_shell_ready]}" ]]; then'
+    );
+    expect(integrationContents).toContain(
+      "precmd_functions+=(_kmux_emit_shell_ready)"
+    );
+    expect(integrationContents).not.toContain("add-zsh-hook");
+    expect(integrationContents).not.toContain("chpwd_functions");
     expect(integrationContents).not.toContain("__KMUX_LAST_OSC7_PWD");
     expect(integrationContents).toContain("_kmux_prepend_agent_bin");
     expect(integrationContents).toContain(

@@ -1,7 +1,7 @@
 import { terminalSurfaceVmContent } from "@kmux/proto";
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -9,7 +9,6 @@ import { expect, test } from "@playwright/test";
 import {
   closeKmux,
   createSandbox,
-  launchKmux,
   launchKmuxWithSandbox,
   waitForSurfaceSnapshotContains,
   waitForView
@@ -99,15 +98,31 @@ for (const shellCase of shellCases) {
       "SWITCHED__"
     );
     const repoLeft = shellCompletionMarker("__KMUX_REPO_", "LEFT__");
-    const launched = await launchKmux(
-      `kmux-e2e-shell-integration-${shellName}-`,
-      {
-        env: {
-          PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-          SHELL: shellPath
-        }
+    const fixture = createSandbox(`kmux-e2e-shell-integration-${shellName}-`);
+    const zshPrecmdSentinelPath =
+      shellName === "zsh"
+        ? join(fixture.profileRoot, "zsh-existing-precmd-hook")
+        : undefined;
+    if (zshPrecmdSentinelPath) {
+      writeFileSync(
+        join(fixture.shellHomeDir, ".zshrc"),
+        [
+          "fpath=()",
+          "function _kmux_e2e_existing_precmd() {",
+          `  print -r -- invoked >> ${shellQuote(zshPrecmdSentinelPath)}`,
+          "}",
+          "precmd_functions+=(_kmux_e2e_existing_precmd)",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+    }
+    const launched = await launchKmuxWithSandbox(fixture, {
+      env: {
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        SHELL: shellPath
       }
-    );
+    });
 
     try {
       const { page, sandbox } = launched;
@@ -146,11 +161,20 @@ for (const shellCase of shellCases) {
       const activeSurfaceId =
         runningView.activeWorkspace.panes[activePaneId].activeSurfaceId;
 
+      if (zshPrecmdSentinelPath) {
+        await expect
+          .poll(() => existsSync(zshPrecmdSentinelPath), {
+            message: "existing zsh precmd hook should remain registered",
+            timeout: 10_000
+          })
+          .toBe(true);
+      }
+
       await page.evaluate(
         ({ surfaceId, text }) => window.kmux.sendText(surfaceId, text),
         {
           surfaceId: activeSurfaceId,
-          text: `cd ${shellQuote(repoDir)}; ` + `${repoEntered.command}\r`
+          text: `cd ${shellQuote(repoDir)} && ` + `${repoEntered.command}\r`
         }
       );
 
@@ -210,7 +234,7 @@ for (const shellCase of shellCases) {
         {
           surfaceId: activeSurfaceId,
           text:
-            `git switch -c ${shellQuote(switchedBranch)}; ` +
+            `git switch -c ${shellQuote(switchedBranch)} && ` +
             `${branchSwitched.command}\r`
         }
       );
@@ -245,7 +269,8 @@ for (const shellCase of shellCases) {
         {
           surfaceId: activeSurfaceId,
           text:
-            `cd ${shellQuote(sandbox.shellHomeDir)}; ` + `${repoLeft.command}\r`
+            `cd ${shellQuote(sandbox.shellHomeDir)} && ` +
+            `${repoLeft.command}\r`
         }
       );
 

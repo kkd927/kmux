@@ -620,8 +620,6 @@ function buildZshIntegrationScript(): string {
     "typeset -g __KMUX_OSC7_INSTALLED=1",
     "typeset -g __KMUX_SHELL_READY_EMITTED=0",
     "",
-    "autoload -Uz add-zsh-hook",
-    "",
     "function _kmux_prepend_agent_bin() {",
     "  emulate -L zsh",
     '  local agent_bin="${KMUX_AGENT_WRAPPER_BIN_DIR:-${KMUX_AGENT_BIN_DIR:-}}"',
@@ -678,8 +676,12 @@ function buildZshIntegrationScript(): string {
     "_kmux_prepend_agent_bin",
     "unfunction _kmux_prepend_agent_bin",
     "",
-    "add-zsh-hook precmd _kmux_emit_osc7",
-    "add-zsh-hook precmd _kmux_emit_shell_ready",
+    'if [[ -z "${precmd_functions[(r)_kmux_emit_osc7]}" ]]; then',
+    "  precmd_functions+=(_kmux_emit_osc7)",
+    "fi",
+    'if [[ -z "${precmd_functions[(r)_kmux_emit_shell_ready]}" ]]; then',
+    "  precmd_functions+=(_kmux_emit_shell_ready)",
+    "fi",
     ""
   ].join("\n");
 }
