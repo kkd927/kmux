@@ -10,10 +10,7 @@ import { join } from "node:path";
 
 import { uint64 } from "@kmux/proto";
 
-import {
-  createRetainedSessionInventoryStore,
-  retainedTerminationHasDurableTombstone
-} from "./retainedSessionInventory";
+import { createRetainedSessionInventoryStore } from "./retainedSessionInventory";
 import { durableAtomicReplace } from "./durableAtomicWrite";
 import type { ObservedSessionKeeper } from "./remoteReconciler";
 
@@ -75,7 +72,7 @@ describe("retained-session inventory", () => {
     expect(envelope.entriesDigest).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("keeps offline termination retained until the exact result and tombstone are both durable", () => {
+  it("durably retains a pending termination and its authoritative result", () => {
     const store = createRetainedSessionInventoryStore(inventoryPath, {
       now: () => "2026-07-18T00:00:01.000Z"
     });
@@ -95,7 +92,6 @@ describe("retained-session inventory", () => {
     );
 
     expect(pending.reason).toBe("termination-pending");
-    expect(retainedTerminationHasDurableTombstone(pending, keeper)).toBe(false);
     expect(store.listRetained()).toHaveLength(1);
 
     const withResult = store.recordTerminationResult(
@@ -103,26 +99,13 @@ describe("retained-session inventory", () => {
       "terminate_1",
       "e".repeat(64)
     );
-    expect(retainedTerminationHasDurableTombstone(withResult, keeper)).toBe(
-      false
-    );
-
-    const tombstone = observedKeeper({
-      processState: "exited",
-      remoteResourceRevision: uint64(5n),
-      exitCode: 0,
-      descriptor: {
-        ...keeper.descriptor!,
-        lastOperationId: "terminate_1",
-        lastOperationPayloadHash: "d".repeat(64),
-        lastResultDigest: "e".repeat(64)
-      }
+    expect(withResult.termination).toMatchObject({
+      operationId: "terminate_1",
+      resultDigest: "e".repeat(64)
     });
-    expect(retainedTerminationHasDurableTombstone(withResult, tombstone)).toBe(
-      true
-    );
-    expect(store.remove(keeper.resourceKey)).toBe(true);
-    expect(store.listRetained()).toEqual([]);
+    expect(
+      createRetainedSessionInventoryStore(inventoryPath).listRetained()
+    ).toEqual([withResult]);
   });
 
   it("does not lose an explicit retention reason on a later unowned observation", () => {
@@ -144,6 +127,49 @@ describe("retained-session inventory", () => {
     expect(updated.reason).toBe("workspace-close");
     expect(updated.retainedAt).toBe("2026-07-18T00:00:01.000Z");
     expect(updated.remoteResourceRevision).toBe(5n);
+  });
+
+  it("removes persisted terminal entries with pending termination when loading without migrating running entries", () => {
+    const store = createRetainedSessionInventoryStore(inventoryPath);
+    const running = observedKeeper();
+    const exited = observedKeeper({
+      resourceKey: {
+        ...running.resourceKey,
+        sessionId: "session_exited"
+      },
+      generation: "keeper_exited",
+      processState: "exited",
+      exitCode: 137
+    });
+    store.retain(running, "workspace-close", "2026-07-18T00:00:00.000Z");
+    store.retain(exited, "unowned-observation", "2026-07-18T00:00:01.000Z");
+    store.markTerminationPending(exited, "2026-07-18T00:00:02.000Z", {
+      operationId: "terminate_exited",
+      canonicalPayloadHash: "d".repeat(64),
+      expectedWorkspaceRevision: "c".repeat(64),
+      expectedRemoteResourceRevision: uint64(4n),
+      nextRemoteResourceRevision: uint64(5n),
+      admittedAt: "2026-07-18T00:00:02.000Z",
+      priorReason: "unowned-observation"
+    });
+    expect(store.listRetained()).toHaveLength(2);
+
+    const reloaded = createRetainedSessionInventoryStore(inventoryPath);
+
+    expect(reloaded.listRetained()).toMatchObject([
+      {
+        resourceKey: { sessionId: "session_1" },
+        processState: "running"
+      }
+    ]);
+    const envelope = JSON.parse(readFileSync(inventoryPath, "utf8")) as {
+      version: number;
+      entries: Array<{ resourceKey: { sessionId: string } }>;
+    };
+    expect(envelope.version).toBe(1);
+    expect(
+      envelope.entries.map((entry) => entry.resourceKey.sessionId)
+    ).toEqual(["session_1"]);
   });
 
   it("durably admits and audits an explicit retained-session termination failure", () => {

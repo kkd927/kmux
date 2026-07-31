@@ -180,10 +180,6 @@ describe("terminal stream preload bridge", () => {
       sessions: [],
       updatedAt: "2026-07-18T00:00:00.000Z"
     };
-    const result = {
-      operationId: "retained_termination_1",
-      outcome: { status: "pending", reason: "offline" }
-    };
     const resourceKey = {
       desktopInstallationId: "desktop_1",
       targetId: "target_1",
@@ -194,12 +190,14 @@ describe("terminal stream preload bridge", () => {
       getRetainedRemoteSessions(): Promise<unknown>;
       terminateRetainedRemoteSession(resourceKey: unknown): Promise<unknown>;
     };
-    mocks.invoke.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(result);
+    mocks.invoke
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce(undefined);
 
     await expect(api.getRetainedRemoteSessions()).resolves.toBe(snapshot);
-    await expect(api.terminateRetainedRemoteSession(resourceKey)).resolves.toBe(
-      result
-    );
+    await expect(
+      api.terminateRetainedRemoteSession(resourceKey)
+    ).resolves.toBeUndefined();
     expect(mocks.invoke).toHaveBeenNthCalledWith(
       1,
       "kmux:remote-retained-sessions:get"

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createInitialState, workspaceLocation } from "@kmux/core";
 
 import {
-  collectSshStartupTargetIds,
+  collectSshStartupTargets,
   restoreSshStartupTargets
 } from "./sshStartupRestore";
 
@@ -28,12 +28,22 @@ describe("SSH startup restore", () => {
     };
 
     expect(
-      collectSshStartupTargetIds({
+      collectSshStartupTargets({
         state,
         retained: [
           {
             resourceKey: { targetId: "target_retained" },
             processState: "running"
+          },
+          {
+            resourceKey: { targetId: "target_termination" },
+            processState: "running",
+            termination: { operationId: "termination_1" }
+          },
+          {
+            resourceKey: { targetId: "target_workspace" },
+            processState: "running",
+            termination: { operationId: "termination_2" }
           },
           {
             resourceKey: { targetId: "target_exited" },
@@ -61,26 +71,52 @@ describe("SSH startup restore", () => {
         ]
       })
     ).toEqual([
-      "target_conversion",
-      "target_pending",
-      "target_retained",
-      "target_workspace"
+      {
+        targetId: "target_conversion",
+        mode: "interactive-restore"
+      },
+      {
+        targetId: "target_pending",
+        mode: "non-interactive-maintenance"
+      },
+      {
+        targetId: "target_termination",
+        mode: "non-interactive-maintenance"
+      },
+      {
+        targetId: "target_workspace",
+        mode: "interactive-restore"
+      }
     ]);
   });
 
-  it("deduplicates restores, contains failures, and reports every target", async () => {
+  it("deduplicates plans, preserves interactive priority, and contains failures", async () => {
     const onFailure = vi.fn();
-    const restored: string[] = [];
+    const restored: Array<{ targetId: string; mode: string }> = [];
     const result = await restoreSshStartupTargets({
-      targetIds: ["target_b", "target_a", "target_b"],
-      async restoreTarget(targetId) {
-        restored.push(targetId);
+      targets: [
+        {
+          targetId: "target_b",
+          mode: "non-interactive-maintenance"
+        },
+        { targetId: "target_a", mode: "interactive-restore" },
+        { targetId: "target_b", mode: "interactive-restore" }
+      ],
+      async restoreTarget(targetId, mode) {
+        restored.push({ targetId, mode });
         if (targetId === "target_b") throw new Error("offline");
       },
       onFailure
     });
 
-    expect(restored.sort()).toEqual(["target_a", "target_b"]);
+    expect(
+      restored.sort((left, right) =>
+        left.targetId.localeCompare(right.targetId)
+      )
+    ).toEqual([
+      { targetId: "target_a", mode: "interactive-restore" },
+      { targetId: "target_b", mode: "interactive-restore" }
+    ]);
     expect(result.connected).toEqual(["target_a"]);
     expect(result.failed).toMatchObject([
       { targetId: "target_b", error: { message: "offline" } }

@@ -233,7 +233,83 @@ describe("RemoteReconciler observations", () => {
     }
   });
 
-  it("keeps an offline termination retained until the matching durable tombstone is observed", () => {
+  it("removes a naturally exited retained descriptor and never re-registers it", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-reconciler-exited-"));
+    try {
+      const fixture = createRemoteFixture();
+      const inventory = createRetainedSessionInventoryStore(
+        join(sandbox, "retained.json")
+      );
+      const reconciler = createReconciler(fixture.state, inventory);
+      const keeper = observedKeeper(fixture.workspaceId, fixture.sessionId);
+      reconciler.observe(authoritativeInventory([keeper]));
+      reconciler.retainWorkspace(fixture.workspaceId, "workspace-close");
+      applyAction(fixture.state, {
+        type: "workspace.close",
+        workspaceId: fixture.workspaceId
+      });
+      expect(reconciler.listRetainedSessions()).toHaveLength(1);
+      reconciler.observe({
+        targetId: "target_1",
+        targetStatus: "offline",
+        inventoryComplete: false,
+        keepers: []
+      });
+      expect(reconciler.listRetainedSessions()).toMatchObject([
+        {
+          processState: "running",
+          lastObservedAt: "2026-07-17T00:00:00.000Z"
+        }
+      ]);
+      const exited = {
+        ...keeper,
+        descriptorState: "exited" as const,
+        processState: "exited" as const,
+        exitCode: 137
+      };
+
+      reconciler.observe(authoritativeInventory([exited]));
+      reconciler.observe(authoritativeInventory([exited]));
+
+      expect(reconciler.listRetainedSessions()).toEqual([]);
+      expect(inventory.loadAll()).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("does not require a retained descriptor when closing an exited workspace session", () => {
+    const sandbox = mkdtempSync(
+      join(tmpdir(), "kmux-reconciler-exited-close-")
+    );
+    try {
+      const fixture = createRemoteFixture();
+      const inventory = createRetainedSessionInventoryStore(
+        join(sandbox, "retained.json")
+      );
+      const reconciler = createReconciler(fixture.state, inventory);
+      const keeper = observedKeeper(fixture.workspaceId, fixture.sessionId);
+
+      reconciler.observe(
+        authoritativeInventory([
+          {
+            ...keeper,
+            descriptorState: "exited",
+            processState: "exited",
+            exitCode: 0
+          }
+        ])
+      );
+
+      expect(
+        reconciler.retainWorkspace(fixture.workspaceId, "workspace-close")
+      ).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an offline termination pending but removes it after an authoritative terminal observation without a matching tombstone", () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-reconciler-terminate-"));
     try {
       const fixture = createRemoteFixture();
@@ -273,120 +349,16 @@ describe("RemoteReconciler observations", () => {
         }
       ]);
 
-      Object.assign(fixture.state.remoteOperations.terminate_1, {
-        state: "succeeded" as const,
-        completedAt: "2026-07-18T00:00:02.000Z",
-        resultDigest: "e".repeat(64)
-      });
       reconciler.observe(
         authoritativeInventory([
           {
             ...keeper,
             processState: "exited",
-            exitCode: 0,
-            remoteResourceRevision: uint64(2n),
-            descriptor: {
-              ...keeper.descriptor!,
-              lastOperationId: "terminate_1",
-              lastOperationPayloadHash: payloadHash,
-              lastResultDigest: "e".repeat(64)
-            }
+            exitCode: 0
           }
         ])
       );
       expect(reconciler.listRetainedSessions()).toEqual([]);
-    } finally {
-      rmSync(sandbox, { recursive: true, force: true });
-    }
-  });
-
-  it("accepts an exact successful tombstone without requiring an intermediate pending observation", () => {
-    const sandbox = mkdtempSync(
-      join(tmpdir(), "kmux-reconciler-fast-terminate-")
-    );
-    try {
-      const fixture = createRemoteFixture();
-      const inventory = createRetainedSessionInventoryStore(
-        join(sandbox, "retained.json")
-      );
-      const reconciler = createReconciler(fixture.state, inventory);
-      const keeper = observedKeeper(fixture.workspaceId, fixture.sessionId);
-      const payloadHash = "d".repeat(64);
-      const resultDigest = "e".repeat(64);
-
-      reconciler.observe(authoritativeInventory([keeper]));
-      fixture.state.remoteOperations.terminate_1 = {
-        operationId: "terminate_1",
-        kind: "session.terminate",
-        resourceKey: keeper.resourceKey,
-        expectedWorkspaceRevision: "f".repeat(64),
-        expectedRemoteResourceRevision: uint64(1n),
-        nextRemoteResourceRevision: uint64(2n),
-        canonicalPayloadHash: payloadHash,
-        pendingProduct: {
-          kind: "session.terminate",
-          sessionId: fixture.sessionId
-        },
-        state: "succeeded",
-        createdAt: "2026-07-18T00:00:00.000Z",
-        completedAt: "2026-07-18T00:00:01.000Z",
-        resultDigest
-      };
-
-      expect(() =>
-        reconciler.observe(
-          authoritativeInventory([
-            {
-              ...keeper,
-              processState: "exited",
-              exitCode: 0,
-              remoteResourceRevision: uint64(2n),
-              descriptor: {
-                ...keeper.descriptor!,
-                lastOperationId: "terminate_1",
-                lastOperationPayloadHash: payloadHash,
-                lastResultDigest: resultDigest
-              }
-            }
-          ])
-        )
-      ).not.toThrow();
-      expect(inventory.listRetained()).toEqual([]);
-
-      fixture.state.sessions[fixture.sessionId].runtimeStatus = {
-        processState: "running",
-        observationState: "unknown",
-        attachmentState: "detached"
-      };
-      fixture.state.sessions[fixture.sessionId].remoteRuntime = {
-        keeperGeneration: "generation_2",
-        remoteResourceRevision: uint64(3n)
-      };
-      expect(() =>
-        reconciler.observe(
-          authoritativeInventory([
-            {
-              ...keeper,
-              generation: "generation_2",
-              remoteResourceRevision: uint64(3n),
-              descriptor: {
-                ...keeper.descriptor!,
-                lastOperationId: "restart_1",
-                lastOperationPayloadHash: "1".repeat(64),
-                lastResultDigest: "2".repeat(64)
-              }
-            }
-          ])
-        )
-      ).not.toThrow();
-      expect(inventory.loadAll()).toMatchObject([
-        {
-          ownership: "owned-cache",
-          keeperGeneration: "generation_2",
-          remoteResourceRevision: 3n,
-          processState: "running"
-        }
-      ]);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

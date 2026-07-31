@@ -97,6 +97,7 @@ export interface CreateRemoteLifecycleRuntimeOptions {
   eventReceiptStore?: RemoteEventReceiptStore;
   reportError?: (error: Error) => void;
   reconnectTarget?: (targetId: Id) => Promise<unknown>;
+  ensureRetainedTargetConnected?: (targetId: Id) => Promise<unknown>;
   onTargetConnected?: (targetId: Id) => void;
   retainedInventory?: RetainedSessionInventoryStore;
   closeWorkspaceProduct?: (workspaceId: Id) => void;
@@ -847,8 +848,7 @@ export class RemoteLifecycleRuntime {
                 completedAt: entry.lastTerminationFailure.completedAt
               }
             }),
-        canTerminate:
-          entry.processState === "running" && entry.termination === undefined
+        canTerminate: entry.processState === "running"
       })),
       updatedAt: new Date().toISOString()
     };
@@ -923,7 +923,9 @@ export class RemoteLifecycleRuntime {
 
   async terminateRetainedSession(
     resourceKey: RemoteResourceKey & { sessionId: Id }
-  ): Promise<RemoteOperationCommandResult> {
+  ): Promise<void> {
+    const inventory = this.requireRetainedInventory();
+    const initialEntry = inventory.get(resourceKey);
     if (
       resourceKey.desktopInstallationId !== this.options.desktopInstallationId
     ) {
@@ -931,43 +933,83 @@ export class RemoteLifecycleRuntime {
         "retained-session termination belongs to another desktop installation"
       );
     }
-    this.requireBinding(resourceKey.targetId);
-    const inventory = this.requireRetainedInventory();
-    let entry = inventory.get(resourceKey);
-    if (!entry || entry.ownership !== "retained") {
+    if (!initialEntry || initialEntry.ownership !== "retained") {
       throw new Error("retained-session termination target is unavailable");
     }
-    if (!entry.termination) {
-      const payload = retainedTerminationPayload(entry.resourceKey);
-      entry = inventory.admitRetainedTermination(entry.resourceKey, {
-        operationId: makeId("retained-termination"),
-        canonicalPayloadHash: sha256(
-          canonicalizeRemoteOperationPayload(payload)
-        ),
-        expectedWorkspaceRevision: retainedWorkspaceRevision(entry),
-        expectedRemoteResourceRevision: entry.remoteResourceRevision,
-        nextRemoteResourceRevision: incrementUint64(
-          entry.remoteResourceRevision
-        ),
-        admittedAt: new Date().toISOString(),
-        priorReason:
-          entry.reason === undefined || entry.reason === "termination-pending"
-            ? "unowned-observation"
-            : entry.reason
-      });
+    const trustedResourceKey = initialEntry.resourceKey;
+    this.requireBinding(trustedResourceKey.targetId);
+    const existingOperationId = initialEntry.termination?.operationId;
+    if (!this.connectedTargets.has(trustedResourceKey.targetId)) {
+      if (!this.options.ensureRetainedTargetConnected) {
+        throw new Error(
+          "retained-session termination requires an SSH connection"
+        );
+      }
+      try {
+        await this.options.ensureRetainedTargetConnected(
+          trustedResourceKey.targetId
+        );
+      } catch (error) {
+        if (!inventory.get(trustedResourceKey)) return;
+        throw error;
+      }
     }
-    const admission = entry.termination;
-    if (!admission) {
-      throw new Error("retained-session termination admission was not stored");
-    }
-    const operationId = admission.operationId;
-    const outcome = await this.enqueueTarget(resourceKey.targetId, () =>
-      this.executeRetainedTermination(entry)
-    );
-    if (outcome.status === "succeeded") {
-      await this.tryReconcile(resourceKey.targetId);
-    }
-    return { operationId, outcome };
+    await this.enqueueTarget(trustedResourceKey.targetId, async () => {
+      if (!this.connectedTargets.has(trustedResourceKey.targetId)) {
+        throw new Error(
+          "retained-session termination requires an SSH connection"
+        );
+      }
+      await this.reconcileTarget(trustedResourceKey.targetId);
+      if (!this.connectedTargets.has(trustedResourceKey.targetId)) {
+        throw new Error(
+          "retained-session termination requires an SSH connection"
+        );
+      }
+      let entry = inventory.get(trustedResourceKey);
+      if (!entry) return;
+      if (entry.ownership !== "retained") {
+        throw new Error("retained-session termination target is unavailable");
+      }
+      if (existingOperationId && !entry.termination) {
+        const failure = entry.lastTerminationFailure;
+        throw new Error(
+          failure?.operationId === existingOperationId
+            ? failure.message
+            : "retained-session termination is no longer current"
+        );
+      }
+      if (!entry.termination) {
+        const payload = retainedTerminationPayload(entry.resourceKey);
+        entry = inventory.admitRetainedTermination(entry.resourceKey, {
+          operationId: makeId("retained-termination"),
+          canonicalPayloadHash: sha256(
+            canonicalizeRemoteOperationPayload(payload)
+          ),
+          expectedWorkspaceRevision: retainedWorkspaceRevision(entry),
+          expectedRemoteResourceRevision: entry.remoteResourceRevision,
+          nextRemoteResourceRevision: incrementUint64(
+            entry.remoteResourceRevision
+          ),
+          admittedAt: new Date().toISOString(),
+          priorReason:
+            entry.reason === undefined || entry.reason === "termination-pending"
+              ? "unowned-observation"
+              : entry.reason
+        });
+      }
+      if (!entry.termination) {
+        throw new Error(
+          "retained-session termination admission was not stored"
+        );
+      }
+      const outcome = await this.executeRetainedTermination(entry);
+      if (outcome.status === "succeeded") {
+        await this.tryReconcile(trustedResourceKey.targetId);
+      } else if (outcome.status === "failed") {
+        throw new Error(outcome.message);
+      }
+    });
   }
 
   async reconcileTarget(targetId: Id): Promise<void> {

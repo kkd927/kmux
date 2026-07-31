@@ -780,6 +780,18 @@ describe("SSH connection runtime", () => {
         expect.objectContaining({ askpassPath: "/tmp/kmux-askpass" })
       );
 
+      await runtime.restoreTarget("target_restore", {
+        authentication: "interactive",
+        purpose: "retained-termination"
+      });
+      expect(createContext).toHaveBeenLastCalledWith(
+        profile,
+        "retained-termination"
+      );
+      expect(host.verifyRequests[3]).toEqual(
+        expect.objectContaining({ askpassPath: "/tmp/kmux-askpass" })
+      );
+
       const active = runtime.getActiveTarget("target_restore");
       expect(active?.remoteHome).toBe("/home/kmux");
       bindings.replace({

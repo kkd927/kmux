@@ -17,7 +17,6 @@ import {
 } from "@kmux/proto";
 
 import {
-  retainedTerminationHasDurableTombstone,
   type RetainedSessionInventoryEntry,
   type RetainedSessionInventoryStore,
   type RetainedSessionObservationUpdate
@@ -325,27 +324,14 @@ function synchronizeRetainedInventory(
     const owned = productOwnsKeeper(state, keeper);
     const termination = latestSessionTermination(state, keeper.resourceKey);
     const retainedEntry = inventory.get(keeper.resourceKey);
+    // Retained inventory tracks resources that may still be actionable. A
+    // complete terminal observation resolves that question independently of
+    // whether it proves the causal result of a pending termination operation.
     if (
-      retainedEntry?.termination &&
-      retainedTerminationHasDurableTombstone(retainedEntry, keeper)
+      keeper.processState === "exited" ||
+      keeper.descriptorState === "exited" ||
+      keeper.descriptorState === "terminated"
     ) {
-      if (owned) {
-        inventory.clearTermination(keeper, observed.lastObservedAt!, true);
-      } else {
-        inventory.remove(keeper.resourceKey);
-      }
-      continue;
-    }
-    if (
-      !owned &&
-      keeper.descriptorState === "terminated" &&
-      !retainedEntry?.termination
-    ) {
-      // `terminated` is written only by an explicit lifecycle mutation (or
-      // provisional reclaim), unlike a natural `exited` keeper. Once the
-      // terminal operation projection is checkpointed, this descriptor state
-      // remains the compact tombstone that prevents a closed session from
-      // being resurrected as retained inventory.
       if (retainedEntry) inventory.remove(keeper.resourceKey);
       continue;
     }
@@ -529,6 +515,7 @@ function remoteSessionKeysForWorkspace(
   const targetId = workspace.location.target.targetId;
   return Object.values(state.sessions)
     .flatMap((session) => {
+      if (session.runtimeStatus.processState === "exited") return [];
       const surface = state.surfaces[session.surfaceId];
       const pane = surface ? state.panes[surface.paneId] : undefined;
       return pane?.workspaceId === workspaceId

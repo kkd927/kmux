@@ -7,7 +7,6 @@ import {
   type MenuItemConstructorOptions
 } from "electron";
 import { buildDefaultShortcuts } from "@kmux/ui";
-import type { RemoteOperationCommandResult } from "@kmux/core";
 
 import type {
   CreateImageAttachmentsResult,
@@ -96,7 +95,7 @@ function registerTestHandlers(options: {
   getRetainedRemoteSessions?: () => RetainedRemoteSessionsSnapshot;
   terminateRetainedRemoteSession?: (
     resourceKey: RetainedRemoteSessionResourceKey
-  ) => Promise<RemoteOperationCommandResult>;
+  ) => Promise<void>;
   resolveSshProfile?: (profileId: string) => Promise<SshProfileVm | null>;
   respondSshAskpass?: (request: SshAskpassResponseRequest) => void;
   claimSshAskpassPresenter?: (presenterId: number) => SshAskpassPrompt[];
@@ -151,10 +150,7 @@ function registerTestHandlers(options: {
       })),
     terminateRetainedRemoteSession:
       options.terminateRetainedRemoteSession ??
-      vi.fn(async () => ({
-        operationId: "retained_termination_test",
-        outcome: { status: "pending" as const, reason: "offline" as const }
-      })),
+      vi.fn(async () => undefined),
     getSshConnections: vi.fn(async () => ({
       profiles: [],
       updatedAt: "2026-07-19T00:00:00.000Z"
@@ -336,10 +332,7 @@ describe("ipc handlers", () => {
       sessions: [],
       updatedAt: "2026-07-18T00:00:00.000Z"
     };
-    const terminateRetainedRemoteSession = vi.fn(async () => ({
-      operationId: "retained_termination_1",
-      outcome: { status: "pending" as const, reason: "offline" as const }
-    }));
+    const terminateRetainedRemoteSession = vi.fn(async () => undefined);
     registerTestHandlers({
       snapshot: {
         updatedAt: "2026-06-10T00:00:00.000Z",
@@ -377,7 +370,7 @@ describe("ipc handlers", () => {
           resourceKey
         )
       )
-    ).resolves.toMatchObject({ operationId: "retained_termination_1" });
+    ).resolves.toBeUndefined();
     expect(terminateRetainedRemoteSession).toHaveBeenCalledWith(resourceKey);
 
     expect(() =>

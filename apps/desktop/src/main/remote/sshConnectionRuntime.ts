@@ -48,6 +48,7 @@ export type SshTargetRestorePurpose =
   | "startup-restore"
   | "manual-reconnect"
   | "session-resume"
+  | "retained-termination"
   | "runtime-reconnect";
 
 export interface SshTargetRestoreRequest {
@@ -601,6 +602,7 @@ export function createSshConnectionRuntime(options: {
           | "startup-restore"
           | "manual-reconnect"
           | "session-resume"
+          | "retained-termination"
           | undefined;
         if (request.authentication === "interactive") {
           if (request.purpose === "runtime-reconnect") {

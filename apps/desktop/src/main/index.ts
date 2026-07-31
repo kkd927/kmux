@@ -166,7 +166,7 @@ import { listOpenSshAliases } from "./remote/openSshAliasCatalog";
 import { createSshProfileConnectionResolver } from "./remote/sshProfileConnection";
 import { createSshProfileStore } from "./remote/sshProfileStore";
 import {
-  collectSshStartupTargetIds,
+  collectSshStartupTargets,
   restoreSshStartupTargets
 } from "./remote/sshStartupRestore";
 import { createSshWorkspaceRuntime } from "./remote/sshWorkspaceRuntime";
@@ -760,6 +760,8 @@ async function bootstrap(): Promise<void> {
         authentication: "non-interactive",
         purpose: "runtime-reconnect"
       }),
+    ensureRetainedTargetConnected: (targetId) =>
+      sshReconnect.ensureTargetConnected(targetId, "retained-termination"),
     onTargetConnected: (targetId) => sshReconnect.targetConnected(targetId)
   });
   remoteLifecycle.recover();
@@ -1920,7 +1922,7 @@ async function bootstrap(): Promise<void> {
       }),
     shutdown
   });
-  const startupSshTargetIds = collectSshStartupTargetIds({
+  const startupSshTargets = collectSshStartupTargets({
     state: runtime.getState(),
     retained: retainedSessionInventory.loadAll(),
     conversions: sshWorkspaceTransactionWal.loadAll(),
@@ -1931,11 +1933,15 @@ async function bootstrap(): Promise<void> {
     if (startupSshRestoreStarted) return;
     startupSshRestoreStarted = true;
     void restoreSshStartupTargets({
-      targetIds: startupSshTargetIds,
-      restoreTarget: (targetId) =>
+      targets: startupSshTargets,
+      restoreTarget: (targetId, mode) =>
         sshReconnect.reconnectTarget(targetId, {
-          authentication: "interactive",
-          purpose: "startup-restore"
+          authentication:
+            mode === "interactive-restore" ? "interactive" : "non-interactive",
+          purpose:
+            mode === "interactive-restore"
+              ? "startup-restore"
+              : "runtime-reconnect"
         }),
       onFailure: (targetId, error) => {
         logDiagnostics("main.ssh-target.restore-failed", {
@@ -1944,9 +1950,9 @@ async function bootstrap(): Promise<void> {
         });
       }
     }).then((result) => {
-      if (startupSshTargetIds.length === 0) return;
+      if (startupSshTargets.length === 0) return;
       logDiagnostics("main.ssh-target.restore-complete", {
-        requested: startupSshTargetIds.length,
+        requested: startupSshTargets.length,
         connected: result.connected.length,
         failed: result.failed.length
       });

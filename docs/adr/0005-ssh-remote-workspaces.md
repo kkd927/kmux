@@ -759,9 +759,9 @@ compensating result.
 Split maps to `session.create` plus a pending pane/surface projection. Restart
 maps to `session.restart` and replaces the keeper generation only after an
 authoritative result. Adopt changes layout ownership only after the existing
-resource is verified. Termination leaves a `termination-pending` product and
-retained-inventory state until the matching remote tombstone/ack is durable; an
-offline request does not optimistically erase the resource.
+resource is verified. Termination success requires the matching remote
+tombstone/ack. Separately, a complete authoritative terminal observation may
+remove the local retained-inventory row without projecting operation success.
 
 Managed worktree create/remove and desired forward changes also use this
 coordinator because they have durable product ownership or destructive safety
@@ -2234,9 +2234,14 @@ and persistence capability. It supports:
 - reattach to an existing or newly adopted surface
 - explicit termination of one keeper
 - explicit target-wide termination with confirmation
-- cleanup of exited descriptors after retained data policy permits
+- automatic local cleanup of authoritatively observed terminal sessions
 
-Closing a layout or disabling restore never removes an inventory entry while a
+Disconnected `running` state is the last authoritative observation, not a live
+probe. Unknown or incomplete observations never remove a retained entry.
+Complete `exited`/`terminated` observations remove the local row, including a
+pending termination, without marking that operation successful or deleting
+remote descriptors, journals, or logs. Persisted `exited` rows are pruned on
+load. Closing a layout or disabling restore never removes an entry while its
 keeper may still be live.
 
 ## Protocol
@@ -2837,8 +2842,9 @@ the terminal continuity contract.
   product-fact projection for split/create/restart/adopt/terminate/worktree
   operations recovers the same operation; a renderer cannot dispatch Main-only
   result facts
-- an offline termination remains `termination-pending` and retained until an
-  authoritative tombstone is durable
+- unknown/offline termination remains pending under the same operation ID; a
+  complete terminal observation may clear retained state without synthesizing
+  operation success
 - retrying create after operation-ledger GC returns the descriptor identified by
   create operation ID and deterministic resource key
 - retrying a stale restart/forward revision after ledger GC fails without a new

@@ -24,6 +24,7 @@ import {
   createRemoteEventReceiptStore,
   type RemoteEventReceiptStore
 } from "./remoteEventReceiptStore";
+import type { ObservedSessionKeeper } from "./remoteReconciler";
 import {
   compareRemoteOperationRetryOrder,
   RemoteLifecycleRuntime,
@@ -100,41 +101,12 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
-  it("keeps an offline retained termination durable and retries the same operation through an exact tombstone", async () => {
+  it("connects before admission and keeps a disconnect during termination pending", async () => {
     const fixture = remoteFixture();
-    const resourceKey = {
-      desktopInstallationId: "desktop_1",
-      targetId: "target_1",
-      workspaceId: fixture.workspaceId,
-      sessionId: fixture.initialSessionId
-    };
     const inventory = createRetainedSessionInventoryStore(
       join(sandbox, "retained.json")
     );
-    inventory.retain(
-      {
-        resourceKey,
-        generation: `keeper_${fixture.initialSessionId}`,
-        processState: "running",
-        persistenceLevel: "ssh-disconnect",
-        remoteResourceRevision: uint64(1n),
-        storageStatus: normalStorageStatus(),
-        checkpointAvailable: false,
-        retainedRangeTruncated: false,
-        descriptor: {
-          createOperationId: `create_${fixture.initialSessionId}`,
-          canonicalCreatePayloadHash: "a".repeat(64),
-          lastOperationId: `last_${fixture.initialSessionId}`,
-          lastOperationPayloadHash: "b".repeat(64),
-          lastResultDigest: "c".repeat(64),
-          launch: { cwd: "/srv/app" },
-          lifecycleState: "committed",
-          everGrantedWriterLease: true
-        }
-      },
-      "workspace-close",
-      "2026-07-17T00:00:00.000Z"
-    );
+    const resourceKey = retainFixtureSession(fixture, inventory);
     const keepers = new Map<string, ScriptedKeeper>([
       [
         fixture.initialSessionId,
@@ -149,36 +121,185 @@ describe("RemoteLifecycleRuntime", () => {
     const fork = vi.fn(() => child as unknown as UtilityProcess);
     const host = new RemoteHostManager(fork);
     host.on("error", vi.fn());
-    const runtime = createRuntime(
-      fixture.state,
+    const executeOperation = vi
+      .spyOn(host, "executeOperation")
+      .mockRejectedValueOnce(new Error("SSH connection was lost"));
+    let runtime!: RemoteLifecycleRuntime;
+    const ensureRetainedTargetConnected = vi.fn(async () => {
+      await runtime.connectTarget(connection());
+    });
+    runtime = createRetainedRuntime(
+      fixture,
       host,
-      binding(),
       sandbox,
-      [],
-      inventory
+      inventory,
+      ensureRetainedTargetConnected
     );
     runtime.recover();
 
-    const offline = await runtime.terminateRetainedSession(resourceKey);
-    expect(offline.outcome).toEqual({ status: "pending", reason: "offline" });
-    expect(fork).not.toHaveBeenCalled();
+    await expect(
+      runtime.terminateRetainedSession(resourceKey)
+    ).resolves.toBeUndefined();
+    expect(ensureRetainedTargetConnected).toHaveBeenCalledWith("target_1");
+    expect(executeOperation).toHaveBeenCalledOnce();
     expect(inventory.listRetained()).toMatchObject([
       {
         reason: "termination-pending",
-        termination: { operationId: offline.operationId }
+        termination: {
+          operationId: expect.stringMatching(/^retained-termination_/u)
+        }
       }
     ]);
-    expect(
-      inventory.listRetained()[0]?.termination?.resultDigest
-    ).toBeUndefined();
 
-    await runtime.connectTarget(connection());
+    await runtime.stop();
+  });
+
+  it("does not admit termination when interactive retained connection fails", async () => {
+    const fixture = remoteFixture();
+    const inventory = createRetainedSessionInventoryStore(
+      join(sandbox, "retained.json")
+    );
+    const resourceKey = retainFixtureSession(fixture, inventory);
+    const host = new RemoteHostManager(vi.fn());
+    host.on("error", vi.fn());
+    const ensureRetainedTargetConnected = vi.fn(async () => {
+      throw new Error("SSH authentication was cancelled");
+    });
+    const runtime = createRetainedRuntime(
+      fixture,
+      host,
+      sandbox,
+      inventory,
+      ensureRetainedTargetConnected
+    );
+    runtime.recover();
+
+    await expect(
+      runtime.terminateRetainedSession({
+        ...resourceKey,
+        sessionId: "stale_session"
+      })
+    ).rejects.toThrow(/target is unavailable/u);
+    expect(ensureRetainedTargetConnected).not.toHaveBeenCalled();
+    await expect(runtime.terminateRetainedSession(resourceKey)).rejects.toThrow(
+      /authentication was cancelled/u
+    );
+    expect(ensureRetainedTargetConnected).toHaveBeenCalledOnce();
+    expect(inventory.listRetained()).toMatchObject([
+      {
+        reason: "workspace-close",
+        processState: "running"
+      }
+    ]);
+    expect(inventory.listRetained()[0]?.termination).toBeUndefined();
+
+    await runtime.stop();
+  });
+
+  it("treats a terminal connection observation as success without admitting termination", async () => {
+    const fixture = remoteFixture();
+    const inventory = createRetainedSessionInventoryStore(
+      join(sandbox, "retained.json")
+    );
+    const resourceKey = retainFixtureSession(fixture, inventory);
+    const keepers = new Map<string, ScriptedKeeper>([
+      [
+        fixture.initialSessionId,
+        {
+          resourceKey,
+          keeperGeneration: `keeper_${fixture.initialSessionId}`,
+          remoteResourceRevision: "1",
+          descriptorState: "exited",
+          processState: "exited",
+          exitCode: 0
+        }
+      ]
+    ]);
+    const child = new ScriptedUtilityProcess(keepers);
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    let runtime!: RemoteLifecycleRuntime;
+    runtime = createRetainedRuntime(
+      fixture,
+      host,
+      sandbox,
+      inventory,
+      async () => {
+        await runtime.connectTarget(connection());
+      }
+    );
+    runtime.recover();
+
+    await expect(
+      runtime.terminateRetainedSession(resourceKey)
+    ).resolves.toBeUndefined();
+    expect(inventory.listRetained()).toEqual([]);
+    expect(
+      child.messages.filter((message) => message.type === "operation.execute")
+    ).toEqual([]);
+
+    await runtime.stop();
+  });
+
+  it("retries a pending retained termination with its existing operation id", async () => {
+    const fixture = remoteFixture();
+    const inventory = createRetainedSessionInventoryStore(
+      join(sandbox, "retained.json")
+    );
+    const resourceKey = retainFixtureSession(fixture, inventory);
+    inventory.admitRetainedTermination(resourceKey, {
+      operationId: "retained_termination_existing",
+      canonicalPayloadHash: "d".repeat(64),
+      expectedWorkspaceRevision: "e".repeat(64),
+      expectedRemoteResourceRevision: uint64(1n),
+      nextRemoteResourceRevision: uint64(2n),
+      admittedAt: "2026-07-17T00:00:01.000Z",
+      priorReason: "workspace-close"
+    });
+    const keepers = new Map<string, ScriptedKeeper>([
+      [
+        fixture.initialSessionId,
+        {
+          resourceKey,
+          keeperGeneration: `keeper_${fixture.initialSessionId}`,
+          remoteResourceRevision: "1"
+        }
+      ]
+    ]);
+    const child = new ScriptedUtilityProcess(keepers);
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    let runtime!: RemoteLifecycleRuntime;
+    runtime = createRetainedRuntime(
+      fixture,
+      host,
+      sandbox,
+      inventory,
+      async () => {
+        await runtime.connectTarget(connection());
+      }
+    );
+    runtime.recover();
+
+    expect(runtime.getRetainedSessionsSnapshot().sessions).toMatchObject([
+      {
+        termination: { operationId: "retained_termination_existing" },
+        canTerminate: true
+      }
+    ]);
+    await expect(
+      runtime.terminateRetainedSession(resourceKey)
+    ).resolves.toBeUndefined();
     const executions = child.messages.filter(
       (message) => message.type === "operation.execute"
     );
     expect(executions).toHaveLength(1);
     expect((executions[0].intent as { operationId: string }).operationId).toBe(
-      offline.operationId
+      "retained_termination_existing"
     );
     expect(inventory.listRetained()).toEqual([]);
 
@@ -1267,7 +1388,8 @@ function createRuntime(
     persist: (state: AppState) => void;
   },
   observedBindings: RemoteTargetBinding[] = [],
-  onTargetConnected?: (targetId: string) => void
+  onTargetConnected?: (targetId: string) => void,
+  ensureRetainedTargetConnected?: (targetId: string) => Promise<unknown>
 ): RemoteLifecycleRuntime {
   return new RemoteLifecycleRuntime({
     desktopInstallationId: "desktop_1",
@@ -1298,8 +1420,82 @@ function createRuntime(
         ? {}
         : { persistDurableProductSnapshot }),
     ...(onTargetConnected === undefined ? {} : { onTargetConnected }),
+    ...(ensureRetainedTargetConnected === undefined
+      ? {}
+      : { ensureRetainedTargetConnected }),
     reportError: (error) => errors.push(error)
   });
+}
+
+function createRetainedRuntime(
+  fixture: ReturnType<typeof remoteFixture>,
+  host: RemoteHostManager,
+  sandbox: string,
+  inventory: ReturnType<typeof createRetainedSessionInventoryStore>,
+  ensureRetainedTargetConnected: (targetId: string) => Promise<unknown>
+): RemoteLifecycleRuntime {
+  return createRuntime(
+    fixture.state,
+    host,
+    binding(),
+    sandbox,
+    [],
+    inventory,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    undefined,
+    ensureRetainedTargetConnected
+  );
+}
+
+function retainFixtureSession(
+  fixture: ReturnType<typeof remoteFixture>,
+  inventory: ReturnType<typeof createRetainedSessionInventoryStore>
+): ObservedSessionKeeper["resourceKey"] {
+  const resourceKey = {
+    desktopInstallationId: "desktop_1",
+    targetId: "target_1",
+    workspaceId: fixture.workspaceId,
+    sessionId: fixture.initialSessionId
+  };
+  inventory.retain(
+    retainedKeeper(resourceKey, fixture.initialSessionId),
+    "workspace-close",
+    "2026-07-17T00:00:00.000Z"
+  );
+  applyAction(fixture.state, {
+    type: "workspace.close",
+    workspaceId: fixture.workspaceId
+  });
+  return resourceKey;
+}
+
+function retainedKeeper(
+  resourceKey: ObservedSessionKeeper["resourceKey"],
+  sessionId: string
+): ObservedSessionKeeper {
+  return {
+    resourceKey,
+    generation: `keeper_${sessionId}`,
+    processState: "running",
+    persistenceLevel: "ssh-disconnect",
+    remoteResourceRevision: uint64(1n),
+    storageStatus: normalStorageStatus(),
+    checkpointAvailable: false,
+    retainedRangeTruncated: false,
+    descriptor: {
+      createOperationId: `create_${sessionId}`,
+      canonicalCreatePayloadHash: "a".repeat(64),
+      lastOperationId: `last_${sessionId}`,
+      lastOperationPayloadHash: "b".repeat(64),
+      lastResultDigest: "c".repeat(64),
+      launch: { cwd: "/srv/app" },
+      lifecycleState: "committed",
+      everGrantedWriterLease: true
+    }
+  };
 }
 
 function remoteFixture(): {

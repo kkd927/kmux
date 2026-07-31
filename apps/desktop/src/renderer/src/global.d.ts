@@ -1,4 +1,4 @@
-import type { AppAction, RemoteOperationCommandResult } from "@kmux/core";
+import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
 import type { TerminalStreamErrorReport } from "../../shared/terminalStreamDiagnostics";
@@ -76,7 +76,7 @@ declare global {
       getRetainedRemoteSessions(): Promise<RetainedRemoteSessionsSnapshot>;
       terminateRetainedRemoteSession(
         resourceKey: RetainedRemoteSessionResourceKey
-      ): Promise<RemoteOperationCommandResult>;
+      ): Promise<void>;
       getSshConnections(): Promise<SshConnectionsSnapshot>;
       resolveSshProfile(profileId: string): Promise<SshProfileVm | null>;
       listSshConfigAliases(): Promise<string[]>;

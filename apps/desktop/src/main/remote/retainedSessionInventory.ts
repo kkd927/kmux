@@ -185,7 +185,13 @@ export function createRetainedSessionInventoryStore(
   const uid = options.uid ?? currentUid();
   const write = options.write ?? durableAtomicReplace;
   const now = options.now ?? (() => new Date().toISOString());
-  let entries = readInventory(path, uid);
+  const loadedEntries = readInventory(path, uid);
+  // Terminal rows are no longer manageable resources. Pending termination
+  // metadata does not keep them in this liveness inventory or imply that the
+  // corresponding operation received a matching success result.
+  let entries = loadedEntries.filter(
+    (entry) => entry.processState === "running"
+  );
 
   const persist = (nextEntries: RetainedSessionInventoryEntry[]): void => {
     const sorted = nextEntries
@@ -220,6 +226,10 @@ export function createRetainedSessionInventoryStore(
     write(root, fileName, bytes);
     entries = sorted;
   };
+
+  if (entries.length !== loadedEntries.length) {
+    persist(entries);
+  }
 
   const replace = (
     entry: RetainedSessionInventoryEntry
@@ -614,28 +624,6 @@ export function createRetainedSessionInventoryStore(
       return entries.map(cloneEntry);
     }
   });
-}
-
-export function retainedTerminationHasDurableTombstone(
-  entry: RetainedSessionInventoryEntry,
-  keeper: ObservedSessionKeeper
-): boolean {
-  const termination = entry.termination;
-  const descriptor = keeper.descriptor;
-  return Boolean(
-    termination?.resultDigest &&
-    descriptor &&
-    keeper.processState === "exited" &&
-    keeper.resourceKey.desktopInstallationId ===
-      entry.resourceKey.desktopInstallationId &&
-    keeper.resourceKey.targetId === entry.resourceKey.targetId &&
-    keeper.resourceKey.workspaceId === entry.resourceKey.workspaceId &&
-    keeper.resourceKey.sessionId === entry.resourceKey.sessionId &&
-    keeper.remoteResourceRevision === termination.nextRemoteResourceRevision &&
-    descriptor.lastOperationId === termination.operationId &&
-    descriptor.lastOperationPayloadHash === termination.canonicalPayloadHash &&
-    descriptor.lastResultDigest === termination.resultDigest
-  );
 }
 
 function observedMatchesTerminationTombstone(

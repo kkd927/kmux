@@ -1,6 +1,5 @@
 import { BrowserWindow, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
-import type { RemoteOperationCommandResult } from "@kmux/core";
 
 import type {
   ExternalAgentSessionResumeRequest,
@@ -89,7 +88,7 @@ interface IpcHandlersOptions {
   getRetainedRemoteSessions: () => RetainedRemoteSessionsSnapshot;
   terminateRetainedRemoteSession: (
     resourceKey: RetainedRemoteSessionResourceKey
-  ) => Promise<RemoteOperationCommandResult>;
+  ) => Promise<void>;
   getSshConnections: () => Promise<SshConnectionsSnapshot>;
   resolveSshProfile: (profileId: Id) => Promise<SshProfileVm | null>;
   listSshConfigAliases: () => string[] | Promise<string[]>;

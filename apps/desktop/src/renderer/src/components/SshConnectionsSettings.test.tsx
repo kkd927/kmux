@@ -160,6 +160,70 @@ describe("SSH connections settings loading", () => {
     expect(getSshConnections).toHaveBeenCalledTimes(2);
   });
 
+  it("lets pending retained terminations retry", async () => {
+    const resourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: "workspace_1",
+      sessionId: "session_1"
+    };
+    const getRetainedRemoteSessions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            resourceKey,
+            reason: "termination-pending",
+            keeperGeneration: "keeper_1",
+            remoteResourceRevision: "1",
+            processState: "running",
+            persistenceLevel: "ssh-disconnect",
+            storageStatus: {
+              state: "normal",
+              journalAdmitted: "1",
+              journalSynced: "1",
+              emergencyBytes: 0
+            },
+            checkpointAvailable: false,
+            retainedRangeTruncated: false,
+            launch: { cwd: "/srv/app", title: "Agent session" },
+            retainedAt: "2026-07-29T00:00:00.000Z",
+            lastObservedAt: "2026-07-29T00:01:00.000Z",
+            termination: {
+              operationId: "termination_1",
+              admittedAt: "2026-07-29T00:02:00.000Z",
+              state: "pending"
+            },
+            canTerminate: true
+          }
+        ],
+        updatedAt: CREATED_AT
+      })
+      .mockResolvedValueOnce({ sessions: [], updatedAt: CREATED_AT });
+    const terminateRetainedRemoteSession = vi.fn(async () => undefined);
+    installKmux({
+      getSshConnections: vi.fn(async () => ({
+        profiles: [],
+        updatedAt: CREATED_AT
+      })),
+      resolveSshProfile: vi.fn(async () => null),
+      getRetainedRemoteSessions,
+      terminateRetainedRemoteSession
+    });
+
+    await renderSettings(root);
+
+    expect(container.textContent).toContain("Agent session");
+    expect(button("Retry termination").disabled).toBe(false);
+    await act(async () => {
+      button("Retry termination").click();
+      await flushUi();
+    });
+
+    expect(terminateRetainedRemoteSession).toHaveBeenCalledWith(resourceKey);
+    expect(container.textContent).toContain("No retained remote sessions.");
+  });
+
   function button(label: string): HTMLButtonElement {
     const match = [...container.querySelectorAll("button")].find((candidate) =>
       candidate.textContent?.includes(label)
@@ -187,6 +251,8 @@ function installKmux(overrides: {
   getSshConnections: typeof window.kmux.getSshConnections;
   resolveSshProfile: typeof window.kmux.resolveSshProfile;
   saveSshProfile?: typeof window.kmux.saveSshProfile;
+  getRetainedRemoteSessions?: typeof window.kmux.getRetainedRemoteSessions;
+  terminateRetainedRemoteSession?: typeof window.kmux.terminateRetainedRemoteSession;
 }): void {
   window.kmux = {
     ...window.kmux,
@@ -200,10 +266,14 @@ function installKmux(overrides: {
         createdAt: CREATED_AT,
         updatedAt: CREATED_AT
       })),
-    getRetainedRemoteSessions: vi.fn(async () => ({
-      sessions: [],
-      updatedAt: CREATED_AT
-    })),
+    getRetainedRemoteSessions:
+      overrides.getRetainedRemoteSessions ??
+      vi.fn(async () => ({
+        sessions: [],
+        updatedAt: CREATED_AT
+      })),
+    terminateRetainedRemoteSession:
+      overrides.terminateRetainedRemoteSession ?? vi.fn(async () => undefined),
     listSshConfigAliases: vi.fn(async () => [])
   };
 }

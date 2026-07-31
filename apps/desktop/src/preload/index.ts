@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
-import type { AppAction, RemoteOperationCommandResult } from "@kmux/core";
+import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../shared/platform/rendererPlatform";
 import {
   KMUX_TERMINAL_PORT_CHANNEL,
@@ -154,7 +154,7 @@ const api = {
   },
   terminateRetainedRemoteSession(
     resourceKey: RetainedRemoteSessionResourceKey
-  ): Promise<RemoteOperationCommandResult> {
+  ): Promise<void> {
     return ipcRenderer.invoke(
       "kmux:remote-retained-sessions:terminate",
       resourceKey

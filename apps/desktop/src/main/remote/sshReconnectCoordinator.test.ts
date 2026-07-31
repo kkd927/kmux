@@ -106,7 +106,7 @@ describe("SSH reconnect coordinator", () => {
     });
   });
 
-  it("falls back to interactive restore after joining a failed runtime reconnect", async () => {
+  it("falls back to interactive retained termination after joining a failed runtime reconnect", async () => {
     const state = sshStateWithSharedTarget();
     const nonInteractive = deferred<ConnectedSshProfile>();
     let active: ActiveSshTarget | null = null;
@@ -132,7 +132,7 @@ describe("SSH reconnect coordinator", () => {
       .catch(() => undefined);
     const ensured = coordinator.ensureTargetConnected(
       "target_shared",
-      "session-resume"
+      "retained-termination"
     );
     nonInteractive.reject(new Error("agent unavailable"));
 
@@ -140,7 +140,7 @@ describe("SSH reconnect coordinator", () => {
     expect(restoreTarget).toHaveBeenCalledTimes(2);
     expect(restoreTarget).toHaveBeenLastCalledWith("target_shared", {
       authentication: "interactive",
-      purpose: "session-resume"
+      purpose: "retained-termination"
     });
   });
 

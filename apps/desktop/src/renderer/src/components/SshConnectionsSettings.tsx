@@ -601,7 +601,7 @@ export function SshConnectionsSettings(): JSX.Element {
           <span>
             <strong>Retained remote sessions</strong>
             <small>
-              Disconnected sessions kept on a remote host for later recovery.
+              Disconnected sessions last observed running on a remote host.
             </small>
           </span>
           <span className={styles.settingsSectionMeta}>
@@ -615,7 +615,8 @@ export function SshConnectionsSettings(): JSX.Element {
                 <span>
                   <strong>{session.launch.title ?? session.launch.cwd}</strong>
                   <small>
-                    {session.reason} · {session.processState} · target{" "}
+                    last observed running ·{" "}
+                    {formatTimestamp(session.lastObservedAt)} · target{" "}
                     {session.resourceKey.targetId}
                   </small>
                 </span>
@@ -624,14 +625,17 @@ export function SshConnectionsSettings(): JSX.Element {
                   disabled={!session.canTerminate || Boolean(busy)}
                   onClick={() =>
                     void run("terminate", async () => {
-                      await window.kmux.terminateRetainedRemoteSession(
-                        session.resourceKey
-                      );
-                      await reloadRetained();
+                      try {
+                        await window.kmux.terminateRetainedRemoteSession(
+                          session.resourceKey
+                        );
+                      } finally {
+                        await reloadRetained();
+                      }
                     })
                   }
                 >
-                  Terminate
+                  {session.termination ? "Retry termination" : "Terminate"}
                 </button>
               </div>
             ))}

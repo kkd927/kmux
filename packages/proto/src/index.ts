@@ -352,7 +352,8 @@ export interface SshAskpassPrompt {
     | "explicit-connect"
     | "startup-restore"
     | "manual-reconnect"
-    | "session-resume";
+    | "session-resume"
+    | "retained-termination";
 }
 
 export interface SshAskpassResponseRequest {

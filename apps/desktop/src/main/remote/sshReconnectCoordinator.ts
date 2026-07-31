@@ -20,7 +20,7 @@ export interface SshReconnectCoordinator {
   reconnectWorkspace(workspaceId: Id): Promise<SshWorkspaceReconnectResult>;
   ensureTargetConnected(
     targetId: Id,
-    purpose: "session-resume"
+    purpose: "session-resume" | "retained-termination"
   ): Promise<ActiveSshTarget>;
   isTargetReconnecting(targetId: Id): boolean;
   targetConnected(targetId: Id): void;
@@ -147,7 +147,7 @@ export function createSshReconnectCoordinator(options: {
 
     async ensureTargetConnected(
       targetId: Id,
-      purpose: "session-resume"
+      purpose: "session-resume" | "retained-termination"
     ): Promise<ActiveSshTarget> {
       const current = ensureAttempts.get(targetId);
       if (current) return await current;
