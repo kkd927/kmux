@@ -853,100 +853,6 @@ describe("real system OpenSSH transport spike", () => {
       expect(await readFile(downloaded.localPath)).toEqual(sourceBytes);
       await runtime.releaseFile(downloaded.localPath);
 
-      const historyDirectory = `/home/kmux/.codex/sessions/phase7-${suffix}`;
-      const historyRemotePath = `${historyDirectory}/rollout-${suffix}.jsonl`;
-      const historyLocalPath = join(transferRoot, "remote-history.jsonl");
-      await writeFile(
-        historyLocalPath,
-        [
-          JSON.stringify({
-            type: "session_meta",
-            payload: {
-              id: `history-${suffix}`,
-              cwd: "/home/kmux/remote-history-repo"
-            }
-          }),
-          JSON.stringify({
-            type: "event_msg",
-            timestamp: "2026-07-18T00:00:01.000Z",
-            payload: {
-              type: "token_count",
-              info: {
-                total_token_usage: {
-                  input_tokens: 100,
-                  cached_input_tokens: 20,
-                  output_tokens: 10,
-                  reasoning_output_tokens: 2
-                }
-              }
-            }
-          }),
-          ""
-        ].join("\n"),
-        { mode: 0o600 }
-      );
-      await target.target.exec([
-        "install",
-        "-d",
-        "-o",
-        "kmux",
-        "-g",
-        "kmux",
-        "-m",
-        "700",
-        "/home/kmux/.codex",
-        "/home/kmux/.codex/sessions",
-        historyDirectory
-      ]);
-      const historyBytes = await readFile(historyLocalPath);
-      await runtime.uploadFile({
-        transferId: `history_upload_${suffix}`,
-        localPath: historyLocalPath,
-        remotePath: historyRemotePath,
-        maxBytes: historyBytes.byteLength,
-        sha256: createHash("sha256").update(historyBytes).digest("hex")
-      });
-      await expect(
-        runtime.scanHistory({
-          desktopInstallationId: `desktop_phase7_sftp_${suffix}`,
-          targetId: assigned.targetId,
-          maxRecords: 100
-        })
-      ).resolves.toMatchObject({
-        targetId: assigned.targetId,
-        principal: { uid: 1000, accountName: "kmux" },
-        records: [
-          expect.objectContaining({
-            vendor: "codex",
-            sessionId: `history-${suffix}`,
-            cwd: "/home/kmux/remote-history-repo"
-          })
-        ]
-      });
-      await expect(
-        runtime.scanUsage({
-          desktopInstallationId: `desktop_phase7_sftp_${suffix}`,
-          targetId: assigned.targetId,
-          startAtUnixMs: 0,
-          maxRecords: 64
-        })
-      ).resolves.toMatchObject({
-        targetId: assigned.targetId,
-        principal: { uid: 1000, accountName: "kmux" },
-        records: [
-          expect.objectContaining({
-            vendor: "codex",
-            sessionId: `history-${suffix}`,
-            cwd: "/home/kmux/remote-history-repo",
-            inputTokens: "80",
-            cacheReadTokens: "20",
-            outputTokens: "8",
-            thinkingTokens: "2",
-            totalTokens: "110"
-          })
-        ]
-      });
-
       const desktopInstallationId = `desktop_phase7_sftp_${suffix}`;
       const workspaceId = `workspace_phase7_sftp_${suffix}`;
       const sessionId = `session_phase7_sftp_${suffix}`;
@@ -1150,6 +1056,117 @@ describe("real system OpenSSH transport spike", () => {
       });
       await attachment.checkpoint;
 
+      const historyDirectory = `/home/kmux/.codex/sessions/phase7-${suffix}`;
+      const historyRemotePath = `${historyDirectory}/rollout-${suffix}.jsonl`;
+      const historyLocalPath = join(transferRoot, "remote-history.jsonl");
+      await target.target.exec([
+        "install",
+        "-d",
+        "-o",
+        "kmux",
+        "-g",
+        "kmux",
+        "-m",
+        "700",
+        "/home/kmux/.codex",
+        "/home/kmux/.codex/sessions",
+        historyDirectory
+      ]);
+      const historySessionId = `history-${suffix}`;
+      const historyCwd = "/home/kmux/remote-history-repo";
+      const historyClaimSentinel = `phase7-history-claimed-${suffix}`;
+      await attachment.sendInput(
+        uint64(1n),
+        new TextEncoder().encode(
+          `printf '%s' ${quotePosixWord(
+            JSON.stringify({
+              session_id: historySessionId,
+              transcript_path: historyRemotePath,
+              cwd: historyCwd
+            })
+          )} | "$KMUX_AGENT_BIN_DIR/kmux-agent-hook" codex SessionStart && printf '${historyClaimSentinel}\\n'\n`
+        )
+      );
+      await collectTerminalUntil(attachment, historyClaimSentinel);
+
+      await writeFile(
+        historyLocalPath,
+        [
+          JSON.stringify({
+            type: "session_meta",
+            payload: {
+              id: historySessionId,
+              cwd: historyCwd
+            }
+          }),
+          JSON.stringify({
+            type: "event_msg",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: {
+                  input_tokens: 100,
+                  cached_input_tokens: 20,
+                  output_tokens: 10,
+                  reasoning_output_tokens: 2
+                }
+              }
+            }
+          }),
+          ""
+        ].join("\n"),
+        { mode: 0o600 }
+      );
+      const historyBytes = await readFile(historyLocalPath);
+      await runtime.uploadFile({
+        transferId: `history_upload_${suffix}`,
+        localPath: historyLocalPath,
+        remotePath: historyRemotePath,
+        maxBytes: historyBytes.byteLength,
+        sha256: createHash("sha256").update(historyBytes).digest("hex")
+      });
+      await expect(
+        runtime.scanHistory({
+          desktopInstallationId,
+          targetId: assigned.targetId,
+          maxRecords: 100
+        })
+      ).resolves.toMatchObject({
+        targetId: assigned.targetId,
+        principal: { uid: 1000, accountName: "kmux" },
+        records: [
+          expect.objectContaining({
+            vendor: "codex",
+            sessionId: historySessionId,
+            cwd: historyCwd
+          })
+        ]
+      });
+      await expect(
+        runtime.scanUsage({
+          desktopInstallationId,
+          targetId: assigned.targetId,
+          startAtUnixMs: 0,
+          maxRecords: 64
+        })
+      ).resolves.toMatchObject({
+        targetId: assigned.targetId,
+        principal: { uid: 1000, accountName: "kmux" },
+        records: [
+          expect.objectContaining({
+            vendor: "codex",
+            sessionId: historySessionId,
+            cwd: historyCwd,
+            inputTokens: "80",
+            cacheReadTokens: "20",
+            outputTokens: "8",
+            thinkingTokens: "2",
+            totalTokens: "110"
+          })
+        ]
+      });
+
       const forwardId = `forward_phase7_${suffix}`;
       const forwardCreate = coordinator.admit({
         type: "remote-operation.command",
@@ -1256,7 +1273,7 @@ describe("real system OpenSSH transport spike", () => {
       });
       const terminalMarker = `terminal-survived-sftp-${suffix}`;
       await attachment.sendInput(
-        uint64(1n),
+        uint64(2n),
         new TextEncoder().encode(`printf '${terminalMarker}\\n'\n`)
       );
       await collectTerminalUntil(attachment, terminalMarker);
@@ -1264,7 +1281,7 @@ describe("real system OpenSSH transport spike", () => {
       const remoteServicePort =
         30_000 + (Number.parseInt(suffix.slice(0, 4), 16) % 20_000);
       await attachment.sendInput(
-        uint64(2n),
+        uint64(3n),
         new TextEncoder().encode(
           `exec socat TCP-LISTEN:${remoteServicePort},bind=127.0.0.1,reuseaddr,fork EXEC:/bin/cat\n`
         )
@@ -1279,7 +1296,7 @@ describe("real system OpenSSH transport spike", () => {
         },
         remoteServicePort
       );
-      await attachment.sendInput(uint64(3n), Uint8Array.of(3));
+      await attachment.sendInput(uint64(4n), Uint8Array.of(3));
 
       const featureDelta = SshConnectionAudit.delta(
         afterMaster,
