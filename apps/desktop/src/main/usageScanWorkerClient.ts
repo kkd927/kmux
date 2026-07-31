@@ -6,12 +6,12 @@ import { fileURLToPath } from "node:url";
 
 import type {
   AgentStorageRoots,
-  AdditionalAgentSessionRoots,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
   UsageHistoryDay,
   UsageVendor
 } from "@kmux/metadata";
+import type { AgentScopeSettings } from "@kmux/proto";
 
 import type {
   UsageScanWorkerConfig,
@@ -64,7 +64,7 @@ interface CreateUsageScanWorkerClientOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
   platform?: NodeJS.Platform;
   currentDir?: string;
   nodeEnv?: string;
@@ -120,9 +120,7 @@ export function createUsageScanWorkerClient(
     ...(options.agentStorageRoots
       ? { agentStorageRoots: options.agentStorageRoots }
       : {}),
-    ...(options.additionalSessionRoots
-      ? { additionalSessionRoots: options.additionalSessionRoots }
-      : {}),
+    ...(options.agentSettings ? { agentSettings: options.agentSettings } : {}),
     platform: options.platform ?? process.platform
   };
   const forkWorker = options.forkWorker ?? fork;

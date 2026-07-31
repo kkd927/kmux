@@ -72,7 +72,7 @@ const TERMINAL_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PENDING_TERMINAL_MUTATIONS = 4_096;
 const MAX_PENDING_TERMINAL_MUTATION_BYTES = 4 * 1024 * 1024;
 const MAX_CHANNEL_STDERR_TAIL_BYTES = 64 * 1024;
-const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v1";
+const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v2";
 const OWNED_AGENT_SESSIONS_CAPABILITY = "agent-sessions.kmux-owned-v1";
 
 export class RemoteRuntimeError extends Error {

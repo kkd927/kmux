@@ -78,12 +78,8 @@ describe("external session scan worker client", () => {
     const client = createExternalSessionScanWorkerClient({
       homeDir,
       env: { PATH: process.env.PATH },
-      settings: {
-        agents: {
-          local: {
-            codex: { command: process.execPath }
-          }
-        }
+      agentSettings: {
+        codex: { command: process.execPath }
       }
     });
 

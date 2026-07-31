@@ -1902,7 +1902,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("merges additional roots by newest session and uses the configured launcher", () => {
+  it("replaces the native root and resumes with the same configured launcher", () => {
     const homeDir = createSandboxHome();
     const additionalRoot = join(homeDir, "wrapper-sessions");
     const older = new Date("2026-04-26T10:00:00.000Z");
@@ -1944,6 +1944,8 @@ describe("external session indexer", () => {
       "Default root title"
     );
     writeSession(additionalRoot, newer, "Additional root title");
+    const customRootLink = join(homeDir, "wrapper-sessions-link");
+    symlinkSync(additionalRoot, customRootLink);
     const tied = new Date("2026-04-26T09:00:00.000Z");
     writeSession(
       join(homeDir, ".codex", "sessions"),
@@ -1957,18 +1959,11 @@ describe("external session indexer", () => {
       homeDir,
       now: () => new Date("2026-04-26T12:00:00.000Z"),
       commandAvailability: (command) => command === "ccsxp",
-      settings: {
-        agents: {
-          local: {
-            codex: {
-              command: "ccsxp",
-              args: ["shared profile"],
-              additionalSessionRoots: [
-                additionalRoot,
-                join(homeDir, "missing-sessions")
-              ]
-            }
-          }
+      agentSettings: {
+        codex: {
+          command: "ccsxp",
+          args: ["shared profile", "--"],
+          sessionRoot: customRootLink
         }
       }
     });
@@ -1980,17 +1975,51 @@ describe("external session indexer", () => {
     ).toMatchObject({
       title: "Additional root title",
       canResume: true,
-      resumeCommandPreview: "ccsxp 'shared profile' resume shared-session"
+      resumeCommandPreview: "ccsxp 'shared profile' -- resume shared-session"
     });
     expect(
       sessions.find((session) => session.key === "codex:tie-session")
     ).toMatchObject({
-      title: "Default tie winner"
+      title: "Additional tie loser"
     });
     expect(
       indexer.resolveExternalAgentSession("codex:shared-session")?.launch
         .initialInput
-    ).toBe("ccsxp 'shared profile' resume shared-session\r");
+    ).toBe("ccsxp 'shared profile' -- resume shared-session\r");
+  });
+
+  it("does not fall back to native history when a custom root is missing", () => {
+    const homeDir = createSandboxHome();
+    const mtime = new Date("2026-04-26T11:00:00.000Z");
+    writeJsonl(
+      join(
+        homeDir,
+        ".codex",
+        "sessions",
+        "2026",
+        "04",
+        "26",
+        "rollout-native-only.jsonl"
+      ),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: { id: "native-only", cwd: "/Users/test/project" }
+        }
+      ],
+      mtime
+    );
+
+    expect(
+      createTestExternalSessionIndexer({
+        homeDir,
+        now: () => new Date("2026-04-26T12:00:00.000Z"),
+        agentSettings: {
+          codex: { sessionRoot: join(homeDir, "missing-sessions") }
+        }
+      }).listExternalAgentSessions().sessions
+    ).toEqual([]);
   });
 
   it("does not fall back to a native command when a configured launcher is missing", () => {
@@ -2019,12 +2048,8 @@ describe("external session indexer", () => {
       homeDir,
       now: () => new Date("2026-04-26T12:00:00.000Z"),
       commandAvailability: (command) => command === "codex",
-      settings: {
-        agents: {
-          local: {
-            codex: { command: "missing-wrapper" }
-          }
-        }
+      agentSettings: {
+        codex: { command: "missing-wrapper" }
       }
     });
 
@@ -2057,13 +2082,9 @@ describe("external session indexer", () => {
     const snapshot = createTestExternalSessionIndexer({
       homeDir,
       now: () => new Date("2026-04-26T12:00:00.000Z"),
-      settings: {
-        agents: {
-          local: {
-            codex: {
-              additionalSessionRoots: [additionalRoot]
-            }
-          }
+      agentSettings: {
+        codex: {
+          sessionRoot: additionalRoot
         }
       },
       scanLimits: {
@@ -2086,13 +2107,9 @@ describe("external session indexer", () => {
 
     const indexer = createTestExternalSessionIndexer({
       homeDir,
-      settings: {
-        agents: {
-          local: {
-            codex: {
-              additionalSessionRoots: [additionalRoot]
-            }
-          }
+      agentSettings: {
+        codex: {
+          sessionRoot: additionalRoot
         }
       },
       scanLimits: {

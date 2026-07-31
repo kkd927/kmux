@@ -1269,7 +1269,7 @@ fn hello(
             "history.scan-partial-v2".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
             "agent-sessions.kmux-owned-v1".to_owned(),
-            "agents.settings-scan-v1".to_owned(),
+            "agents.settings-scan-v2".to_owned(),
             "worktree.durable-v1".to_owned(),
             "forward.desired-state-v1".to_owned(),
         ],
@@ -2328,7 +2328,7 @@ fn metadata_agent_settings(settings: AgentSettings) -> ExternalAgentSettings {
     ExternalAgentSettings {
         command: settings.command,
         args: settings.args,
-        additional_session_roots: settings.additional_session_roots,
+        session_root: settings.session_root,
     }
 }
 

@@ -86,8 +86,9 @@ kmux automatically indexes the local session databases for supported agents — 
 
 Clicking a session resumes it instantly. kmux will focus the existing workspace/tab for that directory if open, or automatically spin up a fresh pane and run the resume commands (`claude --resume`, `codex resume`, etc.) for you.
 
-Compatible agent wrappers and additional transcript stores can be configured
-per local or SSH scope in [`settings.json`](docs/agent-settings.md).
+A single active wrapper and transcript root can be configured per vendor and
+environment in [`settings.json`](docs/agent-settings.md); local profiles are
+kept separate from optional SSH profiles.
 
 </td>
 </tr>

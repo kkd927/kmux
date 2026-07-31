@@ -9,7 +9,7 @@ import {
   type LocatedPath,
   type WorkspaceTarget
 } from "@kmux/core";
-import type { Id } from "@kmux/proto";
+import type { AgentScopeSettings, Id } from "@kmux/proto";
 import {
   createEmptyUsageViewSnapshot,
   isoNow,
@@ -28,7 +28,6 @@ import {
 import {
   resolveAiCliProcessMatches,
   isProcessAlive,
-  type AdditionalAgentSessionRoots,
   type AgentStorageRoots,
   type AiCliProcessMatch,
   type AiCliProcessProbe,
@@ -261,7 +260,8 @@ interface UsageRuntimeOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
+  sshAgentSettings?: AgentScopeSettings;
   platform?: NodeJS.Platform;
   now?: () => number;
   emitSnapshot?: (snapshot: UsageViewSnapshot) => void;
@@ -297,7 +297,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
               env: options.env,
               homeDir: options.homeDir,
               agentStorageRoots: options.agentStorageRoots,
-              additionalSessionRoots: options.additionalSessionRoots,
+              agentSettings: options.agentSettings,
               platform: options.platform
             })
           : null))
@@ -940,20 +940,15 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         const key = usageTargetKey(target);
         try {
           const provider = registry.resolveLocated(target).usage;
+          const agentSettings =
+            target.kind === "local"
+              ? options.agentSettings
+              : options.sshAgentSettings;
           const scan = await provider.refresh({
             startAtUnixMs: startOfLocalDay(now()),
             initial: !initializedUsageTargets.has(key),
             maxRecords: target.kind === "local" ? 4_096 : 64,
-            ...(options.getState().settings.agents?.[
-              target.kind === "local" ? "local" : "ssh"
-            ] === undefined
-              ? {}
-              : {
-                  agentSettings:
-                    options.getState().settings.agents?.[
-                      target.kind === "local" ? "local" : "ssh"
-                    ]
-                }),
+            ...(agentSettings === undefined ? {} : { agentSettings }),
             ...(target.kind === "local" && historyRange ? { historyRange } : {})
           });
           const incoming = scan.records.map((record) =>
@@ -1037,7 +1032,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         env: options.env,
         homeDir: options.homeDir,
         agentStorageRoots: options.agentStorageRoots,
-        additionalSessionRoots: options.additionalSessionRoots,
+        agentSettings: options.agentSettings,
         platform: options.platform,
         fromMs: rangeStartMs,
         toMs: endOfLocalDay(now())

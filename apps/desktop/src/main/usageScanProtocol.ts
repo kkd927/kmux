@@ -1,17 +1,17 @@
 import type {
   AgentStorageRoots,
-  AdditionalAgentSessionRoots,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
   UsageHistoryDay,
   UsageVendor
 } from "@kmux/metadata";
+import type { AgentScopeSettings } from "@kmux/proto";
 
 export interface UsageScanWorkerConfig {
   env: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
   platform: NodeJS.Platform;
 }
 

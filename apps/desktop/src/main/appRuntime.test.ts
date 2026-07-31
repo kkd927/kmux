@@ -593,11 +593,9 @@ describe("app runtime restore", () => {
   it("does not restore agent settings that were removed from settings.json", () => {
     const snapshot = createInitialState("/bin/zsh");
     snapshot.settings.agents = {
-      local: {
-        claude: {
-          command: "ccs",
-          additionalSessionRoots: ["/tmp/ccs-sessions"]
-        }
+      claude: {
+        command: "ccs",
+        sessionRoot: "/tmp/ccs-sessions"
       }
     };
 
@@ -610,6 +608,36 @@ describe("app runtime restore", () => {
     });
 
     expect(runtime.restoreInitialState().settings.agents).toBeUndefined();
+  });
+
+  it("prefers the current settings file agent profile over the restored snapshot", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    snapshot.settings.agents = {
+      claude: {
+        command: "snapshot-wrapper",
+        sessionRoot: "/tmp/snapshot-sessions"
+      }
+    };
+    const settings = createDefaultSettings();
+    settings.agents = {
+      claude: {
+        command: "current-wrapper",
+        args: ["--"],
+        sessionRoot: "/tmp/current-sessions"
+      }
+    };
+
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: false
+      },
+      settings
+    });
+
+    expect(runtime.restoreInitialState().settings.agents).toEqual(
+      settings.agents
+    );
   });
 
   it("starts fresh instead of restoring a clean-shutdown snapshot without restore-on-launch", () => {

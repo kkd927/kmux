@@ -1179,21 +1179,12 @@ function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
         return [];
       }
       const settings = requireRecord(raw, `agentSettings.${vendor}`);
-      assertExactKeys(settings, ["command", "args", "additionalSessionRoots"]);
+      assertExactKeys(settings, ["command", "args", "sessionRoot"]);
       if (
         settings.args !== undefined &&
         (!Array.isArray(settings.args) || settings.args.length > 256)
       ) {
         throw new TypeError(`agentSettings.${vendor}.args is invalid`);
-      }
-      if (
-        settings.additionalSessionRoots !== undefined &&
-        (!Array.isArray(settings.additionalSessionRoots) ||
-          settings.additionalSessionRoots.length > 256)
-      ) {
-        throw new TypeError(
-          `agentSettings.${vendor}.additionalSessionRoots is invalid`
-        );
       }
       return [
         [
@@ -1220,23 +1211,12 @@ function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
                     )
                   )
                 }),
-            ...(settings.additionalSessionRoots === undefined
+            ...(settings.sessionRoot === undefined
               ? {}
               : {
-                  additionalSessionRoots: settings.additionalSessionRoots.map(
-                    (root) => {
-                      const path = requireString(
-                        root,
-                        `agentSettings.${vendor}.additionalSessionRoots`,
-                        MAX_PATH_BYTES
-                      );
-                      if (!path.startsWith("/") && !path.startsWith("~/")) {
-                        throw new TypeError(
-                          `agentSettings.${vendor}.additionalSessionRoots must contain only absolute or home-relative paths`
-                        );
-                      }
-                      return path;
-                    }
+                  sessionRoot: requireAgentSessionRoot(
+                    settings.sessionRoot,
+                    `agentSettings.${vendor}.sessionRoot`
                   )
                 })
           }
@@ -1244,6 +1224,14 @@ function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
       ];
     })
   );
+}
+
+function requireAgentSessionRoot(value: unknown, field: string): string {
+  const path = requireAgentSettingString(value, field, MAX_PATH_BYTES, false);
+  if (!path.startsWith("/") && !path.startsWith("~/")) {
+    throw new TypeError(`${field} must be an absolute or home-relative path`);
+  }
+  return path;
 }
 
 function requireAgentSettingString(

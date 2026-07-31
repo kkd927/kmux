@@ -93,7 +93,7 @@ describe("usage adapters", () => {
     ]);
   });
 
-  it("scans default and additional session roots while skipping missing roots", async () => {
+  it("replaces native usage roots and does not fall back from a missing root", async () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), "kmux-usage-multi-"));
     const additionalRoot = mkdtempSync(
       path.join(tmpdir(), "kmux-usage-additional-")
@@ -137,27 +137,42 @@ describe("usage adapters", () => {
     const adapter = createUsageAdapters({
       homeDir,
       agentStorageRoots: roots,
-      additionalSessionRoots: {
-        codex: [additionalRoot, path.join(homeDir, "missing")]
+      agentSettings: {
+        codex: { sessionRoot: additionalRoot }
       }
     }).find((candidate) => candidate.vendor === "codex")!;
     const result = await adapter.initialScan(
       startOfLocalDay(new Date(timestamp).getTime())
     );
 
-    expect(result.samples.map((sample) => sample.sessionId).sort()).toEqual([
-      "additional-session",
-      "default-session"
+    expect(result.samples.map((sample) => sample.sessionId)).toEqual([
+      "additional-session"
     ]);
     adapter.close();
+
+    const missingRootAdapter = createUsageAdapters({
+      homeDir,
+      agentStorageRoots: roots,
+      agentSettings: {
+        codex: { sessionRoot: path.join(homeDir, "missing") }
+      }
+    }).find((candidate) => candidate.vendor === "codex")!;
+    expect(
+      (
+        await missingRootAdapter.initialScan(
+          startOfLocalDay(new Date(timestamp).getTime())
+        )
+      ).samples
+    ).toEqual([]);
+    missingRootAdapter.close();
 
     writeCodexUsage(roots.codex.sessionsDir, "shared-session", 11);
     writeCodexUsage(additionalRoot, "shared-session", 11);
     const days = await scanUsageHistoryDays({
       homeDir,
       agentStorageRoots: roots,
-      additionalSessionRoots: {
-        codex: [additionalRoot, path.join(homeDir, "missing")]
+      agentSettings: {
+        codex: { sessionRoot: additionalRoot }
       },
       fromMs: startOfLocalDay(new Date(timestamp).getTime()),
       toMs: new Date(timestamp).getTime()
@@ -165,7 +180,7 @@ describe("usage adapters", () => {
 
     expect(days).toEqual([
       expect.objectContaining({
-        totalTokens: 26
+        totalTokens: 20
       })
     ]);
   });

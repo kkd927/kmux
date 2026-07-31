@@ -20,10 +20,10 @@ import {
 } from "node:path";
 import {
   type AgentStorageRoots,
-  type AdditionalAgentSessionRoots,
   resolveAgentSessionRoots,
   resolveAgentStorageRoots
 } from "./agentStorage";
+import type { AgentScopeSettings } from "@kmux/proto";
 import { readAntigravityConversationMetadataFromInventory } from "./antigravityStorage";
 import { isCodexSubagentSessionMetadata } from "./codexSession";
 import { estimateModelCost } from "./modelPricing";
@@ -100,7 +100,7 @@ export interface CreateUsageAdaptersOptions {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
   platform?: NodeJS.Platform;
 }
 
@@ -770,21 +770,24 @@ export function createUsageAdapters(
     });
   const sessionRoots = resolveAgentSessionRoots({
     agentStorageRoots,
-    additionalSessionRoots: options.additionalSessionRoots
+    agentSettings: options.agentSettings
   });
-  const antigravityRoots = env.KMUX_ANTIGRAVITY_USAGE_DIR?.trim()
-    ? resolveRoots(
-        env.KMUX_ANTIGRAVITY_USAGE_DIR,
-        agentStorageRoots.antigravity.brainDir
-      )
-    : sessionRoots.antigravity.map((root) => join(root, "brain"));
+  const antigravityRoots =
+    options.agentSettings?.antigravity?.sessionRoot === undefined &&
+    env.KMUX_ANTIGRAVITY_USAGE_DIR?.trim()
+      ? resolveRoots(
+          env.KMUX_ANTIGRAVITY_USAGE_DIR,
+          agentStorageRoots.antigravity.brainDir
+        )
+      : sessionRoots.antigravity.map((root) => join(root, "brain"));
   const antigravityWorkspaceInventoryLoader =
     createAntigravityWorkspaceInventoryLoader(sessionRoots.antigravity);
 
   return [
     new FileUsageAdapter(
       "claude",
-      env.KMUX_CLAUDE_USAGE_DIR?.trim()
+      options.agentSettings?.claude?.sessionRoot === undefined &&
+        env.KMUX_CLAUDE_USAGE_DIR?.trim()
         ? resolveRoots(
             env.KMUX_CLAUDE_USAGE_DIR,
             agentStorageRoots.claude.projectsDir
@@ -794,7 +797,8 @@ export function createUsageAdapters(
     ),
     new FileUsageAdapter(
       "codex",
-      env.KMUX_CODEX_USAGE_DIR?.trim()
+      options.agentSettings?.codex?.sessionRoot === undefined &&
+        env.KMUX_CODEX_USAGE_DIR?.trim()
         ? resolveRoots(
             env.KMUX_CODEX_USAGE_DIR,
             agentStorageRoots.codex.sessionsDir
@@ -1066,7 +1070,7 @@ export async function scanUsageHistoryDays(options: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
   platform?: NodeJS.Platform;
   fromMs: number;
   toMs: number;
@@ -1075,7 +1079,7 @@ export async function scanUsageHistoryDays(options: {
     env: options.env,
     homeDir: options.homeDir,
     agentStorageRoots: options.agentStorageRoots,
-    additionalSessionRoots: options.additionalSessionRoots,
+    agentSettings: options.agentSettings,
     platform: options.platform
   });
   const historySamples = new Map<string, UsageEventSample>();

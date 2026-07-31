@@ -28,7 +28,7 @@ describe("remote agent settings scan capability", () => {
     ).not.toThrow();
     expect(() =>
       requireAgentSettingsScanCapability(
-        { claude: { additionalSessionRoots: ["/srv/claude"] } },
+        { claude: { sessionRoot: "/srv/claude" } },
         new Set()
       )
     ).toThrowError(
@@ -41,6 +41,17 @@ describe("remote agent settings scan capability", () => {
       requireAgentSettingsScanCapability(
         { claude: { command: "ccs" } },
         new Set(["agents.settings-scan-v1"])
+      )
+    ).toThrowError(
+      expect.objectContaining({
+        code: "upgrade-required",
+        retryable: false
+      })
+    );
+    expect(() =>
+      requireAgentSettingsScanCapability(
+        { claude: { command: "ccs" } },
+        new Set(["agents.settings-scan-v2"])
       )
     ).not.toThrow();
   });

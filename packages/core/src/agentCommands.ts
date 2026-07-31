@@ -1,4 +1,9 @@
-import type { AgentScope, AgentVendor, KmuxSettings } from "@kmux/proto";
+import type {
+  AgentScope,
+  AgentScopeSettings,
+  AgentsSettings,
+  AgentVendor
+} from "@kmux/proto";
 
 const NATIVE_AGENT_COMMANDS: Record<AgentVendor, string> = {
   claude: "claude",
@@ -7,12 +12,11 @@ const NATIVE_AGENT_COMMANDS: Record<AgentVendor, string> = {
 };
 
 export function resolveAgentCommand(
-  settings: Pick<KmuxSettings, "agents"> | undefined,
-  scope: AgentScope,
+  settings: AgentScopeSettings | undefined,
   vendor: AgentVendor,
   operationArgs: readonly string[] = []
 ): string[] {
-  const configured = settings?.agents?.[scope]?.[vendor];
+  const configured = settings?.[vendor];
   return [
     configured?.command ?? NATIVE_AGENT_COMMANDS[vendor],
     ...(configured?.args ?? []),
@@ -21,17 +25,34 @@ export function resolveAgentCommand(
 }
 
 export function resolveAgentResumeCommand(
-  settings: Pick<KmuxSettings, "agents"> | undefined,
-  scope: AgentScope,
+  settings: AgentScopeSettings | undefined,
   vendor: AgentVendor,
   sessionId: string
 ): string[] {
   return resolveAgentCommand(
     settings,
-    scope,
     vendor,
     agentResumeOperationArgs(vendor, sessionId)
   );
+}
+
+export function resolveAgentScopeSettings(
+  agents: AgentsSettings | undefined,
+  scope: AgentScope
+): AgentScopeSettings | undefined {
+  if (scope === "ssh") {
+    return agents?.ssh;
+  }
+  if (!agents) {
+    return undefined;
+  }
+  const settings: AgentScopeSettings = {};
+  for (const vendor of ["claude", "codex", "antigravity"] as const) {
+    if (agents[vendor] !== undefined) {
+      settings[vendor] = agents[vendor];
+    }
+  }
+  return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
 export function agentResumeOperationArgs(

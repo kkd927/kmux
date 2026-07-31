@@ -21,6 +21,7 @@ import {
 } from "@kmux/metadata";
 
 import {
+  resolveAgentScopeSettings,
   resolveSurfaceDiagnosticCaptureEnabled,
   terminalRuntimeMetadataForSurface,
   terminalSessionForSurface,
@@ -445,19 +446,19 @@ async function bootstrap(): Promise<void> {
   let worktreeRuntime!: ReturnType<typeof createWorktreeRuntime>;
   let targetServices: TargetServiceRegistry | undefined;
   let targetHistoryRuntime: TargetHistoryRuntime | undefined;
+  const configuredAgents = savedSettings?.agents;
+  const localAgentSettings = resolveAgentScopeSettings(
+    configuredAgents,
+    "local"
+  );
+  const sshAgentSettings = resolveAgentScopeSettings(configuredAgents, "ssh");
   const localExternalSessionIndexer = createExternalSessionScanWorkerClient({
     homeDir: userHomeDir,
     env: resolvedShellEnv.baseEnv,
     agentStorageRoots,
-    settings: savedSettings ?? undefined,
+    agentSettings: localAgentSettings,
     antigravitySessionIndexPath: paths.antigravitySessionsPath
   });
-  const localAdditionalSessionRoots = {
-    claude: savedSettings?.agents?.local?.claude?.additionalSessionRoots,
-    codex: savedSettings?.agents?.local?.codex?.additionalSessionRoots,
-    antigravity:
-      savedSettings?.agents?.local?.antigravity?.additionalSessionRoots
-  };
 
   const runtime = createAppRuntime({
     paths: {
@@ -563,7 +564,7 @@ async function bootstrap(): Promise<void> {
       env: resolvedShellEnv.baseEnv,
       homeDir: userHomeDir,
       agentStorageRoots,
-      additionalSessionRoots: localAdditionalSessionRoots,
+      agentSettings: localAgentSettings,
       platform: platformRuntime.platformId
     })
   });
@@ -574,7 +575,8 @@ async function bootstrap(): Promise<void> {
     historyStore: usageHistoryStore,
     homeDir: userHomeDir,
     agentStorageRoots,
-    additionalSessionRoots: localAdditionalSessionRoots,
+    agentSettings: localAgentSettings,
+    sshAgentSettings,
     platform: platformRuntime.platformId,
     resolveLocalPath,
     targetServices: () => targetServices,
@@ -1039,6 +1041,8 @@ async function bootstrap(): Promise<void> {
     targetServices,
     getState: runtime.getState,
     localIndexer: localExternalSessionIndexer,
+    localAgentSettings,
+    sshAgentSettings,
     reportError: (target, error) =>
       logDiagnostics("main.target-history.refresh-failed", {
         target: target.kind === "local" ? "local" : `ssh:${target.targetId}`,

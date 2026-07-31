@@ -1,5 +1,8 @@
 import type { AgentStorageRoots } from "@kmux/metadata";
-import type { ExternalAgentSessionsSnapshot, KmuxSettings } from "@kmux/proto";
+import type {
+  AgentScopeSettings,
+  ExternalAgentSessionsSnapshot
+} from "@kmux/proto";
 
 import type { ExternalSessionResumeSpec } from "./externalSessions";
 
@@ -7,7 +10,7 @@ export interface ExternalSessionScanWorkerConfig {
   homeDir: string;
   env: NodeJS.ProcessEnv;
   agentStorageRoots?: AgentStorageRoots;
-  settings?: Pick<KmuxSettings, "agents">;
+  agentSettings?: AgentScopeSettings;
   antigravitySessionIndexPath?: string;
 }
 

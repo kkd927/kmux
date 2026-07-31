@@ -84,11 +84,13 @@ export type AgentScope = "local" | "ssh";
 export interface AgentSettings {
   command?: string;
   args?: string[];
-  additionalSessionRoots?: string[];
+  sessionRoot?: string;
 }
 
 export type AgentScopeSettings = Partial<Record<AgentVendor, AgentSettings>>;
-export type AgentsSettings = Partial<Record<AgentScope, AgentScopeSettings>>;
+export type AgentsSettings = AgentScopeSettings & {
+  ssh?: AgentScopeSettings;
+};
 
 export type SubscriptionUsageProvider = Exclude<UsageVendor, "unknown">;
 export type ImageAttachmentMimeType =

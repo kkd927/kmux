@@ -97,7 +97,7 @@ describe("agent storage roots", () => {
     );
   });
 
-  it("expands home roots and deduplicates roots by real path and file identity", () => {
+  it("replaces native roots and canonicalizes home-relative symlink roots", () => {
     const homeDir = mkdtempSync(join(tmpdir(), "kmux-agent-roots-"));
     cleanupPaths.push(homeDir);
     const roots = resolveAgentStorageRoots({ homeDir });
@@ -109,20 +109,27 @@ describe("agent storage roots", () => {
 
     const resolved = resolveAgentSessionRoots({
       agentStorageRoots: roots,
-      additionalSessionRoots: {
-        claude: [
-          "~/shared/claude-projects",
-          symlinkRoot,
-          roots.claude.projectsDir,
-          join(homeDir, "missing")
-        ]
+      agentSettings: {
+        claude: {
+          sessionRoot: "~/shared/claude-link"
+        }
       }
     });
 
-    expect(resolved.claude).toEqual([
-      realpathSync(roots.claude.projectsDir),
-      realpathSync(sharedRoot),
-      join(homeDir, "missing")
-    ]);
+    expect(resolved.claude).toEqual([realpathSync(sharedRoot)]);
+    expect(resolved.codex).toEqual([roots.codex.sessionsDir]);
+  });
+
+  it("keeps a missing custom root authoritative without native fallback", () => {
+    const roots = resolveAgentStorageRoots({ homeDir: "/home/test" });
+
+    expect(
+      resolveAgentSessionRoots({
+        agentStorageRoots: roots,
+        agentSettings: {
+          codex: { sessionRoot: "~/missing-codex-sessions" }
+        }
+      }).codex
+    ).toEqual(["/home/test/missing-codex-sessions"]);
   });
 });

@@ -99,6 +99,7 @@ export {
   formatAgentCommandForShell,
   resolveAgentCommand,
   resolveAgentResumeCommand,
+  resolveAgentScopeSettings,
   shellQuoteAgentCommandPart
 } from "./agentCommands";
 
@@ -270,7 +271,7 @@ const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
-export const CURRENT_SETTINGS_VERSION = 5;
+export const CURRENT_SETTINGS_VERSION = 6;
 const TERMINAL_TYPOGRAPHY_DEFAULT_RESET_SETTINGS_VERSION = 4;
 
 export interface SessionSpawnEffect {
@@ -686,20 +687,22 @@ export function sanitizeAgentsSettings(
     return undefined;
   }
   const agents: NonNullable<KmuxSettings["agents"]> = {};
-  for (const scope of ["local", "ssh"] as const) {
-    const rawScope = value[scope];
-    if (!isUnknownRecord(rawScope)) {
-      continue;
+  for (const vendor of ["claude", "codex", "antigravity"] as const) {
+    const sanitized = sanitizeAgentSettings(value[vendor]);
+    if (sanitized !== undefined) {
+      agents[vendor] = sanitized;
     }
-    const sanitizedScope: AgentScopeSettings = {};
+  }
+  if (isUnknownRecord(value.ssh)) {
+    const ssh: AgentScopeSettings = {};
     for (const vendor of ["claude", "codex", "antigravity"] as const) {
-      const sanitized = sanitizeAgentSettings(rawScope[vendor]);
+      const sanitized = sanitizeAgentSettings(value.ssh[vendor]);
       if (sanitized !== undefined) {
-        sanitizedScope[vendor] = sanitized;
+        ssh[vendor] = sanitized;
       }
     }
-    if (Object.keys(sanitizedScope).length > 0) {
-      agents[scope] = sanitizedScope;
+    if (Object.keys(ssh).length > 0) {
+      agents.ssh = ssh;
     }
   }
   return Object.keys(agents).length > 0 ? agents : undefined;
@@ -718,19 +721,15 @@ function sanitizeAgentSettings(value: unknown): AgentSettings | undefined {
         (argument): argument is string => typeof argument === "string"
       )
     : undefined;
-  const additionalSessionRoots = Array.isArray(value.additionalSessionRoots)
-    ? value.additionalSessionRoots.flatMap((root): string[] => {
-        if (typeof root !== "string") {
-          return [];
-        }
-        const trimmed = root.trim();
-        return isSupportedAgentSessionRoot(trimmed) ? [trimmed] : [];
-      })
-    : undefined;
+  const sessionRoot =
+    typeof value.sessionRoot === "string" &&
+    isSupportedAgentSessionRoot(value.sessionRoot.trim())
+      ? value.sessionRoot.trim()
+      : undefined;
   const sanitized = {
     ...(command === undefined ? {} : { command }),
     ...(args === undefined ? {} : { args }),
-    ...(additionalSessionRoots === undefined ? {} : { additionalSessionRoots })
+    ...(sessionRoot === undefined ? {} : { sessionRoot })
   };
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }

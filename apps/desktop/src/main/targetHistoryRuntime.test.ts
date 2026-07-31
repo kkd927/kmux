@@ -25,9 +25,7 @@ describe("target history runtime", () => {
       cwd: "/srv/repo"
     });
     state.settings.agents = {
-      local: {
-        codex: { command: "local-codex" }
-      },
+      codex: { command: "local-codex" },
       ssh: {
         codex: { command: "ccsxp", args: ["remote profile"] }
       }
@@ -82,8 +80,18 @@ describe("target history runtime", () => {
         resolveExternalAgentSession: (key: string) =>
           key === localFallback.key ? localFallback : null
       } as never,
+      localAgentSettings: {
+        codex: { command: "local-codex" }
+      },
+      sshAgentSettings: state.settings.agents.ssh,
       now: () => new Date(10_000)
     });
+    state.settings.agents = {
+      codex: { command: "changed-local-codex" },
+      ssh: {
+        codex: { command: "changed-remote-codex" }
+      }
+    };
 
     const snapshot = await runtime.listExternalAgentSessions();
 

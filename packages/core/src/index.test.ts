@@ -2194,34 +2194,33 @@ describe("core reducer", () => {
     expect(settings.agents).toBeUndefined();
   });
 
-  it("migrates agent settings to v5 while sanitizing each field independently", () => {
+  it("normalizes v6 agent profiles while ignoring removed legacy fields", () => {
     const restored = sanitizeSettings({
       ...createDefaultSettings(),
-      settingsVersion: 4,
+      settingsVersion: 5,
       agents: {
-        local: {
-          claude: {
-            command: "  ccs  ",
-            args: ["enterprise", 7, "--profile"],
-            additionalSessionRoots: [
-              "~/.ccs/shared/projects",
-              "relative/projects",
-              "/srv/claude",
-              9
-            ]
-          },
-          codex: {
-            command: "   ",
-            args: [],
-            additionalSessionRoots: []
-          },
-          unknown: { command: "ignored" }
+        claude: {
+          command: "  ccs  ",
+          args: ["enterprise", 7, "--profile"],
+          sessionRoot: "~/.ccs/shared/projects",
+          additionalSessionRoots: ["/legacy/ignored"]
+        },
+        codex: {
+          command: "   ",
+          args: [],
+          sessionRoot: "relative/projects"
         },
         ssh: {
           codex: {
             command: "/opt/bin/ccsxp",
             args: "resume",
-            additionalSessionRoots: ["$HOME/sessions", "/srv/codex"]
+            sessionRoot: "/srv/codex"
+          }
+        },
+        local: {
+          antigravity: {
+            command: "legacy-ignored",
+            sessionRoot: "/legacy/ignored"
           }
         },
         container: {
@@ -2230,23 +2229,20 @@ describe("core reducer", () => {
       }
     } as unknown as ReturnType<typeof createDefaultSettings>);
 
-    expect(restored.settingsVersion).toBe(5);
+    expect(restored.settingsVersion).toBe(6);
     expect(restored.agents).toEqual({
-      local: {
-        claude: {
-          command: "ccs",
-          args: ["enterprise", "--profile"],
-          additionalSessionRoots: ["~/.ccs/shared/projects", "/srv/claude"]
-        },
-        codex: {
-          args: [],
-          additionalSessionRoots: []
-        }
+      claude: {
+        command: "ccs",
+        args: ["enterprise", "--profile"],
+        sessionRoot: "~/.ccs/shared/projects"
+      },
+      codex: {
+        args: []
       },
       ssh: {
         codex: {
           command: "/opt/bin/ccsxp",
-          additionalSessionRoots: ["/srv/codex"]
+          sessionRoot: "/srv/codex"
         }
       }
     });

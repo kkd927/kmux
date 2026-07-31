@@ -99,7 +99,7 @@ pub struct ExternalUsageScan {
 pub struct ExternalAgentSettings {
     pub command: Option<String>,
     pub args: Vec<String>,
-    pub additional_session_roots: Vec<String>,
+    pub session_root: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -267,7 +267,7 @@ pub fn scan_owned_external_history_with_settings(
     let mut records = Vec::with_capacity(claims.len());
     let mut cache_updates = Vec::new();
     let mut truncated = false;
-    for claim in claims {
+    'claims: for claim in claims {
         let mut parsed = ParsedRecord::default();
         let mut updated_at_unix_ms = claim.last_kmux_seen_at_unix_ms;
         let mut source_path = None;
@@ -309,6 +309,9 @@ pub fn scan_owned_external_history_with_settings(
                 }
             }
             _ => unreachable!("claims were validated"),
+        }
+        if configured_session_root(settings, &claim.vendor) && source_path.is_none() {
+            continue 'claims;
         }
         if let Some(path) = source_path {
             cache_updates.push(ExternalSourceCacheUpdate {
@@ -541,7 +544,7 @@ fn antigravity_owned_history_record(
     }
     let mut seen = BTreeSet::new();
     for path in paths {
-        if !seen.insert(path.clone()) {
+        if !seen.insert(path.clone()) || !path_belongs_to_roots(&path, roots) {
             continue;
         }
         let Some(candidate) = candidate_for_regular_file(&path) else {
@@ -820,6 +823,7 @@ fn claimed_jsonl_candidates<'a>(
     let direct_candidates = paths
         .into_iter()
         .filter(|path| seen.insert(path.clone()))
+        .filter(|path| path_belongs_to_roots(path, roots))
         .filter_map(|path| candidate_for_regular_file(&path))
         .collect::<Vec<_>>();
     direct_candidates.into_iter().chain(
@@ -829,6 +833,12 @@ fn claimed_jsonl_candidates<'a>(
         })
         .flatten(),
     )
+}
+
+fn path_belongs_to_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    fs::canonicalize(path)
+        .ok()
+        .is_some_and(|canonical| roots.iter().any(|root| canonical.starts_with(root)))
 }
 
 fn adjacent_claude_subagent_candidates(parent: &CandidateFile) -> (Vec<CandidateFile>, bool) {
@@ -961,6 +971,16 @@ fn owned_session_roots(
         ),
         _ => Vec::new(),
     }
+}
+
+fn configured_session_root(settings: &ExternalAgentScanSettings, vendor: &str) -> bool {
+    match vendor {
+        "codex" => settings.codex.as_ref(),
+        "claude" => settings.claude.as_ref(),
+        "antigravity" => settings.antigravity.as_ref(),
+        _ => None,
+    }
+    .is_some_and(|settings| settings.session_root.is_some())
 }
 
 fn validate_external_session_claims(
@@ -2869,8 +2889,7 @@ fn validate_agent_scan_settings(
                 .args
                 .iter()
                 .any(|argument| !valid_agent_setting_string(argument, true))
-            || setting.additional_session_roots.len() > 256
-            || setting.additional_session_roots.iter().any(|root| {
+            || setting.session_root.as_ref().is_some_and(|root| {
                 !valid_agent_setting_string(root, false)
                     || (!root.starts_with('/') && !root.starts_with("~/"))
             })
@@ -2892,26 +2911,17 @@ fn session_roots(
     default_root: &Path,
     settings: Option<&ExternalAgentSettings>,
 ) -> Vec<PathBuf> {
-    let configured = settings
-        .into_iter()
-        .flat_map(|settings| settings.additional_session_roots.iter())
-        .filter_map(|root| expand_session_root(home, root));
-    let mut seen_paths = BTreeSet::new();
-    let mut seen_identities = BTreeSet::new();
-    [default_root.to_owned()]
-        .into_iter()
-        .chain(configured)
+    let root = match settings.and_then(|settings| settings.session_root.as_deref()) {
+        Some(configured) => expand_session_root(home, configured),
+        None => Some(default_root.to_owned()),
+    };
+    root.into_iter()
         .filter_map(|root| {
             let canonical = fs::canonicalize(root).ok()?;
-            let metadata = fs::metadata(&canonical).ok()?;
-            if !metadata.is_dir() {
-                return None;
-            }
-            let identity = (metadata.dev(), metadata.ino());
-            if !seen_paths.insert(canonical.clone()) || !seen_identities.insert(identity) {
-                return None;
-            }
-            Some(canonical)
+            fs::metadata(&canonical)
+                .ok()
+                .filter(|metadata| metadata.is_dir())
+                .map(|_| canonical)
         })
         .collect()
 }
@@ -3453,7 +3463,7 @@ mod tests {
     }
 
     #[test]
-    fn scans_home_relative_additional_roots_and_configured_executables() {
+    fn replaces_native_roots_with_a_home_relative_symlink_and_configured_executable() {
         let temporary = tempdir().unwrap();
         let home = temporary.path();
         let additional = home.join("wrapper-sessions");
@@ -3484,13 +3494,7 @@ mod tests {
         let settings = ExternalAgentScanSettings {
             codex: Some(ExternalAgentSettings {
                 command: Some(executable.to_string_lossy().into_owned()),
-                additional_session_roots: vec![
-                    "~/wrapper-sessions".to_owned(),
-                    home.join("wrapper-sessions-link")
-                        .to_string_lossy()
-                        .into_owned(),
-                    home.join("missing").to_string_lossy().into_owned(),
-                ],
+                session_root: Some("~/wrapper-sessions-link".to_owned()),
                 ..ExternalAgentSettings::default()
             }),
             ..ExternalAgentScanSettings::default()
@@ -3508,6 +3512,88 @@ mod tests {
             Some("wrapper-session")
         );
         assert_eq!(usage.records[0].total_tokens, 15);
+
+        let missing_root_settings = ExternalAgentScanSettings {
+            codex: Some(ExternalAgentSettings {
+                session_root: Some("~/missing".to_owned()),
+                ..ExternalAgentSettings::default()
+            }),
+            ..ExternalAgentScanSettings::default()
+        };
+        assert!(
+            scan_external_history_with_settings(home, 10, &missing_root_settings)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        assert!(
+            scan_external_usage_with_settings(home, 0, 64, &missing_root_settings)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn owned_scans_exclude_native_sessions_when_a_custom_root_is_configured() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let native = home.join(".codex/sessions/native.jsonl");
+        let custom = home.join("custom-codex/custom.jsonl");
+        create_dir_all(native.parent().unwrap()).unwrap();
+        create_dir_all(custom.parent().unwrap()).unwrap();
+        let write_session = |path: &Path, session_id: &str, input_tokens: u64| {
+            let metadata = serde_json::json!({
+                "timestamp": "2026-07-18T09:00:00.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "cwd": format!("/srv/{session_id}")
+                }
+            });
+            let usage = serde_json::json!({
+                "timestamp": "2026-07-18T09:01:00.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": 1,
+                            "total_tokens": input_tokens + 1
+                        }
+                    }
+                }
+            });
+            write(path, format!("{metadata}\n{usage}\n")).unwrap();
+        };
+        write_session(&native, "native-session", 3);
+        write_session(&custom, "custom-session", 7);
+        let claims = vec![
+            owned_claim("codex", "native-session", 1, Some(&native)),
+            owned_claim("codex", "custom-session", 1, Some(&custom)),
+        ];
+        let settings = ExternalAgentScanSettings {
+            codex: Some(ExternalAgentSettings {
+                session_root: Some("~/custom-codex".to_owned()),
+                ..ExternalAgentSettings::default()
+            }),
+            ..ExternalAgentScanSettings::default()
+        };
+
+        let (history, _) =
+            scan_owned_external_history_with_settings(home, 10, &settings, &claims).unwrap();
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.records[0].session_id, "custom-session");
+
+        let (usage, _) =
+            scan_owned_external_usage_with_settings(home, 0, 64, &settings, &claims).unwrap();
+        assert_eq!(usage.records.len(), 1);
+        assert_eq!(
+            usage.records[0].session_id.as_deref(),
+            Some("custom-session")
+        );
+        assert_eq!(usage.records[0].total_tokens, 8);
     }
 
     #[test]

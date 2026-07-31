@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
-import type { AgentVendor } from "@kmux/proto";
+import type { AgentScopeSettings } from "@kmux/proto";
 
 export interface AgentStorageRoots {
   homeDir: string;
@@ -32,10 +32,6 @@ export interface ResolveAgentStorageRootsOptions {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
 }
-
-export type AdditionalAgentSessionRoots = Partial<
-  Record<AgentVendor, readonly string[]>
->;
 
 export interface AgentSessionRoots {
   codex: string[];
@@ -79,23 +75,23 @@ export function resolveAgentStorageRoots(
 
 export function resolveAgentSessionRoots(options: {
   agentStorageRoots: AgentStorageRoots;
-  additionalSessionRoots?: AdditionalAgentSessionRoots;
+  agentSettings?: AgentScopeSettings;
 }): AgentSessionRoots {
-  const { agentStorageRoots, additionalSessionRoots = {} } = options;
+  const { agentStorageRoots, agentSettings } = options;
   return {
     codex: resolveSessionRootList(
       agentStorageRoots.codex.sessionsDir,
-      additionalSessionRoots.codex,
+      agentSettings?.codex?.sessionRoot,
       agentStorageRoots.homeDir
     ),
     claude: resolveSessionRootList(
       agentStorageRoots.claude.projectsDir,
-      additionalSessionRoots.claude,
+      agentSettings?.claude?.sessionRoot,
       agentStorageRoots.homeDir
     ),
     antigravity: resolveSessionRootList(
       agentStorageRoots.antigravity.root,
-      additionalSessionRoots.antigravity,
+      agentSettings?.antigravity?.sessionRoot,
       agentStorageRoots.homeDir
     )
   };
@@ -103,31 +99,17 @@ export function resolveAgentSessionRoots(options: {
 
 function resolveSessionRootList(
   defaultRoot: string,
-  additionalRoots: readonly string[] | undefined,
+  configuredRoot: string | undefined,
   homeDir: string
 ): string[] {
-  const roots = [defaultRoot, ...(additionalRoots ?? [])]
-    .map((root) => expandConfiguredSessionRoot(root, homeDir))
-    .filter((root): root is string => root !== null);
-  const seenPaths = new Set<string>();
-  const seenIdentities = new Set<string>();
-  const resolvedRoots: string[] = [];
-  for (const root of roots) {
-    const actual = actualSessionRoot(root);
-    const canonicalPath = actual?.path ?? root;
-    if (seenPaths.has(canonicalPath)) {
-      continue;
-    }
-    if (actual?.identity && seenIdentities.has(actual.identity)) {
-      continue;
-    }
-    seenPaths.add(canonicalPath);
-    if (actual?.identity) {
-      seenIdentities.add(actual.identity);
-    }
-    resolvedRoots.push(canonicalPath);
+  const root = expandConfiguredSessionRoot(
+    configuredRoot ?? defaultRoot,
+    homeDir
+  );
+  if (root === null) {
+    return [];
   }
-  return resolvedRoots;
+  return [actualSessionRoot(root) ?? root];
 }
 
 function expandConfiguredSessionRoot(
@@ -141,16 +123,10 @@ function expandConfiguredSessionRoot(
   return isAbsolute(trimmed) ? resolve(trimmed) : null;
 }
 
-function actualSessionRoot(
-  root: string
-): { path: string; identity: string } | null {
+function actualSessionRoot(root: string): string | null {
   try {
     const path = realpathSync.native(root);
-    const stats = statSync(path);
-    return {
-      path,
-      identity: `${String(stats.dev)}:${String(stats.ino)}`
-    };
+    return statSync(path).isDirectory() ? path : null;
   } catch {
     return null;
   }

@@ -5,7 +5,10 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentStorageRoots } from "@kmux/metadata";
-import type { ExternalAgentSessionsSnapshot, KmuxSettings } from "@kmux/proto";
+import type {
+  AgentScopeSettings,
+  ExternalAgentSessionsSnapshot
+} from "@kmux/proto";
 
 import type {
   ExternalSessionIndexer,
@@ -41,7 +44,7 @@ interface CreateExternalSessionScanWorkerClientOptions {
   homeDir: string;
   env?: NodeJS.ProcessEnv;
   agentStorageRoots?: AgentStorageRoots;
-  settings?: Pick<KmuxSettings, "agents">;
+  agentSettings?: AgentScopeSettings;
   antigravitySessionIndexPath?: string;
   currentDir?: string;
   nodeEnv?: string;
@@ -101,7 +104,7 @@ export function createExternalSessionScanWorkerClient(
     ...(options.agentStorageRoots
       ? { agentStorageRoots: options.agentStorageRoots }
       : {}),
-    ...(options.settings ? { settings: options.settings } : {}),
+    ...(options.agentSettings ? { agentSettings: options.agentSettings } : {}),
     ...(options.antigravitySessionIndexPath
       ? { antigravitySessionIndexPath: options.antigravitySessionIndexPath }
       : {})

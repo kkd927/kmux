@@ -15,11 +15,11 @@ import {
 } from "@kmux/core";
 
 import type {
+  AgentScopeSettings,
   ExternalAgentSessionRef,
   ExternalAgentSessionVendor,
   ExternalAgentSessionVm,
   ExternalAgentSessionsSnapshot,
-  KmuxSettings,
   SessionLaunchConfig
 } from "@kmux/proto";
 import {
@@ -46,7 +46,7 @@ export interface ExternalSessionIndexerOptions {
   env?: NodeJS.ProcessEnv;
   commandAvailability?: (command: string) => boolean;
   agentStorageRoots?: AgentStorageRoots;
-  settings?: Pick<KmuxSettings, "agents">;
+  agentSettings?: AgentScopeSettings;
   antigravitySessionIndexPath?: string;
   scanLimits?: Partial<SessionInventoryLimits>;
 }
@@ -119,12 +119,7 @@ export function createExternalSessionIndexer(
     });
   const sessionRoots = resolveAgentSessionRoots({
     agentStorageRoots,
-    additionalSessionRoots: {
-      claude: options.settings?.agents?.local?.claude?.additionalSessionRoots,
-      codex: options.settings?.agents?.local?.codex?.additionalSessionRoots,
-      antigravity:
-        options.settings?.agents?.local?.antigravity?.additionalSessionRoots
-    }
+    agentSettings: options.agentSettings
   });
 
   function listRecords(currentNow: Date): {
@@ -150,6 +145,10 @@ export function createExternalSessionIndexer(
       maxFilesPerVendor * HISTORY_PARSE_CANDIDATE_MULTIPLIER,
       scanLimits
     );
+    const antigravityIndexPath =
+      options.agentSettings?.antigravity?.sessionRoot === undefined
+        ? resolveAntigravityIndexPath(options)
+        : undefined;
     const records = dedupeLatestSessionRecords(
       [
         ...listCodexSessions(
@@ -165,7 +164,7 @@ export function createExternalSessionIndexer(
         ...sessionRoots.antigravity.flatMap((root, index) =>
           listAntigravitySessions(
             root,
-            index === 0 ? resolveAntigravityIndexPath(options) : undefined,
+            index === 0 ? antigravityIndexPath : undefined,
             maxFilesPerVendor,
             antigravityInventory.candidates
           )
@@ -198,8 +197,8 @@ export function createExternalSessionIndexer(
           toViewModel(
             record,
             currentNow,
-            canResumeRecord(record, canRunCommand, options.settings),
-            options.settings
+            canResumeRecord(record, canRunCommand, options.agentSettings),
+            options.agentSettings
           )
         ),
         updatedAt: currentNow.toISOString(),
@@ -210,8 +209,9 @@ export function createExternalSessionIndexer(
       const record = (cachedRecords ?? refreshRecords()).find(
         (entry) => entry.key === key
       );
-      return record && canResumeRecord(record, canRunCommand, options.settings)
-        ? toResumeSpec(record, options.settings)
+      return record &&
+        canResumeRecord(record, canRunCommand, options.agentSettings)
+        ? toResumeSpec(record, options.agentSettings)
         : null;
     }
   };
@@ -250,7 +250,9 @@ function collectVendorCandidates(
 } {
   const inventory = collectSessionInventory(roots, limits);
   const candidateByPath = new Map(
-    inventory.candidates.map((candidate) => [candidate.path, candidate] as const)
+    inventory.candidates.map(
+      (candidate) => [candidate.path, candidate] as const
+    )
   );
   const candidates = inventory.candidates
     .filter((candidate) => {
@@ -518,73 +520,67 @@ function listClaudeSessions(
   maxFiles: number,
   cache: Map<string, SessionFileCacheEntry>
 ): ExternalSessionRecord[] {
-  return candidates
-    .slice(0, maxFiles)
-    .flatMap((candidate) => {
-      const cached = readCachedSessionRecord(cache, candidate);
-      if (cached) {
-        return cached.record ? [cached.record] : [];
-      }
-      const records = parseJsonlEdges(candidate.path);
-      let sessionId: string | undefined;
-      let cwd: string | undefined;
-      let createdAt: string | undefined;
-      let updatedAt: string | undefined;
-      let metadataTitle: string | undefined;
-      let promptTitle: string | undefined;
-      let recentConversation: string | undefined;
-      let model: string | undefined;
+  return candidates.slice(0, maxFiles).flatMap((candidate) => {
+    const cached = readCachedSessionRecord(cache, candidate);
+    if (cached) {
+      return cached.record ? [cached.record] : [];
+    }
+    const records = parseJsonlEdges(candidate.path);
+    let sessionId: string | undefined;
+    let cwd: string | undefined;
+    let createdAt: string | undefined;
+    let updatedAt: string | undefined;
+    let metadataTitle: string | undefined;
+    let promptTitle: string | undefined;
+    let recentConversation: string | undefined;
+    let model: string | undefined;
 
-      for (const record of records) {
-        const object = asObject(record);
-        if (!object) {
-          continue;
-        }
-        sessionId ??= pickFirstString(object, [
-          "sessionId",
-          "session_id",
-          "id"
-        ]);
-        cwd ??= pickFirstString(object, ["cwd", "projectRoot"]);
-        const timestamp = pickFirstString(object, [
-          "timestamp",
-          "createdAt",
-          "updatedAt"
-        ]);
-        if (timestamp) {
-          createdAt ??= timestamp;
-          updatedAt = maxIsoTimestamp(updatedAt, timestamp);
-        }
-        metadataTitle = claudeSessionMetadataTitle(object) ?? metadataTitle;
-        const type = pickFirstString(object, ["type", "role"]);
-        if (type === "user" || type === "human") {
-          promptTitle ??= claudeUserPromptTitle(object);
-        }
-        recentConversation =
-          claudeConversationPreview(object) ?? recentConversation;
-        model = claudeModelFromRecord(object) ?? model;
+    for (const record of records) {
+      const object = asObject(record);
+      if (!object) {
+        continue;
       }
+      sessionId ??= pickFirstString(object, ["sessionId", "session_id", "id"]);
+      cwd ??= pickFirstString(object, ["cwd", "projectRoot"]);
+      const timestamp = pickFirstString(object, [
+        "timestamp",
+        "createdAt",
+        "updatedAt"
+      ]);
+      if (timestamp) {
+        createdAt ??= timestamp;
+        updatedAt = maxIsoTimestamp(updatedAt, timestamp);
+      }
+      metadataTitle = claudeSessionMetadataTitle(object) ?? metadataTitle;
+      const type = pickFirstString(object, ["type", "role"]);
+      if (type === "user" || type === "human") {
+        promptTitle ??= claudeUserPromptTitle(object);
+      }
+      recentConversation =
+        claudeConversationPreview(object) ?? recentConversation;
+      model = claudeModelFromRecord(object) ?? model;
+    }
 
-      if (!sessionId) {
-        sessionId = basename(candidate.path, ".jsonl");
-      }
-      const record = buildRecord({
-        vendor: "claude",
-        sessionId,
-        cwd,
-        createdAt,
-        updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-        title: firstMeaningfulSessionTitle(
-          [metadataTitle, promptTitle],
-          sessionId
-        ),
-        recentConversation,
-        model,
-        mtimeMs: candidate.mtimeMs
-      });
-      cacheSessionRecord(cache, candidate, record);
-      return [record];
+    if (!sessionId) {
+      sessionId = basename(candidate.path, ".jsonl");
+    }
+    const record = buildRecord({
+      vendor: "claude",
+      sessionId,
+      cwd,
+      createdAt,
+      updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
+      title: firstMeaningfulSessionTitle(
+        [metadataTitle, promptTitle],
+        sessionId
+      ),
+      recentConversation,
+      model,
+      mtimeMs: candidate.mtimeMs
     });
+    cacheSessionRecord(cache, candidate, record);
+    return [record];
+  });
 }
 
 function codexUserPromptTitle(value: unknown): string | undefined {
@@ -868,7 +864,7 @@ function toViewModel(
   record: ExternalSessionRecord,
   now: Date,
   canResume: boolean,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): ExternalAgentSessionVm {
   return {
     key: record.key,
@@ -883,15 +879,15 @@ function toViewModel(
     updatedAt: record.updatedAt,
     relativeTimeLabel: formatRelativeTime(now, record.updatedAtMs),
     canResume,
-    resumeCommandPreview: buildResumeCommandPreview(record, settings)
+    resumeCommandPreview: buildResumeCommandPreview(record, agentSettings)
   };
 }
 
 function toResumeSpec(
   record: ExternalSessionRecord,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): ExternalSessionResumeSpec {
-  const launch = buildResumeLaunch(record, settings);
+  const launch = buildResumeLaunch(record, agentSettings);
   return {
     key: record.key,
     vendor: record.vendor,
@@ -909,9 +905,9 @@ function toResumeSpec(
 
 function buildResumeLaunch(
   record: ExternalSessionRecord,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): SessionLaunchConfig {
-  const command = resumeCommandParts(record, settings);
+  const command = resumeCommandParts(record, agentSettings);
   return {
     cwd: record.cwd,
     initialInput: `${formatAgentCommandForShell(command)}\r`,
@@ -921,18 +917,17 @@ function buildResumeLaunch(
 
 function buildResumeCommandPreview(
   record: ExternalSessionRecord,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): string {
-  return formatAgentCommandForShell(resumeCommandParts(record, settings));
+  return formatAgentCommandForShell(resumeCommandParts(record, agentSettings));
 }
 
 function resumeCommandParts(
   record: ExternalSessionRecord,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): string[] {
   return resolveAgentResumeCommand(
-    settings,
-    "local",
+    agentSettings,
     record.vendor,
     record.sessionId
   );
@@ -941,9 +936,9 @@ function resumeCommandParts(
 function canResumeRecord(
   record: ExternalSessionRecord,
   canRunCommand: (command: string) => boolean,
-  settings: Pick<KmuxSettings, "agents"> | undefined
+  agentSettings: AgentScopeSettings | undefined
 ): boolean {
-  return canRunCommand(resumeCommandParts(record, settings)[0]);
+  return canRunCommand(resumeCommandParts(record, agentSettings)[0]);
 }
 
 function createCommandAvailability(

@@ -348,9 +348,7 @@ describe("remote-host Phase 7 metadata request boundary", () => {
           claude: {
             command: "ccs",
             args: ["enterprise"],
-            additionalSessionRoots: [
-              "~/.ccs/shared/context-groups/default/projects"
-            ]
+            sessionRoot: "~/.ccs/shared/context-groups/default/projects"
           }
         }
       })
@@ -361,9 +359,7 @@ describe("remote-host Phase 7 metadata request boundary", () => {
         claude: {
           command: "ccs",
           args: ["enterprise"],
-          additionalSessionRoots: [
-            "~/.ccs/shared/context-groups/default/projects"
-          ]
+          sessionRoot: "~/.ccs/shared/context-groups/default/projects"
         }
       }
     });
@@ -416,7 +412,7 @@ describe("remote-host Phase 7 metadata request boundary", () => {
         maxRecords: 100,
         agentSettings: {
           claude: {
-            additionalSessionRoots: ["$HOME/projects"]
+            sessionRoot: "$HOME/projects"
           }
         }
       })

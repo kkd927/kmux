@@ -8,6 +8,7 @@ import {
   type WorkspaceTarget
 } from "@kmux/core";
 import type {
+  AgentScopeSettings,
   ExternalAgentSessionVendor,
   ExternalAgentSessionVm,
   ExternalAgentSessionsSnapshot
@@ -56,6 +57,8 @@ export function createTargetHistoryRuntime(options: {
   targetServices: TargetServiceRegistry;
   getState: () => AppState;
   localIndexer: ExternalSessionIndexer;
+  localAgentSettings?: AgentScopeSettings;
+  sshAgentSettings?: AgentScopeSettings;
   now?: () => Date;
   reportError?: (target: WorkspaceTarget, error: Error) => void;
 }): TargetHistoryRuntime {
@@ -72,18 +75,13 @@ export function createTargetHistoryRuntime(options: {
         const key = targetKey(target);
         try {
           const services = options.targetServices.resolveLocated(target);
+          const agentSettings =
+            target.kind === "local"
+              ? options.localAgentSettings
+              : options.sshAgentSettings;
           const scan = await services.history.refresh({
             maxRecords: MAX_HISTORY_RECORDS,
-            ...(options.getState().settings.agents?.[
-              target.kind === "local" ? "local" : "ssh"
-            ] === undefined
-              ? {}
-              : {
-                  agentSettings:
-                    options.getState().settings.agents?.[
-                      target.kind === "local" ? "local" : "ssh"
-                    ]
-                })
+            ...(agentSettings === undefined ? {} : { agentSettings })
           });
           if (
             target.kind === "ssh" &&
@@ -96,6 +94,7 @@ export function createTargetHistoryRuntime(options: {
           const incoming = scan.records.map((record) => ({
             target,
             services,
+            agentSettings,
             record
           }));
           recordsByTarget.set(
@@ -139,9 +138,8 @@ export function createTargetHistoryRuntime(options: {
       Array.from(partialTargetKeys).some((key) => currentTargetKeys.has(key));
     const currentRecords = allCurrentRecords.slice(0, MAX_HISTORY_RECORDS);
     const nextResumeByKey = new Map<string, ExternalSessionResumeSpec>();
-    const commandSettings = options.getState().settings;
     const sessions = currentRecords.map((entry) =>
-      toExternalSession(entry, now(), nextResumeByKey, commandSettings)
+      toExternalSession(entry, now(), nextResumeByKey)
     );
     resumeByKey.clear();
     for (const [key, spec] of nextResumeByKey) resumeByKey.set(key, spec);
@@ -172,6 +170,7 @@ export function createTargetHistoryRuntime(options: {
 interface TargetHistoryRecordWithTarget {
   target: WorkspaceTarget;
   services: ReturnType<TargetServiceRegistry["resolveLocated"]>;
+  agentSettings?: AgentScopeSettings;
   record: TargetHistoryRecord<LocatedPath>;
 }
 
@@ -223,8 +222,7 @@ function localHistoryRecord(
 function toExternalSession(
   entry: TargetHistoryRecordWithTarget,
   currentNow: Date,
-  resumeByKey: Map<string, ExternalSessionResumeSpec>,
-  settings: Pick<AppState["settings"], "agents">
+  resumeByKey: Map<string, ExternalSessionResumeSpec>
 ): ExternalAgentSessionVm {
   const record = entry.record;
   const key = externalKey(entry.target, record.vendor, record.sessionId);
@@ -233,8 +231,7 @@ function toExternalSession(
   const updatedAt =
     record.updatedAt ?? new Date(record.updatedAtUnixMs).toISOString();
   const command = resolveAgentResumeCommand(
-    settings,
-    entry.target.kind === "local" ? "local" : "ssh",
+    entry.agentSettings,
     record.vendor,
     record.sessionId
   );

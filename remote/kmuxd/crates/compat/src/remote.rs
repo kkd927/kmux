@@ -620,8 +620,7 @@ pub struct AgentSettings {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
-    #[serde(default)]
-    pub additional_session_roots: Vec<String>,
+    pub session_root: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
