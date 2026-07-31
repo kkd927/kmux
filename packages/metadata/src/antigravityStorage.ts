@@ -565,13 +565,20 @@ function normalizePathValue(value: string | undefined): string | undefined {
 }
 
 function sanitizeTitle(value: string | undefined): string | undefined {
-  const normalized = value?.replace(/\s+/gu, " ").trim();
-  if (!normalized) {
+  const firstLine = value
+    ?.split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
     return undefined;
   }
-  return normalized.length > MAX_TITLE_LENGTH
-    ? `${normalized.slice(0, MAX_TITLE_LENGTH - 3)}...`
-    : normalized;
+  const compact = firstLine.replace(/\s+/gu, " ").trim();
+  if (!compact) {
+    return undefined;
+  }
+  return compact.length > MAX_TITLE_LENGTH
+    ? `${compact.slice(0, MAX_TITLE_LENGTH - 1)}…`
+    : compact;
 }
 
 function sanitizePreview(value: string | undefined): string | undefined {

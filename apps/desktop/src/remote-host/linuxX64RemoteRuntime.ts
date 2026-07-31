@@ -73,6 +73,7 @@ const MAX_PENDING_TERMINAL_MUTATIONS = 4_096;
 const MAX_PENDING_TERMINAL_MUTATION_BYTES = 4 * 1024 * 1024;
 const MAX_CHANNEL_STDERR_TAIL_BYTES = 64 * 1024;
 const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v1";
+const OWNED_AGENT_SESSIONS_CAPABILITY = "agent-sessions.kmux-owned-v1";
 
 export class RemoteRuntimeError extends Error {
   constructor(
@@ -98,6 +99,18 @@ export function requireAgentSettingsScanCapability(
     throw new RemoteRuntimeError(
       "upgrade-required",
       "The remote kmux runtime must be upgraded before configured agent commands or session roots can be scanned.",
+      false
+    );
+  }
+}
+
+export function requireOwnedAgentSessionsCapability(
+  capabilities: ReadonlySet<string>
+): void {
+  if (!capabilities.has(OWNED_AGENT_SESSIONS_CAPABILITY)) {
+    throw new RemoteRuntimeError(
+      "upgrade-required",
+      "The remote kmux runtime must be upgraded before SSH History and Usage are available.",
       false
     );
   }
@@ -401,6 +414,7 @@ export class LinuxX64RemoteRuntime {
       );
     }
     const bridge = await this.requireMetadataBridge();
+    requireOwnedAgentSessionsCapability(this.metadataCapabilities);
     requireAgentSettingsScanCapability(
       options.agentSettings,
       this.metadataCapabilities
@@ -441,6 +455,7 @@ export class LinuxX64RemoteRuntime {
       );
     }
     const bridge = await this.requireMetadataBridge();
+    requireOwnedAgentSessionsCapability(this.metadataCapabilities);
     requireAgentSettingsScanCapability(
       options.agentSettings,
       this.metadataCapabilities

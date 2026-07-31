@@ -488,7 +488,10 @@ function parseCodexSessionCandidate(
     cwd,
     createdAt,
     updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-    title: metadataTitle ?? messageTitle,
+    title: firstMeaningfulSessionTitle(
+      [metadataTitle, messageTitle],
+      sessionId
+    ),
     recentConversation,
     model,
     mtimeMs: candidate.mtimeMs
@@ -571,7 +574,10 @@ function listClaudeSessions(
         cwd,
         createdAt,
         updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-        title: metadataTitle ?? promptTitle,
+        title: firstMeaningfulSessionTitle(
+          [metadataTitle, promptTitle],
+          sessionId
+        ),
         recentConversation,
         model,
         mtimeMs: candidate.mtimeMs
@@ -803,10 +809,10 @@ function buildRecord(input: {
   model?: string;
   mtimeMs: number;
 }): ExternalSessionRecord {
-  const vendorLabel = vendorLabelFor(input.vendor);
   const title =
-    input.title ??
-    `${vendorTitleLabelFor(input.vendor, vendorLabel)} ${input.sessionId.slice(0, 8)}`;
+    input.title && meaningfulSessionTitle(input.title, input.sessionId)
+      ? input.title
+      : `${vendorTitleLabelFor(input.vendor)} session`;
   const updatedAtMs = input.updatedAt
     ? Date.parse(input.updatedAt)
     : input.mtimeMs;
@@ -824,11 +830,38 @@ function buildRecord(input: {
   };
 }
 
-function vendorTitleLabelFor(
-  vendor: ExternalAgentSessionVendor,
-  compactLabel: ExternalAgentSessionVm["vendorLabel"]
-): string {
-  return vendor === "antigravity" ? "Antigravity" : compactLabel;
+function vendorTitleLabelFor(vendor: ExternalAgentSessionVendor): string {
+  switch (vendor) {
+    case "codex":
+      return "Codex";
+    case "claude":
+      return "Claude";
+    case "antigravity":
+      return "Antigravity";
+  }
+}
+
+function meaningfulSessionTitle(title: string, sessionId: string): boolean {
+  const trimmed = title.trim();
+  if (
+    !trimmed ||
+    trimmed.includes(sessionId) ||
+    trimmed.startsWith("<local-command-") ||
+    trimmed.startsWith("<system-reminder")
+  ) {
+    return false;
+  }
+  return !(/^[0-9a-f_-]+$/iu.test(trimmed) && trimmed.length >= 24);
+}
+
+function firstMeaningfulSessionTitle(
+  titles: Array<string | undefined>,
+  sessionId: string
+): string | undefined {
+  return titles.find(
+    (title): title is string =>
+      title !== undefined && meaningfulSessionTitle(title, sessionId)
+  );
 }
 
 function toViewModel(

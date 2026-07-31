@@ -153,6 +153,7 @@ const socketParamSchemas = {
       paneId: z.string().min(1).optional(),
       surfaceId: z.string().min(1).optional(),
       sessionId: z.string().min(1).optional(),
+      vendorSessionId: z.string().min(1).optional(),
       agent: z.string().min(1),
       event: agentEventSchema,
       title: z.string().optional(),

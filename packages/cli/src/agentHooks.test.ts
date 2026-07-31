@@ -187,6 +187,7 @@ describe("agent hook normalization", () => {
       workspaceId: "workspace_1",
       surfaceId: "surface_1",
       sessionId: "kmux-session_1",
+      vendorSessionId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
       agent: "antigravity",
       event: "session_start",
       details: {
@@ -220,6 +221,7 @@ describe("agent hook normalization", () => {
     expect(event).toMatchObject({
       workspaceId: "workspace_1",
       sessionId: "kmux-session_1",
+      vendorSessionId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
       agent: "antigravity",
       event: "session_start",
       details: {
@@ -227,6 +229,26 @@ describe("agent hook normalization", () => {
       }
     });
     expect(event?.surfaceId).toBeUndefined();
+  });
+
+  it("keeps Codex routing and vendor session ids separate", () => {
+    expect(
+      normalizeAgentHookInvocation(
+        "codex",
+        "SessionStart",
+        { session_id: "codex-session_1" },
+        {
+          KMUX_SURFACE_ID: "surface_1",
+          KMUX_SESSION_ID: "kmux-session_1"
+        }
+      )
+    ).toMatchObject({
+      surfaceId: "surface_1",
+      sessionId: "kmux-session_1",
+      vendorSessionId: "codex-session_1",
+      agent: "codex",
+      event: "session_start"
+    });
   });
 
   it("maps Antigravity permission and question tools to needs_input", () => {

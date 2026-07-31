@@ -1680,7 +1680,8 @@ describe("core reducer", () => {
       type: "agent.event",
       workspaceId,
       surfaceId,
-      sessionId: "codex-vendor-session",
+      sessionId: kmuxSessionId,
+      vendorSessionId: "codex-vendor-session",
       agent: "codex",
       event: "session_start"
     });
@@ -1711,11 +1712,10 @@ describe("core reducer", () => {
       type: "agent.event",
       workspaceId,
       sessionId: kmuxSessionId,
+      vendorSessionId: conversationId,
       agent: "antigravity",
       event: "session_start",
-      details: {
-        conversationId
-      }
+      details: {}
     });
 
     expect(effects).toEqual([{ type: "persist" }]);

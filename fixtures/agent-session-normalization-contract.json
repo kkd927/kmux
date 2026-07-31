@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "name": "codex custom title wins over the first meaningful request",
+      "vendor": "codex",
+      "sessionId": "codex-contract",
+      "sourcePath": ".codex/sessions/2026/07/31/rollout-codex-contract.jsonl",
+      "lines": [
+        {
+          "type": "session_meta",
+          "payload": {
+            "id": "codex-contract",
+            "cwd": "/srv/codex-contract"
+          }
+        },
+        {
+          "type": "response_item",
+          "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Implement the owned registry"
+              }
+            ]
+          }
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "thread_name_updated",
+            "thread_name": "Owned registry"
+          }
+        },
+        {
+          "type": "event_msg",
+          "timestamp": 1785456000000,
+          "payload": {
+            "type": "token_count",
+            "info": {
+              "total_token_usage": {
+                "input_tokens": 120,
+                "cached_input_tokens": 20,
+                "output_tokens": 40,
+                "reasoning_output_tokens": 10,
+                "total_tokens": 160
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "title": "Owned registry",
+        "cwd": "/srv/codex-contract",
+        "usage": {
+          "inputTokens": 100,
+          "outputTokens": 30,
+          "thinkingTokens": 10,
+          "cacheReadTokens": 20,
+          "cacheWriteTokens": 0,
+          "cacheWriteTokensKnown": false,
+          "totalTokens": 160
+        }
+      }
+    },
+    {
+      "name": "codex removes injected plugin blocks and uses the first meaningful line",
+      "vendor": "codex",
+      "sessionId": "codex-prompt-contract",
+      "sourcePath": ".codex/sessions/2026/07/31/rollout-codex-prompt-contract.jsonl",
+      "lines": [
+        {
+          "type": "session_meta",
+          "payload": {
+            "id": "codex-prompt-contract",
+            "cwd": "/srv/codex-prompt-contract"
+          }
+        },
+        {
+          "type": "response_item",
+          "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "<recommended_plugins source=\"workspace\">\nIgnore this plugin block\n</recommended_plugins>\n\nFirst meaningful request\nSecond detail line"
+              }
+            ]
+          }
+        },
+        {
+          "type": "event_msg",
+          "timestamp": 1785456000000,
+          "payload": {
+            "type": "token_count",
+            "info": {
+              "total_token_usage": {
+                "input_tokens": 12,
+                "cached_input_tokens": 2,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 1,
+                "total_tokens": 17
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "title": "First meaningful request",
+        "cwd": "/srv/codex-prompt-contract",
+        "usage": {
+          "inputTokens": 10,
+          "outputTokens": 4,
+          "thinkingTokens": 1,
+          "cacheReadTokens": 2,
+          "cacheWriteTokens": 0,
+          "cacheWriteTokensKnown": false,
+          "totalTokens": 17
+        }
+      }
+    },
+    {
+      "name": "claude custom title wins over the first request",
+      "vendor": "claude",
+      "sessionId": "claude-contract",
+      "sourcePath": ".claude/projects/repo/claude-contract.jsonl",
+      "lines": [
+        {
+          "type": "user",
+          "sessionId": "claude-contract",
+          "cwd": "/srv/claude-contract",
+          "message": {
+            "content": "Review the usage filter"
+          }
+        },
+        {
+          "type": "custom-title",
+          "customTitle": "Usage ownership review\nSecond title line"
+        },
+        {
+          "type": "assistant",
+          "sessionId": "claude-contract",
+          "timestamp": 1785456000000,
+          "message": {
+            "model": "claude-sonnet",
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 25,
+              "thinking_tokens": 5,
+              "cache_read_input_tokens": 30,
+              "cache_creation_input_tokens": 5
+            }
+          }
+        }
+      ],
+      "expected": {
+        "title": "Usage ownership review",
+        "cwd": "/srv/claude-contract",
+        "usage": {
+          "inputTokens": 100,
+          "outputTokens": 20,
+          "thinkingTokens": 5,
+          "cacheReadTokens": 30,
+          "cacheWriteTokens": 5,
+          "cacheWriteTokensKnown": true,
+          "totalTokens": 160
+        }
+      }
+    },
+    {
+      "name": "antigravity database prompt replaces the history display",
+      "vendor": "antigravity",
+      "sessionId": "a17a0000-0000-4000-8000-000000000001",
+      "sourcePath": ".gemini/antigravity-cli/history.jsonl",
+      "lines": [
+        {
+          "conversationId": "a17a0000-0000-4000-8000-000000000001",
+          "workspace": "/srv/agy-contract",
+          "display": "History display should be replaced",
+          "timestamp": 1785456000000
+        }
+      ],
+      "conversationPrompts": [
+        "Database prompt title",
+        "Most recent Antigravity request"
+      ],
+      "usageSourcePath": ".gemini/antigravity-cli/brain/a17a0000-0000-4000-8000-000000000001/.system_generated/logs/transcript.jsonl",
+      "usageLines": [
+        {
+          "source": "MODEL",
+          "type": "CHAT_RESPONSE",
+          "timestamp": 1785456000000,
+          "content": "done",
+          "usage": {
+            "input_tokens": 80,
+            "output_tokens": 20,
+            "thinking_tokens": 4,
+            "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 5
+          }
+        }
+      ],
+      "expected": {
+        "title": "Database prompt title",
+        "cwd": "/srv/agy-contract",
+        "usage": {
+          "inputTokens": 65,
+          "outputTokens": 16,
+          "thinkingTokens": 4,
+          "cacheReadTokens": 10,
+          "cacheWriteTokens": 5,
+          "cacheWriteTokensKnown": true,
+          "totalTokens": 100
+        }
+      }
+    },
+    {
+      "name": "identifier-only custom titles fall back to the first request",
+      "vendor": "claude",
+      "sessionId": "abcdef12-3456-7890-abcd-ef1234567890",
+      "sourcePath": ".claude/projects/repo/abcdef12-3456-7890-abcd-ef1234567890.jsonl",
+      "lines": [
+        {
+          "sessionId": "abcdef12-3456-7890-abcd-ef1234567890",
+          "cwd": "/srv/claude-fallback",
+          "type": "user",
+          "message": {
+            "content": "Fallback user request"
+          }
+        },
+        {
+          "sessionId": "abcdef12-3456-7890-abcd-ef1234567890",
+          "cwd": "/srv/claude-fallback",
+          "type": "custom-title",
+          "customTitle": "abcdef12-3456-7890-abcd-ef1234567890"
+        },
+        {
+          "type": "assistant",
+          "sessionId": "abcdef12-3456-7890-abcd-ef1234567890",
+          "timestamp": 1785456000000,
+          "message": {
+            "usage": {
+              "input_tokens": 8,
+              "output_tokens": 2
+            }
+          }
+        }
+      ],
+      "expected": {
+        "title": "Fallback user request",
+        "cwd": "/srv/claude-fallback",
+        "usage": {
+          "inputTokens": 8,
+          "outputTokens": 2,
+          "thinkingTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "cacheWriteTokensKnown": true,
+          "totalTokens": 10
+        }
+      }
+    }
+  ]
+}

@@ -28,7 +28,9 @@ use kmux_compat::{
 };
 use kmux_doctor::{DoctorPaths, run_doctor};
 use kmux_hook::{
-    SessionControlEndpoint, acknowledge_events, replay_events, write_session_control_endpoint,
+    OwnedAgentSession, OwnedAgentSessionSourceKind, OwnedAgentSessionSourceUpdate,
+    SessionControlEndpoint, acknowledge_events, cache_owned_agent_session_sources,
+    load_owned_agent_sessions, replay_events, write_session_control_endpoint,
 };
 use kmux_keeper::{
     ATTACH_CAPABILITY_TTL, KeeperCaptureRequest, KeeperLaunchConfig, KeeperOperationInputRequest,
@@ -40,8 +42,9 @@ use kmux_keeper::{
     write_session_descriptor,
 };
 use kmux_metadata::{
-    ExternalAgentScanSettings, ExternalAgentSettings, scan_external_history_with_settings,
-    scan_external_usage_with_settings,
+    ExternalAgentScanSettings, ExternalAgentSettings, ExternalSessionClaim,
+    ExternalSourceCacheKind, ExternalSourceCacheUpdate, scan_owned_external_history_with_settings,
+    scan_owned_external_usage_with_settings,
 };
 use kmux_platform::{
     current_authenticated_home, current_authenticated_principal, effective_uid, spawn_detached,
@@ -1095,20 +1098,33 @@ fn handle_single_request(
             inspect_session_ports(roots, resource_key).map(BridgeResponseBody::PortsInspected)
         }
         BridgeRequest::HistoryScan {
+            desktop_installation_id,
             target_id,
             max_records,
             agent_settings,
-            ..
-        } => inspect_external_history(&target_id, max_records, agent_settings)
-            .map(BridgeResponseBody::HistoryScanned),
+        } => inspect_external_history(
+            roots,
+            &desktop_installation_id,
+            &target_id,
+            max_records,
+            agent_settings,
+        )
+        .map(BridgeResponseBody::HistoryScanned),
         BridgeRequest::UsageScan {
+            desktop_installation_id,
             target_id,
             start_at_unix_ms,
             max_records,
             agent_settings,
-            ..
-        } => inspect_external_usage(&target_id, &start_at_unix_ms, max_records, agent_settings)
-            .map(BridgeResponseBody::UsageScanned),
+        } => inspect_external_usage(
+            roots,
+            &desktop_installation_id,
+            &target_id,
+            &start_at_unix_ms,
+            max_records,
+            agent_settings,
+        )
+        .map(BridgeResponseBody::UsageScanned),
         BridgeRequest::ForwardsObserve {
             desktop_installation_id,
             target_id,
@@ -1252,6 +1268,7 @@ fn hello(
             "history.scan-bounded-v1".to_owned(),
             "history.scan-partial-v2".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
+            "agent-sessions.kmux-owned-v1".to_owned(),
             "agents.settings-scan-v1".to_owned(),
             "worktree.durable-v1".to_owned(),
             "forward.desired-state-v1".to_owned(),
@@ -2132,10 +2149,13 @@ fn inspect_session_ports(
 }
 
 fn inspect_external_history(
+    roots: &RemoteRuntimeRoots,
+    desktop_installation_id: &str,
     target_id: &str,
     max_records: usize,
     agent_settings: Option<AgentScopeSettings>,
 ) -> Result<HistoryScannedResponse, BridgeRuntimeError> {
+    validate_id(desktop_installation_id, "desktopInstallationId")?;
     validate_id(target_id, "targetId")?;
     let principal = current_authenticated_principal().map_err(|error| {
         BridgeRuntimeError::Invalid(format!("history principal is unavailable: {error}"))
@@ -2144,8 +2164,19 @@ fn inspect_external_history(
         BridgeRuntimeError::Invalid(format!("history home is unavailable: {error}"))
     })?;
     let settings = metadata_agent_scan_settings(agent_settings);
-    let scan = scan_external_history_with_settings(&home, max_records, &settings)
-        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
+    let owned_sessions = load_owned_agent_sessions(
+        Path::new(&roots.state_root),
+        desktop_installation_id,
+        target_id,
+    )?;
+    let claims = owned_sessions
+        .iter()
+        .map(metadata_session_claim)
+        .collect::<Vec<_>>();
+    let (scan, cache_updates) =
+        scan_owned_external_history_with_settings(&home, max_records, &settings, &claims)
+            .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
+    cache_metadata_sources_best_effort(roots, desktop_installation_id, target_id, cache_updates);
     let records = scan
         .records
         .into_iter()
@@ -2174,11 +2205,14 @@ fn inspect_external_history(
 }
 
 fn inspect_external_usage(
+    roots: &RemoteRuntimeRoots,
+    desktop_installation_id: &str,
     target_id: &str,
     start_at_unix_ms: &str,
     max_records: usize,
     agent_settings: Option<AgentScopeSettings>,
 ) -> Result<UsageScannedResponse, BridgeRuntimeError> {
+    validate_id(desktop_installation_id, "desktopInstallationId")?;
     validate_id(target_id, "targetId")?;
     let start_at_unix_ms = parse_u64(start_at_unix_ms)?;
     let principal = current_authenticated_principal().map_err(|error| {
@@ -2188,8 +2222,24 @@ fn inspect_external_usage(
         BridgeRuntimeError::Invalid(format!("usage home is unavailable: {error}"))
     })?;
     let settings = metadata_agent_scan_settings(agent_settings);
-    let scan = scan_external_usage_with_settings(&home, start_at_unix_ms, max_records, &settings)
-        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
+    let owned_sessions = load_owned_agent_sessions(
+        Path::new(&roots.state_root),
+        desktop_installation_id,
+        target_id,
+    )?;
+    let claims = owned_sessions
+        .iter()
+        .map(metadata_session_claim)
+        .collect::<Vec<_>>();
+    let (scan, cache_updates) = scan_owned_external_usage_with_settings(
+        &home,
+        start_at_unix_ms,
+        max_records,
+        &settings,
+        &claims,
+    )
+    .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?;
+    cache_metadata_sources_best_effort(roots, desktop_installation_id, target_id, cache_updates);
     let records = scan
         .records
         .into_iter()
@@ -2219,6 +2269,50 @@ fn inspect_external_usage(
         truncated: scan.truncated,
         records,
     })
+}
+
+fn metadata_session_claim(session: &OwnedAgentSession) -> ExternalSessionClaim {
+    ExternalSessionClaim {
+        vendor: session.vendor.clone(),
+        vendor_session_id: session.vendor_session_id.clone(),
+        claimed_at_unix_ms: session.claimed_at_unix_ms,
+        last_kmux_seen_at_unix_ms: session.last_kmux_seen_at_unix_ms,
+        cwd: session.cwd.clone(),
+        workspace_paths: session.workspace_paths.clone(),
+        transcript_path: session.transcript_path.clone(),
+        artifact_directory_path: session.artifact_directory_path.clone(),
+        history_source_path: session.history_source_path.clone(),
+        usage_source_path: session.usage_source_path.clone(),
+        launch_title: session.launch_title.clone(),
+    }
+}
+
+fn cache_metadata_sources_best_effort(
+    roots: &RemoteRuntimeRoots,
+    desktop_installation_id: &str,
+    target_id: &str,
+    updates: Vec<ExternalSourceCacheUpdate>,
+) {
+    // Source paths only optimize a later scan; they are not part of the scan
+    // result and therefore cannot turn a successful response into a failure.
+    let updates = updates
+        .into_iter()
+        .map(|update| OwnedAgentSessionSourceUpdate {
+            vendor: update.vendor,
+            vendor_session_id: update.vendor_session_id,
+            kind: match update.kind {
+                ExternalSourceCacheKind::History => OwnedAgentSessionSourceKind::History,
+                ExternalSourceCacheKind::Usage => OwnedAgentSessionSourceKind::Usage,
+            },
+            path: update.path,
+        })
+        .collect::<Vec<_>>();
+    let _ = cache_owned_agent_session_sources(
+        Path::new(&roots.state_root),
+        desktop_installation_id,
+        target_id,
+        &updates,
+    );
 }
 
 fn metadata_agent_scan_settings(settings: Option<AgentScopeSettings>) -> ExternalAgentScanSettings {
@@ -2989,6 +3083,8 @@ fn create_keeper(
             state_root: roots.state_root.clone(),
             descriptor_path: descriptor_path.to_string_lossy().into_owned(),
             token_sha256: format!("{:x}", Sha256::digest(control_token.as_bytes())),
+            cwd: Some(launch.cwd.clone()),
+            launch_title: launch.title.clone(),
         },
     )?;
     let cli_bin = ensure_remote_cli_shims(

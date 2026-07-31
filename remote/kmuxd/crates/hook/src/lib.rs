@@ -23,8 +23,11 @@ pub const MAX_SPOOL_EVENTS: usize = 4_096;
 pub const MAX_SPOOL_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_REPLAY_EVENTS: usize = 128;
 pub const MAX_REPLAY_BYTES: usize = 192 * 1024;
+pub const MAX_OWNED_AGENT_SESSIONS: usize = 500;
+pub const OWNED_AGENT_SESSION_TTL_MILLIS: u64 = 30 * 24 * 60 * 60 * 1_000;
 const MAX_EVENT_FILE_BYTES: u64 = 96 * 1024;
 const MAX_METADATA_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_OWNED_AGENT_REGISTRY_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ENDPOINT_BYTES: u64 = 64 * 1024;
 const MAX_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 const MAX_RECENT_EVENT_IDENTITIES: usize = MAX_SPOOL_EVENTS;
@@ -76,6 +79,10 @@ pub struct SessionControlEndpoint {
     pub state_root: String,
     pub descriptor_path: String,
     pub token_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_title: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -125,6 +132,58 @@ pub struct EventReplayPage {
 pub struct EventAcknowledgement {
     pub acknowledged_through: String,
     pub removed_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnedAgentSession {
+    pub vendor: String,
+    pub vendor_session_id: String,
+    #[serde(rename = "claimedAt")]
+    pub claimed_at_unix_ms: u64,
+    #[serde(rename = "lastKmuxSeenAt")]
+    pub last_kmux_seen_at_unix_ms: u64,
+    pub workspace_id: String,
+    pub kmux_session_id: String,
+    pub surface_id: String,
+    pub keeper_generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_directory_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_title: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnedAgentSessionSourceKind {
+    History,
+    Usage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedAgentSessionSourceUpdate {
+    pub vendor: String,
+    pub vendor_session_id: String,
+    pub kind: OwnedAgentSessionSourceKind,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedAgentSessionRegistry {
+    version: u16,
+    desktop_installation_id: String,
+    target_id: String,
+    sessions: Vec<OwnedAgentSession>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,7 +275,69 @@ pub fn admit_event_from_endpoint(
 ) -> Result<EventAdmission, HookError> {
     let endpoint = authorize_session_control_endpoint(endpoint_path, token)?;
     require_active_session_descriptor(&endpoint)?;
-    admit_event(&endpoint, request)
+    let admission = admit_event(&endpoint, request.clone())?;
+    // Ownership metadata is a derived projection. Its failure must not undo a
+    // hook event that is already durable in the primary spool.
+    record_owned_agent_session_event_best_effort(&endpoint, &request);
+    Ok(admission)
+}
+
+pub fn load_owned_agent_sessions(
+    state_root: &Path,
+    desktop_installation_id: &str,
+    target_id: &str,
+) -> Result<Vec<OwnedAgentSession>, HookError> {
+    load_owned_agent_sessions_at(
+        state_root,
+        desktop_installation_id,
+        target_id,
+        unix_millis()?,
+    )
+}
+
+pub fn cache_owned_agent_session_sources(
+    state_root: &Path,
+    desktop_installation_id: &str,
+    target_id: &str,
+    updates: &[OwnedAgentSessionSourceUpdate],
+) -> Result<(), HookError> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let directory = owned_agent_registry_directory(state_root, desktop_installation_id, target_id)?;
+    ensure_private_directory(&directory)?;
+    let _lock = acquire_owned_agent_registry_lock(&directory)?;
+    let Some(mut registry) =
+        read_owned_agent_registry(&directory, desktop_installation_id, target_id)?
+    else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for update in updates {
+        validate_owned_agent_vendor(&update.vendor)?;
+        validate_control_id(&update.vendor_session_id)?;
+        let path = normalized_absolute_path(Some(&update.path));
+        let Some(path) = path else {
+            continue;
+        };
+        let Some(session) = registry.sessions.iter_mut().find(|session| {
+            session.vendor == update.vendor && session.vendor_session_id == update.vendor_session_id
+        }) else {
+            continue;
+        };
+        let slot = match update.kind {
+            OwnedAgentSessionSourceKind::History => &mut session.history_source_path,
+            OwnedAgentSessionSourceKind::Usage => &mut session.usage_source_path,
+        };
+        if slot.as_deref() != Some(path.as_str()) {
+            *slot = Some(path);
+            changed = true;
+        }
+    }
+    if changed {
+        write_owned_agent_registry(&directory, &registry)?;
+    }
+    Ok(())
 }
 
 /// Durably records low-value events that were intentionally compacted by a
@@ -456,6 +577,368 @@ fn scoped_spool_path(
     Ok(state_root.join("events").join(&digest[..32]))
 }
 
+fn record_owned_agent_session_event(
+    endpoint: &SessionControlEndpoint,
+    request: &AdmitEventRequest,
+    now_unix_ms: u64,
+) -> Result<(), HookError> {
+    if request.kind != "agent-hook" {
+        return Ok(());
+    }
+    let Some((agent, hook_event)) = request.name.split_once('.') else {
+        return Ok(());
+    };
+    let Some(vendor) = normalized_owned_agent_vendor(agent) else {
+        return Ok(());
+    };
+    let normalized_event = hook_event
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>();
+    let creates_claim = matches!(
+        (vendor, normalized_event.as_str()),
+        ("codex" | "claude", "sessionstart") | ("antigravity", "preinvocation")
+    );
+    let payload = request.payload.as_object();
+    let vendor_session_id = owned_vendor_session_id(vendor, payload);
+    if vendor_session_id
+        .as_deref()
+        .is_some_and(|value| validate_control_id(value).is_err())
+    {
+        return Ok(());
+    }
+    let directory = owned_agent_registry_directory(
+        Path::new(&endpoint.state_root),
+        &endpoint.resource_key.desktop_installation_id,
+        &endpoint.resource_key.target_id,
+    )?;
+    ensure_private_directory(&directory)?;
+    let _lock = acquire_owned_agent_registry_lock(&directory)?;
+    let mut registry = read_owned_agent_registry(
+        &directory,
+        &endpoint.resource_key.desktop_installation_id,
+        &endpoint.resource_key.target_id,
+    )?
+    .unwrap_or_else(|| OwnedAgentSessionRegistry {
+        version: 1,
+        desktop_installation_id: endpoint.resource_key.desktop_installation_id.clone(),
+        target_id: endpoint.resource_key.target_id.clone(),
+        sessions: Vec::new(),
+    });
+    gc_owned_agent_sessions(&mut registry.sessions, now_unix_ms);
+
+    let kmux_session_id = endpoint
+        .resource_key
+        .session_id
+        .as_ref()
+        .expect("validated endpoint has a session ID");
+    let existing_index = vendor_session_id
+        .as_ref()
+        .and_then(|vendor_session_id| {
+            registry.sessions.iter().position(|session| {
+                session.vendor == vendor && session.vendor_session_id == *vendor_session_id
+            })
+        })
+        .or_else(|| {
+            (!creates_claim).then(|| {
+                let matches = registry
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, session)| {
+                        session.vendor == vendor && session.kmux_session_id == *kmux_session_id
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 {
+                    Some(matches[0])
+                } else {
+                    None
+                }
+            })?
+        });
+
+    let workspace_paths = payload
+        .and_then(|payload| payload.get("workspacePaths"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|value| normalized_absolute_path(Some(value)))
+        .take(10)
+        .collect::<Vec<_>>();
+    let cwd = payload
+        .and_then(|payload| json_string(payload, &["cwd", "projectRoot", "project_path"]))
+        .and_then(|value| normalized_absolute_path(Some(&value)))
+        .or_else(|| endpoint.cwd.clone())
+        .or_else(|| workspace_paths.first().cloned());
+    let transcript_path = payload
+        .and_then(|payload| json_string(payload, &["transcriptPath", "transcript_path"]))
+        .and_then(|value| normalized_absolute_path(Some(&value)));
+    let artifact_directory_path = payload
+        .and_then(|payload| {
+            json_string(
+                payload,
+                &["artifactDirectoryPath", "artifact_directory_path"],
+            )
+        })
+        .and_then(|value| normalized_absolute_path(Some(&value)));
+
+    if let Some(index) = existing_index {
+        let session = &mut registry.sessions[index];
+        session.last_kmux_seen_at_unix_ms = session.last_kmux_seen_at_unix_ms.max(now_unix_ms);
+        session.workspace_id = endpoint.resource_key.workspace_id.clone();
+        session.kmux_session_id = kmux_session_id.clone();
+        session.surface_id = endpoint.surface_id.clone();
+        session.keeper_generation = endpoint.keeper_generation.clone();
+        if cwd.is_some() {
+            session.cwd = cwd;
+        }
+        if !workspace_paths.is_empty() {
+            session.workspace_paths = workspace_paths;
+        }
+        if transcript_path.is_some() {
+            session.transcript_path = transcript_path;
+        }
+        if artifact_directory_path.is_some() {
+            session.artifact_directory_path = artifact_directory_path;
+        }
+        if endpoint.launch_title.is_some() {
+            session.launch_title = endpoint.launch_title.clone();
+        }
+    } else if creates_claim {
+        let Some(vendor_session_id) = vendor_session_id else {
+            return Ok(());
+        };
+        registry.sessions.push(OwnedAgentSession {
+            vendor: vendor.to_owned(),
+            vendor_session_id,
+            claimed_at_unix_ms: now_unix_ms,
+            last_kmux_seen_at_unix_ms: now_unix_ms,
+            workspace_id: endpoint.resource_key.workspace_id.clone(),
+            kmux_session_id: kmux_session_id.clone(),
+            surface_id: endpoint.surface_id.clone(),
+            keeper_generation: endpoint.keeper_generation.clone(),
+            cwd,
+            workspace_paths,
+            transcript_path,
+            artifact_directory_path,
+            history_source_path: None,
+            usage_source_path: None,
+            launch_title: endpoint.launch_title.clone(),
+        });
+    } else {
+        return Ok(());
+    }
+
+    gc_owned_agent_sessions(&mut registry.sessions, now_unix_ms);
+    write_owned_agent_registry(&directory, &registry)
+}
+
+fn record_owned_agent_session_event_best_effort(
+    endpoint: &SessionControlEndpoint,
+    request: &AdmitEventRequest,
+) {
+    let Ok(now_unix_ms) = unix_millis() else {
+        return;
+    };
+    let _ = record_owned_agent_session_event(endpoint, request, now_unix_ms);
+}
+
+fn load_owned_agent_sessions_at(
+    state_root: &Path,
+    desktop_installation_id: &str,
+    target_id: &str,
+    now_unix_ms: u64,
+) -> Result<Vec<OwnedAgentSession>, HookError> {
+    let directory = owned_agent_registry_directory(state_root, desktop_installation_id, target_id)?;
+    ensure_private_directory(&directory)?;
+    let _lock = acquire_owned_agent_registry_lock(&directory)?;
+    let Some(mut registry) =
+        read_owned_agent_registry(&directory, desktop_installation_id, target_id)?
+    else {
+        return Ok(Vec::new());
+    };
+    let previous = registry.sessions.clone();
+    gc_owned_agent_sessions(&mut registry.sessions, now_unix_ms);
+    if registry.sessions != previous {
+        write_owned_agent_registry(&directory, &registry)?;
+    }
+    registry.sessions.sort_by(|left, right| {
+        right
+            .last_kmux_seen_at_unix_ms
+            .cmp(&left.last_kmux_seen_at_unix_ms)
+            .then_with(|| left.vendor.cmp(&right.vendor))
+            .then_with(|| left.vendor_session_id.cmp(&right.vendor_session_id))
+    });
+    Ok(registry.sessions)
+}
+
+fn gc_owned_agent_sessions(sessions: &mut Vec<OwnedAgentSession>, now_unix_ms: u64) {
+    sessions.retain(|session| {
+        now_unix_ms.saturating_sub(session.last_kmux_seen_at_unix_ms)
+            <= OWNED_AGENT_SESSION_TTL_MILLIS
+    });
+    sessions.sort_by(|left, right| {
+        left.last_kmux_seen_at_unix_ms
+            .cmp(&right.last_kmux_seen_at_unix_ms)
+            .then_with(|| left.claimed_at_unix_ms.cmp(&right.claimed_at_unix_ms))
+            .then_with(|| left.vendor.cmp(&right.vendor))
+            .then_with(|| left.vendor_session_id.cmp(&right.vendor_session_id))
+    });
+    if sessions.len() > MAX_OWNED_AGENT_SESSIONS {
+        sessions.drain(..sessions.len() - MAX_OWNED_AGENT_SESSIONS);
+    }
+}
+
+fn owned_agent_registry_directory(
+    state_root: &Path,
+    desktop_installation_id: &str,
+    target_id: &str,
+) -> Result<PathBuf, HookError> {
+    if !state_root.is_absolute() {
+        return Err(HookError::Invalid(
+            "owned agent session state root must be absolute",
+        ));
+    }
+    validate_control_id(desktop_installation_id)?;
+    validate_control_id(target_id)?;
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(format!("{desktop_installation_id}\0{target_id}").as_bytes())
+    );
+    Ok(state_root
+        .join("agent-session-registries")
+        .join(&digest[..32]))
+}
+
+fn read_owned_agent_registry(
+    directory: &Path,
+    desktop_installation_id: &str,
+    target_id: &str,
+) -> Result<Option<OwnedAgentSessionRegistry>, HookError> {
+    let path = directory.join("registry.json");
+    let registry: OwnedAgentSessionRegistry =
+        match read_private_json(&path, MAX_OWNED_AGENT_REGISTRY_BYTES) {
+            Ok(registry) => registry,
+            Err(HookError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+    if registry.version != 1
+        || registry.desktop_installation_id != desktop_installation_id
+        || registry.target_id != target_id
+    {
+        return Err(HookError::Invalid(
+            "owned agent session registry scope is invalid",
+        ));
+    }
+    for session in &registry.sessions {
+        validate_owned_agent_session(session)?;
+    }
+    Ok(Some(registry))
+}
+
+fn write_owned_agent_registry(
+    directory: &Path,
+    registry: &OwnedAgentSessionRegistry,
+) -> Result<(), HookError> {
+    let encoded = serde_json::to_vec(registry)?;
+    if encoded.len() as u64 > MAX_OWNED_AGENT_REGISTRY_BYTES {
+        return Err(HookError::Invalid(
+            "owned agent session registry is too large",
+        ));
+    }
+    write_bytes_atomic(&directory.join("registry.json"), &encoded)
+}
+
+fn validate_owned_agent_session(session: &OwnedAgentSession) -> Result<(), HookError> {
+    validate_owned_agent_vendor(&session.vendor)?;
+    for value in [
+        &session.vendor_session_id,
+        &session.workspace_id,
+        &session.kmux_session_id,
+        &session.surface_id,
+        &session.keeper_generation,
+    ] {
+        validate_control_id(value)?;
+    }
+    if session.claimed_at_unix_ms == 0
+        || session.last_kmux_seen_at_unix_ms < session.claimed_at_unix_ms
+        || session.workspace_paths.len() > 10
+    {
+        return Err(HookError::Invalid(
+            "owned agent session registry entry is invalid",
+        ));
+    }
+    for path in [
+        session.cwd.as_ref(),
+        session.transcript_path.as_ref(),
+        session.artifact_directory_path.as_ref(),
+        session.history_source_path.as_ref(),
+        session.usage_source_path.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(session.workspace_paths.iter())
+    {
+        if normalized_absolute_path(Some(path)).as_deref() != Some(path.as_str()) {
+            return Err(HookError::Invalid(
+                "owned agent session registry path is invalid",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_owned_agent_vendor(vendor: &str) -> Result<(), HookError> {
+    if matches!(vendor, "codex" | "claude" | "antigravity") {
+        Ok(())
+    } else {
+        Err(HookError::Invalid("owned agent session vendor is invalid"))
+    }
+}
+
+fn normalized_owned_agent_vendor(agent: &str) -> Option<&'static str> {
+    match agent.trim().to_ascii_lowercase().as_str() {
+        "codex" => Some("codex"),
+        "claude" => Some("claude"),
+        "agy" | "antigravity" | "antigravity-cli" => Some("antigravity"),
+        _ => None,
+    }
+}
+
+fn owned_vendor_session_id(
+    vendor: &str,
+    payload: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
+    let payload = payload?;
+    match vendor {
+        "codex" | "claude" => json_string(payload, &["session_id", "sessionId"]),
+        "antigravity" => json_string(payload, &["conversationId", "conversation_id"]),
+        _ => None,
+    }
+}
+
+fn json_string(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalized_absolute_path(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    (Path::new(value).is_absolute()
+        && value.len() <= 32 * 1024
+        && !value.contains(['\0', '\r', '\n']))
+    .then(|| value.to_owned())
+}
+
 fn validate_endpoint(endpoint: &SessionControlEndpoint) -> Result<(), HookError> {
     if endpoint.version != SPOOL_VERSION
         || endpoint.resource_key.session_id.is_none()
@@ -482,6 +965,13 @@ fn validate_endpoint(endpoint: &SessionControlEndpoint) -> Result<(), HookError>
         &endpoint.keeper_generation,
     ] {
         validate_control_id(value)?;
+    }
+    for path in [endpoint.cwd.as_ref()].into_iter().flatten() {
+        if normalized_absolute_path(Some(path)).as_deref() != Some(path.as_str()) {
+            return Err(HookError::Invalid(
+                "session control endpoint cwd is invalid",
+            ));
+        }
     }
     Ok(())
 }
@@ -908,6 +1398,48 @@ struct SpoolLock {
     _lock: Flock<File>,
 }
 
+struct OwnedAgentRegistryLock {
+    _lock: Flock<File>,
+}
+
+fn acquire_owned_agent_registry_lock(
+    directory: &Path,
+) -> Result<OwnedAgentRegistryLock, HookError> {
+    let path = directory.join("registry.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .open(&path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != effective_uid() || metadata.mode() & 0o077 != 0 {
+        return Err(HookError::Invalid(
+            "owned agent session registry lock is unsafe",
+        ));
+    }
+    File::open(directory)?.sync_all()?;
+    let deadline = Instant::now() + LOCK_TIMEOUT;
+    let mut file = file;
+    loop {
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => return Ok(OwnedAgentRegistryLock { _lock: lock }),
+            Err((returned, Errno::EAGAIN)) => {
+                file = returned;
+                if Instant::now() >= deadline {
+                    return Err(HookError::LockTimedOut);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err((_returned, error)) => {
+                return Err(io::Error::from_raw_os_error(error as i32).into());
+            }
+        }
+    }
+}
+
 fn acquire_spool_lock(spool: &Path) -> Result<SpoolLock, HookError> {
     let path = spool.join("spool.lock");
     let file = OpenOptions::new()
@@ -976,6 +1508,8 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             token_sha256: format!("{:x}", Sha256::digest(b"secret")),
+            cwd: Some("/tmp".to_owned()),
+            launch_title: None,
         }
     }
 
@@ -986,6 +1520,269 @@ mod tests {
             name: "agent-finished".to_owned(),
             payload: serde_json::json!({"title": "Done", "message": "ready"}),
         }
+    }
+
+    fn agent_event(name: &str, payload: Value) -> AdmitEventRequest {
+        AdmitEventRequest {
+            event_id: None,
+            kind: "agent-hook".to_owned(),
+            name: name.to_owned(),
+            payload,
+        }
+    }
+
+    #[test]
+    fn only_start_hooks_claim_sessions_and_registries_are_scope_isolated() {
+        let sandbox = TempDir::new().unwrap();
+        let first = endpoint(sandbox.path());
+        record_owned_agent_session_event(
+            &first,
+            &agent_event(
+                "codex.Stop",
+                serde_json::json!({"session_id": "codex-unclaimed"}),
+            ),
+            1_000,
+        )
+        .unwrap();
+        assert!(
+            load_owned_agent_sessions_at(
+                Path::new(&first.state_root),
+                "desktop_1",
+                "target_1",
+                1_000
+            )
+            .unwrap()
+            .is_empty()
+        );
+
+        record_owned_agent_session_event(
+            &first,
+            &agent_event(
+                "codex.SessionStart",
+                serde_json::json!({
+                    "session_id": "codex-owned",
+                    "cwd": "/srv/owned",
+                    "transcript_path": "/srv/owned/rollout.jsonl"
+                }),
+            ),
+            2_000,
+        )
+        .unwrap();
+        let owned = load_owned_agent_sessions_at(
+            Path::new(&first.state_root),
+            "desktop_1",
+            "target_1",
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].vendor_session_id, "codex-owned");
+        assert_eq!(owned[0].claimed_at_unix_ms, 2_000);
+
+        let mut second = first.clone();
+        second.resource_key.desktop_installation_id = "desktop_2".to_owned();
+        record_owned_agent_session_event(
+            &second,
+            &agent_event(
+                "claude.SessionStart",
+                serde_json::json!({"session_id": "claude-owned"}),
+            ),
+            3_000,
+        )
+        .unwrap();
+        assert_eq!(
+            load_owned_agent_sessions_at(
+                Path::new(&first.state_root),
+                "desktop_1",
+                "target_1",
+                3_000
+            )
+            .unwrap()
+            .iter()
+            .map(|session| session.vendor_session_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["codex-owned"]
+        );
+        assert_eq!(
+            load_owned_agent_sessions_at(
+                Path::new(&first.state_root),
+                "desktop_2",
+                "target_1",
+                3_000
+            )
+            .unwrap()
+            .iter()
+            .map(|session| session.vendor_session_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["claude-owned"]
+        );
+
+        let mut third = first.clone();
+        third.resource_key.target_id = "target_2".to_owned();
+        record_owned_agent_session_event(
+            &third,
+            &agent_event(
+                "antigravity.PreInvocation",
+                serde_json::json!({"conversationId": "antigravity-owned"}),
+            ),
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(
+            load_owned_agent_sessions_at(
+                Path::new(&first.state_root),
+                "desktop_1",
+                "target_1",
+                4_000
+            )
+            .unwrap()
+            .iter()
+            .map(|session| session.vendor_session_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["codex-owned"]
+        );
+        assert_eq!(
+            load_owned_agent_sessions_at(
+                Path::new(&first.state_root),
+                "desktop_1",
+                "target_2",
+                4_000
+            )
+            .unwrap()
+            .iter()
+            .map(|session| session.vendor_session_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["antigravity-owned"]
+        );
+    }
+
+    #[test]
+    fn owned_session_gc_expires_caps_and_reclaims_sessions() {
+        let sandbox = TempDir::new().unwrap();
+        let endpoint = endpoint(sandbox.path());
+        record_owned_agent_session_event(
+            &endpoint,
+            &agent_event(
+                "codex.SessionStart",
+                serde_json::json!({"session_id": "codex-initial"}),
+            ),
+            10_000,
+        )
+        .unwrap();
+        let template = load_owned_agent_sessions_at(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+            10_000,
+        )
+        .unwrap()
+        .remove(0);
+        let mut sessions = (0..=MAX_OWNED_AGENT_SESSIONS)
+            .map(|index| OwnedAgentSession {
+                vendor_session_id: format!("codex-{index:04}"),
+                claimed_at_unix_ms: 10_000 + index as u64,
+                last_kmux_seen_at_unix_ms: 10_000 + index as u64,
+                ..template.clone()
+            })
+            .collect::<Vec<_>>();
+        gc_owned_agent_sessions(&mut sessions, 10_000 + MAX_OWNED_AGENT_SESSIONS as u64);
+        assert_eq!(sessions.len(), MAX_OWNED_AGENT_SESSIONS);
+        assert!(
+            sessions
+                .iter()
+                .all(|session| session.vendor_session_id != "codex-0000")
+        );
+
+        let expired_at = 10_000 + OWNED_AGENT_SESSION_TTL_MILLIS + 1;
+        assert!(
+            load_owned_agent_sessions_at(
+                Path::new(&endpoint.state_root),
+                "desktop_1",
+                "target_1",
+                expired_at
+            )
+            .unwrap()
+            .is_empty()
+        );
+        record_owned_agent_session_event(
+            &endpoint,
+            &agent_event(
+                "codex.SessionStart",
+                serde_json::json!({"session_id": "codex-0500"}),
+            ),
+            expired_at,
+        )
+        .unwrap();
+        let reclaimed = load_owned_agent_sessions_at(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+            expired_at,
+        )
+        .unwrap();
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].claimed_at_unix_ms, expired_at);
+    }
+
+    #[test]
+    fn followup_hooks_refresh_only_existing_claims_and_source_cache_does_not() {
+        let sandbox = TempDir::new().unwrap();
+        let endpoint = endpoint(sandbox.path());
+        record_owned_agent_session_event(
+            &endpoint,
+            &agent_event(
+                "antigravity.PreInvocation",
+                serde_json::json!({"conversationId": "agy-owned"}),
+            ),
+            1_000,
+        )
+        .unwrap();
+        record_owned_agent_session_event(
+            &endpoint,
+            &agent_event("antigravity.Stop", serde_json::json!({})),
+            2_000,
+        )
+        .unwrap();
+        cache_owned_agent_session_sources(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+            &[OwnedAgentSessionSourceUpdate {
+                vendor: "antigravity".to_owned(),
+                vendor_session_id: "agy-owned".to_owned(),
+                kind: OwnedAgentSessionSourceKind::Usage,
+                path: "/srv/agy/transcript.jsonl".to_owned(),
+            }],
+        )
+        .unwrap();
+        let sessions = load_owned_agent_sessions_at(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(sessions[0].claimed_at_unix_ms, 1_000);
+        assert_eq!(sessions[0].last_kmux_seen_at_unix_ms, 2_000);
+        assert_eq!(
+            sessions[0].usage_source_path.as_deref(),
+            Some("/srv/agy/transcript.jsonl")
+        );
+
+        record_owned_agent_session_event(
+            &endpoint,
+            &agent_event("antigravity.Stop", serde_json::json!({})),
+            1_500,
+        )
+        .unwrap();
+        let after_clock_rollback = load_owned_agent_sessions_at(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+            1_500,
+        )
+        .unwrap();
+        assert_eq!(after_clock_rollback[0].last_kmux_seen_at_unix_ms, 2_000);
     }
 
     fn write_descriptor(endpoint: &SessionControlEndpoint, state: &str, keeper_generation: &str) {
@@ -1141,6 +1938,41 @@ mod tests {
             admit_event_from_endpoint(&endpoint_path, "secret", event("event_stale_generation")),
             Err(HookError::Unauthorized)
         ));
+    }
+
+    #[test]
+    fn ownership_registry_failure_does_not_drop_agent_hook_events() {
+        let root = TempDir::new().unwrap();
+        let endpoint = endpoint(root.path());
+        let endpoint_path = root.path().join("runtime/hooks/session.json");
+        write_session_control_endpoint(&endpoint_path, &endpoint).unwrap();
+        write_descriptor(&endpoint, "running", "keeper_1");
+        let registry_directory = owned_agent_registry_directory(
+            Path::new(&endpoint.state_root),
+            "desktop_1",
+            "target_1",
+        )
+        .unwrap();
+        ensure_private_directory(&registry_directory).unwrap();
+        let registry_path = registry_directory.join("registry.json");
+        fs::write(&registry_path, b"{invalid").unwrap();
+        fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let admission = admit_event_from_endpoint(
+            &endpoint_path,
+            "secret",
+            agent_event(
+                "claude.PermissionRequest",
+                serde_json::json!({"session_id": "claude-owned"}),
+            ),
+        )
+        .unwrap();
+
+        assert!(admission.durable);
+        let replay =
+            replay_events(Path::new(&endpoint.state_root), "desktop_1", "target_1", 0).unwrap();
+        assert_eq!(replay.events.len(), 1);
+        assert_eq!(replay.events[0].name, "claude.PermissionRequest");
     }
 
     #[test]

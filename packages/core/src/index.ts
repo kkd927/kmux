@@ -360,6 +360,7 @@ export type RemoteEventProductAction =
       paneId?: Id;
       surfaceId?: Id;
       sessionId?: Id;
+      vendorSessionId?: string;
       agent: string;
       event: AgentEventName;
       title?: string;
@@ -488,6 +489,7 @@ export type AppAction =
       paneId?: Id;
       surfaceId?: Id;
       sessionId?: Id;
+      vendorSessionId?: string;
       agent: string;
       event: AgentEventName;
       title?: string;
@@ -2760,15 +2762,7 @@ function backfillAgentSessionRef(
     ? terminalSessionForSurface(state, surface.id)
     : undefined;
   const vendor = normalizeExternalAgentSessionVendor(action.agent);
-  const vendorSessionId =
-    vendor === "antigravity"
-      ? normalizeOptionalText(
-          typeof action.details?.conversationId === "string"
-            ? action.details.conversationId
-            : undefined,
-          512
-        )
-      : normalizeOptionalText(action.sessionId, 512);
+  const vendorSessionId = normalizeOptionalText(action.vendorSessionId, 512);
   if (
     !session ||
     !target.workspace ||

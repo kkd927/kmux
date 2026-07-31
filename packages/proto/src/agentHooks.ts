@@ -11,6 +11,7 @@ export interface NormalizedAgentEvent {
   paneId?: Id;
   surfaceId?: Id;
   sessionId?: Id;
+  vendorSessionId?: string;
   agent: string;
   event: AgentEventName;
   title?: string;
@@ -49,6 +50,7 @@ export function normalizeAgentHookInvocation(
   const target = resolveHookTarget(payload, environment);
   const message = extractHookMessage(agent, event, payload);
   const displayName = agentDisplayName(agent);
+  const vendorSessionId = resolveVendorSessionId(agent, payload);
 
   const details = compactDetails(payload);
   const hookEventArg = hookEventInput.trim();
@@ -61,6 +63,7 @@ export function normalizeAgentHookInvocation(
     paneId: target.paneId,
     surfaceId: target.surfaceId,
     sessionId: target.sessionId,
+    ...(vendorSessionId === undefined ? {} : { vendorSessionId }),
     agent,
     event,
     title: event === "needs_input" ? `${displayName} needs input` : undefined,
@@ -233,9 +236,9 @@ function resolveHookTarget(
     environment.KMUX_SURFACE_ID
   );
   const sessionId = firstString(
-    stringField(payload, "session_id"),
-    stringField(payload, "sessionId"),
     environment.KMUX_SESSION_ID,
+    stringField(payload, "kmux_session_id"),
+    stringField(payload, "kmuxSessionId"),
     surfaceId
   );
 
@@ -252,6 +255,25 @@ function resolveHookTarget(
     surfaceId,
     sessionId
   };
+}
+
+function resolveVendorSessionId(
+  agent: string,
+  payload: HookPayload
+): string | undefined {
+  if (agent === "antigravity") {
+    return firstString(
+      stringField(payload, "conversationId"),
+      stringField(payload, "conversation_id")
+    );
+  }
+  if (agent === "codex" || agent === "claude") {
+    return firstString(
+      stringField(payload, "session_id"),
+      stringField(payload, "sessionId")
+    );
+  }
+  return undefined;
 }
 
 function extractHookMessage(
@@ -356,6 +378,7 @@ function compactDetails(payload: HookPayload): Record<string, unknown> {
     "tool_name",
     "toolName",
     "session_id",
+    "sessionId",
     "surface_id",
     "conversationId",
     "transcriptPath",

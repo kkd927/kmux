@@ -6084,6 +6084,8 @@ mod tests {
             state_root: state_root.to_string_lossy().into_owned(),
             descriptor_path: descriptor_path.to_string_lossy().into_owned(),
             token_sha256: format!("{:x}", Sha256::digest(token.as_bytes())),
+            cwd: Some("/tmp".to_owned()),
+            launch_title: None,
         };
         kmux_hook::write_session_control_endpoint(&endpoint_path, &endpoint).unwrap();
         descriptor.launch.env = Some(BTreeMap::from([

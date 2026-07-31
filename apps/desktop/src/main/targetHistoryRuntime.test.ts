@@ -275,6 +275,7 @@ describe("target history runtime", () => {
       "ssh:target_1:claude:stale"
     ]);
     expect(nextPartial.truncated).toBe(true);
+    expect(reportError).not.toHaveBeenCalled();
 
     mode = "full";
     const full = await runtime.listExternalAgentSessions();
@@ -290,7 +291,7 @@ describe("target history runtime", () => {
     expect(reportError).toHaveBeenCalledWith(
       { kind: "ssh", targetId: "target_1" },
       expect.objectContaining({
-        message: "history scan reached its bound; merged partial results"
+        message: "history unavailable"
       })
     );
 

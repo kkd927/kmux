@@ -17,6 +17,7 @@ import {
   BridgeConnection,
   RemoteTerminalAttachment,
   requireAgentSettingsScanCapability,
+  requireOwnedAgentSessionsCapability,
   resolveTerminalProxyCommand
 } from "./linuxX64RemoteRuntime";
 
@@ -40,6 +41,22 @@ describe("remote agent settings scan capability", () => {
       requireAgentSettingsScanCapability(
         { claude: { command: "ccs" } },
         new Set(["agents.settings-scan-v1"])
+      )
+    ).not.toThrow();
+  });
+});
+
+describe("remote owned agent sessions capability", () => {
+  it("never permits legacy full scans when ownership support is absent", () => {
+    expect(() => requireOwnedAgentSessionsCapability(new Set())).toThrowError(
+      expect.objectContaining({
+        code: "upgrade-required",
+        retryable: false
+      })
+    );
+    expect(() =>
+      requireOwnedAgentSessionsCapability(
+        new Set(["agent-sessions.kmux-owned-v1"])
       )
     ).not.toThrow();
   });

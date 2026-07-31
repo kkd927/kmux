@@ -390,6 +390,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
     started = true;
+    hydratePersistedSshAgentBindings();
     const handleUsageSourceChange = (vendor: UsageVendor): void => {
       const nowMs = now();
       for (const candidate of manualCandidates.values()) {
@@ -970,12 +971,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
                 : incoming
           });
           initializedUsageTargets.add(key);
-          if (scan.truncated) {
-            options.reportTargetUsageError?.(
-              target,
-              new Error("usage scan reached its bound; merged partial results")
-            );
-          }
           if (target.kind === "local" && scan.historyDays) {
             historyDays = normalizeHistoryDays(scan.historyDays);
             options.historyStore?.save(historyDays);
@@ -1213,9 +1208,25 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
 
+    if (
+      action.type === "remote.event.apply" &&
+      action.productAction?.type === "agent.event" &&
+      action.productAction.sessionId
+    ) {
+      hydratePersistedSshAgentBinding(action.productAction.sessionId, now());
+      rebuildSnapshot();
+      return;
+    }
+
     if (action.type === "session.exited") {
       const binding = findBindingByKmuxSessionId(action.sessionId);
-      if (binding?.source === "manual_cli") {
+      const bindingTarget = binding
+        ? options.getState().workspaces[binding.workspaceId]?.location.target
+        : undefined;
+      if (
+        binding &&
+        (binding.source === "manual_cli" || bindingTarget?.kind === "ssh")
+      ) {
         bindings.delete(binding.surfaceId);
       }
       const surfaceId =
@@ -1234,6 +1245,9 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       action.type === "surface.closeOthers" ||
       action.type === "state.restore"
     ) {
+      if (action.type === "state.restore") {
+        hydratePersistedSshAgentBindings();
+      }
       pruneBindings();
       rebuildSnapshot();
       return;
@@ -1332,10 +1346,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
 
     const kmuxSessionId = session.id;
-    const vendorSessionId =
-      action.sessionId && action.sessionId !== kmuxSessionId
-        ? action.sessionId
-        : existing?.vendorSessionId;
+    const vendorSessionId = action.vendorSessionId ?? existing?.vendorSessionId;
     bindings.set(surfaceId, {
       surfaceId,
       workspaceId: pane.workspaceId,
@@ -1350,6 +1361,58 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     manualCandidates.delete(surfaceId);
     pruneBindings();
     rebuildSnapshot();
+  }
+
+  function hydratePersistedSshAgentBindings(): void {
+    const state = options.getState();
+    const hydratedAtMs = now();
+    for (const sessionId of Object.keys(state.sessions)) {
+      hydratePersistedSshAgentBinding(sessionId, hydratedAtMs);
+    }
+  }
+
+  function hydratePersistedSshAgentBinding(
+    sessionId: Id,
+    hydratedAtMs: number
+  ): void {
+    const state = options.getState();
+    const session = state.sessions[sessionId];
+    if (
+      !session ||
+      session.runtimeStatus.processState === "exited" ||
+      !session.agentSessionRef
+    ) {
+      return;
+    }
+    const surface = state.surfaces[session.surfaceId];
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    const workspace = pane ? state.workspaces[pane.workspaceId] : undefined;
+    const target = workspace?.location.target;
+    if (
+      !surface ||
+      !pane ||
+      target?.kind !== "ssh" ||
+      session.agentSessionRef.targetId !== target.targetId
+    ) {
+      return;
+    }
+    const vendor = normalizeVendor(session.agentSessionRef.vendor);
+    if (vendor === "unknown" || !session.agentSessionRef.id.trim()) {
+      return;
+    }
+    const existing = bindings.get(surface.id);
+    bindings.set(surface.id, {
+      surfaceId: surface.id,
+      workspaceId: pane.workspaceId,
+      vendor,
+      source: "agent",
+      kmuxSessionId: session.id,
+      vendorSessionId: session.agentSessionRef.id,
+      cwd: session.runtimeMetadata.cwd ?? session.agentSessionRef.cwd,
+      boundAtMs: existing?.boundAtMs ?? hydratedAtMs,
+      lastAgentEventAtMs: existing?.lastAgentEventAtMs ?? hydratedAtMs
+    });
+    manualCandidates.delete(surface.id);
   }
 
   function pruneBindings(): void {
@@ -1378,7 +1441,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       const session = terminalSessionForSurface(state, surfaceId);
       const metadata = terminalRuntimeMetadataForSurface(state, surfaceId);
       if (!session || session.runtimeStatus.processState === "exited") {
-        if (binding.source === "manual_cli") {
+        const target = state.workspaces[pane.workspaceId]?.location.target;
+        if (binding.source === "manual_cli" || target?.kind === "ssh") {
           bindings.delete(surfaceId);
         }
         continue;
@@ -2203,12 +2267,15 @@ function matchSampleToSurface(
       )
   );
 
-  const sessionKey = sample.threadId ?? sample.sessionId;
+  const remoteSample = sample.usageTarget.kind === "ssh";
+  const sessionKey = remoteSample
+    ? sample.sessionId
+    : (sample.threadId ?? sample.sessionId);
   if (sessionKey) {
     const bySession = vendorBindings.filter(
       (binding) =>
         binding.vendorSessionId === sessionKey ||
-        binding.kmuxSessionId === sessionKey
+        (!remoteSample && binding.kmuxSessionId === sessionKey)
     );
     if (bySession.length === 1) {
       return {
@@ -2220,6 +2287,10 @@ function matchSampleToSurface(
     if (bySession.length > 1) {
       return null;
     }
+  }
+
+  if (remoteSample) {
+    return null;
   }
 
   const pathKey = normalizeComparablePath(sample.cwd ?? sample.projectPath);

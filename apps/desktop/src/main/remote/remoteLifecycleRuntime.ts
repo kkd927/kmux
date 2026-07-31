@@ -1852,6 +1852,9 @@ function normalizeRemoteSpoolEvent(
         paneId: pane.id,
         surfaceId: surface.id,
         sessionId: session.id,
+        ...(normalized.vendorSessionId === undefined
+          ? {}
+          : { vendorSessionId: normalized.vendorSessionId }),
         agent: normalized.agent,
         event: normalized.event,
         title: normalized.title,

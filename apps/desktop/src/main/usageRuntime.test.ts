@@ -14,7 +14,7 @@ import type {
   UsageAdapterReadResult,
   UsageEventSample
 } from "@kmux/metadata";
-import type { SubscriptionProviderUsageVm } from "@kmux/proto";
+import { uint64, type SubscriptionProviderUsageVm } from "@kmux/proto";
 import { createUsageRuntime as createUsageRuntimeImpl } from "./usageRuntime";
 import type { UsageScanService } from "./usageScanWorkerClient";
 import type { TargetServiceRegistry } from "./targets/contracts";
@@ -104,11 +104,8 @@ describe("usage runtime", () => {
     });
     const targetTwoWorkspaceId =
       state.windows[state.activeWindowId].activeWorkspaceId;
-    let targetOneMode:
-      | "initial-partial"
-      | "partial"
-      | "full"
-      | "failed" = "initial-partial";
+    let targetOneMode: "initial-partial" | "partial" | "full" | "failed" =
+      "initial-partial";
     const localRefresh = vi.fn(async () => ({
       truncated: false,
       records: [
@@ -256,11 +253,9 @@ describe("usage runtime", () => {
       runtime.getSnapshot().targets.find((entry) => entry.target.kind === "ssh")
         ?.todayTokens
     ).toBe(32);
-    expect(reportTargetUsageError).toHaveBeenCalledWith(
+    expect(reportTargetUsageError).not.toHaveBeenCalledWith(
       { kind: "ssh", targetId: "target_1" },
-      expect.objectContaining({
-        message: "usage scan reached its bound; merged partial results"
-      })
+      expect.anything()
     );
 
     targetOneMode = "full";
@@ -295,6 +290,226 @@ describe("usage runtime", () => {
     expect(runtime.getSnapshot().targets).toEqual([
       expect.objectContaining({ target: { kind: "local" }, todayTokens: 10 })
     ]);
+  });
+
+  it("attributes SSH usage from remote event envelopes only by the exact vendor session id", async () => {
+    const state = createInitialState();
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/shared"
+    });
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    let exactSession = false;
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: vi.fn(
+        (target: { kind: "local" } | { kind: "ssh"; targetId: string }) =>
+          ({
+            usage: {
+              refresh: async () =>
+                target.kind === "local"
+                  ? { records: [], truncated: false }
+                  : {
+                      principal: { uid: 1_000, accountName: "kmux" },
+                      records: [
+                        {
+                          vendor: "codex",
+                          sampleId: exactSession ? "exact" : "unrelated",
+                          timestampUnixMs: new Date(
+                            "2026-07-18T01:00:00.000Z"
+                          ).getTime(),
+                          sessionId: exactSession
+                            ? "codex-owned"
+                            : "codex-unrelated",
+                          threadId: "codex-owned",
+                          cwd: locatedPathForTarget(
+                            { kind: "ssh", targetId: "target_1" },
+                            "/srv/shared"
+                          ),
+                          inputTokens: 100,
+                          outputTokens: 0,
+                          cacheTokens: 0,
+                          totalTokens: 100,
+                          estimatedCostUsd: 0,
+                          costSource: "unavailable"
+                        }
+                      ],
+                      truncated: false
+                    }
+            }
+          }) as never
+      )
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+    const remoteEvent: AppAction = {
+      type: "remote.event.apply",
+      targetId: "target_1",
+      sequence: uint64(1n),
+      eventId: "remote-event-1",
+      productAction: {
+        type: "agent.event",
+        workspaceId,
+        paneId,
+        surfaceId,
+        sessionId: requireTerminalSurfaceContent(state.surfaces[surfaceId])
+          .sessionId,
+        vendorSessionId: "codex-owned",
+        agent: "codex",
+        event: "session_start"
+      }
+    };
+    applyAction(state, remoteEvent);
+    runtime.handleAppAction(remoteEvent);
+
+    await runtime.refreshNow();
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toMatchObject({
+      sessionTokens: 0,
+      todayTokens: 0
+    });
+    expect(
+      runtime
+        .getSnapshot()
+        .targets.find(
+          (target) =>
+            target.target.kind === "ssh" &&
+            target.target.targetId === "target_1"
+        )
+    ).toMatchObject({ todayTokens: 100 });
+
+    exactSession = true;
+    await runtime.refreshNow();
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toMatchObject({
+      sessionTokens: 100,
+      todayTokens: 100
+    });
+
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
+    applyAction(state, {
+      type: "session.exited",
+      sessionId,
+      exitCode: 0
+    });
+    runtime.handleAppAction({
+      type: "session.exited",
+      sessionId,
+      exitCode: 0
+    });
+    await runtime.refreshNow();
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toBeUndefined();
+    expect(
+      runtime
+        .getSnapshot()
+        .targets.find(
+          (target) =>
+            target.target.kind === "ssh" &&
+            target.target.targetId === "target_1"
+        )
+    ).toMatchObject({ todayTokens: 100 });
+  });
+
+  it("restores exact SSH usage attribution from the persisted agent session ref", async () => {
+    const state = createInitialState();
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/restored"
+    });
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const surfaceId = state.panes[paneId].activeSurfaceId;
+    const sessionId = requireTerminalSurfaceContent(
+      state.surfaces[surfaceId]
+    ).sessionId;
+    state.sessions[sessionId].agentSessionRef = {
+      vendor: "codex",
+      id: "codex-restored",
+      targetId: "target_1",
+      cwd: locatedPathForTarget(
+        { kind: "ssh", targetId: "target_1" },
+        "/srv/restored"
+      )
+    };
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: vi.fn(
+        (target: { kind: "local" } | { kind: "ssh"; targetId: string }) =>
+          ({
+            usage: {
+              refresh: async () =>
+                target.kind === "local"
+                  ? { records: [], truncated: false }
+                  : {
+                      principal: { uid: 1_000, accountName: "kmux" },
+                      records: [
+                        {
+                          vendor: "codex",
+                          sampleId: "codex:codex-restored",
+                          timestampUnixMs: new Date(
+                            "2026-07-18T01:00:00.000Z"
+                          ).getTime(),
+                          sessionId: "codex-restored",
+                          cwd: locatedPathForTarget(
+                            { kind: "ssh", targetId: "target_1" },
+                            "/srv/restored"
+                          ),
+                          inputTokens: 100,
+                          outputTokens: 0,
+                          cacheTokens: 0,
+                          totalTokens: 100,
+                          estimatedCostUsd: 0,
+                          costSource: "unavailable"
+                        }
+                      ],
+                      truncated: false
+                    }
+            }
+          }) as never
+      )
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    runtime.start();
+    await runtime.refreshNow();
+
+    expect(runtime.getSnapshot().surfaces[surfaceId]).toMatchObject({
+      vendor: "codex",
+      attributionState: "bound",
+      sessionTokens: 100,
+      todayTokens: 100
+    });
+    runtime.shutdown();
+
+    const restoredRuntime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+    restoredRuntime.handleAppAction({ type: "state.restore", snapshot: state });
+    await restoredRuntime.refreshNow();
+    expect(restoredRuntime.getSnapshot().surfaces[surfaceId]).toMatchObject({
+      sessionTokens: 100,
+      todayTokens: 100
+    });
+    restoredRuntime.shutdown();
   });
 
   it("retries partial history backfills without replacing persisted daily totals", async () => {
@@ -528,7 +743,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "claude-session-1",
+      vendorSessionId: "claude-session-1",
       agent: "claude",
       event: "session_start"
     });
@@ -582,7 +797,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "claude-session-2",
+      vendorSessionId: "claude-session-2",
       agent: "claude",
       event: "session_start"
     });
@@ -673,7 +888,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "claude-session-live",
+      vendorSessionId: "claude-session-live",
       agent: "claude",
       event: "session_start"
     });
@@ -1206,7 +1421,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "codex-dashboard-session",
+      vendorSessionId: "codex-dashboard-session",
       agent: "codex",
       event: "session_start"
     });
@@ -1958,7 +2173,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "codex-live-session",
+      vendorSessionId: "codex-live-session",
       agent: "codex",
       event: "session_start"
     });
@@ -2407,7 +2622,7 @@ describe("usage runtime", () => {
       workspaceId,
       paneId,
       surfaceId,
-      sessionId: "claude-live-session",
+      vendorSessionId: "claude-live-session",
       agent: "claude",
       event: "session_start"
     });

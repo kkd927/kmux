@@ -849,6 +849,9 @@ export class KmuxSocketServer {
         : undefined,
       surfaceId: params.surfaceId,
       sessionId: params.sessionId,
+      ...(params.vendorSessionId === undefined
+        ? {}
+        : { vendorSessionId: params.vendorSessionId }),
       agent: params.agent,
       event: params.event,
       title: params.title,

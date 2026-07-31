@@ -106,12 +106,6 @@ export function createTargetHistoryRuntime(options: {
           );
           if (scan.truncated) {
             partialTargetKeys.add(key);
-            options.reportError?.(
-              target,
-              new Error(
-                "history scan reached its bound; merged partial results"
-              )
-            );
           } else {
             partialTargetKeys.delete(key);
           }
@@ -234,9 +228,7 @@ function toExternalSession(
 ): ExternalAgentSessionVm {
   const record = entry.record;
   const key = externalKey(entry.target, record.vendor, record.sessionId);
-  const title =
-    record.title ??
-    `${vendorTitle(record.vendor)} ${record.sessionId.slice(0, 8)}`;
+  const title = record.title ?? `${vendorTitle(record.vendor)} session`;
   const cwd = record.cwd ? entry.services.files.display(record.cwd) : undefined;
   const updatedAt =
     record.updatedAt ?? new Date(record.updatedAtUnixMs).toISOString();
@@ -341,7 +333,14 @@ function vendorLabel(
 }
 
 function vendorTitle(vendor: ExternalAgentSessionVendor): string {
-  return vendor === "antigravity" ? "Antigravity" : vendorLabel(vendor);
+  switch (vendor) {
+    case "codex":
+      return "Codex";
+    case "claude":
+      return "Claude";
+    case "antigravity":
+      return "Antigravity";
+  }
 }
 
 function formatRelativeTime(now: Date, updatedAtUnixMs: number): string {

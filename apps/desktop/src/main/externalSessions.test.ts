@@ -1200,7 +1200,7 @@ describe("external session indexer", () => {
       key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
       vendor: "antigravity",
       vendorLabel: "AGY",
-      title: "Antigravity 9a8b7c6d",
+      title: "Antigravity session",
       cwd: "/Users/test/antigravity-project",
       relativeTimeLabel: "25m",
       canResume: true,
@@ -1340,7 +1340,7 @@ describe("external session indexer", () => {
     });
     expect(snapshot.sessions[2]).toMatchObject({
       key: `antigravity:${dbOnlyConversationId}`,
-      title: "Antigravity 8098bfd3",
+      title: "Antigravity session",
       cwd: workspace,
       resumeCommandPreview: `agy --conversation ${dbOnlyConversationId}`
     });
@@ -1362,8 +1362,6 @@ describe("external session indexer", () => {
     const updatedAt = new Date("2026-06-02T14:57:53.000Z");
     const prompt = `Database prompt title\n${"x".repeat(140)}`;
     const recentPrompt = "Most recent Antigravity request";
-    const normalizedPrompt = prompt.replace(/\s+/gu, " ").trim();
-    const expectedTitle = `${normalizedPrompt.slice(0, 93)}...`;
 
     writeJsonl(
       join(homeDir, ".gemini", "antigravity-cli", "history.jsonl"),
@@ -1402,7 +1400,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0]).toMatchObject({
       key: `antigravity:${conversationId}`,
-      title: expectedTitle,
+      title: "Database prompt title",
       recentConversation: recentPrompt,
       cwd: workspace,
       resumeCommandPreview: `agy --conversation ${conversationId}`
@@ -1657,7 +1655,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Actual user request");
   });
 
-  it("falls back to a short Claude session id when no safe title is available", () => {
+  it("uses a neutral Claude title when no safe title is available", () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1705,7 +1703,7 @@ describe("external session indexer", () => {
     }).listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(1);
-    expect(snapshot.sessions[0].title).toBe("CLAUDE abcdef12");
+    expect(snapshot.sessions[0].title).toBe("Claude session");
   });
 
   it("uses JSONL file mtime as recent activity when the bounded prefix scan is stale", () => {
