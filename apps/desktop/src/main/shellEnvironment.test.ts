@@ -109,6 +109,7 @@ describe("shell environment resolver", () => {
         prependWrapperToPath: true
       },
       hookEnv: {
+        KMUX_AGENT_HOOK_TRANSPORT: "local",
         KMUX_SOCKET_PATH: "/tmp/kmux.sock",
         KMUX_AGENT_BIN_DIR: "/Users/test/.local/share/kmux/hooks",
         KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"

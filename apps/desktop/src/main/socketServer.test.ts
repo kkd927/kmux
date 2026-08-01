@@ -4,6 +4,7 @@ import {
   existsSync,
   lstatSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync
@@ -518,6 +519,43 @@ describe("kmux socket server agent hooks", () => {
     vi.restoreAllMocks();
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reconciles an invocation-time agent integration path through the authenticated socket", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-agent-integration-rpc-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const hooksPath = join(tempDir, "custom-codex", "hooks.json");
+    const server = createTestSocketServer(socketPath);
+    await server.start();
+
+    try {
+      const first = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_agent_integration_first",
+        method: "agent.integration.ensure",
+        params: { vendor: "codex", path: hooksPath }
+      });
+      expect(first.result).toMatchObject({
+        vendor: "codex",
+        path: hooksPath,
+        status: "changed",
+        contractVersion: 2
+      });
+      expect(readFileSync(hooksPath, "utf8")).toContain(
+        "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2"
+      );
+
+      const second = await sendSocketMessage(socketPath, {
+        jsonrpc: "2.0",
+        id: "rpc_agent_integration_second",
+        method: "agent.integration.ensure",
+        params: { vendor: "codex", path: hooksPath }
+      });
+      expect(second.result).toMatchObject({ status: "current" });
+    } finally {
+      await server.stop();
     }
   });
 

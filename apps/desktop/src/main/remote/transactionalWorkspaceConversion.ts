@@ -777,10 +777,14 @@ function conversionIds(transactionId: Id): {
     ),
     paneId: stableId("pane", transactionId, "replacement"),
     nodeId: stableId("node", transactionId, "replacement"),
-    surfaceId: stableId("surface", transactionId, "replacement"),
+    surfaceId: conversionSurfaceIdForTransaction(transactionId),
     sessionId: stableId("session", transactionId, "replacement"),
     authToken: stableId("auth", transactionId, "replacement")
   };
+}
+
+export function conversionSurfaceIdForTransaction(transactionId: Id): Id {
+  return stableId("surface", transactionId, "replacement");
 }
 
 function buildRemoteSnapshot(record: ConversionPreparingRecord): string {

@@ -16,7 +16,8 @@ import {
   type RemotePersistenceLevel,
   type RemoteSpoolEventDto,
   type RetainedRemoteSessionsSnapshot,
-  type TerminalKeyInput
+  type TerminalKeyInput,
+  type UsageVendor
 } from "@kmux/proto";
 import {
   canonicalizeRemoteOperationPayload,
@@ -57,6 +58,7 @@ import type {
   RemoteHostTargetVerification
 } from "../remoteHost";
 import type { DurableRemoteOperationStore } from "./durableRemoteOperationStore";
+import { classifyAgentTerminalNotification } from "../agentTerminalNotificationPolicy";
 import type {
   ConversionCleanupAcknowledgement,
   ConversionLocalCleanupTarget,
@@ -94,6 +96,8 @@ export interface CreateRemoteLifecycleRuntimeOptions {
   replaceTargetBinding: (binding: RemoteTargetBinding) => void;
   dispatchFact: (fact: MainFact) => void;
   dispatchAppAction?: (action: AppAction) => void;
+  getSurfaceVendor?: (surfaceId: Id) => UsageVendor;
+  isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
   eventReceiptStore?: RemoteEventReceiptStore;
   reportError?: (error: Error) => void;
   reconnectTarget?: (targetId: Id) => Promise<unknown>;
@@ -1409,7 +1413,12 @@ export class RemoteLifecycleRuntime {
       );
     }
     if (receipt.pending) {
-      await this.applyStagedRemoteEvent(receipt.pending, dispatch, persist);
+      const projected = await this.applyStagedRemoteEventAfterReconcile(
+        receipt.pending,
+        dispatch,
+        persist
+      );
+      if (!projected) return;
       receipt = store.complete(receipt.pending);
     }
     const recoveredProductReceipt =
@@ -1448,7 +1457,12 @@ export class RemoteLifecycleRuntime {
           throw new Error("remote event replay order or scope is invalid");
         }
         store.stage(event);
-        await this.applyStagedRemoteEvent(event, dispatch, persist);
+        const projected = await this.applyStagedRemoteEventAfterReconcile(
+          event,
+          dispatch,
+          persist
+        );
+        if (!projected) return;
         receipt = store.complete(event);
         priorSequence = sequence;
       }
@@ -1473,29 +1487,71 @@ export class RemoteLifecycleRuntime {
     }
   }
 
-  private async applyStagedRemoteEvent(
+  private async applyStagedRemoteEventAfterReconcile(
     event: RemoteSpoolEventDto,
     dispatch: (action: AppAction) => void,
     persist: (state: AppState) => Promise<string> | string | void
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (await this.applyStagedRemoteEvent(event, dispatch, persist)) {
+      return true;
+    }
+    await this.reconcileTarget(event.resourceKey.targetId);
+    return this.applyStagedRemoteEvent(event, dispatch, persist, true);
+  }
+
+  private async applyStagedRemoteEvent(
+    event: RemoteSpoolEventDto,
+    dispatch: (action: AppAction) => void,
+    persist: (state: AppState) => Promise<string> | string | void,
+    projectionReconciled = false
+  ): Promise<boolean> {
     const sequence = parseUint64Decimal(event.sequence);
-    const productAction = normalizeRemoteSpoolEvent(
+    const normalized = normalizeRemoteSpoolEvent(
       this.options.getState(),
-      event
+      event,
+      {
+        projectionReconciled,
+        getSurfaceVendor: this.options.getSurfaceVendor,
+        isSurfaceVisibleToUser: this.options.isSurfaceVisibleToUser
+      }
     );
-    dispatch({
-      type: "remote.event.apply",
-      targetId: event.resourceKey.targetId,
-      sequence,
-      eventId: event.eventId,
-      ...(productAction === undefined ? {} : { productAction })
-    });
+    if (normalized.disposition === "pending") {
+      dispatch({
+        type: "remote.event.apply",
+        targetId: event.resourceKey.targetId,
+        sequence,
+        eventId: event.eventId,
+        disposition: "pending",
+        reason: normalized.reason
+      });
+      return false;
+    }
+    dispatch(
+      normalized.disposition === "applied"
+        ? {
+            type: "remote.event.apply",
+            targetId: event.resourceKey.targetId,
+            sequence,
+            eventId: event.eventId,
+            disposition: "applied",
+            productAction: normalized.productAction
+          }
+        : {
+            type: "remote.event.apply",
+            targetId: event.resourceKey.targetId,
+            sequence,
+            eventId: event.eventId,
+            disposition: normalized.disposition,
+            reason: normalized.reason
+          }
+    );
     await persist(this.options.getState());
     const receipt =
       this.options.getState().remoteEventReceipts[event.resourceKey.targetId];
     if (!receipt || receipt.throughSequence < sequence) {
       throw new Error("remote event product receipt was not durably projected");
     }
+    return true;
   }
 
   private requireRemoteTerminalControl(surfaceId: Id) {
@@ -1840,27 +1896,73 @@ function requireRemoteSurfaceContext(state: AppState, surfaceId: Id) {
   return { ...context, surface, session };
 }
 
+type RemoteEventNormalization =
+  | { disposition: "applied"; productAction: RemoteEventProductAction }
+  | {
+      disposition: "suppressed" | "pending" | "rejected";
+      reason: string;
+    };
+
 function normalizeRemoteSpoolEvent(
   state: AppState,
-  event: RemoteSpoolEventDto
-): RemoteEventProductAction | undefined {
+  event: RemoteSpoolEventDto,
+  options: {
+    projectionReconciled?: boolean;
+    getSurfaceVendor?: (surfaceId: Id) => UsageVendor;
+    isSurfaceVisibleToUser?: (surfaceId: Id) => boolean;
+  } = {}
+): RemoteEventNormalization {
   const workspace = state.workspaces[event.resourceKey.workspaceId];
-  const surface = state.surfaces[event.surfaceId];
-  const pane = surface ? state.panes[surface.paneId] : undefined;
   const session = state.sessions[event.resourceKey.sessionId];
+  const hasPendingProjection = Object.values(state.remoteOperations).some(
+    (operation) =>
+      operation.resourceKey.desktopInstallationId ===
+        event.resourceKey.desktopInstallationId &&
+      operation.resourceKey.targetId === event.resourceKey.targetId &&
+      operation.resourceKey.workspaceId === event.resourceKey.workspaceId &&
+      operation.resourceKey.sessionId === event.resourceKey.sessionId &&
+      (operation.state === "pending" ||
+        operation.state === "termination-pending")
+  );
+  if (!workspace || !session) {
+    return hasPendingProjection
+      ? { disposition: "pending", reason: "product-projection-pending" }
+      : { disposition: "rejected", reason: "remote-session-scope-unknown" };
+  }
   if (
-    !workspace ||
+    workspace.location.target.kind !== "ssh" ||
+    workspace.location.target.targetId !== event.resourceKey.targetId
+  ) {
+    return { disposition: "rejected", reason: "remote-target-scope-mismatch" };
+  }
+  const surface = state.surfaces[session.surfaceId];
+  const pane = surface ? state.panes[surface.paneId] : undefined;
+  if (
     !surface ||
     !pane ||
-    !session ||
     pane.workspaceId !== workspace.id ||
     terminalSessionForSurface(state, surface.id)?.id !== session.id ||
-    session.surfaceId !== surface.id ||
-    workspace.location.target.kind !== "ssh" ||
-    workspace.location.target.targetId !== event.resourceKey.targetId ||
-    session.remoteRuntime?.keeperGeneration !== event.keeperGeneration
+    session.surfaceId !== surface.id
   ) {
-    return undefined;
+    return hasPendingProjection
+      ? { disposition: "pending", reason: "surface-projection-pending" }
+      : {
+          disposition: "rejected",
+          reason: "surface-projection-unresolved"
+        };
+  }
+  if (!session.remoteRuntime) {
+    return options.projectionReconciled && !hasPendingProjection
+      ? {
+          disposition: "rejected",
+          reason: "keeper-projection-unresolved"
+        }
+      : { disposition: "pending", reason: "keeper-projection-pending" };
+  }
+  if (session.remoteRuntime.keeperGeneration !== event.keeperGeneration) {
+    return hasPendingProjection
+      ? { disposition: "pending", reason: "keeper-generation-pending" }
+      : { disposition: "suppressed", reason: "historical-keeper-generation" };
   }
   const payload = plainRecord(event.payload);
   const eventDetails = {
@@ -1889,19 +1991,22 @@ function normalizeRemoteSpoolEvent(
     );
     if (normalized) {
       return {
-        type: "agent.event",
-        workspaceId: workspace.id,
-        paneId: pane.id,
-        surfaceId: surface.id,
-        sessionId: session.id,
-        ...(normalized.vendorSessionId === undefined
-          ? {}
-          : { vendorSessionId: normalized.vendorSessionId }),
-        agent: normalized.agent,
-        event: normalized.event,
-        title: normalized.title,
-        message: normalized.message,
-        details: { ...(normalized.details ?? {}), ...eventDetails }
+        disposition: "applied",
+        productAction: {
+          type: "agent.event",
+          workspaceId: workspace.id,
+          paneId: pane.id,
+          surfaceId: surface.id,
+          sessionId: session.id,
+          ...(normalized.vendorSessionId === undefined
+            ? {}
+            : { vendorSessionId: normalized.vendorSessionId }),
+          agent: normalized.agent,
+          event: normalized.event,
+          title: normalized.title,
+          message: normalized.message,
+          details: { ...(normalized.details ?? {}), ...eventDetails }
+        }
       };
     }
     const notification = normalizeHookNotificationInvocation(
@@ -1912,23 +2017,100 @@ function normalizeRemoteSpoolEvent(
     );
     if (notification) {
       return {
-        type: "notification.create",
-        workspaceId: workspace.id,
-        paneId: pane.id,
-        surfaceId: surface.id,
-        title: notification.title,
-        message: notification.message,
-        source: notification.source,
-        agent: notification.agent
+        disposition: "applied",
+        productAction: {
+          type: "notification.create",
+          workspaceId: workspace.id,
+          paneId: pane.id,
+          surfaceId: surface.id,
+          title: notification.title,
+          message: notification.message,
+          source: notification.source,
+          agent: notification.agent
+        }
       };
     }
-    return undefined;
+    return { disposition: "suppressed", reason: "unsupported-agent-hook" };
   }
 
   // Match the local terminal contract: BEL is recorded as an acknowledged
   // terminal side effect but does not create a notification-center item.
   if (event.kind === "notification" && event.name === "terminal.bell") {
-    return undefined;
+    return { disposition: "suppressed", reason: "terminal-bell" };
+  }
+
+  if (event.kind === "osc-notification") {
+    const title = boundedRemoteEventText(payload.title) ?? surface.title;
+    const message =
+      boundedRemoteEventText(payload.message) ??
+      boundedRemoteEventText(payload.body) ??
+      boundedRemoteEventText(payload.text) ??
+      title;
+    const vendor = options.getSurfaceVendor?.(surface.id) ?? "unknown";
+    const terminalDecision = classifyAgentTerminalNotification(
+      vendor,
+      title,
+      message
+    );
+    if (terminalDecision.disposition === "needs_input") {
+      const protocol =
+        typeof payload.protocol === "number" &&
+        Number.isInteger(payload.protocol)
+          ? payload.protocol
+          : undefined;
+      return {
+        disposition: "applied",
+        productAction: {
+          type: "agent.event",
+          workspaceId: workspace.id,
+          paneId: pane.id,
+          surfaceId: surface.id,
+          sessionId: session.id,
+          agent: "codex",
+          event: "needs_input",
+          title: "Codex needs input",
+          message,
+          details: {
+            ...eventDetails,
+            uiOnly: true,
+            ...(options.isSurfaceVisibleToUser?.(surface.id)
+              ? { visibleToUser: true }
+              : {}),
+            ...(terminalDecision.inferredFromUnknownVendor
+              ? { inferredFromUnknownVendor: true }
+              : {}),
+            source: "terminal",
+            ...(protocol === undefined ? {} : { protocol }),
+            terminalTitle: title
+          }
+        }
+      };
+    }
+    if (terminalDecision.disposition === "suppressed") {
+      return {
+        disposition: "suppressed",
+        reason: terminalDecision.reason
+      };
+    }
+    if (options.isSurfaceVisibleToUser?.(surface.id)) {
+      return {
+        disposition: "suppressed",
+        reason: "visible-terminal-notification"
+      };
+    }
+    return {
+      disposition: "applied",
+      productAction: {
+        type: "notification.create",
+        workspaceId: workspace.id,
+        paneId: pane.id,
+        surfaceId: surface.id,
+        title,
+        message,
+        source: "terminal",
+        kind: "generic"
+      }
+    };
   }
 
   const title = boundedRemoteEventText(payload.title) ?? event.name;
@@ -1943,15 +2125,18 @@ function normalizeRemoteSpoolEvent(
       ? payload.kind
       : "generic";
   return {
-    type: "notification.create",
-    workspaceId: workspace.id,
-    paneId: pane.id,
-    surfaceId: surface.id,
-    title,
-    message,
-    source: event.kind === "osc-notification" ? "terminal" : "agent",
-    kind,
-    ...(agent === undefined ? {} : { agent })
+    disposition: "applied",
+    productAction: {
+      type: "notification.create",
+      workspaceId: workspace.id,
+      paneId: pane.id,
+      surfaceId: surface.id,
+      title,
+      message,
+      source: "agent",
+      kind,
+      ...(agent === undefined ? {} : { agent })
+    }
   };
 }
 

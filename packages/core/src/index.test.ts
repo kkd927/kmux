@@ -3764,6 +3764,7 @@ describe("remote event product receipt", () => {
       targetId: "target_1",
       sequence: uint64(1n),
       eventId: "event_1",
+      disposition: "applied" as const,
       productAction: {
         type: "notification.create" as const,
         workspaceId: workspace.id,
@@ -3798,7 +3799,9 @@ describe("remote event product receipt", () => {
       type: "remote.event.apply",
       targetId: "target_1",
       sequence: uint64(1n),
-      eventId: "event_1"
+      eventId: "event_1",
+      disposition: "suppressed",
+      reason: "test-suppression"
     });
     expect(state.remoteEventReceipts.target_1?.throughSequence).toBe(1n);
     expect(
@@ -3807,6 +3810,7 @@ describe("remote event product receipt", () => {
         targetId: "target_1",
         sequence: uint64(2n),
         eventId: "event_1",
+        disposition: "applied",
         productAction: {
           type: "notification.create",
           workspaceId: Object.keys(state.workspaces)[0]!,

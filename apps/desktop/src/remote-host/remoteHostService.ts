@@ -280,7 +280,10 @@ export class RemoteHostService {
           runtimePath: verified.prepared.runtimePath,
           remoteHome: verified.prepared.remoteHome,
           roots: structuredClone(verified.prepared.roots),
-          doctor: structuredClone(verified.prepared.doctor)
+          doctor: structuredClone(verified.prepared.doctor),
+          agentIntegration: structuredClone(
+            verified.prepared.agentIntegration
+          )
         });
         return;
       }

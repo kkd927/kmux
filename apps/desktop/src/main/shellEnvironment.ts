@@ -278,6 +278,7 @@ export function buildShellLaunchPolicy(
       prependWrapperToPath: true
     },
     hookEnv: {
+      KMUX_AGENT_HOOK_TRANSPORT: "local",
       KMUX_SOCKET_PATH: options.socketPath,
       KMUX_AGENT_BIN_DIR: options.agentHookBinDir,
       KMUX_NODE_PATH: options.nodePath

@@ -1,46 +1,7 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
+import { ensureAgentIntegrationVendor } from "@kmux/agent-integration";
 import type { AgentStorageRoots } from "@kmux/metadata";
-
-import { shellAbsolutePathAssignment } from "./agentHookCommand";
-
-const CLAUDE_SETTINGS_PATH_SEGMENTS = [".claude", "settings.json"] as const;
-const KMUX_MANAGED_CLAUDE_HOOK_MARKER = "KMUX_MANAGED_CLAUDE_HOOK=1";
-
-type ClaudeHookEvent =
-  | "PermissionRequest"
-  | "Notification"
-  | "PreToolUse"
-  | "PostToolUse"
-  | "SessionEnd"
-  | "SessionStart"
-  | "UserPromptSubmit"
-  | "Stop";
-
-type JsonObject = Record<string, unknown>;
-
-interface HookCommandDefinition extends JsonObject {
-  type?: unknown;
-  command?: unknown;
-}
-
-interface HookMatcherGroup extends JsonObject {
-  matcher?: unknown;
-  hooks?: unknown;
-}
-
-interface ManagedClaudeHookDefinition {
-  eventName: ClaudeHookEvent;
-  matcher?: string;
-}
 
 export interface ClaudeIntegrationInstallResult {
   changed: boolean;
@@ -49,160 +10,11 @@ export interface ClaudeIntegrationInstallResult {
 }
 
 export interface ClaudeHookRuntimePaths {
+  /** Retained for source compatibility; transport is selected at launch time. */
   socketPath?: string;
+  /** Retained for source compatibility; hook commands resolve the launch environment first. */
   agentBinDir?: string;
   agentStorageRoots?: AgentStorageRoots;
-}
-
-const MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
-  { eventName: "PermissionRequest" },
-  { eventName: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
-  { eventName: "SessionStart" },
-  { eventName: "Stop" }
-];
-const DEPRECATED_MANAGED_CLAUDE_HOOKS: ManagedClaudeHookDefinition[] = [
-  { eventName: "Notification" },
-  { eventName: "PostToolUse" },
-  { eventName: "SessionEnd" },
-  { eventName: "UserPromptSubmit" }
-];
-
-function isPlainObject(value: unknown): value is JsonObject {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function atomicWrite(filePath: string, content: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
-  writeFileSync(tmpPath, content, "utf8");
-  try {
-    renameSync(tmpPath, filePath);
-  } finally {
-    if (existsSync(tmpPath)) {
-      rmSync(tmpPath, { force: true });
-    }
-  }
-}
-
-function buildClaudeHookCommand(
-  eventName: ClaudeHookEvent,
-  runtimePaths: ClaudeHookRuntimePaths = {}
-): string {
-  return [
-    `${KMUX_MANAGED_CLAUDE_HOOK_MARKER};`,
-    shellAbsolutePathAssignment(
-      "_kmux_socket_path",
-      "KMUX_SOCKET_PATH",
-      runtimePaths.socketPath
-    ),
-    shellAbsolutePathAssignment(
-      "_kmux_agent_bin_dir",
-      "KMUX_AGENT_BIN_DIR",
-      runtimePaths.agentBinDir
-    ),
-    'if [ -n "$_kmux_socket_path" ] &&',
-    '[ -n "$_kmux_agent_bin_dir" ] &&',
-    '[ -x "$_kmux_agent_bin_dir/kmux-agent-hook" ]; then',
-    `KMUX_SOCKET_PATH="$_kmux_socket_path" KMUX_AGENT_BIN_DIR="$_kmux_agent_bin_dir" "$_kmux_agent_bin_dir/kmux-agent-hook" claude ${eventName} || true;`,
-    "fi"
-  ].join(" ");
-}
-
-function buildManagedMatcherGroup({
-  eventName,
-  matcher
-}: ManagedClaudeHookDefinition,
-runtimePaths: ClaudeHookRuntimePaths): HookMatcherGroup {
-  return {
-    ...(matcher ? { matcher } : {}),
-    hooks: [
-      {
-        type: "command",
-        command: buildClaudeHookCommand(eventName, runtimePaths)
-      }
-    ]
-  };
-}
-
-function isManagedClaudeHookCommand(
-  hook: unknown,
-  eventName: ClaudeHookEvent
-): hook is HookCommandDefinition {
-  return (
-    isPlainObject(hook) &&
-    hook.type === "command" &&
-    typeof hook.command === "string" &&
-    hook.command.includes(KMUX_MANAGED_CLAUDE_HOOK_MARKER) &&
-    hook.command.includes(` claude ${eventName}`)
-  );
-}
-
-function hasManagedClaudeHookCommand(
-  existingGroups: unknown,
-  eventName: ClaudeHookEvent
-): boolean {
-  return (Array.isArray(existingGroups) ? existingGroups : []).some(
-    (group) =>
-      isPlainObject(group) &&
-      Array.isArray(group.hooks) &&
-      group.hooks.some((hook) => isManagedClaudeHookCommand(hook, eventName))
-  );
-}
-
-function mergeManagedMatcherGroups(
-  existingGroups: unknown,
-  definition: ManagedClaudeHookDefinition,
-  runtimePaths: ClaudeHookRuntimePaths
-): HookMatcherGroup[] {
-  const nextGroups = pruneManagedMatcherGroups(
-    existingGroups,
-    definition.eventName
-  );
-
-  nextGroups.push(buildManagedMatcherGroup(definition, runtimePaths));
-  return nextGroups;
-}
-
-function pruneManagedMatcherGroups(
-  existingGroups: unknown,
-  eventName: ClaudeHookEvent
-): HookMatcherGroup[] {
-  const nextGroups: HookMatcherGroup[] = [];
-  for (const group of Array.isArray(existingGroups) ? existingGroups : []) {
-    if (!isPlainObject(group) || !Array.isArray(group.hooks)) {
-      nextGroups.push(group as HookMatcherGroup);
-      continue;
-    }
-
-    const filteredHooks = group.hooks.filter(
-      (hook) => !isManagedClaudeHookCommand(hook, eventName)
-    );
-    if (filteredHooks.length === 0) {
-      continue;
-    }
-    if (filteredHooks.length === group.hooks.length) {
-      nextGroups.push(group as HookMatcherGroup);
-      continue;
-    }
-    nextGroups.push({
-      ...group,
-      hooks: filteredHooks
-    });
-  }
-
-  return nextGroups;
-}
-
-function parseClaudeSettings(settingsPath: string): JsonObject | null {
-  if (!existsSync(settingsPath)) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 export function ensureClaudeHooksInstalled(
@@ -213,73 +25,12 @@ export function ensureClaudeHooksInstalled(
   const settingsPath =
     runtimePaths.agentStorageRoots?.claude.settingsPath ??
     (normalizedHomeDir
-      ? join(normalizedHomeDir, ...CLAUDE_SETTINGS_PATH_SEGMENTS)
-      : join(...CLAUDE_SETTINGS_PATH_SEGMENTS));
-
-  if (!normalizedHomeDir && !runtimePaths.agentStorageRoots) {
-    return {
-      changed: false,
-      settingsPath,
-      warning:
-        "[agent-hooks] Claude integration was skipped because HOME could not be resolved."
-    };
-  }
-
-  const existingSettings = parseClaudeSettings(settingsPath);
-  if (!existingSettings) {
-    return {
-      changed: false,
-      settingsPath,
-      warning: `[agent-hooks] Claude integration was skipped because ${settingsPath} is not valid JSON.`
-    };
-  }
-
-  const existingHooks = isPlainObject(existingSettings.hooks)
-    ? existingSettings.hooks
-    : {};
-  const nextHooks: JsonObject = { ...existingHooks };
-  for (const definition of DEPRECATED_MANAGED_CLAUDE_HOOKS) {
-    if (
-      !hasManagedClaudeHookCommand(
-        nextHooks[definition.eventName],
-        definition.eventName
-      )
-    ) {
-      continue;
-    }
-    const prunedGroups = pruneManagedMatcherGroups(
-      nextHooks[definition.eventName],
-      definition.eventName
-    );
-    if (prunedGroups.length === 0) {
-      delete nextHooks[definition.eventName];
-    } else {
-      nextHooks[definition.eventName] = prunedGroups;
-    }
-  }
-  for (const definition of MANAGED_CLAUDE_HOOKS) {
-    nextHooks[definition.eventName] = mergeManagedMatcherGroups(
-      nextHooks[definition.eventName],
-      definition,
-      runtimePaths
-    );
-  }
-
-  const nextSettings: JsonObject = {
-    ...existingSettings,
-    hooks: nextHooks
-  };
-
-  if (JSON.stringify(existingSettings) === JSON.stringify(nextSettings)) {
-    return {
-      changed: false,
-      settingsPath
-    };
-  }
-
-  atomicWrite(settingsPath, `${JSON.stringify(nextSettings, null, 2)}\n`);
+      ? join(normalizedHomeDir, ".claude", "settings.json")
+      : join(".claude", "settings.json"));
+  const result = ensureAgentIntegrationVendor("claude", settingsPath);
   return {
-    changed: true,
-    settingsPath
+    changed: result.status === "changed",
+    settingsPath,
+    ...(result.warning ? { warning: result.warning } : {})
   };
 }

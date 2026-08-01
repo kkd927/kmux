@@ -575,6 +575,8 @@ pub enum BridgeRequest {
         workspace_create_operation_id: String,
         #[serde(rename = "sessionCreateOperationId")]
         session_create_operation_id: String,
+        #[serde(rename = "surfaceId")]
+        surface_id: String,
         #[serde(rename = "workspaceResourceKey")]
         workspace_resource_key: RemoteResourceKey,
         #[serde(rename = "sessionResourceKey")]
@@ -918,6 +920,30 @@ pub struct RemotePrincipal {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationVendorDiagnostic {
+    pub vendor: String,
+    pub path: String,
+    pub status: String,
+    pub contract_version: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationDiagnostic {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_version: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_bin_dir: Option<String>,
+    pub vendors: Vec<AgentIntegrationVendorDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OperationResult {
     pub outcome: String,
     pub operation_id: String,
@@ -926,6 +952,8 @@ pub struct OperationResult {
     pub result_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keeper_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_integration: Option<AgentIntegrationDiagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

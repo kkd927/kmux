@@ -9,6 +9,7 @@ license.workspace = true
 members = [
   ".",
   "crates/bridge",
+  "crates/agent-integration",
   "crates/cli",
   "crates/compat",
   "crates/doctor",
@@ -50,6 +51,7 @@ vt100 = "0.16.2"
 anyhow.workspace = true
 clap.workspace = true
 kmux-bridge = { path = "crates/bridge" }
+kmux-agent-integration = { path = "crates/agent-integration" }
 kmux-cli = { path = "crates/cli" }
 kmux-doctor = { path = "crates/doctor" }
 kmux-hook = { path = "crates/hook" }

@@ -1,0 +1,63 @@
+{
+  "contractVersion": 2,
+  "commandTemplate": "{marker}; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2; _kmux_agent_hook=; if [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] && [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ]; then _kmux_agent_hook=\"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\"; else _kmux_agent_hook=\"$(command -v kmux-agent-hook 2>/dev/null || true)\"; fi; if [ -n \"$_kmux_agent_hook\" ] && [ -x \"$_kmux_agent_hook\" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE={outputMode} \"$_kmux_agent_hook\" {agent} {event} || {fallback}; else {fallback}; fi",
+  "codexWrapper": {
+    "contractMarker": "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2",
+    "legacyHooksFeature": "codex_hooks",
+    "currentHooksFeature": "hooks",
+    "currentHooksFeatureMinor": 129,
+    "notificationMethod": "osc9"
+  },
+  "vendors": {
+    "claude": {
+      "format": "grouped-hooks",
+      "relativePath": ".claude/settings.json",
+      "marker": "KMUX_MANAGED_CLAUDE_HOOK=1",
+      "managed": [
+        { "event": "PermissionRequest" },
+        { "event": "PreToolUse", "matcher": "AskUserQuestion|ExitPlanMode" },
+        { "event": "SessionStart" },
+        { "event": "Stop" }
+      ],
+      "deprecated": [
+        "Notification",
+        "PostToolUse",
+        "SessionEnd",
+        "UserPromptSubmit"
+      ],
+      "outputMode": "silent",
+      "fallback": "true"
+    },
+    "codex": {
+      "format": "grouped-hooks",
+      "relativePath": ".codex/hooks.json",
+      "marker": "KMUX_MANAGED_CODEX_HOOK=1",
+      "managed": [
+        { "event": "SessionStart" },
+        { "event": "PermissionRequest" },
+        { "event": "Stop" }
+      ],
+      "deprecated": ["UserPromptSubmit"],
+      "outputMode": "silent",
+      "fallback": "true"
+    },
+    "antigravity": {
+      "format": "namespaced-hooks",
+      "relativePath": ".gemini/config/hooks.json",
+      "namespace": "kmux-antigravity",
+      "marker": "KMUX_MANAGED_ANTIGRAVITY_HOOK=1",
+      "managed": [
+        { "event": "PreInvocation" },
+        { "event": "PreToolUse", "matcher": ".*" },
+        { "event": "Stop" }
+      ],
+      "deprecated": ["PostToolUse", "PostInvocation"],
+      "outputMode": "json",
+      "fallbackByEvent": {
+        "PreInvocation": "printf '%s\\n' '{}'",
+        "PreToolUse": "printf '%s\\n' '{\"decision\":\"allow\"}'",
+        "Stop": "printf '%s\\n' '{\"decision\":\"allow\"}'"
+      }
+    }
+  }
+}

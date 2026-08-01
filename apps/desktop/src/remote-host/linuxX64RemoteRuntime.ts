@@ -25,6 +25,7 @@ import {
   makeId,
   parseUint64Decimal,
   uint64,
+  type AgentIntegrationDiagnosticDto,
   type AgentScopeSettings,
   type Id,
   type RemoteConversionPrepareRequestDto,
@@ -135,6 +136,7 @@ export type RemoteRuntimeOperationOutcome =
       remoteResourceRevision: Uint64;
       resultDigest: string;
       keeperGeneration?: Id;
+      agentIntegration?: AgentIntegrationDiagnosticDto;
     }
   | {
       status: "failed";
@@ -304,7 +306,10 @@ export class LinuxX64RemoteRuntime {
           resultDigest: body.resultDigest,
           ...(body.keeperGeneration === undefined
             ? {}
-            : { keeperGeneration: body.keeperGeneration })
+            : { keeperGeneration: body.keeperGeneration }),
+          ...(body.agentIntegration === undefined
+            ? {}
+            : { agentIntegration: body.agentIntegration })
         }
       : {
           status: "failed",

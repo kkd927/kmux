@@ -1,0 +1,111 @@
+[
+  {
+    "name": "codex-migrates-managed-hooks-and-preserves-user-fields",
+    "vendor": "codex",
+    "input": {
+      "unknown": { "keep": true },
+      "hooks": {
+        "Stop": [
+          {
+            "matcher": "mixed",
+            "hooks": [
+              { "type": "command", "command": "echo user-stop" },
+              {
+                "type": "command",
+                "command": "KMUX_MANAGED_CODEX_HOOK=1; old codex Stop"
+              }
+            ]
+          }
+        ],
+        "UserPromptSubmit": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "KMUX_MANAGED_CODEX_HOOK=1; old codex UserPromptSubmit"
+              }
+            ]
+          }
+        ],
+        "FutureEvent": "future-value"
+      }
+    },
+    "output": {
+      "unknown": { "keep": true },
+      "hooks": {
+        "Stop": [
+          {
+            "matcher": "mixed",
+            "hooks": [{ "type": "command", "command": "echo user-stop" }]
+          },
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "KMUX_MANAGED_CODEX_HOOK=1; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2; _kmux_agent_hook=; if [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] && [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ]; then _kmux_agent_hook=\"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\"; else _kmux_agent_hook=\"$(command -v kmux-agent-hook 2>/dev/null || true)\"; fi; if [ -n \"$_kmux_agent_hook\" ] && [ -x \"$_kmux_agent_hook\" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE=silent \"$_kmux_agent_hook\" codex Stop || true; else true; fi"
+              }
+            ]
+          }
+        ],
+        "FutureEvent": "future-value",
+        "SessionStart": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "KMUX_MANAGED_CODEX_HOOK=1; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2; _kmux_agent_hook=; if [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] && [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ]; then _kmux_agent_hook=\"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\"; else _kmux_agent_hook=\"$(command -v kmux-agent-hook 2>/dev/null || true)\"; fi; if [ -n \"$_kmux_agent_hook\" ] && [ -x \"$_kmux_agent_hook\" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE=silent \"$_kmux_agent_hook\" codex SessionStart || true; else true; fi"
+              }
+            ]
+          }
+        ],
+        "PermissionRequest": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "KMUX_MANAGED_CODEX_HOOK=1; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2; _kmux_agent_hook=; if [ -n \"${KMUX_AGENT_BIN_DIR:-}\" ] && [ -x \"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\" ]; then _kmux_agent_hook=\"${KMUX_AGENT_BIN_DIR}/kmux-agent-hook\"; else _kmux_agent_hook=\"$(command -v kmux-agent-hook 2>/dev/null || true)\"; fi; if [ -n \"$_kmux_agent_hook\" ] && [ -x \"$_kmux_agent_hook\" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE=silent \"$_kmux_agent_hook\" codex PermissionRequest || true; else true; fi"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "codex-rejects-a-non-object-hooks-container",
+    "vendor": "codex",
+    "input": {
+      "description": "keep this file unchanged",
+      "hooks": "user-command"
+    },
+    "errorContains": "codex hooks must be an object"
+  },
+  {
+    "name": "codex-rejects-a-non-array-managed-event",
+    "vendor": "codex",
+    "input": {
+      "hooks": {
+        "Stop": "user-command"
+      }
+    },
+    "errorContains": "codex hooks.Stop must be an array"
+  },
+  {
+    "name": "antigravity-rejects-a-non-object-managed-namespace",
+    "vendor": "antigravity",
+    "input": {
+      "kmux-antigravity": "user-command"
+    },
+    "errorContains": "antigravity kmux-antigravity must be an object"
+  },
+  {
+    "name": "antigravity-rejects-a-non-array-managed-event",
+    "vendor": "antigravity",
+    "input": {
+      "kmux-antigravity": {
+        "Stop": "user-command"
+      }
+    },
+    "errorContains": "antigravity kmux-antigravity.Stop must be an array"
+  }
+]

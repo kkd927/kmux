@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+kmux-agent-integration = { path = "../agent-integration" }
 kmux-compat = { path = "../compat" }
 kmux-doctor = { path = "../doctor" }
 kmux-hook = { path = "../hook" }

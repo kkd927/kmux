@@ -73,6 +73,7 @@ describe("SSH workspace transaction remote request boundary", () => {
         transactionId: "transaction_1",
         workspaceCreateOperationId: "operation_workspace",
         sessionCreateOperationId: "operation_session",
+        surfaceId: "surface_1",
         workspaceResourceKey: {
           desktopInstallationId: "desktop_1",
           targetId: "target_1",
@@ -164,14 +165,42 @@ describe("remote-host UtilityProcess operation outcome boundary", () => {
         operationId: "operation_1",
         remoteResourceRevision: 7n,
         resultDigest: "a".repeat(64),
-        keeperGeneration: "keeper_1"
+        keeperGeneration: "keeper_1",
+        agentIntegration: {
+          status: "degraded",
+          contractVersion: 2,
+          agentBinDir: "/home/kmux/.kmux/shims/current",
+          vendors: [
+            {
+              vendor: "claude",
+              path: "/home/kmux/.claude/settings.json",
+              status: "degraded",
+              contractVersion: 2,
+              warning: "settings are read-only"
+            }
+          ]
+        }
       })
     ).toEqual({
       status: "succeeded",
       operationId: "operation_1",
       remoteResourceRevision: uint64(7n),
       resultDigest: "a".repeat(64),
-      keeperGeneration: "keeper_1"
+      keeperGeneration: "keeper_1",
+      agentIntegration: {
+        status: "degraded",
+        contractVersion: 2,
+        agentBinDir: "/home/kmux/.kmux/shims/current",
+        vendors: [
+          {
+            vendor: "claude",
+            path: "/home/kmux/.claude/settings.json",
+            status: "degraded",
+            contractVersion: 2,
+            warning: "settings are read-only"
+          }
+        ]
+      }
     });
   });
 

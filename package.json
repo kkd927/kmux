@@ -45,7 +45,7 @@
     "rebuild:electron": "electron-rebuild -f -w node-pty",
     "postinstall": "node scripts/ensure-node-pty-spawn-helper.mjs",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "npm run check:agent-integration-contract && vitest run",
     "test:ssh:integration": "npm run build:remote:linux-x64 && vitest run --config vitest.ssh.config.ts",
     "test:ssh:e2e": "npm run build:remote:linux-x64 && npm run smoke:dev && npm run build && playwright test tests/e2e/kmux-ssh-remote.spec.ts",
     "test:watch": "vitest",
@@ -70,6 +70,7 @@
     "capture:scene": "npm run build && node scripts/capture-reference-scene.mjs",
     "update:model-pricing": "node scripts/update-model-pricing.mjs",
     "check:model-pricing": "node scripts/update-model-pricing.mjs --check",
+    "check:agent-integration-contract": "node scripts/check-agent-integration-contract.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

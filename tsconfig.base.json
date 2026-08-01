@@ -19,6 +19,7 @@
       "@kmux/proto": ["packages/proto/src/index.ts"],
       "@kmux/persistence": ["packages/persistence/src/index.ts"],
       "@kmux/metadata": ["packages/metadata/src/index.ts"],
+      "@kmux/agent-integration": ["packages/agent-integration/src/index.ts"],
       "@kmux/ui": ["packages/ui/src/index.ts"]
     }
   }

@@ -1028,6 +1028,27 @@ describe("real system OpenSSH transport spike", () => {
         throw new Error("forced worktree removal did not commit");
       }
       await expect(runtime.fileExists(worktreePath)).resolves.toBe(false);
+      const fakeCodexBin = `/home/kmux/.phase7-fake-vendor-${suffix}`;
+      const fakeCodex = [
+        "#!/bin/sh",
+        'if [ "${1:-}" = --version ]; then printf "codex-cli 0.130.0\\n"; exit 0; fi',
+        'hooks_file="${CODEX_HOME:-$HOME/.codex}/hooks.json"',
+        `command=$(sed -n '/kmux-agent-hook.* codex SessionStart/ { s/^[[:space:]]*"command": "//; s/",[[:space:]]*$//; s/"[[:space:]]*$//; p; q; }' "$hooks_file")`,
+        `command=$(printf '%s' "$command" | sed -e 's/\\\\"/"/g' -e 's/\\\\\\\\/\\\\/g')`,
+        '[ -n "$command" ] && eval "$command"',
+        ""
+      ].join("\n");
+      const fakeCodexSetup = await target.target.exec([
+        "sh",
+        "-c",
+        [
+          `install -d -o kmux -g kmux -m 700 ${quotePosixWord(fakeCodexBin)}`,
+          `printf '%s' ${quotePosixWord(fakeCodex)} > ${quotePosixWord(`${fakeCodexBin}/codex`)}`,
+          `chown kmux:kmux ${quotePosixWord(`${fakeCodexBin}/codex`)}`,
+          `chmod 700 ${quotePosixWord(`${fakeCodexBin}/codex`)}`
+        ].join(" && ")
+      ]);
+      expect(fakeCodexSetup.exitCode).toBe(0);
       const create = coordinator.admit({
         type: "remote-operation.command",
         workspaceId,
@@ -1037,7 +1058,14 @@ describe("real system OpenSSH transport spike", () => {
           sessionId,
           surfaceId,
           paneId: state.workspaces[workspaceId].activePaneId,
-          launch: { cwd: "/home/kmux", shell: "/bin/sh" }
+          launch: {
+            cwd: "/home/kmux",
+            shell: "/bin/sh",
+            env: {
+              PATH: `${fakeCodexBin}:/usr/bin:/bin`,
+              CODEX_HOME: "/home/kmux/.codex"
+            }
+          }
         }
       });
       const created = await coordinator.execute(
@@ -1084,10 +1112,14 @@ describe("real system OpenSSH transport spike", () => {
               transcript_path: historyRemotePath,
               cwd: historyCwd
             })
-          )} | "$KMUX_AGENT_BIN_DIR/kmux-agent-hook" codex SessionStart && printf '${historyClaimSentinel}\\n'\n`
+          )} | codex fake-session-start && printf '${historyClaimSentinel}\\n'\n`
         )
       );
       await collectTerminalUntil(attachment, historyClaimSentinel);
+      const remoteClock = await target.target.exec(["date", "+%s%3N"]);
+      expect(remoteClock.exitCode).toBe(0);
+      const historyEventTimestamp = Number(remoteClock.output.trim()) + 1_000;
+      expect(Number.isSafeInteger(historyEventTimestamp)).toBe(true);
 
       await writeFile(
         historyLocalPath,
@@ -1101,7 +1133,7 @@ describe("real system OpenSSH transport spike", () => {
           }),
           JSON.stringify({
             type: "event_msg",
-            timestamp: new Date(Date.now() + 1_000).toISOString(),
+            timestamp: new Date(historyEventTimestamp).toISOString(),
             payload: {
               type: "token_count",
               info: {
@@ -2598,6 +2630,7 @@ describe("real system OpenSSH transport spike", () => {
         transactionId: `conversion_leased_${suffix}`,
         workspaceCreateOperationId: `workspace_create_leased_${suffix}`,
         sessionCreateOperationId: `session_create_leased_${suffix}`,
+        surfaceId: `surface_leased_${suffix}`,
         workspaceResourceKey: {
           desktopInstallationId,
           targetId: assigned.targetId,
@@ -2660,6 +2693,7 @@ describe("real system OpenSSH transport spike", () => {
         transactionId: `conversion_unleased_${suffix}`,
         workspaceCreateOperationId: `workspace_create_unleased_${suffix}`,
         sessionCreateOperationId: `session_create_unleased_${suffix}`,
+        surfaceId: `surface_unleased_${suffix}`,
         workspaceResourceKey: {
           desktopInstallationId,
           targetId: assigned.targetId,
@@ -2737,6 +2771,9 @@ describe("real system OpenSSH transport spike", () => {
     const workspaceId = `workspace_phase6_${suffix}`;
     const sessionId = `session_phase6_${suffix}`;
     const surfaceId = `surface_phase6_${suffix}`;
+    const fakeHome = `/home/kmux/.phase6-home-${suffix}`;
+    const customCodexHome = `${fakeHome}/custom-codex-home`;
+    const fakeVendorBin = `${fakeHome}/bin`;
     const remoteRoot = `/home/kmux/.kmux-phase6-${suffix}`;
     const roots = doctorPaths(remoteRoot);
     const token = createRemoteRuntimeToken();
@@ -2762,6 +2799,37 @@ describe("real system OpenSSH transport spike", () => {
         "/home/kmux"
       );
       const paneId = state.workspaces[workspaceId].activePaneId;
+      const fakeVendorScript = (vendor: "codex" | "antigravity") => {
+        return [
+          "#!/bin/sh",
+          ...(vendor === "codex"
+            ? [
+                'if [ "${1:-}" = --version ]; then printf "codex-cli 0.130.0\\n"; exit 0; fi'
+              ]
+            : []),
+          vendor === "codex"
+            ? 'hooks_file="${CODEX_HOME:-$HOME/.codex}/hooks.json"'
+            : 'hooks_file="$HOME/.gemini/config/hooks.json"',
+          `command=$(sed -n '/kmux-agent-hook.* ${vendor} Stop/ { s/^[[:space:]]*"command": "//; s/",[[:space:]]*$//; s/"[[:space:]]*$//; p; q; }' "$hooks_file")`,
+          `command=$(printf '%s' "$command" | sed -e 's/\\\\"/"/g' -e 's/\\\\\\\\/\\\\/g')`,
+          '[ -n "$command" ] && eval "$command"',
+          ""
+        ].join("\n");
+      };
+      const fakeSetup = await target.target.exec([
+        "sh",
+        "-c",
+        [
+          `install -d -o kmux -g kmux -m 700 ${quotePosixWord(fakeHome)} ${quotePosixWord(fakeVendorBin)}`,
+          `printf '%s' ${quotePosixWord(`stty -echo\nexport CODEX_HOME=${customCodexHome}\nexport PATH=${fakeVendorBin}:/usr/bin:/bin\n`)} > ${quotePosixWord(`${fakeHome}/.bashrc`)}`,
+          `printf '%s' ${quotePosixWord(fakeVendorScript("codex"))} > ${quotePosixWord(`${fakeVendorBin}/codex`)}`,
+          `printf '%s' ${quotePosixWord(fakeVendorScript("antigravity"))} > ${quotePosixWord(`${fakeVendorBin}/antigravity`)}`,
+          `chown -R kmux:kmux ${quotePosixWord(fakeHome)}`,
+          `chmod 600 ${quotePosixWord(`${fakeHome}/.bashrc`)}`,
+          `chmod 700 ${quotePosixWord(`${fakeVendorBin}/codex`)} ${quotePosixWord(`${fakeVendorBin}/antigravity`)}`
+        ].join(" && ")
+      ]);
+      expect(fakeSetup.exitCode).toBe(0);
       const store = createDurableRemoteOperationStore(
         join(target.sandboxPath, `phase6-operations-${suffix}`)
       );
@@ -2783,9 +2851,12 @@ describe("real system OpenSSH transport spike", () => {
           paneId,
           launch: {
             cwd: "/home/kmux",
-            shell: "/bin/sh",
-            args: ["-c", "stty -echo; exec /bin/sh"],
-            env: { KMUX_SURFACE_ID: surfaceId }
+            shell: "/bin/bash",
+            args: ["--noprofile", "-i"],
+            env: {
+              HOME: fakeHome,
+              CODEX_HOME: customCodexHome
+            }
           }
         }
       });
@@ -2794,6 +2865,12 @@ describe("real system OpenSSH transport spike", () => {
         runtimeExecutor(runtime)
       );
       const keeperGeneration = requireKeeperGeneration(created);
+      const eagerCustomCodexHooks = await target.target.exec([
+        "sh",
+        "-c",
+        `grep -q KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2 ${quotePosixWord(`${customCodexHome}/hooks.json`)}`
+      ]);
+      expect(eagerCustomCodexHooks.exitCode).toBe(0);
       const resourceKey = {
         desktopInstallationId,
         targetId: assigned.targetId,
@@ -2894,7 +2971,7 @@ describe("real system OpenSSH transport spike", () => {
       await attachment.sendInput(
         uint64(5n),
         new TextEncoder().encode(
-          `[ -x "$KMUX_AGENT_BIN_DIR/kmux-agent-hook" ] && printf '%s' ${quotePosixWord(JSON.stringify({ message: hookMessage }))} | "$KMUX_AGENT_BIN_DIR/kmux-agent-hook" codex Stop && printf '%s' ${quotePosixWord(JSON.stringify({ message: agentResponseSentinel }))} | KMUX_AGENT_HOOK_OUTPUT_MODE=json "$KMUX_AGENT_BIN_DIR/kmux-agent-hook" antigravity Stop && printf '${hookSentinel}\\n'\n`
+          `printf '%s' ${quotePosixWord(JSON.stringify({ message: hookMessage }))} | codex fake-stop && printf '%s' ${quotePosixWord(JSON.stringify({ message: agentResponseSentinel }))} | antigravity fake-stop && printf '${hookSentinel}\\n'\n`
         )
       );
       const hookOutput = await collectTerminalUntil(attachment, hookSentinel);

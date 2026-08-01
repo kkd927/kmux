@@ -20,6 +20,7 @@ import type {
   RemoteResourceKey
 } from "@kmux/core";
 import {
+  decodeAgentIntegrationDiagnostic,
   decodeRemoteBridgeResponseBody,
   decodeRemoteSpoolEventDto,
   incrementUint64,
@@ -27,6 +28,7 @@ import {
   parseUint64Decimal,
   uint64,
   type AgentScopeSettings,
+  type AgentIntegrationDiagnosticDto,
   type Id,
   type RemoteBridgeResponseBody,
   type RemoteConversionPrepareRequestDto,
@@ -164,6 +166,7 @@ export interface RemoteHostTargetVerification {
   remoteHome: string;
   roots: RemoteRuntimeRootsDto;
   doctor: RemoteDoctorReport;
+  agentIntegration: AgentIntegrationDiagnosticDto;
 }
 
 export interface RemoteHostManagerOptions {
@@ -369,7 +372,8 @@ export class RemoteHostManager extends EventEmitter {
       "runtimePath",
       "remoteHome",
       "roots",
-      "doctor"
+      "doctor",
+      "agentIntegration"
     ]);
     if (
       record.verificationId !== options.verificationId ||
@@ -390,6 +394,9 @@ export class RemoteHostManager extends EventEmitter {
       throw new Error("remote-host returned an invalid authenticated HOME");
     }
     const doctor = decodeVerifiedDoctor(record.doctor, roots);
+    const agentIntegration = decodeAgentIntegrationDiagnostic(
+      record.agentIntegration
+    );
     if (
       record.runtimePath !==
       posix.join(roots.installRoot, "bin", record.generation, "kmuxd")
@@ -398,15 +405,21 @@ export class RemoteHostManager extends EventEmitter {
         "remote-host target verification returned another runtime path"
       );
     }
-    return {
+    const verification = {
       verificationId: options.verificationId,
       effectiveConnectionPolicyHash: options.effectiveConnectionPolicyHash,
       generation: record.generation,
       runtimePath: record.runtimePath,
       remoteHome: record.remoteHome,
       roots,
-      doctor
+      doctor,
+      agentIntegration
     };
+    this.emit("agent-integration", {
+      scope: "bootstrap",
+      report: structuredClone(agentIntegration)
+    });
+    return verification;
   }
 
   async promoteVerifiedTarget(
@@ -464,9 +477,18 @@ export class RemoteHostManager extends EventEmitter {
     if (record.targetId !== targetId) {
       throw new Error("remote-host operation result target does not match");
     }
-    return decodeRemoteHostOperationOutcome(
+    const outcome = decodeRemoteHostOperationOutcome(
       record.outcome
     ) satisfies RemoteRuntimeOperationOutcome;
+    if (outcome.status === "succeeded" && outcome.agentIntegration) {
+      this.emit("agent-integration", {
+        scope: "session",
+        targetId,
+        operationId: outcome.operationId,
+        report: structuredClone(outcome.agentIntegration)
+      });
+    }
+    return outcome;
   }
 
   async observe(

@@ -466,6 +466,10 @@ describe("RemoteHostManager", () => {
       }
     );
     manager.on("error", vi.fn());
+    const integrationReports: unknown[] = [];
+    manager.on("agent-integration", (report) =>
+      integrationReports.push(report)
+    );
     const roots = {
       installRoot: "/home/kmux/.kmux",
       authorityRoot: "/home/kmux/.kmux/state/authority",
@@ -510,6 +514,20 @@ describe("RemoteHostManager", () => {
           arch: "x86_64",
           abi: "musl",
           ...roots
+        },
+        agentIntegration: {
+          status: "degraded",
+          contractVersion: 2,
+          agentBinDir: "/home/kmux/.kmux/shims/current",
+          vendors: [
+            {
+              vendor: "codex",
+              path: "/home/kmux/.codex/hooks.json",
+              status: "degraded",
+              contractVersion: 2,
+              warning: "Codex hooks are read-only"
+            }
+          ]
         }
       }
     });
@@ -520,6 +538,12 @@ describe("RemoteHostManager", () => {
         remoteInstallationId: "11111111-1111-4111-8111-111111111111"
       }
     });
+    expect(integrationReports).toEqual([
+      expect.objectContaining({
+        scope: "bootstrap",
+        report: expect.objectContaining({ status: "degraded" })
+      })
+    ]);
 
     const promoting = manager.promoteVerifiedTarget({
       verificationId: "verification_1",

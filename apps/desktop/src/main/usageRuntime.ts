@@ -1205,7 +1205,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     if (
       action.type === "remote.event.apply" &&
-      action.productAction?.type === "agent.event" &&
+      action.disposition === "applied" &&
+      action.productAction.type === "agent.event" &&
       action.productAction.sessionId
     ) {
       hydratePersistedSshAgentBinding(action.productAction.sessionId, now());

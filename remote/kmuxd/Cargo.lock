@@ -345,9 +345,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kmux-agent-integration"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "kmux-bridge"
 version = "0.1.0"
 dependencies = [
+ "kmux-agent-integration",
  "kmux-compat",
  "kmux-doctor",
  "kmux-hook",
@@ -496,6 +509,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "kmux-agent-integration",
  "kmux-bridge",
  "kmux-cli",
  "kmux-compat",

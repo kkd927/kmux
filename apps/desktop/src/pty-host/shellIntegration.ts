@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
+import { AGENT_INTEGRATION_CONTRACT } from "@kmux/agent-integration";
 
 import { MAX_DIAGNOSTICS_LOG_BYTES } from "../shared/diagnostics";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
@@ -261,10 +262,7 @@ function ensureZshWrapperDir(
       writeZshWrapperFiles(cachedZshWrapperDir, {
         includeLegacyAgentBin: shouldIncludeLegacyAgentBin
       });
-    } else if (
-      includeLegacyAgentBin &&
-      !cachedZshWrapperDirHasLegacyAgentBin
-    ) {
+    } else if (includeLegacyAgentBin && !cachedZshWrapperDirHasLegacyAgentBin) {
       writeLegacyAgentBin(cachedZshWrapperDir);
     }
     cachedZshWrapperDirHasLegacyAgentBin =
@@ -355,9 +353,9 @@ function isKmuxZshWrapperDir(candidate: string): boolean {
   if (!basename(trimmed).startsWith("kmux-zsh-")) {
     return false;
   }
-  const configuredWrapperDir = process.env[KMUX_ZSH_WRAPPER_DIR_ENV]
-    ?.trim()
-    .replace(/\/+$/, "");
+  const configuredWrapperDir = process.env[
+    KMUX_ZSH_WRAPPER_DIR_ENV
+  ]?.trim().replace(/\/+$/, "");
   if (configuredWrapperDir && trimmed === configuredWrapperDir) {
     return true;
   }
@@ -680,10 +678,10 @@ function buildZshIntegrationScript(): string {
     "  emulate -L zsh",
     "  typeset -ga precmd_functions",
     "",
-    '  if (( ${precmd_functions[(I)_kmux_emit_osc7]} == 0 )); then',
+    "  if (( ${precmd_functions[(I)_kmux_emit_osc7]} == 0 )); then",
     "    precmd_functions+=(_kmux_emit_osc7)",
     "  fi",
-    '  if (( ${precmd_functions[(I)_kmux_emit_shell_ready]} == 0 )); then',
+    "  if (( ${precmd_functions[(I)_kmux_emit_shell_ready]} == 0 )); then",
     "    precmd_functions+=(_kmux_emit_shell_ready)",
     "  fi",
     "}",
@@ -974,8 +972,50 @@ function buildNodeRuntimeResolverLines(): string[] {
 function buildAgentHookRunnerScript(): string {
   return `
 const net = require("node:net");
+const path = require("node:path");
 
 const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";
+const diagnose = process.argv.includes("--diagnose");
+const ensureIntegration = process.argv[2] === "--ensure-integration";
+
+function resolveTransport() {
+  const explicit = (process.env.KMUX_AGENT_HOOK_TRANSPORT || "").trim();
+  const socketPath = (process.env.KMUX_SOCKET_PATH || "").trim();
+  const endpoint = (process.env.KMUX_AGENT_HOOK_ENDPOINT || "").trim();
+  const token = (process.env.KMUX_AUTH_TOKEN || "").trim();
+  const localPresent = Boolean(socketPath);
+  const remotePresent = Boolean(endpoint || token);
+  const localComplete = path.isAbsolute(socketPath);
+  const remoteComplete = path.isAbsolute(endpoint) && Boolean(token);
+  if (explicit && explicit !== "local" && explicit !== "remote") {
+    return { status: "blocked", reason: "transport-invalid" };
+  }
+  if (explicit === "local") {
+    return localComplete
+      ? { status: "ready", transport: "local", socketPath }
+      : { status: "blocked", transport: "local", reason: "local-tuple-incomplete" };
+  }
+  if (explicit === "remote") {
+    return remoteComplete
+      ? { status: "blocked", transport: "remote", reason: "remote-transport-unavailable" }
+      : { status: "blocked", transport: "remote", reason: "remote-tuple-incomplete" };
+  }
+  if (localComplete && !remotePresent) {
+    return { status: "ready", transport: "local", socketPath, inferred: true };
+  }
+  if (remoteComplete && !localPresent) {
+    return { status: "blocked", transport: "remote", reason: "remote-transport-unavailable", inferred: true };
+  }
+  if (!localPresent && !remotePresent) {
+    return { status: "blocked", reason: "transport-missing" };
+  }
+  return {
+    status: "blocked",
+    reason: localComplete && remoteComplete ? "transport-ambiguous" : "transport-tuple-incomplete",
+  };
+}
+
+const transport = resolveTransport();
 
 function hookResponsePayload() {
   const agent = (process.env.KMUX_HOOK_AGENT || "").trim().toLowerCase();
@@ -1006,6 +1046,75 @@ function finish() {
   process.exit(0);
 }
 
+if (diagnose) {
+  process.stdout.write(JSON.stringify(transport) + "\\n");
+  process.exit(transport.status === "ready" ? 0 : 1);
+}
+
+function connectAndEnsureIntegration() {
+  const socketPath = transport.status === "ready" && transport.transport === "local"
+    ? transport.socketPath
+    : undefined;
+  const vendor = process.argv[3];
+  const configPath = process.argv[4];
+  if (
+    !socketPath ||
+    !["claude", "codex", "antigravity"].includes(vendor) ||
+    !path.isAbsolute(configPath || "")
+  ) {
+    process.exit(1);
+  }
+
+  const socket = net.createConnection(socketPath);
+  let settled = false;
+  let buffer = "";
+  const complete = (exitCode, result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    socket.destroy();
+    if (outputJson && result !== undefined) {
+      process.stdout.write(JSON.stringify(result) + "\\n");
+    }
+    process.exit(exitCode);
+  };
+  const timeout = setTimeout(() => complete(1), ${AGENT_HOOK_RPC_TIMEOUT_MS});
+
+  socket.on("connect", () => {
+    socket.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "agent_integration_" + Date.now().toString(36),
+        method: "agent.integration.ensure",
+        params: {
+          vendor,
+          path: configPath,
+          authToken: process.env.KMUX_AUTH_TOKEN || undefined,
+        },
+      }) + "\\n"
+    );
+  });
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    const newline = buffer.indexOf("\\n");
+    if (newline < 0) return;
+    try {
+      const response = JSON.parse(buffer.slice(0, newline));
+      const result = response && response.result;
+      complete(
+        result && (result.status === "changed" || result.status === "current")
+          ? 0
+          : 1,
+        result || response.error
+      );
+    } catch {
+      complete(1);
+    }
+  });
+  socket.on("error", () => complete(1));
+  socket.on("close", () => complete(1));
+}
+
 function buildParams(payload) {
   return {
     agent: process.env.KMUX_HOOK_AGENT,
@@ -1019,7 +1128,9 @@ function buildParams(payload) {
 }
 
 function connectAndSend(payload) {
-  const socketPath = process.env.KMUX_SOCKET_PATH;
+  const socketPath = transport.status === "ready" && transport.transport === "local"
+    ? transport.socketPath
+    : undefined;
   const agent = process.env.KMUX_HOOK_AGENT;
   const hookEvent = process.env.KMUX_HOOK_EVENT;
   if (!socketPath || !agent || !hookEvent) {
@@ -1104,7 +1215,11 @@ function forwardFromStdin() {
   process.stdin.resume();
 }
 
-forwardFromStdin();
+if (ensureIntegration) {
+  connectAndEnsureIntegration();
+} else {
+  forwardFromStdin();
+}
 `.trim();
 }
 
@@ -1129,7 +1244,7 @@ function buildAgentHookHelperScript(): string {
     "  exit 0",
     "fi",
     "",
-    'KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"',
+    'KMUX_AGENT_BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
     ...buildPathFilteringHelperLines(),
     ...buildNodeRuntimeResolverLines(),
     'PATH="$(kmux_filter_path "${PATH:-}")"',
@@ -1147,6 +1262,18 @@ function buildAgentHookHelperScript(): string {
     "  return $?",
     "}",
     "",
+    'if [ "${1:-}" = "--diagnose" ]; then',
+    '  KMUX_AGENT_HOOK_OUTPUT_MODE="json"',
+    "  export KMUX_AGENT_HOOK_OUTPUT_MODE",
+    '  kmux_dispatch_hook "$@"',
+    "  exit $?",
+    "fi",
+    "",
+    'if [ "${1:-}" = "--ensure-integration" ]; then',
+    '  kmux_dispatch_hook "$@"',
+    "  exit $?",
+    "fi",
+    "",
     'if kmux_dispatch_hook "$@"; then',
     "  exit 0",
     "fi",
@@ -1159,6 +1286,7 @@ function buildAgentHookHelperScript(): string {
 }
 
 function buildCodexWrapperScript(): string {
+  const wrapperPolicy = AGENT_INTEGRATION_CONTRACT.codexWrapper;
   return [
     "#!/bin/sh",
     "set -u",
@@ -1177,6 +1305,9 @@ function buildCodexWrapperScript(): string {
     "",
     'KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
     'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"',
+    'if [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ]; then',
+    '  "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" --ensure-integration codex "$KMUX_CODEX_HOME/hooks.json" >/dev/null 2>&1 || true',
+    "fi",
     "",
     "kmux_log_codex_wrapper() {",
     '  [ -n "${KMUX_DEBUG_LOG_PATH:-}" ] || return 0',
@@ -1306,127 +1437,10 @@ function buildCodexWrapperScript(): string {
     "}",
     "",
     'KMUX_USE_CODEX_HOOKS="0"',
-    'if [ -n "$KMUX_CODEX_HOME" ] && [ -n "$KMUX_NODE_RUNTIME" ]; then',
-    '  if KMUX_OUTPUT_HOOKS_FILE="$KMUX_CODEX_HOME/hooks.json" \\',
-    "    env ELECTRON_RUN_AS_NODE=1 \"$KMUX_NODE_RUNTIME\" <<'EOF'",
-    "const fs = require('node:fs');",
-    "const path = require('node:path');",
-    "",
-    "const outputPath = process.env.KMUX_OUTPUT_HOOKS_FILE;",
-    "const managedHookMarker = 'KMUX_MANAGED_CODEX_HOOK=1';",
-    "",
-    "if (!outputPath) {",
-    "  process.exit(0);",
-    "}",
-    "",
-    "function asObject(value) {",
-    "  return value && typeof value === 'object' && !Array.isArray(value)",
-    "    ? value",
-    "    : {};",
-    "}",
-    "",
-    "function asArray(value) {",
-    "  return Array.isArray(value) ? value : [];",
-    "}",
-    "",
-    "function buildHookDefinition(eventName) {",
-    "  return {",
-    "    hooks: [",
-    "      {",
-    "        type: 'command',",
-    '        command: managedHookMarker + \'; [ -n "${KMUX_SOCKET_PATH:-}" ] || exit 0; [ -n "${KMUX_AGENT_BIN_DIR:-}" ] || exit 0; [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ] || exit 0; "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" codex \' + eventName + \' || true\',',
-    "      },",
-    "    ],",
-    "  };",
-    "}",
-    "",
-    "function readHooks(filePath) {",
-    "  if (!fs.existsSync(filePath)) {",
-    "    return { ok: true, config: {}, shouldWrite: true };",
-    "  }",
-    "  try {",
-    "    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));",
-    "    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {",
-    "      return { ok: false };",
-    "    }",
-    "    return { ok: true, config: parsed, shouldWrite: false };",
-    "  } catch {",
-    "    return { ok: false };",
-    "  }",
-    "}",
-    "",
-    "const managedEvents = ['SessionStart', 'PermissionRequest', 'Stop'];",
-    "const deprecatedManagedEvents = ['UserPromptSubmit'];",
-    "",
-    "function isManagedHookEntry(entry, eventName) {",
-    "  return entry && typeof entry === 'object' && !Array.isArray(entry)",
-    "    && entry.type === 'command'",
-    "    && typeof entry.command === 'string'",
-    "    && entry.command.includes(managedHookMarker)",
-    "    && entry.command.includes(' codex ' + eventName);",
-    "}",
-    "",
-    "function pruneManagedHookEntries(hooks, eventName) {",
-    "  return asArray(hooks).flatMap((hook) => {",
-    "    if (!hook || typeof hook !== 'object' || Array.isArray(hook)",
-    "      || !Array.isArray(hook.hooks)) {",
-    "      return [hook];",
-    "    }",
-    "    const remainingHooks = hook.hooks.filter(",
-    "      (entry) => !isManagedHookEntry(entry, eventName)",
-    "    );",
-    "    if (remainingHooks.length === hook.hooks.length) {",
-    "      return [hook];",
-    "    }",
-    "    if (remainingHooks.length === 0) {",
-    "      return [];",
-    "    }",
-    "    return [{ ...hook, hooks: remainingHooks }];",
-    "  });",
-    "}",
-    "",
-    "const readResult = readHooks(outputPath);",
-    "if (!readResult.ok) {",
-    "  process.exit(1);",
-    "}",
-    "const baseHooksConfig = asObject(readResult.config);",
-    "const baseHooks = asObject(baseHooksConfig.hooks);",
-    "const prunedBaseHooks = Object.fromEntries(",
-    "  Object.entries(baseHooks).map(([eventName, hooks]) => [",
-    "    eventName,",
-    "    deprecatedManagedEvents.includes(eventName)",
-    "      ? pruneManagedHookEntries(hooks, eventName)",
-    "      : hooks,",
-    "  ]).filter(([, hooks]) => !Array.isArray(hooks) || hooks.length > 0)",
-    ");",
-    "const managedHookEntries = Object.fromEntries(",
-    "  managedEvents.map((eventName) => [",
-    "    eventName,",
-    "    [",
-    "      ...pruneManagedHookEntries(prunedBaseHooks[eventName], eventName),",
-    "      buildHookDefinition(eventName),",
-    "    ],",
-    "  ])",
-    ");",
-    "",
-    "const mergedHooks = {",
-    "  ...baseHooksConfig,",
-    "  hooks: {",
-    "    ...prunedBaseHooks,",
-    "    ...managedHookEntries,",
-    "  },",
-    "};",
-    "",
-    "const existingSerialized = JSON.stringify(baseHooksConfig);",
-    "const mergedSerialized = JSON.stringify(mergedHooks);",
-    "if (readResult.shouldWrite || existingSerialized !== mergedSerialized) {",
-    "  fs.mkdirSync(path.dirname(outputPath), { recursive: true });",
-    "  fs.writeFileSync(outputPath, mergedSerialized, 'utf8');",
-    "}",
-    "EOF",
-    "  then",
-    '    KMUX_USE_CODEX_HOOKS="1"',
-    "  fi",
+    'if [ -f "$KMUX_CODEX_HOME/hooks.json" ] &&',
+    "  grep -q 'KMUX_MANAGED_CODEX_HOOK=1' \"$KMUX_CODEX_HOME/hooks.json\" 2>/dev/null &&",
+    `  grep -q '${wrapperPolicy.contractMarker}' "$KMUX_CODEX_HOME/hooks.json" 2>/dev/null; then`,
+    '  KMUX_USE_CODEX_HOOKS="1"',
     "fi",
     "# History: kmux sets TERM_PROGRAM=kmux for child PTYs. Codex TUI currently",
     "# only auto-selects OSC 9 notifications for a small terminal allowlist",
@@ -1471,20 +1485,20 @@ function buildCodexWrapperScript(): string {
     '  _kmux_codex_minor="${_kmux_codex_rest%%.*}"',
     '  case "$_kmux_codex_major" in',
     "    ''|*[!0-9]*)",
-    "      printf '%s\\n' codex_hooks",
+    `      printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "      return 0",
     "      ;;",
     "  esac",
     '  case "$_kmux_codex_minor" in',
     "    ''|*[!0-9]*|\"$_kmux_codex_version\")",
-    "      printf '%s\\n' codex_hooks",
+    `      printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "      return 0",
     "      ;;",
     "  esac",
-    '  if [ "$_kmux_codex_major" -gt 0 ] || [ "$_kmux_codex_minor" -ge 129 ]; then',
-    "    printf '%s\\n' hooks",
+    `  if [ "$_kmux_codex_major" -gt 0 ] || [ "$_kmux_codex_minor" -ge ${wrapperPolicy.currentHooksFeatureMinor} ]; then`,
+    `    printf '%s\\n' ${wrapperPolicy.currentHooksFeature}`,
     "  else",
-    "    printf '%s\\n' codex_hooks",
+    `    printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "  fi",
     "}",
     "kmux_log_codex_wrapper",
@@ -1495,7 +1509,7 @@ function buildCodexWrapperScript(): string {
     '  set -- --enable "$KMUX_CODEX_HOOKS_FEATURE" "$@"',
     "fi",
     'if ! kmux_has_notification_method_override "$@"; then',
-    '  set -- --config tui.notification_method=osc9 "$@"',
+    `  set -- --config tui.notification_method=${wrapperPolicy.notificationMethod} "$@"`,
     "fi",
     '  "$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?',
     'exit "$KMUX_EXIT_CODE"',

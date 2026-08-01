@@ -23,6 +23,10 @@ export default defineConfig({
         "packages/persistence/src/index.ts"
       ),
       "@kmux/metadata": resolve(currentDir, "packages/metadata/src/index.ts"),
+      "@kmux/agent-integration": resolve(
+        currentDir,
+        "packages/agent-integration/src/index.ts"
+      ),
       "@kmux/ui": resolve(currentDir, "packages/ui/src/index.ts")
     }
   },

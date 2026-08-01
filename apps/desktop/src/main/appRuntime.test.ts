@@ -101,6 +101,7 @@ function createRuntime(
         prependWrapperToPath: true
       },
       hookEnv: {
+        KMUX_AGENT_HOOK_TRANSPORT: "local",
         KMUX_SOCKET_PATH: "/tmp/kmux.sock",
         KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-hooks",
         KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"
@@ -1568,6 +1569,7 @@ describe("app runtime shell patches", () => {
       }),
       shellLaunchPolicy: expect.objectContaining({
         hookEnv: {
+          KMUX_AGENT_HOOK_TRANSPORT: "local",
           KMUX_SOCKET_PATH: "/tmp/kmux.sock",
           KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-hooks",
           KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"

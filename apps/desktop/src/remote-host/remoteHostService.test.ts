@@ -1205,6 +1205,12 @@ function makePreparedRuntime(
       stateRoot: "/home/kmux/.local/state/kmux",
       runtimeRoot: "/home/kmux/.local/run/kmux"
     },
+    agentIntegration: {
+      status: "ready",
+      contractVersion: 2,
+      agentBinDir: "/home/kmux/.local/share/kmux/shims/current",
+      vendors: []
+    },
     async rotateBridgeToken(options) {
       onRotate(options);
     },

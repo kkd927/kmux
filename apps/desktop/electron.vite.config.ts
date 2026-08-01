@@ -45,6 +45,10 @@ const alias = {
   "@kmux/proto": resolve(repoRoot, "packages/proto/src/index.ts"),
   "@kmux/persistence": resolve(repoRoot, "packages/persistence/src/index.ts"),
   "@kmux/metadata": resolve(repoRoot, "packages/metadata/src/index.ts"),
+  "@kmux/agent-integration": resolve(
+    repoRoot,
+    "packages/agent-integration/src/index.ts"
+  ),
   "@kmux/ui": resolve(repoRoot, "packages/ui/src/index.ts")
 };
 

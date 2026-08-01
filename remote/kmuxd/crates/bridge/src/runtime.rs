@@ -12,7 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kmux_compat::{
-    AgentScopeSettings, AgentSettings, AttachAuthorizedResponse, AttachmentAccess, BridgeRequest,
+    AgentIntegrationDiagnostic, AgentIntegrationVendorDiagnostic, AgentScopeSettings,
+    AgentSettings, AttachAuthorizedResponse, AttachmentAccess, BridgeRequest,
     BridgeRequestEnvelope, BridgeResponseBody, BridgeResponseEnvelope, BridgeResponseStatus,
     CohortProxyRequest, CohortProxyResponse, ConversionPreparedResponse,
     ConversionPromotedResponse, DesiredForwardResponse, EventsAcknowledgedResponse,
@@ -1177,6 +1178,7 @@ fn handle_single_request(
             transaction_id,
             workspace_create_operation_id,
             session_create_operation_id,
+            surface_id,
             workspace_resource_key,
             session_resource_key,
             remote_snapshot,
@@ -1191,6 +1193,7 @@ fn handle_single_request(
                 transaction_id,
                 workspace_create_operation_id,
                 session_create_operation_id,
+                surface_id,
                 workspace_resource_key,
                 session_resource_key,
                 remote_snapshot,
@@ -1262,6 +1265,7 @@ fn hello(
             "surface.capture-bounded".to_owned(),
             "events.replay-ack".to_owned(),
             "hook.spool-v1".to_owned(),
+            "agent-integration-v2".to_owned(),
             "conversion.provisional-v1".to_owned(),
             "git.inspect-bounded-v1".to_owned(),
             "ports.inspect-bounded-v1".to_owned(),
@@ -1301,12 +1305,26 @@ fn execute_operation(
         | RemoteOperationPayload::WorkspaceTerminate { .. } => {
             execute_workspace_operation(roots, &intent, &payload)
         }
-        RemoteOperationPayload::SessionCreate { launch, .. } => {
-            execute_session_create(roots, retention_policy, executable, &intent, launch)
-        }
-        RemoteOperationPayload::SessionRestart { launch, .. } => {
-            execute_session_restart(roots, retention_policy, executable, &intent, launch)
-        }
+        RemoteOperationPayload::SessionCreate {
+            surface_id, launch, ..
+        } => execute_session_create(
+            roots,
+            retention_policy,
+            executable,
+            &intent,
+            &surface_id,
+            launch,
+        ),
+        RemoteOperationPayload::SessionRestart {
+            surface_id, launch, ..
+        } => execute_session_restart(
+            roots,
+            retention_policy,
+            executable,
+            &intent,
+            &surface_id,
+            launch,
+        ),
         RemoteOperationPayload::SessionAdopt { launch, .. } => {
             execute_session_adopt(roots, &intent, &launch)
         }
@@ -2667,6 +2685,7 @@ fn execute_session_create(
     retention_policy: RemoteRetentionPolicy,
     executable: &Path,
     intent: &RemoteOperationIntent,
+    surface_id: &str,
     launch: kmux_compat::RemoteSessionLaunchPayload,
 ) -> Result<OperationResult, BridgeRuntimeError> {
     let descriptor_path =
@@ -2685,9 +2704,9 @@ fn execute_session_create(
         {
             spawn_keeper(executable, &descriptor_path, &existing.keeper_generation)?;
             let recovered = wait_for_keeper(&descriptor_path, &existing.keeper_generation)?;
-            return resolve_existing_operation(&recovered, intent);
+            return resolve_existing_session_operation(&recovered, intent);
         }
-        return resolve_existing_operation(&existing, intent);
+        return resolve_existing_session_operation(&existing, intent);
     }
     if intent.expected_remote_resource_revision != "0" {
         return Ok(operation_failure(
@@ -2696,7 +2715,15 @@ fn execute_session_create(
             "session does not exist at the expected revision",
         ));
     }
-    create_keeper(roots, retention_policy, executable, intent, launch, None)
+    create_keeper(
+        roots,
+        retention_policy,
+        executable,
+        intent,
+        surface_id,
+        launch,
+        None,
+    )
 }
 
 fn execute_session_restart(
@@ -2704,6 +2731,7 @@ fn execute_session_restart(
     retention_policy: RemoteRetentionPolicy,
     executable: &Path,
     intent: &RemoteOperationIntent,
+    surface_id: &str,
     launch: kmux_compat::RemoteSessionLaunchPayload,
 ) -> Result<OperationResult, BridgeRuntimeError> {
     let descriptor_path =
@@ -2713,14 +2741,14 @@ fn execute_session_restart(
     let existing = load_session_descriptor(&descriptor_path)?;
     if existing.last_operation_id == intent.operation_id {
         if existing.last_operation_payload_hash != intent.canonical_payload_hash {
-            return resolve_existing_operation(&existing, intent);
+            return resolve_existing_session_operation(&existing, intent);
         }
         if existing.state == SessionDescriptorState::Creating {
             spawn_keeper(executable, &descriptor_path, &existing.keeper_generation)?;
             let recovered = wait_for_keeper(&descriptor_path, &existing.keeper_generation)?;
-            return resolve_existing_operation(&recovered, intent);
+            return resolve_existing_session_operation(&recovered, intent);
         }
-        return resolve_existing_operation(&existing, intent);
+        return resolve_existing_session_operation(&existing, intent);
     }
     if existing.remote_resource_revision != intent.expected_remote_resource_revision {
         return Ok(operation_failure(
@@ -2762,6 +2790,7 @@ fn execute_session_restart(
         retention_policy,
         executable,
         intent,
+        surface_id,
         launch,
         Some(&existing),
     )
@@ -3023,6 +3052,7 @@ fn create_keeper(
     retention_policy: RemoteRetentionPolicy,
     executable: &Path,
     intent: &RemoteOperationIntent,
+    surface_id: &str,
     mut launch: kmux_compat::RemoteSessionLaunchPayload,
     previous: Option<&SessionDescriptor>,
 ) -> Result<OperationResult, BridgeRuntimeError> {
@@ -3059,13 +3089,7 @@ fn create_keeper(
         .session_id
         .as_deref()
         .ok_or_else(|| BridgeRuntimeError::Invalid("session ID is required".to_owned()))?;
-    let surface_id = launch
-        .env
-        .as_ref()
-        .and_then(|env| env.get("KMUX_SURFACE_ID"))
-        .filter(|value| validate_id(value, "KMUX_SURFACE_ID").is_ok())
-        .cloned()
-        .unwrap_or_else(|| session_id.to_owned());
+    validate_id(surface_id, "surfaceId")?;
     let control_token = format!(
         "{:x}",
         Sha256::digest(format!("{}:{}", Uuid::new_v4(), Uuid::new_v4()).as_bytes())
@@ -3078,7 +3102,7 @@ fn create_keeper(
         &SessionControlEndpoint {
             version: 1,
             resource_key: intent.resource_key.clone(),
-            surface_id: surface_id.clone(),
+            surface_id: surface_id.to_owned(),
             keeper_generation: generation.clone(),
             state_root: roots.state_root.clone(),
             descriptor_path: descriptor_path.to_string_lossy().into_owned(),
@@ -3092,6 +3116,12 @@ fn create_keeper(
         executable,
         &executable_generation,
     )?;
+    let (integration_home, integration_codex_home) = agent_integration_homes(launch.env.as_ref());
+    let agent_integration = reconcile_agent_integration(
+        integration_home.as_deref(),
+        integration_codex_home.as_deref(),
+        &cli_bin,
+    );
     let mut managed_env = launch.env.take().unwrap_or_default();
     managed_env.remove("KMUX_SOCKET_PATH");
     managed_env.remove("KMUX_AGENT_BIN_DIR");
@@ -3103,7 +3133,7 @@ fn create_keeper(
         "KMUX_WORKSPACE_ID".to_owned(),
         intent.resource_key.workspace_id.clone(),
     );
-    managed_env.insert("KMUX_SURFACE_ID".to_owned(), surface_id);
+    managed_env.insert("KMUX_SURFACE_ID".to_owned(), surface_id.to_owned());
     managed_env.insert("KMUX_SESSION_ID".to_owned(), session_id.to_owned());
     managed_env.insert("KMUX_KEEPER_GENERATION".to_owned(), generation.clone());
     managed_env.insert(
@@ -3115,6 +3145,7 @@ fn create_keeper(
         endpoint_path.to_string_lossy().into_owned(),
     );
     managed_env.insert("KMUX_AUTH_TOKEN".to_owned(), control_token);
+    managed_env.insert("KMUX_AGENT_HOOK_TRANSPORT".to_owned(), "remote".to_owned());
     managed_env.insert(
         "KMUX_CLI_PATH".to_owned(),
         cli_bin.join("kmux").to_string_lossy().into_owned(),
@@ -3122,6 +3153,42 @@ fn create_keeper(
     managed_env.insert(
         "KMUX_AGENT_BIN_DIR".to_owned(),
         cli_bin.to_string_lossy().into_owned(),
+    );
+    let inherited_path = managed_env
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    preserve_managed_environment_value(
+        &mut managed_env,
+        "PATH",
+        "KMUX_ORIGINAL_PATH",
+        &inherited_path,
+    );
+    let cli_path = cli_bin.to_string_lossy();
+    let filtered_path = inherited_path
+        .split(':')
+        .filter(|entry| *entry != cli_path)
+        .collect::<Vec<_>>()
+        .join(":");
+    managed_env.insert(
+        "PATH".to_owned(),
+        if filtered_path.is_empty() {
+            cli_path.into_owned()
+        } else {
+            format!("{cli_path}:{filtered_path}")
+        },
+    );
+    // User startup files may replace PATH. The managed shell roots source the
+    // user's normal rc files first, then put this runtime generation back in
+    // front so an older globally-installed kmux wrapper cannot win.
+    let inherited_shell = std::env::var("SHELL").ok();
+    let integration_shell =
+        effective_shell_for_integration(launch.shell.as_deref(), inherited_shell.as_deref());
+    let _ = kmux_agent_integration::prepare_shell_environment(
+        integration_shell.as_deref(),
+        &mut managed_env,
+        &cli_bin,
     );
     launch.env = Some(managed_env);
     let descriptor = SessionDescriptor {
@@ -3185,11 +3252,141 @@ fn create_keeper(
     write_session_descriptor(&descriptor_path, &descriptor)?;
     spawn_keeper(executable, &descriptor_path, &generation)?;
     let running = wait_for_keeper(&descriptor_path, &generation)?;
-    Ok(operation_success(
-        intent,
-        result_digest,
-        Some(running.keeper_generation),
-    ))
+    let mut result = operation_success(intent, result_digest, Some(running.keeper_generation));
+    result.agent_integration = Some(agent_integration);
+    Ok(result)
+}
+
+fn reconcile_agent_integration(
+    home: Option<&Path>,
+    codex_home: Option<&Path>,
+    agent_bin_dir: &Path,
+) -> AgentIntegrationDiagnostic {
+    let Some(home) = home else {
+        return AgentIntegrationDiagnostic {
+            status: "degraded".to_owned(),
+            contract_version: None,
+            agent_bin_dir: Some(agent_bin_dir.to_string_lossy().into_owned()),
+            vendors: Vec::new(),
+            warning: Some("remote agent integration HOME is unavailable".to_owned()),
+        };
+    };
+    match kmux_agent_integration::ensure_all_with_codex_home(home, agent_bin_dir, codex_home) {
+        Ok(report) => {
+            let vendors = report
+                .vendors
+                .into_iter()
+                .map(|vendor| AgentIntegrationVendorDiagnostic {
+                    vendor: vendor.vendor,
+                    path: vendor.path.to_string_lossy().into_owned(),
+                    status: match vendor.status {
+                        kmux_agent_integration::VendorStatus::Changed => "changed",
+                        kmux_agent_integration::VendorStatus::Current => "current",
+                        kmux_agent_integration::VendorStatus::Degraded => "degraded",
+                    }
+                    .to_owned(),
+                    contract_version: vendor.contract_version,
+                    warning: vendor
+                        .warning
+                        .map(|warning| bounded_diagnostic_warning(&warning)),
+                })
+                .collect::<Vec<_>>();
+            AgentIntegrationDiagnostic {
+                status: if vendors.iter().any(|vendor| vendor.status == "degraded") {
+                    "degraded"
+                } else {
+                    "ready"
+                }
+                .to_owned(),
+                contract_version: Some(report.contract_version),
+                agent_bin_dir: Some(report.agent_bin_dir.to_string_lossy().into_owned()),
+                vendors,
+                warning: None,
+            }
+        }
+        Err(error) => AgentIntegrationDiagnostic {
+            status: "degraded".to_owned(),
+            contract_version: None,
+            agent_bin_dir: Some(agent_bin_dir.to_string_lossy().into_owned()),
+            vendors: Vec::new(),
+            warning: Some(bounded_diagnostic_warning(&error.to_string())),
+        },
+    }
+}
+
+fn agent_integration_homes(
+    env: Option<&BTreeMap<String, String>>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let absolute_path = |name: &str| {
+        if let Some(value) = env.and_then(|env| env.get(name)) {
+            return Some(PathBuf::from(value)).filter(|path| path.is_absolute());
+        }
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    (absolute_path("HOME"), absolute_path("CODEX_HOME"))
+}
+
+fn resolve_existing_session_operation(
+    descriptor: &SessionDescriptor,
+    intent: &RemoteOperationIntent,
+) -> Result<OperationResult, BridgeRuntimeError> {
+    let mut result = resolve_existing_operation(descriptor, intent)?;
+    if result.outcome != "succeeded" {
+        return Ok(result);
+    }
+    let agent_bin_dir = descriptor
+        .launch
+        .env
+        .as_ref()
+        .and_then(|env| env.get("KMUX_AGENT_BIN_DIR"))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let Some(agent_bin_dir) = agent_bin_dir else {
+        result.agent_integration = Some(AgentIntegrationDiagnostic {
+            status: "degraded".to_owned(),
+            contract_version: None,
+            agent_bin_dir: None,
+            vendors: Vec::new(),
+            warning: Some("remote agent integration helper directory is unavailable".to_owned()),
+        });
+        return Ok(result);
+    };
+    let user_env = user_launch_env(descriptor.launch.env.as_ref());
+    let (home, codex_home) = agent_integration_homes(user_env.as_ref());
+    result.agent_integration = Some(reconcile_agent_integration(
+        home.as_deref(),
+        codex_home.as_deref(),
+        &agent_bin_dir,
+    ));
+    Ok(result)
+}
+
+fn bounded_diagnostic_warning(value: &str) -> String {
+    let mut warning = String::new();
+    for character in value.chars().filter(|character| !character.is_control()) {
+        if warning.len().saturating_add(character.len_utf8()) > MAX_OPERATION_MESSAGE_BYTES {
+            break;
+        }
+        warning.push(character);
+    }
+    let warning = warning.trim();
+    if warning.is_empty() {
+        "remote agent integration reconciliation failed".to_owned()
+    } else {
+        warning.to_owned()
+    }
+}
+
+fn effective_shell_for_integration(
+    configured: Option<&str>,
+    inherited: Option<&str>,
+) -> Option<String> {
+    configured
+        .or(inherited)
+        .filter(|value| Path::new(value).is_absolute())
+        .map(str::to_owned)
 }
 
 fn user_launch_env(env: Option<&BTreeMap<String, String>>) -> Option<BTreeMap<String, String>> {
@@ -3200,6 +3397,7 @@ fn user_launch_env(env: Option<&BTreeMap<String, String>>) -> Option<BTreeMap<St
         "KMUX_SURFACE_ID",
         "KMUX_SESSION_ID",
         "KMUX_KEEPER_GENERATION",
+        "KMUX_AGENT_HOOK_TRANSPORT",
         "KMUX_AGENT_HOOK_ENDPOINT",
         "KMUX_REMOTE_CONTROL_ENDPOINT",
         "KMUX_AUTH_TOKEN",
@@ -3208,10 +3406,72 @@ fn user_launch_env(env: Option<&BTreeMap<String, String>>) -> Option<BTreeMap<St
         "KMUX_AGENT_BIN_DIR",
     ];
     let mut sanitized = env?.clone();
+    restore_managed_environment_value(
+        &mut sanitized,
+        "HOME",
+        "KMUX_ORIGINAL_HOME",
+        "KMUX_ORIGINAL_HOME_PRESENT",
+    );
+    restore_managed_environment_value(
+        &mut sanitized,
+        "ZDOTDIR",
+        "KMUX_ORIGINAL_ZDOTDIR",
+        "KMUX_ORIGINAL_ZDOTDIR_PRESENT",
+    );
+    restore_managed_environment_value(
+        &mut sanitized,
+        "XDG_CONFIG_HOME",
+        "KMUX_ORIGINAL_XDG_CONFIG_HOME",
+        "KMUX_ORIGINAL_XDG_CONFIG_HOME_PRESENT",
+    );
+    restore_managed_environment_value(
+        &mut sanitized,
+        "PATH",
+        "KMUX_ORIGINAL_PATH",
+        "KMUX_ORIGINAL_PATH_PRESENT",
+    );
     for key in MANAGED_KEYS {
         sanitized.remove(*key);
     }
     (!sanitized.is_empty()).then_some(sanitized)
+}
+
+fn preserve_managed_environment_value(
+    env: &mut BTreeMap<String, String>,
+    key: &str,
+    managed_key: &str,
+    fallback: &str,
+) {
+    let present = env.contains_key(key);
+    let value = env.get(key).cloned().unwrap_or_else(|| fallback.to_owned());
+    env.insert(managed_key.to_owned(), value);
+    env.insert(
+        format!("{managed_key}_PRESENT"),
+        u8::from(present).to_string(),
+    );
+}
+
+fn restore_managed_environment_value(
+    env: &mut BTreeMap<String, String>,
+    key: &str,
+    managed_key: &str,
+    present_key: &str,
+) {
+    let present = env.remove(present_key);
+    let original = env.remove(managed_key);
+    match present.as_deref() {
+        Some("1") => {
+            if let Some(original) = original {
+                env.insert(key.to_owned(), original);
+            } else {
+                env.remove(key);
+            }
+        }
+        Some("0") => {
+            env.remove(key);
+        }
+        _ => {}
+    }
 }
 
 fn spawn_keeper(
@@ -3402,6 +3662,7 @@ struct ConversionPrepareInput {
     transaction_id: String,
     workspace_create_operation_id: String,
     session_create_operation_id: String,
+    surface_id: String,
     workspace_resource_key: RemoteResourceKey,
     session_resource_key: RemoteResourceKey,
     remote_snapshot: String,
@@ -3525,6 +3786,7 @@ fn prepare_conversion(
         retention_policy,
         executable,
         &session_intent,
+        &input.surface_id,
         input.launch,
     )?;
     if creation.outcome != "succeeded" {
@@ -5124,6 +5386,7 @@ fn operation_success(
         remote_resource_revision: Some(intent.next_remote_resource_revision.clone()),
         result_digest,
         keeper_generation,
+        agent_integration: None,
         code: None,
         message: None,
     }
@@ -5141,6 +5404,7 @@ fn operation_failure(operation_id: &str, code: &str, message: &str) -> Operation
         remote_resource_revision: None,
         result_digest,
         keeper_generation: None,
+        agent_integration: None,
         code: Some(code.to_owned()),
         message: Some(message),
     }
@@ -5691,77 +5955,8 @@ fn ensure_remote_cli_shims(
     executable: &Path,
     executable_generation: &str,
 ) -> Result<PathBuf, BridgeRuntimeError> {
-    if !install_root.is_absolute() || !is_sha256(executable_generation) {
-        return Err(BridgeRuntimeError::Invalid(
-            "remote CLI shim scope is invalid".to_owned(),
-        ));
-    }
-    // `bin/` contains immutable content-addressed executable generations.
-    // Mutable CLI wrappers belong to a separate namespace so shim refreshes
-    // cannot make generation validation or GC race with live sessions.
-    let directory = install_root
-        .join("shims")
-        .join(&executable_generation[..16]);
-    ensure_private_directory(&directory)?;
-    let _lock = acquire_resource_lock(&directory.join("shim-set"))?;
-    let quoted_executable = quote_posix_word(&executable.to_string_lossy());
-    let cli = format!("#!/bin/sh\nexec {quoted_executable} cli \"$@\"\n");
-    let hook = format!(
-        "#!/bin/sh\nagent=${{1:-unknown}}\nevent=${{2:-event}}\nif [ \"${{KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}}\" = json ]; then\n  exec {quoted_executable} hook emit --kind agent-hook --name \"$agent.$event\"\nfi\nexec {quoted_executable} hook emit --kind agent-hook --name \"$agent.$event\" >/dev/null 2>&1\n"
-    );
-    write_executable_atomic(&directory.join("kmux"), cli.as_bytes())?;
-    write_executable_atomic(&directory.join("kmux-agent-hook"), hook.as_bytes())?;
-    Ok(directory)
-}
-
-fn quote_posix_word(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn write_executable_atomic(path: &Path, bytes: &[u8]) -> Result<(), BridgeRuntimeError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| BridgeRuntimeError::Invalid("shim path has no parent".to_owned()))?;
-    ensure_private_directory(parent)?;
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        if !metadata.is_file()
-            || metadata.file_type().is_symlink()
-            || metadata.uid() != effective_uid()
-            || metadata.mode() & 0o077 != 0
-            || metadata.len() > 64 * 1024
-        {
-            return Err(BridgeRuntimeError::Invalid(
-                "remote CLI shim is unsafe".to_owned(),
-            ));
-        }
-        if fs::read(path)? == bytes {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-            return Ok(());
-        }
-    }
-    let temporary = parent.join(format!(".shim-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o700)
-            .custom_flags(OFlag::O_NOFOLLOW.bits())
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        // Do not publish an executable while it still has a writable file
-        // descriptor. Linux rejects an exec racing with that descriptor as
-        // ETXTBSY ("Text file busy").
-        drop(file);
-        fs::rename(&temporary, path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    kmux_agent_integration::ensure_runtime_shims(install_root, executable, executable_generation)
+        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))
 }
 
 fn write_json_create_new(path: &Path, value: &impl Serialize) -> Result<(), BridgeRuntimeError> {
@@ -6154,6 +6349,13 @@ mod tests {
 
     #[test]
     fn create_retry_uses_permanent_create_result_after_later_mutation() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let home = sandbox.path().join("home");
+        let codex_home = sandbox.path().join("custom-codex-home");
+        let agent_bin_dir = sandbox.path().join("agent-bin");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::create_dir_all(&agent_bin_dir).unwrap();
+        fs::write(codex_home.join("hooks.json"), b"{").unwrap();
         let payload_hash = "b".repeat(64);
         let intent = operation_intent("session.create", &payload_hash);
         let descriptor = SessionDescriptor {
@@ -6178,7 +6380,28 @@ mod tests {
                 cwd: "/tmp".to_owned(),
                 shell: None,
                 args: None,
-                env: None,
+                env: Some(BTreeMap::from([
+                    (
+                        "HOME".to_owned(),
+                        agent_bin_dir
+                            .join("shell/bash")
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                    (
+                        "KMUX_ORIGINAL_HOME".to_owned(),
+                        home.to_string_lossy().into_owned(),
+                    ),
+                    ("KMUX_ORIGINAL_HOME_PRESENT".to_owned(), "1".to_owned()),
+                    (
+                        "CODEX_HOME".to_owned(),
+                        codex_home.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "KMUX_AGENT_BIN_DIR".to_owned(),
+                        agent_bin_dir.to_string_lossy().into_owned(),
+                    ),
+                ])),
                 title: None,
                 cols: 80,
                 rows: 24,
@@ -6198,10 +6421,20 @@ mod tests {
             retained_checkpoint: None,
             truncated_before_sequence: None,
         };
-        let result = resolve_existing_operation(&descriptor, &intent).unwrap();
+        let result = resolve_existing_session_operation(&descriptor, &intent).unwrap();
         assert_eq!(result.outcome, "succeeded");
         assert_eq!(result.result_digest, "c".repeat(64));
         assert_eq!(result.keeper_generation.as_deref(), Some("keeper_current"));
+        let diagnostic = result.agent_integration.unwrap();
+        assert_eq!(diagnostic.status, "degraded");
+        let codex = diagnostic
+            .vendors
+            .iter()
+            .find(|vendor| vendor.vendor == "codex")
+            .unwrap();
+        assert_eq!(codex.path, codex_home.join("hooks.json").to_string_lossy());
+        assert_eq!(codex.status, "degraded");
+        assert!(!home.join(".codex/hooks.json").exists());
 
         let mut terminate_intent = operation_intent("session.terminate", &"d".repeat(64));
         terminate_intent.operation_id = "terminate_1".to_owned();
@@ -6796,6 +7029,10 @@ mod tests {
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         let bin = ensure_remote_cli_shims(sandbox.path(), &executable, &"a".repeat(64)).unwrap();
         let hook = bin.join("kmux-agent-hook");
+        assert!(bin.join("codex").exists());
+        let hook_script = fs::read_to_string(&hook).unwrap();
+        assert!(hook_script.contains("KMUX_AGENT_HOOK_TRANSPORT"));
+        assert!(hook_script.contains("KMUX_AGENT_HOOK_ENDPOINT"));
 
         let silent = std::process::Command::new(&hook)
             .args(["codex", "Stop"])
@@ -6863,6 +7100,71 @@ mod tests {
                 ("PATH".to_owned(), "/custom/bin:/usr/bin".to_owned()),
                 ("USER_VALUE".to_owned(), "preserved".to_owned()),
             ]))
+        );
+    }
+
+    #[test]
+    fn managed_shell_roots_restore_the_exact_user_launch_environment() {
+        let without_home = BTreeMap::from([
+            ("HOME".to_owned(), "/kmux/shell/bash".to_owned()),
+            ("KMUX_ORIGINAL_HOME".to_owned(), "/remote/home".to_owned()),
+            ("KMUX_ORIGINAL_HOME_PRESENT".to_owned(), "0".to_owned()),
+            ("KMUX_AGENT_BIN_DIR".to_owned(), "/kmux/bin".to_owned()),
+            ("USER_VALUE".to_owned(), "preserved".to_owned()),
+        ]);
+        assert_eq!(
+            user_launch_env(Some(&without_home)),
+            Some(BTreeMap::from([(
+                "USER_VALUE".to_owned(),
+                "preserved".to_owned()
+            )]))
+        );
+
+        let with_zdotdir = BTreeMap::from([
+            ("ZDOTDIR".to_owned(), "/kmux/shell/zsh".to_owned()),
+            ("KMUX_ORIGINAL_ZDOTDIR".to_owned(), "/remote/zsh".to_owned()),
+            ("KMUX_ORIGINAL_ZDOTDIR_PRESENT".to_owned(), "1".to_owned()),
+        ]);
+        assert_eq!(
+            user_launch_env(Some(&with_zdotdir)),
+            Some(BTreeMap::from([(
+                "ZDOTDIR".to_owned(),
+                "/remote/zsh".to_owned()
+            )]))
+        );
+
+        let with_injected_path = BTreeMap::from([
+            (
+                "PATH".to_owned(),
+                "/kmux/bin:/remote/custom/bin:/usr/bin".to_owned(),
+            ),
+            (
+                "KMUX_ORIGINAL_PATH".to_owned(),
+                "/remote/custom/bin:/usr/bin".to_owned(),
+            ),
+            ("KMUX_ORIGINAL_PATH_PRESENT".to_owned(), "1".to_owned()),
+        ]);
+        assert_eq!(
+            user_launch_env(Some(&with_injected_path)),
+            Some(BTreeMap::from([(
+                "PATH".to_owned(),
+                "/remote/custom/bin:/usr/bin".to_owned()
+            )]))
+        );
+
+        let without_original_path = BTreeMap::from([
+            ("PATH".to_owned(), "/kmux/bin:/usr/bin".to_owned()),
+            ("KMUX_ORIGINAL_PATH".to_owned(), "/usr/bin".to_owned()),
+            ("KMUX_ORIGINAL_PATH_PRESENT".to_owned(), "0".to_owned()),
+        ]);
+        assert_eq!(user_launch_env(Some(&without_original_path)), None);
+        assert_eq!(
+            effective_shell_for_integration(None, Some("/bin/bash")).as_deref(),
+            Some("/bin/bash")
+        );
+        assert_eq!(
+            effective_shell_for_integration(Some("/bin/zsh"), Some("/bin/bash")).as_deref(),
+            Some("/bin/zsh")
         );
     }
 

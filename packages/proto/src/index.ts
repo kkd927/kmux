@@ -41,6 +41,7 @@ export type {
 } from "./remoteFrames";
 export {
   REMOTE_PROTOCOL_VERSION,
+  decodeAgentIntegrationDiagnostic,
   decodeRemoteBridgeResponseBody,
   decodeRemoteBridgeResponseEnvelope,
   decodeRemoteKeeperControlMessage,
@@ -48,6 +49,8 @@ export {
   encodeRemoteControlJson
 } from "./remoteControl";
 export type {
+  AgentIntegrationDiagnosticDto,
+  AgentIntegrationVendorDiagnosticDto,
   RemoteBridgeRequestBody,
   RemoteBridgeRequestEnvelope,
   RemoteBridgeResponseBody,

@@ -4,7 +4,9 @@ import { chmod, lstat, mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { isAbsolute, join, posix } from "node:path";
 
 import {
+  decodeAgentIntegrationDiagnostic,
   REMOTE_PROTOCOL_VERSION,
+  type AgentIntegrationDiagnosticDto,
   type RemoteRuntimeRootsDto
 } from "@kmux/proto";
 
@@ -75,6 +77,7 @@ export interface PreparedRemoteRuntime {
   roots: RemoteRuntimeRootsDto;
   shellPolicy: BootstrapShellPolicy;
   doctor: RemoteDoctorReport;
+  agentIntegration: AgentIntegrationDiagnosticDto;
   rotateBridgeToken(options: {
     desktopInstallationId: string;
     targetId: string;
@@ -247,6 +250,13 @@ export async function prepareRemoteRuntime(
     );
   }
 
+  const agentIntegration = await reconcileRemoteAgentIntegration(
+    runtimeOptions,
+    shellPolicy,
+    runtimePath,
+    remoteHome
+  );
+
   return {
     runtimePath,
     generation,
@@ -254,6 +264,7 @@ export async function prepareRemoteRuntime(
     roots: structuredClone(roots),
     shellPolicy,
     doctor,
+    agentIntegration,
     async rotateBridgeToken(options): Promise<void> {
       if (
         options.desktopInstallationId.length === 0 ||
@@ -893,6 +904,64 @@ async function runHelperCommand(
     buildBootstrapHelperCommand(policy, runtimePath, args),
     limits
   );
+}
+
+async function reconcileRemoteAgentIntegration(
+  options: PrepareRemoteRuntimeOptions,
+  policy: BootstrapShellPolicy,
+  runtimePath: string,
+  remoteHome: string
+): Promise<AgentIntegrationDiagnosticDto> {
+  try {
+    const result = await runHelperCommand(
+      options,
+      policy,
+      runtimePath,
+      [
+        "agent-integration",
+        "ensure",
+        "--json",
+        "--home",
+        remoteHome
+      ],
+      { maxOutputBytes: 256 * 1024 }
+    );
+    const report = parseJsonObject(
+      result.stdout,
+      "remote agent integration ensure"
+    );
+    assertExactKeys(report, ["agentBinDir", "contractVersion", "vendors"]);
+    if (!Array.isArray(report.vendors)) {
+      throw new TypeError("remote agent integration vendors must be an array");
+    }
+    return decodeAgentIntegrationDiagnostic({
+      ...report,
+      status: report.vendors.some(
+        (vendor) =>
+          requireRecord(vendor, "remote agent integration vendor").status ===
+          "degraded"
+      )
+        ? "degraded"
+        : "ready"
+    });
+  } catch (error) {
+    return decodeAgentIntegrationDiagnostic({
+      status: "degraded",
+      vendors: [],
+      warning: boundedAgentIntegrationWarning(error)
+    });
+  }
+}
+
+function boundedAgentIntegrationWarning(error: unknown): string {
+  const source = error instanceof Error ? error.message : String(error);
+  let warning = "";
+  for (const character of source) {
+    if (character < " " || character === "\u007f") continue;
+    if (Buffer.byteLength(warning + character, "utf8") > 4 * 1024) break;
+    warning += character;
+  }
+  return warning.trim() || "remote agent integration reconciliation failed";
 }
 
 async function runMuxCommand(

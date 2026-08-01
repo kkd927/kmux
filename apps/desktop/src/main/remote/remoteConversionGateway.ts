@@ -3,6 +3,7 @@ import type {
   ConversionRemoteGateway,
   ConversionRemotePrepareRequest
 } from "./transactionalWorkspaceConversion";
+import { conversionSurfaceIdForTransaction } from "./transactionalWorkspaceConversion";
 import type { ConversionProductInstalledRecord } from "./conversionWal";
 
 export function createRemoteHostSshWorkspaceTransactionGateway(
@@ -17,6 +18,7 @@ export function createRemoteHostSshWorkspaceTransactionGateway(
           transactionId: record.transactionId,
           workspaceCreateOperationId: record.workspaceCreateOperationId,
           sessionCreateOperationId: record.sessionCreateOperationId,
+          surfaceId: conversionSurfaceIdForTransaction(record.transactionId),
           workspaceResourceKey: record.workspaceResourceKey,
           sessionResourceKey: record.sessionResourceKey,
           remoteSnapshot: request.remoteSnapshot,

@@ -17,6 +17,7 @@ const linuxShellPolicy: ShellLaunchPolicy = {
     prependWrapperToPath: true
   },
   hookEnv: {
+    KMUX_AGENT_HOOK_TRANSPORT: "local",
     KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
     KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
     KMUX_NODE_PATH: "/opt/kmux/kmux"

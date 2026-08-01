@@ -6,6 +6,7 @@ import { prepareShellIntegrationLaunch } from "./shellIntegration";
 import { buildSessionEnv } from "./sessionEnv";
 
 const defaultHookEnv = {
+  KMUX_AGENT_HOOK_TRANSPORT: "local" as const,
   KMUX_SOCKET_PATH: "/tmp/kmux.sock",
   KMUX_AGENT_BIN_DIR: "/tmp/kmux-agent-hooks",
   KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"
@@ -85,6 +86,7 @@ describe("buildSessionEnv", () => {
         KMUX_PANE_ID: "pane_launch"
       },
       hookEnv: {
+        KMUX_AGENT_HOOK_TRANSPORT: "local",
         KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
         KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
         KMUX_NODE_PATH: "/opt/kmux/kmux"
@@ -151,6 +153,7 @@ describe("buildSessionEnv", () => {
         KMUX_NODE_PATH: "/launch/kmux"
       },
       hookEnv: {
+        KMUX_AGENT_HOOK_TRANSPORT: "local",
         KMUX_SOCKET_PATH: "/run/user/1000/kmux/control.sock",
         KMUX_AGENT_BIN_DIR: "/home/test/.local/share/kmux/hooks",
         KMUX_NODE_PATH: "/opt/kmux/kmux"
@@ -184,6 +187,7 @@ describe("buildSessionEnv", () => {
         PATH: "/usr/bin"
       },
       hookEnv: {
+        KMUX_AGENT_HOOK_TRANSPORT: "local",
         KMUX_SOCKET_PATH: "/Users/test/.kmux/control.sock",
         KMUX_AGENT_BIN_DIR: helperBinDir,
         KMUX_NODE_PATH: "/Applications/kmux.app/Contents/MacOS/kmux"

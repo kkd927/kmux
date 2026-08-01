@@ -9,9 +9,8 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
+import { ensureAgentIntegrationVendor } from "@kmux/agent-integration";
 import type { AgentStorageRoots } from "@kmux/metadata";
-
-import { shellAbsolutePathAssignment } from "./agentHookCommand";
 
 const ANTIGRAVITY_HOOKS_PATH_SEGMENTS = [
   ".gemini",
@@ -20,20 +19,7 @@ const ANTIGRAVITY_HOOKS_PATH_SEGMENTS = [
 ] as const;
 const ANTIGRAVITY_SESSION_INDEX_VERSION = 1;
 const ANTIGRAVITY_SESSION_INDEX_FILENAME = "antigravity-sessions.json";
-const KMUX_MANAGED_ANTIGRAVITY_HOOK_MARKER = "KMUX_MANAGED_ANTIGRAVITY_HOOK=1";
-
-type AntigravityHookEvent =
-  | "PreInvocation"
-  | "PreToolUse"
-  | "PostToolUse"
-  | "PostInvocation"
-  | "Stop";
 type JsonObject = Record<string, unknown>;
-
-interface HookCommandDefinition extends JsonObject {
-  type?: unknown;
-  command?: unknown;
-}
 
 export interface AntigravityIntegrationInstallResult {
   changed: boolean;
@@ -62,12 +48,6 @@ interface AntigravitySessionIndexEnvelope {
   sessions: AntigravitySessionIndexRecord[];
 }
 
-const MANAGED_ANTIGRAVITY_HOOK_EVENTS: AntigravityHookEvent[] = [
-  "PreInvocation",
-  "PreToolUse",
-  "Stop"
-];
-
 function isPlainObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -85,114 +65,6 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
-function antigravityHookFallbackJson(eventName: AntigravityHookEvent): string {
-  if (eventName === "PreToolUse" || eventName === "Stop") {
-    return JSON.stringify({ decision: "allow" });
-  }
-  return JSON.stringify({});
-}
-
-function buildAntigravityHookCommand(
-  eventName: AntigravityHookEvent,
-  runtimePaths: AntigravityHookRuntimePaths = {}
-): string {
-  const fallbackCommand = `printf '%s\\n' '${antigravityHookFallbackJson(eventName)}'`;
-  return [
-    `${KMUX_MANAGED_ANTIGRAVITY_HOOK_MARKER};`,
-    shellAbsolutePathAssignment(
-      "_kmux_socket_path",
-      "KMUX_SOCKET_PATH",
-      runtimePaths.socketPath
-    ),
-    shellAbsolutePathAssignment(
-      "_kmux_agent_bin_dir",
-      "KMUX_AGENT_BIN_DIR",
-      runtimePaths.agentBinDir
-    ),
-    'if [ -n "$_kmux_socket_path" ] &&',
-    '[ -n "$_kmux_agent_bin_dir" ] &&',
-    '[ -x "$_kmux_agent_bin_dir/kmux-agent-hook" ]; then',
-    `KMUX_SOCKET_PATH="$_kmux_socket_path" KMUX_AGENT_BIN_DIR="$_kmux_agent_bin_dir" KMUX_AGENT_HOOK_OUTPUT_MODE=json "$_kmux_agent_bin_dir/kmux-agent-hook" antigravity ${eventName} || ${fallbackCommand};`,
-    "else",
-    `${fallbackCommand};`,
-    "fi"
-  ].join(" ");
-}
-
-function buildManagedHookCommand(
-  eventName: AntigravityHookEvent,
-  runtimePaths: AntigravityHookRuntimePaths
-): HookCommandDefinition {
-  return {
-    type: "command",
-    command: buildAntigravityHookCommand(eventName, runtimePaths)
-  };
-}
-
-function buildManagedEventConfig(
-  eventName: AntigravityHookEvent,
-  runtimePaths: AntigravityHookRuntimePaths
-): unknown[] {
-  const hook = buildManagedHookCommand(eventName, runtimePaths);
-  if (eventName === "PreToolUse") {
-    return [
-      {
-        matcher: ".*",
-        hooks: [hook]
-      }
-    ];
-  }
-  return [hook];
-}
-
-function isManagedAntigravityHookCommand(
-  hook: unknown
-): hook is HookCommandDefinition {
-  return (
-    isPlainObject(hook) &&
-    typeof hook.command === "string" &&
-    hook.command.includes(KMUX_MANAGED_ANTIGRAVITY_HOOK_MARKER)
-  );
-}
-
-function pruneManagedAntigravityHooksFromConfig(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    const nextItems = value
-      .map((item) => pruneManagedAntigravityHooksFromConfig(item))
-      .filter((item) => item !== null);
-    return nextItems.length > 0 ? nextItems : null;
-  }
-  if (!isPlainObject(value)) {
-    return value;
-  }
-  if (isManagedAntigravityHookCommand(value)) {
-    return null;
-  }
-  const nextObject: JsonObject = {};
-  for (const [key, nestedValue] of Object.entries(value)) {
-    const pruned = pruneManagedAntigravityHooksFromConfig(nestedValue);
-    if (pruned !== null) {
-      nextObject[key] = pruned;
-    }
-  }
-  if (Array.isArray(value.hooks) && !Array.isArray(nextObject.hooks)) {
-    return null;
-  }
-  return nextObject;
-}
-
-function parseJsonFile(path: string): JsonObject | null {
-  if (!existsSync(path)) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function ensureAntigravityHooksInstalled(
   homeDir: string | undefined,
   runtimePaths: AntigravityHookRuntimePaths = {}
@@ -204,39 +76,12 @@ export function ensureAntigravityHooksInstalled(
       ? join(normalizedHomeDir, ...ANTIGRAVITY_HOOKS_PATH_SEGMENTS)
       : join(...ANTIGRAVITY_HOOKS_PATH_SEGMENTS));
 
-  if (!normalizedHomeDir && !runtimePaths.agentStorageRoots) {
-    return {
-      changed: false,
-      hooksPath,
-      warning:
-        "[agent-hooks] Antigravity integration was skipped because HOME could not be resolved."
-    };
-  }
-
-  const existingHooks = parseJsonFile(hooksPath);
-  if (!existingHooks) {
-    return {
-      changed: false,
-      hooksPath,
-      warning: `[agent-hooks] Antigravity integration was skipped because ${hooksPath} is not valid JSON.`
-    };
-  }
-
-  const prunedHooks = pruneManagedAntigravityHooksFromConfig(existingHooks);
-  const nextHooks = isPlainObject(prunedHooks) ? { ...prunedHooks } : {};
-  nextHooks["kmux-antigravity"] = Object.fromEntries(
-    MANAGED_ANTIGRAVITY_HOOK_EVENTS.map((eventName) => [
-      eventName,
-      buildManagedEventConfig(eventName, runtimePaths)
-    ])
-  );
-
-  if (JSON.stringify(existingHooks) === JSON.stringify(nextHooks)) {
-    return { changed: false, hooksPath };
-  }
-
-  atomicWrite(hooksPath, `${JSON.stringify(nextHooks, null, 2)}\n`);
-  return { changed: true, hooksPath };
+  const result = ensureAgentIntegrationVendor("antigravity", hooksPath);
+  return {
+    changed: result.status === "changed",
+    hooksPath,
+    ...(result.warning ? { warning: result.warning } : {})
+  };
 }
 
 export function antigravitySessionIndexPath(

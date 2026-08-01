@@ -355,6 +355,7 @@ describe("usage runtime", () => {
       targetId: "target_1",
       sequence: uint64(1n),
       eventId: "remote-event-1",
+      disposition: "applied",
       productAction: {
         type: "agent.event",
         workspaceId,

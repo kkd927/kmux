@@ -40,6 +40,7 @@ export interface ShellLaunchPolicy {
 }
 
 export interface ShellLaunchHookEnv extends Record<string, string> {
+  KMUX_AGENT_HOOK_TRANSPORT: "local";
   KMUX_SOCKET_PATH: string;
   KMUX_AGENT_BIN_DIR: string;
   KMUX_NODE_PATH: string;

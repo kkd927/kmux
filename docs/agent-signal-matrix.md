@@ -99,15 +99,32 @@ Not allowed:
 
 ## Vendor Matrix
 
+The installed set below is owned by
+[`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json).
+Local TypeScript and remote `kmuxd` both consume that contract.
+
+<!-- agent-integration-contract:v2:start -->
+| Agent | Installed hooks | Removed legacy kmux hooks |
+| --- | --- | --- |
+| Claude | `PermissionRequest`, `PreToolUse(AskUserQuestion\|ExitPlanMode)`, `SessionStart`, `Stop` | `Notification`, `PostToolUse`, `SessionEnd`, `UserPromptSubmit` |
+| Codex | `SessionStart`, `PermissionRequest`, `Stop` | `UserPromptSubmit` |
+| Antigravity | `PreInvocation`, `PreToolUse(.*)`, `Stop` | `PostToolUse`, `PostInvocation` |
+<!-- agent-integration-contract:v2:end -->
+
+Settings reconciliation is non-destructive:
+
+- unknown fields and user hook entries are preserved; only entries carrying the vendor's kmux marker are replaced or removed
+- a missing managed container is created, but an existing `hooks`, managed namespace, or managed event with an unsupported container type degrades only that vendor and leaves the file content and mtime unchanged
+- one degraded vendor does not block other vendor integrations or terminal/session creation
+
 ### Claude
 
 Installed hooks:
 
-- [`apps/desktop/src/main/claudeIntegration.ts`](../apps/desktop/src/main/claudeIntegration.ts)
+- [`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json)
 - `PermissionRequest`
 - `PreToolUse` with matcher `AskUserQuestion|ExitPlanMode`
 - `SessionStart`
-- `SessionEnd`
 - `Stop`
 
 Canonical notification signals:
@@ -117,7 +134,6 @@ Canonical notification signals:
 - if a legacy/user-defined generic `Notification` hook reaches kmux, it is suppressed in `main` before reducer dispatch when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same agent and surface still exists.
 - the reducer performs the reverse cleanup: when a structured `needs_input` arrives, or when `clearAgentAttentionUi` runs (on `idle`/`turn_complete`/`session_end`), any generic `source = "agent"` notification for the same agent and surface is removed. This covers the case where a generic hook arrived first and the structured hook arrived afterwards.
 - hook `SessionStart` -> `agent.event(session_start)`
-- hook `SessionEnd` -> `agent.event(session_end)`
 - hook `Stop` -> `agent.event(turn_complete)`
 - visible-surface submit/dismiss input -> `agent.attention.clear` for that surface
 
@@ -140,7 +156,7 @@ OSC policy:
 
 Installed hooks:
 
-- [`apps/desktop/src/pty-host/shellIntegration.ts`](../apps/desktop/src/pty-host/shellIntegration.ts)
+- [`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json)
 - `SessionStart`
 - `PermissionRequest`
 - `Stop`
@@ -148,7 +164,7 @@ Installed hooks:
 Canonical notification signals:
 
 - hook `SessionStart` -> `agent.event(session_start)`
-- kmux no longer installs Codex `UserPromptSubmit` hooks. Older kmux-managed entries for that hook are removed when the wrapper updates while user-defined hooks are preserved.
+- kmux no longer installs Codex `UserPromptSubmit` hooks. Older kmux-managed entries for that hook are removed by the shared settings orchestrator while user-defined hooks are preserved.
 - hook `PermissionRequest` -> `agent.event(needs_input)`
 - hook `Stop` -> `agent.event(turn_complete)`
 - filtered terminal OSC attention -> synthetic `agent.event(needs_input)` with `details.uiOnly = true`
@@ -163,13 +179,14 @@ Important:
 
 OSC policy:
 
-- in [`terminalBridge.ts`](../apps/desktop/src/main/terminalBridge.ts), if the surface vendor is `codex`:
+- local and SSH projection share [`agentTerminalNotificationPolicy.ts`](../apps/desktop/src/main/agentTerminalNotificationPolicy.ts); if the surface vendor is `codex`:
 - allowlist known input-required patterns such as `Plan mode prompt:`, approval, permission, answer/selection prompts
 - promote those to synthetic `agent.event(needs_input)`
 - mark them with `details.uiOnly = true`
 - suppress other Codex terminal notifications instead of showing generic chatter
 - if the surface vendor is still `unknown`, only a stricter Codex-specific subset such as `Plan mode prompt:` and answer/selection prompts may be promoted
 - this fallback exists for restored Codex sessions where the app has not yet rebound usage/vendor state but Codex is already waiting for input
+- SSH-suppressed terminal events are durably recorded with a `suppressed` disposition and acknowledged so they cannot stall later remote events
 
 Usage policy:
 
@@ -180,7 +197,7 @@ Usage policy:
 
 Installed hooks:
 
-- [`apps/desktop/src/main/antigravityIntegration.ts`](../apps/desktop/src/main/antigravityIntegration.ts)
+- [`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json)
 - global hooks only in `~/.gemini/config/hooks.json`
 - top-level managed hook entry `kmux-antigravity`
 - `PreInvocation`

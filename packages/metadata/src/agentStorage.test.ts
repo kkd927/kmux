@@ -34,7 +34,8 @@ describe("agent storage roots", () => {
       codex: {
         root: "/home/test/.codex",
         sessionsDir: "/home/test/.codex/sessions",
-        authPath: "/home/test/.codex/auth.json"
+        authPath: "/home/test/.codex/auth.json",
+        hooksPath: "/home/test/.codex/hooks.json"
       },
       claude: {
         root: "/home/test/.claude",
@@ -71,6 +72,23 @@ describe("agent storage roots", () => {
     );
   });
 
+  it("uses an absolute CODEX_HOME for every Codex storage path", () => {
+    const roots = resolveAgentStorageRoots({
+      homeDir: "/Users/test",
+      env: {
+        HOME: "/Users/test",
+        CODEX_HOME: "/Volumes/agent-state/codex"
+      }
+    });
+
+    expect(roots.codex).toEqual({
+      root: "/Volumes/agent-state/codex",
+      sessionsDir: "/Volumes/agent-state/codex/sessions",
+      authPath: "/Volumes/agent-state/codex/auth.json",
+      hooksPath: "/Volumes/agent-state/codex/hooks.json"
+    });
+  });
+
   it("ignores blank or relative home directory inputs", () => {
     const roots = resolveAgentStorageRoots({
       homeDir: " relative-home ",
@@ -95,6 +113,12 @@ describe("agent storage roots", () => {
     expect(envFallbackRoots.codex.authPath).not.toBe(
       join("relative-home", ".codex", "auth.json")
     );
+
+    const relativeCodexHomeRoots = resolveAgentStorageRoots({
+      homeDir: "/home/fallback",
+      env: { CODEX_HOME: "relative-codex-home" }
+    });
+    expect(relativeCodexHomeRoots.codex.root).toBe("/home/fallback/.codex");
   });
 
   it("replaces native roots and canonicalizes home-relative symlink roots", () => {

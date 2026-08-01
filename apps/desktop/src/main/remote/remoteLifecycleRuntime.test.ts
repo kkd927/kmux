@@ -306,7 +306,7 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
-  it("durably projects and acknowledges replayed hook notifications once", async () => {
+  it("routes by current session surface and acknowledges a rejected poison event", async () => {
     const fixture = remoteFixture();
     const surface =
       fixture.state.surfaces[
@@ -321,9 +321,15 @@ describe("RemoteLifecycleRuntime", () => {
     const keeperGeneration = `keeper_${fixture.initialSessionId}`;
     const event = remoteNotificationEvent({
       resourceKey,
-      surfaceId: surface.id,
+      surfaceId: "surface_origin_before_split",
       keeperGeneration
     });
+    const rejectedEvent: RemoteSpoolEventDto = {
+      ...event,
+      sequence: "2",
+      eventId: "event_rejected",
+      resourceKey: { ...resourceKey, sessionId: "session_unknown" }
+    };
     const child = new ScriptedUtilityProcess(
       new Map([
         [
@@ -337,7 +343,7 @@ describe("RemoteLifecycleRuntime", () => {
       ]),
       hello(),
       false,
-      [event]
+      [event, rejectedEvent]
     );
     const host = new RemoteHostManager(
       () => child as unknown as UtilityProcess
@@ -365,18 +371,195 @@ describe("RemoteLifecycleRuntime", () => {
       { title: "Done", message: "Ready", surfaceId: surface.id }
     ]);
     expect(fixture.state.remoteEventReceipts.target_1).toEqual({
-      throughSequence: 1n,
-      recentEventIds: ["event_1"]
+      throughSequence: 2n,
+      recentEventIds: ["event_1", "event_rejected"]
     });
     const receipt = receiptStore.load("desktop_1", "target_1");
-    expect(receipt.appliedThrough).toBe(1n);
+    expect(receipt.appliedThrough).toBe(2n);
     expect(receipt.pending).toBeUndefined();
-    expect(child.acknowledgedThrough).toBe(1n);
+    expect(child.acknowledgedThrough).toBe(2n);
     expect(persist).toHaveBeenCalled();
 
     await runtime.disconnectTarget("target_1");
     await runtime.connectTarget(connection());
     expect(fixture.state.notifications).toHaveLength(1);
+    await runtime.stop();
+  });
+
+  it("rejects an unresolved surface projection without blocking later target events", async () => {
+    const fixture = remoteFixture();
+    const firstSession = fixture.state.sessions[fixture.initialSessionId];
+    const firstSurface = fixture.state.surfaces[firstSession.surfaceId];
+    const before = new Set(Object.keys(fixture.state.workspaces));
+    applyAction(fixture.state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/second",
+      name: "remote second"
+    });
+    const secondWorkspaceId = Object.keys(fixture.state.workspaces).find(
+      (workspaceId) => !before.has(workspaceId)
+    )!;
+    const secondPane =
+      fixture.state.panes[
+        fixture.state.workspaces[secondWorkspaceId].activePaneId
+      ];
+    const secondSurface = fixture.state.surfaces[secondPane.activeSurfaceId];
+    const secondSessionId =
+      requireTerminalSurfaceContent(secondSurface).sessionId;
+    const firstResourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: fixture.workspaceId,
+      sessionId: fixture.initialSessionId
+    };
+    const secondResourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: secondWorkspaceId,
+      sessionId: secondSessionId
+    };
+    const firstEvent = remoteNotificationEvent({
+      resourceKey: firstResourceKey,
+      surfaceId: firstSurface.id,
+      keeperGeneration: `keeper_${fixture.initialSessionId}`
+    });
+    const secondEvent: RemoteSpoolEventDto = {
+      ...remoteNotificationEvent({
+        resourceKey: secondResourceKey,
+        surfaceId: secondSurface.id,
+        keeperGeneration: `keeper_${secondSessionId}`
+      }),
+      sequence: "2",
+      eventId: "event_2"
+    };
+    const child = new ScriptedUtilityProcess(
+      new Map([
+        [
+          fixture.initialSessionId,
+          {
+            resourceKey: firstResourceKey,
+            keeperGeneration: `keeper_${fixture.initialSessionId}`,
+            remoteResourceRevision: "1"
+          }
+        ],
+        [
+          secondSessionId,
+          {
+            resourceKey: secondResourceKey,
+            keeperGeneration: `keeper_${secondSessionId}`,
+            remoteResourceRevision: "1"
+          }
+        ]
+      ]),
+      hello(),
+      false,
+      [firstEvent, secondEvent]
+    );
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const replayEvents = host.replayEvents.bind(host);
+    vi.spyOn(host, "replayEvents").mockImplementationOnce(
+      async (targetId, desktopInstallationId, afterSequence) => {
+        const replay = await replayEvents(
+          targetId,
+          desktopInstallationId,
+          afterSequence
+        );
+        delete fixture.state.surfaces[firstSurface.id];
+        return replay;
+      }
+    );
+    const receiptStore = createRemoteEventReceiptStore(
+      join(sandbox, "event-receipts")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      { receiptStore, persist: vi.fn() }
+    );
+    runtime.recover();
+
+    await runtime.connectTarget(connection());
+
+    expect(fixture.state.notifications).toMatchObject([
+      { title: "Done", message: "Ready", surfaceId: secondSurface.id }
+    ]);
+    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+      throughSequence: 2n,
+      recentEventIds: ["event_1", "event_2"]
+    });
+    const receipt = receiptStore.load("desktop_1", "target_1");
+    expect(receipt.appliedThrough).toBe(2n);
+    expect(receipt.pending).toBeUndefined();
+    expect(child.acknowledgedThrough).toBe(2n);
+    await runtime.stop();
+  });
+
+  it("rejects a keeper projection that remains absent after reconciliation", async () => {
+    const fixture = remoteFixture();
+    const session = fixture.state.sessions[fixture.initialSessionId];
+    const surface = fixture.state.surfaces[session.surfaceId];
+    const resourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: fixture.workspaceId,
+      sessionId: fixture.initialSessionId
+    };
+    const firstEvent = remoteNotificationEvent({
+      resourceKey,
+      surfaceId: surface.id,
+      keeperGeneration: `keeper_${fixture.initialSessionId}`
+    });
+    const secondEvent: RemoteSpoolEventDto = {
+      ...firstEvent,
+      sequence: "2",
+      eventId: "event_2",
+      resourceKey: { ...resourceKey, sessionId: "session_unknown" }
+    };
+    const child = new ScriptedUtilityProcess(new Map(), hello(), false, [
+      firstEvent,
+      secondEvent
+    ]);
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const receiptStore = createRemoteEventReceiptStore(
+      join(sandbox, "event-receipts")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      { receiptStore, persist: vi.fn() }
+    );
+    runtime.recover();
+
+    await runtime.connectTarget(connection());
+
+    expect(fixture.state.notifications).toEqual([]);
+    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+      throughSequence: 2n,
+      recentEventIds: ["event_1", "event_2"]
+    });
+    expect(receiptStore.load("desktop_1", "target_1")).toMatchObject({
+      appliedThrough: 2n
+    });
+    expect(child.acknowledgedThrough).toBe(2n);
     await runtime.stop();
   });
 
@@ -459,6 +642,180 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
+  it("suppresses remote Codex completion OSC while retaining the structured Stop notification", async () => {
+    const fixture = remoteFixture();
+    const surface =
+      fixture.state.surfaces[
+        fixture.state.sessions[fixture.initialSessionId].surfaceId
+      ];
+    const resourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: fixture.workspaceId,
+      sessionId: fixture.initialSessionId
+    };
+    const keeperGeneration = `keeper_${fixture.initialSessionId}`;
+    const oscEvent: RemoteSpoolEventDto = {
+      ...remoteNotificationEvent({
+        resourceKey,
+        surfaceId: surface.id,
+        keeperGeneration
+      }),
+      kind: "osc-notification",
+      name: "terminal.osc.9",
+      payload: {
+        protocol: 9,
+        title: "kmux",
+        message: "Work completed successfully"
+      }
+    };
+    const stopEvent: RemoteSpoolEventDto = {
+      ...oscEvent,
+      sequence: "2",
+      eventId: "event_2",
+      kind: "agent-hook",
+      name: "codex.Stop",
+      payload: {}
+    };
+    const child = new ScriptedUtilityProcess(
+      new Map([
+        [
+          fixture.initialSessionId,
+          { resourceKey, keeperGeneration, remoteResourceRevision: "1" }
+        ]
+      ]),
+      hello(),
+      false,
+      [oscEvent, stopEvent]
+    );
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const receiptStore = createRemoteEventReceiptStore(
+      join(sandbox, "event-receipts")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      {
+        receiptStore,
+        persist: vi.fn(),
+        getSurfaceVendor: () => "codex"
+      }
+    );
+    runtime.recover();
+
+    await runtime.connectTarget(connection());
+
+    expect(fixture.state.notifications).toHaveLength(1);
+    expect(fixture.state.notifications).toMatchObject([
+      {
+        title: "Codex finished",
+        message: "Finished",
+        source: "agent",
+        kind: "turn_complete",
+        agent: "codex",
+        surfaceId: surface.id
+      }
+    ]);
+    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+      throughSequence: 2n,
+      recentEventIds: ["event_1", "event_2"]
+    });
+    expect(child.acknowledgedThrough).toBe(2n);
+    await runtime.stop();
+  });
+
+  it("promotes remote Codex input OSC into a structured needs-input event", async () => {
+    const fixture = remoteFixture();
+    const surface =
+      fixture.state.surfaces[
+        fixture.state.sessions[fixture.initialSessionId].surfaceId
+      ];
+    const resourceKey = {
+      desktopInstallationId: "desktop_1",
+      targetId: "target_1",
+      workspaceId: fixture.workspaceId,
+      sessionId: fixture.initialSessionId
+    };
+    const keeperGeneration = `keeper_${fixture.initialSessionId}`;
+    const event: RemoteSpoolEventDto = {
+      ...remoteNotificationEvent({
+        resourceKey,
+        surfaceId: surface.id,
+        keeperGeneration
+      }),
+      kind: "osc-notification",
+      name: "terminal.osc.9",
+      payload: {
+        protocol: 9,
+        title: "kmux",
+        message: "Plan mode prompt: Depth"
+      }
+    };
+    const child = new ScriptedUtilityProcess(
+      new Map([
+        [
+          fixture.initialSessionId,
+          { resourceKey, keeperGeneration, remoteResourceRevision: "1" }
+        ]
+      ]),
+      hello(),
+      false,
+      [event]
+    );
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const receiptStore = createRemoteEventReceiptStore(
+      join(sandbox, "event-receipts")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      {
+        receiptStore,
+        persist: vi.fn(),
+        getSurfaceVendor: () => "codex"
+      }
+    );
+    runtime.recover();
+
+    await runtime.connectTarget(connection());
+
+    expect(fixture.state.notifications).toHaveLength(1);
+    expect(fixture.state.notifications).toMatchObject([
+      {
+        title: "Codex needs input",
+        message: "Plan mode prompt: Depth",
+        source: "agent",
+        kind: "needs_input",
+        agent: "codex",
+        surfaceId: surface.id
+      }
+    ]);
+    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+      throughSequence: 1n,
+      recentEventIds: ["event_1"]
+    });
+    expect(child.acknowledgedThrough).toBe(1n);
+    await runtime.stop();
+  });
+
   it("recovers the crash window after product snapshot but before cursor completion", async () => {
     const fixture = remoteFixture();
     const surface =
@@ -486,6 +843,7 @@ describe("RemoteLifecycleRuntime", () => {
       targetId: "target_1",
       sequence: uint64(1n),
       eventId: "event_1",
+      disposition: "applied",
       productAction: {
         type: "notification.create",
         workspaceId: fixture.workspaceId,
@@ -1386,6 +1744,8 @@ function createRuntime(
   phase6?: {
     receiptStore: RemoteEventReceiptStore;
     persist: (state: AppState) => void;
+    getSurfaceVendor?: () => "codex" | "claude" | "antigravity" | "unknown";
+    isSurfaceVisibleToUser?: () => boolean;
   },
   observedBindings: RemoteTargetBinding[] = [],
   onTargetConnected?: (targetId: string) => void,
@@ -1408,7 +1768,9 @@ function createRuntime(
           dispatchAppAction: (action: Parameters<typeof applyAction>[1]) => {
             applyAction(state, action);
           },
-          eventReceiptStore: phase6.receiptStore
+          eventReceiptStore: phase6.receiptStore,
+          getSurfaceVendor: phase6.getSurfaceVendor,
+          isSurfaceVisibleToUser: phase6.isSurfaceVisibleToUser
         }),
     retainedInventory,
     closeWorkspaceProduct: (workspaceId) => {
@@ -1671,6 +2033,12 @@ class ScriptedUtilityProcess extends EventEmitter {
             arch: this.handshake.arch,
             abi: this.handshake.abi,
             ...roots
+          },
+          agentIntegration: {
+            status: "ready",
+            contractVersion: 2,
+            agentBinDir: "/home/kmux/.kmux/shims/current",
+            vendors: []
           }
         });
         return;

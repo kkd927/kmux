@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  cp,
   copyFile,
   mkdir,
   mkdtemp,
@@ -83,6 +84,23 @@ try {
 }
 
 async function buildLinuxArtifact(temporaryRoot) {
+  const contextRoot = join(temporaryRoot, "context");
+  const contextSource = join(contextRoot, "remote", "kmuxd");
+  const contextContract = join(contextRoot, "packages", "agent-integration");
+  const artifactRoot = join(temporaryRoot, "artifact");
+  await mkdir(dirname(contextSource), { recursive: true });
+  await mkdir(dirname(contextContract), { recursive: true });
+  await cp(sourceDirectory, contextSource, {
+    recursive: true,
+    filter: (path) =>
+      !path.includes(`${join("remote", "kmuxd", "target")}`) &&
+      !path.includes(`${join("remote", "kmuxd", "dist")}`)
+  });
+  await cp(
+    join(repositoryRoot, "packages", "agent-integration"),
+    contextContract,
+    { recursive: true }
+  );
   await execFileAsync(
     process.env.KMUX_DOCKER_PATH ?? "docker",
     [
@@ -91,14 +109,14 @@ async function buildLinuxArtifact(temporaryRoot) {
       "--platform",
       contract.dockerPlatform,
       "--file",
-      join(sourceDirectory, "Dockerfile.linux-musl"),
+      join(contextSource, "Dockerfile.linux-musl"),
       "--build-arg",
       `RUST_TARGET=${contract.rustTarget}`,
       "--target",
       "artifact",
       "--output",
-      `type=local,dest=${temporaryRoot}`,
-      sourceDirectory
+      `type=local,dest=${artifactRoot}`,
+      contextRoot
     ],
     {
       cwd: repositoryRoot,
@@ -106,7 +124,7 @@ async function buildLinuxArtifact(temporaryRoot) {
       timeout: 15 * 60 * 1000
     }
   );
-  return join(temporaryRoot, "kmuxd");
+  return join(artifactRoot, "kmuxd");
 }
 
 async function buildDarwinArtifact() {

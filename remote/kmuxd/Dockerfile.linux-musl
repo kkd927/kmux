@@ -8,11 +8,12 @@ RUN test -n "$RUST_TARGET" \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add "$RUST_TARGET"
 
-WORKDIR /source
-COPY . .
+WORKDIR /source/remote/kmuxd
+COPY remote/kmuxd/ .
+COPY packages/agent-integration/ /source/packages/agent-integration/
 
 RUN --mount=type=cache,id=kmux-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=kmux-target-linux-musl,target=/source/target,sharing=locked \
+    --mount=type=cache,id=kmux-target-linux-musl,target=/source/remote/kmuxd/target,sharing=locked \
     cargo build --locked --release --target "$RUST_TARGET" \
     && mkdir -p /artifact \
     && cp "target/$RUST_TARGET/release/kmuxd" /artifact/kmuxd \

@@ -2,6 +2,7 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { chmodSync, lstatSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { ensureAgentIntegrationVendor } from "@kmux/agent-integration";
 import {
   encodeAppStateDto,
   type AppAction,
@@ -698,6 +699,14 @@ export class KmuxSocketServer {
           activeWorkspaceId,
           runtime
         );
+      case "agent.integration.ensure": {
+        const result = ensureAgentIntegrationVendor(
+          request.params.vendor,
+          request.params.path
+        );
+        if (result.warning) console.warn(result.warning);
+        return result;
+      }
       case "agent.hook": {
         const onAgentHook = runtime.onAgentHook;
         if (onAgentHook) {

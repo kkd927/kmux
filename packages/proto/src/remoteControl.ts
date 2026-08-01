@@ -30,6 +30,22 @@ export interface RemoteRuntimeRootsDto {
   runtimeRoot: string;
 }
 
+export interface AgentIntegrationVendorDiagnosticDto {
+  vendor: "claude" | "codex" | "antigravity";
+  path: string;
+  status: "changed" | "current" | "degraded";
+  contractVersion: number;
+  warning?: string;
+}
+
+export interface AgentIntegrationDiagnosticDto {
+  status: "ready" | "degraded";
+  contractVersion?: number;
+  agentBinDir?: string;
+  vendors: AgentIntegrationVendorDiagnosticDto[];
+  warning?: string;
+}
+
 export interface RemoteConversionSessionLaunchDto {
   cwd: string;
   shell?: string;
@@ -42,6 +58,7 @@ export interface RemoteConversionPrepareRequestDto {
   transactionId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
+  surfaceId: Id;
   workspaceResourceKey: RemoteResourceKeyDto;
   sessionResourceKey: RemoteResourceKeyDto & { sessionId: Id };
   remoteSnapshot: string;
@@ -192,6 +209,7 @@ export type RemoteBridgeResponseBody =
       remoteResourceRevision: string;
       resultDigest: string;
       keeperGeneration?: Id;
+      agentIntegration?: AgentIntegrationDiagnosticDto;
     }
   | {
       type: "operation.result";
@@ -770,7 +788,8 @@ export function decodeRemoteBridgeResponseBody(
           "operationId",
           "remoteResourceRevision",
           "resultDigest",
-          "keeperGeneration"
+          "keeperGeneration",
+          "agentIntegration"
         ]);
         return {
           type: record.type,
@@ -787,6 +806,13 @@ export function decodeRemoteBridgeResponseBody(
                 keeperGeneration: requireId(
                   record.keeperGeneration,
                   "keeperGeneration"
+                )
+              }),
+          ...(record.agentIntegration === undefined
+            ? {}
+            : {
+                agentIntegration: decodeAgentIntegrationDiagnostic(
+                  record.agentIntegration
                 )
               })
         };
@@ -1539,6 +1565,128 @@ function decodeRemotePrincipal(
       `${context} principal accountName`,
       4 * 1024
     )
+  };
+}
+
+export function decodeAgentIntegrationDiagnostic(
+  value: unknown
+): AgentIntegrationDiagnosticDto {
+  const record = requireRecord(value, "agent integration diagnostic");
+  assertExactKeys(record, [
+    "status",
+    "contractVersion",
+    "agentBinDir",
+    "vendors",
+    "warning"
+  ]);
+  if (record.status !== "ready" && record.status !== "degraded") {
+    throw new TypeError("agent integration diagnostic status is invalid");
+  }
+  if (
+    record.contractVersion !== undefined &&
+    (!Number.isSafeInteger(record.contractVersion) ||
+      (record.contractVersion as number) < 1 ||
+      (record.contractVersion as number) > 65_535)
+  ) {
+    throw new TypeError("agent integration contract version is invalid");
+  }
+  if (!Array.isArray(record.vendors) || record.vendors.length > 3) {
+    throw new TypeError("agent integration vendors must be a bounded array");
+  }
+  const seen = new Set<string>();
+  const vendors = record.vendors.map((value) => {
+    const vendor = requireRecord(value, "agent integration vendor diagnostic");
+    assertExactKeys(vendor, [
+      "vendor",
+      "path",
+      "status",
+      "contractVersion",
+      "warning"
+    ]);
+    if (
+      vendor.vendor !== "claude" &&
+      vendor.vendor !== "codex" &&
+      vendor.vendor !== "antigravity"
+    ) {
+      throw new TypeError("agent integration vendor is invalid");
+    }
+    const vendorName =
+      vendor.vendor as AgentIntegrationVendorDiagnosticDto["vendor"];
+    if (seen.has(vendorName)) {
+      throw new TypeError("agent integration vendor is duplicated");
+    }
+    seen.add(vendorName);
+    if (
+      vendor.status !== "changed" &&
+      vendor.status !== "current" &&
+      vendor.status !== "degraded"
+    ) {
+      throw new TypeError("agent integration vendor status is invalid");
+    }
+    const vendorStatus =
+      vendor.status as AgentIntegrationVendorDiagnosticDto["status"];
+    if (
+      !Number.isSafeInteger(vendor.contractVersion) ||
+      (vendor.contractVersion as number) < 1 ||
+      (vendor.contractVersion as number) > 65_535
+    ) {
+      throw new TypeError("agent integration vendor contract version is invalid");
+    }
+    return {
+      vendor: vendorName,
+      path: requireAbsoluteRemotePath(
+        vendor.path,
+        "agent integration vendor path",
+        32 * 1024
+      ),
+      status: vendorStatus,
+      contractVersion: vendor.contractVersion as number,
+      ...(vendor.warning === undefined
+        ? {}
+        : {
+            warning: requireString(
+              vendor.warning,
+              "agent integration vendor warning",
+              32 * 1024,
+              true
+            )
+          })
+    };
+  });
+  const warning =
+    record.warning === undefined
+      ? undefined
+      : requireString(
+          record.warning,
+          "agent integration warning",
+          32 * 1024,
+          true
+        );
+  const hasDegradedVendor = vendors.some(
+    (vendor) => vendor.status === "degraded"
+  );
+  if (
+    (record.status === "ready" && (hasDegradedVendor || warning)) ||
+    (record.status === "degraded" && !hasDegradedVendor && !warning)
+  ) {
+    throw new TypeError("agent integration aggregate status is inconsistent");
+  }
+  return {
+    status: record.status,
+    ...(record.contractVersion === undefined
+      ? {}
+      : { contractVersion: record.contractVersion as number }),
+    ...(record.agentBinDir === undefined
+      ? {}
+      : {
+          agentBinDir: requireAbsoluteRemotePath(
+            record.agentBinDir,
+            "agent integration bin directory",
+            32 * 1024
+          )
+        }),
+    vendors,
+    ...(warning === undefined ? {} : { warning })
   };
 }
 

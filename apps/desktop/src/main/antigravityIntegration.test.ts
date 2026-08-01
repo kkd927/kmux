@@ -123,17 +123,10 @@ describe("ensureAntigravityHooksInstalled", () => {
     );
     expect(
       (managed.PreInvocation[0] as { command?: string }).command
-    ).toContain("$_kmux_agent_bin_dir/kmux-agent-hook");
-    expect(
-      (managed.PreInvocation[0] as { command?: string }).command
-    ).toContain(
-      `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
-    );
-    expect(
-      (managed.PreInvocation[0] as { command?: string }).command
-    ).toContain(
-      `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
-    );
+    ).toContain('${KMUX_AGENT_BIN_DIR}/kmux-agent-hook');
+    expect(JSON.stringify(managed)).not.toContain(socketPath);
+    expect(JSON.stringify(managed)).not.toContain(agentBinDir);
+    expect(JSON.stringify(managed)).toContain("command -v kmux-agent-hook");
     expect(
       (managed.PreInvocation[0] as { command?: string }).command
     ).toContain("antigravity PreInvocation");
@@ -146,7 +139,7 @@ describe("ensureAntigravityHooksInstalled", () => {
   });
 
   it(
-    "routes a global hook to kmux through installed fallback paths when inherited env is relative",
+    "routes a global hook through PATH when KMUX_AGENT_BIN_DIR is unusable",
     async () => {
       const homeDir = createSandboxHome();
       sandboxDirs.push(homeDir);
@@ -208,8 +201,10 @@ describe("ensureAntigravityHooksInstalled", () => {
             "/Users/test/antigravity-project/.gemini/jetski/artifacts"
         },
         {
-          KMUX_SOCKET_PATH: "relative.sock",
-          KMUX_AGENT_BIN_DIR: "relative-hooks"
+          KMUX_AGENT_HOOK_TRANSPORT: "local",
+          KMUX_SOCKET_PATH: socketPath,
+          KMUX_AGENT_BIN_DIR: "relative-hooks",
+          PATH: `${agentBinDir}:${process.env.PATH ?? ""}`
         }
       );
 

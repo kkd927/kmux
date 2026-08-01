@@ -502,7 +502,16 @@ export type AppAction =
       targetId: Id;
       sequence: Uint64;
       eventId: Id;
-      productAction?: RemoteEventProductAction;
+      disposition: "applied";
+      productAction: RemoteEventProductAction;
+    }
+  | {
+      type: "remote.event.apply";
+      targetId: Id;
+      sequence: Uint64;
+      eventId: Id;
+      disposition: "suppressed" | "rejected" | "pending";
+      reason: string;
     }
   | { type: "agent.attention.clear"; surfaceId: Id }
   | { type: "notification.clear"; notificationId?: Id }
@@ -3021,6 +3030,9 @@ function applyRemoteEvent(
   state: AppState,
   action: Extract<AppAction, { type: "remote.event.apply" }>
 ): AppEffect[] {
+  if (action.disposition === "pending") {
+    return [];
+  }
   const receipt = state.remoteEventReceipts[action.targetId];
   if (receipt && action.sequence <= receipt.throughSequence) {
     return [];
@@ -3032,9 +3044,10 @@ function applyRemoteEvent(
     };
     return [{ type: "persist" }];
   }
-  const effects = action.productAction
-    ? applyActionEffects(state, action.productAction)
-    : [];
+  const effects =
+    action.disposition === "applied"
+      ? applyActionEffects(state, action.productAction)
+      : [];
   const recentEventIds = [
     ...(receipt?.recentEventIds ?? []),
     action.eventId

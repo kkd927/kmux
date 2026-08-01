@@ -267,7 +267,21 @@ describe("remote control v1", () => {
             operationId: "operation_1",
             remoteResourceRevision: "18446744073709551615",
             resultDigest: "a".repeat(64),
-            keeperGeneration: "keeper_1"
+            keeperGeneration: "keeper_1",
+            agentIntegration: {
+              status: "degraded",
+              contractVersion: 2,
+              agentBinDir: "/home/kmux/.kmux/shims/current",
+              vendors: [
+                {
+                  vendor: "codex",
+                  path: "/home/kmux/.codex/hooks.json",
+                  status: "degraded",
+                  contractVersion: 2,
+                  warning: "hooks file is read-only"
+                }
+              ]
+            }
           }
         })
       )
@@ -281,7 +295,21 @@ describe("remote control v1", () => {
         operationId: "operation_1",
         remoteResourceRevision: "18446744073709551615",
         resultDigest: "a".repeat(64),
-        keeperGeneration: "keeper_1"
+        keeperGeneration: "keeper_1",
+        agentIntegration: {
+          status: "degraded",
+          contractVersion: 2,
+          agentBinDir: "/home/kmux/.kmux/shims/current",
+          vendors: [
+            {
+              vendor: "codex",
+              path: "/home/kmux/.codex/hooks.json",
+              status: "degraded",
+              contractVersion: 2,
+              warning: "hooks file is read-only"
+            }
+          ]
+        }
       }
     });
   });

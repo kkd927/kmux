@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 import { z } from "zod";
 
 const emptyParamsSchema = z.object({}).strict();
@@ -39,6 +41,17 @@ const terminalKeySchema = z
   .refine(
     (value) => Buffer.byteLength(value, "utf8") <= 4 * 1024,
     "Expected a key no larger than 4 KiB"
+  );
+const agentIntegrationPathSchema = z
+  .string()
+  .min(1)
+  .max(32 * 1024)
+  .refine(
+    (value) =>
+      isAbsolute(value) &&
+      Buffer.byteLength(value, "utf8") <= 32 * 1024 &&
+      !/\p{Cc}/u.test(value),
+    "Expected an absolute control-safe agent integration path"
   );
 
 const socketEnvelopeSchema = z.object({
@@ -170,6 +183,12 @@ const socketParamSchemas = {
       agent: z.string().min(1),
       hookEvent: z.string().min(1),
       payload: z.record(z.string(), z.unknown()).optional()
+    })
+    .strict(),
+  "agent.integration.ensure": z
+    .object({
+      vendor: z.enum(["claude", "codex", "antigravity"]),
+      path: agentIntegrationPathSchema
     })
     .strict(),
   "sidebar.set_progress": z

@@ -1,6 +1,7 @@
+use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::net::Shutdown;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +14,8 @@ use nix::sys::termios::{
     ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices, tcgetattr,
     tcsetattr,
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
 #[command(name = "kmuxd", version, about = "kmux remote runtime")]
@@ -26,6 +29,7 @@ enum RuntimeCommand {
     Bridge(BridgeCommand),
     Keeper(KeeperCommand),
     Hook(HookCommand),
+    AgentIntegration(AgentIntegrationCommand),
     Cli(CliCommand),
     Doctor(DoctorCommand),
     #[command(hide = true)]
@@ -139,6 +143,13 @@ struct HookCommand {
 #[derive(Subcommand)]
 enum HookSubcommand {
     Emit(HookEmitCommand),
+    Diagnose(HookDiagnoseCommand),
+}
+
+#[derive(Args)]
+struct HookDiagnoseCommand {
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -151,6 +162,32 @@ struct HookEmitCommand {
     name: String,
     #[arg(long)]
     event_id: Option<String>,
+}
+
+#[derive(Args)]
+struct AgentIntegrationCommand {
+    #[command(subcommand)]
+    command: AgentIntegrationSubcommand,
+}
+
+#[derive(Subcommand)]
+enum AgentIntegrationSubcommand {
+    Ensure(AgentIntegrationOptions),
+    Doctor(AgentIntegrationOptions),
+}
+
+#[derive(Args)]
+struct AgentIntegrationOptions {
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    #[arg(long)]
+    home: Option<PathBuf>,
+    #[arg(long)]
+    agent_bin_dir: Option<PathBuf>,
+    #[arg(long)]
+    vendor: Option<String>,
+    #[arg(long)]
+    path: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -386,6 +423,7 @@ fn main() -> anyhow::Result<()> {
             KeeperSubcommand::Proxy => run_keeper_proxy()?,
         },
         RuntimeCommand::Hook(command) => run_hook(command)?,
+        RuntimeCommand::AgentIntegration(command) => run_agent_integration(command)?,
         RuntimeCommand::Cli(command) => run_cli(command)?,
         RuntimeCommand::Doctor(command) => {
             let report = kmux_doctor::run_doctor(&DoctorPaths {
@@ -781,7 +819,167 @@ fn run_hook(command: HookCommand) -> anyhow::Result<()> {
                 print_json(&admission)
             }
         }
+        Some(HookSubcommand::Diagnose(diagnose)) if !command.capabilities => {
+            anyhow::ensure!(diagnose.json, "hook diagnose requires --json");
+            print_json(&diagnose_hook_transport())
+        }
         _ => anyhow::bail!("hook requires --capabilities or the emit subcommand"),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookTransportDiagnosis {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inferred: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+fn diagnose_hook_transport() -> HookTransportDiagnosis {
+    let explicit = std::env::var("KMUX_AGENT_HOOK_TRANSPORT")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let socket = std::env::var("KMUX_SOCKET_PATH").unwrap_or_default();
+    let endpoint = std::env::var("KMUX_AGENT_HOOK_ENDPOINT").unwrap_or_default();
+    let token = std::env::var("KMUX_AUTH_TOKEN").unwrap_or_default();
+    let local_present = !socket.trim().is_empty();
+    let remote_present = !endpoint.trim().is_empty() || !token.trim().is_empty();
+    let local_complete = Path::new(socket.trim()).is_absolute();
+    let remote_complete = Path::new(endpoint.trim()).is_absolute() && !token.trim().is_empty();
+    let (transport, inferred) = match explicit.as_str() {
+        "local" if local_complete => ("local", false),
+        "local" => return blocked(Some("local"), None, "local-tuple-incomplete"),
+        "remote" if remote_complete => ("remote", false),
+        "remote" => return blocked(Some("remote"), None, "remote-tuple-incomplete"),
+        "" if local_complete && !remote_present => ("local", true),
+        "" if remote_complete && !local_present => ("remote", true),
+        "" if !local_present && !remote_present => {
+            return blocked(None, None, "transport-missing");
+        }
+        "" if local_complete && remote_complete => {
+            return blocked(None, None, "transport-ambiguous");
+        }
+        "" => return blocked(None, None, "transport-tuple-incomplete"),
+        _ => return blocked(None, None, "transport-invalid"),
+    };
+    if transport == "local" {
+        return HookTransportDiagnosis {
+            status: "blocked",
+            transport: Some("local"),
+            inferred: Some(inferred),
+            reason: Some("local-transport-unavailable"),
+        };
+    }
+    match kmux_hook::authorize_session_control_endpoint(Path::new(&endpoint), &token) {
+        Ok(_) => HookTransportDiagnosis {
+            status: "ready",
+            transport: Some("remote"),
+            inferred: Some(inferred),
+            reason: None,
+        },
+        Err(kmux_hook::HookError::Unauthorized) => {
+            blocked(Some("remote"), Some(inferred), "remote-token-invalid")
+        }
+        Err(_) => blocked(Some("remote"), Some(inferred), "remote-endpoint-invalid"),
+    }
+}
+
+fn blocked(
+    transport: Option<&'static str>,
+    inferred: Option<bool>,
+    reason: &'static str,
+) -> HookTransportDiagnosis {
+    HookTransportDiagnosis {
+        status: "blocked",
+        transport,
+        inferred,
+        reason: Some(reason),
+    }
+}
+
+fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()> {
+    let options = match &command.command {
+        AgentIntegrationSubcommand::Ensure(options)
+        | AgentIntegrationSubcommand::Doctor(options) => options,
+    };
+    anyhow::ensure!(options.json, "agent-integration commands require --json");
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let generation = hash_file_bytes(&executable)?;
+    let install_root = executable
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .context("runtime executable is outside its install root")?;
+    let agent_bin_dir = match &options.agent_bin_dir {
+        Some(path) => path.clone(),
+        None => {
+            kmux_agent_integration::ensure_runtime_shims(install_root, &executable, &generation)?
+        }
+    };
+    match command.command {
+        AgentIntegrationSubcommand::Ensure(options) => match (options.vendor, options.path) {
+            (Some(vendor), Some(path)) => {
+                print_json(&kmux_agent_integration::ensure_vendor_path(&vendor, &path)?)
+            }
+            (None, None) => {
+                let home = resolve_agent_integration_home(options.home)?;
+                let codex_home = resolve_agent_integration_codex_home();
+                print_json(&kmux_agent_integration::ensure_all_with_codex_home(
+                    &home,
+                    &agent_bin_dir,
+                    codex_home.as_deref(),
+                )?)
+            }
+            _ => anyhow::bail!("agent integration --vendor and --path must be provided together"),
+        },
+        AgentIntegrationSubcommand::Doctor(options) => {
+            anyhow::ensure!(
+                options.vendor.is_none() && options.path.is_none(),
+                "agent integration doctor does not accept --vendor or --path"
+            );
+            let home = resolve_agent_integration_home(options.home)?;
+            let codex_home = resolve_agent_integration_codex_home();
+            print_json(&kmux_agent_integration::doctor_with_codex_home(
+                &home,
+                &agent_bin_dir,
+                codex_home.as_deref(),
+            )?)
+        }
+    }
+}
+
+fn resolve_agent_integration_home(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let home = home
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .context("agent integration HOME is unavailable")?;
+    anyhow::ensure!(
+        home.is_absolute(),
+        "agent integration HOME must be absolute"
+    );
+    Ok(home)
+}
+
+fn resolve_agent_integration_codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn hash_file_bytes(path: &Path) -> anyhow::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let bytes = file.read(&mut buffer)?;
+        if bytes == 0 {
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
+        hasher.update(&buffer[..bytes]);
     }
 }
 

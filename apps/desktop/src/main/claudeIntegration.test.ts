@@ -75,26 +75,18 @@ describe("ensureClaudeHooksInstalled", () => {
       "AskUserQuestion|ExitPlanMode"
     );
     expect(settings.hooks.PostToolUse).toBeUndefined();
-    expect(settings.hooks.SessionStart[0].hooks).toEqual([
-      expect.objectContaining({
-        command: expect.stringContaining(
-          `if [ "\${_kmux_socket_path_env#/}" != "$_kmux_socket_path_env" ]; then _kmux_socket_path="$_kmux_socket_path_env"; else _kmux_socket_path='${socketPath}'`
-        )
-      })
-    ]);
-    expect(settings.hooks.SessionStart[0].hooks).toEqual([
-      expect.objectContaining({
-        command: expect.stringContaining(
-          `if [ "\${_kmux_agent_bin_dir_env#/}" != "$_kmux_agent_bin_dir_env" ]; then _kmux_agent_bin_dir="$_kmux_agent_bin_dir_env"; else _kmux_agent_bin_dir='${agentBinDir}'`
-        )
-      })
-    ]);
+    expect(JSON.stringify(settings)).not.toContain(socketPath);
+    expect(JSON.stringify(settings)).not.toContain(agentBinDir);
+    expect(JSON.stringify(settings)).toContain(
+      'KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2'
+    );
+    expect(JSON.stringify(settings)).toContain("command -v kmux-agent-hook");
     expect(JSON.stringify(settings)).toContain("KMUX_MANAGED_CLAUDE_HOOK=1");
     expect(settings.hooks.Stop[0].hooks).toEqual([
       expect.objectContaining({
         type: "command",
         command: expect.stringContaining(
-          '"$_kmux_agent_bin_dir/kmux-agent-hook" claude Stop || true'
+          '"$_kmux_agent_hook" claude Stop || true'
         )
       })
     ]);

@@ -10,6 +10,7 @@ export interface AgentStorageRoots {
     root: string;
     sessionsDir: string;
     authPath: string;
+    hooksPath: string;
   };
   claude: {
     root: string;
@@ -43,7 +44,8 @@ export function resolveAgentStorageRoots(
   options: ResolveAgentStorageRootsOptions = {}
 ): AgentStorageRoots {
   const homeDir = resolveHomeDir(options.homeDir, options.env);
-  const codexRoot = join(homeDir, ".codex");
+  const codexRoot =
+    normalizedAbsolutePath(options.env?.CODEX_HOME) ?? join(homeDir, ".codex");
   const claudeRoot = join(homeDir, ".claude");
   const geminiRoot = join(homeDir, ".gemini");
   const antigravityRoot = join(geminiRoot, "antigravity-cli");
@@ -53,7 +55,8 @@ export function resolveAgentStorageRoots(
     codex: {
       root: codexRoot,
       sessionsDir: join(codexRoot, "sessions"),
-      authPath: join(codexRoot, "auth.json")
+      authPath: join(codexRoot, "auth.json"),
+      hooksPath: join(codexRoot, "hooks.json")
     },
     claude: {
       root: claudeRoot,

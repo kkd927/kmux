@@ -19,6 +19,7 @@ import {
   USAGE_AGGREGATION_REVISION,
   USAGE_PRICING_REVISION
 } from "@kmux/metadata";
+import type { AgentIntegrationDiagnosticDto } from "@kmux/proto";
 
 import {
   resolveAgentScopeSettings,
@@ -41,7 +42,7 @@ import {
 import { createAppRuntime } from "./appRuntime";
 import { DocumentService } from "./documentService";
 import { ResourceOpenCoordinator } from "./resourceOpenCoordinator";
-import { ensureClaudeHooksInstalled } from "./claudeIntegration";
+import { ensureLocalAgentIntegrations } from "./agentIntegration";
 import { createMainClipboardService } from "./clipboard";
 import { createExternalSessionScanWorkerClient } from "./externalSessionScanWorkerClient";
 import {
@@ -135,10 +136,7 @@ import {
   type MainWindowOpenReason
 } from "./rendererRecoveryController";
 import { AppStore } from "./store";
-import {
-  ensureAntigravityHooksInstalled,
-  recordAntigravitySessionFromHook
-} from "./antigravityIntegration";
+import { recordAntigravitySessionFromHook } from "./antigravityIntegration";
 import {
   KMUX_APP_ID,
   KMUX_APP_NAME,
@@ -422,24 +420,11 @@ async function bootstrap(): Promise<void> {
   };
   writeAgentHookHelpers(paths.agentHookBinDir);
   writeAgentWrapperBinaries(paths.agentWrapperBinDir);
-  const claudeIntegrationResult = ensureClaudeHooksInstalled(userHomeDir, {
-    socketPath: paths.socketPath,
-    agentBinDir: paths.agentHookBinDir,
+  for (const result of ensureLocalAgentIntegrations({
+    homeDir: userHomeDir,
     agentStorageRoots
-  });
-  if (claudeIntegrationResult.warning) {
-    console.warn(claudeIntegrationResult.warning);
-  }
-  const antigravityIntegrationResult = ensureAntigravityHooksInstalled(
-    userHomeDir,
-    {
-      socketPath: paths.socketPath,
-      agentBinDir: paths.agentHookBinDir,
-      agentStorageRoots
-    }
-  );
-  if (antigravityIntegrationResult.warning) {
-    console.warn(antigravityIntegrationResult.warning);
+  })) {
+    if (result.warning) console.warn(result.warning);
   }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
   let usageRuntime!: ReturnType<typeof createUsageRuntime>;
@@ -683,6 +668,35 @@ async function bootstrap(): Promise<void> {
   remoteHost.on("runtime-lost", () => {
     logDiagnostics("main.remote-host.runtime-lost", {});
   });
+  remoteHost.on(
+    "agent-integration",
+    (event: {
+      scope: "bootstrap" | "session";
+      targetId?: string;
+      operationId?: string;
+      report: AgentIntegrationDiagnosticDto;
+    }) => {
+      logDiagnostics("main.remote-agent-integration.reconciled", {
+        scope: event.scope,
+        targetId: event.targetId,
+        operationId: event.operationId,
+        status: event.report.status,
+        contractVersion: event.report.contractVersion,
+        agentBinDir: event.report.agentBinDir,
+        vendors: event.report.vendors,
+        warning: event.report.warning
+      });
+      if (event.report.status === "degraded") {
+        const warnings = [
+          event.report.warning,
+          ...event.report.vendors.map((vendor) => vendor.warning)
+        ].filter((warning): warning is string => Boolean(warning));
+        console.warn(
+          `[remote-agent-integration] ${warnings.join("; ") || "configuration is degraded"}`
+        );
+      }
+    }
+  );
   let sshConnections!: ReturnType<typeof createSshConnectionRuntime>;
   const sshReconnect = createSshReconnectCoordinator({
     getState: runtime.getState,
@@ -713,6 +727,8 @@ async function bootstrap(): Promise<void> {
       }
     },
     dispatchAppAction: runtime.dispatchAppAction,
+    getSurfaceVendor: usageRuntime.getSurfaceVendor,
+    isSurfaceVisibleToUser,
     eventReceiptStore: remoteEventReceiptStore,
     retainedInventory: retainedSessionInventory,
     persistDurableProductSnapshot: (state) => {

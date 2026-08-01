@@ -15,6 +15,7 @@ import type {
 import type { PtyEvent } from "../shared/ptyProtocol";
 
 import type { PtyHostManager } from "./ptyHost";
+import { classifyAgentTerminalNotification } from "./agentTerminalNotificationPolicy";
 import { logDiagnostics } from "../shared/diagnostics";
 
 interface TerminalBridgeOptions {
@@ -29,19 +30,6 @@ const TITLE_METADATA_COALESCE_MS = 1000;
 const MAX_TERMINAL_TITLE_BYTES = 4 * 1024;
 const MAX_TERMINAL_TITLE_REPORT_ID_BYTES = 512;
 const terminalTitleTextEncoder = new TextEncoder();
-type CodexInputAttentionMatch = {
-  reason:
-    | "plan-mode-prompt"
-    | "enter-to-submit-answer"
-    | "needs-input"
-    | "waiting-for-input"
-    | "question-unanswered"
-    | "question-submit";
-};
-
-type CodexInputAttentionMatchOptions = {
-  allowGenericInputPhrases: boolean;
-};
 
 export interface TerminalBridge {
   surfaceSessionId(surfaceId: Id): Id | null;
@@ -497,12 +485,12 @@ export function createTerminalBridge(
             ? encodeLocatedPathDto(runtimeMetadata.cwd).path
             : undefined) ??
           "Terminal notification";
-        const codexAttentionMatch = matchCodexInputAttentionForVendor(
+        const terminalDecision = classifyAgentTerminalNotification(
           vendor,
           title,
           message
         );
-        if (codexAttentionMatch) {
+        if (terminalDecision.disposition === "needs_input") {
           logDiagnostics("main.terminal.notification.codex-promoted", {
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
@@ -511,7 +499,7 @@ export function createTerminalBridge(
             visibleToUser,
             title,
             message,
-            matchReason: codexAttentionMatch.reason
+            matchReason: terminalDecision.reason
           });
           options.dispatchAppAction({
             type: "agent.event",
@@ -526,7 +514,7 @@ export function createTerminalBridge(
             details: {
               uiOnly: true,
               ...(visibleToUser ? { visibleToUser: true } : {}),
-              ...(vendor === "unknown"
+              ...(terminalDecision.inferredFromUnknownVendor
                 ? { inferredFromUnknownVendor: true }
                 : {}),
               source: "terminal",
@@ -536,7 +524,7 @@ export function createTerminalBridge(
           });
           return;
         }
-        if (vendor === "codex") {
+        if (terminalDecision.disposition === "suppressed") {
           logDiagnostics("main.terminal.notification.codex-suppressed", {
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
@@ -697,61 +685,6 @@ function normalizeTerminalTitleReportId(value: unknown, field: string): Id {
     throw new TypeError(`terminal title report ${field} is invalid`);
   }
   return value;
-}
-
-function matchCodexInputAttentionForVendor(
-  vendor: UsageVendor,
-  title: string,
-  message: string
-): CodexInputAttentionMatch | null {
-  if (vendor === "codex") {
-    return matchCodexInputAttention(title, message, {
-      allowGenericInputPhrases: true
-    });
-  }
-  if (vendor === "unknown") {
-    return matchCodexInputAttention(title, message, {
-      allowGenericInputPhrases: false
-    });
-  }
-  return null;
-}
-
-function matchCodexInputAttention(
-  title: string,
-  message: string,
-  options: CodexInputAttentionMatchOptions
-): CodexInputAttentionMatch | null {
-  const normalized = `${title}\n${message}`.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const hasQuestion = /\bquestion \d+\/\d+\b/i.test(normalized);
-  const hasEnterToSubmit = /\benter to submit answer\b/i.test(normalized);
-  if (hasQuestion) {
-    if (/\bunanswered\b/i.test(normalized)) {
-      return { reason: "question-unanswered" };
-    }
-    if (hasEnterToSubmit) {
-      return { reason: "question-submit" };
-    }
-  }
-  if (/\bplan mode prompt:/i.test(normalized)) {
-    return { reason: "plan-mode-prompt" };
-  }
-  if (hasEnterToSubmit) {
-    return { reason: "enter-to-submit-answer" };
-  }
-  if (options.allowGenericInputPhrases) {
-    if (/\bneeds input\b/i.test(normalized)) {
-      return { reason: "needs-input" };
-    }
-    if (/\bwaiting for input\b/i.test(normalized)) {
-      return { reason: "waiting-for-input" };
-    }
-  }
-  return null;
 }
 
 function dismissKeyFromText(

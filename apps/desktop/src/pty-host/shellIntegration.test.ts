@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
+import { ensureAgentIntegrationVendor } from "@kmux/agent-integration";
 import { describe, expect, it } from "vitest";
 
 import { MAX_DIAGNOSTICS_LOG_BYTES } from "../shared/diagnostics";
@@ -26,9 +27,46 @@ import {
 import { buildSessionEnv } from "./sessionEnv";
 
 const SPAWNED_WRAPPER_TEST_TIMEOUT_MS = 30_000;
-const ZSH_PATH = ["/bin/zsh", "/usr/bin/zsh"].find((path) =>
-  existsSync(path)
-);
+const ZSH_PATH = ["/bin/zsh", "/usr/bin/zsh"].find((path) => existsSync(path));
+
+async function startAgentIntegrationRpcServer(socketPath: string) {
+  const server = createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const request = JSON.parse(buffer.slice(0, newline)) as {
+        id?: string;
+        method?: string;
+        params?: { vendor?: "codex"; path?: string };
+      };
+      const result =
+        request.method === "agent.integration.ensure" &&
+        request.params?.vendor === "codex" &&
+        request.params.path
+          ? ensureAgentIntegrationVendor("codex", request.params.path)
+          : undefined;
+      socket.end(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          ...(result
+            ? { result }
+            : { error: { code: -32602, message: "invalid request" } })
+        })}\n`
+      );
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return server;
+}
 
 describe("shell integration launch preparation", () => {
   it("keeps launches unchanged when kmux shell integration is disabled", () => {
@@ -83,6 +121,7 @@ describe("shell integration launch preparation", () => {
           PATH: "/usr/local/bin:/usr/bin"
         },
         hookEnv: {
+          KMUX_AGENT_HOOK_TRANSPORT: "local",
           KMUX_SOCKET_PATH: "/tmp/kmux.sock",
           KMUX_AGENT_BIN_DIR: helperBinDir,
           KMUX_NODE_PATH: process.execPath
@@ -175,10 +214,10 @@ describe("shell integration launch preparation", () => {
         "  emulate -L zsh",
         "  typeset -ga precmd_functions",
         "",
-        '  if (( ${precmd_functions[(I)_kmux_emit_osc7]} == 0 )); then',
+        "  if (( ${precmd_functions[(I)_kmux_emit_osc7]} == 0 )); then",
         "    precmd_functions+=(_kmux_emit_osc7)",
         "  fi",
-        '  if (( ${precmd_functions[(I)_kmux_emit_shell_ready]} == 0 )); then',
+        "  if (( ${precmd_functions[(I)_kmux_emit_shell_ready]} == 0 )); then",
         "    precmd_functions+=(_kmux_emit_shell_ready)",
         "  fi",
         "}"
@@ -248,9 +287,9 @@ describe("shell integration launch preparation", () => {
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'KMUX_WRAPPER_TTY_PATH="$(tty 2>/dev/null || true)"'
     );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'env ELECTRON_RUN_AS_NODE=1 "$KMUX_NODE_RUNTIME" <<'
-    );
+    expect(
+      readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
+    ).not.toContain("KMUX_OUTPUT_HOOKS_FILE");
     expect(
       readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
     ).not.toContain("kmux_sync_codex_home() {");
@@ -258,10 +297,7 @@ describe("shell integration launch preparation", () => {
       readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
     ).not.toContain('export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"');
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "const managedEvents = ['SessionStart', 'PermissionRequest', 'Stop'];"
-    );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "const deprecatedManagedEvents = ['UserPromptSubmit'];"
+      "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "kmux_has_notification_method_override() {"
@@ -326,6 +362,7 @@ describe("shell integration launch preparation", () => {
           SHELL: ZSH_PATH
         },
         hookEnv: {
+          KMUX_AGENT_HOOK_TRANSPORT: "local",
           KMUX_SOCKET_PATH: "/tmp/kmux.sock",
           KMUX_AGENT_BIN_DIR: helperBinDir,
           KMUX_NODE_PATH: process.execPath
@@ -430,9 +467,7 @@ describe("shell integration launch preparation", () => {
       expect(existsSync(join(wrapperDir, ".zprofile"))).toBe(true);
       expect(existsSync(join(wrapperDir, ".zshrc"))).toBe(true);
       expect(existsSync(join(wrapperDir, "kmux.zsh"))).toBe(true);
-      expect(existsSync(join(wrapperDir, "bin", "kmux-agent-hook"))).toBe(
-        true
-      );
+      expect(existsSync(join(wrapperDir, "bin", "kmux-agent-hook"))).toBe(true);
       expect(existsSync(join(wrapperDir, "bin", "codex"))).toBe(true);
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
@@ -589,6 +624,7 @@ describe("shell integration launch preparation", () => {
           SHELL: "/bin/bash"
         },
         hookEnv: {
+          KMUX_AGENT_HOOK_TRANSPORT: "local",
           KMUX_SOCKET_PATH: "/tmp/kmux.sock",
           KMUX_AGENT_BIN_DIR: helperBinDir,
           KMUX_NODE_PATH: process.execPath
@@ -700,9 +736,7 @@ describe("shell integration launch preparation", () => {
     expect(integrationScript).toBeTruthy();
     const integrationContents = readFileSync(integrationScript ?? "", "utf8");
     expect(integrationContents).toContain("KMUX_AGENT_WRAPPER_BIN_DIR");
-    expect(integrationContents).toContain(
-      "set -gx PATH $_kmux_next_path"
-    );
+    expect(integrationContents).toContain("set -gx PATH $_kmux_next_path");
     expect(integrationContents).toContain(
       "function __kmux_emit_osc7 --on-event fish_prompt"
     );
@@ -784,6 +818,7 @@ describe("shell integration launch preparation", () => {
         const child = spawn(agentHookHelper, ["codex", "Stop"], {
           env: {
             ...process.env,
+            KMUX_AGENT_HOOK_TRANSPORT: "local",
             KMUX_AGENT_HOOK_OUTPUT_MODE: "json",
             KMUX_NODE_PATH: process.execPath,
             KMUX_SOCKET_PATH: socketPath,
@@ -889,6 +924,88 @@ describe("shell integration launch preparation", () => {
   );
 
   it(
+    "diagnoses explicit, inferred, missing, incomplete, and ambiguous transports",
+    async () => {
+      const helperDir = mkdtempSync(join(tmpdir(), "kmux-hook-diagnose-"));
+      try {
+        const prepared = prepareShellIntegrationLaunch(
+          "/bin/zsh",
+          ["-l"],
+          { HOME: "/Users/test" },
+          { enabled: true }
+        );
+        const wrapperDir = prepared.env.ZDOTDIR;
+        if (!wrapperDir) throw new Error("expected ZDOTDIR wrapper to be set");
+        const helper = join(wrapperDir, "bin", "kmux-agent-hook");
+
+        const diagnose = async (overrides: NodeJS.ProcessEnv) => {
+          const env: NodeJS.ProcessEnv = {
+            PATH: process.env.PATH,
+            KMUX_NODE_PATH: process.execPath,
+            KMUX_AGENT_BIN_DIR: join(wrapperDir, "bin"),
+            ...overrides
+          };
+          const child = spawn(helper, ["--diagnose", "--json"], {
+            env,
+            stdio: ["ignore", "pipe", "pipe"]
+          });
+          let stdout = "";
+          child.stdout.on(
+            "data",
+            (chunk) => (stdout += chunk.toString("utf8"))
+          );
+          const [code] = (await once(child, "close")) as [number | null];
+          return {
+            code,
+            report: JSON.parse(stdout) as Record<string, unknown>
+          };
+        };
+
+        await expect(
+          diagnose({
+            KMUX_AGENT_HOOK_TRANSPORT: "local",
+            KMUX_SOCKET_PATH: join(helperDir, "kmux.sock")
+          })
+        ).resolves.toMatchObject({
+          code: 0,
+          report: { status: "ready", transport: "local" }
+        });
+        await expect(
+          diagnose({ KMUX_SOCKET_PATH: join(helperDir, "legacy.sock") })
+        ).resolves.toMatchObject({
+          code: 0,
+          report: { status: "ready", transport: "local", inferred: true }
+        });
+        await expect(diagnose({})).resolves.toMatchObject({
+          code: 1,
+          report: { reason: "transport-missing" }
+        });
+        await expect(
+          diagnose({
+            KMUX_AGENT_HOOK_ENDPOINT: join(helperDir, "endpoint.json")
+          })
+        ).resolves.toMatchObject({
+          code: 1,
+          report: { reason: "transport-tuple-incomplete" }
+        });
+        await expect(
+          diagnose({
+            KMUX_SOCKET_PATH: join(helperDir, "kmux.sock"),
+            KMUX_AGENT_HOOK_ENDPOINT: join(helperDir, "endpoint.json"),
+            KMUX_AUTH_TOKEN: "token"
+          })
+        ).resolves.toMatchObject({
+          code: 1,
+          report: { reason: "transport-ambiguous" }
+        });
+      } finally {
+        rmSync(helperDir, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_WRAPPER_TEST_TIMEOUT_MS
+  );
+
+  it(
     "forces Codex to use osc9 notifications unless the caller overrides it",
     async () => {
       const prepared = prepareShellIntegrationLaunch(
@@ -927,6 +1044,10 @@ describe("shell integration launch preparation", () => {
         "utf8"
       );
       chmodSync(fakeCodex, 0o755);
+      ensureAgentIntegrationVendor(
+        "codex",
+        join(fakeHome, ".codex", "hooks.json")
+      );
 
       async function runWrapper(args: string[]): Promise<string[]> {
         const child = spawn(wrapperCodex, args, {
@@ -1011,6 +1132,10 @@ describe("shell integration launch preparation", () => {
 
       writeFileSync(fakeCodex, "#!/bin/sh\nexit 0\n", "utf8");
       chmodSync(fakeCodex, 0o755);
+      ensureAgentIntegrationVendor(
+        "codex",
+        join(fakeHome, ".codex", "hooks.json")
+      );
       writeFileSync(logPath, "stale-wrapper-record\n", { mode: 0o644 });
       truncateSync(logPath, MAX_DIAGNOSTICS_LOG_BYTES);
       chmodSync(logPath, 0o644);
@@ -1095,6 +1220,10 @@ describe("shell integration launch preparation", () => {
         "utf8"
       );
       chmodSync(fakeCodex, 0o755);
+      ensureAgentIntegrationVendor(
+        "codex",
+        join(fakeHome, ".codex", "hooks.json")
+      );
 
       async function runWrapper(
         versionOutput: string,
@@ -1186,12 +1315,15 @@ describe("shell integration launch preparation", () => {
       }
 
       const wrapperCodex = join(wrapperDir, "bin", "codex");
+      const agentBinDir = join(wrapperDir, "bin");
       const fakeCodexDir = mkdtempSync(join(tmpdir(), "kmux-fake-codex-"));
       const fakeCodex = join(fakeCodexDir, "codex");
       const fakeHome = mkdtempSync(join(tmpdir(), "kmux-fake-home-"));
-      const hooksPath = join(fakeHome, ".codex", "hooks.json");
+      const customCodexHome = join(fakeHome, "custom-codex-home");
+      const hooksPath = join(customCodexHome, "hooks.json");
+      const socketPath = join(fakeHome, "agent-integration.sock");
       const capturePath = join(fakeCodexDir, "argv.txt");
-      mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+      mkdirSync(customCodexHome, { recursive: true });
       writeFileSync(
         hooksPath,
         JSON.stringify(
@@ -1252,14 +1384,19 @@ describe("shell integration launch preparation", () => {
         "utf8"
       );
       chmodSync(fakeCodex, 0o755);
+      const server = await startAgentIntegrationRpcServer(socketPath);
 
       async function runWrapper(): Promise<void> {
         const child = spawn(wrapperCodex, ["status"], {
           env: {
             ...process.env,
             HOME: fakeHome,
+            CODEX_HOME: customCodexHome,
             PATH: `${fakeCodexDir}:${process.env.PATH ?? ""}`,
             KMUX_CAPTURE_ARGS_FILE: capturePath,
+            KMUX_AGENT_BIN_DIR: agentBinDir,
+            KMUX_AGENT_HOOK_TRANSPORT: "local",
+            KMUX_SOCKET_PATH: socketPath,
             KMUX_NODE_PATH: process.execPath,
             TERM_PROGRAM: "kmux"
           },
@@ -1307,6 +1444,7 @@ describe("shell integration launch preparation", () => {
         expect(readFileSync(hooksPath, "utf8")).toBe(firstContents);
         expect(statSync(hooksPath).mtimeMs).toBe(firstMtimeMs);
       } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
         rmSync(fakeCodexDir, { recursive: true, force: true });
         rmSync(fakeHome, { recursive: true, force: true });
       }

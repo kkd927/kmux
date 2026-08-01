@@ -10,9 +10,11 @@ import {
 } from "@kmux/core";
 import {
   IncrementalSha256,
+  decodeAgentIntegrationDiagnostic,
   parseUint64Decimal,
   uint64,
   type AgentScopeSettings,
+  type AgentIntegrationDiagnosticDto,
   type Id,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
@@ -435,6 +437,7 @@ export type DecodedRemoteHostOperationOutcome =
       remoteResourceRevision: Uint64;
       resultDigest: string;
       keeperGeneration?: Id;
+      agentIntegration?: AgentIntegrationDiagnosticDto;
     }
   | {
       status: "failed";
@@ -1055,6 +1058,7 @@ function decodeConversionPrepare(
     "transactionId",
     "workspaceCreateOperationId",
     "sessionCreateOperationId",
+    "surfaceId",
     "workspaceResourceKey",
     "sessionResourceKey",
     "remoteSnapshot",
@@ -1084,6 +1088,7 @@ function decodeConversionPrepare(
       record.sessionCreateOperationId,
       "sessionCreateOperationId"
     ),
+    surfaceId: requireId(record.surfaceId, "surfaceId"),
     workspaceResourceKey,
     sessionResourceKey,
     remoteSnapshot,
@@ -1453,7 +1458,8 @@ export function decodeRemoteHostOperationOutcome(
       "operationId",
       "remoteResourceRevision",
       "resultDigest",
-      "keeperGeneration"
+      "keeperGeneration",
+      "agentIntegration"
     ]);
     if (typeof record.remoteResourceRevision !== "bigint") {
       throw new TypeError(
@@ -1471,6 +1477,13 @@ export function decodeRemoteHostOperationOutcome(
             keeperGeneration: requireId(
               record.keeperGeneration,
               "keeperGeneration"
+            )
+          }),
+      ...(record.agentIntegration === undefined
+        ? {}
+        : {
+            agentIntegration: decodeAgentIntegrationDiagnostic(
+              record.agentIntegration
             )
           })
     };
