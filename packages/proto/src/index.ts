@@ -1089,6 +1089,7 @@ export type {
   MarkdownDocumentSubscriptionDto,
   MarkdownDocumentErrorCode,
   MarkdownDocumentEvent,
+  MarkdownImageSources,
   TerminalFileLinkActivationDto,
   TerminalRuntimeMetadataDto,
   TerminalSurfaceVmContent,
@@ -1097,6 +1098,10 @@ export type {
 
 export {
   MAX_MARKDOWN_BYTES,
+  MAX_MARKDOWN_IMAGE_DATA_URL_LENGTH,
+  MAX_MARKDOWN_IMAGE_SOURCE_LENGTH,
+  MAX_MARKDOWN_IMAGE_SOURCES,
+  MAX_MARKDOWN_IMAGE_SOURCES_TOTAL_LENGTH,
   decodeMarkdownDocumentEvent,
   decodeMarkdownDocumentSubscriptionDto,
   decodeTerminalFileLinkActivationDto,

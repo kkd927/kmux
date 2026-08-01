@@ -14,10 +14,11 @@ const renderedMarkdown = vi.hoisted(() => vi.fn());
 
 vi.mock("./MarkdownRenderedContent", () => ({
   MarkdownRenderedContent: (props: {
+    imageSources?: Readonly<Record<string, string>>;
     markdown: string;
     onReady: () => void;
   }) => {
-    renderedMarkdown(props.markdown);
+    renderedMarkdown(props.markdown, props.imageSources);
     useEffect(props.onReady, [props.onReady]);
     return <article>{props.markdown}</article>;
   }
@@ -81,9 +82,15 @@ describe("MarkdownSurfaceView document lifecycle", () => {
       surfaceId: surface.id,
       revision: 1,
       text: "# Restored",
-      byteLength: 10
+      byteLength: 10,
+      imageSources: {
+        "./hero.png": "data:image/png;base64,iVBORw=="
+      }
     });
     expect(container.textContent).toContain("# Restored");
+    expect(renderedMarkdown).toHaveBeenLastCalledWith("# Restored", {
+      "./hero.png": "data:image/png;base64,iVBORw=="
+    });
 
     act(() => root?.unmount());
     root = null;

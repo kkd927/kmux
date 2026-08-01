@@ -49,13 +49,7 @@ const MarkdownSurfaceAdapter = (
     }
     resetKey={props.surface.id}
   >
-    <Suspense
-      fallback={
-        <div role="status" style={{ flex: 1, padding: 24 }}>
-          Loading Markdown preview…
-        </div>
-      }
-    >
+    <Suspense fallback={null}>
       <LazyMarkdownSurfaceView {...props} />
     </Suspense>
   </SurfaceRenderErrorBoundary>

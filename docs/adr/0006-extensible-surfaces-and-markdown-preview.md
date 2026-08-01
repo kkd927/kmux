@@ -835,14 +835,15 @@ const plugins = {
   parseIncompleteMarkdown={isUpdating}
   isAnimating={isUpdating}
   rehypePlugins={[
+    defaultRehypePlugins.raw,
     defaultRehypePlugins.sanitize,
     [
       harden,
       {
         allowedProtocols: ["http", "https", "mailto"],
         allowedLinkPrefixes: ["*"],
-        allowedImagePrefixes: [],
-        allowDataImages: false
+        allowedImagePrefixes: hasAllowedImages ? ["*"] : [],
+        allowDataImages: hasAllowedImages
       }
     ]
   ]}
@@ -885,9 +886,13 @@ Do not change global xterm font, line-height, selection, textarea, or canvas sty
 
 ### Link and image policy
 
-- Do not render raw HTML.
+- Parse GitHub-style presentation HTML, then sanitize it before rendering. Scriptable elements,
+  event-handler attributes, and unsafe URL protocols remain forbidden.
 - Reject javascript, file, and data protocols.
-- Block remote and data images in v1.
+- Allow http/https images explicitly referenced by the document.
+- Resolve relative image paths in Main against the authorized Markdown file, enforce per-image/count/total
+  transfer bounds for both local and SSH targets, and send only allowlisted image data URLs to Renderer.
+- Continue to block author-supplied data images and non-image local files.
 - Route http, https, and mailto links through the existing safe external-open path.
 - Resolve fragment-only links only within the current Markdown document.
 - If relative .md/.markdown links are supported, revalidate them in main relative to the source document
@@ -1059,8 +1064,9 @@ Following AGENTS.md, automate only durable behavior.
 
 ### Security
 
-- Raw HTML and unsafe protocols cannot execute.
-- Remote and data images are blocked by default.
+- Sanitized presentation HTML renders, while executable HTML and unsafe protocols cannot execute.
+- Only document-referenced http/https images and bounded relative image assets are rendered; arbitrary data,
+  file, and unregistered image URLs remain blocked.
 - The document IPC size bound is enforced.
 - Relative and external links never navigate the renderer directly.
 

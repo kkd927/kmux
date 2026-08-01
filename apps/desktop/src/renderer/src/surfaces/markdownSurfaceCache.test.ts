@@ -17,14 +17,20 @@ describe("markdownSurfaceCache", () => {
       surfaceId: "surface_1",
       revision: 2,
       text: "# Current",
-      byteLength: 9
+      byteLength: 9,
+      imageSources: {
+        "./hero.png": "data:image/png;base64,AAAA"
+      }
     });
     const duplicate = applyMarkdownDocumentEvent({
       type: "snapshot",
       surfaceId: "surface_1",
       revision: 3,
       text: "# Current",
-      byteLength: 9
+      byteLength: 9,
+      imageSources: {
+        "./hero.png": "data:image/png;base64,AAAA"
+      }
     });
 
     expect(first).not.toBeNull();

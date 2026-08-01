@@ -17,14 +17,22 @@ describe("Markdown document IPC decoders", () => {
         surfaceId: "surface_1",
         revision: 2,
         text: "# title",
-        byteLength: 7
+        byteLength: 7,
+        imageSources: {
+          "./hero.png": "data:image/png;base64,iVBORw==",
+          "https://example.com/badge.svg": "https://example.com/badge.svg"
+        }
       })
     ).toEqual({
       type: "snapshot",
       surfaceId: "surface_1",
       revision: 2,
       text: "# title",
-      byteLength: 7
+      byteLength: 7,
+      imageSources: {
+        "./hero.png": "data:image/png;base64,iVBORw==",
+        "https://example.com/badge.svg": "https://example.com/badge.svg"
+      }
     });
   });
 
@@ -50,6 +58,18 @@ describe("Markdown document IPC decoders", () => {
         errorCode: "credentials"
       })
     ).toThrow(/error code/u);
+    expect(() =>
+      decodeMarkdownDocumentEvent({
+        type: "snapshot",
+        surfaceId: "surface_1",
+        revision: 1,
+        text: "![bad](file:///tmp/private.png)",
+        byteLength: 32,
+        imageSources: {
+          "file:///tmp/private.png": "file:///tmp/private.png"
+        }
+      })
+    ).toThrow(/image source/u);
   });
 
   it("accepts only exact bounded terminal file-link activations", () => {

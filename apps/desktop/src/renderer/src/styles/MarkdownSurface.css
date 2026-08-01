@@ -80,6 +80,15 @@
   font-family: var(--kmux-terminal-font-family);
 }
 
+/* Streamdown wraps these blocks in a card and then adds a second bordered body. */
+[data-streamdown="code-block"],
+[data-streamdown="table-wrapper"],
+[data-streamdown="mermaid-block"] {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
 [data-streamdown="code-block-body"] code > span::before {
   font-size: calc(13px * var(--kmux-markdown-scale, 1));
 }
@@ -147,6 +156,22 @@ button[class*="kmuxsd:"]:focus-visible {
 
 .kmuxMarkdownSurface__document {
   overflow-wrap: anywhere;
+}
+
+.kmuxMarkdownSurface__document [align="center"] {
+  text-align: center;
+}
+
+.kmuxMarkdownSurface__document [align="left"] {
+  text-align: left;
+}
+
+.kmuxMarkdownSurface__document [align="right"] {
+  text-align: right;
+}
+
+.kmuxMarkdownSurface__document img {
+  max-width: 100%;
 }
 
 .kmuxMarkdownSurface .katex-display {

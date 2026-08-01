@@ -37,8 +37,14 @@ describe("MarkdownRenderedContent security boundary", () => {
     viewport.remove();
   });
 
-  it("blocks raw HTML, unsafe protocols, and remote or data images", async () => {
+  it("renders safe presentation HTML while removing executable content", async () => {
     await renderMarkdown(`
+<div align="center" onclick="window.__markdownExecuted = true">
+Centered<br>content
+</div>
+
+<table><tr><td valign="top">cell</td></tr></table>
+
 <script>window.__markdownExecuted = true</script>
 <img src="https://example.com/raw.png" onerror="window.__markdownExecuted = true">
 
@@ -48,6 +54,16 @@ describe("MarkdownRenderedContent security boundary", () => {
 [script](javascript:alert(1)) [file](file:///tmp/secret) [data](data:text/html,bad)
 `);
 
+    const centered = container.querySelector<HTMLDivElement>(
+      'div[align="center"]'
+    );
+    expect(centered).not.toBeNull();
+    expect(centered?.querySelector("br")).not.toBeNull();
+    expect(centered?.getAttribute("onclick")).toBeNull();
+    expect(
+      container.querySelector<HTMLTableCellElement>("td")?.style.verticalAlign
+    ).toBe("top");
+    expect(container.textContent).not.toContain('<div align="center">');
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
@@ -57,6 +73,30 @@ describe("MarkdownRenderedContent security boundary", () => {
       (window as typeof window & { __markdownExecuted?: boolean })
         .__markdownExecuted
     ).not.toBe(true);
+  });
+
+  it("renders only allowlisted raw HTML and Markdown images", async () => {
+    await renderMarkdown(
+      [
+        '<div align="center"><img alt="local" src="./hero.png" onerror="alert(1)"></div>',
+        "![remote](https://example.com/badge.svg)",
+        "![unregistered](https://example.com/tracker.png)"
+      ].join("\n\n"),
+      {
+        "./hero.png": "data:image/png;base64,iVBORw==",
+        "https://example.com/badge.svg": "https://example.com/badge.svg"
+      }
+    );
+
+    const images = [...container.querySelectorAll<HTMLImageElement>("img")];
+    expect(images.map((image) => image.alt)).toEqual(["local", "remote"]);
+    expect(images[0]?.getAttribute("src")).toBe(
+      "data:image/png;base64,iVBORw=="
+    );
+    expect(images[0]?.getAttribute("onerror")).toBeNull();
+    expect(images[1]?.getAttribute("src")).toBe(
+      "https://example.com/badge.svg"
+    );
   });
 
   it("allows only images registered by the release-note bundle", async () => {

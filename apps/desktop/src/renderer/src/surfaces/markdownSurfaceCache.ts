@@ -1,7 +1,8 @@
 import type {
   Id,
   MarkdownDocumentErrorCode,
-  MarkdownDocumentEvent
+  MarkdownDocumentEvent,
+  MarkdownImageSources
 } from "@kmux/proto";
 
 const MAX_CACHED_MARKDOWN_SURFACES = 32;
@@ -12,6 +13,7 @@ export interface MarkdownSurfaceCacheEntry {
   revision: number;
   status: MarkdownSurfaceStatus;
   text?: string;
+  imageSources?: MarkdownImageSources;
   errorCode?: MarkdownDocumentErrorCode;
   scrollTop: number;
 }
@@ -48,6 +50,7 @@ export function applyMarkdownDocumentEvent(
       revision: event.revision,
       status: "ready",
       text: event.text,
+      imageSources: event.imageSources ?? {},
       scrollTop: previous.scrollTop
     };
   } else if (event.type === "offline") {
@@ -55,6 +58,9 @@ export function applyMarkdownDocumentEvent(
       revision: event.revision,
       status: "offline",
       ...(previous.text === undefined ? {} : { text: previous.text }),
+      ...(previous.imageSources === undefined
+        ? {}
+        : { imageSources: previous.imageSources }),
       scrollTop: previous.scrollTop
     };
   } else if (event.type === "error") {
@@ -114,7 +120,21 @@ export function sameMarkdownRenderState(
   return (
     left.status === right.status &&
     left.text === right.text &&
+    sameMarkdownImageSources(left.imageSources, right.imageSources) &&
     left.errorCode === right.errorCode
+  );
+}
+
+function sameMarkdownImageSources(
+  left: MarkdownImageSources | undefined,
+  right: MarkdownImageSources | undefined
+): boolean {
+  if (left === right) return true;
+  const leftEntries = Object.entries(left ?? {});
+  const rightRecord = right ?? {};
+  return (
+    leftEntries.length === Object.keys(rightRecord).length &&
+    leftEntries.every(([source, resolved]) => rightRecord[source] === resolved)
   );
 }
 

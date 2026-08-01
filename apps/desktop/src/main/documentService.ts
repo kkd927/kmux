@@ -10,9 +10,11 @@ import {
   MAX_MARKDOWN_BYTES,
   type Id,
   type MarkdownDocumentEvent,
-  type MarkdownDocumentSubscriptionDto
+  type MarkdownDocumentSubscriptionDto,
+  type MarkdownImageSources
 } from "@kmux/proto";
 
+import { resolveMarkdownImageSources } from "./markdownImages";
 import { RemoteHostManagerError } from "./remoteHost";
 import type { FileMetadata, TargetServiceRegistry } from "./targets/contracts";
 
@@ -284,12 +286,19 @@ export class DocumentService {
         text !== subscription.lastText ||
         subscription.needsRecoverySnapshot
       ) {
+        const imageSources = await resolveMarkdownImageSources({
+          documentPath: subscription.path,
+          files,
+          markdown: text
+        });
+        if (!this.isCompletionCurrent(subscription, generation)) return;
         subscription.lastText = text;
         subscription.needsRecoverySnapshot = false;
         this.emit(subscription, {
           type: "snapshot",
           text,
-          byteLength: bytes.byteLength
+          byteLength: bytes.byteLength,
+          imageSources
         });
       }
       this.scheduleNext(subscription, true);
@@ -343,7 +352,12 @@ export class DocumentService {
     subscription: DocumentSubscription,
     event:
       | { type: "loading" | "offline" }
-      | { type: "snapshot"; text: string; byteLength: number }
+      | {
+          type: "snapshot";
+          text: string;
+          byteLength: number;
+          imageSources: MarkdownImageSources;
+        }
       | {
           type: "error";
           errorCode:

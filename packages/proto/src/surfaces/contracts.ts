@@ -62,6 +62,12 @@ export function terminalSurfaceVmContent(
 }
 
 export const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
+export const MAX_MARKDOWN_IMAGE_SOURCES = 64;
+export const MAX_MARKDOWN_IMAGE_SOURCE_LENGTH = 4 * 1024;
+export const MAX_MARKDOWN_IMAGE_DATA_URL_LENGTH = 12 * 1024 * 1024;
+export const MAX_MARKDOWN_IMAGE_SOURCES_TOTAL_LENGTH = 48 * 1024 * 1024;
+
+export type MarkdownImageSources = Readonly<Record<string, string>>;
 
 export interface MarkdownDocumentSubscriptionDto {
   surfaceId: Id;
@@ -87,6 +93,7 @@ export type MarkdownDocumentEvent =
       revision: number;
       text: string;
       byteLength: number;
+      imageSources?: MarkdownImageSources;
     }
   | { type: "offline"; surfaceId: Id; revision: number }
   | {
@@ -136,7 +143,16 @@ export function decodeMarkdownDocumentEvent(
   const type = base.type;
   const keys =
     type === "snapshot"
-      ? ["type", "surfaceId", "revision", "text", "byteLength"]
+      ? base.imageSources === undefined
+        ? ["type", "surfaceId", "revision", "text", "byteLength"]
+        : [
+            "type",
+            "surfaceId",
+            "revision",
+            "text",
+            "byteLength",
+            "imageSources"
+          ]
       : type === "error"
         ? ["type", "surfaceId", "revision", "errorCode"]
         : ["type", "surfaceId", "revision"];
@@ -156,18 +172,65 @@ export function decodeMarkdownDocumentEvent(
     ) {
       throw new TypeError("document snapshot is outside its byte bound");
     }
+    const imageSources = decodeMarkdownImageSources(record.imageSources);
     return {
       type,
       surfaceId,
       revision,
       text: record.text,
-      byteLength: record.byteLength as number
+      byteLength: record.byteLength as number,
+      ...(imageSources === undefined ? {} : { imageSources })
     };
   }
   if (type === "error" && isMarkdownDocumentErrorCode(record.errorCode)) {
     return { type, surfaceId, revision, errorCode: record.errorCode };
   }
   throw new TypeError("document event type or error code is invalid");
+}
+
+function decodeMarkdownImageSources(
+  value: unknown
+): MarkdownImageSources | undefined {
+  if (value === undefined) return undefined;
+  const record = requireRecord(value, "Markdown image sources");
+  const entries = Object.entries(record);
+  if (entries.length > MAX_MARKDOWN_IMAGE_SOURCES) {
+    throw new TypeError("Markdown image sources exceed the count bound");
+  }
+  const imageSources: Record<string, string> = {};
+  let totalLength = 0;
+  for (const [source, resolved] of entries) {
+    if (
+      !source ||
+      source.length > MAX_MARKDOWN_IMAGE_SOURCE_LENGTH ||
+      typeof resolved !== "string" ||
+      !isSafeMarkdownImageUrl(resolved)
+    ) {
+      throw new TypeError("Markdown image source is invalid");
+    }
+    totalLength += source.length + resolved.length;
+    if (totalLength > MAX_MARKDOWN_IMAGE_SOURCES_TOTAL_LENGTH) {
+      throw new TypeError("Markdown image sources exceed the transfer bound");
+    }
+    imageSources[source] = resolved;
+  }
+  return imageSources;
+}
+
+function isSafeMarkdownImageUrl(value: string): boolean {
+  if (!value || value.length > MAX_MARKDOWN_IMAGE_DATA_URL_LENGTH) return false;
+  if (
+    /^data:image\/(?:avif|bmp|gif|jpeg|png|svg\+xml|webp|x-icon);base64,/iu.test(
+      value
+    )
+  ) {
+    return true;
+  }
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

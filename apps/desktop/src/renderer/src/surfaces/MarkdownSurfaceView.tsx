@@ -152,13 +152,7 @@ export function MarkdownSurfaceView({
             </button>
           </div>
         ) : null}
-        {body === undefined ? (
-          entry.status === "error" ? null : (
-            <div className="kmuxMarkdownSurface__status" role="status">
-              Loading Markdown preview…
-            </div>
-          )
-        ) : (
+        {body === undefined ? null : (
           <SurfaceRenderErrorBoundary
             fallback={
               <div className="kmuxMarkdownSurface__error" role="alert">
@@ -176,15 +170,10 @@ export function MarkdownSurfaceView({
             }
             resetKey={renderKey}
           >
-            <Suspense
-              fallback={
-                <div className="kmuxMarkdownSurface__status" role="status">
-                  Preparing Markdown renderer…
-                </div>
-              }
-            >
+            <Suspense fallback={null}>
               <LazyMarkdownRenderedContent
                 colorTheme={colorTheme}
+                imageSources={entry.imageSources}
                 markdown={body}
                 onReady={restoreScroll}
                 surfaceId={surface.id}

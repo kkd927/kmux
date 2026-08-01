@@ -83,7 +83,8 @@ describe("DocumentService", () => {
         surfaceId: fixture.surfaceId,
         revision: 2,
         text: "# Hi",
-        byteLength: 7
+        byteLength: 7,
+        imageSources: {}
       }
     ]);
 
@@ -97,7 +98,8 @@ describe("DocumentService", () => {
       surfaceId: fixture.surfaceId,
       revision: 4,
       text: "updated",
-      byteLength: 7
+      byteLength: 7,
+      imageSources: {}
     });
 
     service.closeSurface(fixture.surfaceId);

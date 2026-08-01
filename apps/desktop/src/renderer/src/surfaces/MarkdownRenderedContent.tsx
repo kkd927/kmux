@@ -23,6 +23,7 @@ const plugins = { code, mermaid, math, cjk };
 const streamdownPrefix = "kmuxsd";
 const streamdownLinkClassName =
   "kmuxsd:wrap-anywhere kmuxsd:font-medium kmuxsd:text-primary kmuxsd:underline";
+const markdownRelativeUrlOrigin = "https://kmux-relative.invalid/";
 
 export type MarkdownUrl =
   | { kind: "external"; url: string }
@@ -47,20 +48,22 @@ export function MarkdownRenderedContent({
   viewportRef
 }: MarkdownRenderedContentProps): JSX.Element {
   useEffect(onReady, [onReady]);
-  const hasBundledImages =
+  const hasAllowedImages =
     imageSources !== undefined && Object.keys(imageSources).length > 0;
-  const allowedBundledImageUrls = useMemo(
+  const allowedImageUrls = useMemo(
     () => new Set(Object.values(imageSources ?? {})),
     [imageSources]
   );
   const rehypePlugins = useMemo<NonNullable<StreamdownProps["rehypePlugins"]>>(
     () => [
+      defaultRehypePlugins.raw,
       defaultRehypePlugins.sanitize,
+      normalizeLegacyTableAlignment,
       addMarkdownHeadingIds,
-      ...(hasBundledImages
+      ...(hasAllowedImages
         ? [
-            [rewriteBundledImageSources, imageSources] as [
-              typeof rewriteBundledImageSources,
+            [rewriteAllowedImageSources, imageSources] as [
+              typeof rewriteAllowedImageSources,
               Readonly<Record<string, string>>
             ]
           ]
@@ -70,12 +73,14 @@ export function MarkdownRenderedContent({
         {
           allowedProtocols: ["http", "https", "mailto"],
           allowedLinkPrefixes: ["*"],
-          allowedImagePrefixes: hasBundledImages ? ["*"] : [],
-          allowDataImages: hasBundledImages
+          allowedImagePrefixes: hasAllowedImages ? ["*"] : [],
+          allowDataImages: hasAllowedImages,
+          defaultOrigin: markdownRelativeUrlOrigin
         }
-      ]
+      ],
+      restoreRelativeMarkdownUrls
     ],
-    [hasBundledImages, imageSources]
+    [hasAllowedImages, imageSources]
   );
 
   const components = useMemo<Components>(
@@ -87,16 +92,16 @@ export function MarkdownRenderedContent({
           viewportRef={viewportRef}
         />
       ),
-      ...(hasBundledImages
+      ...(hasAllowedImages
         ? {
             img: ({ node: _node, src, ...props }) =>
-              typeof src === "string" && allowedBundledImageUrls.has(src) ? (
+              typeof src === "string" && allowedImageUrls.has(src) ? (
                 <img {...props} src={src} />
               ) : null
           }
         : {})
     }),
-    [allowedBundledImageUrls, hasBundledImages, surfaceId, viewportRef]
+    [allowedImageUrls, hasAllowedImages, surfaceId, viewportRef]
   );
 
   return (
@@ -104,17 +109,17 @@ export function MarkdownRenderedContent({
       <Streamdown
         components={components}
         controls={{
-          code: { copy: true, download: true },
+          code: { copy: false, download: false },
           mermaid: {
-            copy: true,
-            download: true,
-            fullscreen: true,
-            panZoom: true
+            copy: false,
+            download: false,
+            fullscreen: false,
+            panZoom: false
           },
-          table: { copy: true, download: true, fullscreen: true }
+          table: { copy: false, download: false, fullscreen: false }
         }}
         dir="auto"
-        disallowedElements={hasBundledImages ? undefined : ["img"]}
+        disallowedElements={hasAllowedImages ? undefined : ["img"]}
         isAnimating={false}
         lineNumbers
         mermaid={{
@@ -130,10 +135,9 @@ export function MarkdownRenderedContent({
         prefix={streamdownPrefix}
         rehypePlugins={rehypePlugins}
         shikiTheme={["github-light", "github-dark"]}
-        skipHtml
         urlTransform={(url, key) => {
           if (key === "src") {
-            return allowedBundledImageUrls.has(url) ? url : null;
+            return allowedImageUrls.has(url) ? url : null;
           }
           return classifyMarkdownUrl(url).kind === "blocked" ? null : url;
         }}
@@ -177,6 +181,27 @@ function addMarkdownHeadingIds(): (tree: MarkdownHastNode) => void {
   };
 }
 
+function normalizeLegacyTableAlignment(): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    visitMarkdownHast(tree, (node) => {
+      if (
+        node.type !== "element" ||
+        !["td", "th"].includes(node.tagName ?? "") ||
+        typeof node.properties?.vAlign !== "string"
+      ) {
+        return;
+      }
+      const verticalAlign = node.properties.vAlign.toLocaleLowerCase("en-US");
+      if (!["baseline", "bottom", "middle", "top"].includes(verticalAlign)) {
+        delete node.properties.vAlign;
+        return;
+      }
+      node.properties.style = `vertical-align:${verticalAlign}`;
+      delete node.properties.vAlign;
+    });
+  };
+}
+
 function markdownNodeText(node: MarkdownHastNode): string {
   if (node.type === "text") return node.value ?? "";
   return (node.children ?? []).map(markdownNodeText).join("");
@@ -191,7 +216,7 @@ function markdownHeadingId(value: string): string {
     .replace(/\s+/gu, "-");
 }
 
-function rewriteBundledImageSources(
+function rewriteAllowedImageSources(
   imageSources: Readonly<Record<string, string>>
 ): (tree: MarkdownHastNode) => void {
   return (tree) => {
@@ -207,6 +232,26 @@ function rewriteBundledImageSources(
       if (bundledSource) {
         node.properties.src = bundledSource;
       }
+    });
+  };
+}
+
+function restoreRelativeMarkdownUrls(): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    visitMarkdownHast(tree, (node) => {
+      if (node.type !== "element" || node.tagName !== "a") return;
+      const href = node.properties?.href;
+      if (
+        typeof href !== "string" ||
+        !href.startsWith(markdownRelativeUrlOrigin)
+      ) {
+        return;
+      }
+      const restored = href.slice(markdownRelativeUrlOrigin.length);
+      node.properties ??= {};
+      node.properties.href = restored;
+      delete node.properties.target;
+      delete node.properties.rel;
     });
   };
 }
