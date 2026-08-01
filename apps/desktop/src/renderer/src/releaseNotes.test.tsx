@@ -5,6 +5,7 @@ import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS,
   releaseNotesSeenStorageKey,
   selectReleaseNotes,
   type BundledReleaseNotesCatalog,
@@ -25,6 +26,17 @@ const releaseNotes: BundledReleaseNotesCatalog = {
     ko: {
       markdown: "# 한국어 릴리즈",
       imageSources: {}
+    }
+  }
+};
+
+const releaseNotesWithImages: BundledReleaseNotesCatalog = {
+  ...releaseNotes,
+  default: {
+    markdown: "# Default release",
+    imageSources: {
+      "./assets/one.png": "file:///app/one.png",
+      "./assets/two.png": "file:///app/two.png"
     }
   }
 };
@@ -94,6 +106,7 @@ describe("useReleaseNotesModal", () => {
   let openRequest: (() => void) | undefined;
   let stored: Map<string, string>;
   let getPreferredSystemLanguages: () => Promise<string[]>;
+  let imageDecodes: Array<Deferred<void>>;
   const storage = {
     getItem: vi.fn((key: string) => stored.get(key) ?? null),
     setItem: vi.fn((key: string, value: string) => {
@@ -107,15 +120,30 @@ describe("useReleaseNotesModal", () => {
     root = ReactDOMClient.createRoot(container);
     openRequest = undefined;
     stored = new Map();
+    imageDecodes = [];
     getPreferredSystemLanguages = vi.fn(async () => ["en-US"]);
     storage.getItem.mockClear();
     storage.setItem.mockClear();
     exposeKmuxBridge();
+
+    class PreloadImage {
+      src = "";
+
+      decode(): Promise<void> {
+        const decode = deferred<void>();
+        imageDecodes.push(decode);
+        return decode.promise;
+      }
+    }
+
+    vi.stubGlobal("Image", PreloadImage);
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -142,6 +170,45 @@ describe("useReleaseNotesModal", () => {
     exposeKmuxBridge();
     await render({ shellReady: true });
     expect(isOpen()).toBe(false);
+  });
+
+  it("opens only after every release note image decode settles", async () => {
+    await render({
+      releaseNotesCatalog: releaseNotesWithImages,
+      shellReady: true
+    });
+
+    expect(imageDecodes).toHaveLength(2);
+    expect(isOpen()).toBe(false);
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    await act(async () => {
+      imageDecodes[0].reject(new Error("broken image"));
+      await Promise.resolve();
+    });
+    expect(isOpen()).toBe(false);
+
+    await act(async () => {
+      imageDecodes[1].resolve(undefined);
+      await Promise.resolve();
+    });
+    expect(isOpen()).toBe(true);
+  });
+
+  it("opens after the image preload timeout when decode remains pending", async () => {
+    vi.useFakeTimers();
+    await render({
+      releaseNotesCatalog: releaseNotesWithImages,
+      shellReady: true
+    });
+
+    expect(isOpen()).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS);
+    });
+
+    expect(isOpen()).toBe(true);
+    expect(storage.setItem).not.toHaveBeenCalled();
   });
 
   it("preserves a Help request made while language selection is pending", async () => {
@@ -267,17 +334,21 @@ describe("useReleaseNotesModal", () => {
   async function render(options: {
     shellReady: boolean;
     blockingDialogOpen?: boolean;
+    releaseNotesCatalog?: BundledReleaseNotesCatalog;
     storage?: Pick<Storage, "getItem" | "setItem">;
   }): Promise<void> {
     await act(async () => {
       root.render(
         <Harness
           blockingDialogOpen={options.blockingDialogOpen ?? false}
+          releaseNotesCatalog={options.releaseNotesCatalog ?? releaseNotes}
           shellReady={options.shellReady}
           storage={options.storage ?? storage}
         />
       );
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
     });
   }
 
@@ -292,11 +363,12 @@ describe("useReleaseNotesModal", () => {
 
   function Harness(props: {
     blockingDialogOpen: boolean;
+    releaseNotesCatalog: BundledReleaseNotesCatalog;
     shellReady: boolean;
     storage: Pick<Storage, "getItem" | "setItem">;
   }): JSX.Element {
     const modal = useReleaseNotesModal({
-      releaseNotes,
+      releaseNotes: props.releaseNotesCatalog,
       shellReady: props.shellReady,
       blockingDialogOpen: props.blockingDialogOpen,
       storage: props.storage
@@ -314,3 +386,19 @@ describe("useReleaseNotesModal", () => {
     );
   }
 });
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

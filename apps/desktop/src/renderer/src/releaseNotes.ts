@@ -16,6 +16,7 @@ export interface SelectedReleaseNotes extends BundledReleaseNoteDocument {
 }
 
 export const RELEASE_NOTES_SEEN_KEY_PREFIX = "kmux.releaseNotes.seen.";
+export const RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS = 2_000;
 
 export function releaseNotesSeenStorageKey(version: string): string {
   return `${RELEASE_NOTES_SEEN_KEY_PREFIX}${version}`;
@@ -114,6 +115,7 @@ export function useReleaseNotesModal(options: {
   );
   const [open, setOpen] = useState(false);
   const [manualRequestPending, setManualRequestPending] = useState(false);
+  const preloadedImagesRef = useRef<HTMLImageElement[]>([]);
   const openedManuallyRef = useRef(false);
   const dismissedVersionsRef = useRef(new Set<string>());
   const openRef = useRef(open);
@@ -188,9 +190,50 @@ export function useReleaseNotesModal(options: {
     if (!manualRequestPending && seen) {
       return;
     }
-    openedManuallyRef.current = manualRequestPending;
-    setManualRequestPending(false);
-    setOpen(true);
+
+    let cancelled = false;
+    let finished = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const finishOpening = (): void => {
+      if (cancelled || finished) {
+        return;
+      }
+      finished = true;
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+      openedManuallyRef.current = manualRequestPending;
+      setManualRequestPending(false);
+      setOpen(true);
+    };
+    const images = Object.values(releaseNotes.imageSources).map((src) => {
+      const image = new Image();
+      image.src = src;
+      return image;
+    });
+    preloadedImagesRef.current = images;
+
+    if (images.length === 0) {
+      finishOpening();
+    } else {
+      timeoutId = setTimeout(
+        finishOpening,
+        RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS
+      );
+      void Promise.allSettled(images.map(async (image) => image.decode())).then(
+        finishOpening
+      );
+    }
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+      if (!finished) {
+        preloadedImagesRef.current = [];
+      }
+    };
   }, [
     blockingDialogOpen,
     manualRequestPending,
@@ -201,6 +244,7 @@ export function useReleaseNotesModal(options: {
   ]);
 
   const close = useCallback(() => {
+    preloadedImagesRef.current = [];
     if (releaseNotes) {
       dismissedVersionsRef.current.add(releaseNotes.version);
       if (storage) {
@@ -217,6 +261,13 @@ export function useReleaseNotesModal(options: {
     openedManuallyRef.current = false;
     setOpen(false);
   }, [releaseNotes, storage]);
+
+  useEffect(
+    () => () => {
+      preloadedImagesRef.current = [];
+    },
+    []
+  );
 
   return {
     open: open && !blockingDialogOpen,

@@ -614,6 +614,10 @@ export function App(): JSX.Element {
     ? activeWorkspacePaneTree.panes[activeWorkspacePaneTree.activePaneId]
         ?.activeSurfaceId
     : undefined;
+  const releaseNotesVisible =
+    releaseNotesModal.open &&
+    releaseNotesModal.releaseNotes !== null &&
+    releaseNotesLinkSurfaceId !== undefined;
 
   dismissibleUiStateRef.current = {
     paletteOpen,
@@ -626,7 +630,7 @@ export function App(): JSX.Element {
     worktreeDialogOpen: Boolean(worktreeDialog),
     sshWorkspaceDialogOpen: Boolean(sshWorkspaceDialog),
     sshAskpassPromptOpen: sshAskpassPrompts.length > 0,
-    releaseNotesOpen: releaseNotesModal.open
+    releaseNotesOpen: releaseNotesVisible
   };
 
   const { beginSidebarResize, handleSidebarResizeKeyDown } = useSidebarResize({
@@ -1396,7 +1400,14 @@ export function App(): JSX.Element {
       {releaseNotesModal.open &&
       releaseNotesModal.releaseNotes &&
       releaseNotesLinkSurfaceId ? (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            <ReleaseNotesModalFallback
+              onClose={releaseNotesModal.close}
+              version={releaseNotesModal.releaseNotes.version}
+            />
+          }
+        >
           <LazyReleaseNotesModal
             colorTheme={resolvedColorTheme}
             onClose={releaseNotesModal.close}
@@ -2109,6 +2120,49 @@ export function App(): JSX.Element {
     item.run();
     closePalette();
   }
+}
+
+function ReleaseNotesModalFallback({
+  onClose,
+  version
+}: {
+  onClose: () => void;
+  version: string;
+}): JSX.Element {
+  return (
+    <div
+      className={`${styles.overlay} ${styles.settingsOverlay}`}
+      data-testid="release-notes-overlay"
+    >
+      <section
+        className={styles.releaseNotesDialog}
+        role="dialog"
+        aria-busy="true"
+        aria-label={`Loading release notes for ${version}`}
+        aria-modal="true"
+      >
+        <header className={styles.modalHeader}>
+          <h2>Release Notes · {version}</h2>
+          <button
+            autoFocus
+            type="button"
+            aria-label="Close release notes"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <div className={styles.releaseNotesBody} role="status">
+          Loading release notes…
+        </div>
+        <footer className={styles.modalActions}>
+          <button type="button" data-primary="true" onClick={onClose}>
+            Close
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
 }
 
 function omitDeprecatedShortcuts(
