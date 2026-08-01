@@ -60,6 +60,7 @@ export function ReleaseNotesModal({
               markdown={releaseNotes.markdown}
               onReady={onReady}
               surfaceId={surfaceId}
+              trustedImageSources
               viewportRef={viewportRef}
             />
           </div>

@@ -11,8 +11,8 @@ describe("release note virtual module", () => {
         notePath: "/repo/docs/release-notes/v1.2.0.md",
         images: [
           {
-            source: "./assets/v1.2.0/current.webp",
-            absolutePath: "/repo/docs/release-notes/assets/v1.2.0/current.webp"
+            source: "./assets/current.webp",
+            absolutePath: "/repo/docs/release-notes/assets/current.webp"
           }
         ]
       },
@@ -22,8 +22,8 @@ describe("release note virtual module", () => {
           notePath: "/repo/docs/release-notes/v1.2.0.ko.md",
           images: [
             {
-              source: "./assets/v1.2.0/ko.png",
-              absolutePath: "/repo/docs/release-notes/assets/v1.2.0/ko.png"
+              source: "./assets/ko.png",
+              absolutePath: "/repo/docs/release-notes/assets/ko.png"
             }
           ]
         }
@@ -31,13 +31,13 @@ describe("release note virtual module", () => {
     });
 
     expect(source).toContain(
-      'import releaseNoteImage0 from "/repo/docs/release-notes/assets/v1.2.0/current.webp?url";'
+      'import releaseNoteImage0 from "/repo/docs/release-notes/assets/current.webp?url";'
     );
     expect(source).toContain(
-      'import releaseNoteImage1 from "/repo/docs/release-notes/assets/v1.2.0/ko.png?url";'
+      'import releaseNoteImage1 from "/repo/docs/release-notes/assets/ko.png?url";'
     );
-    expect(source).toContain('"./assets/v1.2.0/current.webp"');
-    expect(source).toContain('"./assets/v1.2.0/ko.png"');
+    expect(source).toContain('"./assets/current.webp"');
+    expect(source).toContain('"./assets/ko.png"');
     expect(source).toContain('"ko": {');
     expect(source).toContain('markdown: "# 현재"');
     expect(source).not.toContain("v1.1.0");

@@ -24,6 +24,8 @@ const streamdownPrefix = "kmuxsd";
 const streamdownLinkClassName =
   "kmuxsd:wrap-anywhere kmuxsd:font-medium kmuxsd:text-primary kmuxsd:underline";
 const markdownRelativeUrlOrigin = "https://kmux-relative.invalid/";
+const trustedImagePlaceholder = "https://kmux-trusted-image.invalid/image";
+const trustedImageSource = Symbol("kmuxTrustedImageSource");
 
 export type MarkdownUrl =
   | { kind: "external"; url: string }
@@ -36,6 +38,7 @@ export interface MarkdownRenderedContentProps {
   imageSources?: Readonly<Record<string, string>>;
   onReady: () => void;
   surfaceId: string;
+  trustedImageSources?: boolean;
   viewportRef: RefObject<HTMLDivElement>;
 }
 
@@ -45,6 +48,7 @@ export function MarkdownRenderedContent({
   imageSources,
   onReady,
   surfaceId,
+  trustedImageSources = false,
   viewportRef
 }: MarkdownRenderedContentProps): JSX.Element {
   useEffect(onReady, [onReady]);
@@ -62,8 +66,16 @@ export function MarkdownRenderedContent({
       addMarkdownHeadingIds,
       ...(hasAllowedImages
         ? [
-            [rewriteAllowedImageSources, imageSources] as [
-              typeof rewriteAllowedImageSources,
+            [
+              trustedImageSources
+                ? markTrustedImageSources
+                : rewriteAllowedImageSources,
+              imageSources
+            ] as [
+              (
+                | typeof markTrustedImageSources
+                | typeof rewriteAllowedImageSources
+              ),
               Readonly<Record<string, string>>
             ]
           ]
@@ -78,9 +90,12 @@ export function MarkdownRenderedContent({
           defaultOrigin: markdownRelativeUrlOrigin
         }
       ],
+      ...(hasAllowedImages && trustedImageSources
+        ? [restoreTrustedImageSources]
+        : []),
       restoreRelativeMarkdownUrls
     ],
-    [hasAllowedImages, imageSources]
+    [hasAllowedImages, imageSources, trustedImageSources]
   );
 
   const components = useMemo<Components>(
@@ -154,6 +169,7 @@ interface MarkdownHastNode {
   value?: string;
   properties?: Record<string, unknown>;
   children?: MarkdownHastNode[];
+  [trustedImageSource]?: string;
 }
 
 function addMarkdownHeadingIds(): (tree: MarkdownHastNode) => void {
@@ -231,6 +247,43 @@ function rewriteAllowedImageSources(
       const bundledSource = imageSources[node.properties.src];
       if (bundledSource) {
         node.properties.src = bundledSource;
+      }
+    });
+  };
+}
+
+function markTrustedImageSources(
+  imageSources: Readonly<Record<string, string>>
+): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    visitMarkdownHast(tree, (node) => {
+      if (
+        node.type !== "element" ||
+        node.tagName !== "img" ||
+        typeof node.properties?.src !== "string"
+      ) {
+        return;
+      }
+      const bundledSource = imageSources[node.properties.src];
+      if (bundledSource) {
+        node[trustedImageSource] = bundledSource;
+        node.properties.src = trustedImagePlaceholder;
+      }
+    });
+  };
+}
+
+function restoreTrustedImageSources(): (tree: MarkdownHastNode) => void {
+  return (tree) => {
+    visitMarkdownHast(tree, (node) => {
+      if (
+        node.type === "element" &&
+        node.tagName === "img" &&
+        typeof node[trustedImageSource] === "string"
+      ) {
+        node.properties ??= {};
+        node.properties.src = node[trustedImageSource];
+        delete node[trustedImageSource];
       }
     });
   };

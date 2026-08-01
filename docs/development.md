@@ -105,22 +105,22 @@ no first-run dialog and no Help → Release Notes item.
 
 The desktop build bundles the matching default document, every non-empty
 translation, and the images each document references. Keep release-note images
-under the matching version directory:
+under the shared assets directory:
 
 ```text
-docs/release-notes/assets/v1.2.0/example.webp
+docs/release-notes/assets/example.webp
 ```
 
 Reference them with a document-relative path:
 
 ```markdown
-![Description](./assets/v1.2.0/example.webp)
+![Description](./assets/example.webp)
 ```
 
 PNG, JPEG, WebP, and GIF are supported. Missing files, paths outside the
-matching version directory, SVG, and external, `data:`, or `file:` image URLs
-fail the build. Versioned notes and assets may remain in the repository; older
-versions are not bundled into the current app.
+release-note assets directory, SVG, and external, `data:`, or `file:` image
+URLs fail the build. Versioned notes may remain in the repository; only assets
+referenced by the current notes are bundled into the app.
 
 The GitHub release workflow uses only the default
 `v<version>.md`. It writes a temporary copy whose local image paths point to

@@ -23,7 +23,6 @@ export function loadBundledReleaseNotes(options: {
 export function resolveReleaseNoteImages(options: {
   markdown: string;
   notePath: string;
-  version: string;
 }): ReleaseNoteImage[];
 
 export function rewriteReleaseNoteImagesForGitHub(
@@ -32,7 +31,6 @@ export function rewriteReleaseNoteImagesForGitHub(
     notePath: string;
     repository: string;
     tag: string;
-    version: string;
   }
 ): string;
 

@@ -99,19 +99,21 @@ Centered<br>content
     );
   });
 
-  it("allows only images registered by the release-note bundle", async () => {
+  it("allows only images registered by a trusted release-note bundle", async () => {
+    const packagedImageUrl =
+      "file:///Applications/kmux.app/Contents/Resources/app.asar/out/renderer/assets/release-note-example.abc123.webp";
     await renderMarkdown(
       [
-        "![bundled](./assets/v1.2.0/example.webp)",
-        "![unregistered](./assets/v1.2.0/other.png)",
-        "![different path](/assets/v1.2.0/example.webp)",
+        "![bundled](./assets/example.webp)",
+        "![unregistered](./assets/other.png)",
+        "![different path](assets/example.webp)",
         "![remote](https://example.com/image.png)",
         "![data](data:image/png;base64,AAAA)"
       ].join("\n\n"),
       {
-        "./assets/v1.2.0/example.webp":
-          "/assets/release-note-example.abc123.webp"
-      }
+        "./assets/example.webp": packagedImageUrl
+      },
+      true
     );
 
     const images = [...container.querySelectorAll<HTMLImageElement>("img")];
@@ -119,9 +121,7 @@ Centered<br>content
     expect(images[0]).toMatchObject({
       alt: "bundled"
     });
-    expect(images[0]?.getAttribute("src")).toBe(
-      "/assets/release-note-example.abc123.webp"
-    );
+    expect(images[0]?.getAttribute("src")).toBe(packagedImageUrl);
   });
 
   it("cancels renderer navigation and delegates external links", async () => {
@@ -193,7 +193,8 @@ Centered<br>content
 
   async function renderMarkdown(
     markdown: string,
-    imageSources?: Readonly<Record<string, string>>
+    imageSources?: Readonly<Record<string, string>>,
+    trustedImageSources = false
   ): Promise<void> {
     await act(async () => {
       root.render(
@@ -203,6 +204,7 @@ Centered<br>content
           markdown={markdown}
           onReady={() => {}}
           surfaceId="surface_markdown"
+          trustedImageSources={trustedImageSources}
           viewportRef={{ current: viewport }}
         />
       );

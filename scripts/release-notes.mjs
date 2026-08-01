@@ -90,8 +90,7 @@ export function loadBundledReleaseNotes({
 
   const defaultReleaseNotes = loadReleaseNoteDocument({
     markdown: defaultMarkdown,
-    notePath: defaultNotePath,
-    version
+    notePath: defaultNotePath
   });
   const localized = {};
   for (const source of localizedSources) {
@@ -101,8 +100,7 @@ export function loadBundledReleaseNotes({
     }
     localized[source.locale] = loadReleaseNoteDocument({
       markdown,
-      notePath: source.notePath,
-      version
+      notePath: source.notePath
     });
   }
 
@@ -113,14 +111,13 @@ export function loadBundledReleaseNotes({
   };
 }
 
-function loadReleaseNoteDocument({ markdown, notePath, version }) {
+function loadReleaseNoteDocument({ markdown, notePath }) {
   return {
     markdown,
     notePath,
     images: resolveReleaseNoteImages({
       markdown,
-      notePath,
-      version
+      notePath
     })
   };
 }
@@ -142,33 +139,34 @@ function normalizeReleaseNoteLocale(locale, fileName) {
   return normalized;
 }
 
-export function resolveReleaseNoteImages({ markdown, notePath, version }) {
+export function resolveReleaseNoteImages({ markdown, notePath }) {
   const sources = collectMarkdownImageOccurrences(markdown).map(
     ({ source }) => source
   );
-  const expectedPrefix = `./assets/v${version}/`;
-  const assetDirectory = path.resolve(
-    path.dirname(notePath),
-    "assets",
-    `v${version}`
-  );
+  const expectedPrefix = "assets/";
+  const assetDirectory = path.resolve(path.dirname(notePath), "assets");
 
   return [...new Set(sources)].map((source) => {
+    const documentRelativeSource = source.startsWith("./")
+      ? source.slice("./".length)
+      : source;
     if (
-      !source.startsWith(expectedPrefix) ||
+      !documentRelativeSource.startsWith(expectedPrefix) ||
       source.includes("\\") ||
       source.includes("?") ||
       source.includes("#")
     ) {
-      throw invalidImageSourceError(source, version);
+      throw invalidImageSourceError(source);
     }
 
-    const encodedRelativeAssetPath = source.slice(expectedPrefix.length);
+    const encodedRelativeAssetPath = documentRelativeSource.slice(
+      expectedPrefix.length
+    );
     let relativeAssetPath;
     try {
       relativeAssetPath = decodeURIComponent(encodedRelativeAssetPath);
     } catch {
-      throw invalidImageSourceError(source, version);
+      throw invalidImageSourceError(source);
     }
     if (
       !relativeAssetPath ||
@@ -177,7 +175,7 @@ export function resolveReleaseNoteImages({ markdown, notePath, version }) {
       relativeAssetPath.startsWith("/") ||
       !SUPPORTED_IMAGE_EXTENSION.test(relativeAssetPath)
     ) {
-      throw invalidImageSourceError(source, version);
+      throw invalidImageSourceError(source);
     }
 
     const absolutePath = path.resolve(assetDirectory, relativeAssetPath);
@@ -210,15 +208,17 @@ export function resolveReleaseNoteImages({ markdown, notePath, version }) {
 export function rewriteReleaseNoteImagesForGitHub(markdown, options) {
   const images = resolveReleaseNoteImages({
     markdown,
-    notePath: options.notePath,
-    version: options.version
+    notePath: options.notePath
   });
   const rawUrls = new Map();
   for (const image of images) {
+    const documentRelativeSource = image.source.startsWith("./")
+      ? image.source.slice("./".length)
+      : image.source;
     const repositoryPath = [
       "docs",
       "release-notes",
-      ...decodeURIComponent(image.source.slice("./".length)).split("/")
+      ...decodeURIComponent(documentRelativeSource).split("/")
     ]
       .map(encodeURIComponent)
       .join("/");
@@ -294,8 +294,7 @@ export function prepareGitHubReleaseNotes({
     {
       notePath: releaseNotes.default.notePath,
       repository,
-      tag,
-      version
+      tag
     }
   );
   writeFileSync(outputPath, rewritten, "utf8");
@@ -374,10 +373,9 @@ function assertPathInside(parentPath, candidatePath, source) {
   }
 }
 
-function invalidImageSourceError(source, version) {
-  const versionDetail = version ? `v${version}` : "the current version";
+function invalidImageSourceError(source) {
   return new Error(
-    `Invalid release note image ${JSON.stringify(source)}. Images must be local PNG, JPEG, WebP, or GIF files under ./assets/${versionDetail}/.`
+    `Invalid release note image ${JSON.stringify(source)}. Images must be local PNG, JPEG, WebP, or GIF files under assets/.`
   );
 }
 
