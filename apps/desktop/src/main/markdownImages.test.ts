@@ -1,7 +1,10 @@
 import path from "node:path";
 
-import { locatedPathForTarget, type LocatedPath } from "@kmux/core";
-import { createPathAccess } from "@kmux/core/main/path-access";
+import {
+  encodeLocatedPathDto,
+  locatedPathForTarget,
+  type LocatedPath
+} from "@kmux/core";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -34,13 +37,12 @@ describe("Markdown image resolution", () => {
   it("loads relative local or SSH assets as bounded data URLs and allowlists HTTPS images", async () => {
     const target = { kind: "local" } as const;
     const documentPath = locatedPathForTarget(target, "/repo/docs/README.md");
-    const { unwrapLocal } = createPathAccess();
     const reads = new Map<string, Uint8Array>([
       ["/repo/assets/hero.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])],
       ["/repo/docs/button.svg", new TextEncoder().encode("<svg></svg>")]
     ]);
     const read = vi.fn(async (value: LocatedPath) => {
-      const raw = displayLocatedPath(value, unwrapLocal);
+      const raw = displayLocatedPath(value);
       const bytes = reads.get(raw);
       if (!bytes) throw new Error("missing");
       return bytes;
@@ -49,12 +51,12 @@ describe("Markdown image resolution", () => {
       dirname: (value: LocatedPath) =>
         locatedPathForTarget(
           target,
-          path.dirname(displayLocatedPath(value, unwrapLocal))
+          path.dirname(displayLocatedPath(value))
         ),
       join: (base: LocatedPath, ...segments: string[]) =>
         locatedPathForTarget(
           target,
-          path.join(displayLocatedPath(base, unwrapLocal), ...segments)
+          path.join(displayLocatedPath(base), ...segments)
         ),
       read
     } as unknown as LocatedTargetServiceSet["files"];
@@ -81,9 +83,8 @@ describe("Markdown image resolution", () => {
 });
 
 function displayLocatedPath(
-  value: LocatedPath,
-  unwrapLocal: ReturnType<typeof createPathAccess>["unwrapLocal"]
+  value: LocatedPath
 ): string {
   if (value.kind !== "local") throw new Error("expected local path");
-  return unwrapLocal(value.path);
+  return encodeLocatedPathDto(value).path;
 }
