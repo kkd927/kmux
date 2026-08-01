@@ -4,7 +4,7 @@
 
 **The multi-session terminal workspace for running AI coding agents side-by-side.**
 
-A keyboard-centric terminal emulator designed for Claude Code, Codex CLI, and Antigravity CLI on macOS and Linux.<br>Keep track of parallel agent sessions, monitor API usage, and work safely on separate branches via native git worktrees.
+A terminal emulator designed for Claude Code, Codex CLI, and Antigravity CLI on macOS and Linux.<br>Keep track of parallel agent sessions, monitor API usage, and work safely on separate branches via native git worktrees.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -39,8 +39,7 @@ English | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">简�
 
 <br>
 
-## ✨ Why kmux?
-
+## Why kmux?
 Running CLI-based AI agents like **Claude Code**, **Codex CLI**, or **Antigravity CLI** alongside your development server quickly leads to terminal clutter, fragmented session history, and git conflicts when agents write to the same working directory.
 
 **kmux** solves this by providing a dedicated terminal workspace built for agent workflows:
@@ -53,17 +52,15 @@ Running CLI-based AI agents like **Claude Code**, **Codex CLI**, or **Antigravit
 
 <br>
 
-## 🚀 Highlights
+## Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 📊 Unified Usage Dashboard
+### Unified Usage Dashboard
 
-Monitor your token consumption and API spend across Claude Code, Codex CLI, and Antigravity CLI in one right-sidebar panel. kmux aggregates usage data directly from local session logs, replacing provider-specific command line history with a single live visual dashboard.
-
-Features a daily heatmap, today's spend, top-spending models, and per-project hotspots.
+Track token usage and API spend across Claude Code, Codex CLI, and Antigravity CLI in one sidebar panel — daily heatmap, today's spend, top-spending models, and per-project hotspots.
 
 </td>
 <td width="50%" valign="top">
@@ -75,31 +72,23 @@ Features a daily heatmap, today's spend, top-spending models, and per-project ho
 <tr>
 <td width="50%" valign="top">
 
-<img src="./docs/assets/readme/session-history.png" alt="Cross-agent session history" width="100%">
+### Cross-Agent Session History
+
+kmux indexes sessions from Claude, Codex, and Antigravity into one searchable sidebar — click any session to resume it instantly, in a fresh pane or the tab that's already open.
 
 </td>
 <td width="50%" valign="top">
 
-### 🕘 Cross-Agent Session History
-
-kmux automatically indexes the local session databases for supported agents — Claude (`~/.claude/projects`), Codex (`~/.codex/sessions`), and Antigravity (`~/.gemini/antigravity-cli`) — presenting them in one searchable sidebar.
-
-Clicking a session resumes it instantly. kmux will focus the existing workspace/tab for that directory if open, or automatically spin up a fresh pane and run the resume commands (`claude --resume`, `codex resume`, etc.) for you.
-
-A single active wrapper and transcript root can be configured per vendor and
-environment in [`settings.json`](docs/agent-settings.md); local profiles are
-kept separate from optional SSH profiles.
+<img src="./docs/assets/readme/session-history.png" alt="Cross-agent session history" width="100%">
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 🌳 Worktree Workspaces
+### Worktree Workspaces
 
-Right-click any workspace → **Convert to Worktree Workspace** to spin up an isolated `git worktree`. This allows multiple agents to safely edit different branches of the same repository simultaneously without messing up your main working tree.
-
-kmux tracks the entire worktree lifecycle (branch status, modifications, and deletion safety checks) so your work is never lost or orphaned.
+Right-click any workspace → **Convert to Worktree Workspace** for an isolated `git worktree`, so agents can safely edit different branches of the same repo in parallel.
 
 </td>
 <td width="50%" valign="top">
@@ -108,12 +97,25 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+### SSH Workspaces
+
+Connect any SSH host as a kmux workspace with **Convert to SSH Workspace...** — split terminals, run agent sessions side by side, and resume right where you left off after reopening the app.
+
+</td>
+<td width="50%" valign="top">
+
+<img src="./docs/assets/readme/ssh-workspaces.png" alt="SSH Connections settings" width="100%">
+
+</td>
+</tr>
 </table>
 
 <br>
 
-### 🛠️ Terminal Power-User Features
-
+### Terminal Power-User Features
 - **Split Panes & Tabs** — Group build servers, logs, and agent shells within a single workspace.
 - **Smart Sidebar** — Automatically detects your active working directory (`cwd`), git branch, listening ports, and unread status.
 - **Layout Persistence** — Instantly restores your exact workspace layouts, active tabs, and directories when you relaunch the app.
@@ -122,8 +124,7 @@ kmux tracks the entire worktree lifecycle (branch status, modifications, and del
 
 <br>
 
-## 📦 Install
-
+## Install
 ### macOS
 
 #### Homebrew (recommended)
@@ -161,8 +162,7 @@ kmux includes a built-in updater and will let you know when a new version is ava
 
 <br>
 
-## 🏁 Quick Start
-
+## Quick Start
 1. Launch kmux and create a workspace (`⌘ N` on macOS).
 2. Inside the terminal, run your local agent CLI — `claude`, `codex`, or `agy`.
    > 💡 **Note**: kmux runs the agent CLIs already installed on your system. It does not require you to configure any API keys or wrappers.
@@ -172,7 +172,7 @@ kmux includes a built-in updater and will let you know when a new version is ava
 
 <br>
 
-## ⌨️ Keyboard Shortcuts
+## Keyboard Shortcuts
 
 > Shortcuts below show the macOS defaults. Linux uses platform-specific text shortcuts, and every action is also reachable from the command palette.
 
@@ -224,8 +224,7 @@ kmux includes a built-in updater and will let you know when a new version is ava
 
 <br>
 
-## 📚 Resources
-
+## Resources
 |                          |                                                                                                        |
 | :----------------------- | :----------------------------------------------------------------------------------------------------- |
 | 📖 **Product Spec**      | [docs/product-spec.md](./docs/product-spec.md) — full feature spec, including automation socket & CLI  |
@@ -243,6 +242,6 @@ kmux includes a built-in updater and will let you know when a new version is ava
 
 **kmux** — your AI coding agents, side-by-side.
 
-<sub>macOS + Linux · Pre-release · Actively developed</sub>
+<sub>macOS + Linux · Actively developed</sub>
 
 </div>

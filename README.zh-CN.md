@@ -4,7 +4,7 @@
 
 **专为并排运行 AI 编码助手而优化的多会话终端工作区。**
 
-一款专为 macOS 和 Linux 上的 Claude Code、Codex CLI 和 Antigravity CLI 设计的以键盘为中心的终端模拟器。<br>用于管理并行助手会话、监控 API 用量，并通过原生 git worktrees 在不同分支上安全地进行并行开发。
+一款专为 macOS 和 Linux 上的 Claude Code、Codex CLI 和 Antigravity CLI 设计的终端模拟器。<br>用于管理并行助手会话、监控 API 用量，并通过原生 git worktrees 在不同分支上安全地进行并行开发。
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -39,8 +39,7 @@
 
 <br>
 
-## ✨ 为什么选择 kmux？
-
+## 为什么选择 kmux？
 在运行诸如 **Claude Code**、**Codex CLI** 或 **Antigravity CLI** 等基于 CLI 的 AI 编码助手的同时还要运行开发服务器，很容易导致终端混乱、会话历史碎片化，并且当多个助手同时写入同一个工作目录时，极易引发 Git 冲突。
 
 **kmux** 通过提供专为助手工作流设计的专用终端工作区来解决这些问题：
@@ -53,17 +52,13 @@
 
 <br>
 
-## 🚀 主要特点
-
+## 功能
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 📊 统一用量仪表盘
-
-在侧边栏面板中并排实时监控 Claude Code、Codex CLI 和 Antigravity CLI。kmux 直接从本地会话日志中聚合用量数据，无需在各个终端中输入繁琐的命令，即可通过单个实时可视化仪表盘掌控全局。
-
-提供每日热力图、今日支出、最高支出模型以及按项目划分的热点等洞察。
+### 统一用量仪表盘
+在一个侧边栏面板中追踪 Claude Code、Codex CLI 和 Antigravity CLI 的 token 用量与 API 支出 —— 每日热力图、今日支出、最高支出模型和按项目划分的热点一目了然。
 
 </td>
 <td width="50%" valign="top">
@@ -75,27 +70,21 @@
 <tr>
 <td width="50%" valign="top">
 
-<img src="./docs/assets/readme/session-history.png" alt="跨助手会话历史" width="100%">
+### 跨助手会话历史
+kmux 将 Claude、Codex、Antigravity 的会话汇总到一个可搜索的侧边栏 —— 点击任意会话即可立即恢复，自动打开新分屏或聚焦已有标签页。
 
 </td>
 <td width="50%" valign="top">
 
-### 🕘 跨助手会话历史
-
-kmux 会自动索引受支持助手的本地会话数据库（Claude: `~/.claude/projects`，Codex: `~/.codex/sessions`，Antigravity: `~/.gemini/antigravity-cli`），并在一个可搜索的侧边栏中呈现。
-
-只需点击会话即可瞬间恢复。如果已打开相同工作目录（`cwd`）的现有标签页，kmux 会自动聚焦；否则，它会启动一个全新分屏并自动运行恢复命令（例如 `claude --resume`、`codex resume` 等）。
+<img src="./docs/assets/readme/session-history.png" alt="跨助手会话历史" width="100%">
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 🌳 工作树 (Worktree) 工作区
-
-右键点击任意工作区并选择 **Convert to Worktree Workspace** 即可创建隔离的 `git worktree`。这允许系统同时让多个助手安全独立地编辑同一个仓库的不同分支，而无需担心弄脏主工作树。
-
-kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删除安全检查），确保您的工作成果绝不丢失或成为孤儿。
+### 工作树 (Worktree) 工作区
+右键点击任意工作区 → **Convert to Worktree Workspace** 创建隔离的 `git worktree`，让多个助手可以安全地并行编辑同一仓库的不同分支。
 
 </td>
 <td width="50%" valign="top">
@@ -104,12 +93,24 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+### SSH 工作区
+通过 **Convert to SSH Workspace...** 将任意 SSH 主机直接连接为 kmux 工作区 —— 拆分终端、并排运行多个助手会话，重新打开应用后也能从上次的地方继续。
+
+</td>
+<td width="50%" valign="top">
+
+<img src="./docs/assets/readme/ssh-workspaces.png" alt="SSH 连接设置" width="100%">
+
+</td>
+</tr>
 </table>
 
 <br>
 
-### 🛠️ 专业终端实用功能
-
+### 专业终端实用功能
 - **分屏与窗口标签页** — 在单个工作区中灵活分组合并开发服务器、日志和助手 shell。
 - **智能侧边栏** — 自动检测当前工作目录（`cwd`）、git 分支、活动端口和未读通知徽章。
 - **布局持久化** — 重启应用时，即时恢复您先前的精确工作区布局、活动标签页和目录。
@@ -118,8 +119,7 @@ kmux 能完美追踪工作树的完整生命周期（分支状态、修改和删
 
 <br>
 
-## 📦 安装方法
-
+## 安装方法
 ### macOS
 
 #### Homebrew（推荐）
@@ -157,8 +157,7 @@ kmux 内置自动更新功能，新版本可用时会在应用内提示。
 
 <br>
 
-## 🏁 快速开始
-
+## 快速开始
 1. 启动 kmux 并创建您的第一个工作区（macOS 上为 `⌘ N`）。
 2. 在终端窗口中运行您本地安装的编码助手 CLI（`claude`、`codex` 或 `agy`）。
    > 💡 **提示**：kmux 直接运行您系统上已安装的助手 CLI。它不需要您在应用内配置任何 API 密钥或自定义包装。
@@ -168,7 +167,7 @@ kmux 内置自动更新功能，新版本可用时会在应用内提示。
 
 <br>
 
-## ⌨️ 键盘快捷键
+## 键盘快捷键
 
 > 下方快捷键显示的是 macOS 默认值。Linux 使用平台专属的文本快捷键，所有操作也可通过命令面板运行。
 
@@ -220,8 +219,7 @@ kmux 内置自动更新功能，新版本可用时会在应用内提示。
 
 <br>
 
-## 📚 资源与相关文档
-
+## 资源与相关文档
 |                     |                                                                                                        |
 | :------------------ | :----------------------------------------------------------------------------------------------------- |
 | 📖 **产品详细规格** | [docs/product-spec.md](./docs/product-spec.md) — 包含自动化套接字与 CLI 在内的完整功能规格说明书       |
@@ -239,6 +237,6 @@ kmux 内置自动更新功能，新版本可用时会在应用内提示。
 
 **kmux** — 让您的 AI 编码助手齐头并进，并排高效运行。
 
-<sub>macOS + Linux · 预发布测试版 · 积极开发中</sub>
+<sub>macOS + Linux · 积极开发中</sub>
 
 </div>

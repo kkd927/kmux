@@ -4,7 +4,7 @@
 
 **AI 코딩 에이전트의 병렬 실행에 최적화된 멀티 세션 터미널 워크스페이스.**
 
-macOS와 Linux에서 Claude Code, Codex CLI, Antigravity CLI를 위해 설계된 키보드 중심의 터미널 에뮬레이터입니다.<br>여러 에이전트의 실시간 세션 복구, 통합 API 사용량 대시보드, 그리고 안전한 git worktree 격리 환경을 제공합니다.
+macOS와 Linux에서 Claude Code, Codex CLI, Antigravity CLI를 위해 설계된 터미널 에뮬레이터입니다.<br>여러 에이전트의 실시간 세션 복구, 통합 API 사용량 대시보드, 그리고 안전한 git worktree 격리 환경을 제공합니다.
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -39,8 +39,7 @@ macOS와 Linux에서 Claude Code, Codex CLI, Antigravity CLI를 위해 설계된
 
 <br>
 
-## ✨ 왜 kmux인가요?
-
+## 왜 kmux인가요?
 실무에서 **Claude Code**, **Codex CLI**, **Antigravity CLI** 같은 CLI 기반 AI 에이전트를 실행해 보면 금방 터미널이 어지러워집니다. 여러 에이전트의 세션 기록은 파편화되며, 동일한 디렉토리에서 여러 에이전트가 코드를 수정하다가 Git 충돌이 발생하기 쉽습니다.
 
 **kmux**는 이러한 에이전트 중심의 개발 흐름을 해결하기 위해 최적화된 터미널 워크스페이스를 제공합니다:
@@ -53,17 +52,13 @@ macOS와 Linux에서 Claude Code, Codex CLI, Antigravity CLI를 위해 설계된
 
 <br>
 
-## 🚀 주요 특징
-
+## 기능
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 📊 통합 사용량 대시보드
-
-우측 사이드바 패널에서 Claude Code, Codex CLI, Antigravity CLI를 나란히 모니터링하세요. kmux는 로컬 세션 로그에서 직접 사용량 데이터를 수집하므로, 각 제공자별 터미널 사용량 조회를 번거롭게 실행할 필요 없이 실시간 그래픽 대시보드 하나로 통합 관리할 수 있습니다.
-
-일일 히트맵, 오늘의 지출, 가장 많이 지출한 모델, 프로젝트별 핫스팟 인사이트를 제공합니다.
+### 통합 사용량 대시보드
+사이드바 패널 하나로 Claude Code, Codex CLI, Antigravity CLI의 토큰 사용량과 API 비용을 추적합니다 — 일일 히트맵, 오늘의 지출, 최다 지출 모델, 프로젝트별 핫스팟까지 확인할 수 있습니다.
 
 </td>
 <td width="50%" valign="top">
@@ -75,27 +70,21 @@ macOS와 Linux에서 Claude Code, Codex CLI, Antigravity CLI를 위해 설계된
 <tr>
 <td width="50%" valign="top">
 
-<img src="./docs/assets/readme/session-history.png" alt="교차 에이전트 세션 기록" width="100%">
+### 교차 에이전트 세션 기록
+kmux가 Claude, Codex, Antigravity의 세션을 검색 가능한 사이드바 하나로 모아주며, 클릭 한 번으로 새 창이나 이미 열려 있는 탭에서 바로 이어갈 수 있습니다.
 
 </td>
 <td width="50%" valign="top">
 
-### 🕘 교차 에이전트 세션 기록
-
-kmux는 지원 에이전트의 로컬 세션 데이터베이스(Claude: `~/.claude/projects`, Codex: `~/.codex/sessions`, Antigravity: `~/.gemini/antigravity-cli`)를 자동으로 인덱싱하여 검색 가능한 하나의 사이드바 패널로 집중 제공합니다.
-
-특정 행을 클릭하기만 하면 해당 세션을 바로 복구합니다. 동일한 작업 디렉토리(`cwd`)의 기존 화면이 열려 있다면 해당 화면에 포커스하고, 그렇지 않으면 새 분할 창을 생성하여 `claude --resume`, `codex resume` 등의 복구 명령어를 자동으로 실행해 줍니다.
+<img src="./docs/assets/readme/session-history.png" alt="교차 에이전트 세션 기록" width="100%">
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 🌳 워크트리(Worktree) 워크스페이스
-
-워크스페이스를 우클릭하고 **Convert to Worktree Workspace**를 선택하여 격리된 `git worktree`를 생성할 수 있습니다. 이제 여러 에이전트가 작업 디렉토리를 어지럽히지 않고 동일한 리포지토리의 서로 다른 브랜치를 동시에 안전하고 독립적으로 편집할 수 있습니다.
-
-kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 전체 생명주기를 철저히 추적하므로 작업물이 유실되거나 분실되지 않습니다.
+### 워크트리(Worktree) 워크스페이스
+워크스페이스를 우클릭해 **Convert to Worktree Workspace**를 선택하면 격리된 `git worktree`가 생성되어, 여러 에이전트가 동일 저장소의 다른 브랜치를 동시에 안전하게 편집할 수 있습니다.
 
 </td>
 <td width="50%" valign="top">
@@ -104,12 +93,24 @@ kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 �
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+### SSH 워크스페이스
+**Convert to SSH Workspace...**로 SSH 호스트를 kmux 워크스페이스로 바로 연결해, 터미널을 분할하고 여러 에이전트 세션을 나란히 실행하며 앱을 다시 열어도 하던 작업을 그대로 이어갈 수 있습니다.
+
+</td>
+<td width="50%" valign="top">
+
+<img src="./docs/assets/readme/ssh-workspaces.png" alt="SSH 연결 설정" width="100%">
+
+</td>
+</tr>
 </table>
 
 <br>
 
-### 🛠️ 전문 터미널 편의 기능
-
+### 전문 터미널 편의 기능
 - **분할 창(Split panes) 및 화면 탭(Surface tabs)** — 개발 서버, 로그, 에이전트 쉘을 단일 워크스페이스 내에서 편리하게 그룹화합니다.
 - **스마트 사이드바** — 현재 작업 디렉토리(`cwd`), git 브랜치, 활성 포트, 읽지 않은 알림 배지를 자동으로 감지합니다.
 - **워크스페이스 영속성** — 앱을 다시 실행하더라도 이전의 화면 레이아웃, 활성 탭, 작업 디렉토리를 그대로 복원합니다.
@@ -118,8 +119,7 @@ kmux는 브랜치 상태, 변경 사항, 워크트리 해제 안전 검사 등 �
 
 <br>
 
-## 📦 설치 방법
-
+## 설치 방법
 ### macOS
 
 #### Homebrew(권장)
@@ -157,8 +157,7 @@ kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나�
 
 <br>
 
-## 🏁 빠른 시작
-
+## 빠른 시작
 1. kmux를 실행하고 첫 워크스페이스를 생성합니다(macOS에서는 `⌘ N`).
 2. 터미널 창에서 로컬에 설치된 에이전트 CLI(`claude`, `codex`, `agy` 중 하나)를 실행합니다.
    > 💡 **참고**: kmux는 사용자의 시스템에 설치되어 있는 에이전트 CLI를 그대로 실행합니다. 앱 자체에 별도의 API 키나 래퍼 설정을 요구하지 않습니다.
@@ -168,7 +167,7 @@ kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나�
 
 <br>
 
-## ⌨️ 키보드 단축키
+## 키보드 단축키
 
 > 아래 단축키는 macOS 기본값입니다. Linux는 플랫폼별 텍스트 단축키를 사용하며, 모든 동작은 명령 팔레트에서도 사용할 수 있습니다.
 
@@ -220,8 +219,7 @@ kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나�
 
 <br>
 
-## 📚 관련 문서 및 리소스
-
+## 관련 문서 및 리소스
 |                       |                                                                                                        |
 | :-------------------- | :----------------------------------------------------------------------------------------------------- |
 | 📖 **제품 상세 스펙** | [docs/product-spec.md](./docs/product-spec.md) — 자동화 소켓 및 CLI를 포함한 전체 기능 상세 명세서     |
@@ -239,6 +237,6 @@ kmux에는 자체 업데이트 기능이 포함되어 있어 새 버전이 나�
 
 **kmux** — AI 코딩 에이전트를 나란히 편리하게 활용해보세요.
 
-<sub>macOS + Linux · 시험 버전 · 활발히 개발 중</sub>
+<sub>macOS + Linux · 활발히 개발 중</sub>
 
 </div>

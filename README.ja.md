@@ -4,7 +4,7 @@
 
 **AIコーディングエージェントの並行実行に最適化されたマルチセッションターミナルワークスペース。**
 
-macOSおよびLinuxにおいて Claude Code、Codex CLI、Antigravity CLI を実行するために設計された、キーボード主体のターミナルエミュレータです。<br>並行エージェントセッションの管理、API利用状況の監視、ネイティブな git worktree による安全な複数ブランチでの並行作業を実現します。
+macOSおよびLinuxにおいて Claude Code、Codex CLI、Antigravity CLI を実行するために設計されたターミナルエミュレータです。<br>並行エージェントセッションの管理、API利用状況の監視、ネイティブな git worktree による安全な複数ブランチでの並行作業を実現します。
 
 [![CI](https://github.com/kkd927/kmux/actions/workflows/ci.yml/badge.svg)](https://github.com/kkd927/kmux/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kkd927/kmux?display_name=tag&style=flat&logo=github)](https://github.com/kkd927/kmux/releases/latest)
@@ -39,8 +39,7 @@ macOSおよびLinuxにおいて Claude Code、Codex CLI、Antigravity CLI を実
 
 <br>
 
-## ✨ なぜ kmux なのか？
-
+## なぜ kmux なのか？
 開発サーバーと並行して **Claude Code**、**Codex CLI**、**Antigravity CLI** などのCLIベースのAIエージェントを実行すると、ターミナルが乱雑になり、セッション履歴が断片化し、さらには同じ作業ディレクトリへ同時に書き込まれることでGitの競合が発生しやすくなります。
 
 **kmux** は、エージェントのワークフロー向けに専用設計されたターミナルワークスペースを提供することで、これらの課題を解決します：
@@ -53,17 +52,13 @@ macOSおよびLinuxにおいて Claude Code、Codex CLI、Antigravity CLI を実
 
 <br>
 
-## 🚀 主な特徴
-
+## 機能
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 📊 統合利用状況ダッシュボード
-
-右側のサイドバーパネルで、Claude Code、Codex CLI、Antigravity CLI を並行して監視します。kmux はローカルのセッションログから直接利用データを取り込むため、各プロバイダー固有のコマンドで確認する手間を省き、単一のリアルタイムビジュアルダッシュボードで一元化できます。
-
-日次ヒートマップ、本日の支出、最も支出の多いモデル、プロジェクトごとのホットスポットを表示します。
+### 統合利用状況ダッシュボード
+サイドバー1つで Claude Code、Codex CLI、Antigravity CLI のトークン使用量と API コストを追跡できます — 日次ヒートマップ、本日の支出、最も支出の多いモデル、プロジェクトごとのホットスポットまで確認できます。
 
 </td>
 <td width="50%" valign="top">
@@ -75,27 +70,21 @@ macOSおよびLinuxにおいて Claude Code、Codex CLI、Antigravity CLI を実
 <tr>
 <td width="50%" valign="top">
 
-<img src="./docs/assets/readme/session-history.png" alt="クロスエージェントセッション履歴" width="100%">
+### クロスエージェントセッション履歴
+kmux が Claude、Codex、Antigravity のセッションを検索可能なサイドバー1つにまとめ、クリックするだけで新しいペインか既存のタブから即座に再開できます。
 
 </td>
 <td width="50%" valign="top">
 
-### 🕘 クロスエージェントセッション履歴
-
-kmuxは、対応エージェントのローカルセッションデータベース（Claude: `~/.claude/projects`、Codex: `~/.codex/sessions`、Antigravity: `~/.gemini/antigravity-cli`）を自動的にインデックス登録し、検索可能なサイドバーに表示します。
-
-セッションをクリックするだけで即座に再開できます。同一の作業ディレクトリ（`cwd`）の既存タブが開いていればそこにフォーカスし、開いていなければ新しいペインを起動して `claude --resume` や `codex resume` などの再開コマンドを自動実行します。
+<img src="./docs/assets/readme/session-history.png" alt="クロスエージェントセッション履歴" width="100%">
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### 🌳 ワークツリー（Worktree）ワークスペース
-
-ワークスペースを右クリックして **Convert to Worktree Workspace** を選択すると、隔離された `git worktree` が作成されます。これにより、複数のエージェントがメインの作業ツリーを汚すことなく、同一リポジトリの異なるブランチを独立して安全に並行編集できます。
-
-kmuxは、ブランチ状態、変更状況、削除時の安全確認など、ワークツリーのライフサイクル全体を追跡するため、作業内容の損失や孤立を防ぎます。
+### ワークツリー（Worktree）ワークスペース
+ワークスペースを右クリックして **Convert to Worktree Workspace** を選択すると隔離された `git worktree` が作成され、複数のエージェントが同一リポジトリの異なるブランチを安全に並行編集できます。
 
 </td>
 <td width="50%" valign="top">
@@ -104,12 +93,24 @@ kmuxは、ブランチ状態、変更状況、削除時の安全確認など、�
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+### SSHワークスペース
+**Convert to SSH Workspace...** で SSH ホストを kmux ワークスペースとして直接接続し、ターミナルを分割して複数のエージェントセッションを並行実行、アプリを再度開いても作業を続きから再開できます。
+
+</td>
+<td width="50%" valign="top">
+
+<img src="./docs/assets/readme/ssh-workspaces.png" alt="SSH接続設定" width="100%">
+
+</td>
+</tr>
 </table>
 
 <br>
 
-### 🛠️ プロフェッショナル向けターミナル機能
-
+### プロフェッショナル向けターミナル機能
 - **分割ペインと画面タブ** — 開発サーバー、ログ、エージェントシェルを単一のワークスペース内に柔軟にグループ化します。
 - **スマートサイドバー** — 現在の作業ディレクトリ（`cwd`）、gitブランチ、アクティブポート、未読の通知バッジを自動検出します。
 - **レイアウトの永続性** — アプリの再起動時、直前のワークスペースレイアウト、アクティブタブ、作業ディレクトリを自動復元します。
@@ -118,8 +119,7 @@ kmuxは、ブランチ状態、変更状況、削除時の安全確認など、�
 
 <br>
 
-## 📦 インストール方法
-
+## インストール方法
 ### macOS
 
 #### Homebrew（推奨）
@@ -157,8 +157,7 @@ kmuxには自動アップデーターが組み込まれており、新しいバ�
 
 <br>
 
-## 🏁 クイックスタート
-
+## クイックスタート
 1. kmuxを起動し、最初のワークスペースを作成します（macOSでは `⌘ N`）。
 2. ターミナル内で、ローカルにインストールされているエージェントCLI（`claude`、`codex`、または `agy`）を実行します。
    > 💡 **注意**: kmuxはシステムにすでにインストールされているエージェントCLIを実行します。アプリ側でのAPIキー設定や専用のラッパー設定は不要です。
@@ -168,7 +167,7 @@ kmuxには自動アップデーターが組み込まれており、新しいバ�
 
 <br>
 
-## ⌨️ キーボードショートカット
+## キーボードショートカット
 
 > 以下のショートカットはmacOSのデフォルトです。Linuxではプラットフォーム固有のテキストショートカットを使用し、すべての操作はコマンドパレットからも実行できます。
 
@@ -220,8 +219,7 @@ kmuxには自動アップデーターが組み込まれており、新しいバ�
 
 <br>
 
-## 📚 関連ドキュメントとリソース
-
+## 関連ドキュメントとリソース
 |                             |                                                                                                        |
 | :-------------------------- | :----------------------------------------------------------------------------------------------------- |
 | 📖 **製品仕様書**           | [docs/product-spec.md](./docs/product-spec.md) — 自動化ソケットとCLIを含むすべての機能詳細仕様書       |
@@ -239,6 +237,6 @@ kmuxには自動アップデーターが組み込まれており、新しいバ�
 
 **kmux** — AIコーディングエージェントを並行して便利に活用しましょう。
 
-<sub>macOS + Linux · プレリリース · 活発に開発中</sub>
+<sub>macOS + Linux · 活発に開発中</sub>
 
 </div>
