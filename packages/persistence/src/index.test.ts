@@ -10,7 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createInitialState, encodeAppStateDto } from "@kmux/core";
+import {
+  createInitialState,
+  encodeAppStateDto,
+  type RemoteOperationProjection
+} from "@kmux/core";
+import { uint64 } from "@kmux/proto";
 
 import {
   AppPathResolutionError,
@@ -47,12 +52,13 @@ describe("file-store persistence", () => {
       status: "ok",
       record: {
         snapshot: state,
+        schemaVersion: 4,
         cleanShutdown: false,
         restoreOnLaunch: false
       }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 3,
+      version: 4,
       cleanShutdown: false,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(state)
@@ -71,12 +77,13 @@ describe("file-store persistence", () => {
       status: "ok",
       record: {
         snapshot: state,
+        schemaVersion: 4,
         cleanShutdown: true,
         restoreOnLaunch: false
       }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 3,
+      version: 4,
       cleanShutdown: true,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(state)
@@ -109,12 +116,13 @@ describe("file-store persistence", () => {
       status: "ok",
       record: {
         snapshot: state,
+        schemaVersion: 4,
         cleanShutdown: true,
         restoreOnLaunch: true
       }
     });
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 3,
+      version: 4,
       cleanShutdown: true,
       restoreOnLaunch: true,
       snapshot: encodeAppStateDto(state)
@@ -294,17 +302,68 @@ describe("file-store persistence", () => {
       status: "ok",
       record: {
         snapshot: state,
+        schemaVersion: 2,
         cleanShutdown: false,
         restoreOnLaunch: false
       }
     });
   });
 
+  it.each([1, 2, 3] as const)(
+    "migrates v%s top-level remote recovery fields into v4 state",
+    (version) => {
+      const statePath = join(sandboxDir, `state-v${version}-remote.json`);
+      const state = createInitialState("/bin/zsh");
+      const workspaceId = Object.keys(state.workspaces)[0]!;
+      const operation: RemoteOperationProjection = {
+        operationId: "operation_legacy",
+        kind: "session.terminate",
+        resourceKey: {
+          desktopInstallationId: "desktop_1",
+          targetId: "target_1",
+          workspaceId,
+          sessionId: "session_remote"
+        },
+        expectedWorkspaceRevision: "a".repeat(64),
+        expectedRemoteResourceRevision: uint64(11n),
+        nextRemoteResourceRevision: uint64(12n),
+        canonicalPayloadHash: "b".repeat(64),
+        pendingProduct: {
+          kind: "session.terminate",
+          sessionId: "session_remote"
+        },
+        state: "termination-pending",
+        createdAt: "2026-07-31T00:00:00.000Z"
+      };
+      state.remoteRecovery.operations[operation.operationId] = operation;
+      state.remoteRecovery.eventReceipts.target_1 = {
+        throughSequence: uint64(12n),
+        recentEventIds: ["event_12"]
+      };
+      const encoded = encodeAppStateDto(state) as Record<string, unknown>;
+      const remoteRecovery = encoded.remoteRecovery as Record<string, unknown>;
+      encoded.remoteOperations = remoteRecovery.operations;
+      encoded.remoteEventReceipts = remoteRecovery.eventReceipts;
+      delete encoded.remoteRecovery;
+      writeFileSync(statePath, JSON.stringify({ version, snapshot: encoded }));
+
+      expect(createSnapshotStore(statePath).loadRecord()).toEqual({
+        status: "ok",
+        record: {
+          snapshot: state,
+          schemaVersion: version,
+          cleanShutdown: false,
+          restoreOnLaunch: false
+        }
+      });
+    }
+  );
+
   it("preserves incompatible snapshots and disables writes for the run", () => {
     const statePath = join(sandboxDir, "state-incompatible.json");
     const state = createInitialState("/bin/zsh");
     const envelope = {
-      version: 3,
+      version: 4,
       snapshot: encodeAppStateDto(state)
     };
     const surfaces = envelope.snapshot.surfaces as Record<
@@ -334,7 +393,7 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(secondState);
     expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
-      version: 3,
+      version: 4,
       cleanShutdown: false,
       restoreOnLaunch: false,
       snapshot: encodeAppStateDto(secondState)

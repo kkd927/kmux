@@ -223,7 +223,8 @@ export function computeWorkspaceRevision(
     const surfaceId = readStringProperty(value, "surfaceId");
     return surfaceId !== undefined && surfaceIds.has(surfaceId);
   });
-  const remoteOperations = filterRecord(snapshot.remoteOperations, (value) => {
+  const remoteRecovery = readRecord(snapshot.remoteRecovery);
+  const remoteOperations = filterRecord(remoteRecovery.operations, (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return false;
     }
@@ -1077,7 +1078,7 @@ export function applyMainRemoteOperationCheckpointFact(
   state: AppState,
   fact: MainRemoteOperationCheckpointFact
 ): ApplyMainFactResult {
-  const projection = state.remoteOperations[fact.operationId];
+  const projection = state.remoteRecovery.operations[fact.operationId];
   if (!projection) return noChange();
   if (
     (projection.state !== "succeeded" && projection.state !== "failed") ||
@@ -1088,7 +1089,7 @@ export function applyMainRemoteOperationCheckpointFact(
       `operation ${fact.operationId} is not the checkpointed terminal result`
     );
   }
-  delete state.remoteOperations[fact.operationId];
+  delete state.remoteRecovery.operations[fact.operationId];
   return changed();
 }
 
@@ -1337,7 +1338,7 @@ function applyPendingFact(
   state: AppState,
   projection: RemoteOperationProjection
 ): ApplyMainFactResult {
-  const existing = state.remoteOperations[projection.operationId];
+  const existing = state.remoteRecovery.operations[projection.operationId];
   if (existing) {
     if (sameOperationAdmission(existing, projection)) {
       return noChange();
@@ -1383,7 +1384,8 @@ function applyPendingFact(
     );
   }
   applyPendingProductProjection(state, projection);
-  state.remoteOperations[projection.operationId] = structuredClone(projection);
+  state.remoteRecovery.operations[projection.operationId] =
+    structuredClone(projection);
   return changed();
 }
 
@@ -2119,7 +2121,7 @@ function requireProjection(
   state: AppState,
   operationId: Id
 ): RemoteOperationProjection {
-  const projection = state.remoteOperations[operationId];
+  const projection = state.remoteRecovery.operations[operationId];
   if (!projection) {
     throw new MainFactConflictError(
       "operation-missing",

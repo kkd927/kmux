@@ -70,6 +70,7 @@ import type {
   RetainedSessionInventoryStore
 } from "./retainedSessionInventory";
 import type { RemoteEventReceiptStore } from "./remoteEventReceiptStore";
+import { RemoteEventCheckpointConflictError } from "./remoteEventCheckpointRecovery";
 import { createBoundRemoteTerminalControlProvider } from "./remoteTerminalControlProvider";
 import { createRemoteHostSshWorkspaceTransactionGateway } from "./remoteConversionGateway";
 import {
@@ -726,7 +727,7 @@ export class RemoteLifecycleRuntime {
       return;
     }
     if (
-      Object.values(state.remoteOperations).some(
+      Object.values(state.remoteRecovery.operations).some(
         (operation) =>
           operation.kind === "session.terminate" &&
           operation.resourceKey.workspaceId === workspace.id &&
@@ -1405,11 +1406,14 @@ export class RemoteLifecycleRuntime {
 
     let receipt = store.load(this.options.desktopInstallationId, targetId);
     const productReceipt =
-      this.options.getState().remoteEventReceipts[targetId];
+      this.options.getState().remoteRecovery.eventReceipts[targetId];
     const productThrough = productReceipt?.throughSequence ?? uint64(0n);
     if (productThrough < receipt.appliedThrough) {
-      throw new Error(
-        "remote event receipt advanced beyond the durable product snapshot"
+      throw new RemoteEventCheckpointConflictError(
+        targetId,
+        productThrough,
+        receipt.appliedThrough,
+        "product-cursor-mismatch"
       );
     }
     if (receipt.pending) {
@@ -1422,12 +1426,15 @@ export class RemoteLifecycleRuntime {
       receipt = store.complete(receipt.pending);
     }
     const recoveredProductReceipt =
-      this.options.getState().remoteEventReceipts[targetId];
+      this.options.getState().remoteRecovery.eventReceipts[targetId];
     const recoveredProductThrough =
       recoveredProductReceipt?.throughSequence ?? uint64(0n);
     if (recoveredProductThrough !== receipt.appliedThrough) {
-      throw new Error(
-        "remote event product receipt does not match its durable cursor"
+      throw new RemoteEventCheckpointConflictError(
+        targetId,
+        recoveredProductThrough,
+        receipt.appliedThrough,
+        "product-cursor-mismatch"
       );
     }
 
@@ -1547,9 +1554,20 @@ export class RemoteLifecycleRuntime {
     );
     await persist(this.options.getState());
     const receipt =
-      this.options.getState().remoteEventReceipts[event.resourceKey.targetId];
+      this.options.getState().remoteRecovery.eventReceipts[
+        event.resourceKey.targetId
+      ];
     if (!receipt || receipt.throughSequence < sequence) {
-      throw new Error("remote event product receipt was not durably projected");
+      const durableReceipt = this.options.eventReceiptStore?.load(
+        this.options.desktopInstallationId,
+        event.resourceKey.targetId
+      );
+      throw new RemoteEventCheckpointConflictError(
+        event.resourceKey.targetId,
+        receipt?.throughSequence ?? uint64(0n),
+        durableReceipt?.appliedThrough ?? uint64(0n),
+        "product-cursor-mismatch"
+      );
     }
     return true;
   }
@@ -1826,7 +1844,7 @@ export class RemoteLifecycleRuntime {
     );
     let pruned = false;
     for (const projection of Object.values(
-      this.options.getState().remoteOperations
+      this.options.getState().remoteRecovery.operations
     )) {
       if (
         durableOperationIds.has(projection.operationId) ||
@@ -1914,7 +1932,9 @@ function normalizeRemoteSpoolEvent(
 ): RemoteEventNormalization {
   const workspace = state.workspaces[event.resourceKey.workspaceId];
   const session = state.sessions[event.resourceKey.sessionId];
-  const hasPendingProjection = Object.values(state.remoteOperations).some(
+  const hasPendingProjection = Object.values(
+    state.remoteRecovery.operations
+  ).some(
     (operation) =>
       operation.resourceKey.desktopInstallationId ===
         event.resourceKey.desktopInstallationId &&
@@ -2185,7 +2205,7 @@ function latestProjectedSessionRevision(
 ) {
   const session = state.sessions[sessionId];
   let revision = session?.remoteRuntime?.remoteResourceRevision ?? uint64(0n);
-  for (const operation of Object.values(state.remoteOperations)) {
+  for (const operation of Object.values(state.remoteRecovery.operations)) {
     if (
       operation.resourceKey.workspaceId !== workspaceId ||
       operation.resourceKey.sessionId !== sessionId ||

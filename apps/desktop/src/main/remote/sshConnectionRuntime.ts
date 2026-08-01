@@ -38,6 +38,7 @@ import type {
 import { readObservedSshHostKeyFingerprint } from "./sshProfileConnection";
 import type { SshProfileStore } from "./sshProfileStore";
 import type { SshAskpassBroker, SshAskpassContext } from "./sshAskpassBroker";
+import { RemoteEventCheckpointConflictError } from "./remoteEventCheckpointRecovery";
 
 const MACOS_LOCAL_NETWORK_GUIDANCE =
   "If this SSH host is on your local network, macOS may be blocking kmux's Local Network access. Allow kmux in System Settings > Privacy & Security > Local Network, then retry.";
@@ -123,6 +124,9 @@ export function createSshConnectionRuntime(options: {
   askpassPath?: string;
   askpassBroker?: SshAskpassBroker;
   isTargetReferenced: (targetId: Id) => boolean;
+  getEventCheckpointConflict?: (
+    targetId: Id
+  ) => RemoteEventCheckpointConflictError | undefined;
   now?: () => string;
   makeTargetId?: () => Id;
   makeConnectionAttemptId?: () => Id;
@@ -211,6 +215,19 @@ export function createSshConnectionRuntime(options: {
       throw new SshConnectionAttemptSupersededError();
     }
   };
+
+  const eventCheckpointConflictForProfile = (
+    profileId: Id
+  ): RemoteEventCheckpointConflictError | undefined =>
+    options.bindings
+      .list()
+      .filter((binding) => binding.locator.profileId === profileId)
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((binding) => options.getEventCheckpointConflict?.(binding.id))
+      .find(
+        (conflict): conflict is RemoteEventCheckpointConflictError =>
+          conflict !== undefined
+      );
 
   const rememberActiveTarget = (
     connected: ConnectedSshProfile
@@ -399,6 +416,10 @@ export function createSshConnectionRuntime(options: {
         void askpassContext?.dispose();
       };
       try {
+        const checkpointConflict = eventCheckpointConflictForProfile(
+          profile.id
+        );
+        if (checkpointConflict) throw checkpointConflict;
         if (internal.signal?.aborted) {
           throw new Error("SSH authentication was cancelled");
         }
@@ -569,6 +590,7 @@ export function createSshConnectionRuntime(options: {
         ) {
           throw new SshConnectionAttemptSupersededError();
         }
+        if (error instanceof RemoteEventCheckpointConflictError) throw error;
         const failure = presentSshConnectionFailure(error, platform);
         options.profiles.recordError(profile.id, failure);
         touch();
@@ -590,11 +612,15 @@ export function createSshConnectionRuntime(options: {
         throw new Error("restored SSH target locator profile does not exist");
       }
       let verification: RemoteHostTargetVerification | undefined;
+      let candidateBinding: RemoteTargetBinding | undefined;
       let askpassContext: SshAskpassContext | undefined;
       const cancelAskpass = (): void => {
         void askpassContext?.dispose();
       };
       try {
+        const checkpointConflict =
+          options.getEventCheckpointConflict?.(targetId);
+        if (checkpointConflict) throw checkpointConflict;
         if (request.signal?.aborted) {
           throw new SshAuthenticationCancelledError();
         }
@@ -686,6 +712,7 @@ export function createSshConnectionRuntime(options: {
             ? {}
             : { sshHostKeyFingerprint: observedFingerprint })
         });
+        candidateBinding = candidate;
         const token = makeToken();
         if (!/^[a-f0-9]{64}$/u.test(token)) {
           throw new Error(
@@ -726,7 +753,13 @@ export function createSshConnectionRuntime(options: {
           token,
           retentionPolicy,
           assertPromotionCurrent: () =>
-            assertRestoreSnapshotCurrent(binding, profile)
+            assertRestoreAttemptCurrent(
+              options.bindings.get(binding.id),
+              binding,
+              candidateBinding,
+              profile,
+              isStoredProfileCurrent
+            )
         });
         const restoredBinding = options.bindings.get(binding.id);
         if (!restoredBinding) {
@@ -755,10 +788,17 @@ export function createSshConnectionRuntime(options: {
         }
         if (
           error instanceof SshConnectionAttemptSupersededError ||
-          !isRestoreSnapshotCurrent(binding, profile)
+          !isRestoreAttemptCurrent(
+            options.bindings.get(binding.id),
+            binding,
+            candidateBinding,
+            profile,
+            isStoredProfileCurrent
+          )
         ) {
           throw new SshConnectionAttemptSupersededError();
         }
+        if (error instanceof RemoteEventCheckpointConflictError) throw error;
         const failure = presentSshConnectionFailure(
           authenticationCancelled
             ? new SshAuthenticationCancelledError()
@@ -1001,6 +1041,52 @@ function sameDoctorAuthority(
     expected.authenticatedPrincipal.accountName ===
       actual.authenticatedPrincipal.accountName
   );
+}
+
+function isRestoreAttemptCurrent(
+  current: RemoteTargetBinding | undefined,
+  initial: RemoteTargetBinding,
+  candidate: RemoteTargetBinding | undefined,
+  profile: SshProfileDto,
+  isProfileCurrent: (profile: SshProfileDto) => boolean
+): boolean {
+  if (!isProfileCurrent(profile) || !current) return false;
+  if (isDeepStrictEqual(current, initial)) return true;
+  return Boolean(
+    candidate &&
+    isDeepStrictEqual(
+      bindingWithoutObservation(current),
+      bindingWithoutObservation(candidate)
+    )
+  );
+}
+
+function assertRestoreAttemptCurrent(
+  current: RemoteTargetBinding | undefined,
+  initial: RemoteTargetBinding,
+  candidate: RemoteTargetBinding | undefined,
+  profile: SshProfileDto,
+  isProfileCurrent: (profile: SshProfileDto) => boolean
+): void {
+  if (
+    !isRestoreAttemptCurrent(
+      current,
+      initial,
+      candidate,
+      profile,
+      isProfileCurrent
+    )
+  ) {
+    throw new SshConnectionAttemptSupersededError();
+  }
+}
+
+function bindingWithoutObservation(
+  binding: RemoteTargetBinding
+): RemoteTargetBinding {
+  const candidate = structuredClone(binding);
+  delete candidate.observation;
+  return candidate;
 }
 
 function canonicalTimestamp(value: string): string {

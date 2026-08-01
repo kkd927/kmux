@@ -52,7 +52,8 @@ describe("RemoteOperationCoordinator", () => {
     );
     expect(events.slice(0, 2)).toEqual(["store.admit", "fact.pending"]);
     expect(
-      fixture.state.remoteOperations[operation.intent.operationId].state
+      fixture.state.remoteRecovery.operations[operation.intent.operationId]
+        .state
     ).toBe("termination-pending");
 
     coordinator.recordAuthoritativeResult(operation.intent.operationId, {
@@ -63,7 +64,8 @@ describe("RemoteOperationCoordinator", () => {
     });
     expect(events.slice(-2)).toEqual(["store.result", "fact.succeeded"]);
     expect(
-      fixture.state.remoteOperations[operation.intent.operationId].state
+      fixture.state.remoteRecovery.operations[operation.intent.operationId]
+        .state
     ).toBe("succeeded");
   });
 
@@ -154,7 +156,8 @@ describe("RemoteOperationCoordinator", () => {
 
     expect(store.get(operation.intent.operationId)?.result).toBeUndefined();
     expect(
-      fixture.state.remoteOperations[operation.intent.operationId].state
+      fixture.state.remoteRecovery.operations[operation.intent.operationId]
+        .state
     ).toBe("termination-pending");
   });
 
@@ -183,7 +186,8 @@ describe("RemoteOperationCoordinator", () => {
     );
     recovering.recover();
     expect(
-      recoveredState.remoteOperations[persisted.intent.operationId].state
+      recoveredState.remoteRecovery.operations[persisted.intent.operationId]
+        .state
     ).toBe("termination-pending");
 
     const crashingResult = createRemoteOperationCoordinator({
@@ -205,14 +209,16 @@ describe("RemoteOperationCoordinator", () => {
     ).toThrow(/result projection crash/);
     expect(store.get(persisted.intent.operationId)?.result).toBeDefined();
     expect(
-      recoveredState.remoteOperations[persisted.intent.operationId].state
+      recoveredState.remoteRecovery.operations[persisted.intent.operationId]
+        .state
     ).toBe("termination-pending");
 
     createRemoteOperationCoordinator(
       coordinatorOptions(recoveredState, store)
     ).recover();
     expect(
-      recoveredState.remoteOperations[persisted.intent.operationId].state
+      recoveredState.remoteRecovery.operations[persisted.intent.operationId]
+        .state
     ).toBe("succeeded");
   });
 
@@ -255,10 +261,10 @@ describe("RemoteOperationCoordinator", () => {
     ).recover();
 
     expect(
-      recoveredState.remoteOperations[first.intent.operationId].state
+      recoveredState.remoteRecovery.operations[first.intent.operationId].state
     ).toBe("succeeded");
     expect(
-      recoveredState.remoteOperations[second.intent.operationId].state
+      recoveredState.remoteRecovery.operations[second.intent.operationId].state
     ).toBe("pending");
   });
 
@@ -285,7 +291,8 @@ describe("RemoteOperationCoordinator", () => {
     ).resolves.toEqual({ status: "pending", reason: "ambiguous" });
     expect(store.get(operation.intent.operationId)?.result).toBeUndefined();
     expect(
-      fixture.state.remoteOperations[operation.intent.operationId].state
+      fixture.state.remoteRecovery.operations[operation.intent.operationId]
+        .state
     ).toBe("termination-pending");
   });
 
@@ -415,7 +422,7 @@ describe("RemoteOperationCoordinator", () => {
       desktopInstallationId: "desktop_other"
     });
     expect(() => recovering.recover()).toThrow(/another desktop installation/);
-    expect(recoveredState.remoteOperations).toEqual({});
+    expect(recoveredState.remoteRecovery.operations).toEqual({});
   });
 });
 

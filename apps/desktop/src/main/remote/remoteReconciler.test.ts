@@ -319,7 +319,7 @@ describe("RemoteReconciler observations", () => {
       const reconciler = createReconciler(fixture.state, inventory);
       const keeper = observedKeeper(fixture.workspaceId, fixture.sessionId);
       const payloadHash = "d".repeat(64);
-      fixture.state.remoteOperations.terminate_1 = {
+      fixture.state.remoteRecovery.operations.terminate_1 = {
         operationId: "terminate_1",
         kind: "session.terminate",
         resourceKey: keeper.resourceKey,

@@ -241,7 +241,7 @@ function createRemoteReconciliationHarness(options?: {
     completedAt: "2026-07-17T00:00:01.000Z",
     resultDigest: "2".repeat(64)
   };
-  state.remoteOperations[projection.operationId] = projection;
+  state.remoteRecovery.operations[projection.operationId] = projection;
 
   let failedCreates = options?.failedCreates ?? 0;
   let pendingCreates = options?.pendingCreates ?? 0;

@@ -160,7 +160,7 @@ export function currentWorkspaceRemoteRevision(
     workspace.location.target.targetId === targetId
       ? (workspace.remoteResourceRevision ?? uint64(0n))
       : uint64(0n);
-  for (const operation of Object.values(state.remoteOperations)) {
+  for (const operation of Object.values(state.remoteRecovery.operations)) {
     if (
       operation.resourceKey.targetId !== targetId ||
       operation.resourceKey.workspaceId !== workspaceId ||

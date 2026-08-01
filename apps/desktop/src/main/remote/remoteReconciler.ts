@@ -169,7 +169,7 @@ export function createRemoteReconciler(
     },
 
     pendingOperations(targetId: Id): RemoteOperationProjection[] {
-      return Object.values(options.getState().remoteOperations)
+      return Object.values(options.getState().remoteRecovery.operations)
         .filter(
           (operation) =>
             operation.resourceKey.targetId === targetId &&
@@ -469,7 +469,7 @@ function latestSessionTermination(
   state: AppState,
   resourceKey: RemoteResourceKey & { sessionId: Id }
 ): RemoteOperationProjection | undefined {
-  return Object.values(state.remoteOperations)
+  return Object.values(state.remoteRecovery.operations)
     .filter(
       (operation) =>
         operation.kind === "session.terminate" &&

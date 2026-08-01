@@ -19,7 +19,10 @@ import {
   USAGE_AGGREGATION_REVISION,
   USAGE_PRICING_REVISION
 } from "@kmux/metadata";
-import type { AgentIntegrationDiagnosticDto } from "@kmux/proto";
+import {
+  formatUint64Decimal,
+  type AgentIntegrationDiagnosticDto
+} from "@kmux/proto";
 
 import {
   resolveAgentScopeSettings,
@@ -156,6 +159,10 @@ import { createDurableRemoteOperationStore } from "./remote/durableRemoteOperati
 import { createSshWorkspaceTransactionWalStore } from "./remote/conversionWal";
 import { createRetainedSessionInventoryStore } from "./remote/retainedSessionInventory";
 import { createRemoteEventReceiptStore } from "./remote/remoteEventReceiptStore";
+import {
+  recoverLegacyRemoteEventCheckpoints,
+  RemoteEventCheckpointConflictError
+} from "./remote/remoteEventCheckpointRecovery";
 import { RemoteLifecycleRuntime } from "./remote/remoteLifecycleRuntime";
 import { createRemoteTargetBindingStore } from "./remote/remoteTargetBindingStore";
 import { createSshConnectionRuntime } from "./remote/sshConnectionRuntime";
@@ -206,6 +213,22 @@ let ptyHost: PtyHostManager | null = null;
 let remoteHost: RemoteHostManager | null = null;
 let remoteLifecycle: RemoteLifecycleRuntime | null = null;
 let socketServer: KmuxSocketServer | null = null;
+
+function remoteEventCheckpointDiagnosticFields(
+  error: Error
+): Record<string, string> {
+  return error instanceof RemoteEventCheckpointConflictError
+    ? {
+        checkpointTargetId: error.targetId,
+        checkpointProductThrough: formatUint64Decimal(error.productThrough),
+        checkpointDurableThrough:
+          error.durableThrough === undefined
+            ? "unavailable"
+            : formatUint64Decimal(error.durableThrough),
+        checkpointConflictReason: error.reason
+      }
+    : {};
+}
 
 function ignoreExpectedPipeClose(error: NodeJS.ErrnoException): void {
   if (error.code === "EPIPE") {
@@ -583,21 +606,8 @@ async function bootstrap(): Promise<void> {
     return activePane?.activeSurfaceId === surfaceId;
   };
 
-  const initial = runtime.restoreInitialState();
-  runtime.setStore(new AppStore(initial));
-  const localExternalSessionWarmup = Object.values(initial.sessions).some(
-    (session) =>
-      session.runtimeStatus.processState !== "exited" &&
-      Boolean(session.agentSessionRef?.externalKey)
-  )
-    ? Promise.resolve(
-        localExternalSessionIndexer.listExternalAgentSessions()
-      ).catch((error) => {
-        logDiagnostics("main.external-sessions.warmup-failed", {
-          message: error instanceof Error ? error.message : String(error)
-        });
-      })
-    : Promise.resolve();
+  const initialRestore = runtime.restoreInitialState();
+  const initial = initialRestore.state;
   const desktopInstallationId = loadOrCreateDesktopInstallationId(
     paths.desktopInstallationIdentityPath
   );
@@ -617,6 +627,65 @@ async function bootstrap(): Promise<void> {
   const retainedSessionInventory = createRetainedSessionInventoryStore(
     paths.retainedSessionInventoryPath
   );
+  const checkpointRecovery = recoverLegacyRemoteEventCheckpoints({
+    desktopInstallationId,
+    state: initial,
+    sourceSnapshot: initialRestore.sourceSnapshot,
+    bindingTargetIds: remoteTargetBindings.list().map((binding) => binding.id),
+    retained: retainedSessionInventory.loadAll(),
+    conversions: sshWorkspaceTransactionWal.loadAll(),
+    durableOperations: remoteOperationStore.loadAll(),
+    eventReceiptStore: remoteEventReceiptStore,
+    persistDurableProductSnapshot: (state) =>
+      snapshotStore.saveDurable(state, { cleanShutdown: false })
+  });
+  const remoteEventCheckpointConflicts = new Map(
+    checkpointRecovery.conflicts.map((error) => [error.targetId, error])
+  );
+  for (const checkpoint of checkpointRecovery.recovered) {
+    logDiagnostics("main.remote-event-checkpoint.recovered", {
+      targetId: checkpoint.targetId,
+      productThrough: formatUint64Decimal(checkpoint.productThrough),
+      durableThrough: formatUint64Decimal(checkpoint.durableThrough),
+      sourceSnapshotStatus: initialRestore.sourceSnapshot.status,
+      sourceSnapshotVersion:
+        initialRestore.sourceSnapshot.status === "ok"
+          ? initialRestore.sourceSnapshot.schemaVersion
+          : undefined
+    });
+  }
+  for (const conflict of checkpointRecovery.conflicts) {
+    logDiagnostics("main.remote-event-checkpoint.conflict", {
+      targetId: conflict.targetId,
+      productThrough: formatUint64Decimal(conflict.productThrough),
+      ...(conflict.durableThrough === undefined
+        ? {}
+        : {
+            durableThrough: formatUint64Decimal(conflict.durableThrough)
+          }),
+      reason: conflict.reason,
+      message: conflict.message,
+      sourceSnapshotStatus: initialRestore.sourceSnapshot.status,
+      sourceSnapshotVersion:
+        initialRestore.sourceSnapshot.status === "ok"
+          ? initialRestore.sourceSnapshot.schemaVersion
+          : undefined
+    });
+  }
+  runtime.setStore(new AppStore(initial));
+  const localExternalSessionWarmup = Object.values(initial.sessions).some(
+    (session) =>
+      session.runtimeStatus.processState !== "exited" &&
+      Boolean(session.agentSessionRef?.externalKey)
+  )
+    ? Promise.resolve(
+        localExternalSessionIndexer.listExternalAgentSessions()
+      ).catch((error) => {
+        logDiagnostics("main.external-sessions.warmup-failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      })
+    : Promise.resolve();
   let updater!: ReturnType<typeof createUpdaterController>;
   let lifecycle!: ReturnType<typeof createMainLifecycleController>;
 
@@ -709,7 +778,8 @@ async function bootstrap(): Promise<void> {
     onConnected: () => worktreeRuntime?.reconcileManagedSurfaces(),
     reportError: (error) => {
       logDiagnostics("main.ssh-target.post-connect-failed", {
-        message: error.message
+        message: error.message,
+        ...remoteEventCheckpointDiagnosticFields(error)
       });
     }
   });
@@ -768,7 +838,8 @@ async function bootstrap(): Promise<void> {
     },
     reportError: (error) => {
       logDiagnostics("main.remote-lifecycle.error", {
-        message: error.message
+        message: error.message,
+        ...remoteEventCheckpointDiagnosticFields(error)
       });
     },
     reconnectTarget: (targetId) =>
@@ -802,6 +873,8 @@ async function bootstrap(): Promise<void> {
     host: providerRemoteHost,
     lifecycle: providerRemoteLifecycle,
     askpassBroker: sshAskpass,
+    getEventCheckpointConflict: (targetId) =>
+      remoteEventCheckpointConflicts.get(targetId),
     isTargetReferenced: (targetId) => {
       if (
         Object.values(runtime.getState().workspaces).some(
@@ -1962,7 +2035,8 @@ async function bootstrap(): Promise<void> {
       onFailure: (targetId, error) => {
         logDiagnostics("main.ssh-target.restore-failed", {
           targetId,
-          message: error.message
+          message: error.message,
+          ...remoteEventCheckpointDiagnosticFields(error)
         });
       }
     }).then((result) => {

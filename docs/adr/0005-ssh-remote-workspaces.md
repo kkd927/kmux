@@ -2013,7 +2013,7 @@ never invokes the other target's provider as a fallback.
 | Area                  | Remote contract                                                                                                              |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Pane/surface          | Split creates a new keeper; restart changes generation only through an explicit operation                                    |
-| Restore               | Disabling layout restore does not kill keepers; they remain in retained-session inventory                                    |
+| Restore               | Disabling layout restore resets only the workspace graph; it preserves the remote recovery kernel and does not kill keepers  |
 | CLI/future Agent Team | Alias routing, `send_text`/`send_key` PTY-boundary acknowledgement, and bounded `surface.capture` execute on the same target |
 | Hooks/notifications   | `kmuxd hook` writes a bounded user-only spool while bridge/desktop is absent and replays without duplicates                  |
 | Git/worktree          | Operations run through the target provider with dirty checks and dedicated-worktree policy; there is no local fallback       |
@@ -2437,6 +2437,17 @@ needed to diagnose:
 
 ### Local Desktop
 
+The version-4 `state.json` snapshot has two lifecycle domains in one atomic
+file: the discardable workspace graph (`windows`, `workspaces`, `panes`,
+`surfaces`, `sessions`, notifications, and active window) and the
+`RemoteRecoveryState` kernel (durable-operation projections and remote-event
+product receipts). Settings and the complete remote recovery kernel survive a
+workspace-graph reset. Clean shutdown with layout restore disabled and the
+matching next-launch path use the same reset operation, so neither path can
+silently discard recovery state the other preserves. The two domains remain in
+one snapshot; this boundary does not introduce SQLite or a second product-state
+database.
+
 Persist:
 
 - SSH profiles without secrets
@@ -2463,6 +2474,22 @@ use the file-fsync, atomic-rename, and parent-directory-fsync primitive defined
 by Transactional Conversion. Each record contains the canonical product fact
 needed to repair a lagging snapshot. Compaction writes a new bounded store with
 the same durability sequence; it never edits an acknowledged record in place.
+
+Remote event replay keeps its crash-safe order: durably stage the event in the
+receipt WAL, apply the product fact and fsync the atomic `state.json`
+replacement (including the product cursor), complete the receipt, then
+acknowledge the remote spool. Receipt deletion and product-cursor rollback are
+not recovery mechanisms. A legacy or missing product snapshot may advance a
+lagging product cursor to the completed durable receipt only when there is no
+pending receipt and no SSH workspace, product operation projection,
+incomplete conversion, or unresolved durable operation for that target.
+Retained inventory and an authority binding alone are safe. Current-schema or
+otherwise unsafe mismatches fail closed with target/product/durable cursors and
+a typed reason.
+
+Recovery and checkpoint-conflict diagnostics contain only structured target,
+snapshot-version/status, cursor, and reason fields. They never include the
+remote event payload.
 
 ### Remote Runtime
 

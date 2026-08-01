@@ -726,8 +726,10 @@ function createState(): AppState {
         }
       }
     },
-    remoteOperations: {},
-    remoteEventReceipts: {},
+    remoteRecovery: {
+      operations: {},
+      eventReceipts: {}
+    },
     notifications: [],
     settings: {} as never,
     activeWindowId: "window_test"

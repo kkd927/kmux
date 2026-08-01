@@ -230,14 +230,18 @@ export interface RemoteEventReceiptState {
   recentEventIds: Id[];
 }
 
+export interface RemoteRecoveryState {
+  operations: Record<Id, RemoteOperationProjection>;
+  eventReceipts: Record<Id, RemoteEventReceiptState>;
+}
+
 export interface AppState {
   windows: Record<Id, WindowState>;
   workspaces: Record<Id, WorkspaceState>;
   panes: Record<Id, PaneState>;
   surfaces: Record<Id, SurfaceState>;
   sessions: Record<Id, SessionState>;
-  remoteOperations: Record<Id, RemoteOperationProjection>;
-  remoteEventReceipts: Record<Id, RemoteEventReceiptState>;
+  remoteRecovery: RemoteRecoveryState;
   notifications: NotificationItem[];
   settings: KmuxSettings;
   activeWindowId: Id;
@@ -932,14 +936,30 @@ export function createInitialState(
         }
       }
     },
-    remoteOperations: {},
-    remoteEventReceipts: {},
+    remoteRecovery: {
+      operations: {},
+      eventReceipts: {}
+    },
     notifications: [],
     settings: createDefaultSettings("kmuxOnly", shellPath),
     activeWindowId: windowId
   };
 
   return state;
+}
+
+/**
+ * Starts a fresh local workspace graph while carrying forward the state that
+ * has an independent recovery lifecycle.
+ */
+export function createWorkspaceGraphResetState(
+  currentState: AppState,
+  shellPath: string | undefined = process.env.SHELL
+): AppState {
+  const reset = createInitialState(shellPath);
+  reset.settings = structuredClone(currentState.settings);
+  reset.remoteRecovery = structuredClone(currentState.remoteRecovery);
+  return reset;
 }
 
 export type AppStateDto = Record<string, unknown>;
@@ -1050,25 +1070,29 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
         }
       ])
     ),
-    remoteOperations: Object.fromEntries(
-      Object.entries(snapshot.remoteOperations).map(([id, operation]) => [
-        id,
-        {
-          ...encodeRemoteOperationProjectionDto(operation)
-        }
-      ])
-    ),
-    remoteEventReceipts: Object.fromEntries(
-      Object.entries(snapshot.remoteEventReceipts).map(
-        ([targetId, receipt]) => [
-          targetId,
-          {
-            throughSequence: formatUint64Decimal(receipt.throughSequence),
-            recentEventIds: [...receipt.recentEventIds]
-          }
-        ]
+    remoteRecovery: {
+      operations: Object.fromEntries(
+        Object.entries(snapshot.remoteRecovery.operations).map(
+          ([id, operation]) => [
+            id,
+            {
+              ...encodeRemoteOperationProjectionDto(operation)
+            }
+          ]
+        )
+      ),
+      eventReceipts: Object.fromEntries(
+        Object.entries(snapshot.remoteRecovery.eventReceipts).map(
+          ([targetId, receipt]) => [
+            targetId,
+            {
+              throughSequence: formatUint64Decimal(receipt.throughSequence),
+              recentEventIds: [...receipt.recentEventIds]
+            }
+          ]
+        )
       )
-    ),
+    },
     notifications: structuredClone(snapshot.notifications),
     settings: structuredClone(snapshot.settings),
     activeWindowId: snapshot.activeWindowId
@@ -1076,7 +1100,7 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
 }
 
 export interface DecodeAppStateOptions {
-  snapshotVersion?: 1 | 2 | 3;
+  snapshotVersion?: 1 | 2 | 3 | 4;
 }
 
 /** Decodes the current DTO and explicitly supported legacy snapshot schemas. */
@@ -1087,7 +1111,23 @@ export function decodeAppStateDto(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("app state snapshot must be an object");
   }
-  const cloned = structuredClone(value) as AppState;
+  const cloned = structuredClone(value) as AppState & {
+    remoteOperations?: unknown;
+    remoteEventReceipts?: unknown;
+  };
+  if (
+    options.snapshotVersion === 1 ||
+    options.snapshotVersion === 2 ||
+    options.snapshotVersion === 3
+  ) {
+    cloned.remoteRecovery = {
+      operations: cloned.remoteOperations as RemoteRecoveryState["operations"],
+      eventReceipts:
+        cloned.remoteEventReceipts as RemoteRecoveryState["eventReceipts"]
+    };
+    delete cloned.remoteOperations;
+    delete cloned.remoteEventReceipts;
+  }
   return sanitizeState(cloned, {
     allowLegacySurfaceFormat:
       options.snapshotVersion === 1 || options.snapshotVersion === 2
@@ -3033,12 +3073,12 @@ function applyRemoteEvent(
   if (action.disposition === "pending") {
     return [];
   }
-  const receipt = state.remoteEventReceipts[action.targetId];
+  const receipt = state.remoteRecovery.eventReceipts[action.targetId];
   if (receipt && action.sequence <= receipt.throughSequence) {
     return [];
   }
   if (receipt?.recentEventIds.includes(action.eventId)) {
-    state.remoteEventReceipts[action.targetId] = {
+    state.remoteRecovery.eventReceipts[action.targetId] = {
       throughSequence: action.sequence,
       recentEventIds: receipt.recentEventIds
     };
@@ -3052,7 +3092,7 @@ function applyRemoteEvent(
     ...(receipt?.recentEventIds ?? []),
     action.eventId
   ].slice(-MAX_RECENT_REMOTE_EVENT_IDS);
-  state.remoteEventReceipts[action.targetId] = {
+  state.remoteRecovery.eventReceipts[action.targetId] = {
     throughSequence: action.sequence,
     recentEventIds
   };
@@ -4053,10 +4093,17 @@ function sanitizeState(
   state: AppState,
   options: { allowLegacySurfaceFormat: boolean }
 ): AppState {
-  const rawRemoteEventReceipts = (
-    state as AppState & { remoteEventReceipts?: unknown }
-  ).remoteEventReceipts;
-  state.remoteEventReceipts =
+  const rawRemoteRecovery = (state as AppState & { remoteRecovery?: unknown })
+    .remoteRecovery;
+  const remoteRecovery =
+    rawRemoteRecovery &&
+    typeof rawRemoteRecovery === "object" &&
+    !Array.isArray(rawRemoteRecovery)
+      ? (rawRemoteRecovery as unknown as Record<string, unknown>)
+      : {};
+  const rawRemoteEventReceipts = (remoteRecovery as { eventReceipts?: unknown })
+    .eventReceipts;
+  const eventReceipts =
     rawRemoteEventReceipts &&
     typeof rawRemoteEventReceipts === "object" &&
     !Array.isArray(rawRemoteEventReceipts)
@@ -4099,10 +4146,9 @@ function sanitizeState(
             })
         )
       : {};
-  const rawRemoteOperations = (
-    state as AppState & { remoteOperations?: unknown }
-  ).remoteOperations;
-  state.remoteOperations =
+  const rawRemoteOperations = (remoteRecovery as { operations?: unknown })
+    .operations;
+  const operations =
     rawRemoteOperations &&
     typeof rawRemoteOperations === "object" &&
     !Array.isArray(rawRemoteOperations)
@@ -4117,6 +4163,7 @@ function sanitizeState(
           })
         )
       : {};
+  state.remoteRecovery = { operations, eventReceipts };
   const firstWindowId = Object.keys(state.windows)[0];
   if (!state.windows[state.activeWindowId] && firstWindowId) {
     state.activeWindowId = firstWindowId;

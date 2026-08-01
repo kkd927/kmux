@@ -1246,7 +1246,8 @@ function durableSnapshotContainsResult(
   snapshot: AppState,
   operation: DurableRemoteOperationRecord
 ): boolean {
-  const projection = snapshot.remoteOperations[operation.intent.operationId];
+  const projection =
+    snapshot.remoteRecovery.operations[operation.intent.operationId];
   const result = operation.result?.authoritative;
   if (!projection || !result) return false;
   if (

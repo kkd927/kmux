@@ -163,7 +163,7 @@ function validateRemoteLayoutAction(action: AppAction, state: AppState): void {
   ) {
     return;
   }
-  const pendingOwnership = Object.values(state.remoteOperations).some(
+  const pendingOwnership = Object.values(state.remoteRecovery.operations).some(
     (operation) =>
       operation.state === "pending" &&
       operation.pendingProduct?.kind === "session.create" &&

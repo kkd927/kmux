@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import type { SshProfileDto } from "@kmux/proto";
+import { createInitialState } from "@kmux/core";
+import { uint64, type SshProfileDto } from "@kmux/proto";
 
 import type { RemoteHostManager } from "../remoteHost";
 import type { RemoteLifecycleRuntime } from "./remoteLifecycleRuntime";
@@ -14,6 +15,10 @@ import {
 } from "./sshConnectionRuntime";
 import type { SshProfileConnectionResolver } from "./sshProfileConnection";
 import { createSshProfileStore } from "./sshProfileStore";
+import {
+  recoverLegacyRemoteEventCheckpoints,
+  RemoteEventCheckpointConflictError
+} from "./remoteEventCheckpointRecovery";
 
 const NOW = "2026-07-19T00:00:00.000Z";
 const POLICY = "a".repeat(64);
@@ -860,6 +865,185 @@ describe("SSH connection runtime", () => {
       expect(lifecycle.promotions).toEqual([]);
       expect(host.discarded).toEqual(["restore_verification_1"]);
       expect(bindings.get("target_restore")).toEqual(original);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a target-scoped unreadable receipt before opening an SSH connection", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "checkpoint-conflict",
+        host: "conflict.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      bindings.replace(binding("target_conflict", profile.id));
+      const host = new FakeHost();
+      const conflict = new RemoteEventCheckpointConflictError(
+        "target_conflict",
+        uint64(12n),
+        undefined,
+        "durable-receipt-unreadable",
+        { cause: new Error("remote event receipt digest does not match") }
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: host as unknown as RemoteHostManager,
+        lifecycle: new FakeLifecycle(
+          bindings
+        ) as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => true,
+        getEventCheckpointConflict: () => conflict,
+        now: () => NOW
+      });
+
+      await expect(
+        runtime.restoreTarget("target_conflict", {
+          authentication: "non-interactive",
+          purpose: "runtime-reconnect"
+        })
+      ).rejects.toBe(conflict);
+      await expect(runtime.connectProfile(profile.id)).rejects.toBe(conflict);
+      expect(host.verifyRequests).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Test Connection and retained termination after safe legacy checkpoint recovery", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "legacy-recovered",
+        host: "legacy.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      bindings.replace(binding("target_recovered", profile.id));
+      const state = createInitialState("/bin/zsh");
+      const durableSave = vi.fn();
+      const checkpointRecovery = recoverLegacyRemoteEventCheckpoints({
+        desktopInstallationId: "desktop_1",
+        state,
+        sourceSnapshot: { status: "ok", schemaVersion: 3 },
+        bindingTargetIds: ["target_recovered"],
+        retained: [{ resourceKey: { targetId: "target_recovered" } }],
+        conversions: [],
+        durableOperations: [],
+        eventReceiptStore: {
+          load: () => ({
+            desktopInstallationId: "desktop_1",
+            targetId: "target_recovered",
+            appliedThrough: uint64(20n)
+          }),
+          stage: () => {
+            throw new Error("not used");
+          },
+          complete: () => {
+            throw new Error("not used");
+          }
+        },
+        persistDurableProductSnapshot: durableSave
+      });
+      const conflicts = new Map(
+        checkpointRecovery.conflicts.map((error) => [error.targetId, error])
+      );
+      const host = new FakeHost();
+      const lifecycle = new FakeLifecycle(bindings);
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: host as unknown as RemoteHostManager,
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => true,
+        getEventCheckpointConflict: (targetId) => conflicts.get(targetId),
+        now: () => NOW,
+        makeToken: () => "d".repeat(64)
+      });
+
+      expect(durableSave).toHaveBeenCalledOnce();
+      expect(state.remoteRecovery.eventReceipts.target_recovered).toEqual({
+        throughSequence: 20n,
+        recentEventIds: []
+      });
+      await expect(runtime.connectProfile(profile.id)).resolves.toMatchObject({
+        binding: { id: "target_recovered" }
+      });
+      await expect(
+        runtime.restoreTarget("target_recovered", {
+          authentication: "non-interactive",
+          purpose: "retained-termination"
+        })
+      ).resolves.toMatchObject({ binding: { id: "target_recovered" } });
+      expect(host.verifyRequests).toHaveLength(2);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a post-connect checkpoint error after its own hello observation update", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "post-connect-conflict",
+        host: "post-connect.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      bindings.replace(binding("target_restore", profile.id));
+      const lifecycle = new FakeLifecycle(bindings);
+      const promote = lifecycle.promoteVerifiedTarget.bind(lifecycle);
+      const conflict = new RemoteEventCheckpointConflictError(
+        "target_restore",
+        uint64(12n),
+        uint64(20n),
+        "product-cursor-mismatch"
+      );
+      lifecycle.promoteVerifiedTarget = async (options) => {
+        await promote(options);
+        throw conflict;
+      };
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => true,
+        now: () => NOW,
+        makeToken: () => "d".repeat(64)
+      });
+
+      await expect(
+        runtime.restoreTarget("target_restore", {
+          authentication: "non-interactive",
+          purpose: "runtime-reconnect"
+        })
+      ).rejects.toBe(conflict);
+      expect(bindings.get("target_restore")?.observation).toBeDefined();
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

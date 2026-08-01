@@ -307,7 +307,9 @@ describe("Main-only remote operation facts", () => {
         completedAt: "2026-07-17T00:00:01.000Z"
       })
     ).toThrow(/keeper generation/);
-    expect(state.remoteOperations[intent.operationId].state).toBe("pending");
+    expect(state.remoteRecovery.operations[intent.operationId].state).toBe(
+      "pending"
+    );
 
     applyMainRemoteOperationFact(state, {
       type: "remote-operation.succeeded",
@@ -558,7 +560,7 @@ describe("Main-only remote operation facts", () => {
       activeSurfaceId: previousSurfaceId
     });
     expect(workspace.activePaneId).toBe(pane.id);
-    expect(state.remoteOperations[intent.operationId]).toMatchObject({
+    expect(state.remoteRecovery.operations[intent.operationId]).toMatchObject({
       state: "failed",
       failure: { code: "adopt-launch-mismatch" }
     });
@@ -688,7 +690,7 @@ describe("Main-only remote operation facts", () => {
       operationId: removeIntent.operationId,
       resultDigest: "8".repeat(64)
     });
-    expect(state.remoteOperations).toEqual({});
+    expect(state.remoteRecovery.operations).toEqual({});
   });
 
   it("projects a durably constructed pending fact and an authoritative result", () => {
@@ -700,7 +702,7 @@ describe("Main-only remote operation facts", () => {
       applied: true,
       effects: [{ type: "persist" }]
     });
-    expect(state.remoteOperations[intent.operationId]).toMatchObject({
+    expect(state.remoteRecovery.operations[intent.operationId]).toMatchObject({
       state: "termination-pending",
       resourceKey: { workspaceId, sessionId }
     });
@@ -713,7 +715,7 @@ describe("Main-only remote operation facts", () => {
       completedAt: "2026-07-17T00:00:01.000Z"
     };
     applyMainRemoteOperationFact(state, success);
-    expect(state.remoteOperations[intent.operationId]).toMatchObject({
+    expect(state.remoteRecovery.operations[intent.operationId]).toMatchObject({
       state: "succeeded",
       resultDigest: "c".repeat(64)
     });

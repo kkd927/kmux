@@ -24,6 +24,7 @@ import {
   createRemoteEventReceiptStore,
   type RemoteEventReceiptStore
 } from "./remoteEventReceiptStore";
+import { RemoteEventCheckpointConflictError } from "./remoteEventCheckpointRecovery";
 import type { ObservedSessionKeeper } from "./remoteReconciler";
 import {
   compareRemoteOperationRetryOrder,
@@ -94,9 +95,9 @@ describe("RemoteLifecycleRuntime", () => {
     });
 
     expect(result.outcome).toEqual({ status: "pending", reason: "offline" });
-    expect(fixture.state.remoteOperations[result.operationId].state).toBe(
-      "termination-pending"
-    );
+    expect(
+      fixture.state.remoteRecovery.operations[result.operationId].state
+    ).toBe("termination-pending");
     expect(fork).not.toHaveBeenCalled();
     await runtime.stop();
   });
@@ -370,7 +371,7 @@ describe("RemoteLifecycleRuntime", () => {
     expect(fixture.state.notifications).toMatchObject([
       { title: "Done", message: "Ready", surfaceId: surface.id }
     ]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 2n,
       recentEventIds: ["event_1", "event_rejected"]
     });
@@ -493,7 +494,7 @@ describe("RemoteLifecycleRuntime", () => {
     expect(fixture.state.notifications).toMatchObject([
       { title: "Done", message: "Ready", surfaceId: secondSurface.id }
     ]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 2n,
       recentEventIds: ["event_1", "event_2"]
     });
@@ -552,7 +553,7 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.connectTarget(connection());
 
     expect(fixture.state.notifications).toEqual([]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 2n,
       recentEventIds: ["event_1", "event_2"]
     });
@@ -634,7 +635,7 @@ describe("RemoteLifecycleRuntime", () => {
         surfaceId: surface.id
       }
     ]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 2n,
       recentEventIds: ["event_1", "event_2"]
     });
@@ -725,7 +726,7 @@ describe("RemoteLifecycleRuntime", () => {
         surfaceId: surface.id
       }
     ]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 2n,
       recentEventIds: ["event_1", "event_2"]
     });
@@ -808,7 +809,7 @@ describe("RemoteLifecycleRuntime", () => {
         surfaceId: surface.id
       }
     ]);
-    expect(fixture.state.remoteEventReceipts.target_1).toEqual({
+    expect(fixture.state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 1n,
       recentEventIds: ["event_1"]
     });
@@ -946,9 +947,13 @@ describe("RemoteLifecycleRuntime", () => {
     );
     runtime.recover();
 
-    await expect(runtime.connectTarget(connection())).rejects.toThrow(
-      /receipt advanced beyond the durable product snapshot/u
-    );
+    await expect(runtime.connectTarget(connection())).rejects.toMatchObject({
+      name: RemoteEventCheckpointConflictError.name,
+      targetId: "target_1",
+      productThrough: 0n,
+      durableThrough: 1n,
+      reason: "product-cursor-mismatch"
+    });
     expect(fixture.state.notifications).toEqual([]);
     await runtime.stop();
   });
@@ -1266,9 +1271,9 @@ describe("RemoteLifecycleRuntime", () => {
       launch: { cwd: "/srv/offline", initialInput: "codex\r" }
     });
 
-    const operations = Object.values(fixture.state.remoteOperations).sort(
-      compareRemoteOperationRetryOrder
-    );
+    const operations = Object.values(
+      fixture.state.remoteRecovery.operations
+    ).sort(compareRemoteOperationRetryOrder);
     expect(operations.map((operation) => operation.kind)).toEqual([
       "session.create",
       "launch-input"
@@ -1479,7 +1484,9 @@ describe("RemoteLifecycleRuntime", () => {
 
     expect(result.outcome.status).toBe("succeeded");
     expect(persistDurableProductSnapshot).toHaveBeenCalledTimes(2);
-    expect(fixture.state.remoteOperations[result.operationId]).toBeUndefined();
+    expect(
+      fixture.state.remoteRecovery.operations[result.operationId]
+    ).toBeUndefined();
     expect(operationStore.get(result.operationId)).toBeNull();
     expect(operationStore.listResourceReceipts()).toEqual([]);
 

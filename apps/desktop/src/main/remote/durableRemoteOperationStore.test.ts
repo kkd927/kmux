@@ -280,7 +280,7 @@ describe("durable remote operation store", () => {
       }
     );
     const snapshot = createInitialState("/bin/sh");
-    snapshot.remoteOperations[admission.intent.operationId] = {
+    snapshot.remoteRecovery.operations[admission.intent.operationId] = {
       ...admission.pendingFact.projection,
       state: "succeeded",
       completedAt,
@@ -337,7 +337,7 @@ describe("durable remote operation store", () => {
       }
     );
     const snapshot = createInitialState("/bin/sh");
-    snapshot.remoteOperations[admission.intent.operationId] = {
+    snapshot.remoteRecovery.operations[admission.intent.operationId] = {
       ...admission.pendingFact.projection,
       state: "succeeded",
       completedAt,

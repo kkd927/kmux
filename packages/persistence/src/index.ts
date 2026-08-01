@@ -25,7 +25,7 @@ import {
 } from "@kmux/core";
 import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
-const SNAPSHOT_STORE_VERSION = 3;
+const SNAPSHOT_STORE_VERSION = 4;
 const WINDOW_STATE_STORE_VERSION = 1;
 const USAGE_HISTORY_STORE_VERSION = 1;
 const DEFAULT_SOCKET_FILE_NAME = "control.sock";
@@ -126,6 +126,7 @@ interface SnapshotEnvelope {
 
 export interface SnapshotRecord {
   snapshot: AppState;
+  schemaVersion: 1 | 2 | 3 | 4;
   cleanShutdown: boolean;
   restoreOnLaunch: boolean;
 }
@@ -362,6 +363,7 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
     if (
       envelope.version !== 1 &&
       envelope.version !== 2 &&
+      envelope.version !== 3 &&
       envelope.version !== SNAPSHOT_STORE_VERSION
     ) {
       return incompatible(`unsupported version ${String(envelope.version)}`);
@@ -376,6 +378,7 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
           snapshot: decodeAppStateDto(envelope.snapshot, {
             snapshotVersion: envelope.version
           }),
+          schemaVersion: envelope.version,
           cleanShutdown: envelope.cleanShutdown === true,
           restoreOnLaunch: envelope.restoreOnLaunch === true
         }

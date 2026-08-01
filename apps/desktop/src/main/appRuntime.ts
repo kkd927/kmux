@@ -20,6 +20,7 @@ import {
   cloneState,
   createDefaultSettings,
   createInitialState,
+  createWorkspaceGraphResetState,
   mergeSettings,
   migrateShortcutDefaultsForPlatform,
   terminalSessionForSurface
@@ -45,6 +46,7 @@ import { isoNow, makeId } from "@kmux/proto";
 import type {
   SettingsFileStore,
   SnapshotFileStore,
+  SnapshotLoadResult,
   WindowStateFileStore
 } from "@kmux/persistence";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
@@ -106,7 +108,7 @@ export interface AppRuntime {
   installDurableState(state: AppState): void;
   runEffects(effects: AppEffect[]): void;
   syncWindowTitles(): void;
-  restoreInitialState(): AppState;
+  restoreInitialState(): InitialStateRestoreResult;
   capabilityList(): string[];
   identify(): ShellIdentity;
   previewTerminalTypography(
@@ -116,6 +118,21 @@ export interface AppRuntime {
   getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
   respawnRestoredSessions(): void;
   shutdown(options?: { preserveWorkspaceLayout?: boolean }): void;
+}
+
+export type InitialStateSnapshotSource =
+  | {
+      status: "ok";
+      schemaVersion: 1 | 2 | 3 | 4;
+      cleanShutdown: boolean;
+      restoreOnLaunch: boolean;
+    }
+  | { status: "missing" }
+  | { status: "incompatible"; reason: string };
+
+export interface InitialStateRestoreResult {
+  state: AppState;
+  sourceSnapshot: InitialStateSnapshotSource;
 }
 
 export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
@@ -635,7 +652,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     );
   }
 
-  function restoreInitialState(): AppState {
+  function restoreInitialState(): InitialStateRestoreResult {
     const snapshotLoad = options.snapshotStore.loadRecord();
     const snapshotRecord =
       snapshotLoad.status === "ok" ? snapshotLoad.record : null;
@@ -650,7 +667,9 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         snapshotRecord.restoreOnLaunch === true);
     const initial = shouldRestoreSnapshot
       ? cloneState(snapshot)
-      : createInitialState(options.defaultShellPath);
+      : snapshot
+        ? createWorkspaceGraphResetState(snapshot, options.defaultShellPath)
+        : createInitialState(options.defaultShellPath);
 
     initial.settings = mergeSettings(
       { ...initial.settings, agents: undefined },
@@ -695,7 +714,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       activeWindow.sidebarWidth = persistedSidebarWidth;
     }
 
-    return initial;
+    return {
+      state: initial,
+      sourceSnapshot: snapshotSource(snapshotLoad)
+    };
   }
 
   function capabilityList(): string[] {
@@ -860,7 +882,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         shutdownOptions.preserveWorkspaceLayout === true;
       const shutdownSnapshot = restoreOnLaunch
         ? currentState
-        : createCleanShutdownSnapshot(currentState, options.defaultShellPath);
+        : createWorkspaceGraphResetState(
+            currentState,
+            options.defaultShellPath
+          );
       options.snapshotStore.save(shutdownSnapshot, {
         cleanShutdown: true,
         restoreOnLaunch
@@ -1025,16 +1050,16 @@ function externalAgentSessionRefsMatch(
   );
 }
 
-function createCleanShutdownSnapshot(
-  currentState: AppState,
-  defaultShellPath: string
-): AppState {
-  const cleanState = createInitialState(defaultShellPath);
-  cleanState.settings = mergeSettings(
-    cleanState.settings,
-    currentState.settings
-  );
-  return cleanState;
+function snapshotSource(
+  result: SnapshotLoadResult
+): InitialStateSnapshotSource {
+  if (result.status !== "ok") return result;
+  return {
+    status: "ok",
+    schemaVersion: result.record.schemaVersion,
+    cleanShutdown: result.record.cleanShutdown,
+    restoreOnLaunch: result.record.restoreOnLaunch
+  };
 }
 
 type ShellGroup =

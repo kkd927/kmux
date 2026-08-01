@@ -3781,7 +3781,7 @@ describe("remote event product receipt", () => {
       "persist"
     ]);
     expect(state.notifications).toHaveLength(1);
-    expect(state.remoteEventReceipts.target_1).toEqual({
+    expect(state.remoteRecovery.eventReceipts.target_1).toEqual({
       throughSequence: 1n,
       recentEventIds: ["event_1"]
     });
@@ -3803,7 +3803,9 @@ describe("remote event product receipt", () => {
       disposition: "suppressed",
       reason: "test-suppression"
     });
-    expect(state.remoteEventReceipts.target_1?.throughSequence).toBe(1n);
+    expect(state.remoteRecovery.eventReceipts.target_1?.throughSequence).toBe(
+      1n
+    );
     expect(
       applyAction(state, {
         type: "remote.event.apply",
@@ -3819,7 +3821,9 @@ describe("remote event product receipt", () => {
         }
       })
     ).toEqual([{ type: "persist" }]);
-    expect(state.remoteEventReceipts.target_1?.throughSequence).toBe(2n);
+    expect(state.remoteRecovery.eventReceipts.target_1?.throughSequence).toBe(
+      2n
+    );
     expect(state.notifications).toHaveLength(0);
   });
 });

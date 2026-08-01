@@ -247,7 +247,7 @@ export function createWorktreeRuntime(
 
   async function reconcileManagedSurfaces(): Promise<void> {
     const state = options.getState();
-    const candidates = Object.values(state.remoteOperations).flatMap(
+    const candidates = Object.values(state.remoteRecovery.operations).flatMap(
       (operation) => {
         if (
           operation.state !== "succeeded" ||

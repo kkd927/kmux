@@ -72,6 +72,7 @@ function createRuntime(
     initialState?: AppState;
     snapshotRecord?: {
       snapshot: AppState;
+      schemaVersion?: 1 | 2 | 3 | 4;
       cleanShutdown: boolean;
       restoreOnLaunch?: boolean;
     } | null;
@@ -116,6 +117,7 @@ function createRuntime(
               status: "ok" as const,
               record: {
                 ...options.snapshotRecord,
+                schemaVersion: options.snapshotRecord.schemaVersion ?? 4,
                 restoreOnLaunch: options.snapshotRecord.restoreOnLaunch === true
               }
             }
@@ -337,7 +339,7 @@ describe("app runtime shortcut default migration", () => {
     });
 
     try {
-      const state = runtime.restoreInitialState();
+      const state = runtime.restoreInitialState().state;
 
       expect(state.settings.shortcutDefaultsPlatform).toBe("linux");
       expect(state.settings.shortcuts).toEqual(LINUX_DEFAULT_SHORTCUTS);
@@ -355,7 +357,7 @@ describe("app runtime shortcut default migration", () => {
     });
 
     try {
-      const state = runtime.restoreInitialState();
+      const state = runtime.restoreInitialState().state;
 
       expect(state.settings.shortcutDefaultsPlatform).toBe("linux");
       expect(state.settings.shortcuts["workspace.create"]).toBe(
@@ -548,7 +550,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
 
     expect(restored.notifications).toEqual([]);
     expect(restored.surfaces[surfaceId]).toEqual(
@@ -582,7 +584,7 @@ describe("app runtime restore", () => {
       settings: legacySettings as unknown as KmuxSettings
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
 
     expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
     expect(
@@ -608,7 +610,7 @@ describe("app runtime restore", () => {
       settings: createDefaultSettings()
     });
 
-    expect(runtime.restoreInitialState().settings.agents).toBeUndefined();
+    expect(runtime.restoreInitialState().state.settings.agents).toBeUndefined();
   });
 
   it("prefers the current settings file agent profile over the restored snapshot", () => {
@@ -636,13 +638,17 @@ describe("app runtime restore", () => {
       settings
     });
 
-    expect(runtime.restoreInitialState().settings.agents).toEqual(
+    expect(runtime.restoreInitialState().state.settings.agents).toEqual(
       settings.agents
     );
   });
 
   it("starts fresh instead of restoring a clean-shutdown snapshot without restore-on-launch", () => {
     const snapshot = createInitialState("/bin/zsh");
+    snapshot.remoteRecovery.eventReceipts.target_1 = {
+      throughSequence: uint64(12n),
+      recentEventIds: ["event_12"]
+    };
 
     applyAction(snapshot, {
       type: "workspace.create",
@@ -659,7 +665,8 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restore = runtime.restoreInitialState();
+    const restored = restore.state;
 
     expect(Object.keys(restored.workspaces)).toHaveLength(1);
     expect(Object.keys(restored.panes)).toHaveLength(1);
@@ -668,6 +675,13 @@ describe("app runtime restore", () => {
     expect(
       restored.windows[restored.activeWindowId]?.workspaceOrder
     ).toHaveLength(1);
+    expect(restored.remoteRecovery).toEqual(snapshot.remoteRecovery);
+    expect(restore.sourceSnapshot).toEqual({
+      status: "ok",
+      schemaVersion: 4,
+      cleanShutdown: true,
+      restoreOnLaunch: false
+    });
   });
 
   it("restores a clean-shutdown snapshot when restore-on-launch is set", () => {
@@ -692,7 +706,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
 
     expect(restored.workspaces[restoredWorkspaceId]?.name).toBe("project");
     for (const session of Object.values(restored.sessions)) {
@@ -723,7 +737,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
     const restoredSessionIds = new Set(
       Object.values(restored.surfaces).map(
         (surface) => requireTerminalSurfaceContent(surface).sessionId
@@ -790,7 +804,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
     expect(restored.sessions[remoteSessionId]).toMatchObject({
       runtimeStatus: {
         processState: "running",
@@ -838,7 +852,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
     const restoredWindow = restored.windows[restored.activeWindowId];
 
     expect(restored.workspaces[restoredWorkspaceId]).toBeUndefined();
@@ -883,7 +897,7 @@ describe("app runtime restore", () => {
       }
     });
 
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
 
     expect(Object.keys(restored.panes)).toHaveLength(3);
     expect(Object.keys(restored.surfaces)).toHaveLength(4);
@@ -942,7 +956,7 @@ describe("app runtime restore", () => {
         resolveExternalAgentSession
       }
     });
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
     const ptyHost = { send: vi.fn() };
     runtime.setStore(new AppStore(restored));
     runtime.setPtyHost(ptyHost as never);
@@ -1000,7 +1014,7 @@ describe("app runtime restore", () => {
         resolveExternalAgentSession: () => null
       }
     });
-    const restored = runtime.restoreInitialState();
+    const restored = runtime.restoreInitialState().state;
     const ptyHost = { send: vi.fn() };
     runtime.setStore(new AppStore(restored));
     runtime.setPtyHost(ptyHost as never);
@@ -1060,6 +1074,11 @@ describe("app runtime restore", () => {
     const state = runtime.getState();
     state.settings.restoreWorkspacesAfterQuit = false;
     const initialWorkspaceId = Object.keys(state.workspaces)[0]!;
+    state.remoteRecovery.eventReceipts.target_1 = {
+      throughSequence: uint64(20n),
+      recentEventIds: ["event_20"]
+    };
+    const expectedRemoteRecovery = cloneState(state).remoteRecovery;
 
     applyAction(state, {
       type: "workspace.create",
@@ -1093,6 +1112,7 @@ describe("app runtime restore", () => {
       savedSnapshot.windows[savedSnapshot.activeWindowId]?.workspaceOrder
     ).toHaveLength(1);
     expect(savedSnapshot.workspaces[initialWorkspaceId]).toBeUndefined();
+    expect(savedSnapshot.remoteRecovery).toEqual(expectedRemoteRecovery);
   });
 
   it("preserves the current layout for one restart when remote retention evidence is incomplete", () => {
