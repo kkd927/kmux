@@ -83,6 +83,11 @@ function createRuntime(
   const initialState = options.initialState ?? createInitialState("/bin/zsh");
   initialState.settings.notificationSound = notificationSound;
   const snapshotSave = vi.fn();
+  const snapshotSaveAsync = vi.fn(async () => undefined);
+  const settingsSave = vi.fn();
+  const settingsSaveAsync = vi.fn(async () => undefined);
+  const persistWindowState = vi.fn();
+  const persistWindowStateAsync = vi.fn(async () => undefined);
   const runtime = createAppRuntime({
     paths: {
       socketPath: "/tmp/kmux.sock",
@@ -123,22 +128,27 @@ function createRuntime(
             }
           : { status: "missing" as const },
       save: snapshotSave,
+      saveAsync: snapshotSaveAsync,
       saveDurable: snapshotSave
     },
     windowStateStore: {
       path: "/tmp/kmux-window.json",
       load: () => options.windowState ?? null,
-      save: vi.fn()
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => undefined)
     },
     settingsStore: {
       path: "/tmp/kmux-settings.json",
       load: () => options.settings ?? null,
-      save: vi.fn()
+      save: settingsSave,
+      saveAsync: settingsSaveAsync
     },
     defaultShellPath: "/bin/zsh",
     shortcutDefaultsPlatform: options.shortcutDefaultsPlatform,
     refreshMetadata: options.refreshMetadata ?? vi.fn(),
-    persistWindowState: vi.fn(),
+    persistWindowState,
+    persistWindowStateAsync:
+      options.persistWindowStateAsync ?? persistWindowStateAsync,
     profileRecorder: options.profileRecorder,
     externalSessionIndexer: options.externalSessionIndexer,
     nativeNotificationIdentity: options.nativeNotificationIdentity,
@@ -157,7 +167,12 @@ function createRuntime(
 
   return Object.assign(runtime, {
     __test__: {
-      snapshotSave
+      persistWindowState,
+      persistWindowStateAsync,
+      settingsSave,
+      settingsSaveAsync,
+      snapshotSave,
+      snapshotSaveAsync
     }
   });
 }
@@ -1028,6 +1043,103 @@ describe("app runtime restore", () => {
       shell: "/bin/zsh"
     });
     expect(runtime.__test__.snapshotSave).not.toHaveBeenCalled();
+  });
+
+  it("flushes the live snapshot, settings, and window state without marking shutdown", async () => {
+    vi.useFakeTimers();
+    const runtime = createRuntime(false);
+    const mainWindow = {
+      ...createMockWindow(),
+      isDestroyed: vi.fn(() => false)
+    };
+    runtime.setMainWindow(mainWindow as never);
+    runtime.__test__.snapshotSave.mockClear();
+    runtime.__test__.snapshotSaveAsync.mockClear();
+    runtime.__test__.settingsSave.mockClear();
+    runtime.__test__.settingsSaveAsync.mockClear();
+    runtime.__test__.persistWindowState.mockClear();
+    runtime.__test__.persistWindowStateAsync.mockClear();
+
+    try {
+      runtime.dispatchAppAction({
+        type: "settings.update",
+        patch: { warnBeforeQuit: false }
+      });
+      await runtime.flushPersistence();
+
+      expect(runtime.__test__.snapshotSaveAsync).toHaveBeenCalledWith(
+        runtime.getState(),
+        { cleanShutdown: false }
+      );
+      expect(runtime.__test__.settingsSaveAsync).toHaveBeenCalledWith(
+        runtime.getState().settings
+      );
+      expect(runtime.__test__.persistWindowStateAsync).toHaveBeenCalledWith(
+        mainWindow
+      );
+
+      vi.advanceTimersByTime(300);
+      expect(runtime.__test__.snapshotSaveAsync).toHaveBeenCalledTimes(1);
+    } finally {
+      runtime.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("attempts every live persistence target when one async save fails", async () => {
+    const runtime = createRuntime(false);
+    const mainWindow = {
+      ...createMockWindow(),
+      isDestroyed: vi.fn(() => false)
+    };
+    runtime.setMainWindow(mainWindow as never);
+    runtime.__test__.snapshotSaveAsync.mockRejectedValueOnce(
+      new Error("snapshot unavailable")
+    );
+
+    await expect(runtime.flushPersistence()).rejects.toThrow(
+      "snapshot: snapshot unavailable"
+    );
+    expect(runtime.__test__.snapshotSaveAsync).toHaveBeenCalledTimes(1);
+    expect(runtime.__test__.settingsSaveAsync).toHaveBeenCalledTimes(1);
+    expect(runtime.__test__.persistWindowStateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses async persistence for the final clean Linux-style shutdown snapshot", async () => {
+    const runtime = createRuntime(false);
+    runtime.getState().settings.restoreWorkspacesAfterQuit = false;
+
+    await runtime.shutdownAsync();
+
+    expect(runtime.__test__.snapshotSaveAsync).toHaveBeenLastCalledWith(
+      expect.any(Object),
+      {
+        cleanShutdown: true,
+        restoreOnLaunch: false
+      }
+    );
+    expect(runtime.__test__.settingsSaveAsync).toHaveBeenCalledWith(
+      runtime.getState().settings
+    );
+  });
+
+  it("does not overwrite the final shutdown snapshot with late runtime actions", async () => {
+    vi.useFakeTimers();
+    const runtime = createRuntime(false);
+    try {
+      await runtime.shutdownAsync();
+      runtime.__test__.snapshotSaveAsync.mockClear();
+
+      runtime.dispatchAppAction({
+        type: "settings.update",
+        patch: { warnBeforeQuit: false }
+      });
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(runtime.__test__.snapshotSaveAsync).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears notifications from the persisted snapshot when clean shutdown restore is disabled", () => {

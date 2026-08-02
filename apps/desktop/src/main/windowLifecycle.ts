@@ -178,13 +178,31 @@ export function buildMainWindowBrowserOptions(options: {
 }
 
 export function persistWindowState(options: PersistWindowStateOptions): void {
+  const windowState = resolvePersistedWindowState(options);
+  if (windowState) {
+    options.windowStateStore.save(windowState);
+  }
+}
+
+export async function persistWindowStateAsync(
+  options: PersistWindowStateOptions
+): Promise<void> {
+  const windowState = resolvePersistedWindowState(options);
+  if (windowState) {
+    await options.windowStateStore.saveAsync(windowState);
+  }
+}
+
+function resolvePersistedWindowState(
+  options: PersistWindowStateOptions
+): PersistedWindowState | null {
   if (options.window.isDestroyed()) {
-    return;
+    return null;
   }
   const bounds = options.window.isMaximized()
     ? options.window.getNormalBounds()
     : options.window.getBounds();
-  options.windowStateStore.save({
+  return {
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
@@ -192,7 +210,7 @@ export function persistWindowState(options: PersistWindowStateOptions): void {
     maximized: options.window.isMaximized(),
     sidebarVisible: options.getSidebarVisible(),
     sidebarWidth: options.getSidebarWidth() ?? DEFAULT_SIDEBAR_WIDTH
-  });
+  };
 }
 
 function configureWindowWebContents(webContents: WebContents): void {

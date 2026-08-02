@@ -46,9 +46,13 @@ describe("electron builder config", () => {
     const rootPackage = JSON.parse(
       readFileSync("package.json", "utf8")
     ) as Record<string, Record<string, string>>;
+    const desktopPackage = JSON.parse(
+      readFileSync("apps/desktop/package.json", "utf8")
+    ) as Record<string, Record<string, string>>;
     const config = readBuilderConfig();
 
     expect(rootPackage.devDependencies["electron-builder"]).toBe("26.15.3");
+    expect(desktopPackage.dependencies["electron-updater"]).toBe("6.8.9");
     expect(config.toolsets).toEqual({
       appimage: "1.0.3"
     });
@@ -94,7 +98,8 @@ describe("electron builder config", () => {
       description:
         "Run coding agents side by side without losing terminal output continuity.",
       executableName: "kmux",
-      artifactName: "${productName}-${version}-linux-${arch}.${ext}",
+      artifactName:
+        "${productName}-linux-${env.KMUX_LINUX_PACKAGE_ARCH}.${ext}",
       target: ["AppImage"]
     });
     expect(desktopEntry).toMatchObject({

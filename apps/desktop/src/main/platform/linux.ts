@@ -1,9 +1,6 @@
 import { createRendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { PlatformRuntime } from "./runtime";
-import {
-  hasAppImageRuntimeEnv,
-  isPackagedDesktopUpdaterEligible
-} from "./posix";
+import { isPackagedDesktopUpdaterEligible } from "./posix";
 
 export function createLinuxPlatformRuntime(options: {
   isPackaged?: boolean;
@@ -44,9 +41,9 @@ export function createLinuxPlatformRuntime(options: {
       }
     },
     updater: {
-      enabled:
-        isPackagedDesktopUpdaterEligible(options) &&
-        hasAppImageRuntimeEnv(options.env)
+      enabled: isPackagedDesktopUpdaterEligible(options),
+      autoInstallOnAppQuit: true,
+      autoRunAppAfterInstall: true
     }
   };
 }

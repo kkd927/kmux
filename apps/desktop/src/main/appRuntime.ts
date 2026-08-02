@@ -77,6 +77,7 @@ export interface AppRuntimeOptions {
   shortcutDefaultsPlatform?: ShortcutDefaultsPlatform;
   refreshMetadata: (surfaceId: Id, cwd?: LocatedPath, pid?: number) => void;
   persistWindowState: (window: BrowserWindow) => void;
+  persistWindowStateAsync: (window: BrowserWindow) => Promise<void>;
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
@@ -117,7 +118,9 @@ export interface AppRuntime {
   reportTerminalTypographyProbe(report: TerminalTypographyProbeReport): void;
   getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
   respawnRestoredSessions(): void;
+  flushPersistence(): Promise<void>;
   shutdown(options?: { preserveWorkspaceLayout?: boolean }): void;
+  shutdownAsync(options?: { preserveWorkspaceLayout?: boolean }): Promise<void>;
 }
 
 export type InitialStateSnapshotSource =
@@ -141,6 +144,8 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   let documentService: { closeSurface(surfaceId: Id): void } | null = null;
   let mainWindow: BrowserWindow | null = null;
   let persistTimer: NodeJS.Timeout | null = null;
+  let asyncPersistenceActive = false;
+  let shutdownStarted = false;
   let shellState: ShellStoreSnapshot | null = null;
   let suppressTerminalTypographyPatch = 0;
   const resolveLocalPath = options.resolveLocalPath;
@@ -217,21 +222,62 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   }
 
   function schedulePersist(): void {
+    if (shutdownStarted) {
+      return;
+    }
     if (persistTimer) {
       clearTimeout(persistTimer);
     }
     persistTimer = setTimeout(() => {
-      if (!store) {
+      persistTimer = null;
+      if (!asyncPersistenceActive) {
+        persistCurrentState();
         return;
       }
+      void persistCurrentStateAsync().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[main:persistence]", error);
+        logDiagnostics("main.persistence.save-failed", { message });
+      });
+    }, 300);
+  }
+
+  function persistCurrentState(): void {
+    if (store) {
       options.snapshotStore.save(store.getState(), {
         cleanShutdown: false
       });
       options.settingsStore.save(store.getState().settings);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        options.persistWindowState(mainWindow);
-      }
-    }, 300);
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      options.persistWindowState(mainWindow);
+    }
+  }
+
+  async function persistCurrentStateAsync(): Promise<void> {
+    const tasks: PersistenceWriteTask[] = [];
+    if (store) {
+      const currentState = store.getState();
+      tasks.push({
+        name: "snapshot",
+        save: () =>
+          options.snapshotStore.saveAsync(currentState, {
+            cleanShutdown: false
+          })
+      });
+      tasks.push({
+        name: "settings",
+        save: () => options.settingsStore.saveAsync(currentState.settings)
+      });
+    }
+    const currentWindow = mainWindow;
+    if (currentWindow && !currentWindow.isDestroyed()) {
+      tasks.push({
+        name: "window-state",
+        save: () => options.persistWindowStateAsync(currentWindow)
+      });
+    }
+    await settlePersistenceWrites(tasks);
   }
 
   function emitShellPatch(
@@ -869,8 +915,10 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
   function shutdown(
     shutdownOptions: { preserveWorkspaceLayout?: boolean } = {}
   ): void {
+    shutdownStarted = true;
     if (persistTimer) {
       clearTimeout(persistTimer);
+      persistTimer = null;
     }
     if (mainWindow) {
       options.persistWindowState(mainWindow);
@@ -892,6 +940,60 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       });
       options.settingsStore.save(currentState.settings);
     }
+  }
+
+  async function shutdownAsync(
+    shutdownOptions: { preserveWorkspaceLayout?: boolean } = {}
+  ): Promise<void> {
+    shutdownStarted = true;
+    asyncPersistenceActive = true;
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+
+    const tasks: PersistenceWriteTask[] = [];
+    const currentWindow = mainWindow;
+    if (currentWindow) {
+      tasks.push({
+        name: "window-state",
+        save: () => options.persistWindowStateAsync(currentWindow)
+      });
+    }
+    if (store) {
+      const currentState = store.getState();
+      const restoreOnLaunch =
+        currentState.settings.restoreWorkspacesAfterQuit ||
+        shutdownOptions.preserveWorkspaceLayout === true;
+      const shutdownSnapshot = restoreOnLaunch
+        ? currentState
+        : createWorkspaceGraphResetState(
+            currentState,
+            options.defaultShellPath
+          );
+      tasks.push({
+        name: "snapshot",
+        save: () =>
+          options.snapshotStore.saveAsync(shutdownSnapshot, {
+            cleanShutdown: true,
+            restoreOnLaunch
+          })
+      });
+      tasks.push({
+        name: "settings",
+        save: () => options.settingsStore.saveAsync(currentState.settings)
+      });
+    }
+    await settlePersistenceWrites(tasks);
+  }
+
+  async function flushPersistence(): Promise<void> {
+    asyncPersistenceActive = true;
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    await persistCurrentStateAsync();
   }
 
   return {
@@ -933,8 +1035,43 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     reportTerminalTypographyProbe,
     getExternalAgentSessions,
     respawnRestoredSessions,
-    shutdown
+    flushPersistence,
+    shutdown,
+    shutdownAsync
   };
+}
+
+interface PersistenceWriteTask {
+  name: string;
+  save(): void | Promise<void>;
+}
+
+async function settlePersistenceWrites(
+  tasks: PersistenceWriteTask[]
+): Promise<void> {
+  const results = await Promise.allSettled(
+    tasks.map((task) => Promise.resolve().then(() => task.save()))
+  );
+  const failures = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [
+          {
+            name: tasks[index]?.name ?? "unknown",
+            error: result.reason
+          }
+        ]
+      : []
+  );
+  if (failures.length === 0) {
+    return;
+  }
+  const details = failures
+    .map(({ name, error }) => {
+      const message = error instanceof Error ? error.message : String(error);
+      return `${name}: ${message}`;
+    })
+    .join("; ");
+  throw new Error(`Persistence writes failed (${details})`);
 }
 
 function agentSessionTargetMatches(

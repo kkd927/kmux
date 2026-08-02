@@ -6,6 +6,8 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export interface PendingUpdateRecord {
@@ -15,6 +17,7 @@ export interface PendingUpdateRecord {
 export interface PendingUpdateStore {
   read(): PendingUpdateRecord | null;
   record(version: string): void;
+  recordAsync(version: string): Promise<void>;
   clear(): void;
 }
 
@@ -59,7 +62,7 @@ export function createPendingUpdateStore(filePath: string): PendingUpdateStore {
       }
       try {
         mkdirSync(dirname(filePath), { recursive: true });
-        const tmpPath = `${filePath}.tmp-${process.pid}`;
+        const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
         writeFileSync(tmpPath, JSON.stringify({ version: trimmed }, null, 2));
         try {
           renameSync(tmpPath, filePath);
@@ -70,6 +73,22 @@ export function createPendingUpdateStore(filePath: string): PendingUpdateStore {
         }
       } catch {
         // Best effort: failing to record only disables the recovery hint.
+      }
+    },
+    async recordAsync(version) {
+      const trimmed = version?.trim();
+      if (!trimmed) {
+        return;
+      }
+      const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+      try {
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(tmpPath, JSON.stringify({ version: trimmed }, null, 2));
+        await rename(tmpPath, filePath);
+      } catch {
+        // Best effort: failing to record only disables the recovery hint.
+      } finally {
+        await rm(tmpPath, { force: true }).catch(() => undefined);
       }
     },
     clear() {

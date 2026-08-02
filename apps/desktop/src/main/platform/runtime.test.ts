@@ -39,7 +39,9 @@ describe("platform runtime", () => {
         }
       },
       updater: {
-        enabled: true
+        enabled: true,
+        autoInstallOnAppQuit: false,
+        autoRunAppAfterInstall: true
       },
       rendererDescriptor: {
         windowChrome: "native",
@@ -92,7 +94,9 @@ describe("platform runtime", () => {
         }
       },
       updater: {
-        enabled: true
+        enabled: true,
+        autoInstallOnAppQuit: true,
+        autoRunAppAfterInstall: true
       },
       rendererDescriptor: {
         windowChrome: "custom",
@@ -148,7 +152,7 @@ describe("platform runtime", () => {
     expect(runtime.updater.enabled).toBe(false);
   });
 
-  it("keeps Linux updater disabled for test, unpackaged, and non-AppImage builds", () => {
+  it("keeps Linux updater disabled only for test and unpackaged builds", () => {
     expect(
       requirePlatformRuntime({
         platform: "linux",
@@ -172,7 +176,7 @@ describe("platform runtime", () => {
         isPackaged: true,
         env: {}
       }).updater.enabled
-    ).toBe(false);
+    ).toBe(true);
     expect(
       requirePlatformRuntime({
         platform: "linux",
@@ -181,7 +185,7 @@ describe("platform runtime", () => {
           APPIMAGE: "/tmp/kmux-extracted"
         }
       }).updater.enabled
-    ).toBe(false);
+    ).toBe(true);
     expect(
       requirePlatformRuntime({
         platform: "linux",
@@ -190,7 +194,7 @@ describe("platform runtime", () => {
           APPIMAGE: "kmux-0.3.12-linux-x64.AppImage"
         }
       }).updater.enabled
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("reports unsupported platforms with a clear message", () => {

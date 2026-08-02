@@ -45,13 +45,11 @@ describe("artifact-build-completed hook", () => {
 
   it("routes only Linux AppImage artifacts to blockmap sidecar generation", () => {
     expect(
-      isLinuxAppImageArtifact({
-        file: "/tmp/kmux-0.3.12-linux-arm64.AppImage"
-      })
+      isLinuxAppImageArtifact({ file: "/tmp/kmux-linux-arm64.AppImage" })
     ).toBe(true);
     expect(
       isLinuxAppImageArtifact({
-        file: "/tmp/kmux-0.3.12-linux-arm64.AppImage.blockmap"
+        file: "/tmp/kmux-linux-arm64.AppImage.blockmap"
       })
     ).toBe(false);
     expect(isLinuxAppImageArtifact({ file: "/tmp/latest-linux.yml" })).toBe(
@@ -69,19 +67,19 @@ describe("artifact-build-completed hook", () => {
 
     await buildLinuxAppImageBlockmap(
       {
-        file: "/tmp/kmux-0.3.12-linux-arm64.AppImage",
+        file: "/tmp/kmux-linux-arm64.AppImage",
         target,
         packager,
-        safeArtifactName: "kmux-0.3.12-linux-arm64.AppImage"
+        safeArtifactName: "kmux-linux-arm64.AppImage"
       },
       createBlockmap
     );
 
     expect(createBlockmap).toHaveBeenCalledWith(
-      "/tmp/kmux-0.3.12-linux-arm64.AppImage",
+      "/tmp/kmux-linux-arm64.AppImage",
       target,
       packager,
-      "kmux-0.3.12-linux-arm64.AppImage"
+      "kmux-linux-arm64.AppImage"
     );
   });
 });

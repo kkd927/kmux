@@ -97,4 +97,12 @@ describe("createPendingUpdateStore", () => {
       version: "0.3.11"
     });
   });
+
+  it("records the attempted version asynchronously for Linux shutdown", async () => {
+    const store = createPendingUpdateStore(filePath);
+
+    await store.recordAsync("  0.3.12  ");
+
+    expect(store.read()).toEqual({ version: "0.3.12" });
+  });
 });

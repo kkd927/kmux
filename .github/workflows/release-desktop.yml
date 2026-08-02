@@ -240,20 +240,15 @@ jobs:
         run: npm run dist:linux --workspace @kmux/desktop -- --${{ matrix.arch }}
       - name: Verify Linux release assets
         run: |
-          shopt -s nullglob
+          appimage="apps/desktop/release/kmux-linux-${{ matrix.arch }}.AppImage"
           if [ "${{ matrix.arch }}" = "x64" ]; then
-            appimages=(
-              apps/desktop/release/kmux-*-linux-x64.AppImage
-              apps/desktop/release/kmux-*-linux-x86_64.AppImage
-            )
-            manifests=(apps/desktop/release/latest-linux.yml)
+            manifest="apps/desktop/release/latest-linux.yml"
           else
-            appimages=(apps/desktop/release/kmux-*-linux-${{ matrix.arch }}.AppImage)
-            manifests=(apps/desktop/release/latest-linux-${{ matrix.arch }}.yml)
+            manifest="apps/desktop/release/latest-linux-${{ matrix.arch }}.yml"
           fi
-          test "${#appimages[@]}" -eq 1
-          test "${#manifests[@]}" -eq 1
-          test -s "${appimages[0]}.blockmap"
+          test -s "$appimage"
+          test -s "${appimage}.blockmap"
+          test -s "$manifest"
       - name: Smoke packaged AppImage directly under Xvfb
         run: xvfb-run --auto-servernum npm run smoke:packaged:linux -- --allow-any-linux-desktop
       - name: Upload Linux release assets
@@ -300,9 +295,13 @@ jobs:
           test "${#zips[@]}" -gt 0
           test "${#appimages[@]}" -eq 2
           test "${#appimage_blockmaps[@]}" -eq 2
-          test -f release-assets/latest-linux.yml
-          test -f release-assets/latest-linux-arm64.yml
-      - name: Create versionless download aliases
+          test -s release-assets/latest-linux.yml
+          test -s release-assets/latest-linux-arm64.yml
+          test -s release-assets/kmux-linux-x64.AppImage
+          test -s release-assets/kmux-linux-x64.AppImage.blockmap
+          test -s release-assets/kmux-linux-arm64.AppImage
+          test -s release-assets/kmux-linux-arm64.AppImage.blockmap
+      - name: Create macOS versionless download aliases
         run: |
           shopt -s nullglob
           for arch in arm64 x64; do
@@ -313,25 +312,8 @@ jobs:
             fi
             cp "${matches[0]}" "release-assets/kmux-mac-${arch}.dmg"
           done
-          for arch in x64 arm64; do
-            if [ "$arch" = "x64" ]; then
-              linux_matches=(
-                release-assets/kmux-*-linux-x64.AppImage
-                release-assets/kmux-*-linux-x86_64.AppImage
-              )
-            else
-              linux_matches=(release-assets/kmux-*-linux-${arch}.AppImage)
-            fi
-            if [ "${#linux_matches[@]}" -ne 1 ]; then
-              echo "Expected exactly 1 source AppImage for Linux $arch, found ${#linux_matches[@]}: ${linux_matches[*]:-<none>}" >&2
-              exit 1
-            fi
-            cp "${linux_matches[0]}" "release-assets/kmux-linux-${arch}.AppImage"
-          done
           test -f release-assets/kmux-mac-arm64.dmg
           test -f release-assets/kmux-mac-x64.dmg
-          test -f release-assets/kmux-linux-x64.AppImage
-          test -f release-assets/kmux-linux-arm64.AppImage
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

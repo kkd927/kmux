@@ -12,6 +12,7 @@ import {
   writeSync,
   writeFileSync
 } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -158,6 +159,7 @@ export interface SnapshotFileStore {
   load(): AppState | null;
   loadRecord(): SnapshotLoadResult;
   save(snapshot: AppState, options?: SnapshotSaveOptions): void;
+  saveAsync(snapshot: AppState, options?: SnapshotSaveOptions): Promise<void>;
   saveDurable(snapshot: AppState, options?: SnapshotSaveOptions): void;
 }
 
@@ -165,12 +167,14 @@ export interface WindowStateFileStore {
   path: string;
   load(): PersistedWindowState | null;
   save(windowState: PersistedWindowState): void;
+  saveAsync(windowState: PersistedWindowState): Promise<void>;
 }
 
 export interface SettingsFileStore {
   path: string;
   load(): KmuxSettings | null;
   save(settings: KmuxSettings): void;
+  saveAsync(settings: KmuxSettings): Promise<void>;
 }
 
 export interface UsageHistoryVendorRecord {
@@ -229,6 +233,21 @@ function readTextFile(filePath: string): TextFileReadResult {
   }
 }
 
+async function readTextFileAsync(
+  filePath: string
+): Promise<TextFileReadResult> {
+  try {
+    return { status: "ok", content: await readFile(filePath, "utf8") };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return { status: "missing" };
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    warnInvalidFile(filePath, reason);
+    return { status: "error", reason };
+  }
+}
+
 function readJsonFile<T>(filePath: string): T | null {
   const readResult = readTextFile(filePath);
   if (readResult.status !== "ok") {
@@ -263,7 +282,7 @@ function sameTextFileReadResult(
 
 function atomicWrite(filePath: string, content: string): void {
   mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
   writeFileSync(tmpPath, content);
   try {
     renameSync(tmpPath, filePath);
@@ -272,6 +291,83 @@ function atomicWrite(filePath: string, content: string): void {
       rmSync(tmpPath, { force: true });
     }
   }
+}
+
+interface AtomicTextWriter {
+  writeSync(content: string): void;
+  writeDurableSync(content: string): void;
+  writeAsync(content: string): Promise<boolean>;
+  invalidateSync(): void;
+}
+
+function createAtomicTextWriter(filePath: string): AtomicTextWriter {
+  let generation = 0;
+  let inFlightTmpPath: string | null = null;
+  let commitTail = Promise.resolve();
+
+  const invalidateSync = (): void => {
+    generation += 1;
+    if (inFlightTmpPath) {
+      rmSync(inFlightTmpPath, { force: true });
+    }
+  };
+
+  return {
+    invalidateSync,
+    writeSync(content): void {
+      invalidateSync();
+      atomicWrite(filePath, content);
+    },
+    writeDurableSync(content): void {
+      invalidateSync();
+      durableAtomicWrite(filePath, content);
+    },
+    async writeAsync(content): Promise<boolean> {
+      const writeGeneration = ++generation;
+      const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+      let renamed = false;
+
+      try {
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(tmpPath, content);
+        if (writeGeneration !== generation) {
+          return false;
+        }
+
+        const commit = commitTail
+          .catch(() => undefined)
+          .then(async () => {
+            if (writeGeneration !== generation) {
+              return false;
+            }
+            inFlightTmpPath = tmpPath;
+            try {
+              await rename(tmpPath, filePath);
+              renamed = true;
+              return writeGeneration === generation;
+            } catch (error) {
+              if (writeGeneration !== generation && isMissingFileError(error)) {
+                return false;
+              }
+              throw error;
+            } finally {
+              if (inFlightTmpPath === tmpPath) {
+                inFlightTmpPath = null;
+              }
+            }
+          });
+        commitTail = commit.then(
+          () => undefined,
+          () => undefined
+        );
+        return await commit;
+      } finally {
+        if (!renamed) {
+          await rm(tmpPath, { force: true }).catch(() => undefined);
+        }
+      }
+    }
+  };
 }
 
 function durableAtomicWrite(filePath: string, content: string): void {
@@ -337,6 +433,7 @@ function durableAtomicWrite(filePath: string, content: string): void {
 
 export function createSnapshotStore(statePath: string): SnapshotFileStore {
   let writesDisabled = false;
+  const writer = createAtomicTextWriter(statePath);
 
   const incompatible = (reason: string): SnapshotLoadResult => {
     writesDisabled = true;
@@ -413,14 +510,21 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
         warnSkippedSave(statePath, "snapshot is incompatible for this run");
         return;
       }
-      atomicWrite(statePath, encodeSnapshot(snapshot, options));
+      writer.writeSync(encodeSnapshot(snapshot, options));
+    },
+    async saveAsync(snapshot, options = {}) {
+      if (writesDisabled) {
+        warnSkippedSave(statePath, "snapshot is incompatible for this run");
+        return;
+      }
+      await writer.writeAsync(encodeSnapshot(snapshot, options));
     },
     saveDurable(snapshot, options = {}) {
       if (writesDisabled) {
         warnSkippedSave(statePath, "snapshot is incompatible for this run");
         return;
       }
-      durableAtomicWrite(statePath, encodeSnapshot(snapshot, options));
+      writer.writeDurableSync(encodeSnapshot(snapshot, options));
     }
   };
 }
@@ -428,6 +532,13 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
 export function createWindowStateStore(
   windowStatePath: string
 ): WindowStateFileStore {
+  const writer = createAtomicTextWriter(windowStatePath);
+  const encodeWindowState = (windowState: PersistedWindowState): string =>
+    JSON.stringify({
+      version: WINDOW_STATE_STORE_VERSION,
+      windowState
+    } satisfies WindowStateEnvelope);
+
   return {
     path: windowStatePath,
     load() {
@@ -450,13 +561,10 @@ export function createWindowStateStore(
       return envelope.windowState;
     },
     save(windowState) {
-      atomicWrite(
-        windowStatePath,
-        JSON.stringify({
-          version: WINDOW_STATE_STORE_VERSION,
-          windowState
-        } satisfies WindowStateEnvelope)
-      );
+      writer.writeSync(encodeWindowState(windowState));
+    },
+    async saveAsync(windowState) {
+      await writer.writeAsync(encodeWindowState(windowState));
     }
   };
 }
@@ -464,6 +572,46 @@ export function createWindowStateStore(
 export function createSettingsStore(settingsPath: string): SettingsFileStore {
   mkdirSync(dirname(settingsPath), { recursive: true });
   let lastKnownReadResult = readTextFile(settingsPath);
+  let saveGeneration = 0;
+  let asyncSaveTail = Promise.resolve();
+  let pendingAsyncContent: string | null = null;
+  const writer = createAtomicTextWriter(settingsPath);
+
+  const canSave = (
+    currentReadResult: TextFileReadResult,
+    pendingInternalContent?: string | null
+  ): boolean => {
+    if (currentReadResult.status === "error") {
+      warnSkippedSave(
+        settingsPath,
+        `settings file could not be read: ${currentReadResult.reason}`
+      );
+      return false;
+    }
+    if (lastKnownReadResult.status === "error") {
+      warnSkippedSave(
+        settingsPath,
+        "last settings read failed; reload settings before saving"
+      );
+      return false;
+    }
+    if (
+      !sameTextFileReadResult(currentReadResult, lastKnownReadResult) &&
+      !(
+        currentReadResult.status === "ok" &&
+        pendingInternalContent !== null &&
+        pendingInternalContent !== undefined &&
+        currentReadResult.content === pendingInternalContent
+      )
+    ) {
+      warnSkippedSave(
+        settingsPath,
+        "external changes detected since the last settings load or save"
+      );
+      return false;
+    }
+    return true;
+  };
 
   return {
     path: settingsPath,
@@ -487,32 +635,50 @@ export function createSettingsStore(settingsPath: string): SettingsFileStore {
       return sanitizeSettings(settings);
     },
     save(settings) {
+      saveGeneration += 1;
+      writer.invalidateSync();
       const currentReadResult = readTextFile(settingsPath);
-      if (currentReadResult.status === "error") {
-        warnSkippedSave(
-          settingsPath,
-          `settings file could not be read: ${currentReadResult.reason}`
-        );
-        return;
-      }
-      if (lastKnownReadResult.status === "error") {
-        warnSkippedSave(
-          settingsPath,
-          "last settings read failed; reload settings before saving"
-        );
-        return;
-      }
-      if (!sameTextFileReadResult(currentReadResult, lastKnownReadResult)) {
-        warnSkippedSave(
-          settingsPath,
-          "external changes detected since the last settings load or save"
-        );
+      if (!canSave(currentReadResult, pendingAsyncContent)) {
         return;
       }
 
       const nextContent = JSON.stringify(settings, null, 2);
-      atomicWrite(settingsPath, nextContent);
+      writer.writeSync(nextContent);
       lastKnownReadResult = { status: "ok", content: nextContent };
+    },
+    saveAsync(settings) {
+      const requestGeneration = ++saveGeneration;
+      const nextContent = JSON.stringify(settings, null, 2);
+      const save = asyncSaveTail
+        .catch(() => undefined)
+        .then(async () => {
+          if (requestGeneration !== saveGeneration) {
+            return;
+          }
+          pendingAsyncContent = nextContent;
+          try {
+            const currentReadResult = await readTextFileAsync(settingsPath);
+            if (
+              requestGeneration !== saveGeneration ||
+              !canSave(currentReadResult)
+            ) {
+              return;
+            }
+            const didWrite = await writer.writeAsync(nextContent);
+            if (didWrite) {
+              lastKnownReadResult = { status: "ok", content: nextContent };
+            }
+          } finally {
+            if (pendingAsyncContent === nextContent) {
+              pendingAsyncContent = null;
+            }
+          }
+        });
+      asyncSaveTail = save.then(
+        () => undefined,
+        () => undefined
+      );
+      return save;
     }
   };
 }

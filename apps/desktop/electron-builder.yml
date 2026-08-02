@@ -65,6 +65,6 @@ linux:
       StartupNotify: "true"
       Terminal: "false"
       Keywords: AI;agent;terminal;developer;coding;
-  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  artifactName: ${productName}-linux-${env.KMUX_LINUX_PACKAGE_ARCH}.${ext}
   target:
     - AppImage

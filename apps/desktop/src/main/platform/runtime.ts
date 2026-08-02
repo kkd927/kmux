@@ -30,6 +30,8 @@ export interface PlatformRuntime {
   };
   updater: {
     enabled: boolean;
+    autoInstallOnAppQuit: boolean;
+    autoRunAppAfterInstall: boolean;
   };
 }
 

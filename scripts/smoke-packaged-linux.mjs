@@ -36,11 +36,9 @@ const DEFAULT_RELEASE_SEARCH_ROOTS = [
 const DEFAULT_BUILDER_CONFIG_PATH = path.resolve(
   "apps/desktop/electron-builder.yml"
 );
-const DEFAULT_DESKTOP_PACKAGE_PATH = path.resolve(
-  "apps/desktop/package.json"
-);
+const DEFAULT_DESKTOP_PACKAGE_PATH = path.resolve("apps/desktop/package.json");
 const KMUX_LINUX_APPIMAGE_NAME_PATTERN =
-  /^kmux-\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?-linux-[A-Za-z0-9_-]+\.AppImage$/i;
+  /^kmux-linux-(?:x64|arm64)\.AppImage$/i;
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -111,7 +109,7 @@ export function findAppImagePath({
     assertExistingFile(explicitPath, "AppImage");
     if (!isKmuxLinuxAppImagePath(explicitPath)) {
       throw new Error(
-        `AppImage artifact must be named kmux-<version>-linux-<arch>.AppImage; got ${path.basename(explicitPath)}`
+        `AppImage artifact must use the canonical name kmux-linux-<x64|arm64>.AppImage; got ${path.basename(explicitPath)}`
       );
     }
     return explicitPath;
@@ -128,7 +126,7 @@ export function findAppImagePath({
   }
 
   throw new Error(
-    "Could not find a packaged AppImage named kmux-<version>-linux-<arch>.AppImage. Run `npm run package:linux` first or pass --appimage <path>."
+    "Could not find a packaged AppImage named kmux-linux-<x64|arm64>.AppImage. Run `npm run package:linux` first or pass --appimage <path>."
   );
 }
 
@@ -146,75 +144,11 @@ export function isKmuxLinuxAppImagePath(appImagePath) {
   return KMUX_LINUX_APPIMAGE_NAME_PATTERN.test(path.basename(appImagePath));
 }
 
-function linuxAppImageMtimeMs(appImagePath) {
-  try {
-    return statSync(appImagePath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-function linuxAppImageVersion(appImagePath) {
-  const match =
-    /^kmux-(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?-linux-/i.exec(
-      path.basename(appImagePath)
-    );
-  if (!match) {
-    return undefined;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ?? ""
-  };
-}
-
-function compareLinuxAppImageVersion(leftPath, rightPath) {
-  const left = linuxAppImageVersion(leftPath);
-  const right = linuxAppImageVersion(rightPath);
-  if (!left || !right) {
-    return 0;
-  }
-
-  for (const key of ["major", "minor", "patch"]) {
-    const delta = right[key] - left[key];
-    if (delta !== 0) {
-      return delta;
-    }
-  }
-
-  if (left.prerelease === right.prerelease) {
-    return 0;
-  }
-  if (!left.prerelease) {
-    return -1;
-  }
-  if (!right.prerelease) {
-    return 1;
-  }
-  return right.prerelease.localeCompare(left.prerelease);
-}
-
-function compareLinuxAppImagePath(left, right) {
-  const mtimeDelta = linuxAppImageMtimeMs(right) - linuxAppImageMtimeMs(left);
-  if (mtimeDelta !== 0) {
-    return mtimeDelta;
-  }
-
-  const versionDelta = compareLinuxAppImageVersion(left, right);
-  if (versionDelta !== 0) {
-    return versionDelta;
-  }
-
-  return left.localeCompare(right);
-}
-
 export function selectLinuxAppImagePath(
   appImagePaths,
   preferredArch = process.arch
 ) {
-  const sortedPaths = [...appImagePaths].sort(compareLinuxAppImagePath);
+  const sortedPaths = [...appImagePaths].sort();
   return (
     sortedPaths.find(
       (appImagePath) => inferLinuxAppImageArch(appImagePath) === preferredArch
@@ -363,9 +297,7 @@ export function loadExpectedLinuxDesktopEntry(
 
   const expectedEntry = { ...entry };
   if (linux.syncDesktopName === true) {
-    const desktopPackage = JSON.parse(
-      readFileSync(desktopPackagePath, "utf8")
-    );
+    const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, "utf8"));
     if (!isRecord(desktopPackage)) {
       throw new Error(`${desktopPackagePath} must contain an object`);
     }
@@ -375,9 +307,7 @@ export function loadExpectedLinuxDesktopEntry(
         `${desktopPackagePath} must include desktopName when linux.syncDesktopName is true`
       );
     }
-    expectedEntry.StartupWMClass = desktopName
-      .trim()
-      .replace(/\.desktop$/, "");
+    expectedEntry.StartupWMClass = desktopName.trim().replace(/\.desktop$/, "");
   }
 
   return expectedEntry;
@@ -440,13 +370,7 @@ export function findExtractedLauncherIconSizes(
   extractedRoot,
   iconName = "kmux"
 ) {
-  const iconRoot = path.join(
-    extractedRoot,
-    "usr",
-    "share",
-    "icons",
-    "hicolor"
-  );
+  const iconRoot = path.join(extractedRoot, "usr", "share", "icons", "hicolor");
   if (!existsSync(iconRoot)) {
     return [];
   }
@@ -459,9 +383,7 @@ export function findExtractedLauncherIconSizes(
   return [
     ...new Set(
       walkFiles(iconRoot)
-        .map((filePath) =>
-          iconPattern.exec(filePath.split(path.sep).join("/"))
-        )
+        .map((filePath) => iconPattern.exec(filePath.split(path.sep).join("/")))
         .filter((match) => match !== null)
         .map((match) => Number.parseInt(match[1], 10))
     )

@@ -14,8 +14,9 @@ import {
 class FakeUpdater extends EventEmitter implements UpdaterDriver {
   autoDownload = true;
   autoInstallOnAppQuit = true;
+  autoRunAppAfterInstall = false;
   allowPrerelease = true;
-  checkForUpdates = vi.fn(async () => undefined);
+  checkForUpdates = vi.fn<() => Promise<unknown>>(async () => undefined);
   downloadUpdate = vi.fn(async () => undefined);
   quitAndInstall = vi.fn(() => undefined);
 
@@ -40,6 +41,12 @@ function createHarness(options?: {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   beforeQuitAndInstall?: ReturnType<typeof vi.fn>;
+  commitQuitAndInstall?: ReturnType<typeof vi.fn>;
+  cancelQuitAndInstall?: ReturnType<typeof vi.fn>;
+  recoverQuitAndInstall?: ReturnType<typeof vi.fn>;
+  autoInstallOnAppQuit?: boolean;
+  autoRunAppAfterInstall?: boolean;
+  preInstallTimeoutMs?: number;
 }): {
   updater: FakeUpdater;
   dialogs: UpdaterDialogs & {
@@ -86,7 +93,13 @@ function createHarness(options?: {
     isPackaged: options?.isPackaged ?? true,
     enabled: options?.enabled,
     env: options?.env ?? {},
-    beforeQuitAndInstall: options?.beforeQuitAndInstall
+    beforeQuitAndInstall: options?.beforeQuitAndInstall,
+    commitQuitAndInstall: options?.commitQuitAndInstall,
+    cancelQuitAndInstall: options?.cancelQuitAndInstall,
+    recoverQuitAndInstall: options?.recoverQuitAndInstall,
+    autoInstallOnAppQuit: options?.autoInstallOnAppQuit,
+    autoRunAppAfterInstall: options?.autoRunAppAfterInstall,
+    preInstallTimeoutMs: options?.preInstallTimeoutMs
   });
 
   return {
@@ -96,6 +109,15 @@ function createHarness(options?: {
     logger,
     controller
   };
+}
+
+async function moveToDownloaded(
+  harness: ReturnType<typeof createHarness>
+): Promise<void> {
+  await harness.controller.checkForUpdates("background");
+  harness.updater.emit("update-available", { version: "0.1.12" });
+  await harness.controller.downloadUpdate("background");
+  harness.updater.emit("update-downloaded", { version: "0.1.12" });
 }
 
 describe("updater controller", () => {
@@ -116,7 +138,7 @@ describe("updater controller", () => {
     expect(unpackaged.updater.allowPrerelease).toBe(false);
   });
 
-  it("enables packaged Linux updater checks for AppImage runtime outside tests", async () => {
+  it("enables packaged Linux updater checks without requiring APPIMAGE", async () => {
     const packagedLinux = createHarness({
       platform: "linux",
       isPackaged: true,
@@ -124,17 +146,10 @@ describe("updater controller", () => {
         APPIMAGE: "/tmp/kmux-0.3.12-linux-x64.AppImage"
       }
     });
-    const nonAppImageLinux = createHarness({
+    const noAppImageEnvLinux = createHarness({
       platform: "linux",
       isPackaged: true,
       env: {}
-    });
-    const invalidAppImageEnvLinux = createHarness({
-      platform: "linux",
-      isPackaged: true,
-      env: {
-        APPIMAGE: "/tmp/kmux-extracted"
-      }
     });
     const unpackagedLinux = createHarness({
       platform: "linux",
@@ -151,11 +166,8 @@ describe("updater controller", () => {
     });
 
     expect(packagedLinux.controller.getState()).toEqual({ status: "idle" });
-    expect(nonAppImageLinux.controller.getState()).toEqual({
-      status: "disabled"
-    });
-    expect(invalidAppImageEnvLinux.controller.getState()).toEqual({
-      status: "disabled"
+    expect(noAppImageEnvLinux.controller.getState()).toEqual({
+      status: "idle"
     });
     expect(unpackagedLinux.controller.getState()).toEqual({
       status: "disabled"
@@ -163,18 +175,56 @@ describe("updater controller", () => {
     expect(testLinux.controller.getState()).toEqual({ status: "disabled" });
 
     await packagedLinux.controller.checkForUpdates("foreground");
-    await nonAppImageLinux.controller.checkForUpdates("foreground");
-    await invalidAppImageEnvLinux.controller.checkForUpdates("foreground");
+    await noAppImageEnvLinux.controller.checkForUpdates("foreground");
     await unpackagedLinux.controller.checkForUpdates("foreground");
     await testLinux.controller.checkForUpdates("foreground");
 
     expect(packagedLinux.updater.checkForUpdates).toHaveBeenCalledTimes(1);
-    expect(nonAppImageLinux.updater.checkForUpdates).not.toHaveBeenCalled();
-    expect(
-      invalidAppImageEnvLinux.updater.checkForUpdates
-    ).not.toHaveBeenCalled();
+    expect(noAppImageEnvLinux.updater.checkForUpdates).toHaveBeenCalledTimes(1);
     expect(unpackagedLinux.updater.checkForUpdates).not.toHaveBeenCalled();
     expect(testLinux.updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("applies platform-composed install-on-quit and relaunch policies", () => {
+    const linux = createHarness({
+      platform: "linux",
+      autoInstallOnAppQuit: true,
+      autoRunAppAfterInstall: true
+    });
+    const mac = createHarness({
+      platform: "darwin",
+      autoInstallOnAppQuit: false,
+      autoRunAppAfterInstall: true
+    });
+
+    expect(linux.updater.autoInstallOnAppQuit).toBe(true);
+    expect(linux.updater.autoRunAppAfterInstall).toBe(true);
+    expect(mac.updater.autoInstallOnAppQuit).toBe(false);
+    expect(mac.updater.autoRunAppAfterInstall).toBe(true);
+  });
+
+  it("freezes auto-install eligibility at shutdown entry", async () => {
+    const downloading = createHarness({
+      platform: "linux",
+      autoInstallOnAppQuit: true
+    });
+    await downloading.controller.checkForUpdates("background");
+    downloading.updater.emit("update-available", { version: "0.1.12" });
+    await downloading.controller.downloadUpdate("background");
+
+    expect(downloading.controller.prepareForShutdown()).toBeUndefined();
+    expect(downloading.updater.autoInstallOnAppQuit).toBe(false);
+    downloading.updater.emit("update-downloaded", { version: "0.1.12" });
+    expect(downloading.updater.autoInstallOnAppQuit).toBe(false);
+
+    const downloaded = createHarness({
+      platform: "linux",
+      autoInstallOnAppQuit: true
+    });
+    await moveToDownloaded(downloaded);
+
+    expect(downloaded.controller.prepareForShutdown()).toBe("0.1.12");
+    expect(downloaded.updater.autoInstallOnAppQuit).toBe(true);
   });
 
   it("keeps packaged app updates on the stable release channel", () => {
@@ -226,6 +276,16 @@ describe("updater controller", () => {
     expect(harness.controller.getState()).toEqual({ status: "idle" });
   });
 
+  it("returns to idle when the native updater declines a check with null", async () => {
+    const harness = createHarness({ platform: "linux", env: {} });
+    harness.updater.checkForUpdates.mockResolvedValueOnce(null);
+
+    await harness.controller.checkForUpdates("foreground");
+
+    expect(harness.controller.getState()).toEqual({ status: "idle" });
+    expect(harness.dialogs.showUpToDate).not.toHaveBeenCalled();
+  });
+
   it("prompts for download on a foreground update and starts downloading when accepted", async () => {
     const harness = createHarness();
     harness.dialogs.promptForDownload.mockResolvedValue(true);
@@ -273,7 +333,10 @@ describe("updater controller", () => {
     await Promise.resolve();
 
     expect(harness.dialogs.promptForInstall).toHaveBeenCalledWith("0.1.12");
-    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    });
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledWith(false, true);
     expect(harness.notifier.notifyUpdateDownloaded).not.toHaveBeenCalled();
     expect(harness.controller.getState()).toEqual({
       status: "downloaded",
@@ -329,7 +392,9 @@ describe("updater controller", () => {
 
     expect(harness.updater.downloadUpdate).toHaveBeenCalledTimes(1);
     expect(harness.dialogs.promptForInstall).toHaveBeenCalledWith("0.1.12");
-    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    });
     expect(harness.notifier.notifyUpdateDownloaded).not.toHaveBeenCalled();
     expect(harness.controller.getState()).toEqual({
       status: "downloaded",
@@ -351,12 +416,170 @@ describe("updater controller", () => {
     await Promise.resolve();
 
     harness.updater.emit("update-downloaded", { version: "0.1.12" });
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    });
 
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
     expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
       harness.updater.quitAndInstall.mock.invocationCallOrder[0]
     );
+  });
+
+  it("deduplicates install requests while persistence preparation is pending", async () => {
+    let finishPreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const beforeQuitAndInstall = vi.fn(() => preparation);
+    const commitQuitAndInstall = vi.fn();
+    const harness = createHarness({
+      beforeQuitAndInstall,
+      commitQuitAndInstall
+    });
+
+    await moveToDownloaded(harness);
+    const firstInstall = harness.controller.quitAndInstall();
+    const duplicateInstall = harness.controller.quitAndInstall();
+    await duplicateInstall;
+
+    expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
+    expect(harness.updater.quitAndInstall).not.toHaveBeenCalled();
+
+    finishPreparation();
+    await firstInstall;
+
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+    expect(commitQuitAndInstall).toHaveBeenCalledTimes(1);
+    expect(
+      harness.updater.quitAndInstall.mock.invocationCallOrder[0]
+    ).toBeLessThan(commitQuitAndInstall.mock.invocationCallOrder[0]);
+  });
+
+  it("continues installation after the 2.5 second persistence deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const beforeQuitAndInstall = vi.fn(() => new Promise<void>(() => {}));
+      const harness = createHarness({ beforeQuitAndInstall });
+      await moveToDownloaded(harness);
+
+      const install = harness.controller.quitAndInstall();
+      await Promise.resolve();
+      vi.advanceTimersByTime(2_499);
+      expect(harness.updater.quitAndInstall).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      await install;
+
+      expect(harness.updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+      expect(harness.logger.warn).toHaveBeenCalledWith(
+        "[updater:pre-install]",
+        "Persistence flush exceeded 2500ms; continuing update install."
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps synchronous handoff preparation when persistence rejects", async () => {
+    let handoffPrepared = false;
+    const beforeQuitAndInstall = vi.fn(() => {
+      handoffPrepared = true;
+      throw new Error("settings write failed");
+    });
+    const harness = createHarness({ beforeQuitAndInstall });
+    harness.updater.quitAndInstall.mockImplementationOnce(() => {
+      expect(handoffPrepared).toBe(true);
+    });
+    await moveToDownloaded(harness);
+
+    await harness.controller.quitAndInstall();
+
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(harness.logger.warn).toHaveBeenCalledWith(
+      "[updater:pre-install]",
+      "settings write failed"
+    );
+  });
+
+  it("rolls back preparation when updater state changes before native install", async () => {
+    let finishPreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const cancelQuitAndInstall = vi.fn(async () => undefined);
+    const harness = createHarness({
+      beforeQuitAndInstall: vi.fn(() => preparation),
+      cancelQuitAndInstall
+    });
+    await moveToDownloaded(harness);
+
+    const install = harness.controller.quitAndInstall();
+    await Promise.resolve();
+    harness.updater.emit("error", new Error("download was invalidated"));
+    finishPreparation();
+    await install;
+
+    expect(cancelQuitAndInstall).toHaveBeenCalledWith("0.1.12");
+    expect(harness.updater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it("recovers a synchronous native install error without committing shutdown", async () => {
+    const commitQuitAndInstall = vi.fn();
+    const recoverQuitAndInstall = vi.fn(async () => undefined);
+    const harness = createHarness({
+      commitQuitAndInstall,
+      recoverQuitAndInstall
+    });
+    await moveToDownloaded(harness);
+    harness.updater.quitAndInstall.mockImplementationOnce(() => {
+      harness.updater.emit("error", new Error("No update filepath provided"));
+    });
+
+    await harness.controller.quitAndInstall();
+    await vi.waitFor(() => {
+      expect(recoverQuitAndInstall).toHaveBeenCalledTimes(1);
+    });
+
+    expect(commitQuitAndInstall).not.toHaveBeenCalled();
+    expect(harness.controller.getState()).toEqual({
+      status: "downloaded",
+      version: "0.1.12"
+    });
+    expect(harness.dialogs.showError).toHaveBeenCalledWith(
+      "No update filepath provided"
+    );
+
+    harness.updater.quitAndInstall.mockImplementationOnce(() => undefined);
+    await harness.controller.quitAndInstall();
+    expect(harness.updater.quitAndInstall).toHaveBeenCalledTimes(2);
+    expect(commitQuitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a directly thrown native install error", async () => {
+    const commitQuitAndInstall = vi.fn();
+    const recoverQuitAndInstall = vi.fn(async () => undefined);
+    const harness = createHarness({
+      commitQuitAndInstall,
+      recoverQuitAndInstall
+    });
+    await moveToDownloaded(harness);
+    harness.updater.quitAndInstall.mockImplementationOnce(() => {
+      throw new Error("spawn failed");
+    });
+
+    await harness.controller.quitAndInstall();
+
+    expect(recoverQuitAndInstall).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "spawn failed" }),
+      "0.1.12"
+    );
+    expect(commitQuitAndInstall).not.toHaveBeenCalled();
+    expect(harness.controller.getState()).toEqual({
+      status: "downloaded",
+      version: "0.1.12"
+    });
+    expect(harness.dialogs.showError).toHaveBeenCalledWith("spawn failed");
   });
 
   it("rechecks before inline downloads so stale update buttons jump to the latest version", async () => {

@@ -1,10 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  utimesSync,
-  writeFileSync
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -40,11 +34,9 @@ import {
 
 function createReleaseFixture({ arch = "x64" } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-"));
-  const appImageName = `kmux-0.3.12-linux-${arch}.AppImage`;
+  const appImageName = `kmux-linux-${arch}.AppImage`;
   const metadataName =
-    arch === "x64" || arch === "x86_64"
-      ? "latest-linux.yml"
-      : `latest-linux-${arch}.yml`;
+    arch === "x64" ? "latest-linux.yml" : `latest-linux-${arch}.yml`;
   const appImagePath = path.join(root, appImageName);
   const metadataPath = path.join(root, metadataName);
   const appImageContents = "app";
@@ -129,7 +121,7 @@ describe("linux packaged smoke wrapper", () => {
         root,
         "other-tool-0.3.12-linux-x64.AppImage"
       );
-      const linuxAppImage = path.join(root, "kmux-0.3.12-linux-x64.AppImage");
+      const linuxAppImage = path.join(root, "kmux-linux-x64.AppImage");
       writeFileSync(genericAppImage, "");
       writeFileSync(macNamedAppImage, "");
       writeFileSync(otherProductAppImage, "");
@@ -152,7 +144,7 @@ describe("linux packaged smoke wrapper", () => {
       writeFileSync(genericAppImage, "");
 
       expect(() => findAppImagePath({ explicitPath: genericAppImage })).toThrow(
-        /kmux-<version>-linux-<arch>\.AppImage/
+        /kmux-linux-<x64\|arm64>\.AppImage/
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -162,10 +154,7 @@ describe("linux packaged smoke wrapper", () => {
   it("rejects explicit AppImage paths that are not files", () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-appdir-"));
     try {
-      const appImageDirectory = path.join(
-        root,
-        "kmux-0.3.12-linux-x64.AppImage"
-      );
+      const appImageDirectory = path.join(root, "kmux-linux-x64.AppImage");
       mkdirSync(appImageDirectory);
 
       expect(() =>
@@ -181,10 +170,7 @@ describe("linux packaged smoke wrapper", () => {
     try {
       const artifactDir = path.join(root, "linux-x64-release-assets");
       mkdirSync(artifactDir);
-      const appImagePath = path.join(
-        artifactDir,
-        "kmux-0.3.12-linux-x64.AppImage"
-      );
+      const appImagePath = path.join(artifactDir, "kmux-linux-x64.AppImage");
       const metadataPath = path.join(artifactDir, "latest-linux.yml");
       writeFileSync(appImagePath, "app");
       writeFileSync(
@@ -192,10 +178,10 @@ describe("linux packaged smoke wrapper", () => {
         [
           "version: 0.3.12",
           "files:",
-          "  - url: kmux-0.3.12-linux-x64.AppImage",
+          "  - url: kmux-linux-x64.AppImage",
           "    sha512: abc123",
           "    size: 3",
-          "path: kmux-0.3.12-linux-x64.AppImage",
+          "path: kmux-linux-x64.AppImage",
           "sha512: abc123"
         ].join("\n")
       );
@@ -221,11 +207,8 @@ describe("linux packaged smoke wrapper", () => {
       const x64Dir = path.join(root, "linux-x64-release-assets");
       mkdirSync(arm64Dir);
       mkdirSync(x64Dir);
-      const arm64AppImage = path.join(
-        arm64Dir,
-        "kmux-0.3.12-linux-arm64.AppImage"
-      );
-      const x64AppImage = path.join(x64Dir, "kmux-0.3.12-linux-x64.AppImage");
+      const arm64AppImage = path.join(arm64Dir, "kmux-linux-arm64.AppImage");
+      const x64AppImage = path.join(x64Dir, "kmux-linux-x64.AppImage");
       writeFileSync(arm64AppImage, "");
       writeFileSync(x64AppImage, "");
 
@@ -240,42 +223,14 @@ describe("linux packaged smoke wrapper", () => {
     }
   });
 
-  it("selects the newest AppImage for the preferred architecture", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-stale-"));
-    try {
-      const oldX64AppImage = path.join(root, "kmux-0.3.11-linux-x64.AppImage");
-      const newX64AppImage = path.join(root, "kmux-0.3.12-linux-x64.AppImage");
-      const newerArm64AppImage = path.join(
-        root,
-        "kmux-0.3.13-linux-arm64.AppImage"
-      );
-      writeFileSync(oldX64AppImage, "");
-      writeFileSync(newX64AppImage, "");
-      writeFileSync(newerArm64AppImage, "");
-
-      utimesSync(oldX64AppImage, new Date(1000), new Date(1000));
-      utimesSync(newX64AppImage, new Date(2000), new Date(2000));
-      utimesSync(newerArm64AppImage, new Date(3000), new Date(3000));
-
-      expect(
-        findAppImagePath({ searchRoots: [root], preferredArch: "x64" })
-      ).toBe(newX64AppImage);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("prefers the host architecture across all release roots", () => {
     const arm64Root = mkdtempSync(
       path.join(tmpdir(), "kmux-linux-smoke-arm64-")
     );
     const x64Root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-x64-"));
     try {
-      const arm64AppImage = path.join(
-        arm64Root,
-        "kmux-0.3.12-linux-arm64.AppImage"
-      );
-      const x64AppImage = path.join(x64Root, "kmux-0.3.12-linux-x64.AppImage");
+      const arm64AppImage = path.join(arm64Root, "kmux-linux-arm64.AppImage");
+      const x64AppImage = path.join(x64Root, "kmux-linux-x64.AppImage");
       writeFileSync(arm64AppImage, "");
       writeFileSync(x64AppImage, "");
 
@@ -317,8 +272,8 @@ describe("linux packaged smoke wrapper", () => {
     }
   });
 
-  it("uses the x64 update channel for x86_64 AppImage names", () => {
-    const fixture = createReleaseFixture({ arch: "x86_64" });
+  it("uses the generic Linux update channel for canonical x64 AppImages", () => {
+    const fixture = createReleaseFixture({ arch: "x64" });
     try {
       expect(inferLinuxAppImageArch(fixture.appImagePath)).toBe("x64");
       expect(expectedLinuxUpdateMetadataNames(fixture.appImagePath)).toEqual([
@@ -370,7 +325,7 @@ describe("linux packaged smoke wrapper", () => {
   it("ignores directory-shaped Linux update metadata candidates", () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-linux-smoke-metadir-"));
     try {
-      const appImagePath = path.join(root, "kmux-0.3.12-linux-x64.AppImage");
+      const appImagePath = path.join(root, "kmux-linux-x64.AppImage");
       const metadataDirectory = path.join(root, "latest-linux.yml");
       writeFileSync(appImagePath, "");
       mkdirSync(metadataDirectory);
@@ -567,10 +522,10 @@ describe("linux packaged smoke wrapper", () => {
       expect(summary).toContain(`Update metadata: ${fixture.metadataPath}`);
       expect(summary).toContain("Update metadata version: 0.3.12");
       expect(summary).toContain(
-        "Update metadata AppImage path: kmux-0.3.12-linux-x64.AppImage"
+        "Update metadata AppImage path: kmux-linux-x64.AppImage"
       );
       expect(summary).toContain(
-        "Update metadata AppImage file entry: kmux-0.3.12-linux-x64.AppImage"
+        "Update metadata AppImage file entry: kmux-linux-x64.AppImage"
       );
       expect(summary).toContain(
         "Update metadata AppImage file size: 3 bytes (matches packaged AppImage size 3 bytes)"
@@ -871,12 +826,12 @@ describe("linux packaged smoke wrapper", () => {
         version: "0.3.12",
         files: [
           {
-            url: "kmux-0.3.12-linux-x64.AppImage",
+            url: "kmux-linux-x64.AppImage",
             sha512: "abc123",
             size: 3
           }
         ],
-        path: "kmux-0.3.12-linux-x64.AppImage",
+        path: "kmux-linux-x64.AppImage",
         sha512: "abc123"
       };
 
@@ -898,12 +853,12 @@ describe("linux packaged smoke wrapper", () => {
         version: "0.3.12",
         files: [
           {
-            url: "kmux-0.3.12-linux-x64.AppImage",
+            url: "kmux-linux-x64.AppImage",
             sha512: "file-checksum",
             size: 3
           }
         ],
-        path: "kmux-0.3.12-linux-x64.AppImage",
+        path: "kmux-linux-x64.AppImage",
         sha512: "top-level-checksum"
       };
 
@@ -925,12 +880,12 @@ describe("linux packaged smoke wrapper", () => {
         version: "0.3.12",
         files: [
           {
-            url: "kmux-0.3.12-linux-x64.AppImage",
+            url: "kmux-linux-x64.AppImage",
             sha512: "metadata-checksum",
             size: 3
           }
         ],
-        path: "kmux-0.3.12-linux-x64.AppImage",
+        path: "kmux-linux-x64.AppImage",
         sha512: "metadata-checksum"
       };
 
@@ -952,12 +907,12 @@ describe("linux packaged smoke wrapper", () => {
         version: "0.3.12",
         files: [
           {
-            url: "kmux-0.3.12-linux-x64.AppImage",
+            url: "kmux-linux-x64.AppImage",
             sha512: "abc123",
             size: 42
           }
         ],
-        path: "kmux-0.3.12-linux-x64.AppImage",
+        path: "kmux-linux-x64.AppImage",
         sha512: "abc123"
       };
 
@@ -979,11 +934,11 @@ describe("linux packaged smoke wrapper", () => {
         version: "0.3.12",
         files: [
           {
-            url: "kmux-0.3.12-linux-x64.AppImage",
+            url: "kmux-linux-x64.AppImage",
             sha512: "abc123"
           }
         ],
-        path: "kmux-0.3.12-linux-x64.AppImage",
+        path: "kmux-linux-x64.AppImage",
         sha512: "abc123"
       };
 
@@ -1064,7 +1019,7 @@ describe("linux packaged smoke wrapper", () => {
 
   it("passes only normal launch and test-isolation env to packaged smoke", () => {
     const env = buildPackagedSmokeEnv({
-      appImagePath: "/tmp/kmux-0.3.12-linux-x64.AppImage",
+      appImagePath: "/tmp/kmux-linux-x64.AppImage",
       env: {
         PATH: "/usr/bin",
         APPIMAGE: "/tmp/stale.AppImage",
@@ -1079,7 +1034,7 @@ describe("linux packaged smoke wrapper", () => {
     expect(env).toMatchObject({
       PATH: "/usr/bin",
       APPIMAGELAUNCHER_DISABLE: "1",
-      KMUX_PACKAGED_EXECUTABLE_PATH: "/tmp/kmux-0.3.12-linux-x64.AppImage"
+      KMUX_PACKAGED_EXECUTABLE_PATH: "/tmp/kmux-linux-x64.AppImage"
     });
     expect(env).not.toHaveProperty("APPIMAGE");
     expect(env).not.toHaveProperty("APPIMAGE_EXTRACT_AND_RUN");

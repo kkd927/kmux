@@ -65,6 +65,71 @@ describe("file-store persistence", () => {
     });
   });
 
+  it("roundtrips snapshots, settings, and window state through async writes", async () => {
+    const statePath = join(sandboxDir, "async-state.json");
+    const settingsPath = join(sandboxDir, "async-settings.json");
+    const windowStatePath = join(sandboxDir, "async-window.json");
+    const snapshotStore = createSnapshotStore(statePath);
+    const settingsStore = createSettingsStore(settingsPath);
+    const windowStateStore = createWindowStateStore(windowStatePath);
+    const state = createInitialState("/bin/zsh");
+    const windowState: PersistedWindowState = {
+      width: 1280,
+      height: 800,
+      maximized: false
+    };
+
+    await Promise.all([
+      snapshotStore.saveAsync(state, { cleanShutdown: true }),
+      settingsStore.saveAsync(state.settings),
+      windowStateStore.saveAsync(windowState)
+    ]);
+
+    expect(snapshotStore.loadRecord()).toMatchObject({
+      status: "ok",
+      record: { cleanShutdown: true }
+    });
+    expect(settingsStore.load()).toEqual(state.settings);
+    expect(windowStateStore.load()).toEqual(windowState);
+  });
+
+  it("does not let a superseded async settings save overwrite a newer sync save", async () => {
+    const settingsPath = join(sandboxDir, "settings-order.json");
+    const store = createSettingsStore(settingsPath);
+    const older = createInitialState("/bin/zsh").settings;
+    const newer = { ...older, warnBeforeQuit: !older.warnBeforeQuit };
+
+    const pending = store.saveAsync(older);
+    store.save(newer);
+    await pending;
+
+    expect(store.load()).toEqual(newer);
+  });
+
+  it("keeps the final shutdown snapshot when it supersedes a live async flush", async () => {
+    const statePath = join(sandboxDir, "snapshot-order.json");
+    const store = createSnapshotStore(statePath);
+    const liveState = createInitialState("/bin/zsh");
+    const shutdownState = createInitialState("/bin/bash");
+
+    const liveFlush = store.saveAsync(liveState, { cleanShutdown: false });
+    const finalFlush = store.saveAsync(shutdownState, {
+      cleanShutdown: true,
+      restoreOnLaunch: true
+    });
+    await Promise.all([liveFlush, finalFlush]);
+
+    expect(store.loadRecord()).toEqual({
+      status: "ok",
+      record: {
+        snapshot: shutdownState,
+        schemaVersion: 4,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      }
+    });
+  });
+
   it("persists clean shutdown metadata on the final snapshot save", () => {
     const statePath = join(sandboxDir, "state-clean.json");
     const store = createSnapshotStore(statePath);

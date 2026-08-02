@@ -1,6 +1,6 @@
 import type { UpdaterState } from "@kmux/proto";
 
-import { hasAppImageRuntimeEnv } from "./platform/posix";
+import { isPackagedDesktopUpdaterEligible } from "./platform/posix";
 
 export type UpdateCheckSource = "background" | "foreground" | "inline";
 export type UpdateDownloadSource = UpdateCheckSource | "inline";
@@ -23,10 +23,11 @@ type UpdaterEventListener = (...args: unknown[]) => void;
 export interface UpdaterDriver {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  autoRunAppAfterInstall: boolean;
   allowPrerelease: boolean;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
-  quitAndInstall(): void;
+  quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
   on(event: UpdaterEventName, listener: UpdaterEventListener): unknown;
   off?(event: UpdaterEventName, listener: UpdaterEventListener): unknown;
   removeListener?(
@@ -65,15 +66,24 @@ interface UpdaterControllerOptions {
   dialogs: UpdaterDialogs;
   notifier: UpdaterNotifier;
   currentVersion: string;
-  beforeQuitAndInstall?: (version?: string) => void;
+  beforeQuitAndInstall?: (version?: string) => void | Promise<void>;
+  commitQuitAndInstall?: (version?: string) => void | Promise<void>;
+  cancelQuitAndInstall?: (version?: string) => void | Promise<void>;
+  recoverQuitAndInstall?: (
+    error: unknown,
+    version?: string
+  ) => void | Promise<void>;
   logger?: UpdaterLogger;
   scheduler?: UpdaterScheduler;
   enabled?: boolean;
+  autoInstallOnAppQuit?: boolean;
+  autoRunAppAfterInstall?: boolean;
   platform?: NodeJS.Platform;
   isPackaged?: boolean;
   env?: NodeJS.ProcessEnv;
   initialDelayMs?: number;
   intervalMs?: number;
+  preInstallTimeoutMs?: number;
 }
 
 export interface UpdaterController {
@@ -81,7 +91,8 @@ export interface UpdaterController {
   subscribe(listener: (state: UpdaterState) => void): () => void;
   checkForUpdates(source?: UpdateCheckSource): Promise<void>;
   downloadUpdate(source?: UpdateDownloadSource): Promise<void>;
-  quitAndInstall(): void;
+  quitAndInstall(): Promise<void>;
+  prepareForShutdown(): string | undefined;
   startBackgroundChecks(): void;
   dispose(): void;
 }
@@ -93,6 +104,7 @@ type ActiveOperation =
 
 const DEFAULT_INITIAL_DELAY_MS = 30_000;
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_PRE_INSTALL_TIMEOUT_MS = 2_500;
 
 const DEFAULT_LOGGER: UpdaterLogger = {
   info: (...args) => console.info(...args),
@@ -112,16 +124,10 @@ export function isUpdaterEnabled(options: {
   isPackaged?: boolean;
   env?: NodeJS.ProcessEnv;
 }): boolean {
-  if (options.isPackaged !== true || options.env?.NODE_ENV === "test") {
+  if (!isPackagedDesktopUpdaterEligible(options)) {
     return false;
   }
-  if (options.platform === "darwin") {
-    return true;
-  }
-  if (options.platform === "linux") {
-    return hasAppImageRuntimeEnv(options.env);
-  }
-  return false;
+  return options.platform === "darwin" || options.platform === "linux";
 }
 
 export function createUpdaterController(
@@ -142,12 +148,17 @@ export function createUpdaterController(
   let activeOperation: ActiveOperation = null;
   let initialTimer: NodeJS.Timeout | null = null;
   let intervalTimer: NodeJS.Timeout | null = null;
+  let installInProgress = false;
+  let installNativeInvoked = false;
+  let installCommitted = false;
 
   const listeners = new Set<(state: UpdaterState) => void>();
   const detachFns: Array<() => void> = [];
 
   options.driver.autoDownload = false;
-  options.driver.autoInstallOnAppQuit = false;
+  options.driver.autoInstallOnAppQuit = options.autoInstallOnAppQuit ?? false;
+  options.driver.autoRunAppAfterInstall =
+    options.autoRunAppAfterInstall ?? true;
   options.driver.allowPrerelease = false;
 
   const eventHandlers: Record<UpdaterEventName, UpdaterEventListener> = {
@@ -235,6 +246,9 @@ export function createUpdaterController(
       if (!enabled) {
         return;
       }
+      if (recoverRejectedInstall(error)) {
+        return;
+      }
       handleError(error);
     }
   };
@@ -268,7 +282,7 @@ export function createUpdaterController(
     }
     if (state.status === "downloaded" && source !== "inline") {
       if (source === "foreground") {
-        quitAndInstall();
+        await quitAndInstall();
       }
       return;
     }
@@ -286,7 +300,15 @@ export function createUpdaterController(
     setState({ status: "checking" });
 
     try {
-      await options.driver.checkForUpdates();
+      const result = await options.driver.checkForUpdates();
+      if (
+        result === null &&
+        activeOperation?.kind === "check" &&
+        getState().status === "checking"
+      ) {
+        activeOperation = null;
+        setState({ status: "idle" });
+      }
     } catch (error) {
       handleError(error);
     }
@@ -314,7 +336,7 @@ export function createUpdaterController(
     }
     if (state.status === "downloaded") {
       if (source === "foreground") {
-        quitAndInstall();
+        await quitAndInstall();
       }
       return;
     }
@@ -335,12 +357,42 @@ export function createUpdaterController(
     }
   }
 
-  function quitAndInstall(): void {
-    if (!enabled || state.status !== "downloaded") {
+  async function quitAndInstall(): Promise<void> {
+    if (!enabled || state.status !== "downloaded" || installInProgress) {
       return;
     }
-    options.beforeQuitAndInstall?.(state.version);
-    options.driver.quitAndInstall();
+    const version = state.version;
+    installInProgress = true;
+    installNativeInvoked = false;
+    installCommitted = false;
+
+    await runPreInstallHook(version);
+    if (!installInProgress || state.status !== "downloaded") {
+      await cancelPreparedInstall(version);
+      return;
+    }
+
+    installNativeInvoked = true;
+    try {
+      options.driver.quitAndInstall(false, true);
+    } catch (error) {
+      await recoverRejectedInstallAsync(error, version);
+      return;
+    }
+
+    // AppImageUpdater reports native install rejection through a synchronous
+    // `error` event instead of throwing. Its listener clears this guard before
+    // quitAndInstall returns so destructive shutdown work is never committed.
+    if (!installInProgress) {
+      return;
+    }
+
+    installCommitted = true;
+    try {
+      await options.commitQuitAndInstall?.(version);
+    } catch (error) {
+      logger.error("[updater:install-commit]", getErrorMessage(error));
+    }
   }
 
   function startBackgroundChecks(): void {
@@ -355,6 +407,15 @@ export function createUpdaterController(
         void checkForUpdates("background");
       }, options.intervalMs ?? DEFAULT_INTERVAL_MS);
     }, options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS);
+  }
+
+  function prepareForShutdown(): string | undefined {
+    const shouldAutoInstall =
+      enabled &&
+      options.autoInstallOnAppQuit === true &&
+      state.status === "downloaded";
+    options.driver.autoInstallOnAppQuit = shouldAutoInstall;
+    return shouldAutoInstall ? state.version : undefined;
   }
 
   function dispose(): void {
@@ -384,8 +445,99 @@ export function createUpdaterController(
   async function promptForInstall(version?: string): Promise<void> {
     const shouldInstall = await options.dialogs.promptForInstall(version);
     if (shouldInstall) {
-      quitAndInstall();
+      await quitAndInstall();
     }
+  }
+
+  async function runPreInstallHook(version?: string): Promise<void> {
+    if (!options.beforeQuitAndInstall) {
+      return;
+    }
+
+    let timeout: NodeJS.Timeout | null = null;
+    const preparation = Promise.resolve()
+      .then(() => options.beforeQuitAndInstall?.(version))
+      .then(() => "complete" as const)
+      .catch((error) => {
+        logger.warn("[updater:pre-install]", getErrorMessage(error));
+        return "failed" as const;
+      });
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timeout = scheduler.setTimeout(
+        () => resolve("timeout"),
+        options.preInstallTimeoutMs ?? DEFAULT_PRE_INSTALL_TIMEOUT_MS
+      );
+    });
+
+    const result = await Promise.race([preparation, timedOut]);
+    if (timeout) {
+      scheduler.clearTimeout(timeout);
+    }
+    if (result === "timeout") {
+      logger.warn(
+        "[updater:pre-install]",
+        `Persistence flush exceeded ${
+          options.preInstallTimeoutMs ?? DEFAULT_PRE_INSTALL_TIMEOUT_MS
+        }ms; continuing update install.`
+      );
+    }
+  }
+
+  function recoverRejectedInstall(error: unknown): boolean {
+    const recovery = beginRejectedInstallRecovery(error, state.version);
+    if (!recovery) {
+      return false;
+    }
+    void recovery;
+    return true;
+  }
+
+  async function cancelPreparedInstall(version?: string): Promise<void> {
+    installInProgress = false;
+    installNativeInvoked = false;
+    installCommitted = false;
+    try {
+      await options.cancelQuitAndInstall?.(version);
+    } catch (error) {
+      logger.error("[updater:install-cancel]", getErrorMessage(error));
+    }
+  }
+
+  async function recoverRejectedInstallAsync(
+    error: unknown,
+    version?: string
+  ): Promise<void> {
+    await beginRejectedInstallRecovery(error, version);
+  }
+
+  function beginRejectedInstallRecovery(
+    error: unknown,
+    version?: string
+  ): Promise<void> | null {
+    if (!installInProgress || !installNativeInvoked || installCommitted) {
+      return null;
+    }
+    installInProgress = false;
+    installNativeInvoked = false;
+    installCommitted = false;
+    return finishRejectedInstallRecovery(error, version);
+  }
+
+  async function finishRejectedInstallRecovery(
+    error: unknown,
+    version?: string
+  ): Promise<void> {
+    const message = getErrorMessage(error);
+    logger.error("[updater:install]", message);
+    try {
+      await options.recoverQuitAndInstall?.(error, version);
+    } catch (recoveryError) {
+      logger.error(
+        "[updater:install-recovery]",
+        getErrorMessage(recoveryError)
+      );
+    }
+    await options.dialogs.showError(message);
   }
 
   function handleError(error: unknown): void {
@@ -418,6 +570,7 @@ export function createUpdaterController(
     checkForUpdates,
     downloadUpdate,
     quitAndInstall,
+    prepareForShutdown,
     startBackgroundChecks,
     dispose
   };

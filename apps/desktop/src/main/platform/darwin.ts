@@ -40,7 +40,9 @@ export function createDarwinPlatformRuntime(options: {
       }
     },
     updater: {
-      enabled: isPackagedDesktopUpdaterEligible(options)
+      enabled: isPackagedDesktopUpdaterEligible(options),
+      autoInstallOnAppQuit: false,
+      autoRunAppAfterInstall: true
     }
   };
 }

@@ -1,6 +1,5 @@
 import {
   app,
-  autoUpdater as electronAutoUpdater,
   BrowserWindow,
   dialog,
   Menu,
@@ -75,7 +74,6 @@ import {
   resolveTargetTerminalFileLinks
 } from "./terminalFileOpen";
 import { createUpdaterController } from "./updater";
-import { createAppImageUpdateRelaunchCoordinator } from "./appImageUpdateRelaunch";
 import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
 import { createUsageScanWorkerClient } from "./usageScanWorkerClient";
@@ -93,6 +91,16 @@ import {
   createMainLifecycleController,
   showQuitConfirmationDialog
 } from "./mainLifecycle";
+import {
+  acquireLinuxSingleInstanceLock,
+  prepareUpdateRelaunchEnvironment,
+  type UpdateRelaunchEnvironment
+} from "./linuxSingleInstance";
+import {
+  LINUX_SHUTDOWN_TIMEOUT_MS,
+  settleShutdownTasks
+} from "./shutdownTasks";
+import { createUpdateInstallWatchdog } from "./updateInstallWatchdog";
 import {
   requirePlatformRuntime,
   UnsupportedPlatformError
@@ -131,6 +139,7 @@ import {
 import {
   createMainWindow,
   persistWindowState,
+  persistWindowStateAsync,
   setDevelopmentDockIcon,
   type MainWindowRecoveryState
 } from "./windowLifecycle";
@@ -544,6 +553,20 @@ async function bootstrap(): Promise<void> {
     },
     persistWindowState: (window) => {
       persistWindowState({
+        windowStateStore,
+        window,
+        getSidebarVisible: () => {
+          const state = runtime.getState();
+          return state.windows[state.activeWindowId]?.sidebarVisible;
+        },
+        getSidebarWidth: () => {
+          const state = runtime.getState();
+          return state.windows[state.activeWindowId]?.sidebarWidth;
+        }
+      });
+    },
+    persistWindowStateAsync: (window) => {
+      return persistWindowStateAsync({
         windowStateStore,
         window,
         getSidebarVisible: () => {
@@ -1659,7 +1682,11 @@ async function bootstrap(): Promise<void> {
     importTerminalThemePalette: importItermcolorsPalette,
     exportTerminalThemePalette: exportItermcolorsPalette,
     openSettingsJson: async () => {
-      settingsStore.save(runtime.getState().settings);
+      if (platformRuntime.platformId === "linux") {
+        await settingsStore.saveAsync(runtime.getState().settings);
+      } else {
+        settingsStore.save(runtime.getState().settings);
+      }
       const result = await openSettingsJsonFile({
         nodeEnv: process.env.NODE_ENV,
         platform: platformRuntime.opener.platform,
@@ -1874,17 +1901,25 @@ async function bootstrap(): Promise<void> {
     autoUpdater.channel = autoUpdaterChannel;
   }
   autoUpdater.allowDowngrade = false;
-  const appImageUpdateRelaunch = createAppImageUpdateRelaunchCoordinator({
-    enabled: platformRuntime.updater.enabled,
-    platform: process.platform,
-    env: process.env,
-    updater: autoUpdater,
-    updateQuitEmitter: electronAutoUpdater,
-    app
-  });
   const pendingUpdateStore = createPendingUpdateStore(
     join(dirname(paths.settingsPath), "pending-update.json")
   );
+  let pendingUpdateRecordPromise: Promise<void> | null = null;
+  const recordPendingLinuxUpdate = (version: string): void => {
+    pendingUpdateRecordPromise ??= pendingUpdateStore.recordAsync(version);
+  };
+  const updateInstallWatchdog = createUpdateInstallWatchdog({
+    exit: (code) => app.exit(code),
+    onTimeout: (timeoutMs) => {
+      logDiagnostics("main.updater.install-exit-timeout", { timeoutMs });
+    }
+  });
+  let updateRelaunchEnvironment: UpdateRelaunchEnvironment | null = null;
+  const restoreUpdateRelaunchEnvironment = (): void => {
+    updateRelaunchEnvironment?.restore();
+    updateRelaunchEnvironment = null;
+    updateInstallWatchdog.disarm();
+  };
   updater = createUpdaterController({
     driver: autoUpdater,
     dialogs: createNativeUpdaterDialogs({
@@ -1900,13 +1935,39 @@ async function bootstrap(): Promise<void> {
     isPackaged: app.isPackaged,
     enabled: platformRuntime.updater.enabled,
     env: process.env,
+    autoInstallOnAppQuit: platformRuntime.updater.autoInstallOnAppQuit,
+    autoRunAppAfterInstall: platformRuntime.updater.autoRunAppAfterInstall,
     beforeQuitAndInstall: (version) => {
+      if (platformRuntime.platformId === "linux") {
+        // AppImageUpdater inherits this environment when it spawns the new
+        // image. Prepare it before any fallible persistence work so a failed
+        // flush cannot strand the replacement behind the old process lock.
+        updateRelaunchEnvironment ??= prepareUpdateRelaunchEnvironment(
+          process.env,
+          process.pid
+        );
+        return runtime.flushPersistence();
+      }
+
+      // Preserve the existing macOS Squirrel handoff ordering. The native
+      // updater may begin quitting synchronously from quitAndInstall().
       lifecycle.allowQuit();
-      appImageUpdateRelaunch.requestRelaunchAfterInstall();
       if (version) {
         pendingUpdateStore.record(version);
       }
-    }
+    },
+    commitQuitAndInstall: (version) => {
+      if (platformRuntime.platformId !== "linux") {
+        return;
+      }
+      lifecycle.allowQuit();
+      updateInstallWatchdog.arm();
+      if (version) {
+        recordPendingLinuxUpdate(version);
+      }
+    },
+    cancelQuitAndInstall: restoreUpdateRelaunchEnvironment,
+    recoverQuitAndInstall: restoreUpdateRelaunchEnvironment
   });
   const broadcastUpdaterState = (): void => {
     const state = updater.getState();
@@ -1914,12 +1975,37 @@ async function bootstrap(): Promise<void> {
       window.webContents.send("kmux:updater", state);
     }
   };
+  const reportLinuxShutdownOutcome = (
+    outcome: Awaited<ReturnType<typeof settleShutdownTasks>>
+  ): void => {
+    for (const failure of outcome.failures) {
+      const message =
+        failure.error instanceof Error
+          ? failure.error.message
+          : String(failure.error);
+      console.error(`[main:shutdown:${failure.name}]`, failure.error);
+      logDiagnostics("main.shutdown.stop-failed", {
+        target: failure.name,
+        message
+      });
+    }
+    if (outcome.timedOut.length > 0) {
+      console.warn("[main:shutdown:timeout]", outcome.timedOut);
+      logDiagnostics("main.shutdown.timeout", {
+        timeoutMs: LINUX_SHUTDOWN_TIMEOUT_MS,
+        targets: outcome.timedOut
+      });
+    }
+  };
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (): Promise<void> => {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
         logDiagnostics("main.shutdown.begin", {});
-        appImageUpdateRelaunch.dispose();
+        const autoInstallVersion = updater.prepareForShutdown();
+        if (autoInstallVersion) {
+          recordPendingLinuxUpdate(autoInstallVersion);
+        }
         unsubscribeUpdater();
         updater.dispose();
         clearInterval(diagnosticsSampleTimer);
@@ -1935,15 +2021,6 @@ async function bootstrap(): Promise<void> {
             });
           }
         }
-        runtime.shutdown({
-          preserveWorkspaceLayout: preserveRemoteWorkspaceLayout
-        });
-        metadataRuntime.dispose();
-        usageRuntime.shutdown();
-        localExternalSessionIndexer.close?.();
-        documentService.close();
-
-        await diagnosticConfiguration;
         const server = socketServer;
         socketServer = null;
         const host = ptyHost;
@@ -1953,16 +2030,105 @@ async function bootstrap(): Promise<void> {
         const remoteControl = remoteLifecycle;
         remoteLifecycle = null;
 
-        const socketStop = server?.stop();
-        const hostStop = host?.stop();
-        const remoteStop = remoteControl?.stop() ?? remote?.stop();
-        const askpassStop = sshAskpass.stop();
         try {
-          await Promise.all([socketStop, hostStop, remoteStop, askpassStop]);
-          await diagnosticsWriter?.close();
-          diagnosticsWriter = null;
+          if (platformRuntime.platformId === "linux") {
+            const stopDeadlineStartedAt = performance.now();
+            const pendingUpdateRecord = pendingUpdateRecordPromise;
+            const outcome = await settleShutdownTasks([
+              ...(pendingUpdateRecord
+                ? [
+                    {
+                      name: "pending-update",
+                      stop: () => pendingUpdateRecord
+                    }
+                  ]
+                : []),
+              {
+                name: "app-runtime",
+                stop: () =>
+                  runtime.shutdownAsync({
+                    preserveWorkspaceLayout: preserveRemoteWorkspaceLayout
+                  })
+              },
+              {
+                name: "metadata-runtime",
+                stop: () => metadataRuntime.dispose()
+              },
+              {
+                name: "usage-runtime",
+                stop: () => usageRuntime.shutdown()
+              },
+              {
+                name: "external-session-indexer",
+                stop: () => localExternalSessionIndexer.close?.()
+              },
+              {
+                name: "document-service",
+                stop: () => documentService.close()
+              },
+              {
+                name: "diagnostics-configuration",
+                stop: () => diagnosticConfiguration
+              },
+              {
+                name: "socket-server",
+                stop: () => server?.stop()
+              },
+              {
+                name: "pty-host",
+                stop: () => host?.stop()
+              },
+              {
+                name: "remote-runtime",
+                stop: () => remoteControl?.stop() ?? remote?.stop()
+              },
+              {
+                name: "ssh-askpass",
+                stop: () => sshAskpass.stop()
+              }
+            ]);
+            reportLinuxShutdownOutcome(outcome);
+
+            const writer = diagnosticsWriter;
+            diagnosticsWriter = null;
+            setDiagnosticsRecordSink(null);
+            if (writer) {
+              const elapsedMs = performance.now() - stopDeadlineStartedAt;
+              const remainingMs = Math.max(
+                0,
+                Math.ceil(LINUX_SHUTDOWN_TIMEOUT_MS - elapsedMs)
+              );
+              const writerOutcome = await settleShutdownTasks(
+                [
+                  {
+                    name: "diagnostics-writer",
+                    stop: () => writer.close()
+                  }
+                ],
+                { timeoutMs: remainingMs }
+              );
+              reportLinuxShutdownOutcome(writerOutcome);
+            }
+          } else {
+            runtime.shutdown({
+              preserveWorkspaceLayout: preserveRemoteWorkspaceLayout
+            });
+            metadataRuntime.dispose();
+            usageRuntime.shutdown();
+            localExternalSessionIndexer.close?.();
+            documentService.close();
+
+            await diagnosticConfiguration;
+            const socketStop = server?.stop();
+            const hostStop = host?.stop();
+            const remoteStop = remoteControl?.stop() ?? remote?.stop();
+            const askpassStop = sshAskpass.stop();
+            await Promise.all([socketStop, hostStop, remoteStop, askpassStop]);
+            await diagnosticsWriter?.close();
+            diagnosticsWriter = null;
+            setDiagnosticsRecordSink(null);
+          }
           applyDiagnosticsLogPath(process.env, undefined);
-          setDiagnosticsRecordSink(null);
         } finally {
           shellWrapperRuntime.cleanup();
         }
@@ -2199,15 +2365,47 @@ function deriveRemoteHome(roots: {
   return undefined;
 }
 
-app
-  .whenReady()
-  .then(bootstrap)
-  .catch((error) => {
-    if (error instanceof UnsupportedPlatformError) {
-      console.error("[main:unsupported-platform]", error.message);
-      dialog.showErrorBox("Unsupported platform", error.message);
-    } else {
-      console.error(error);
-    }
-    app.quit();
+async function startApplication(): Promise<void> {
+  const singleInstance = await acquireLinuxSingleInstanceLock({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    env: process.env,
+    requestLock: () => app.requestSingleInstanceLock()
   });
+  if (
+    singleInstance.status === "denied" ||
+    singleInstance.status === "parent-timeout"
+  ) {
+    console.warn("[main:single-instance]", singleInstance);
+    app.quit();
+    return;
+  }
+  if (singleInstance.status === "acquired") {
+    app.on("second-instance", () => {
+      const window = BrowserWindow.getAllWindows().find(
+        (candidate) => !candidate.isDestroyed()
+      );
+      if (!window) {
+        return;
+      }
+      if (window.isMinimized()) {
+        window.restore();
+      }
+      window.show();
+      window.focus();
+    });
+  }
+
+  await app.whenReady();
+  await bootstrap();
+}
+
+void startApplication().catch((error) => {
+  if (error instanceof UnsupportedPlatformError) {
+    console.error("[main:unsupported-platform]", error.message);
+    dialog.showErrorBox("Unsupported platform", error.message);
+  } else {
+    console.error(error);
+  }
+  app.quit();
+});
