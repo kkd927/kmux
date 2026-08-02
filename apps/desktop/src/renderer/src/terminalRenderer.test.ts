@@ -652,131 +652,28 @@ describe("terminal renderer helpers", () => {
     );
   });
 
-  it("uses one explicit Linux IME commit while suppressing xterm composition data", () => {
-    let time = 0;
-    const controller = createTerminalImeInputController({
-      now: () => time,
-      duplicateWindowMs: 20
-    });
-
-    controller.compositionStart("");
-    controller.compositionUpdate("가");
-    expect(controller.filterData("가")).toBeNull();
-    time = 1;
-    const firstEnd = controller.compositionEnd("가", "가");
-    expect(firstEnd.commitText).toBe("가");
-
-    time = 2;
-    expect(controller.filterData("가")).toBeNull();
-
-    controller.finishComposition(firstEnd.settlementId);
-    controller.compositionStart("");
-    controller.compositionUpdate("가");
-    expect(controller.filterData("가")).toBeNull();
-    expect(controller.compositionEnd("가", "가").commitText).toBe("가");
-    time = 30;
-    expect(controller.filterData("가")).toBe("가");
-  });
-
   it("keeps deferred navigation attached to its composition across overlapping settlements", () => {
     const controller = createTerminalImeInputController();
 
-    controller.compositionStart("");
-    controller.compositionUpdate("삭제");
+    controller.compositionStart();
     controller.deferNavigation("ArrowLeft");
-    const firstEnd = controller.compositionEnd("삭제", "삭제");
+    const firstSettlementId = controller.compositionEnd();
 
-    controller.compositionStart("삭제");
-    controller.compositionUpdate("발행 후");
+    controller.compositionStart();
     controller.deferNavigation("ArrowRight");
     expect(controller.getPhase()).toBe("composing");
 
-    expect(controller.finishComposition(firstEnd.settlementId)).toEqual([
+    expect(controller.finishComposition(firstSettlementId)).toEqual([
       "ArrowLeft"
     ]);
     expect(controller.getPhase()).toBe("composing");
 
-    const secondEnd = controller.compositionEnd("삭제발행 후", "발행 후");
-    expect(secondEnd.commitText).toBe("발행 후");
+    const secondSettlementId = controller.compositionEnd();
     expect(controller.getPhase()).toBe("settling");
-    expect(controller.finishComposition(secondEnd.settlementId)).toEqual([
+    expect(controller.finishComposition(secondSettlementId)).toEqual([
       "ArrowRight"
     ]);
     expect(controller.getPhase()).toBe("idle");
-  });
-
-  it("keeps a space after a Linux IME commit while removing the duplicate commit", () => {
-    let time = 0;
-    const controller = createTerminalImeInputController({
-      now: () => time,
-      duplicateWindowMs: 20
-    });
-
-    controller.compositionStart("");
-    controller.compositionUpdate("한");
-    time = 1;
-    expect(controller.compositionEnd("한", "한").commitText).toBe("한");
-
-    time = 2;
-    expect(controller.filterData("한 ")).toBe(" ");
-    expect(controller.filterData(" ")).toBe(" ");
-  });
-
-  it("removes a duplicate Linux IME commit across Unicode normalization forms", () => {
-    let time = 0;
-    const controller = createTerminalImeInputController({
-      now: () => time,
-      duplicateWindowMs: 20
-    });
-    const composed = "한";
-    const decomposed = composed.normalize("NFD");
-
-    controller.compositionStart("");
-    controller.compositionUpdate(composed);
-    time = 1;
-    expect(controller.compositionEnd(composed, composed).commitText).toBe(
-      composed
-    );
-
-    time = 2;
-    expect(controller.filterData(`${decomposed} `)).toBe(" ");
-    expect(controller.filterData(decomposed)).toBeNull();
-  });
-
-  it("allows the first post-composition commit when ibus ends composition with empty data", () => {
-    let time = 0;
-    const controller = createTerminalImeInputController({
-      now: () => time,
-      duplicateWindowMs: 20
-    });
-
-    controller.compositionStart("안");
-    controller.compositionUpdate("녕");
-    controller.compositionUpdate("");
-    time = 1;
-    expect(controller.compositionEnd("안", "").commitText).toBe("");
-
-    time = 2;
-    expect(controller.filterData("녕")).toBe("녕");
-  });
-
-  it("suppresses only an immediate repeated post-composition commit from xterm", () => {
-    let time = 0;
-    const controller = createTerminalImeInputController({
-      now: () => time,
-      duplicateWindowMs: 20
-    });
-
-    controller.compositionStart("안");
-    controller.compositionUpdate("녕");
-    controller.compositionUpdate("");
-    time = 1;
-    expect(controller.compositionEnd("안", "").commitText).toBe("");
-
-    time = 2;
-    expect(controller.filterData("녕")).toBe("녕");
-    expect(controller.filterData("녕")).toBeNull();
-    expect(controller.filterData(" ")).toBe(" ");
   });
 
   it("applies pending Enter rewrites only to the originating surface CR", () => {

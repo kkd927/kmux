@@ -175,8 +175,17 @@ type TerminalRenderSinkContext = {
   surfaceId: string;
 };
 
+interface TerminalInputOwnerState {
+  owners: object[];
+  settling: object | null;
+}
+
 const PROFILE_TERMINAL_WRITE_BUCKET_MIN_WRITES = 100;
 const UTF8_ENCODER = new TextEncoder();
+// A cached xterm can briefly be mounted by two pane owners during handoff.
+// Only the newest owner handles input, except that an already-admitted delayed
+// IME commit remains bound to the owner that began its settlement.
+const terminalInputOwners = new WeakMap<Terminal, TerminalInputOwnerState>();
 const TERMINAL_ATTACH_REARM_INITIAL_DELAY_MS = 1_000;
 const TERMINAL_ATTACH_REARM_MAX_DELAY_MS = 30_000;
 const TERMINAL_DIRECT_RESIZE_ACK_TIMEOUT_MS = 10_000;
@@ -442,10 +451,6 @@ export function TerminalSurfaceView(
       }
     })
   );
-  const terminalImeInputControllerRef = useRef(
-    createTerminalImeInputController()
-  );
-  const isPastingRef = useRef(false);
 
   function updateTerminalDiagnostics(
     surfaceId: string,
@@ -804,13 +809,34 @@ export function TerminalSurfaceView(
     return terminalInstanceStore.getReadyAttachId(surfaceId, sessionId);
   }
 
-  function sendTerminalText(surfaceId: string, text: string): void {
-    const stream = terminalStreamRef.current;
-    const sessionId = sessionIdForSurface(surfaceId);
+  function inputStreamForSession(
+    surfaceId: string,
+    sessionId: string,
+    preferredStream?: AttachedTerminalStream | null
+  ): AttachedTerminalStream | null {
+    const isReady = (stream: AttachedTerminalStream | null | undefined) =>
+      stream?.grant.session.surfaceId === surfaceId &&
+      stream.grant.session.sessionId === sessionId &&
+      !stream.registration.closed;
+    if (preferredStream) {
+      return isReady(preferredStream) ? preferredStream : null;
+    }
+    const currentStream = terminalStreamRef.current;
+    return isReady(currentStream) ? currentStream : null;
+  }
+
+  function sendTerminalText(
+    surfaceId: string,
+    sessionId: string,
+    text: string,
+    preferredStream?: AttachedTerminalStream | null
+  ): void {
+    const stream = inputStreamForSession(surfaceId, sessionId, preferredStream);
     const diagnosticWrapper = surfaceWrapperRefs.current.get(surfaceId);
     if (
       terminalDiagnosticsEnabledRef.current &&
       activeSurfaceRef.current?.id === surfaceId &&
+      activeSurfaceRef.current.content.sessionId === sessionId &&
       terminalRef.current
     ) {
       updateTerminalDiagnostics(surfaceId, terminalRef.current, {
@@ -819,11 +845,7 @@ export function TerminalSurfaceView(
         lastInputBytes: UTF8_ENCODER.encode(text).byteLength
       });
     }
-    if (
-      stream?.grant.session.surfaceId === surfaceId &&
-      stream.grant.session.sessionId === sessionId &&
-      !stream.registration.closed
-    ) {
+    if (stream) {
       if (diagnosticWrapper) {
         diagnosticWrapper.dataset.terminalLastInputRoute = "live-stream";
         diagnosticWrapper.dataset.terminalLastInputBytes = String(text.length);
@@ -831,12 +853,20 @@ export function TerminalSurfaceView(
       stream.registration.sendText(text);
       return;
     }
+    if (preferredStream) {
+      return;
+    }
+    if (
+      preferredStream !== undefined &&
+      sessionIdForSurface(surfaceId) !== sessionId
+    ) {
+      return;
+    }
     if (diagnosticWrapper) {
       diagnosticWrapper.dataset.terminalLastInputRoute = "pending-stream";
       diagnosticWrapper.dataset.terminalLastInputBytes = String(text.length);
     }
     if (
-      !sessionId ||
       !pendingTerminalStreamInputRef.current.enqueueText(
         surfaceId,
         sessionId,
@@ -847,15 +877,20 @@ export function TerminalSurfaceView(
     }
   }
 
-  function sendTerminalBinary(surfaceId: string, data: string): void {
-    const stream = terminalStreamRef.current;
-    const sessionId = sessionIdForSurface(surfaceId);
+  function sendTerminalBinary(
+    surfaceId: string,
+    sessionId: string,
+    data: string,
+    preferredStream?: AttachedTerminalStream | null
+  ): void {
+    const stream = inputStreamForSession(surfaceId, sessionId, preferredStream);
     const diagnosticWrapper = terminalDiagnosticsEnabledRef.current
       ? surfaceWrapperRefs.current.get(surfaceId)
       : undefined;
     if (
       terminalDiagnosticsEnabledRef.current &&
       activeSurfaceRef.current?.id === surfaceId &&
+      activeSurfaceRef.current.content.sessionId === sessionId &&
       terminalRef.current
     ) {
       updateTerminalDiagnostics(surfaceId, terminalRef.current, {
@@ -864,11 +899,7 @@ export function TerminalSurfaceView(
         lastInputBytes: data.length
       });
     }
-    if (
-      stream?.grant.session.surfaceId === surfaceId &&
-      stream.grant.session.sessionId === sessionId &&
-      !stream.registration.closed
-    ) {
+    if (stream) {
       if (diagnosticWrapper) {
         diagnosticWrapper.dataset.terminalLastInputRoute = "live-stream";
         diagnosticWrapper.dataset.terminalLastInputBytes = String(data.length);
@@ -876,12 +907,20 @@ export function TerminalSurfaceView(
       stream.registration.sendBinary(data);
       return;
     }
+    if (preferredStream) {
+      return;
+    }
+    if (
+      preferredStream !== undefined &&
+      sessionIdForSurface(surfaceId) !== sessionId
+    ) {
+      return;
+    }
     if (diagnosticWrapper) {
       diagnosticWrapper.dataset.terminalLastInputRoute = "pending-stream";
       diagnosticWrapper.dataset.terminalLastInputBytes = String(data.length);
     }
     if (
-      !sessionId ||
       !pendingTerminalStreamInputRef.current.enqueueBinary(
         surfaceId,
         sessionId,
@@ -2188,7 +2227,19 @@ export function TerminalSurfaceView(
     if (!container || !terminal) {
       return;
     }
-    const imeInputController = terminalImeInputControllerRef.current;
+    const inputSurfaceId = activeSurface.id;
+    const inputSessionId = activeSurface.content.sessionId;
+    const inputOwnerToken = {};
+    const inputOwnerState = terminalInputOwners.get(terminal) ?? {
+      owners: [],
+      settling: null
+    };
+    terminalInputOwners.set(terminal, inputOwnerState);
+    inputOwnerState.owners.push(inputOwnerToken);
+    const ownsTerminalInput = (): boolean =>
+      (inputOwnerState.settling ?? inputOwnerState.owners.at(-1)) ===
+      inputOwnerToken;
+    const imeInputController = createTerminalImeInputController();
     const clearPendingEnterRewrite = () => {
       const pending = pendingEnterRewriteRef.current;
       if (pending) {
@@ -2221,8 +2272,7 @@ export function TerminalSurfaceView(
       };
     };
     const handleTerminalShortcut = (event: KeyboardEvent) => {
-      const currentSurface = activeSurfaceRef.current;
-      if (!currentSurface) {
+      if (!ownsTerminalInput()) {
         return;
       }
       if (
@@ -2233,7 +2283,7 @@ export function TerminalSurfaceView(
       ) {
         return;
       }
-      queueEnterRewrite(event, currentSurface.id);
+      queueEnterRewrite(event, inputSurfaceId);
       if (matchesTerminalShortcut(event, "terminal.copyMode")) {
         event.preventDefault();
         event.stopPropagation();
@@ -2246,7 +2296,7 @@ export function TerminalSurfaceView(
       if (matchesTerminalShortcut(event, "terminal.search")) {
         event.preventDefault();
         event.stopPropagation();
-        toggleSearch(showSearchRef.current ? null : currentSurface.id);
+        toggleSearch(showSearchRef.current ? null : inputSurfaceId);
         return;
       }
       if (matchesTerminalShortcut(event, "terminal.search.next")) {
@@ -2271,7 +2321,7 @@ export function TerminalSurfaceView(
         event.preventDefault();
         event.stopPropagation();
         if (!copyModeRef.current) {
-          void pasteClipboard(terminal, currentSurface.id);
+          void pasteClipboard(terminal, inputSurfaceId);
         }
         return;
       }
@@ -2281,7 +2331,7 @@ export function TerminalSurfaceView(
         if (event.key === "Escape") {
           setCopyMode(false);
           terminal.clearSelection();
-          focusTerminalInput();
+          focusTerminalInput(inputSurfaceId);
           return;
         }
         if (
@@ -2297,40 +2347,37 @@ export function TerminalSurfaceView(
         switch (event.key) {
           case "ArrowUp":
             terminal.scrollLines(-1);
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           case "ArrowDown":
             terminal.scrollLines(1);
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           case "PageUp":
             terminal.scrollPages(-1);
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           case "PageDown":
             terminal.scrollPages(1);
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           case "Home":
             terminal.scrollToTop();
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           case "End":
             terminal.scrollToBottom();
-            syncTerminalMetrics(terminal);
+            syncSurfaceTerminalMetrics(inputSurfaceId, terminal);
             return;
           default:
             return;
         }
       }
     };
-    const markTerminalPasteInProgress = (): void => {
-      isPastingRef.current = true;
-      setTimeout(() => {
-        isPastingRef.current = false;
-      }, 0);
-    };
     const handleTerminalPaste = (event: ClipboardEvent) => {
+      if (!ownsTerminalInput()) {
+        return;
+      }
       if (copyModeRef.current || showSearchRef.current) {
         const targetElement =
           event.target instanceof Element
@@ -2346,13 +2393,8 @@ export function TerminalSurfaceView(
         const text = event.clipboardData?.getData("text/plain") ?? "";
         const sanitizedText = sanitizeTerminalPasteText(text);
         if (sanitizedText) {
-          markTerminalPasteInProgress();
           terminal.paste(sanitizedText);
         }
-        return;
-      }
-      const currentSurface = activeSurfaceRef.current;
-      if (!currentSurface) {
         return;
       }
       const clipboardData = event.clipboardData;
@@ -2373,8 +2415,7 @@ export function TerminalSurfaceView(
           }
         }
         const sanitizedText = sanitizeTerminalPasteText(text);
-        if (sanitizedText) {
-          markTerminalPasteInProgress();
+        if (sanitizedText && ownsTerminalInput()) {
           terminal.paste(sanitizedText);
         }
       };
@@ -2407,14 +2448,29 @@ export function TerminalSurfaceView(
               )
             : [];
         payloads.push(...nativeImages);
-        await attachImagePayloads(terminal, currentSurface.id, payloads);
+        if (ownsTerminalInput()) {
+          await attachImagePayloads(terminal, inputSurfaceId, payloads);
+        }
       })();
     };
 
     container.addEventListener("keydown", handleTerminalShortcut, true);
     container.addEventListener("paste", handleTerminalPaste, true);
     const xtermTextarea = terminal.textarea;
-    const imeSettlementTimeouts = new Set<ReturnType<typeof setTimeout>>();
+    const imeSettlements = new Map<
+      number,
+      {
+        stream: AttachedTerminalStream | null;
+        releaseStream: (() => Promise<void>) | null;
+        terminalPin: terminalInstanceStore.TerminalVisibilityPin | null;
+      }
+    >();
+    let inputEffectDisposed = false;
+    let disposeData: IDisposable | null = null;
+    const disposeDataListener = (): void => {
+      disposeData?.dispose();
+      disposeData = null;
+    };
     const replayDeferredImeNavigation = (
       navigationKeys: readonly TerminalImeNavigationKey[]
     ): void => {
@@ -2429,59 +2485,85 @@ export function TerminalSurfaceView(
       }
     };
     const handleCompositionStart = (): void => {
-      imeInputController.compositionStart(xtermTextarea?.value ?? "");
-    };
-    const handleCompositionUpdate = (event: CompositionEvent): void => {
-      imeInputController.compositionUpdate(event.data);
-    };
-    const handleCompositionEnd = (event: CompositionEvent): void => {
-      const { commitText, settlementId } = imeInputController.compositionEnd(
-        xtermTextarea?.value ?? "",
-        event.data
-      );
-      const currentSurface = activeSurfaceRef.current;
-      if (props.keyboardPlatform === "linux" && commitText && currentSurface) {
-        sendTerminalText(currentSurface.id, commitText);
+      if (!ownsTerminalInput()) {
+        return;
       }
-      // An empty ibus compositionend may still be followed by xterm's one real
-      // commit. Leave the textarea intact until the settlement callback in
-      // that case; filterData allows that first commit and rejects repeats.
-      if (props.keyboardPlatform === "linux" && xtermTextarea && commitText) {
-        xtermTextarea.value = "";
+      imeInputController.compositionStart();
+    };
+    const handleCompositionEnd = (): void => {
+      if (!ownsTerminalInput()) {
+        return;
       }
-      // xterm defers its own compositionend send with setTimeout(0). Run after
-      // that callback so macOS can still read Chromium's propagated commit.
+      const settlementId = imeInputController.compositionEnd();
+      inputOwnerState.settling ??= inputOwnerToken;
+      const stream = inputStreamForSession(inputSurfaceId, inputSessionId);
+      const terminalPin =
+        terminalInstanceStore.acquireSettlementPin(terminalInstanceKey);
+      const releaseStream = stream
+        ? terminalStreamClient.acquireSettlementLease(stream)
+        : null;
+      // xterm is the sole owner of composition commits on every platform and
+      // defers its compositionend send with setTimeout(0). Run after that
+      // callback so Chromium can finish propagating the committed text.
       // Once every composition has settled, clear the hidden textarea residue;
       // otherwise a moved textarea caret can make xterm slice the previous
       // Korean character as the next commit.
-      const settlementTimeout = setTimeout(() => {
-        imeSettlementTimeouts.delete(settlementTimeout);
-        const navigationKeys =
-          imeInputController.finishComposition(settlementId);
-        if (xtermTextarea && imeInputController.getPhase() === "idle") {
-          xtermTextarea.value = "";
+      setTimeout(() => {
+        const settlement = imeSettlements.get(settlementId);
+        if (!settlement) {
+          return;
         }
-        replayDeferredImeNavigation(navigationKeys);
+        try {
+          const navigationKeys =
+            imeInputController.finishComposition(settlementId);
+          if (xtermTextarea && imeInputController.getPhase() === "idle") {
+            xtermTextarea.value = "";
+          }
+          replayDeferredImeNavigation(navigationKeys);
+        } finally {
+          imeSettlements.delete(settlementId);
+          if (
+            imeSettlements.size === 0 &&
+            inputOwnerState.settling === inputOwnerToken
+          ) {
+            inputOwnerState.settling = null;
+          }
+          if (
+            inputOwnerState.owners.length === 0 &&
+            !inputOwnerState.settling
+          ) {
+            terminalInputOwners.delete(terminal);
+          }
+          if (inputEffectDisposed && imeSettlements.size === 0) {
+            disposeDataListener();
+            imeInputController.reset();
+          }
+          void settlement.releaseStream?.();
+          if (settlement.terminalPin) {
+            terminalInstanceStore.releaseVisibilityPin(
+              terminalInstanceKey,
+              settlement.terminalPin
+            );
+          }
+        }
       }, 0);
-      imeSettlementTimeouts.add(settlementTimeout);
+      imeSettlements.set(settlementId, {
+        stream,
+        releaseStream,
+        terminalPin
+      });
     };
     // Reset stale composition state if focus leaves the textarea (e.g. surface
     // switch, OS-level shortcut) without a matching compositionend.
     const handleTextareaBlur = (): void => {
-      for (const timeout of imeSettlementTimeouts) {
-        clearTimeout(timeout);
+      if (ownsTerminalInput() && imeSettlements.size === 0) {
+        imeInputController.reset();
       }
-      imeSettlementTimeouts.clear();
-      imeInputController.reset();
     };
     if (xtermTextarea) {
       xtermTextarea.addEventListener(
         "compositionstart",
         handleCompositionStart
-      );
-      xtermTextarea.addEventListener(
-        "compositionupdate",
-        handleCompositionUpdate
       );
       xtermTextarea.addEventListener("compositionend", handleCompositionEnd);
       xtermTextarea.addEventListener("blur", handleTextareaBlur);
@@ -2573,34 +2655,37 @@ export function TerminalSurfaceView(
       requestThrottledFit("pane-divider-drag-ended");
     });
 
-    const disposeData = terminal.onData((data) => {
-      const currentSurface = activeSurfaceRef.current;
-      if (!currentSurface) {
+    disposeData = terminal.onData((data) => {
+      if (!ownsTerminalInput()) {
         return;
       }
-      let dataToSend = data;
-      if (props.keyboardPlatform === "linux" && !isPastingRef.current) {
-        const filteredData = imeInputController.filterData(data);
-        if (!filteredData) {
-          return;
-        }
-        dataToSend = filteredData;
-      }
+      const settlementStream = imeSettlements.values().next().value?.stream;
       const rewrite = applyPendingTerminalEnterRewrite(
-        currentSurface.id,
-        dataToSend,
+        inputSurfaceId,
+        data,
         pendingEnterRewriteRef.current
       );
       if (rewrite.clearPending) {
         clearPendingEnterRewrite();
       }
-      sendTerminalText(currentSurface.id, rewrite.data);
+      sendTerminalText(
+        inputSurfaceId,
+        inputSessionId,
+        rewrite.data,
+        settlementStream
+      );
     });
     const disposeBinary = terminal.onBinary((data) => {
-      const currentSurface = activeSurfaceRef.current;
-      if (currentSurface) {
-        sendTerminalBinary(currentSurface.id, data);
+      if (!ownsTerminalInput()) {
+        return;
       }
+      const settlementStream = imeSettlements.values().next().value?.stream;
+      sendTerminalBinary(
+        inputSurfaceId,
+        inputSessionId,
+        data,
+        settlementStream
+      );
     });
     const disposeWriteParsed = terminal.onWriteParsed(() => {
       syncTerminalMetrics(terminal);
@@ -2608,14 +2693,19 @@ export function TerminalSurfaceView(
     const disposeScroll = terminal.onScroll(() => {
       syncTerminalMetrics(terminal);
     });
-    const inputReadyWrapper = surfaceWrapperRefs.current.get(
-      activeSurfaceRef.current?.id ?? ""
-    ) as TerminalHostElement | undefined;
+    const inputReadyWrapper = surfaceWrapperRefs.current.get(inputSurfaceId) as
+      | TerminalHostElement
+      | undefined;
     if (inputReadyWrapper?.__kmuxTerminal === terminal) {
       inputReadyWrapper.dataset.terminalInputReady = "true";
     }
 
     return () => {
+      inputEffectDisposed = true;
+      const ownerIndex = inputOwnerState.owners.indexOf(inputOwnerToken);
+      if (ownerIndex >= 0) {
+        inputOwnerState.owners.splice(ownerIndex, 1);
+      }
       if (foregroundFitRef.current === foregroundFit) {
         foregroundFitRef.current = null;
       }
@@ -2627,7 +2717,6 @@ export function TerminalSurfaceView(
         clearTimeout(resizeTimeout);
         resizeTimeout = null;
       }
-      disposeData.dispose();
       disposeBinary.dispose();
       disposeWriteParsed.dispose();
       disposeScroll.dispose();
@@ -2642,25 +2731,27 @@ export function TerminalSurfaceView(
           handleCompositionStart
         );
         xtermTextarea.removeEventListener(
-          "compositionupdate",
-          handleCompositionUpdate
-        );
-        xtermTextarea.removeEventListener(
           "compositionend",
           handleCompositionEnd
         );
         xtermTextarea.removeEventListener("blur", handleTextareaBlur);
       }
-      for (const timeout of imeSettlementTimeouts) {
-        clearTimeout(timeout);
+      if (imeSettlements.size === 0) {
+        if (inputOwnerState.settling === inputOwnerToken) {
+          inputOwnerState.settling = null;
+        }
+        if (inputOwnerState.owners.length === 0 && !inputOwnerState.settling) {
+          terminalInputOwners.delete(terminal);
+        }
+        disposeDataListener();
+        imeInputController.reset();
       }
-      imeSettlementTimeouts.clear();
-      imeInputController.reset();
       clearPendingEnterRewrite();
     };
   }, [
     props.keyboardPlatform,
     props.paneId,
+    activeSurface.content.sessionId,
     terminalGeneration,
     terminalInstanceKey
   ]);

@@ -102,7 +102,8 @@ vi.mock("@xterm/addon-web-links", () => ({
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => {
-    let onDataListener: ((data: string) => void) | undefined;
+    const onDataListeners = new Set<(data: string) => void>();
+    const onBinaryListeners = new Set<(data: string) => void>();
     let onTitleChangeListener: ((title: string) => void) | undefined;
     let compositionStartIndex = 0;
     let compositionActive = false;
@@ -183,7 +184,9 @@ vi.mock("@xterm/xterm", () => ({
               endIndex
             );
             if (data) {
-              onDataListener?.(data);
+              for (const listener of onDataListeners) {
+                listener(data);
+              }
             }
           }, 0);
         });
@@ -202,13 +205,31 @@ vi.mock("@xterm/xterm", () => ({
       }),
       attachCustomKeyEventHandler: vi.fn(),
       onData: vi.fn((listener: (data: string) => void) => {
-        onDataListener = listener;
-        return { dispose: vi.fn() };
+        onDataListeners.add(listener);
+        return {
+          dispose: vi.fn(() => {
+            onDataListeners.delete(listener);
+          })
+        };
       }),
       input: vi.fn((data: string) => {
-        onDataListener?.(data);
+        for (const listener of onDataListeners) {
+          listener(data);
+        }
       }),
-      onBinary: vi.fn(() => ({ dispose: vi.fn() })),
+      onBinary: vi.fn((listener: (data: string) => void) => {
+        onBinaryListeners.add(listener);
+        return {
+          dispose: vi.fn(() => {
+            onBinaryListeners.delete(listener);
+          })
+        };
+      }),
+      _emitBinary(data: string) {
+        for (const listener of onBinaryListeners) {
+          listener(data);
+        }
+      },
       onTitleChange: vi.fn((listener: (title: string) => void) => {
         onTitleChangeListener = listener;
         return { dispose: vi.fn() };
@@ -668,6 +689,10 @@ describe("TerminalSurfaceView visibility cleanup", () => {
   afterEach(async () => {
     await act(async () => {
       root.unmount();
+      // Let xterm's compositionend timer and the matching kmux settlement
+      // lease finish before the shared terminal client is reset for the next
+      // test.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await flushMicrotasks(10);
     });
     terminalInstanceStore.releaseAll();
@@ -1760,10 +1785,21 @@ describe("TerminalSurfaceView visibility cleanup", () => {
         root.render(<TerminalSurfaceView {...sourceProps} />);
         await flushMicrotasks(10);
       });
+      const movedTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | {
+            _emitBinary(data: string): void;
+            input: ReturnType<typeof vi.fn>;
+          }
+        | undefined;
+      expect(movedTerminal).toBeDefined();
       const movedAttach = latestTerminalStreamAttach("surface_1");
       await act(async () => {
         targetRoot.render(<TerminalSurfaceView {...targetProps} />);
         await flushMicrotasks(10);
+      });
+      act(() => {
+        movedTerminal!.input("handoff-input");
+        movedTerminal!._emitBinary("\u0002");
       });
       await act(async () => {
         root.render(<TerminalSurfaceView {...sourceAfterMoveProps} />);
@@ -1778,6 +1814,16 @@ describe("TerminalSurfaceView visibility cleanup", () => {
         "surface_2",
         "session_surface_2"
       );
+      expect(
+        movedAttach.port.sent.flatMap((message) =>
+          message.type === "input:text" ? [message.text] : []
+        )
+      ).toEqual(["handoff-input"]);
+      expect(
+        movedAttach.port.sent.flatMap((message) =>
+          message.type === "input:binary" ? [message.data] : []
+        )
+      ).toEqual(["\u0002"]);
     } finally {
       act(() => {
         targetRoot.unmount();
@@ -2281,14 +2327,7 @@ describe("TerminalSurfaceView visibility cleanup", () => {
     const terminalTextarea = container.querySelector<HTMLTextAreaElement>(
       "[data-testid='terminal-surface_1'] textarea"
     );
-    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
-      | { onData: ReturnType<typeof vi.fn> }
-      | undefined;
-    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as
-      | ((data: string) => void)
-      | undefined;
     expect(terminalTextarea).not.toBeNull();
-    expect(onData).toBeTypeOf("function");
 
     const attach = latestTerminalStreamAttach("surface_1");
     const sentTexts = (): string[] =>
@@ -2320,11 +2359,207 @@ describe("TerminalSurfaceView visibility cleanup", () => {
     });
     expect(sentTexts()).toEqual(["녕"]);
     expect(terminalTextarea!.value).toBe("");
+  });
+
+  it("preserves repeated Linux Hangul input after xterm's delayed IME commit", async () => {
+    const props = createProps("surface_1");
+
+    await act(async () => {
+      root.render(<TerminalSurfaceView {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    const terminalTextarea = container.querySelector<HTMLTextAreaElement>(
+      "[data-testid='terminal-surface_1'] textarea"
+    );
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { onData: ReturnType<typeof vi.fn> }
+      | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as
+      | ((data: string) => void)
+      | undefined;
+    expect(terminalTextarea).not.toBeNull();
+    expect(onData).toBeTypeOf("function");
+
+    const attach = latestTerminalStreamAttach("surface_1");
+    const sentTexts = (): string[] =>
+      attach.port.sent.flatMap((message) =>
+        message.type === "input:text" ? [message.text] : []
+      );
 
     act(() => {
-      onData!("녕");
+      terminalTextarea!.value = "";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      terminalTextarea!.value = "ㅇ";
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionupdate", "ㅇ")
+      );
+      terminalTextarea!.dispatchEvent(
+        createCompositionEvent("compositionend", "ㅇ")
+      );
     });
-    expect(sentTexts()).toEqual(["녕"]);
+
+    expect(terminalTextarea!.value).toBe("ㅇ");
+    expect(sentTexts()).toEqual([]);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(sentTexts()).toEqual(["ㅇ"]);
+    expect(terminalTextarea!.value).toBe("");
+
+    act(() => {
+      // On Linux/Wayland, subsequent physical repeats can arrive through
+      // xterm as ordinary input without another compositionstart first.
+      onData!("ㅇ");
+      onData!("ㅇ");
+      onData!("ㅇ");
+    });
+    expect(sentTexts()).toEqual(["ㅇ", "ㅇ", "ㅇ", "ㅇ"]);
+  });
+
+  it("routes a delayed IME commit to its original surface during a tab switch", async () => {
+    const firstSurface = createSurface("surface_1");
+    const secondSurface = createSurface("surface_2");
+    const props = createProps("surface_1");
+    props.surfaces = [firstSurface, secondSurface];
+
+    await act(async () => {
+      root.render(<TerminalSurfaceView {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    const firstTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          input: ReturnType<typeof vi.fn>;
+          textarea: HTMLTextAreaElement;
+        }
+      | undefined;
+    expect(firstTerminal).toBeDefined();
+    const firstAttach = latestTerminalStreamAttach("surface_1");
+
+    act(() => {
+      firstTerminal!.textarea.value = "";
+      firstTerminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      firstTerminal!.textarea.value = "녕";
+      firstTerminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionupdate", "녕")
+      );
+      firstTerminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionend", "녕")
+      );
+      root.render(
+        <TerminalSurfaceView {...props} activeSurfaceId="surface_2" />
+      );
+    });
+
+    const secondTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | {
+          attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+          textarea: HTMLTextAreaElement;
+        }
+      | undefined;
+    const secondKeyHandler =
+      secondTerminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as
+        | ((event: KeyboardEvent) => boolean)
+        | undefined;
+    expect(secondTerminal).toBeDefined();
+    expect(secondKeyHandler).toBeTypeOf("function");
+    act(() => {
+      secondTerminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flushMicrotasks(10);
+    });
+
+    const secondAttach = latestTerminalStreamAttach("surface_2");
+    const firstInputIndex = firstAttach.port.sent.findIndex(
+      (message) => message.type === "input:text" && message.text === "녕"
+    );
+    const firstDetachIndex = firstAttach.port.sent.findIndex(
+      (message) => message.type === "detach"
+    );
+    expect(firstInputIndex).toBeGreaterThanOrEqual(0);
+    expect(firstDetachIndex).toBeGreaterThan(firstInputIndex);
+    expect(
+      secondAttach.port.sent.filter((message) => message.type === "input:text")
+    ).toEqual([]);
+    expect(
+      secondKeyHandler!(
+        new KeyboardEvent("keydown", { key: "a", code: "KeyA" })
+      )
+    ).toBe(false);
+
+    act(() => {
+      firstTerminal!.input("stale");
+    });
+    expect(
+      firstAttach.port.sent.flatMap((message) =>
+        message.type === "input:text" ? [message.text] : []
+      )
+    ).toEqual(["녕"]);
+  });
+
+  it("does not redirect a delayed IME commit into a replacement session", async () => {
+    const props = createProps("surface_1");
+    const restartedProps = createProps("surface_1");
+    restartedProps.surfaces = [
+      {
+        ...restartedProps.surfaces[0],
+        content: {
+          ...restartedProps.surfaces[0].content,
+          sessionId: "session_restarted"
+        }
+      }
+    ];
+
+    await act(async () => {
+      root.render(<TerminalSurfaceView {...props} />);
+      await flushMicrotasks(10);
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+      | { textarea: HTMLTextAreaElement }
+      | undefined;
+    expect(terminal).toBeDefined();
+
+    act(() => {
+      terminal!.textarea.value = "";
+      terminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionstart")
+      );
+      terminal!.textarea.value = "녕";
+      terminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionupdate", "녕")
+      );
+      terminal!.textarea.dispatchEvent(
+        createCompositionEvent("compositionend", "녕")
+      );
+      root.render(<TerminalSurfaceView {...restartedProps} />);
+    });
+    await act(async () => {
+      await flushMicrotasks(10);
+    });
+    const restartedAttach = latestTerminalStreamAttach("surface_1");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flushMicrotasks(10);
+    });
+
+    expect(
+      restartedAttach.port.sent.filter(
+        (message) => message.type === "input:text"
+      )
+    ).toEqual([]);
   });
 
   it("clears propagated macOS IME residue before cursor movement and the next composition", async () => {

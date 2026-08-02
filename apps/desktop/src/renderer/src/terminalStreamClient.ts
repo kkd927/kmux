@@ -599,6 +599,31 @@ export class TerminalStreamClient {
     });
   }
 
+  /**
+   * Keeps an already-attached capability open for renderer work that was
+   * admitted before its visible owner started detaching. The returned release
+   * participates in the same reference count as attach/detach, so it cannot
+   * revive or redirect a stale session.
+   */
+  acquireSettlementLease(
+    stream: AttachedTerminalStream
+  ): (() => Promise<void>) | null {
+    const active = this.activeStreams.get(stream.grant.session.surfaceId);
+    if (active?.stream !== stream || stream.registration.closed) {
+      return null;
+    }
+    active.claims += 1;
+    active.releaseVersion += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return Promise.resolve();
+      }
+      released = true;
+      return this.detach(stream, "hidden");
+    };
+  }
+
   private closeActive(
     active: ActiveStream,
     reason: Parameters<TerminalStreamRegistration["detach"]>[0]

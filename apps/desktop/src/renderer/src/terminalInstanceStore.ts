@@ -151,9 +151,9 @@ export function acquireVisible(
 }
 
 /**
- * Keeps a just-hidden xterm alive while its sealed stream drains renderer work
- * that was admitted before the MessagePort closed. The lease is not a stream
- * attachment and is normally released within the same parser turn.
+ * Keeps a just-hidden xterm alive while renderer work admitted by its visible
+ * owner settles, such as a sealed parser drain or xterm's delayed composition
+ * commit. The lease is not itself a stream attachment and is short-lived.
  */
 export function acquireSettlementPin(
   key: string

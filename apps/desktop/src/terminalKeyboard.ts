@@ -125,8 +125,8 @@ function isTerminalImeNavigationKey(
 
 // xterm.js's CompositionHelper finalizes composition for keyCodes other than
 // 16/17/18/20/229. This function only decides which platform-specific keydowns
-// may reach xterm; macOS leaves the commit itself to xterm's delayed finalizer,
-// while Linux keeps its explicit commit and duplicate-filtering path.
+// may reach xterm. IME data emission is always owned by xterm, including its
+// delayed composition finalizer, so repeated input is not inferred from text.
 //
 // Linux ibus/fcitx can emit ordinary physical keydowns during composition, so
 // all of them stay suppressed as before. On macOS, an unmodified navigation key
