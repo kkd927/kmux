@@ -86,10 +86,13 @@ The release workflow writes `APPLE_API_KEY_P8` to a temporary file and exposes t
 ## Release Notes
 
 Write the default English desktop release notes in
-`docs/release-notes/v<apps/desktop package version>.md`. Add translations with
-a BCP 47 locale suffix, such as `v1.2.0.ko.md` or, when a regional distinction
-is needed, `v1.2.0.zh-CN.md`. The version must match exactly, including
-prerelease suffixes such as `v1.2.0-alpha.1.md`.
+`docs/release-notes/v<major>.<minor>.md`. Add translations with a BCP 47
+locale suffix, such as `v1.2.ko.md` or, when a regional distinction is needed,
+`v1.2.zh-CN.md`. App versions `X.Y.Z`, including prereleases such as
+`X.Y.Z-alpha.1`, all use `vX.Y.md`; patches and prereleases in one minor share
+the same document and first-run seen state.
+Updating a note within the same minor does not show it automatically again;
+users can always open the current bundled note from **Help → Release Notes**.
 
 At runtime, kmux checks the OS preferred UI languages in order. For each
 language, it tries the exact tag, language and script, language and region,
@@ -98,7 +101,7 @@ then the general language. For example, `zh-Hans-CN` tries `zh-Hans-CN`,
 lookup fails, kmux shows the default English document.
 
 A translation always requires a non-empty default document. A localized file
-without `v<version>.md`, or with a whitespace-only default, fails the build.
+without `v<major>.<minor>.md`, or with a whitespace-only default, fails the build.
 Whitespace-only translations are ignored. If there is no localized file and
 the default is missing or whitespace-only, the build intentionally produces
 no first-run dialog and no Help → Release Notes item.
@@ -122,10 +125,10 @@ release-note assets directory, SVG, and external, `data:`, or `file:` image
 URLs fail the build. Versioned notes may remain in the repository; only assets
 referenced by the current notes are bundled into the app.
 
-The GitHub release workflow uses only the default
-`v<version>.md`. It writes a temporary copy whose local image paths point to
-the tagged files on `raw.githubusercontent.com`, while leaving the source file
-unchanged and retaining GitHub's generated release notes.
+The GitHub release workflow uses only the default `v<major>.<minor>.md` for
+the release tag's minor. It writes a temporary copy whose local image paths
+point to the exact tagged files on `raw.githubusercontent.com`, while leaving
+the source file unchanged and retaining GitHub's generated release notes.
 
 ## Smoothness Profiling
 

@@ -9,16 +9,19 @@ describe("release tag classification", () => {
   it("classifies stable, alpha, and beta release tags", () => {
     expect(classifyReleaseTag("v0.4.6")).toEqual({
       version: "0.4.6",
+      releaseNotesVersion: "0.4",
       releaseKind: "stable",
       isPrerelease: false
     });
     expect(classifyReleaseTag("v0.4.6-alpha.1")).toEqual({
       version: "0.4.6-alpha.1",
+      releaseNotesVersion: "0.4",
       releaseKind: "prerelease",
       isPrerelease: true
     });
     expect(classifyReleaseTag("v0.4.6-beta.2")).toEqual({
       version: "0.4.6-beta.2",
+      releaseNotesVersion: "0.4",
       releaseKind: "prerelease",
       isPrerelease: true
     });

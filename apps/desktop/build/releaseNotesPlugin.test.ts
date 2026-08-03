@@ -5,10 +5,10 @@ import { renderReleaseNotesVirtualModule } from "./releaseNotesPlugin";
 describe("release note virtual module", () => {
   it("exports the default and localized documents with their own images", () => {
     const source = renderReleaseNotesVirtualModule({
-      version: "1.2.0",
+      version: "1.2",
       default: {
         markdown: "# Current",
-        notePath: "/repo/docs/release-notes/v1.2.0.md",
+        notePath: "/repo/docs/release-notes/v1.2.md",
         images: [
           {
             source: "./assets/current.webp",
@@ -19,7 +19,7 @@ describe("release note virtual module", () => {
       localized: {
         ko: {
           markdown: "# 현재",
-          notePath: "/repo/docs/release-notes/v1.2.0.ko.md",
+          notePath: "/repo/docs/release-notes/v1.2.ko.md",
           images: [
             {
               source: "./assets/ko.png",
@@ -40,7 +40,7 @@ describe("release note virtual module", () => {
     expect(source).toContain('"./assets/ko.png"');
     expect(source).toContain('"ko": {');
     expect(source).toContain('markdown: "# 현재"');
-    expect(source).not.toContain("v1.1.0");
+    expect(source).toContain('version: "1.2"');
   });
 
   it("exports null when the current release has no notes", () => {

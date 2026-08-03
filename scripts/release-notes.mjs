@@ -10,6 +10,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { fromMarkdown } from "mdast-util-from-markdown";
 
+import { releaseNotesVersionFor } from "./release-version.mjs";
+
 const SUPPORTED_IMAGE_EXTENSION = /\.(?:gif|jpe?g|png|webp)$/iu;
 
 export function loadBundledReleaseNotes({
@@ -22,14 +24,15 @@ export function loadBundledReleaseNotes({
     "desktop",
     "package.json"
   );
-  const version =
+  const applicationVersion =
     requestedVersion ??
     JSON.parse(readFileSync(desktopPackagePath, "utf8")).version;
-  if (typeof version !== "string" || !version.trim()) {
+  if (typeof applicationVersion !== "string" || !applicationVersion.trim()) {
     throw new Error(
       `Desktop package version is missing from ${desktopPackagePath}.`
     );
   }
+  const version = releaseNotesVersionFor(applicationVersion);
 
   const noteDirectory = path.join(repoRoot, "docs", "release-notes");
   const defaultFileName = `v${version}.md`;

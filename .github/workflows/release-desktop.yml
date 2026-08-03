@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.release.outputs.version }}
+      release_notes_version: ${{ steps.release.outputs.release_notes_version }}
       release_kind: ${{ steps.release.outputs.release_kind }}
       is_prerelease: ${{ steps.release.outputs.is_prerelease }}
     steps:
@@ -318,6 +319,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_NOTES_VERSION: ${{ needs.release-metadata.outputs.release_notes_version }}
           RELEASE_KIND: ${{ needs.release-metadata.outputs.release_kind }}
           IS_PRERELEASE: ${{ needs.release-metadata.outputs.is_prerelease }}
         run: |
@@ -350,7 +352,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
             notes_args=(--generate-notes)
-            release_notes_path="docs/release-notes/${GITHUB_REF_NAME}.md"
+            release_notes_path="docs/release-notes/v${RELEASE_NOTES_VERSION}.md"
             if [ -f "$release_notes_path" ] && grep -q '[^[:space:]]' "$release_notes_path"; then
               temporary_release_notes="$RUNNER_TEMP/${GITHUB_REF_NAME}-release-notes.md"
               node scripts/release-notes.mjs \

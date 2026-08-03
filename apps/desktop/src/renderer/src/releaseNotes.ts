@@ -18,6 +18,11 @@ export interface SelectedReleaseNotes extends BundledReleaseNoteDocument {
 export const RELEASE_NOTES_SEEN_KEY_PREFIX = "kmux.releaseNotes.seen.";
 export const RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS = 2_000;
 
+type ReleaseNotesStorage = Pick<Storage, "getItem" | "setItem"> &
+  Partial<Pick<Storage, "key">> & {
+    readonly length?: number;
+  };
+
 export function releaseNotesSeenStorageKey(version: string): string {
   return `${RELEASE_NOTES_SEEN_KEY_PREFIX}${version}`;
 }
@@ -83,7 +88,7 @@ export function useReleaseNotesModal(options: {
   releaseNotes: BundledReleaseNotesCatalog | null;
   shellReady: boolean;
   blockingDialogOpen: boolean;
-  storage?: Pick<Storage, "getItem" | "setItem">;
+  storage?: ReleaseNotesStorage;
 }): {
   open: boolean;
   close: () => void;
@@ -94,10 +99,7 @@ export function useReleaseNotesModal(options: {
     shellReady,
     blockingDialogOpen
   } = options;
-  const fallbackStorageRef = useRef<Pick<
-    Storage,
-    "getItem" | "setItem"
-  > | null>();
+  const fallbackStorageRef = useRef<ReleaseNotesStorage | null>();
   if (
     options.storage === undefined &&
     fallbackStorageRef.current === undefined
@@ -177,16 +179,9 @@ export function useReleaseNotesModal(options: {
     if (!manualRequestPending && dismissed) {
       return;
     }
-    let seen = false;
-    if (storage) {
-      try {
-        seen =
-          storage.getItem(releaseNotesSeenStorageKey(releaseNotes.version)) ===
-          "1";
-      } catch (error) {
-        console.warn("Failed to read viewed release notes", error);
-      }
-    }
+    const seen = storage
+      ? hasSeenReleaseNotes(storage, releaseNotes.version)
+      : false;
     if (!manualRequestPending && seen) {
       return;
     }
@@ -274,4 +269,49 @@ export function useReleaseNotesModal(options: {
     close,
     releaseNotes
   };
+}
+
+function hasSeenReleaseNotes(
+  storage: ReleaseNotesStorage,
+  releaseNotesVersion: string
+): boolean {
+  const canonicalKey = releaseNotesSeenStorageKey(releaseNotesVersion);
+  let canonicalValue: string | null;
+  try {
+    canonicalValue = storage.getItem(canonicalKey);
+  } catch (error) {
+    console.warn("Failed to read viewed release notes", error);
+    return false;
+  }
+  if (canonicalValue === "1") {
+    return true;
+  }
+  if (canonicalValue !== null) {
+    return false;
+  }
+
+  const legacyKeyPrefix = `${canonicalKey}.`;
+  try {
+    const { length, key } = storage;
+    if (typeof length !== "number" || typeof key !== "function") {
+      return false;
+    }
+    for (let index = 0; index < length; index += 1) {
+      const legacyKey = key.call(storage, index);
+      if (
+        legacyKey?.startsWith(legacyKeyPrefix) &&
+        storage.getItem(legacyKey) === "1"
+      ) {
+        try {
+          storage.setItem(canonicalKey, "1");
+        } catch (error) {
+          console.warn("Failed to migrate viewed release notes", error);
+        }
+        return true;
+      }
+    }
+  } catch (error) {
+    console.warn("Failed to read viewed release notes", error);
+  }
+  return false;
 }

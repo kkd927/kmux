@@ -17,7 +17,7 @@ import {
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const releaseNotes: BundledReleaseNotesCatalog = {
-  version: "1.2.0",
+  version: "1.2",
   default: {
     markdown: "# Default release",
     imageSources: {}
@@ -55,7 +55,7 @@ describe("release note language selection", () => {
 
   it("prefers exact, script, and region matches before general language", () => {
     const catalog: BundledReleaseNotesCatalog = {
-      version: "1.2.0",
+      version: "1.2",
       default: document("default"),
       localized: {
         zh: document("language"),
@@ -74,7 +74,7 @@ describe("release note language selection", () => {
 
   it("checks OS preferred languages in order", () => {
     const catalog: BundledReleaseNotesCatalog = {
-      version: "1.2.0",
+      version: "1.2",
       default: document("default"),
       localized: {
         fr: document("French"),
@@ -108,7 +108,11 @@ describe("useReleaseNotesModal", () => {
   let getPreferredSystemLanguages: () => Promise<string[]>;
   let imageDecodes: Array<Deferred<void>>;
   const storage = {
+    get length(): number {
+      return stored.size;
+    },
     getItem: vi.fn((key: string) => stored.get(key) ?? null),
+    key: vi.fn((index: number) => [...stored.keys()][index] ?? null),
     setItem: vi.fn((key: string, value: string) => {
       stored.set(key, value);
     })
@@ -123,6 +127,7 @@ describe("useReleaseNotesModal", () => {
     imageDecodes = [];
     getPreferredSystemLanguages = vi.fn(async () => ["en-US"]);
     storage.getItem.mockClear();
+    storage.key.mockClear();
     storage.setItem.mockClear();
     exposeKmuxBridge();
 
@@ -147,7 +152,7 @@ describe("useReleaseNotesModal", () => {
     vi.restoreAllMocks();
   });
 
-  it("opens unseen notes only after shell restore and remembers the version on close", async () => {
+  it("opens unseen notes only after shell restore and remembers the minor on close", async () => {
     await render({ shellReady: false });
     expect(isOpen()).toBe(false);
 
@@ -160,7 +165,7 @@ describe("useReleaseNotesModal", () => {
 
     expect(isOpen()).toBe(false);
     expect(storage.setItem).toHaveBeenCalledWith(
-      releaseNotesSeenStorageKey("1.2.0"),
+      releaseNotesSeenStorageKey("1.2"),
       "1"
     );
 
@@ -170,6 +175,55 @@ describe("useReleaseNotesModal", () => {
     exposeKmuxBridge();
     await render({ shellReady: true });
     expect(isOpen()).toBe(false);
+  });
+
+  it.each(["1.2.3", "1.2.0-alpha.1"])(
+    "migrates legacy seen key %s and suppresses the automatic dialog",
+    async (legacyVersion) => {
+      stored.set(releaseNotesSeenStorageKey(legacyVersion), "1");
+
+      await render({ shellReady: true });
+
+      expect(isOpen()).toBe(false);
+      expect(stored.get(releaseNotesSeenStorageKey(legacyVersion))).toBe("1");
+      expect(storage.setItem).toHaveBeenCalledWith(
+        releaseNotesSeenStorageKey("1.2"),
+        "1"
+      );
+    }
+  );
+
+  it("does not mistake another minor's legacy key for the current notes", async () => {
+    stored.set(releaseNotesSeenStorageKey("1.10.3"), "1");
+
+    await render({ shellReady: true });
+
+    expect(isOpen()).toBe(true);
+    expect(storage.setItem).not.toHaveBeenCalled();
+  });
+
+  it("treats a legacy key as seen even when canonical migration cannot be saved", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stored.set(releaseNotesSeenStorageKey("1.2.3"), "1");
+    const migrationFailingStorage = {
+      get length(): number {
+        return stored.size;
+      },
+      getItem: vi.fn((key: string) => stored.get(key) ?? null),
+      key: vi.fn((index: number) => [...stored.keys()][index] ?? null),
+      setItem: vi.fn(() => {
+        throw new Error("quota unavailable");
+      })
+    };
+
+    await render({ shellReady: true, storage: migrationFailingStorage });
+
+    expect(isOpen()).toBe(false);
+    expect(migrationFailingStorage.setItem).toHaveBeenCalledWith(
+      releaseNotesSeenStorageKey("1.2"),
+      "1"
+    );
+    warn.mockRestore();
   });
 
   it("opens only after every release note image decode settles", async () => {
@@ -251,7 +305,7 @@ describe("useReleaseNotesModal", () => {
   });
 
   it("opens seen notes from Help after another dialog closes", async () => {
-    stored.set(releaseNotesSeenStorageKey("1.2.0"), "1");
+    stored.set(releaseNotesSeenStorageKey("1.2"), "1");
     await render({ shellReady: true, blockingDialogOpen: true });
 
     act(() => openRequest?.());
@@ -262,7 +316,7 @@ describe("useReleaseNotesModal", () => {
   });
 
   it("temporarily yields a Help-opened modal to a higher-priority dialog", async () => {
-    stored.set(releaseNotesSeenStorageKey("1.2.0"), "1");
+    stored.set(releaseNotesSeenStorageKey("1.2"), "1");
     await render({ shellReady: true });
     act(() => openRequest?.());
     expect(isOpen()).toBe(true);

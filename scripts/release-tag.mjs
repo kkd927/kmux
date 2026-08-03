@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { releaseNotesVersionFor } from "./release-version.mjs";
+
 const NUMERIC_IDENTIFIER = "(?:0|[1-9][0-9]*)";
 const STABLE_TAG_PATTERN = new RegExp(
   `^v(${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER})$`
@@ -21,6 +23,7 @@ export function classifyReleaseTag(tag) {
   if (stableMatch) {
     return {
       version: stableMatch[1],
+      releaseNotesVersion: releaseNotesVersionFor(stableMatch[1]),
       releaseKind: "stable",
       isPrerelease: false
     };
@@ -30,6 +33,7 @@ export function classifyReleaseTag(tag) {
   if (prereleaseMatch) {
     return {
       version: prereleaseMatch[1],
+      releaseNotesVersion: releaseNotesVersionFor(prereleaseMatch[1]),
       releaseKind: "prerelease",
       isPrerelease: true
     };
@@ -154,6 +158,7 @@ async function main() {
   const metadata = await resolveReleaseMetadata({ tag });
   const output = [
     `version=${metadata.version}`,
+    `release_notes_version=${metadata.releaseNotesVersion}`,
     `release_kind=${metadata.releaseKind}`,
     `is_prerelease=${String(metadata.isPrerelease)}`
   ].join("\n");
