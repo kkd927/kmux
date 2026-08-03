@@ -1275,7 +1275,7 @@ export type SubscriptionUsageRowVm =
   | (SubscriptionUsageBaseRowVm & {
       valueKind?: "percent";
       usedPercent: number;
-      windowKind: Exclude<SubscriptionUsageWindowKind, "credits">;
+      windowKind: SubscriptionUsageWindowKind;
       usedAmountUsd?: number;
       limitAmountUsd?: number;
       currency?: string;

@@ -578,6 +578,296 @@ describe("subscription usage fetchers", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the unlimited credits row alongside rate-limit windows", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: {
+              primary_window: {
+                used_percent: 12,
+                reset_at: 1_785_729_600,
+                limit_window_seconds: 5 * 60 * 60
+              }
+            },
+            credits: { has_credits: true, unlimited: true }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows).toEqual([
+      expect.objectContaining({ key: "session", label: "Session" }),
+      expect.objectContaining({
+        key: "credits",
+        label: "Credits",
+        valueKind: "unlimited",
+        resetLabel: "Unlimited"
+      })
+    ]);
+  });
+
+  it("maps a Codex Business metered credit pool into a credits row", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      last_refresh: "2026-08-03T01:11:34.537Z",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: null,
+            credits: {
+              has_credits: true,
+              unlimited: false,
+              overage_limit_reached: false,
+              balance: null
+            },
+            spend_control: {
+              reached: false,
+              individual_limit: {
+                source: "group_based_spend_controls",
+                limit: "4750",
+                used: "0.7733500003814697",
+                remaining: "4749.2266499996185",
+                used_percent: 0,
+                remaining_percent: 100,
+                reset_after_seconds: 2_499_715,
+                reset_at: 1_788_220_801
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "codex",
+        providerLabel: "Codex",
+        planLabel: "Business",
+        source: "oauth",
+        rows: [
+          {
+            key: "credits",
+            label: "Credits",
+            valueKind: "percent",
+            usedPercent: 0,
+            resetLabel: "Resets in 28d 22h",
+            resetsAt: "2026-09-01T00:00:01.000Z",
+            windowKind: "credits"
+          }
+        ]
+      })
+    );
+  });
+
+  it("derives the Codex credit pool percentage from the used and limit amounts", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: null,
+            credits: { has_credits: true, unlimited: false },
+            spend_control: {
+              individual_limit: {
+                limit: "4750",
+                used: "1900",
+                // Deliberately disagrees with used/limit to prove precedence.
+                used_percent: 0,
+                reset_at: 1_788_220_801
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows).toEqual([
+      expect.objectContaining({ key: "credits", usedPercent: 40 })
+    ]);
+  });
+
+  it("keeps the Codex credit pool row alongside rate-limit windows", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: {
+              primary_window: {
+                used_percent: 12,
+                reset_at: 1_785_729_600,
+                limit_window_seconds: 5 * 60 * 60
+              }
+            },
+            credits: { has_credits: true, unlimited: false },
+            spend_control: {
+              individual_limit: {
+                limit: "4750",
+                used: "1900",
+                reset_at: 1_788_220_801
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage?.rows).toEqual([
+      expect.objectContaining({ key: "session", label: "Session" }),
+      expect.objectContaining({
+        key: "credits",
+        label: "Credits",
+        usedPercent: 40,
+        windowKind: "credits"
+      })
+    ]);
+  });
+
+  it("skips the Codex credits row when the account is not credit backed", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            plan_type: "business",
+            rate_limit: null,
+            credits: { has_credits: false, unlimited: false },
+            spend_control: {
+              individual_limit: {
+                limit: "4750",
+                used: "0.77",
+                reset_at: 1_788_220_801
+              }
+            }
+          }),
+          { status: 200 }
+        )
+    );
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      codexRpcProbe: vi.fn(async () => null),
+      codexStatusProbe: vi.fn(async () => null),
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage).toBeNull();
+  });
+
+  it("maps a metered credit pool reported by the Codex RPC probe fallback", async () => {
+    const homeDir = createSandboxHome();
+    writeJson(homeDir, [".codex", "auth.json"], {
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access-token",
+        account_id: "acct_business"
+      }
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network unavailable");
+    });
+    const codexRpcProbe = vi.fn(async () => ({
+      planType: "business",
+      credits: { hasCredits: true, unlimited: false },
+      individualLimit: {
+        limit: "4750",
+        used: "0.7733500003814697",
+        remaining_percent: 100,
+        reset_at: 1_788_220_801
+      },
+      windows: []
+    }));
+
+    const usage = await fetchCodexSubscriptionUsage({
+      homeDir,
+      fetchImpl,
+      codexRpcProbe,
+      now: () => new Date("2026-08-03T02:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "codex",
+        planLabel: "Business",
+        source: "rpc",
+        rows: [
+          expect.objectContaining({
+            key: "credits",
+            label: "Credits",
+            windowKind: "credits",
+            resetLabel: "Resets in 28d 22h"
+          })
+        ]
+      })
+    );
+  });
+
   it("maps Claude OAuth usage windows and plan tier from Claude Code credentials", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".claude", ".credentials.json"], {

@@ -225,6 +225,54 @@ describe("UsageDashboard", () => {
     );
   });
 
+  it("renders a metered Codex credit pool row without the credit amounts", () => {
+    mockUseUsageSnapshot.mockReturnValue({
+      ...createEmptyUsageViewSnapshot("2026-08-03", "2026-08-03T02:00:00.000Z"),
+      subscriptionUsage: [
+        {
+          provider: "codex",
+          providerLabel: "Codex",
+          planLabel: "Business",
+          source: "oauth",
+          updatedAt: "2026-08-03T02:00:00.000Z",
+          rows: [
+            {
+              key: "credits",
+              label: "Credits",
+              valueKind: "percent",
+              usedPercent: 0,
+              resetLabel: "Resets in 28d 22h",
+              resetsAt: "2026-09-01T00:00:01.000Z",
+              windowKind: "credits"
+            }
+          ]
+        }
+      ]
+    });
+
+    act(() => {
+      root.render(
+        <UsageDashboard embedded onJumpToSurface={() => undefined} />
+      );
+    });
+
+    const provider = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-provider-codex']"
+    );
+    const row = container.querySelector<HTMLElement>(
+      "[data-testid='subscription-row-codex-credits']"
+    );
+    const bar = row?.querySelector<HTMLElement>("[role='progressbar']");
+    expect(provider?.textContent).toContain("Codex Business");
+    expect(row?.textContent).toContain("Credits");
+    expect(row?.textContent).toContain("Resets in 28d 22h");
+    expect(row?.textContent).toContain("100%");
+    // The credit amounts stay out of the meter copy.
+    expect(row?.textContent).not.toContain("4,750");
+    expect(row?.textContent).not.toContain("0.77");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("100");
+  });
+
   it("renders Antigravity subscription quota rows", () => {
     mockUseUsageSnapshot.mockReturnValue({
       ...createEmptyUsageViewSnapshot("2026-06-02", "2026-06-02T02:00:00.000Z"),

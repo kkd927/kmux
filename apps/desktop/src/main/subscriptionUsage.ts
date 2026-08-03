@@ -34,11 +34,21 @@ type CodexProbeWindow = {
   resetsAtMs?: number;
 };
 
+type CodexIndividualLimit = {
+  limit?: string;
+  used?: string;
+  used_percent?: number;
+  remaining_percent?: number;
+  reset_at?: number;
+};
+
 type CodexProbeResult = {
   planType?: string | null;
   credits?: {
+    hasCredits?: boolean;
     unlimited?: boolean;
   };
+  individualLimit?: CodexIndividualLimit;
   windows: CodexProbeWindow[];
 };
 
@@ -278,7 +288,11 @@ export async function fetchCodexSubscriptionUsage(
       const payload = (await response.json()) as {
         plan_type?: string;
         credits?: {
+          has_credits?: boolean;
           unlimited?: boolean;
+        };
+        spend_control?: {
+          individual_limit?: CodexIndividualLimit | null;
         };
         rate_limit?: {
           primary_window?: {
@@ -579,7 +593,11 @@ function normalizeCodexUsageFromApi(
   payload: {
     plan_type?: string;
     credits?: {
+      has_credits?: boolean;
       unlimited?: boolean;
+    };
+    spend_control?: {
+      individual_limit?: CodexIndividualLimit | null;
     };
     rate_limit?: {
       primary_window?: {
@@ -613,8 +631,16 @@ function normalizeCodexUsageFromApi(
     } => Boolean(window)
   );
   const rows = normalizeCodexWindowRows(windows, nowMs);
-  if (rows.length === 0 && payload.credits?.unlimited === true) {
-    rows.push(buildUnlimitedCreditsRow());
+  const creditsRow = buildCodexCreditsRow(
+    {
+      hasCredits: payload.credits?.has_credits,
+      unlimited: payload.credits?.unlimited
+    },
+    payload.spend_control?.individual_limit ?? undefined,
+    nowMs
+  );
+  if (creditsRow) {
+    rows.push(creditsRow);
   }
   if (rows.length === 0) {
     return null;
@@ -645,6 +671,60 @@ function buildUnlimitedCreditsRow(
   };
 }
 
+/**
+ * Credit-backed plans (Codex Business) report no rate-limit windows. They expose
+ * a credit pool through the spend control instead, so `hasCredits` — not the
+ * spend control itself — is what decides the row is denominated in credits.
+ * Metered and unlimited pools render identically apart from the reset line, so
+ * both keep the same `Credits` label and both report alongside any window rows.
+ */
+function buildCodexCreditsRow(
+  credits: { hasCredits?: boolean; unlimited?: boolean } | undefined,
+  individualLimit: CodexIndividualLimit | undefined,
+  nowMs: number
+): SubscriptionUsageRowVm | null {
+  if (credits?.unlimited === true) {
+    return buildUnlimitedCreditsRow();
+  }
+  if (credits?.hasCredits !== true || !individualLimit) {
+    return null;
+  }
+  const usedPercent = resolveCodexCreditsUsedPercent(individualLimit);
+  if (usedPercent === null) {
+    return null;
+  }
+  return buildRow({
+    key: "credits",
+    label: "Credits",
+    usedPercent,
+    resetsAtMs:
+      typeof individualLimit.reset_at === "number"
+        ? individualLimit.reset_at * 1000
+        : undefined,
+    windowKind: "credits",
+    nowMs
+  });
+}
+
+function resolveCodexCreditsUsedPercent(
+  individualLimit: CodexIndividualLimit
+): number | null {
+  // `limit` and `used` arrive as strings. Prefer deriving the ratio from them:
+  // the percent fields are absent on some payloads and pre-rounded on others.
+  const limit = Number.parseFloat(individualLimit.limit ?? "");
+  const used = Number.parseFloat(individualLimit.used ?? "");
+  if (Number.isFinite(limit) && limit > 0 && Number.isFinite(used)) {
+    return (used / limit) * 100;
+  }
+  if (typeof individualLimit.used_percent === "number") {
+    return individualLimit.used_percent;
+  }
+  if (typeof individualLimit.remaining_percent === "number") {
+    return 100 - individualLimit.remaining_percent;
+  }
+  return null;
+}
+
 function normalizeCodexUsageFromProbe(
   payload: CodexProbeResult,
   source: "rpc" | "pty",
@@ -660,8 +740,13 @@ function normalizeCodexUsageFromProbe(
     })),
     nowMs
   );
-  if (rows.length === 0 && payload.credits?.unlimited === true) {
-    rows.push(buildUnlimitedCreditsRow());
+  const creditsRow = buildCodexCreditsRow(
+    payload.credits,
+    payload.individualLimit,
+    nowMs
+  );
+  if (creditsRow) {
+    rows.push(creditsRow);
   }
   if (rows.length === 0) {
     return null;
@@ -1472,7 +1557,7 @@ function buildRow(options: {
   label: string;
   usedPercent: number;
   resetsAtMs?: number;
-  windowKind: Exclude<SubscriptionUsageRowVm["windowKind"], "credits">;
+  windowKind: SubscriptionUsageRowVm["windowKind"];
   nowMs: number;
   usedAmountUsd?: number;
   limitAmountUsd?: number;
@@ -1632,19 +1717,37 @@ async function probeCodexViaRpc(
             resetsAt?: number;
           };
           credits?: {
+            hasCredits?: boolean;
             unlimited?: boolean;
+          };
+          individualLimit?: {
+            limit?: string;
+            used?: string;
+            remainingPercent?: number;
+            resetsAt?: number;
           };
         };
       };
+      const individualLimit = limits?.rateLimits?.individualLimit;
       return {
         planType:
           account?.account?.type === "chatgpt"
             ? (account.account.planType ?? null)
             : null,
-        credits:
-          typeof limits?.rateLimits?.credits?.unlimited === "boolean"
-            ? { unlimited: limits.rateLimits.credits.unlimited }
-            : undefined,
+        credits: limits?.rateLimits?.credits
+          ? {
+              hasCredits: limits.rateLimits.credits.hasCredits,
+              unlimited: limits.rateLimits.credits.unlimited
+            }
+          : undefined,
+        individualLimit: individualLimit
+          ? {
+              limit: individualLimit.limit,
+              used: individualLimit.used,
+              remaining_percent: individualLimit.remainingPercent,
+              reset_at: individualLimit.resetsAt
+            }
+          : undefined,
         windows: [
           normalizeCodexRpcWindow("session", limits?.rateLimits?.primary),
           normalizeCodexRpcWindow("weekly", limits?.rateLimits?.secondary)
