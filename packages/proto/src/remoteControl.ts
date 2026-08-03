@@ -1,4 +1,5 @@
 import { parseUint64Decimal } from "./uint64";
+import { REMOTE_CONTROL_HARD_MAX_BYTES } from "./remoteFrames";
 import type { AgentScopeSettings, Id, RemotePersistenceLevel } from "./index";
 
 export const REMOTE_PROTOCOL_VERSION = 1 as const;
@@ -44,6 +45,48 @@ export interface AgentIntegrationDiagnosticDto {
   agentBinDir?: string;
   vendors: AgentIntegrationVendorDiagnosticDto[];
   warning?: string;
+}
+
+export type RemoteMetadataPurposeDto = "usage" | "history";
+export type RemoteMetadataVendorDto = "claude" | "codex" | "antigravity";
+export type RemoteMetadataSourceRoleDto =
+  | "codex-session"
+  | "claude-session"
+  | "claude-subagent"
+  | "antigravity-history"
+  | "antigravity-transcript"
+  | "antigravity-conversation";
+export type RemoteMetadataSourceFormatDto = "jsonl" | "sqlite";
+
+export interface RemoteMetadataSourceClaimDto {
+  sessionId: string;
+  claimedAtUnixMs: string;
+  lastSeenAtUnixMs: string;
+  cwd?: string;
+  workspacePaths: string[];
+  launchTitle?: string;
+}
+
+export interface RemoteMetadataClaimDto extends RemoteMetadataSourceClaimDto {
+  vendor: RemoteMetadataVendorDto;
+}
+
+export interface RemoteMetadataSourceDto {
+  sourceId: Id;
+  vendor: RemoteMetadataVendorDto;
+  role: RemoteMetadataSourceRoleDto;
+  format: RemoteMetadataSourceFormatDto;
+  logicalName: string;
+  size: string;
+  mtimeUnixMs: string;
+  fileIdentity: string;
+  claim: RemoteMetadataSourceClaimDto;
+}
+
+export interface RemoteMetadataQueryRowDto {
+  index: number;
+  stepType: number;
+  payloadBase64: string;
 }
 
 export interface RemoteConversionSessionLaunchDto {
@@ -146,6 +189,26 @@ export type RemoteBridgeRequestBody =
       startAtUnixMs: string;
       maxRecords: number;
       agentSettings?: AgentScopeSettings;
+    }
+  | {
+      type: "metadata.sources.list";
+      desktopInstallationId: Id;
+      targetId: Id;
+      purpose: RemoteMetadataPurposeDto;
+      agentSettings?: AgentScopeSettings;
+    }
+  | {
+      type: "metadata.sources.read";
+      sourceId: Id;
+      offset: string;
+      maxBytes: number;
+    }
+  | {
+      type: "metadata.sources.query";
+      sourceId: Id;
+      queryId: string;
+      pageToken?: string;
+      maxRows: number;
     }
   | {
       type: "forwards.observe";
@@ -315,6 +378,32 @@ export type RemoteBridgeResponseBody =
         cacheWriteTokensKnown: boolean;
         totalTokens: string;
       }>;
+    }
+  | {
+      type: "metadata.sources.listed";
+      targetId: Id;
+      purpose: RemoteMetadataPurposeDto;
+      contractVersion: 1;
+      truncated: boolean;
+      claims: RemoteMetadataClaimDto[];
+      sources: RemoteMetadataSourceDto[];
+    }
+  | {
+      type: "metadata.sources.read";
+      sourceId: Id;
+      offset: string;
+      nextOffset: string;
+      eof: boolean;
+      fileIdentity: string;
+      content: string;
+    }
+  | {
+      type: "metadata.sources.queried";
+      sourceId: Id;
+      queryId: string;
+      fileIdentity: string;
+      rows: RemoteMetadataQueryRowDto[];
+      nextPageToken?: string;
     }
   | {
       type: "forwards.observed";
@@ -494,8 +583,8 @@ const textEncoder = new TextEncoder();
 
 export function encodeRemoteControlJson(value: unknown): Uint8Array {
   const encoded = textEncoder.encode(JSON.stringify(value));
-  if (encoded.byteLength > 256 * 1024) {
-    throw new RangeError("remote control JSON exceeds 256 KiB");
+  if (encoded.byteLength > REMOTE_CONTROL_HARD_MAX_BYTES) {
+    throw new RangeError("remote control JSON exceeds its hard limit");
   }
   return encoded;
 }
@@ -967,6 +1056,146 @@ export function decodeRemoteBridgeResponseBody(
         records
       };
     }
+    case "metadata.sources.listed": {
+      assertExactKeys(record, [
+        "type",
+        "targetId",
+        "purpose",
+        "contractVersion",
+        "truncated",
+        "claims",
+        "sources"
+      ]);
+      if (record.contractVersion !== 1) {
+        throw new TypeError("metadata source contract version is unsupported");
+      }
+      if (!Array.isArray(record.sources) || record.sources.length > 2_048) {
+        throw new TypeError("metadata sources must be a bounded array");
+      }
+      if (!Array.isArray(record.claims) || record.claims.length > 500) {
+        throw new TypeError("metadata claims must be a bounded array");
+      }
+      const sources = record.sources.map(decodeRemoteMetadataSource);
+      const claims = record.claims.map(decodeRemoteMetadataClaim);
+      if (
+        new Set(sources.map((source) => source.sourceId)).size !==
+        sources.length
+      ) {
+        throw new TypeError("metadata source IDs must be unique");
+      }
+      if (
+        new Set(claims.map((claim) => `${claim.vendor}\t${claim.sessionId}`))
+          .size !== claims.length
+      ) {
+        throw new TypeError("metadata claims must be unique");
+      }
+      return {
+        type: record.type,
+        targetId: requireId(record.targetId, "targetId"),
+        purpose: requireRemoteMetadataPurpose(record.purpose),
+        contractVersion: 1,
+        truncated: requireBoolean(
+          record.truncated,
+          "metadata sources truncated"
+        ),
+        claims,
+        sources
+      };
+    }
+    case "metadata.sources.read": {
+      assertExactKeys(record, [
+        "type",
+        "sourceId",
+        "offset",
+        "nextOffset",
+        "eof",
+        "fileIdentity",
+        "content"
+      ]);
+      const offset = requireUint64String(
+        record.offset,
+        "metadata source offset"
+      );
+      const nextOffset = requireUint64String(
+        record.nextOffset,
+        "metadata source nextOffset"
+      );
+      if (parseUint64Decimal(nextOffset) < parseUint64Decimal(offset)) {
+        throw new TypeError("metadata source offset moved backward");
+      }
+      return {
+        type: record.type,
+        sourceId: requireId(record.sourceId, "sourceId"),
+        offset,
+        nextOffset,
+        eof: requireBoolean(record.eof, "metadata source eof"),
+        fileIdentity: requireString(
+          record.fileIdentity,
+          "metadata source fileIdentity",
+          512
+        ),
+        content: requireMetadataContent(record.content)
+      };
+    }
+    case "metadata.sources.queried": {
+      assertExactKeys(record, [
+        "type",
+        "sourceId",
+        "queryId",
+        "fileIdentity",
+        "rows",
+        "nextPageToken"
+      ]);
+      if (!Array.isArray(record.rows) || record.rows.length > 512) {
+        throw new TypeError("metadata query rows must be a bounded array");
+      }
+      let encodedPayloadBytes = 0;
+      const rows = record.rows.map((value) => {
+        const row = requireRecord(value, "metadata query row");
+        assertExactKeys(row, ["index", "stepType", "payloadBase64"]);
+        if (
+          !Number.isSafeInteger(row.index) ||
+          (row.index as number) < 0 ||
+          !Number.isSafeInteger(row.stepType) ||
+          (row.stepType as number) < 0
+        ) {
+          throw new TypeError("metadata query row identity is invalid");
+        }
+        if (
+          typeof row.payloadBase64 !== "string" ||
+          textEncoder.encode(row.payloadBase64).byteLength > 1024 * 1024 ||
+          row.payloadBase64.length % 4 !== 0 ||
+          !/^[A-Za-z0-9+/]*={0,2}$/u.test(row.payloadBase64)
+        ) {
+          throw new TypeError("metadata query payload is not bounded base64");
+        }
+        encodedPayloadBytes += row.payloadBase64.length + 128;
+        if (encodedPayloadBytes > 1024 * 1024) {
+          throw new TypeError("metadata query response exceeds its byte bound");
+        }
+        return {
+          index: row.index as number,
+          stepType: row.stepType as number,
+          payloadBase64: row.payloadBase64
+        };
+      });
+      return {
+        type: record.type,
+        sourceId: requireId(record.sourceId, "sourceId"),
+        queryId: requireString(record.queryId, "metadata queryId", 256),
+        fileIdentity: requireString(
+          record.fileIdentity,
+          "metadata query fileIdentity",
+          512
+        ),
+        rows,
+        ...(record.nextPageToken === undefined
+          ? {}
+          : {
+              nextPageToken: requireMetadataPageToken(record.nextPageToken)
+            })
+      };
+    }
     case "forwards.observed": {
       assertExactKeys(record, ["type", "targetId", "forwards"]);
       if (!Array.isArray(record.forwards) || record.forwards.length > 4_096) {
@@ -1393,6 +1622,188 @@ export function decodeRemoteSpoolEventDto(value: unknown): RemoteSpoolEventDto {
   };
 }
 
+function requireRemoteMetadataPurpose(
+  value: unknown
+): RemoteMetadataPurposeDto {
+  if (value !== "usage" && value !== "history") {
+    throw new TypeError("metadata purpose is invalid");
+  }
+  return value;
+}
+
+function decodeRemoteMetadataSource(value: unknown): RemoteMetadataSourceDto {
+  const source = requireRecord(value, "metadata source");
+  assertExactKeys(source, [
+    "sourceId",
+    "vendor",
+    "role",
+    "format",
+    "logicalName",
+    "size",
+    "mtimeUnixMs",
+    "fileIdentity",
+    "claim"
+  ]);
+  if (
+    source.vendor !== "claude" &&
+    source.vendor !== "codex" &&
+    source.vendor !== "antigravity"
+  ) {
+    throw new TypeError("metadata source vendor is invalid");
+  }
+  if (
+    source.role !== "codex-session" &&
+    source.role !== "claude-session" &&
+    source.role !== "claude-subagent" &&
+    source.role !== "antigravity-history" &&
+    source.role !== "antigravity-transcript" &&
+    source.role !== "antigravity-conversation"
+  ) {
+    throw new TypeError("metadata source role is invalid");
+  }
+  if (source.format !== "jsonl" && source.format !== "sqlite") {
+    throw new TypeError("metadata source format is invalid");
+  }
+  const roleContract = {
+    "codex-session": ["codex", "jsonl"],
+    "claude-session": ["claude", "jsonl"],
+    "claude-subagent": ["claude", "jsonl"],
+    "antigravity-history": ["antigravity", "jsonl"],
+    "antigravity-transcript": ["antigravity", "jsonl"],
+    "antigravity-conversation": ["antigravity", "sqlite"]
+  }[source.role];
+  if (
+    roleContract?.[0] !== source.vendor ||
+    roleContract?.[1] !== source.format
+  ) {
+    throw new TypeError("metadata source role contract is invalid");
+  }
+  const logicalName = requireString(
+    source.logicalName,
+    "metadata source logicalName",
+    32 * 1024,
+    true
+  );
+  if (
+    logicalName.startsWith("/") ||
+    logicalName.split("/").some((component) => component === "..")
+  ) {
+    throw new TypeError("metadata source logicalName is not relative");
+  }
+  const claim = decodeRemoteMetadataSourceClaim(source.claim);
+  return {
+    sourceId: requireId(source.sourceId, "sourceId"),
+    vendor: source.vendor,
+    role: source.role,
+    format: source.format,
+    logicalName,
+    size: requireUint64String(source.size, "metadata source size"),
+    mtimeUnixMs: requireUint64String(
+      source.mtimeUnixMs,
+      "metadata source mtimeUnixMs"
+    ),
+    fileIdentity: requireString(
+      source.fileIdentity,
+      "metadata source fileIdentity",
+      512,
+      true
+    ),
+    claim
+  };
+}
+
+function decodeRemoteMetadataClaim(value: unknown): RemoteMetadataClaimDto {
+  const claim = requireRecord(value, "metadata claim");
+  assertExactKeys(claim, [
+    "vendor",
+    "sessionId",
+    "claimedAtUnixMs",
+    "lastSeenAtUnixMs",
+    "cwd",
+    "workspacePaths",
+    "launchTitle"
+  ]);
+  if (
+    claim.vendor !== "claude" &&
+    claim.vendor !== "codex" &&
+    claim.vendor !== "antigravity"
+  ) {
+    throw new TypeError("metadata claim vendor is invalid");
+  }
+  return {
+    vendor: claim.vendor,
+    ...decodeRemoteMetadataSourceClaim(claim, true)
+  };
+}
+
+function decodeRemoteMetadataSourceClaim(
+  value: unknown,
+  includesVendor = false
+): RemoteMetadataSourceClaimDto {
+  const claim = requireRecord(value, "metadata source claim");
+  assertExactKeys(claim, [
+    ...(includesVendor ? ["vendor"] : []),
+    "sessionId",
+    "claimedAtUnixMs",
+    "lastSeenAtUnixMs",
+    "cwd",
+    "workspacePaths",
+    "launchTitle"
+  ]);
+  if (
+    !Array.isArray(claim.workspacePaths) ||
+    claim.workspacePaths.length > 10
+  ) {
+    throw new TypeError("metadata source claim workspaces are invalid");
+  }
+  const workspacePaths = claim.workspacePaths.map((path) =>
+    requireAbsoluteRemotePath(path, "metadata claim workspace", 32 * 1024)
+  );
+  const claimedAtUnixMs = requireUint64String(
+    claim.claimedAtUnixMs,
+    "metadata claim claimedAtUnixMs"
+  );
+  const lastSeenAtUnixMs = requireUint64String(
+    claim.lastSeenAtUnixMs,
+    "metadata claim lastSeenAtUnixMs"
+  );
+  if (
+    parseUint64Decimal(lastSeenAtUnixMs) < parseUint64Decimal(claimedAtUnixMs)
+  ) {
+    throw new TypeError("metadata source claim time moved backward");
+  }
+  return {
+    sessionId: requireString(
+      claim.sessionId,
+      "metadata claim sessionId",
+      4 * 1024,
+      true
+    ),
+    claimedAtUnixMs,
+    lastSeenAtUnixMs,
+    ...(claim.cwd === undefined
+      ? {}
+      : {
+          cwd: requireAbsoluteRemotePath(
+            claim.cwd,
+            "metadata claim cwd",
+            32 * 1024
+          )
+        }),
+    workspacePaths,
+    ...(claim.launchTitle === undefined
+      ? {}
+      : {
+          launchTitle: requireString(
+            claim.launchTitle,
+            "metadata claim launchTitle",
+            4 * 1024,
+            true
+          )
+        })
+  };
+}
+
 function decodeRemoteHistoryRecord(
   value: unknown
 ): Extract<
@@ -1630,7 +2041,9 @@ export function decodeAgentIntegrationDiagnostic(
       (vendor.contractVersion as number) < 1 ||
       (vendor.contractVersion as number) > 65_535
     ) {
-      throw new TypeError("agent integration vendor contract version is invalid");
+      throw new TypeError(
+        "agent integration vendor contract version is invalid"
+      );
     }
     return {
       vendor: vendorName,
@@ -2106,7 +2519,10 @@ function parseControlRecord(
   payload: Uint8Array,
   field: string
 ): Record<string, unknown> {
-  if (!(payload instanceof Uint8Array) || payload.byteLength > 256 * 1024) {
+  if (
+    !(payload instanceof Uint8Array) ||
+    payload.byteLength > REMOTE_CONTROL_HARD_MAX_BYTES
+  ) {
     throw new TypeError(`${field} payload is invalid or oversized`);
   }
   let value: unknown;
@@ -2163,6 +2579,44 @@ function requireString(
     (rejectControls && /\p{Cc}/u.test(value))
   ) {
     throw new TypeError(`${field} is invalid`);
+  }
+  return value;
+}
+
+function requireMetadataContent(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    textEncoder.encode(value).byteLength > 256 * 1024 ||
+    containsUnsafeMetadataControl(value)
+  ) {
+    throw new TypeError("metadata source content is invalid");
+  }
+  return value;
+}
+
+function containsUnsafeMetadataControl(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      codePoint === 0x7f ||
+      (codePoint < 0x20 &&
+        codePoint !== 0x09 &&
+        codePoint !== 0x0a &&
+        codePoint !== 0x0d)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function requireMetadataPageToken(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9]\d*)$/u.test(value) ||
+    BigInt(value) > 9_223_372_036_854_775_807n
+  ) {
+    throw new TypeError("metadata query nextPageToken is invalid");
   }
   return value;
 }

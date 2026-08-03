@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const REMOTE_FRAME_HARD_MAX_BYTES: usize = 1024 * 1024;
-pub const REMOTE_CONTROL_HARD_MAX_BYTES: usize = 256 * 1024;
+pub const REMOTE_CONTROL_HARD_MAX_BYTES: usize = REMOTE_FRAME_HARD_MAX_BYTES - 1;
 pub const REMOTE_TERMINAL_CHUNK_HARD_MAX_BYTES: usize = 256 * 1024;
 pub const REMOTE_CHECKPOINT_CHUNK_HARD_MAX_BYTES: usize = 256 * 1024;
 pub const REMOTE_CHECKPOINT_HARD_MAX_CHUNKS: usize = 1_024;
@@ -509,6 +509,35 @@ pub enum BridgeRequest {
         #[serde(rename = "agentSettings")]
         agent_settings: Option<AgentScopeSettings>,
     },
+    #[serde(rename = "metadata.sources.list")]
+    MetadataSourcesList {
+        #[serde(rename = "desktopInstallationId")]
+        desktop_installation_id: String,
+        #[serde(rename = "targetId")]
+        target_id: String,
+        purpose: String,
+        #[serde(rename = "agentSettings")]
+        agent_settings: Option<AgentScopeSettings>,
+    },
+    #[serde(rename = "metadata.sources.read")]
+    MetadataSourcesRead {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        offset: String,
+        #[serde(rename = "maxBytes")]
+        max_bytes: usize,
+    },
+    #[serde(rename = "metadata.sources.query")]
+    MetadataSourcesQuery {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[serde(rename = "queryId")]
+        query_id: String,
+        #[serde(rename = "pageToken")]
+        page_token: Option<String>,
+        #[serde(rename = "maxRows")]
+        max_rows: usize,
+    },
     #[serde(rename = "forwards.observe")]
     ForwardsObserve {
         #[serde(rename = "desktopInstallationId")]
@@ -859,6 +888,12 @@ pub enum BridgeResponseBody {
     HistoryScanned(HistoryScannedResponse),
     #[serde(rename = "usage.scanned")]
     UsageScanned(UsageScannedResponse),
+    #[serde(rename = "metadata.sources.listed")]
+    MetadataSourcesListed(MetadataSourcesListedResponse),
+    #[serde(rename = "metadata.sources.read")]
+    MetadataSourcesRead(MetadataSourcesReadResponse),
+    #[serde(rename = "metadata.sources.queried")]
+    MetadataSourcesQueried(MetadataSourcesQueriedResponse),
     #[serde(rename = "forwards.observed")]
     ForwardsObserved(ForwardsObservedResponse),
     #[serde(rename = "attach.authorized")]
@@ -1102,6 +1137,88 @@ pub struct RemoteUsageRecord {
     pub cache_write_tokens: String,
     pub cache_write_tokens_known: bool,
     pub total_tokens: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataSourcesListedResponse {
+    pub target_id: String,
+    pub purpose: String,
+    pub contract_version: u16,
+    pub truncated: bool,
+    pub claims: Vec<RemoteMetadataClaim>,
+    pub sources: Vec<RemoteMetadataSource>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMetadataClaim {
+    pub vendor: String,
+    pub session_id: String,
+    pub claimed_at_unix_ms: String,
+    pub last_seen_at_unix_ms: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    pub workspace_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMetadataSource {
+    pub source_id: String,
+    pub vendor: String,
+    pub role: String,
+    pub format: String,
+    pub logical_name: String,
+    pub size: String,
+    pub mtime_unix_ms: String,
+    pub file_identity: String,
+    pub claim: RemoteMetadataSourceClaim,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMetadataSourceClaim {
+    pub session_id: String,
+    pub claimed_at_unix_ms: String,
+    pub last_seen_at_unix_ms: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    pub workspace_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataSourcesReadResponse {
+    pub source_id: String,
+    pub offset: String,
+    pub next_offset: String,
+    pub eof: bool,
+    pub file_identity: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataSourcesQueriedResponse {
+    pub source_id: String,
+    pub query_id: String,
+    pub file_identity: String,
+    pub rows: Vec<RemoteMetadataQueryRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMetadataQueryRow {
+    pub index: u64,
+    pub step_type: u64,
+    pub payload_base64: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1433,6 +1550,16 @@ mod tests {
 
     #[test]
     fn frame_decoder_rejects_unknown_and_oversized_before_payload_read() {
+        let payload = vec![b'x'; 512 * 1024];
+        let mut encoded = Vec::new();
+        write_remote_frame(&mut encoded, RemoteFrameKind::Control, &payload).unwrap();
+        assert_eq!(
+            read_remote_frame(&mut encoded.as_slice()).unwrap(),
+            Some(RemoteFrame {
+                kind: RemoteFrameKind::Control,
+                payload,
+            })
+        );
         assert!(matches!(
             read_remote_frame(&mut &[0, 0, 0, 1, 99][..]),
             Err(RemoteWireError::UnknownFrameKind(99))

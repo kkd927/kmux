@@ -3,17 +3,29 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use rusqlite::{Connection, OpenFlags, params};
+use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
 pub const MAX_METADATA_CHUNK_BYTES: usize = 256 * 1024;
+pub const MAX_METADATA_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const MAX_METADATA_QUERY_ROWS: usize = 512;
+pub const ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID: &str = "antigravity.conversation.steps.v1";
+const SOURCE_CONTRACT_BYTES: &str =
+    include_str!("../../../../../packages/metadata/source-contract.json");
+const MAX_METADATA_QUERY_PAYLOAD_BYTES: usize = 128 * 1024;
+const MAX_METADATA_QUERY_RESPONSE_BYTES: usize = 896 * 1024;
+const MAX_METADATA_QUERY_DURATION: Duration = Duration::from_millis(250);
+const MAX_ANTIGRAVITY_EDGE_QUERY_ROWS: usize = 2;
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_HISTORY_RECORDS: usize = 100;
 pub const MAX_USAGE_RECORDS: usize = 64;
 const MAX_SESSION_DEPTH: usize = 10;
@@ -51,6 +63,174 @@ pub struct MetadataChunkTooLarge;
 pub enum MetadataScanError {
     #[error("history scan root or bound is invalid")]
     InvalidRequest,
+}
+
+#[derive(Debug, Error)]
+pub enum MetadataSourceError {
+    #[error("metadata source request is invalid")]
+    InvalidRequest,
+    #[error("metadata source handle is stale")]
+    StaleSource,
+    #[error("metadata source is not valid UTF-8")]
+    InvalidUtf8,
+    #[error("metadata source I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("metadata source query failed: {0}")]
+    Query(#[from] rusqlite::Error),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataPurpose {
+    Usage,
+    History,
+}
+
+impl MetadataPurpose {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Usage => "usage",
+            Self::History => "history",
+        }
+    }
+}
+
+impl TryFrom<&str> for MetadataPurpose {
+    type Error = MetadataSourceError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "usage" => Ok(Self::Usage),
+            "history" => Ok(Self::History),
+            _ => Err(MetadataSourceError::InvalidRequest),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataSourceRole {
+    CodexSession,
+    ClaudeSession,
+    ClaudeSubagent,
+    AntigravityHistory,
+    AntigravityTranscript,
+    AntigravityConversation,
+}
+
+impl MetadataSourceRole {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CodexSession => "codex-session",
+            Self::ClaudeSession => "claude-session",
+            Self::ClaudeSubagent => "claude-subagent",
+            Self::AntigravityHistory => "antigravity-history",
+            Self::AntigravityTranscript => "antigravity-transcript",
+            Self::AntigravityConversation => "antigravity-conversation",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataSourceFormat {
+    Jsonl,
+    Sqlite,
+}
+
+impl MetadataSourceFormat {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jsonl => "jsonl",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MetadataSourceHandle {
+    pub path: PathBuf,
+    pub root: PathBuf,
+    pub vendor: String,
+    pub role: MetadataSourceRole,
+    pub format: MetadataSourceFormat,
+    pub logical_name: String,
+    pub size: u64,
+    pub mtime_unix_ms: u64,
+    pub file_identity: String,
+    pub claim: ExternalSessionClaim,
+    device: u64,
+    inode: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MetadataSourceInventory {
+    pub sources: Vec<MetadataSourceHandle>,
+    pub claims: Vec<ExternalSessionClaim>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataSourceRead {
+    pub offset: u64,
+    pub next_offset: u64,
+    pub eof: bool,
+    pub file_identity: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataQueryRow {
+    pub index: u64,
+    pub step_type: u64,
+    pub payload_base64: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataQueryPage {
+    pub file_identity: String,
+    pub rows: Vec<MetadataQueryRow>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SourceContract {
+    version: u16,
+    capability: String,
+    limits: SourceContractLimits,
+    sources: Vec<SourceContractSource>,
+    queries: SourceContractQueries,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceContractLimits {
+    source_read_bytes: usize,
+    response_bytes: usize,
+    query_rows: usize,
+    query_execution_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct SourceContractSource {
+    vendor: String,
+    role: String,
+    format: String,
+    purposes: Vec<String>,
+    pattern: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceContractQueries {
+    antigravity_conversation_steps: SourceContractQuery,
+}
+
+#[derive(Deserialize)]
+struct SourceContractQuery {
+    id: String,
+    #[serde(rename = "sourceRole")]
+    source_role: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,6 +419,655 @@ struct ParsedRecord {
     recent_conversation: Option<String>,
     model: Option<String>,
     subagent: bool,
+}
+
+pub fn list_owned_metadata_sources(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    if !home.is_absolute() || claims.len() > 500 {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    require_source_contract()?;
+    validate_agent_scan_settings(settings).map_err(|_| MetadataSourceError::InvalidRequest)?;
+    validate_external_session_claims(claims).map_err(|_| MetadataSourceError::InvalidRequest)?;
+
+    let mut sources = Vec::new();
+    let mut truncated = false;
+    for claim in claims {
+        let roots = owned_session_roots(home, settings, &claim.vendor);
+        let mut candidates = Vec::<(CandidateFile, MetadataSourceRole)>::new();
+        match claim.vendor.as_str() {
+            "codex" | "claude" => {
+                for candidate in claimed_jsonl_candidates(
+                    claim,
+                    &roots,
+                    match purpose {
+                        MetadataPurpose::Usage => ExternalSourceCacheKind::Usage,
+                        MetadataPurpose::History => ExternalSourceCacheKind::History,
+                    },
+                ) {
+                    let role = if claim.vendor == "codex" {
+                        MetadataSourceRole::CodexSession
+                    } else if is_claude_subagent_path(&candidate.path) {
+                        MetadataSourceRole::ClaudeSubagent
+                    } else {
+                        MetadataSourceRole::ClaudeSession
+                    };
+                    if purpose == MetadataPurpose::History
+                        && role == MetadataSourceRole::ClaudeSubagent
+                    {
+                        continue;
+                    }
+                    candidates.push((candidate, role));
+                }
+            }
+            "antigravity" => {
+                if purpose == MetadataPurpose::History {
+                    for root in &roots {
+                        if let Some(candidate) =
+                            candidate_for_regular_file(&root.join("history.jsonl"))
+                        {
+                            candidates.push((candidate, MetadataSourceRole::AntigravityHistory));
+                        }
+                        if let Some(candidate) = candidate_for_regular_file(
+                            &root
+                                .join("conversations")
+                                .join(format!("{}.db", claim.vendor_session_id)),
+                        ) {
+                            candidates
+                                .push((candidate, MetadataSourceRole::AntigravityConversation));
+                        }
+                    }
+                }
+                for candidate in claimed_jsonl_candidates(
+                    claim,
+                    &roots,
+                    match purpose {
+                        MetadataPurpose::Usage => ExternalSourceCacheKind::Usage,
+                        MetadataPurpose::History => ExternalSourceCacheKind::History,
+                    },
+                ) {
+                    if antigravity_conversation_id(&candidate.path).as_deref()
+                        == Some(claim.vendor_session_id.as_str())
+                        || claim
+                            .transcript_path
+                            .as_ref()
+                            .is_some_and(|path| candidate.path == Path::new(path))
+                    {
+                        candidates.push((candidate, MetadataSourceRole::AntigravityTranscript));
+                    }
+                }
+            }
+            _ => return Err(MetadataSourceError::InvalidRequest),
+        }
+
+        let mut seen = BTreeSet::new();
+        let mut seen_sources = BTreeSet::new();
+        for (candidate, role) in candidates {
+            let accepted = append_owned_metadata_source(
+                candidate.clone(),
+                &roots,
+                claim,
+                role,
+                expected_uid,
+                &mut seen,
+                &mut seen_sources,
+                &mut sources,
+            )?;
+            if accepted
+                && purpose == MetadataPurpose::Usage
+                && role == MetadataSourceRole::ClaudeSession
+            {
+                let (subagents, partial) = adjacent_claude_subagent_candidates(&candidate);
+                truncated |= partial;
+                for subagent in subagents {
+                    append_owned_metadata_source(
+                        subagent,
+                        &roots,
+                        claim,
+                        MetadataSourceRole::ClaudeSubagent,
+                        expected_uid,
+                        &mut seen,
+                        &mut seen_sources,
+                        &mut sources,
+                    )?;
+                }
+            }
+        }
+    }
+    let claims_with_source = sources
+        .iter()
+        .map(|source| {
+            (
+                source.claim.vendor.clone(),
+                source.claim.vendor_session_id.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut eligible_claims = if purpose == MetadataPurpose::History {
+        claims
+            .iter()
+            .filter(|claim| {
+                !configured_session_root(settings, &claim.vendor)
+                    || claims_with_source
+                        .contains(&(claim.vendor.clone(), claim.vendor_session_id.clone()))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    eligible_claims.sort_by(|left, right| {
+        left.vendor
+            .cmp(&right.vendor)
+            .then_with(|| left.vendor_session_id.cmp(&right.vendor_session_id))
+    });
+    let mut shared_history_sources = BTreeSet::new();
+    sources.retain(|source| {
+        source.role != MetadataSourceRole::AntigravityHistory
+            || shared_history_sources.insert(source.path.clone())
+    });
+    sources.sort_by(|left, right| {
+        right
+            .mtime_unix_ms
+            .cmp(&left.mtime_unix_ms)
+            .then_with(|| left.vendor.cmp(&right.vendor))
+            .then_with(|| {
+                left.claim
+                    .vendor_session_id
+                    .cmp(&right.claim.vendor_session_id)
+            })
+            .then_with(|| left.logical_name.cmp(&right.logical_name))
+    });
+    if sources.len() > 2_048 {
+        sources.truncate(2_048);
+        truncated = true;
+    }
+    Ok(MetadataSourceInventory {
+        sources,
+        claims: eligible_claims,
+        truncated,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_owned_metadata_source(
+    candidate: CandidateFile,
+    roots: &[PathBuf],
+    claim: &ExternalSessionClaim,
+    role: MetadataSourceRole,
+    expected_uid: u32,
+    seen: &mut BTreeSet<(PathBuf, &'static str)>,
+    seen_sources: &mut BTreeSet<(PathBuf, &'static str)>,
+    sources: &mut Vec<MetadataSourceHandle>,
+) -> Result<bool, MetadataSourceError> {
+    if !seen.insert((candidate.path.clone(), role.as_str())) {
+        return Ok(false);
+    }
+    let Some(source) = metadata_source_handle(candidate.clone(), roots, claim, role, expected_uid)?
+    else {
+        return Ok(false);
+    };
+    validate_source_path(&source, expected_uid)?;
+    let verified_candidate = CandidateFile {
+        path: source.path.clone(),
+        modified_unix_ms: source.mtime_unix_ms,
+        size: source.size,
+    };
+    let matches_claim = metadata_source_candidate_matches_claim(&verified_candidate, role, claim);
+    validate_source_path(&source, expected_uid)?;
+    if !matches_claim || !seen_sources.insert((source.path.clone(), role.as_str())) {
+        return Ok(false);
+    }
+    sources.push(source);
+    Ok(true)
+}
+
+fn metadata_source_candidate_matches_claim(
+    candidate: &CandidateFile,
+    role: MetadataSourceRole,
+    claim: &ExternalSessionClaim,
+) -> bool {
+    match role {
+        MetadataSourceRole::CodexSession => {
+            let parsed = parse_codex_candidate(candidate);
+            !parsed.subagent
+                && sanitize_identifier(parsed.session_id).as_deref()
+                    == Some(claim.vendor_session_id.as_str())
+        }
+        MetadataSourceRole::ClaudeSession => {
+            let parsed = parse_claude_candidate(candidate);
+            !parsed.subagent
+                && sanitize_identifier(parsed.session_id).as_deref()
+                    == Some(claim.vendor_session_id.as_str())
+        }
+        MetadataSourceRole::ClaudeSubagent => {
+            let parsed = parse_claude_candidate(candidate);
+            sanitize_identifier(parsed.session_id).as_deref()
+                == Some(claim.vendor_session_id.as_str())
+        }
+        MetadataSourceRole::AntigravityHistory => true,
+        MetadataSourceRole::AntigravityTranscript => {
+            antigravity_usage_source_matches_claim(candidate, claim)
+        }
+        MetadataSourceRole::AntigravityConversation => {
+            candidate
+                .path
+                .file_stem()
+                .and_then(OsStr::to_str)
+                .and_then(|value| sanitize_identifier(Some(value.to_owned())))
+                .as_deref()
+                == Some(claim.vendor_session_id.as_str())
+        }
+    }
+}
+
+pub fn read_metadata_source(
+    source: &MetadataSourceHandle,
+    offset: u64,
+    max_bytes: usize,
+    expected_uid: u32,
+) -> Result<MetadataSourceRead, MetadataSourceError> {
+    if max_bytes == 0
+        || max_bytes > MAX_METADATA_CHUNK_BYTES
+        || source.format == MetadataSourceFormat::Sqlite
+    {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&source.path)
+        .map_err(map_source_open_error)?;
+    let metadata = validate_open_metadata(source, &file.metadata()?, expected_uid)?;
+    if metadata.len() < source.size || offset > source.size {
+        return Err(MetadataSourceError::StaleSource);
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let requested = usize::try_from(source.size.saturating_sub(offset))
+        .unwrap_or(usize::MAX)
+        .min(max_bytes);
+    let mut bytes = vec![0_u8; requested];
+    let mut bytes_read = 0;
+    while bytes_read < bytes.len() {
+        let read = file.read(&mut bytes[bytes_read..])?;
+        if read == 0 {
+            break;
+        }
+        bytes_read += read;
+    }
+    bytes.truncate(bytes_read);
+    let observed_size = file.metadata()?.len();
+    if observed_size < source.size {
+        return Err(MetadataSourceError::StaleSource);
+    }
+    let mut eof = offset.saturating_add(bytes.len() as u64) >= source.size;
+    let valid_length = match std::str::from_utf8(&bytes) {
+        Ok(_) => bytes.len(),
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => return Err(MetadataSourceError::InvalidUtf8),
+    };
+    bytes.truncate(valid_length);
+    if source.format == MetadataSourceFormat::Jsonl
+        && !eof
+        && let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n')
+    {
+        bytes.truncate(last_newline.saturating_add(1));
+    }
+    let content = String::from_utf8(bytes).map_err(|_| MetadataSourceError::InvalidUtf8)?;
+    if content
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(MetadataSourceError::InvalidUtf8);
+    }
+    let next_offset = offset.saturating_add(content.len() as u64);
+    eof = next_offset >= source.size;
+    let final_metadata = validate_open_metadata(source, &file.metadata()?, expected_uid)?;
+    if final_metadata.len() < source.size {
+        return Err(MetadataSourceError::StaleSource);
+    }
+    Ok(MetadataSourceRead {
+        offset,
+        next_offset,
+        eof,
+        file_identity: source.file_identity.clone(),
+        content,
+    })
+}
+
+pub fn query_metadata_source(
+    source: &MetadataSourceHandle,
+    query_id: &str,
+    page_token: Option<&str>,
+    max_rows: usize,
+    expected_uid: u32,
+) -> Result<MetadataQueryPage, MetadataSourceError> {
+    require_source_contract()?;
+    if source.role != MetadataSourceRole::AntigravityConversation
+        || source.format != MetadataSourceFormat::Sqlite
+        || query_id != ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID
+        || max_rows == 0
+        || max_rows > MAX_METADATA_QUERY_ROWS
+        || page_token.is_some()
+    {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    validate_source_path(source, expected_uid)?;
+    validate_sqlite_sidecars(source, expected_uid)?;
+    let connection = Connection::open_with_flags(
+        &source.path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    connection.busy_timeout(MAX_METADATA_QUERY_DURATION)?;
+    let deadline = Instant::now() + MAX_METADATA_QUERY_DURATION;
+    connection.progress_handler(1_000, Some(move || Instant::now() >= deadline));
+    let row_limit = i64::try_from(max_rows.min(MAX_ANTIGRAVITY_EDGE_QUERY_ROWS))
+        .map_err(|_| MetadataSourceError::InvalidRequest)?;
+    let maximum_payload = i64::try_from(MAX_METADATA_QUERY_PAYLOAD_BYTES)
+        .map_err(|_| MetadataSourceError::InvalidRequest)?;
+    let mut statement = connection.prepare(
+        "SELECT idx, step_type, CASE WHEN length(step_payload) <= ?1 THEN step_payload END \
+         FROM steps \
+         WHERE step_type = 14 \
+           AND (idx = 0 OR idx = (SELECT MAX(idx) FROM steps WHERE step_type = 14)) \
+         ORDER BY idx ASC LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![maximum_payload, row_limit], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?,
+        ))
+    })?;
+    let mut output = Vec::new();
+    let mut response_bytes = 0_usize;
+    for row in rows {
+        let (index, step_type, payload) = row?;
+        if index < 0
+            || step_type < 0
+            || u64::try_from(index).unwrap_or(u64::MAX) > MAX_JAVASCRIPT_SAFE_INTEGER
+            || u64::try_from(step_type).unwrap_or(u64::MAX) > MAX_JAVASCRIPT_SAFE_INTEGER
+        {
+            continue;
+        }
+        let row = MetadataQueryRow {
+            index: u64::try_from(index).map_err(|_| MetadataSourceError::InvalidRequest)?,
+            step_type: u64::try_from(step_type).map_err(|_| MetadataSourceError::InvalidRequest)?,
+            payload_base64: payload
+                .map(|value| BASE64_STANDARD.encode(value))
+                .unwrap_or_default(),
+        };
+        let row_bytes = row.payload_base64.len().saturating_add(128);
+        if response_bytes.saturating_add(row_bytes) > MAX_METADATA_QUERY_RESPONSE_BYTES {
+            return Err(MetadataSourceError::InvalidRequest);
+        }
+        response_bytes = response_bytes.saturating_add(row_bytes);
+        output.push(row);
+    }
+    validate_source_path(source, expected_uid)?;
+    validate_sqlite_sidecars(source, expected_uid)?;
+    Ok(MetadataQueryPage {
+        file_identity: source.file_identity.clone(),
+        rows: output,
+        next_page_token: None,
+    })
+}
+
+fn metadata_source_handle(
+    candidate: CandidateFile,
+    roots: &[PathBuf],
+    claim: &ExternalSessionClaim,
+    role: MetadataSourceRole,
+    expected_uid: u32,
+) -> Result<Option<MetadataSourceHandle>, MetadataSourceError> {
+    let canonical = match fs::canonicalize(&candidate.path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(root) = roots.iter().find(|root| canonical.starts_with(root)) else {
+        return Ok(None);
+    };
+    let metadata = fs::symlink_metadata(&canonical)?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != expected_uid
+        || metadata.dev() == 0
+        || metadata.ino() == 0
+    {
+        return Ok(None);
+    }
+    if role_for_path(&claim.vendor, root, &canonical) != Some(role) {
+        return Ok(None);
+    }
+    let mut size = metadata.len();
+    let mut mtime_unix_ms = metadata_modified_unix_ms(&metadata)?;
+    if role == MetadataSourceRole::AntigravityConversation {
+        let wal_path = PathBuf::from(format!("{}-wal", canonical.to_string_lossy()));
+        if let Ok(wal) = fs::symlink_metadata(wal_path)
+            && wal.is_file()
+            && !wal.file_type().is_symlink()
+            && wal.uid() == expected_uid
+        {
+            size = size.saturating_add(wal.len());
+            mtime_unix_ms = mtime_unix_ms.max(metadata_modified_unix_ms(&wal)?);
+        }
+    }
+    let logical_name = canonical
+        .strip_prefix(root)
+        .ok()
+        .and_then(Path::to_str)
+        .map(|value| value.trim_start_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(MetadataSourceError::InvalidRequest)?;
+    if logical_name.len() > MAX_PATH_BYTES
+        || logical_name.chars().any(char::is_control)
+        || logical_name
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    Ok(Some(MetadataSourceHandle {
+        path: canonical,
+        root: root.clone(),
+        vendor: claim.vendor.clone(),
+        role,
+        format: if role == MetadataSourceRole::AntigravityConversation {
+            MetadataSourceFormat::Sqlite
+        } else {
+            MetadataSourceFormat::Jsonl
+        },
+        logical_name,
+        size,
+        mtime_unix_ms,
+        file_identity: format!("{}:{}", metadata.dev(), metadata.ino()),
+        claim: claim.clone(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }))
+}
+
+fn validate_source_path(
+    source: &MetadataSourceHandle,
+    expected_uid: u32,
+) -> Result<fs::Metadata, MetadataSourceError> {
+    let metadata = fs::symlink_metadata(&source.path).map_err(map_source_open_error)?;
+    validate_open_metadata(source, &metadata, expected_uid)
+}
+
+fn validate_sqlite_sidecars(
+    source: &MetadataSourceHandle,
+    expected_uid: u32,
+) -> Result<(), MetadataSourceError> {
+    if source.format != MetadataSourceFormat::Sqlite {
+        return Ok(());
+    }
+    for suffix in ["-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", source.path.to_string_lossy()));
+        match fs::symlink_metadata(&path) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.uid() == expected_uid => {}
+            Ok(_) => return Err(MetadataSourceError::StaleSource),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_open_metadata(
+    source: &MetadataSourceHandle,
+    metadata: &fs::Metadata,
+    expected_uid: u32,
+) -> Result<fs::Metadata, MetadataSourceError> {
+    let canonical = fs::canonicalize(&source.path).map_err(map_source_open_error)?;
+    if canonical != source.path
+        || !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != expected_uid
+        || metadata.dev() != source.device
+        || metadata.ino() != source.inode
+        || !source.path.starts_with(&source.root)
+        || role_for_path(&source.vendor, &source.root, &source.path) != Some(source.role)
+    {
+        return Err(MetadataSourceError::StaleSource);
+    }
+    Ok(metadata.clone())
+}
+
+fn role_for_path(vendor: &str, root: &Path, path: &Path) -> Option<MetadataSourceRole> {
+    let vendor = match vendor {
+        "codex" => SessionVendor::Codex,
+        "claude" => SessionVendor::Claude,
+        "antigravity" => SessionVendor::Antigravity,
+        _ => return None,
+    };
+    match classify_session_candidate(root, path, vendor)? {
+        SessionCandidateRole::CodexSession => Some(MetadataSourceRole::CodexSession),
+        SessionCandidateRole::ClaudeSession => Some(MetadataSourceRole::ClaudeSession),
+        SessionCandidateRole::ClaudeSubagent => Some(MetadataSourceRole::ClaudeSubagent),
+        SessionCandidateRole::AntigravityHistory => Some(MetadataSourceRole::AntigravityHistory),
+        SessionCandidateRole::AntigravityTranscript => {
+            Some(MetadataSourceRole::AntigravityTranscript)
+        }
+        SessionCandidateRole::AntigravityConversation => {
+            Some(MetadataSourceRole::AntigravityConversation)
+        }
+    }
+}
+
+fn metadata_modified_unix_ms(metadata: &fs::Metadata) -> Result<u64, MetadataSourceError> {
+    metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| duration.as_millis().try_into().ok())
+        .ok_or(MetadataSourceError::InvalidRequest)
+}
+
+fn map_source_open_error(error: std::io::Error) -> MetadataSourceError {
+    match error.raw_os_error() {
+        Some(libc::ELOOP) | Some(libc::ENOENT) => MetadataSourceError::StaleSource,
+        _ => MetadataSourceError::Io(error),
+    }
+}
+
+fn require_source_contract() -> Result<(), MetadataSourceError> {
+    let contract: SourceContract = serde_json::from_str(SOURCE_CONTRACT_BYTES)
+        .map_err(|_| MetadataSourceError::InvalidRequest)?;
+    let sources = contract
+        .sources
+        .into_iter()
+        .map(|source| {
+            (
+                source.vendor,
+                source.role,
+                source.format,
+                source.purposes.join(","),
+                source.pattern,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_sources = [
+        (
+            "codex",
+            "codex-session",
+            "jsonl",
+            "usage,history",
+            "**/*.jsonl",
+        ),
+        (
+            "claude",
+            "claude-session",
+            "jsonl",
+            "usage,history",
+            "**/*.jsonl",
+        ),
+        (
+            "claude",
+            "claude-subagent",
+            "jsonl",
+            "usage",
+            "**/subagents/*.jsonl",
+        ),
+        (
+            "antigravity",
+            "antigravity-history",
+            "jsonl",
+            "history",
+            "history.jsonl",
+        ),
+        (
+            "antigravity",
+            "antigravity-transcript",
+            "jsonl",
+            "usage,history",
+            "brain/*/.system_generated/logs/transcript.jsonl",
+        ),
+        (
+            "antigravity",
+            "antigravity-conversation",
+            "sqlite",
+            "history",
+            "conversations/*.db",
+        ),
+    ]
+    .into_iter()
+    .map(|(vendor, role, format, purposes, pattern)| {
+        (
+            vendor.to_owned(),
+            role.to_owned(),
+            format.to_owned(),
+            purposes.to_owned(),
+            pattern.to_owned(),
+        )
+    })
+    .collect::<BTreeSet<_>>();
+    if contract.version != 1
+        || contract.capability != "agent-metadata-sources-v1"
+        || contract.limits.source_read_bytes != MAX_METADATA_CHUNK_BYTES
+        || contract.limits.response_bytes != MAX_METADATA_RESPONSE_BYTES
+        || contract.limits.query_rows != MAX_METADATA_QUERY_ROWS
+        || contract.limits.query_execution_ms
+            != u64::try_from(MAX_METADATA_QUERY_DURATION.as_millis()).unwrap_or(u64::MAX)
+        || sources != expected_sources
+        || contract.queries.antigravity_conversation_steps.id
+            != ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID
+        || contract.queries.antigravity_conversation_steps.source_role != "antigravity-conversation"
+    {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    Ok(())
 }
 
 pub fn validate_metadata_chunk(bytes: &[u8]) -> Result<(), MetadataChunkTooLarge> {
@@ -2398,7 +3227,11 @@ fn candidate_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> Option<Can
 }
 
 fn parse_jsonl_edges(candidate: &CandidateFile) -> Vec<Value> {
-    let Ok(mut file) = File::open(&candidate.path) else {
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&candidate.path)
+    else {
         return Vec::new();
     };
     let prefix_length = candidate.size.min(MAX_HISTORY_EDGE_BYTES as u64) as usize;
@@ -2694,10 +3527,8 @@ fn antigravity_usage_source_matches_claim(
     candidate: &CandidateFile,
     claim: &ExternalSessionClaim,
 ) -> bool {
-    if antigravity_conversation_id(&candidate.path).as_deref()
-        == Some(claim.vendor_session_id.as_str())
-    {
-        return true;
+    if let Some(conversation_id) = antigravity_conversation_id(&candidate.path) {
+        return conversation_id == claim.vendor_session_id;
     }
     if [
         claim.usage_source_path.as_ref(),
@@ -2936,7 +3767,7 @@ fn expand_session_root(home: &Path, value: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{FileTimes, Permissions, create_dir_all, set_permissions, write};
+    use std::fs::{File, FileTimes, Permissions, create_dir_all, set_permissions, write};
     use std::os::unix::fs::symlink;
     use std::time::{Duration, SystemTime};
 
@@ -4164,6 +4995,389 @@ mod tests {
         assert!(usage.truncated);
         assert_eq!(usage.records.len(), 1);
         assert_eq!(usage.records[0].total_tokens, 17);
+    }
+
+    #[test]
+    fn metadata_source_handles_bound_reads_and_reject_symlink_rotation_and_truncation() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let root = home.join(".claude/projects/repo");
+        create_dir_all(&root).unwrap();
+        let path = root.join("claude-source.jsonl");
+        let first = "{\"text\":\"안녕\"}\n";
+        let second = "{\"text\":\"later\"}\n";
+        write(&path, format!("{first}{second}")).unwrap();
+        let claim = owned_claim("claude", "claude-source", 1, Some(&path));
+        let uid = fs::metadata(home).unwrap().uid();
+
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(inventory.sources.len(), 1, "{:?}", inventory.sources);
+        let source = &inventory.sources[0];
+
+        let first_end = first.find('안').unwrap() + 1;
+        let prefix = read_metadata_source(source, 0, first_end, uid).unwrap();
+        assert_eq!(prefix.content, "{\"text\":\"");
+        assert!(!prefix.eof);
+        let multibyte_offset = first.find('안').unwrap() as u64;
+        let no_partial_code_point = read_metadata_source(source, multibyte_offset, 1, uid).unwrap();
+        assert!(no_partial_code_point.content.is_empty());
+        assert_eq!(no_partial_code_point.next_offset, multibyte_offset);
+        assert!(!no_partial_code_point.eof);
+        let complete_line = read_metadata_source(source, 0, first.len() + 3, uid).unwrap();
+        assert_eq!(complete_line.content, first);
+        assert_eq!(complete_line.next_offset, first.len() as u64);
+
+        write(&path, format!("{first}{second}{{\"text\":\"appended\"}}\n")).unwrap();
+        let listed_snapshot =
+            read_metadata_source(source, 0, MAX_METADATA_CHUNK_BYTES, uid).unwrap();
+        assert_eq!(listed_snapshot.content, format!("{first}{second}"));
+        assert_eq!(listed_snapshot.next_offset, source.size);
+        assert!(listed_snapshot.eof);
+        write(&path, format!("{first}{second}")).unwrap();
+
+        let mut invalid_utf8 = vec![b' '; source.size as usize];
+        invalid_utf8[0] = 0xff;
+        write(&path, invalid_utf8).unwrap();
+        assert!(matches!(
+            read_metadata_source(source, 0, 1, uid),
+            Err(MetadataSourceError::InvalidUtf8)
+        ));
+        let mut invalid_control = vec![b' '; source.size as usize];
+        invalid_control[0] = 0;
+        write(&path, invalid_control).unwrap();
+        assert!(matches!(
+            read_metadata_source(source, 0, 1, uid),
+            Err(MetadataSourceError::InvalidUtf8)
+        ));
+        write(&path, format!("{first}{second}")).unwrap();
+
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        assert!(matches!(
+            read_metadata_source(source, first.len() as u64, 32, uid),
+            Err(MetadataSourceError::StaleSource)
+        ));
+
+        let stale_path = root.join("stale.jsonl");
+        fs::rename(&path, &stale_path).unwrap();
+        write(&path, "{}\n").unwrap();
+        assert!(matches!(
+            read_metadata_source(source, 0, 32, uid),
+            Err(MetadataSourceError::StaleSource)
+        ));
+
+        let outside = temporary.path().join("outside.jsonl");
+        write(&outside, "{}\n").unwrap();
+        let linked = root.join("linked.jsonl");
+        symlink(&outside, &linked).unwrap();
+        let linked_claim = owned_claim("claude", "linked", 1, Some(&linked));
+        let linked_inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            &[linked_claim],
+            uid,
+        )
+        .unwrap();
+        assert!(linked_inventory.sources.is_empty());
+
+        let nested = root.join("nested");
+        create_dir_all(&nested).unwrap();
+        let nested_path = nested.join("stable.jsonl");
+        write(&nested_path, "{}\n").unwrap();
+        let nested_claim = owned_claim("claude", "stable", 1, Some(&nested_path));
+        let nested_inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            &[nested_claim],
+            uid,
+        )
+        .unwrap();
+        let nested_source = &nested_inventory.sources[0];
+        let moved = root.join("nested-moved");
+        fs::rename(&nested, &moved).unwrap();
+        symlink(&moved, &nested).unwrap();
+        assert!(matches!(
+            read_metadata_source(nested_source, 0, 32, uid),
+            Err(MetadataSourceError::StaleSource)
+        ));
+    }
+
+    #[test]
+    fn metadata_source_inventory_requires_the_claimed_session_identity() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let root = home.join(".codex/sessions");
+        create_dir_all(&root).unwrap();
+        let stale = root.join("stale.jsonl");
+        let fallback = root.join("codex-owned.jsonl");
+        write(
+            &stale,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-other\"}}\n",
+        )
+        .unwrap();
+        write(
+            &fallback,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-owned\"}}\n",
+        )
+        .unwrap();
+        let claim = owned_claim("codex", "codex-owned", 1, Some(&stale));
+        let uid = fs::metadata(home).unwrap().uid();
+
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(inventory.sources.len(), 1, "{:?}", inventory.sources);
+        assert_eq!(
+            inventory.sources[0].path,
+            fs::canonicalize(&fallback).unwrap()
+        );
+
+        write(
+            &fallback,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-other\"}}\n",
+        )
+        .unwrap();
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+            uid,
+        )
+        .unwrap();
+        assert!(inventory.sources.is_empty());
+        assert_eq!(inventory.claims.as_slice(), std::slice::from_ref(&claim));
+
+        let transcript = home.join(
+            ".gemini/antigravity-cli/brain/conversation-other/.system_generated/logs/transcript.jsonl",
+        );
+        create_dir_all(transcript.parent().unwrap()).unwrap();
+        write(&transcript, "{\"source\":\"USER\",\"content\":\"other\"}\n").unwrap();
+        let antigravity_claim =
+            owned_claim("antigravity", "conversation-owned", 1, Some(&transcript));
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&antigravity_claim),
+            uid,
+        )
+        .unwrap();
+        assert!(inventory.sources.is_empty());
+        assert_eq!(
+            inventory.claims.as_slice(),
+            std::slice::from_ref(&antigravity_claim)
+        );
+    }
+
+    #[test]
+    fn metadata_source_inventory_filters_unrelated_claude_subagents() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let root = home.join(".claude/projects/repo");
+        let subagents = root.join("subagents");
+        create_dir_all(&subagents).unwrap();
+        let parent = root.join("claude-owned.jsonl");
+        write(
+            &parent,
+            "{\"type\":\"user\",\"sessionId\":\"claude-owned\",\"message\":{\"content\":\"parent\"}}\n",
+        )
+        .unwrap();
+        write(
+            subagents.join("owned.jsonl"),
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-owned\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n",
+        )
+        .unwrap();
+        let unrelated = subagents.join("unrelated.jsonl");
+        write(
+            &unrelated,
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-other\",\"message\":{\"usage\":{\"input_tokens\":999}}}\n",
+        )
+        .unwrap();
+        let claim = owned_claim("claude", "claude-owned", 1, Some(&parent));
+        let uid = fs::metadata(home).unwrap().uid();
+
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+            uid,
+        )
+        .unwrap();
+        assert_eq!(inventory.sources.len(), 2, "{:?}", inventory.sources);
+        assert!(
+            inventory
+                .sources
+                .iter()
+                .all(|source| source.path != fs::canonicalize(&unrelated).unwrap())
+        );
+    }
+
+    #[test]
+    fn metadata_history_inventory_preserves_source_less_owned_claims_only_for_default_roots() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let missing = home.join(".claude/projects/repo/not-created.jsonl");
+        let claim = owned_claim("claude", "not-created", 1, Some(&missing));
+        let uid = fs::metadata(home).unwrap().uid();
+
+        let default_inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+            uid,
+        )
+        .unwrap();
+        assert!(default_inventory.sources.is_empty());
+        assert_eq!(
+            default_inventory.claims.as_slice(),
+            std::slice::from_ref(&claim)
+        );
+
+        let configured_inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings {
+                claude: Some(ExternalAgentSettings {
+                    session_root: Some(home.join("custom-claude").to_string_lossy().into_owned()),
+                    ..ExternalAgentSettings::default()
+                }),
+                ..ExternalAgentScanSettings::default()
+            },
+            &[claim],
+            uid,
+        )
+        .unwrap();
+        assert!(configured_inventory.sources.is_empty());
+        assert!(configured_inventory.claims.is_empty());
+    }
+
+    #[test]
+    fn metadata_history_inventory_lists_shared_antigravity_history_once() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let root = home.join(".gemini/antigravity-cli");
+        create_dir_all(&root).unwrap();
+        write(
+            root.join("history.jsonl"),
+            concat!(
+                "{\"conversationId\":\"conversation-1\",\"display\":\"first\"}\n",
+                "{\"conversationId\":\"conversation-2\",\"display\":\"second\"}\n"
+            ),
+        )
+        .unwrap();
+        let claims = vec![
+            owned_claim("antigravity", "conversation-1", 1, None),
+            owned_claim("antigravity", "conversation-2", 2, None),
+        ];
+        let uid = fs::metadata(home).unwrap().uid();
+
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            &claims,
+            uid,
+        )
+        .unwrap();
+
+        assert_eq!(inventory.claims.len(), 2);
+        assert_eq!(
+            inventory
+                .sources
+                .iter()
+                .filter(|source| source.role == MetadataSourceRole::AntigravityHistory)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn metadata_source_query_returns_only_conversation_edge_prompts() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let conversations = home.join(".gemini/antigravity-cli/conversations");
+        create_dir_all(&conversations).unwrap();
+        let conversation_id = "conversation-1";
+        let path = conversations.join(format!("{conversation_id}.db"));
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER NOT NULL, step_type INTEGER NOT NULL, step_payload BLOB);",
+            )
+            .unwrap();
+        for index in 0..3_i64 {
+            connection
+                .execute(
+                    "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, 14, ?2)",
+                    params![index, format!("payload-{index}").into_bytes()],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let claim = owned_claim("antigravity", conversation_id, 1, None);
+        let uid = fs::metadata(home).unwrap().uid();
+        let inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+            uid,
+        )
+        .unwrap();
+        let source = inventory
+            .sources
+            .iter()
+            .find(|source| source.role == MetadataSourceRole::AntigravityConversation)
+            .unwrap();
+
+        let edges = query_metadata_source(
+            source,
+            ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID,
+            None,
+            MAX_METADATA_QUERY_ROWS,
+            uid,
+        )
+        .unwrap();
+        assert_eq!(
+            edges.rows.iter().map(|row| row.index).collect::<Vec<_>>(),
+            [0, 2]
+        );
+        assert_eq!(edges.next_page_token, None);
+        assert!(matches!(
+            query_metadata_source(
+                source,
+                ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID,
+                Some("0"),
+                2,
+                uid
+            ),
+            Err(MetadataSourceError::InvalidRequest)
+        ));
+        assert!(matches!(
+            query_metadata_source(source, "arbitrary.sql", None, 2, uid),
+            Err(MetadataSourceError::InvalidRequest)
+        ));
     }
 
     #[test]

@@ -7,6 +7,101 @@ import {
 } from "./remoteControl";
 
 describe("remote control v1", () => {
+  it("decodes bounded metadata source handles, JSONL chunks, and query pages", () => {
+    const source = {
+      sourceId: "source_1",
+      vendor: "claude",
+      role: "claude-session",
+      format: "jsonl",
+      logicalName: "projects/session-1.jsonl",
+      size: "3",
+      mtimeUnixMs: "1",
+      fileIdentity: "1:2",
+      claim: {
+        sessionId: "session-1",
+        claimedAtUnixMs: "1",
+        lastSeenAtUnixMs: "2",
+        cwd: "/srv/repo",
+        workspacePaths: ["/srv/repo"]
+      }
+    };
+    const listed = decodeRemoteBridgeResponseEnvelope(
+      encodeRemoteControlJson({
+        protocolVersion: 1,
+        requestId: "request_metadata_list",
+        status: "ok",
+        body: {
+          type: "metadata.sources.listed",
+          targetId: "target_1",
+          purpose: "history",
+          contractVersion: 1,
+          truncated: false,
+          claims: [{ vendor: "claude", ...source.claim }],
+          sources: [source]
+        }
+      })
+    );
+    expect(listed).toMatchObject({
+      body: { sources: [{ logicalName: "projects/session-1.jsonl" }] }
+    });
+
+    expect(
+      decodeRemoteBridgeResponseEnvelope(
+        encodeRemoteControlJson({
+          protocolVersion: 1,
+          requestId: "request_metadata_read",
+          status: "ok",
+          body: {
+            type: "metadata.sources.read",
+            sourceId: "source_1",
+            offset: "0",
+            nextOffset: "3",
+            eof: true,
+            fileIdentity: "1:2",
+            content: "{}\n"
+          }
+        })
+      )
+    ).toMatchObject({ body: { content: "{}\n" } });
+
+    expect(
+      decodeRemoteBridgeResponseEnvelope(
+        encodeRemoteControlJson({
+          protocolVersion: 1,
+          requestId: "request_metadata_query",
+          status: "ok",
+          body: {
+            type: "metadata.sources.queried",
+            sourceId: "source_1",
+            queryId: "antigravity.conversation.steps.v1",
+            fileIdentity: "1:2",
+            rows: [{ index: 1, stepType: 14, payloadBase64: "" }],
+            nextPageToken: "1"
+          }
+        })
+      )
+    ).toMatchObject({ body: { rows: [{ payloadBase64: "" }] } });
+
+    expect(() =>
+      decodeRemoteBridgeResponseEnvelope(
+        encodeRemoteControlJson({
+          protocolVersion: 1,
+          requestId: "request_metadata_mismatch",
+          status: "ok",
+          body: {
+            type: "metadata.sources.listed",
+            targetId: "target_1",
+            purpose: "usage",
+            contractVersion: 1,
+            truncated: false,
+            claims: [{ vendor: "claude", ...source.claim }],
+            sources: [{ ...source, vendor: "codex" }]
+          }
+        })
+      )
+    ).toThrow(/role contract/u);
+  });
+
   it("strictly bounds target-local port and history metadata", () => {
     const ports = decodeRemoteBridgeResponseEnvelope(
       encodeRemoteControlJson({
@@ -800,7 +895,10 @@ describe("remote control v1", () => {
 
   it("enforces the control-message byte bound before framing", () => {
     expect(() =>
-      encodeRemoteControlJson({ value: "x".repeat(256 * 1024) })
-    ).toThrow(/256 KiB/u);
+      encodeRemoteControlJson({ value: "x".repeat(512 * 1024) })
+    ).not.toThrow();
+    expect(() =>
+      encodeRemoteControlJson({ value: "x".repeat(1024 * 1024) })
+    ).toThrow(/hard limit/u);
   });
 });

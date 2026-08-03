@@ -4,6 +4,12 @@ import { chmod, lstat, mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { isAbsolute, join, posix } from "node:path";
 
 import {
+  AGENT_INTEGRATION_PLANNER_CONTRACT,
+  planAgentIntegrationSnapshot,
+  type AgentIntegrationPlannerVendor,
+  type AgentIntegrationSnapshot
+} from "@kmux/agent-integration/planner";
+import {
   decodeAgentIntegrationDiagnostic,
   REMOTE_PROTOCOL_VERSION,
   type AgentIntegrationDiagnosticDto,
@@ -34,6 +40,13 @@ const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const BOOTSTRAP_COMMAND_TIMEOUT_MS = 30_000;
 const BOOTSTRAP_SFTP_TIMEOUT_MS = 2 * 60_000;
+const AGENT_INTEGRATION_PLANNER_CAPABILITY =
+  "agent-integration-snapshot-apply-v1";
+const MAX_AGENT_INTEGRATION_SETTINGS_BYTES = 4 * 1024 * 1024;
+const MAX_AGENT_INTEGRATION_SNAPSHOT_BYTES =
+  6 * MAX_AGENT_INTEGRATION_SETTINGS_BYTES + 256 * 1024;
+const MAX_AGENT_INTEGRATION_APPLY_REQUEST_BYTES =
+  2 * MAX_AGENT_INTEGRATION_SETTINGS_BYTES + 128 * 1024;
 
 export type RemoteRuntimeBootstrapErrorCode =
   | "invalid-request"
@@ -912,18 +925,121 @@ async function reconcileRemoteAgentIntegration(
   runtimePath: string,
   remoteHome: string
 ): Promise<AgentIntegrationDiagnosticDto> {
+  let plannerAvailable = false;
+  try {
+    const capabilities = parseJsonObject(
+      (
+        await runHelperCommand(
+          options,
+          policy,
+          runtimePath,
+          ["capabilities", "--json"],
+          { maxOutputBytes: 64 * 1024 }
+        )
+      ).stdout,
+      "remote runtime capabilities"
+    );
+    assertExactKeys(capabilities, [
+      "agentIntegrationContractVersion",
+      "capabilities",
+      "runtimeVersion"
+    ]);
+    if (
+      typeof capabilities.runtimeVersion !== "string" ||
+      capabilities.runtimeVersion.length === 0 ||
+      Buffer.byteLength(capabilities.runtimeVersion, "utf8") > 256 ||
+      !Array.isArray(capabilities.capabilities) ||
+      capabilities.capabilities.length > 64 ||
+      !capabilities.capabilities.every(
+        (value) =>
+          typeof value === "string" &&
+          value.length > 0 &&
+          Buffer.byteLength(value, "utf8") <= 256
+      ) ||
+      !Number.isSafeInteger(capabilities.agentIntegrationContractVersion)
+    ) {
+      throw new TypeError("remote runtime capabilities are invalid");
+    }
+    plannerAvailable = capabilities.capabilities.includes(
+      AGENT_INTEGRATION_PLANNER_CAPABILITY
+    );
+  } catch {
+    return await reconcileRemoteAgentIntegrationLegacy(
+      options,
+      policy,
+      runtimePath,
+      remoteHome
+    );
+  }
+
+  if (!plannerAvailable) {
+    return await reconcileRemoteAgentIntegrationLegacy(
+      options,
+      policy,
+      runtimePath,
+      remoteHome
+    );
+  }
+
+  try {
+    const report = await fetchRemoteAgentIntegrationSnapshot(
+      options,
+      policy,
+      runtimePath,
+      remoteHome
+    );
+    const vendors = [];
+    for (const snapshot of report.vendors) {
+      try {
+        vendors.push(
+          await reconcileRemoteAgentIntegrationVendor(
+            options,
+            policy,
+            runtimePath,
+            remoteHome,
+            snapshot,
+            false
+          )
+        );
+      } catch (error) {
+        vendors.push({
+          vendor: snapshot.vendor,
+          path: snapshot.path,
+          status: "degraded" as const,
+          contractVersion: report.contractVersion,
+          warning: boundedAgentIntegrationWarning(error)
+        });
+      }
+    }
+    return decodeAgentIntegrationDiagnostic({
+      status: vendors.some((vendor) => vendor.status === "degraded")
+        ? "degraded"
+        : "ready",
+      contractVersion: report.contractVersion,
+      agentBinDir: report.agentBinDir,
+      vendors
+    });
+  } catch (error) {
+    return decodeAgentIntegrationDiagnostic({
+      status: "degraded",
+      vendors: [],
+      warning: boundedAgentIntegrationWarning(error)
+    });
+  }
+}
+
+async function reconcileRemoteAgentIntegrationLegacy(
+  options: PrepareRemoteRuntimeOptions,
+  policy: BootstrapShellPolicy,
+  runtimePath: string,
+  remoteHome: string
+): Promise<AgentIntegrationDiagnosticDto> {
   try {
     const result = await runHelperCommand(
       options,
       policy,
       runtimePath,
-      [
-        "agent-integration",
-        "ensure",
-        "--json",
-        "--home",
-        remoteHome
-      ],
+      ["agent-integration", "ensure", "--json", "--home", remoteHome],
       { maxOutputBytes: 256 * 1024 }
     );
     const report = parseJsonObject(
@@ -951,6 +1067,275 @@ async function reconcileRemoteAgentIntegration(
       warning: boundedAgentIntegrationWarning(error)
     });
   }
+}
+
+interface RemoteAgentIntegrationSnapshotReport {
+  contractVersion: number;
+  agentBinDir: string;
+  vendors: RemoteAgentIntegrationVendorSnapshot[];
+}
+
+type RemoteAgentIntegrationVendorSnapshot =
+  | (AgentIntegrationSnapshot & { warning?: never })
+  | {
+      vendor: AgentIntegrationPlannerVendor;
+      path: string;
+      state: "degraded";
+      warning: string;
+    };
+
+async function fetchRemoteAgentIntegrationSnapshot(
+  options: PrepareRemoteRuntimeOptions,
+  policy: BootstrapShellPolicy,
+  runtimePath: string,
+  remoteHome: string
+): Promise<RemoteAgentIntegrationSnapshotReport> {
+  const result = await runHelperCommand(
+    options,
+    policy,
+    runtimePath,
+    ["agent-integration", "snapshot", "--json", "--home", remoteHome],
+    { maxOutputBytes: MAX_AGENT_INTEGRATION_SNAPSHOT_BYTES }
+  );
+  const report = parseJsonObject(
+    result.stdout,
+    "remote agent integration snapshot",
+    MAX_AGENT_INTEGRATION_SNAPSHOT_BYTES
+  );
+  assertExactKeys(report, ["agentBinDir", "contractVersion", "vendors"]);
+  if (
+    report.contractVersion !==
+      AGENT_INTEGRATION_PLANNER_CONTRACT.contractVersion ||
+    typeof report.agentBinDir !== "string" ||
+    !isAbsolute(report.agentBinDir) ||
+    containsAsciiControl(report.agentBinDir) ||
+    Buffer.byteLength(report.agentBinDir, "utf8") > 32 * 1024 ||
+    !Array.isArray(report.vendors) ||
+    report.vendors.length !== 3
+  ) {
+    throw new TypeError("remote agent integration snapshot is invalid");
+  }
+
+  const seen = new Set<AgentIntegrationPlannerVendor>();
+  const vendors = report.vendors.map((value) => {
+    const vendor = decodeRemoteAgentIntegrationVendorSnapshot(value);
+    if (seen.has(vendor.vendor)) {
+      throw new TypeError(
+        "remote agent integration snapshot vendor is duplicated"
+      );
+    }
+    seen.add(vendor.vendor);
+    return vendor;
+  });
+  if (seen.size !== 3) {
+    throw new TypeError(
+      "remote agent integration snapshot vendor set is incomplete"
+    );
+  }
+  return {
+    contractVersion: report.contractVersion,
+    agentBinDir: report.agentBinDir,
+    vendors
+  };
+}
+
+function decodeRemoteAgentIntegrationVendorSnapshot(
+  value: unknown
+): RemoteAgentIntegrationVendorSnapshot {
+  const snapshot = requireRecord(
+    value,
+    "remote agent integration vendor snapshot"
+  );
+  assertAllowedKeys(snapshot, [
+    "content",
+    "path",
+    "sha256",
+    "state",
+    "vendor",
+    "warning"
+  ]);
+  if (
+    (snapshot.vendor !== "claude" &&
+      snapshot.vendor !== "codex" &&
+      snapshot.vendor !== "antigravity") ||
+    typeof snapshot.path !== "string" ||
+    !isAbsolute(snapshot.path) ||
+    containsAsciiControl(snapshot.path) ||
+    Buffer.byteLength(snapshot.path, "utf8") > 32 * 1024
+  ) {
+    throw new TypeError("remote agent integration vendor snapshot is invalid");
+  }
+  const vendor = snapshot.vendor;
+  const path = snapshot.path;
+  if (snapshot.state === "degraded") {
+    if (
+      typeof snapshot.warning !== "string" ||
+      snapshot.warning.length === 0 ||
+      Buffer.byteLength(snapshot.warning, "utf8") > 4 * 1024 ||
+      snapshot.content !== undefined ||
+      snapshot.sha256 !== undefined
+    ) {
+      throw new TypeError("degraded agent integration snapshot is invalid");
+    }
+    return { vendor, path, state: "degraded", warning: snapshot.warning };
+  }
+  if (snapshot.warning !== undefined) {
+    throw new TypeError("healthy agent integration snapshot has a warning");
+  }
+  if (snapshot.state === "absent") {
+    if (snapshot.content !== undefined || snapshot.sha256 !== undefined) {
+      throw new TypeError("absent agent integration snapshot has file data");
+    }
+    return { vendor, path, state: "absent" };
+  }
+  if (
+    snapshot.state !== "present" ||
+    typeof snapshot.content !== "string" ||
+    Buffer.byteLength(snapshot.content, "utf8") >
+      MAX_AGENT_INTEGRATION_SETTINGS_BYTES ||
+    typeof snapshot.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(snapshot.sha256)
+  ) {
+    throw new TypeError("present agent integration snapshot is invalid");
+  }
+  return {
+    vendor,
+    path,
+    state: "present",
+    content: snapshot.content,
+    sha256: snapshot.sha256
+  };
+}
+
+async function reconcileRemoteAgentIntegrationVendor(
+  options: PrepareRemoteRuntimeOptions,
+  policy: BootstrapShellPolicy,
+  runtimePath: string,
+  remoteHome: string,
+  snapshot: RemoteAgentIntegrationVendorSnapshot,
+  retried: boolean
+): Promise<{
+  vendor: AgentIntegrationPlannerVendor;
+  path: string;
+  status: "changed" | "current" | "degraded";
+  contractVersion: number;
+  warning?: string;
+}> {
+  const contractVersion = AGENT_INTEGRATION_PLANNER_CONTRACT.contractVersion;
+  if (snapshot.state === "degraded") {
+    return {
+      vendor: snapshot.vendor,
+      path: snapshot.path,
+      status: "degraded",
+      contractVersion,
+      warning: snapshot.warning
+    };
+  }
+
+  let plan;
+  try {
+    plan = planAgentIntegrationSnapshot(snapshot);
+  } catch (error) {
+    return {
+      vendor: snapshot.vendor,
+      path: snapshot.path,
+      status: "degraded",
+      contractVersion,
+      warning: boundedAgentIntegrationWarning(error)
+    };
+  }
+  if (!plan.changed) {
+    return {
+      vendor: snapshot.vendor,
+      path: snapshot.path,
+      status: "current",
+      contractVersion
+    };
+  }
+
+  const operationId = randomBytes(16).toString("hex");
+  const applyRequest = JSON.stringify({
+    operationId,
+    contractVersion: plan.contractVersion,
+    vendor: plan.vendor,
+    path: plan.path,
+    expected: plan.expected,
+    content: plan.desiredContent
+  });
+  const result = await runHelperCommand(
+    options,
+    policy,
+    runtimePath,
+    ["agent-integration", "apply", "--json", "--home", remoteHome],
+    {
+      input: applyRequest,
+      maxInputBytes: MAX_AGENT_INTEGRATION_APPLY_REQUEST_BYTES,
+      maxOutputBytes: 64 * 1024
+    }
+  );
+  const applied = parseJsonObject(
+    result.stdout,
+    "remote agent integration apply"
+  );
+  assertAllowedKeys(applied, [
+    "contractVersion",
+    "operationId",
+    "path",
+    "sha256",
+    "status",
+    "vendor"
+  ]);
+  if (
+    applied.operationId !== operationId ||
+    applied.contractVersion !== contractVersion ||
+    applied.vendor !== snapshot.vendor ||
+    applied.path !== snapshot.path ||
+    (applied.status !== "changed" &&
+      applied.status !== "current" &&
+      applied.status !== "conflict") ||
+    (applied.sha256 !== undefined &&
+      (typeof applied.sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(applied.sha256)))
+  ) {
+    throw new TypeError("remote agent integration apply response is invalid");
+  }
+  if (applied.status !== "conflict") {
+    return {
+      vendor: snapshot.vendor,
+      path: snapshot.path,
+      status: applied.status,
+      contractVersion
+    };
+  }
+  if (retried) {
+    return {
+      vendor: snapshot.vendor,
+      path: snapshot.path,
+      status: "degraded",
+      contractVersion,
+      warning: "settings changed twice while kmux was reconciling hooks"
+    };
+  }
+  const refreshed = await fetchRemoteAgentIntegrationSnapshot(
+    options,
+    policy,
+    runtimePath,
+    remoteHome
+  );
+  const next = refreshed.vendors.find(
+    (vendor) => vendor.vendor === snapshot.vendor
+  );
+  if (!next) {
+    throw new TypeError("refreshed agent integration snapshot is incomplete");
+  }
+  return await reconcileRemoteAgentIntegrationVendor(
+    options,
+    policy,
+    runtimePath,
+    remoteHome,
+    next,
+    true
+  );
 }
 
 function boundedAgentIntegrationWarning(error: unknown): string {
@@ -1452,10 +1837,14 @@ function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function parseJsonObject(value: string, name: string): Record<string, unknown> {
+function parseJsonObject(
+  value: string,
+  name: string,
+  maxBytes = 1024 * 1024
+): Record<string, unknown> {
   if (
     typeof value !== "string" ||
-    Buffer.byteLength(value, "utf8") > 1024 * 1024
+    Buffer.byteLength(value, "utf8") > maxBytes
   ) {
     throw new RemoteRuntimeBootstrapError(
       "bootstrap-failed",
@@ -1493,6 +1882,16 @@ function assertExactKeys(
     throw new TypeError(
       "remote bootstrap object has unknown or missing fields"
     );
+  }
+}
+
+function assertAllowedKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[]
+): void {
+  const allowedSet = new Set(allowed);
+  if (Object.keys(record).some((key) => !allowedSet.has(key))) {
+    throw new TypeError("remote bootstrap object has unknown fields");
   }
 }
 

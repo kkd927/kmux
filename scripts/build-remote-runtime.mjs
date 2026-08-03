@@ -87,9 +87,11 @@ async function buildLinuxArtifact(temporaryRoot) {
   const contextRoot = join(temporaryRoot, "context");
   const contextSource = join(contextRoot, "remote", "kmuxd");
   const contextContract = join(contextRoot, "packages", "agent-integration");
+  const contextMetadata = join(contextRoot, "packages", "metadata");
   const artifactRoot = join(temporaryRoot, "artifact");
   await mkdir(dirname(contextSource), { recursive: true });
   await mkdir(dirname(contextContract), { recursive: true });
+  await mkdir(contextMetadata, { recursive: true });
   await cp(sourceDirectory, contextSource, {
     recursive: true,
     filter: (path) =>
@@ -100,6 +102,10 @@ async function buildLinuxArtifact(temporaryRoot) {
     join(repositoryRoot, "packages", "agent-integration"),
     contextContract,
     { recursive: true }
+  );
+  await copyFile(
+    join(repositoryRoot, "packages", "metadata", "source-contract.json"),
+    join(contextMetadata, "source-contract.json")
   );
   await execFileAsync(
     process.env.KMUX_DOCKER_PATH ?? "docker",
@@ -143,7 +149,7 @@ async function buildDarwinArtifact() {
       contract.rustTarget
     ],
     {
-      cwd: repositoryRoot,
+      cwd: sourceDirectory,
       maxBuffer: 16 * 1024 * 1024,
       timeout: 15 * 60 * 1000
     }

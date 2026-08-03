@@ -47,6 +47,7 @@ import {
   spawnMuxOnlyChannel,
   type MuxOnlyChannelRequest
 } from "./muxOnlyOpenSshChannel";
+import { OpenSshProcessError } from "./openSshProcess";
 import {
   buildBootstrapHelperCommand,
   type BootstrapShellPolicy
@@ -75,6 +76,7 @@ const MAX_PENDING_TERMINAL_MUTATION_BYTES = 4 * 1024 * 1024;
 const MAX_CHANNEL_STDERR_TAIL_BYTES = 64 * 1024;
 const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v2";
 const OWNED_AGENT_SESSIONS_CAPABILITY = "agent-sessions.kmux-owned-v1";
+export const AGENT_METADATA_SOURCES_CAPABILITY = "agent-metadata-sources-v1";
 
 export class RemoteRuntimeError extends Error {
   constructor(
@@ -197,6 +199,21 @@ export type RemoteHistoryScan = Extract<
 export type RemoteUsageScan = Extract<
   RemoteBridgeResponseBody,
   { type: "usage.scanned" }
+>;
+
+export type RemoteMetadataSourcesList = Extract<
+  RemoteBridgeResponseBody,
+  { type: "metadata.sources.listed" }
+>;
+
+export type RemoteMetadataSourceRead = Extract<
+  RemoteBridgeResponseBody,
+  { type: "metadata.sources.read" }
+>;
+
+export type RemoteMetadataSourceQuery = Extract<
+  RemoteBridgeResponseBody,
+  { type: "metadata.sources.queried" }
 >;
 
 export type RemoteDesiredForwards = Extract<
@@ -479,6 +496,126 @@ export class LinuxX64RemoteRuntime {
       throw new RemoteRuntimeError(
         "protocol-error",
         "bridge returned the wrong usage scan response",
+        false
+      );
+    }
+    return body;
+  }
+
+  async listMetadataSources(options: {
+    desktopInstallationId: Id;
+    targetId: Id;
+    purpose: "usage" | "history";
+    agentSettings?: AgentScopeSettings;
+  }): Promise<RemoteMetadataSourcesList> {
+    if (options.targetId !== this.options.assigned.targetId) {
+      throw new RemoteRuntimeError(
+        "target-mismatch",
+        "metadata source target does not match the assigned SSH master",
+        false
+      );
+    }
+    const bridge = await this.requireMetadataBridge();
+    if (!this.metadataCapabilities.has(AGENT_METADATA_SOURCES_CAPABILITY)) {
+      throw new RemoteRuntimeError(
+        "upgrade-required",
+        "The remote kmux runtime does not expose metadata source handles.",
+        false
+      );
+    }
+    requireAgentSettingsScanCapability(
+      options.agentSettings,
+      this.metadataCapabilities
+    );
+    const body = await bridge.request({
+      type: "metadata.sources.list",
+      ...structuredClone(options)
+    });
+    if (
+      body.type !== "metadata.sources.listed" ||
+      body.targetId !== options.targetId ||
+      body.purpose !== options.purpose
+    ) {
+      throw new RemoteRuntimeError(
+        "protocol-error",
+        "bridge returned the wrong metadata source inventory",
+        false
+      );
+    }
+    return body;
+  }
+
+  async readMetadataSource(options: {
+    sourceId: Id;
+    offset: number;
+    maxBytes: number;
+  }): Promise<RemoteMetadataSourceRead> {
+    if (
+      !Number.isSafeInteger(options.offset) ||
+      options.offset < 0 ||
+      !Number.isSafeInteger(options.maxBytes) ||
+      options.maxBytes < 1 ||
+      options.maxBytes > 256 * 1024
+    ) {
+      throw new RemoteRuntimeError(
+        "invalid-request",
+        "metadata source read bounds are invalid",
+        false
+      );
+    }
+    const body = await (
+      await this.requireMetadataBridge()
+    ).request({
+      type: "metadata.sources.read",
+      sourceId: options.sourceId,
+      offset: options.offset.toString(10),
+      maxBytes: options.maxBytes
+    });
+    if (
+      body.type !== "metadata.sources.read" ||
+      body.sourceId !== options.sourceId ||
+      Number(body.offset) !== options.offset
+    ) {
+      throw new RemoteRuntimeError(
+        "protocol-error",
+        "bridge returned the wrong metadata source chunk",
+        false
+      );
+    }
+    return body;
+  }
+
+  async queryMetadataSource(options: {
+    sourceId: Id;
+    queryId: string;
+    pageToken?: string;
+    maxRows: number;
+  }): Promise<RemoteMetadataSourceQuery> {
+    if (
+      !Number.isSafeInteger(options.maxRows) ||
+      options.maxRows < 1 ||
+      options.maxRows > 512
+    ) {
+      throw new RemoteRuntimeError(
+        "invalid-request",
+        "metadata source query bound is invalid",
+        false
+      );
+    }
+    const body = await (
+      await this.requireMetadataBridge()
+    ).request({
+      type: "metadata.sources.query",
+      ...structuredClone(options)
+    });
+    if (
+      body.type !== "metadata.sources.queried" ||
+      body.sourceId !== options.sourceId ||
+      body.queryId !== options.queryId
+    ) {
+      throw new RemoteRuntimeError(
+        "protocol-error",
+        "bridge returned the wrong metadata source query page",
         false
       );
     }
@@ -909,16 +1046,26 @@ export class LinuxX64RemoteRuntime {
   }
 
   private async openMetadataBridge(): Promise<BridgeConnection> {
-    const child = await spawnMuxOnlyChannel(
-      this.channelRequest("metadata", ["bridge", "serve"]),
-      {
-        isCurrentGeneration: (generation) =>
-          this.options.pool.isCurrentGeneration(
-            this.options.assigned.targetId,
-            generation
-          )
+    let child: ChildProcess;
+    try {
+      child = await spawnMuxOnlyChannel(
+        this.channelRequest("metadata", ["bridge", "serve"]),
+        {
+          isCurrentGeneration: (generation) =>
+            this.options.pool.isCurrentGeneration(
+              this.options.assigned.targetId,
+              generation
+            )
+        }
+      );
+    } catch (error) {
+      if (error instanceof OpenSshProcessError) {
+        throw new RemoteRuntimeError(error.code, error.message, true, {
+          cause: error
+        });
       }
-    );
+      throw error;
+    }
     const bridge = new BridgeConnection(child, this.options);
     try {
       const hello = await bridge.request({ type: "hello" });

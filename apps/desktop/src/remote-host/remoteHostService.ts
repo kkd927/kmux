@@ -10,10 +10,12 @@ import {
   type RemoteHostTargetVerifyRequest
 } from "../shared/remoteHostProtocol";
 import {
+  AGENT_METADATA_SOURCES_CAPABILITY,
   LinuxX64RemoteRuntime,
   RemoteRuntimeError,
   type LinuxX64RemoteRuntimeOptions
 } from "./linuxX64RemoteRuntime";
+import { RemoteMetadataSession } from "./remoteMetadataSession";
 import {
   RemoteTerminalDataPlaneAdapter,
   type RemoteTerminalDataPortLike
@@ -46,6 +48,7 @@ interface TargetRuntime {
   runtime: RemoteHostRuntimeLike;
   hello: Awaited<ReturnType<LinuxX64RemoteRuntime["connect"]>>;
   prepared: PreparedRemoteRuntime;
+  metadataSession?: RemoteMetadataSession;
 }
 
 interface TargetVerification {
@@ -82,7 +85,13 @@ type RemoteHostRuntimeLike = Pick<
   | "pruneRemoteAttachments"
   | "attach"
   | "close"
->;
+> &
+  Partial<
+    Pick<
+      LinuxX64RemoteRuntime,
+      "listMetadataSources" | "readMetadataSource" | "queryMetadataSource"
+    >
+  >;
 
 export interface RemoteHostServiceDependencies {
   pool?: SshTransportPool;
@@ -281,9 +290,7 @@ export class RemoteHostService {
           remoteHome: verified.prepared.remoteHome,
           roots: structuredClone(verified.prepared.roots),
           doctor: structuredClone(verified.prepared.doctor),
-          agentIntegration: structuredClone(
-            verified.prepared.agentIntegration
-          )
+          agentIntegration: structuredClone(verified.prepared.agentIntegration)
         });
         return;
       }
@@ -365,14 +372,24 @@ export class RemoteHostService {
       }
       case "history.scan": {
         const target = this.requireTarget(request.targetId);
-        const scan = await target.runtime.scanHistory({
+        const scanRequest = {
           desktopInstallationId: request.desktopInstallationId,
           targetId: request.targetId,
           maxRecords: request.maxRecords,
           ...(request.agentSettings === undefined
             ? {}
             : { agentSettings: request.agentSettings })
-        });
+        };
+        const scan = target.metadataSession
+          ? await target.metadataSession
+              .scanHistory({
+                maxRecords: request.maxRecords,
+                ...(request.agentSettings === undefined
+                  ? {}
+                  : { agentSettings: request.agentSettings })
+              })
+              .catch(async () => await target.runtime.scanHistory(scanRequest))
+          : await target.runtime.scanHistory(scanRequest);
         this.respondOk(request.requestId, {
           type: "history.scanned",
           targetId: request.targetId,
@@ -382,7 +399,7 @@ export class RemoteHostService {
       }
       case "usage.scan": {
         const target = this.requireTarget(request.targetId);
-        const scan = await target.runtime.scanUsage({
+        const scanRequest = {
           desktopInstallationId: request.desktopInstallationId,
           targetId: request.targetId,
           startAtUnixMs: request.startAtUnixMs,
@@ -390,7 +407,18 @@ export class RemoteHostService {
           ...(request.agentSettings === undefined
             ? {}
             : { agentSettings: request.agentSettings })
-        });
+        };
+        const scan = target.metadataSession
+          ? await target.metadataSession
+              .scanUsage({
+                startAtUnixMs: request.startAtUnixMs,
+                maxRecords: request.maxRecords,
+                ...(request.agentSettings === undefined
+                  ? {}
+                  : { agentSettings: request.agentSettings })
+              })
+              .catch(async () => await target.runtime.scanUsage(scanRequest))
+          : await target.runtime.scanUsage(scanRequest);
         this.respondOk(request.requestId, {
           type: "usage.scanned",
           targetId: request.targetId,
@@ -839,10 +867,17 @@ export class RemoteHostService {
           : { sftpPath: verification.request.sftpPath })
       });
       const hello = await runtime.connect();
+      const metadataSession = createRemoteMetadataSession({
+        runtime,
+        hello,
+        desktopInstallationId: request.desktopInstallationId,
+        targetId: request.targetId
+      });
       this.targets.set(request.targetId, {
         runtime,
         hello,
-        prepared: verification.prepared
+        prepared: verification.prepared,
+        ...(metadataSession === undefined ? {} : { metadataSession })
       });
       await existing?.runtime.close().catch(() => undefined);
       void verification.prepared.runGenerationGc().catch(() => undefined);
@@ -1002,6 +1037,7 @@ export class RemoteHostService {
   private async disconnectTarget(targetId: Id): Promise<void> {
     await this.disposeTargetAttachments(targetId);
     const target = this.targets.get(targetId);
+    target?.metadataSession?.clear();
     this.targets.delete(targetId);
     const cleanup = await Promise.allSettled([
       target?.runtime.close(),
@@ -1183,6 +1219,35 @@ export class RemoteHostService {
       }
     });
   }
+}
+
+function createRemoteMetadataSession(options: {
+  runtime: RemoteHostRuntimeLike;
+  hello: TargetRuntime["hello"];
+  desktopInstallationId: Id;
+  targetId: Id;
+}): RemoteMetadataSession | undefined {
+  if (
+    process.env.KMUX_REMOTE_METADATA_LEGACY === "1" ||
+    !options.hello.capabilities.includes(AGENT_METADATA_SOURCES_CAPABILITY) ||
+    typeof options.runtime.listMetadataSources !== "function" ||
+    typeof options.runtime.readMetadataSource !== "function" ||
+    typeof options.runtime.queryMetadataSource !== "function"
+  ) {
+    return undefined;
+  }
+  return new RemoteMetadataSession({
+    runtime: options.runtime as RemoteHostRuntimeLike &
+      Required<
+        Pick<
+          LinuxX64RemoteRuntime,
+          "listMetadataSources" | "readMetadataSource" | "queryMetadataSource"
+        >
+      >,
+    desktopInstallationId: options.desktopInstallationId,
+    targetId: options.targetId,
+    principal: { ...options.hello.authority.authenticatedPrincipal }
+  });
 }
 
 function requestQueueKey(

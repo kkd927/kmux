@@ -12,17 +12,26 @@ export default defineConfig({
         currentDir,
         "packages/core/src/main/pathAccess.ts"
       ),
-      "@kmux/core/main": resolve(
-        currentDir,
-        "packages/core/src/main/index.ts"
-      ),
+      "@kmux/core/main": resolve(currentDir, "packages/core/src/main/index.ts"),
       "@kmux/core": resolve(currentDir, "packages/core/src/index.ts"),
       "@kmux/proto": resolve(currentDir, "packages/proto/src/index.ts"),
       "@kmux/persistence": resolve(
         currentDir,
         "packages/persistence/src/index.ts"
       ),
+      "@kmux/metadata/core": resolve(
+        currentDir,
+        "packages/metadata/src/core/index.ts"
+      ),
+      "@kmux/metadata/node": resolve(
+        currentDir,
+        "packages/metadata/src/node/index.ts"
+      ),
       "@kmux/metadata": resolve(currentDir, "packages/metadata/src/index.ts"),
+      "@kmux/agent-integration/planner": resolve(
+        currentDir,
+        "packages/agent-integration/src/planner.ts"
+      ),
       "@kmux/ui": resolve(currentDir, "packages/ui/src/index.ts")
     }
   },

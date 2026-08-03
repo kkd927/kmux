@@ -12,41 +12,33 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
-import rawContract from "../contract.json";
+import {
+  AGENT_INTEGRATION_PLANNER_CONTRACT,
+  buildPlannedAgentHookCommand,
+  mergePlannedAgentIntegrationConfig,
+  planAgentIntegrationSnapshot,
+  type AgentIntegrationPlannerContract,
+  type AgentIntegrationPlannerVendor
+} from "./planner";
 
-export type AgentIntegrationVendor = "claude" | "codex" | "antigravity";
+export {
+  AGENT_INTEGRATION_PLANNER_CONTRACT,
+  buildPlannedAgentHookCommand,
+  mergePlannedAgentIntegrationConfig,
+  planAgentIntegrationSnapshot
+} from "./planner";
+export type {
+  AgentIntegrationPlan,
+  AgentIntegrationPlannerContract,
+  AgentIntegrationPlannerVendor,
+  AgentIntegrationSnapshot
+} from "./planner";
+
+export type AgentIntegrationVendor = AgentIntegrationPlannerVendor;
 
 type JsonObject = Record<string, unknown>;
 
-interface HookSpec {
-  event: string;
-  matcher?: string;
-}
-
-interface VendorContract {
-  format: "grouped-hooks" | "namespaced-hooks";
-  relativePath: string;
-  namespace?: string;
-  marker: string;
-  managed: HookSpec[];
-  deprecated: string[];
-  outputMode: "silent" | "json";
-  fallback?: string;
-  fallbackByEvent?: Record<string, string>;
-}
-
-export interface AgentIntegrationContract {
-  contractVersion: number;
-  commandTemplate: string;
-  codexWrapper: {
-    contractMarker: string;
-    legacyHooksFeature: string;
-    currentHooksFeature: string;
-    currentHooksFeatureMinor: number;
-    notificationMethod: string;
-  };
-  vendors: Record<AgentIntegrationVendor, VendorContract>;
-}
+export type AgentIntegrationContract = AgentIntegrationPlannerContract;
 
 export interface AgentIntegrationPaths {
   claude: string;
@@ -67,9 +59,7 @@ export interface EnsureAgentIntegrationsOptions {
   paths?: Partial<AgentIntegrationPaths>;
 }
 
-export const AGENT_INTEGRATION_CONTRACT = Object.freeze(
-  rawContract as AgentIntegrationContract
-);
+export const AGENT_INTEGRATION_CONTRACT = AGENT_INTEGRATION_PLANNER_CONTRACT;
 
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 5_000;
@@ -94,28 +84,14 @@ export function buildAgentHookCommand(
   vendor: AgentIntegrationVendor,
   event: string
 ): string {
-  const definition = AGENT_INTEGRATION_CONTRACT.vendors[vendor];
-  const fallback =
-    definition.fallbackByEvent?.[event] ?? definition.fallback ?? "true";
-  return AGENT_INTEGRATION_CONTRACT.commandTemplate
-    .replace("{marker}", definition.marker)
-    .replace("{outputMode}", definition.outputMode)
-    .replace("{agent}", vendor)
-    .replace("{event}", event)
-    .replaceAll("{fallback}", fallback);
+  return buildPlannedAgentHookCommand(vendor, event);
 }
 
 export function mergeAgentIntegrationConfig(
   vendor: AgentIntegrationVendor,
   input: unknown
 ): JsonObject {
-  if (!isPlainObject(input)) {
-    throw new TypeError(`${vendor} agent integration config must be an object`);
-  }
-  const definition = AGENT_INTEGRATION_CONTRACT.vendors[vendor];
-  return definition.format === "namespaced-hooks"
-    ? mergeNamespacedHooks(vendor, definition, input)
-    : mergeGroupedHooks(vendor, definition, input);
+  return mergePlannedAgentIntegrationConfig(vendor, input);
 }
 
 export function ensureAgentIntegrations(
@@ -191,14 +167,21 @@ function ensureVendorFile(
         }
         existing = parsed;
       }
-      const next = mergeAgentIntegrationConfig(vendor, existing);
-      if (JSON.stringify(existing) === JSON.stringify(next)) {
+      const plan = planAgentIntegrationSnapshot({
+        vendor,
+        path,
+        state: fileDescriptor === undefined ? "absent" : "present",
+        ...(fileDescriptor === undefined
+          ? {}
+          : { content: JSON.stringify(existing) })
+      });
+      if (!plan.changed) {
         return current(vendor, path);
       }
       if (existingMode !== undefined && (existingMode & 0o200) === 0) {
         return degraded(vendor, path, `${path} is not user-writable`);
       }
-      atomicWrite(path, `${JSON.stringify(next, null, 2)}\n`);
+      atomicWrite(path, plan.desiredContent);
       return changed(vendor, path);
     });
   } catch (error) {
@@ -208,123 +191,6 @@ function ensureVendorFile(
       error instanceof Error ? error.message : String(error)
     );
   }
-}
-
-function mergeGroupedHooks(
-  vendor: AgentIntegrationVendor,
-  definition: VendorContract,
-  input: JsonObject
-): JsonObject {
-  if (input.hooks !== undefined && !isPlainObject(input.hooks)) {
-    throw new TypeError(`${vendor} hooks must be an object`);
-  }
-  const existingHooks = isPlainObject(input.hooks) ? input.hooks : {};
-  for (const hook of definition.managed) {
-    const existing = existingHooks[hook.event];
-    if (existing !== undefined && !Array.isArray(existing)) {
-      throw new TypeError(`${vendor} hooks.${hook.event} must be an array`);
-    }
-  }
-  const nextHooks: JsonObject = { ...existingHooks };
-  for (const [event, groups] of Object.entries(existingHooks)) {
-    const pruned = pruneManagedEntries(groups, definition.marker);
-    if (Array.isArray(pruned) && pruned.length === 0) {
-      delete nextHooks[event];
-    } else {
-      nextHooks[event] = pruned;
-    }
-  }
-  for (const hook of definition.managed) {
-    const currentGroups = Array.isArray(nextHooks[hook.event])
-      ? (nextHooks[hook.event] as unknown[])
-      : [];
-    nextHooks[hook.event] = [
-      ...currentGroups,
-      {
-        ...(hook.matcher ? { matcher: hook.matcher } : {}),
-        hooks: [managedCommand(vendor, hook.event)]
-      }
-    ];
-  }
-  return { ...input, hooks: nextHooks };
-}
-
-function mergeNamespacedHooks(
-  vendor: AgentIntegrationVendor,
-  definition: VendorContract,
-  input: JsonObject
-): JsonObject {
-  const namespace = definition.namespace;
-  if (!namespace) throw new Error(`${vendor} namespace is missing`);
-  if (input[namespace] !== undefined && !isPlainObject(input[namespace])) {
-    throw new TypeError(`${vendor} ${namespace} must be an object`);
-  }
-  const existingNamespace = isPlainObject(input[namespace])
-    ? input[namespace]
-    : {};
-  for (const hook of definition.managed) {
-    const existing = existingNamespace[hook.event];
-    if (existing !== undefined && !Array.isArray(existing)) {
-      throw new TypeError(
-        `${vendor} ${namespace}.${hook.event} must be an array`
-      );
-    }
-  }
-  const pruned = pruneManagedEntries(input, definition.marker);
-  const next = isPlainObject(pruned) ? { ...pruned } : {};
-  const managedNamespace = isPlainObject(next[namespace])
-    ? { ...(next[namespace] as JsonObject) }
-    : {};
-  for (const hook of definition.managed) {
-    const existing = Array.isArray(managedNamespace[hook.event])
-      ? (managedNamespace[hook.event] as unknown[])
-      : [];
-    managedNamespace[hook.event] = [
-      ...existing,
-      ...(hook.matcher
-        ? [
-            {
-              matcher: hook.matcher,
-              hooks: [managedCommand(vendor, hook.event)]
-            }
-          ]
-        : [managedCommand(vendor, hook.event)])
-    ];
-  }
-  next[namespace] = managedNamespace;
-  return next;
-}
-
-function managedCommand(
-  vendor: AgentIntegrationVendor,
-  event: string
-): JsonObject {
-  return { type: "command", command: buildAgentHookCommand(vendor, event) };
-}
-
-function pruneManagedEntries(value: unknown, marker: string): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => pruneManagedEntries(item, marker))
-      .filter((item) => item !== undefined);
-  }
-  if (!isPlainObject(value)) return value;
-  if (typeof value.command === "string" && value.command.includes(marker)) {
-    return undefined;
-  }
-  const next: JsonObject = {};
-  for (const [key, nested] of Object.entries(value)) {
-    const pruned = pruneManagedEntries(nested, marker);
-    if (pruned !== undefined) next[key] = pruned;
-  }
-  if (
-    Array.isArray(value.hooks) &&
-    Array.isArray(next.hooks) &&
-    next.hooks.length === 0
-  ) {
-    return undefined;
-  }
-  return next;
 }
 
 function withSettingsLock<T>(path: string, operation: () => T): T {

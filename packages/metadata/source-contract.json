@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "capability": "agent-metadata-sources-v1",
+  "limits": {
+    "sourceReadBytes": 262144,
+    "responseBytes": 1048576,
+    "queryRows": 512,
+    "queryExecutionMs": 250
+  },
+  "sources": [
+    {
+      "vendor": "codex",
+      "role": "codex-session",
+      "format": "jsonl",
+      "purposes": ["usage", "history"],
+      "pattern": "**/*.jsonl"
+    },
+    {
+      "vendor": "claude",
+      "role": "claude-session",
+      "format": "jsonl",
+      "purposes": ["usage", "history"],
+      "pattern": "**/*.jsonl"
+    },
+    {
+      "vendor": "claude",
+      "role": "claude-subagent",
+      "format": "jsonl",
+      "purposes": ["usage"],
+      "pattern": "**/subagents/*.jsonl"
+    },
+    {
+      "vendor": "antigravity",
+      "role": "antigravity-history",
+      "format": "jsonl",
+      "purposes": ["history"],
+      "pattern": "history.jsonl"
+    },
+    {
+      "vendor": "antigravity",
+      "role": "antigravity-transcript",
+      "format": "jsonl",
+      "purposes": ["usage", "history"],
+      "pattern": "brain/*/.system_generated/logs/transcript.jsonl"
+    },
+    {
+      "vendor": "antigravity",
+      "role": "antigravity-conversation",
+      "format": "sqlite",
+      "purposes": ["history"],
+      "pattern": "conversations/*.db"
+    }
+  ],
+  "queries": {
+    "antigravityConversationSteps": {
+      "id": "antigravity.conversation.steps.v1",
+      "sourceRole": "antigravity-conversation"
+    }
+  }
+}

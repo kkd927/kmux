@@ -27,6 +27,7 @@ import {
   classifySessionInventoryCandidate,
   collectSessionInventory,
   isCodexSubagentSessionMetadata,
+  parseCoreHistorySource,
   readAntigravityConversationMetadataFromInventory,
   resolveAgentSessionRoots,
   resolveAgentStorageRoots,
@@ -95,8 +96,6 @@ interface SessionFileCacheEntry {
 
 const DEFAULT_MAX_FILES_PER_VENDOR = 100;
 const SESSION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_TITLE_LENGTH = 96;
-const MAX_CONVERSATION_PREVIEW_LENGTH = 220;
 const MAX_JSONL_SCAN_BYTES = 256 * 1024;
 const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
 const MAX_SESSION_FILE_CACHE_ENTRIES = 512;
@@ -428,76 +427,15 @@ function parseCodexSessionCandidate(
   if (identity && isCodexSubagentSessionMetadata(identity)) {
     return null;
   }
-  const records = parseJsonlEdges(candidate.path);
-  let sawSessionMeta = false;
-  let sessionId: string | undefined;
-  let cwd: string | undefined;
-  let createdAt: string | undefined;
-  let updatedAt: string | undefined;
-  let metadataTitle: string | undefined;
-  let messageTitle: string | undefined;
-  let recentConversation: string | undefined;
-  let model: string | undefined;
-
-  for (const record of records) {
-    const object = asObject(record);
-    const payload = asObject(object?.payload);
-    const timestamp = pickFirstString(object, ["timestamp"]);
-    if (timestamp) {
-      updatedAt = maxIsoTimestamp(updatedAt, timestamp);
-    }
-    if (object?.type === "session_meta" && payload && !sawSessionMeta) {
-      sawSessionMeta = true;
-      if (isCodexSubagentSessionMetadata(payload)) {
-        return null;
-      }
-      sessionId = pickFirstString(payload, ["id", "session_id", "sessionId"]);
-      cwd = pickFirstString(payload, ["cwd"]);
-      createdAt =
-        pickFirstString(payload, ["timestamp", "createdAt", "startTime"]) ??
-        timestamp;
-      updatedAt =
-        pickFirstString(payload, ["timestamp", "updatedAt", "lastUpdated"]) ??
-        updatedAt;
-    }
-    if (payload?.type === "thread_name_updated") {
-      metadataTitle =
-        sanitizeTitle(
-          pickFirstString(payload, ["thread_name", "threadName", "name"])
-        ) ?? metadataTitle;
-    }
-    if (payload?.type === "user_message") {
-      messageTitle ??= codexUserPromptTitle(payload.message);
-    }
-    if (
-      object?.type === "response_item" &&
-      payload?.type === "message" &&
-      payload.role === "user"
-    ) {
-      messageTitle ??= codexUserPromptTitle(payload.content);
-    }
-    recentConversation =
-      codexConversationPreview(object, payload) ?? recentConversation;
-    model = codexModelFromRecord(object, payload) ?? model;
-  }
-
-  if (!sessionId) {
-    return null;
-  }
-  return buildRecord({
-    vendor: "codex",
-    sessionId,
-    cwd,
-    createdAt,
-    updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-    title: firstMeaningfulSessionTitle(
-      [metadataTitle, messageTitle],
-      sessionId
-    ),
-    recentConversation,
-    model,
-    mtimeMs: candidate.mtimeMs
-  });
+  return (
+    parseCoreHistorySource({
+      vendor: "codex",
+      role: "codex-session",
+      logicalName: basename(candidate.path),
+      mtimeMs: candidate.mtimeMs,
+      records: parseJsonlEdges(candidate.path)
+    })[0] ?? null
+  );
 }
 
 function firstCodexSessionMetadata(
@@ -525,273 +463,17 @@ function listClaudeSessions(
     if (cached) {
       return cached.record ? [cached.record] : [];
     }
-    const records = parseJsonlEdges(candidate.path);
-    let sessionId: string | undefined;
-    let cwd: string | undefined;
-    let createdAt: string | undefined;
-    let updatedAt: string | undefined;
-    let metadataTitle: string | undefined;
-    let promptTitle: string | undefined;
-    let recentConversation: string | undefined;
-    let model: string | undefined;
-
-    for (const record of records) {
-      const object = asObject(record);
-      if (!object) {
-        continue;
-      }
-      sessionId ??= pickFirstString(object, ["sessionId", "session_id", "id"]);
-      cwd ??= pickFirstString(object, ["cwd", "projectRoot"]);
-      const timestamp = pickFirstString(object, [
-        "timestamp",
-        "createdAt",
-        "updatedAt"
-      ]);
-      if (timestamp) {
-        createdAt ??= timestamp;
-        updatedAt = maxIsoTimestamp(updatedAt, timestamp);
-      }
-      metadataTitle = claudeSessionMetadataTitle(object) ?? metadataTitle;
-      const type = pickFirstString(object, ["type", "role"]);
-      if (type === "user" || type === "human") {
-        promptTitle ??= claudeUserPromptTitle(object);
-      }
-      recentConversation =
-        claudeConversationPreview(object) ?? recentConversation;
-      model = claudeModelFromRecord(object) ?? model;
-    }
-
-    if (!sessionId) {
-      sessionId = basename(candidate.path, ".jsonl");
-    }
-    const record = buildRecord({
+    const record = parseCoreHistorySource({
       vendor: "claude",
-      sessionId,
-      cwd,
-      createdAt,
-      updatedAt: recentJsonlActivityTimestamp(updatedAt, candidate.mtimeMs),
-      title: firstMeaningfulSessionTitle(
-        [metadataTitle, promptTitle],
-        sessionId
-      ),
-      recentConversation,
-      model,
-      mtimeMs: candidate.mtimeMs
-    });
+      role: "claude-session",
+      logicalName: basename(candidate.path),
+      mtimeMs: candidate.mtimeMs,
+      records: parseJsonlEdges(candidate.path)
+    })[0];
+    if (!record) return [];
     cacheSessionRecord(cache, candidate, record);
     return [record];
   });
-}
-
-function codexUserPromptTitle(value: unknown): string | undefined {
-  return sanitizeTitle(extractCodexPromptText(value));
-}
-
-function codexConversationPreview(
-  object: Record<string, unknown> | null,
-  payload: Record<string, unknown> | null
-): string | undefined {
-  if (object?.type === "event_msg") {
-    if (payload?.type === "user_message" || payload?.type === "agent_message") {
-      return sanitizeConversationPreview(
-        extractCodexPromptText(payload.message)
-      );
-    }
-    return undefined;
-  }
-  if (
-    object?.type === "response_item" &&
-    payload?.type === "message" &&
-    (payload.role === "user" || payload.role === "assistant")
-  ) {
-    return sanitizeConversationPreview(extractCodexPromptText(payload.content));
-  }
-  return undefined;
-}
-
-function codexModelFromRecord(
-  object: Record<string, unknown> | null,
-  payload: Record<string, unknown> | null
-): string | undefined {
-  if (object?.type !== "turn_context" && payload?.type !== "token_count") {
-    return undefined;
-  }
-  return (
-    pickFirstString(payload, ["model", "model_name", "modelName"]) ??
-    pickFirstString(asObject(payload?.metadata), ["model"]) ??
-    pickFirstString(asObject(payload?.info), ["model"])
-  );
-}
-
-function extractCodexPromptText(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return cleanCodexPromptText(value);
-  }
-  if (Array.isArray(value)) {
-    const parts = value.map(extractCodexPromptText).filter(Boolean);
-    return parts.length > 0 ? parts.join(" ") : undefined;
-  }
-  const object = asObject(value);
-  if (!object) {
-    return undefined;
-  }
-  const type = pickFirstString(object, ["type"]);
-  if (type === "input_text" || type === "text") {
-    return extractCodexPromptText(object.text);
-  }
-  return extractCodexPromptText(
-    object.content ?? object.text ?? object.message
-  );
-}
-
-function cleanCodexPromptText(value: string): string | undefined {
-  if (isCodexInjectedInstructionsText(value)) {
-    return undefined;
-  }
-  const cleaned = value
-    .replace(
-      /<permissions instructions>[\s\S]*?<\/permissions instructions>/gi,
-      "\n"
-    )
-    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "\n")
-    .replace(/<turn_aborted>[\s\S]*?<\/turn_aborted>/gi, "\n")
-    .replace(/<skill>[\s\S]*?<\/skill>/gi, "\n")
-    .replace(
-      /<recommended_plugins(?:\s[^>]*)?>[\s\S]*?<\/recommended_plugins>/gi,
-      "\n"
-    )
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "\n")
-    .trim();
-  if (isCodexInjectedInstructionsText(cleaned)) {
-    return undefined;
-  }
-  return cleaned || undefined;
-}
-
-function isCodexInjectedInstructionsText(value: string): boolean {
-  return /^# [^\r\n]+ instructions for [^\r\n]+\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>\s*$/i.test(
-    value.trim()
-  );
-}
-
-function claudeSessionMetadataTitle(
-  object: Record<string, unknown>
-): string | undefined {
-  const type = pickFirstString(object, ["type", "role"]);
-  if (type === "custom-title") {
-    return sanitizeTitle(
-      pickFirstString(object, ["customTitle", "custom_title", "title"])
-    );
-  }
-  if (
-    type === "summary" ||
-    type === "session-summary" ||
-    type === "session_summary" ||
-    type === "title"
-  ) {
-    return sanitizeTitle(
-      pickFirstString(object, [
-        "customTitle",
-        "custom_title",
-        "summary",
-        "title"
-      ])
-    );
-  }
-  if (type !== "user" && type !== "human" && type !== "assistant") {
-    return sanitizeTitle(
-      pickFirstString(object, [
-        "customTitle",
-        "custom_title",
-        "summary",
-        "title"
-      ])
-    );
-  }
-  return undefined;
-}
-
-function claudeUserPromptTitle(
-  object: Record<string, unknown>
-): string | undefined {
-  if (object.isMeta === true) {
-    return undefined;
-  }
-  const message = asObject(object.message);
-  return sanitizeTitle(
-    extractClaudePromptText(
-      message?.content ?? object.content ?? object.message
-    )
-  );
-}
-
-function claudeConversationPreview(
-  object: Record<string, unknown>
-): string | undefined {
-  const type = pickFirstString(object, ["type", "role"]);
-  if (type !== "user" && type !== "human" && type !== "assistant") {
-    return undefined;
-  }
-  if ((type === "user" || type === "human") && object.isMeta === true) {
-    return undefined;
-  }
-  const message = asObject(object.message);
-  return sanitizeConversationPreview(
-    extractClaudePromptText(
-      message?.content ?? object.content ?? object.message
-    )
-  );
-}
-
-function claudeModelFromRecord(
-  object: Record<string, unknown>
-): string | undefined {
-  if (pickFirstString(object, ["type", "role"]) !== "assistant") {
-    return undefined;
-  }
-  return (
-    pickFirstString(asObject(object.message), ["model"]) ??
-    pickFirstString(object, ["model"])
-  );
-}
-
-function extractClaudePromptText(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return cleanClaudePromptText(value);
-  }
-  if (Array.isArray(value)) {
-    const parts = value.map(extractClaudePromptText).filter(Boolean);
-    return parts.length > 0 ? parts.join(" ") : undefined;
-  }
-  const object = asObject(value);
-  if (!object) {
-    return undefined;
-  }
-  const type = pickFirstString(object, ["type"]);
-  if (type === "tool_result" || "tool_use_id" in object) {
-    return undefined;
-  }
-  if (type === "text") {
-    return extractClaudePromptText(object.text);
-  }
-  return extractClaudePromptText(
-    object.content ?? object.text ?? object.message
-  );
-}
-
-function cleanClaudePromptText(value: string): string | undefined {
-  const cleaned = value
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "\n")
-    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "\n")
-    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/gi, "\n")
-    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, "\n")
-    .replace(/<command-name>[\s\S]*?<\/command-name>/gi, "\n")
-    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, "\n")
-    .replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/gi, "\n")
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "\n")
-    .replace(/<system_reminder>[\s\S]*?<\/system_reminder>/gi, "\n")
-    .trim();
-  return cleaned || undefined;
 }
 
 function buildRecord(input: {
@@ -848,16 +530,6 @@ function meaningfulSessionTitle(title: string, sessionId: string): boolean {
     return false;
   }
   return !(/^[0-9a-f_-]+$/iu.test(trimmed) && trimmed.length >= 24);
-}
-
-function firstMeaningfulSessionTitle(
-  titles: Array<string | undefined>,
-  sessionId: string
-): string | undefined {
-  return titles.find(
-    (title): title is string =>
-      title !== undefined && meaningfulSessionTitle(title, sessionId)
-  );
 }
 
 function toViewModel(
@@ -1109,64 +781,6 @@ function asObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function pickFirstString(
-  object: Record<string, unknown> | null | undefined,
-  keys: string[]
-): string | undefined {
-  if (!object) {
-    return undefined;
-  }
-  for (const key of keys) {
-    const value = object[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function sanitizeTitle(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const firstLine = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) {
-    return undefined;
-  }
-  const compact = firstLine.replace(/\s+/g, " ").trim();
-  if (!compact) {
-    return undefined;
-  }
-  return compact.length > MAX_TITLE_LENGTH
-    ? `${compact.slice(0, MAX_TITLE_LENGTH - 1)}…`
-    : compact;
-}
-
-function sanitizeConversationPreview(
-  value: string | undefined
-): string | undefined {
-  const compact = value?.replace(/\s+/gu, " ").trim();
-  if (!compact) {
-    return undefined;
-  }
-  return compact.length > MAX_CONVERSATION_PREVIEW_LENGTH
-    ? `${compact.slice(0, MAX_CONVERSATION_PREVIEW_LENGTH - 1)}…`
-    : compact;
-}
-
-function maxIsoTimestamp(
-  current: string | undefined,
-  candidate: string
-): string {
-  if (!current) {
-    return candidate;
-  }
-  return Date.parse(candidate) > Date.parse(current) ? candidate : current;
-}
-
 function latestIsoTimestamp(
   left: string | undefined,
   right: string | undefined
@@ -1191,14 +805,6 @@ function earliestIsoTimestamp(
     return left;
   }
   return Date.parse(right) < Date.parse(left) ? right : left;
-}
-
-function recentJsonlActivityTimestamp(
-  parsedUpdatedAt: string | undefined,
-  mtimeMs: number
-): string {
-  const mtime = new Date(mtimeMs).toISOString();
-  return parsedUpdatedAt ? maxIsoTimestamp(parsedUpdatedAt, mtime) : mtime;
 }
 
 function formatRelativeTime(now: Date, updatedAtMs: number): string {

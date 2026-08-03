@@ -26,6 +26,7 @@ struct CommandLine {
 
 #[derive(Subcommand)]
 enum RuntimeCommand {
+    Capabilities(CapabilitiesCommand),
     Bridge(BridgeCommand),
     Keeper(KeeperCommand),
     Hook(HookCommand),
@@ -36,6 +37,12 @@ enum RuntimeCommand {
     Bootstrap(BootstrapCommand),
     #[command(hide = true)]
     Profile(ProfileCommand),
+}
+
+#[derive(Args)]
+struct CapabilitiesCommand {
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -174,6 +181,8 @@ struct AgentIntegrationCommand {
 enum AgentIntegrationSubcommand {
     Ensure(AgentIntegrationOptions),
     Doctor(AgentIntegrationOptions),
+    Snapshot(AgentIntegrationOptions),
+    Apply(AgentIntegrationOptions),
 }
 
 #[derive(Args)]
@@ -360,6 +369,14 @@ struct DoctorCommand {
     runtime_root: PathBuf,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeCapabilities {
+    runtime_version: &'static str,
+    capabilities: [&'static str; 2],
+    agent_integration_contract_version: u16,
+}
+
 fn main() -> anyhow::Result<()> {
     // A generation lease is process-scoped and acquired before any subcommand
     // performs work. GC can therefore never remove the executable backing a
@@ -368,6 +385,17 @@ fn main() -> anyhow::Result<()> {
         .context("runtime executable generation lease failed")?;
     let command_line = CommandLine::parse();
     match command_line.command {
+        RuntimeCommand::Capabilities(command) => {
+            anyhow::ensure!(command.json, "capabilities requires --json");
+            print_json(&RuntimeCapabilities {
+                runtime_version: env!("CARGO_PKG_VERSION"),
+                capabilities: [
+                    "agent-metadata-sources-v1",
+                    "agent-integration-snapshot-apply-v1",
+                ],
+                agent_integration_contract_version: kmux_agent_integration::contract_version()?,
+            })?;
+        }
         RuntimeCommand::Bridge(bridge_command) => match bridge_command.command {
             Some(BridgeSubcommand::Serve) if !bridge_command.capabilities => {
                 kmux_bridge::run_bridge_server(io::stdin().lock(), io::stdout().lock())?;
@@ -905,7 +933,9 @@ fn blocked(
 fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()> {
     let options = match &command.command {
         AgentIntegrationSubcommand::Ensure(options)
-        | AgentIntegrationSubcommand::Doctor(options) => options,
+        | AgentIntegrationSubcommand::Doctor(options)
+        | AgentIntegrationSubcommand::Snapshot(options)
+        | AgentIntegrationSubcommand::Apply(options) => options,
     };
     anyhow::ensure!(options.json, "agent-integration commands require --json");
     let executable = std::env::current_exe()?.canonicalize()?;
@@ -948,6 +978,34 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
                 &home,
                 &agent_bin_dir,
                 codex_home.as_deref(),
+            )?)
+        }
+        AgentIntegrationSubcommand::Snapshot(options) => {
+            anyhow::ensure!(
+                options.vendor.is_none() && options.path.is_none(),
+                "agent integration snapshot does not accept --vendor or --path"
+            );
+            let home = resolve_agent_integration_home(options.home)?;
+            let codex_home = resolve_agent_integration_codex_home();
+            print_json(&kmux_agent_integration::snapshot_all_with_codex_home(
+                &home,
+                &agent_bin_dir,
+                codex_home.as_deref(),
+            )?)
+        }
+        AgentIntegrationSubcommand::Apply(options) => {
+            anyhow::ensure!(
+                options.vendor.is_none() && options.path.is_none(),
+                "agent integration apply does not accept --vendor or --path"
+            );
+            let home = resolve_agent_integration_home(options.home)?;
+            let codex_home = resolve_agent_integration_codex_home();
+            let request: kmux_agent_integration::PlannedApplyRequest =
+                serde_json::from_value(read_bounded_stdin_json(8 * 1024 * 1024 + 128 * 1024)?)?;
+            print_json(&kmux_agent_integration::apply_planned_with_codex_home(
+                &home,
+                codex_home.as_deref(),
+                &request,
             )?)
         }
     }

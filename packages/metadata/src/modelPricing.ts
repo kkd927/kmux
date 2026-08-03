@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { IncrementalSha256 } from "@kmux/proto";
 
 type SupportedVendor = "claude" | "codex" | "gemini";
 export type SupportedPricingVendor = SupportedVendor;
@@ -383,15 +383,19 @@ const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = {
   ]
 };
 
-export const USAGE_PRICING_REVISION = createHash("sha256")
-  .update(
-    JSON.stringify({
-      forwardCompatPolicyRevision: FORWARD_COMPAT_POLICY_REVISION,
-      modelPricing: MODEL_PRICING
-    })
-  )
-  .digest("hex")
-  .slice(0, 16);
+export const USAGE_PRICING_REVISION = stableRevision(
+  JSON.stringify({
+    forwardCompatPolicyRevision: FORWARD_COMPAT_POLICY_REVISION,
+    modelPricing: MODEL_PRICING
+  })
+);
+
+function stableRevision(value: string): string {
+  return new IncrementalSha256()
+    .update(new TextEncoder().encode(value))
+    .digestHex()
+    .slice(0, 16);
+}
 
 const PRICING_LOOKUP = Object.fromEntries(
   Object.entries(MODEL_PRICING).map(([vendor, entries]) => {

@@ -26,13 +26,19 @@ import {
 import type { AgentScopeSettings } from "@kmux/proto";
 import { readAntigravityConversationMetadataFromInventory } from "./antigravityStorage";
 import { isCodexSubagentSessionMetadata } from "./codexSession";
-import { estimateModelCost } from "./modelPricing";
 import {
   classifySessionInventoryCandidate,
   collectSessionInventory,
   type SessionInventoryCandidate,
   type SessionInventoryDiagnostic
 } from "./sessionInventory";
+import {
+  consumeCoreUsageJsonLine,
+  coreUsageSampleIdentity,
+  createCoreUsageParserState,
+  parseCoreUsageJsonDocument,
+  shouldReplaceCoreUsageSample
+} from "./core/usage";
 
 const JSON_EXTENSIONS = new Set([".json"]);
 const JSONL_EXTENSIONS = new Set([".jsonl", ".ndjson"]);
@@ -150,46 +156,6 @@ interface SourceDescriptor {
   path: string;
 }
 
-type ParsedUsageMetrics = {
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  cacheTokens: number;
-  totalTokens: number;
-  estimatedCostUsd: number;
-  score: number;
-};
-
-type ObjectCandidate = {
-  path: string;
-  value: Record<string, unknown>;
-};
-
-type CodexSessionContext = {
-  cwd?: string;
-  hasSessionMetadata?: boolean;
-  isSubagent?: boolean;
-  model?: string;
-  projectPath?: string;
-  sessionId?: string;
-};
-
-type AntigravitySessionContext = {
-  model?: string;
-};
-
-type TokenUsageTotals = {
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  cacheTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens: number;
-  totalTokens: number;
-};
-
 type CodexSourceIdentity = {
   inode: number;
   isSubagent: boolean;
@@ -226,17 +192,17 @@ interface FileUsageAdapterOptions {
 class FileUsageAdapter implements UsageAdapter {
   readonly vendor: UsageVendor;
 
-  private readonly codexContexts = new Map<string, CodexSessionContext>();
-  private readonly codexTotals = new Map<string, TokenUsageTotals>();
+  private readonly coreParserState = createCoreUsageParserState();
+  private readonly codexContexts = this.coreParserState.codexContexts;
+  private readonly codexTotals = this.coreParserState.codexTotals;
   private readonly codexSourceIdentities = new Map<
     string,
     CodexSourceIdentity
   >();
-  private readonly antigravityContexts = new Map<
-    string,
-    AntigravitySessionContext
-  >();
-  private readonly antigravityWorkspaceByConversation: Map<string, string>;
+  private readonly antigravityContexts =
+    this.coreParserState.antigravityContexts;
+  private readonly antigravityWorkspaceByConversation =
+    this.coreParserState.antigravityWorkspaceByConversation;
   private readonly antigravityWorkspaceByConversationLoader?: () => AntigravityWorkspaceInventory;
   private readonly includeJson: boolean;
   private readonly includeHiddenDirs: boolean;
@@ -265,8 +231,12 @@ class FileUsageAdapter implements UsageAdapter {
     this.roots = roots.filter(Boolean);
     this.antigravityWorkspaceByConversationLoader =
       options.antigravityWorkspaceByConversationLoader;
-    this.antigravityWorkspaceByConversation =
-      options.antigravityWorkspaceByConversation ?? new Map();
+    for (const [
+      conversationId,
+      workspace
+    ] of options.antigravityWorkspaceByConversation ?? []) {
+      this.antigravityWorkspaceByConversation.set(conversationId, workspace);
+    }
     this.includeJson = options.includeJson ?? false;
     this.includeHiddenDirs = options.includeHiddenDirs ?? false;
     this.watchRecursive = options.watchRecursive ?? false;
@@ -431,7 +401,12 @@ class FileUsageAdapter implements UsageAdapter {
     const workspaceInventory = this.antigravityWorkspaceByConversationLoader();
     this.workspaceInventoryTruncated = workspaceInventory.truncated;
     this.workspaceInventoryDiagnostics = workspaceInventory.diagnostics;
-    const nextWorkspaces = workspaceInventory.workspaces;
+    const nextWorkspaces = workspaceInventory.truncated
+      ? new Map([
+          ...this.antigravityWorkspaceByConversation,
+          ...workspaceInventory.workspaces
+        ])
+      : workspaceInventory.workspaces;
     if (
       stringMapEquals(this.antigravityWorkspaceByConversation, nextWorkspaces)
     ) {
@@ -487,14 +462,15 @@ class FileUsageAdapter implements UsageAdapter {
       nextSources.map((source) => [source.path, source] as const)
     );
 
-    for (const existingPath of this.sources.keys()) {
-      if (nextSourceMap.has(existingPath)) {
-        continue;
+    if (!inventory.truncated) {
+      for (const existingPath of this.sources.keys()) {
+        if (nextSourceMap.has(existingPath)) {
+          continue;
+        }
+        this.removeTrackedSource(existingPath);
       }
-      this.removeTrackedSource(existingPath);
     }
 
-    this.sources.clear();
     for (const source of nextSources) {
       this.sources.set(source.path, source);
       if (markAllDirty || !this.cursors.has(source.path)) {
@@ -637,7 +613,7 @@ class FileUsageAdapter implements UsageAdapter {
       : lines.slice(0, -1);
 
     for (const line of completeLines) {
-      offset = consumeJsonLine(
+      offset = consumeCoreUsageJsonLine(
         samples,
         this.vendor,
         source.path,
@@ -645,16 +621,13 @@ class FileUsageAdapter implements UsageAdapter {
         line,
         offset,
         true,
-        this.codexContexts,
-        this.codexTotals,
-        this.antigravityContexts,
-        this.antigravityWorkspaceByConversation
+        this.coreParserState
       );
     }
 
     const trailingLine = endedWithNewline ? "" : (lines.at(-1) ?? "");
     if (trailingLine) {
-      offset = consumeJsonLine(
+      offset = consumeCoreUsageJsonLine(
         samples,
         this.vendor,
         source.path,
@@ -662,10 +635,7 @@ class FileUsageAdapter implements UsageAdapter {
         trailingLine,
         offset,
         false,
-        this.codexContexts,
-        this.codexTotals,
-        this.antigravityContexts,
-        this.antigravityWorkspaceByConversation
+        this.coreParserState
       );
     }
 
@@ -730,16 +700,13 @@ class FileUsageAdapter implements UsageAdapter {
         string,
         unknown
       >;
-      const samples = extractUsageSamplesFromJsonDocument(
-        this.vendor,
-        parsed,
-        source.path,
+      const samples = parseCoreUsageJsonDocument({
+        vendor: this.vendor,
+        value: parsed,
+        sourcePath: source.path,
         range,
-        {
-          antigravityWorkspaceByConversation:
-            this.antigravityWorkspaceByConversation
-        }
-      );
+        state: this.coreParserState
+      });
       if (useCursors) {
         this.cursors.set(source.path, {
           kind: "json",
@@ -1409,870 +1376,6 @@ function stringMapEquals(
   return true;
 }
 
-function extractUsageSampleFromRecord(
-  vendor: UsageVendor,
-  record: Record<string, unknown>,
-  sourcePath: string,
-  metricsRoot: Record<string, unknown> = record
-): UsageEventSample | null {
-  const metrics = pickBestUsageMetrics(vendor, metricsRoot);
-  if (!metrics) {
-    return null;
-  }
-
-  const timestampMs = normalizeTimestamp(
-    pickFirstString(record, [
-      "timestamp",
-      "created_at",
-      "createdAt",
-      "updated_at",
-      "updatedAt"
-    ]) ?? pickFirstNumber(record, ["timestamp_ms", "timestampMs", "ts"]),
-    Date.now()
-  );
-
-  const model = pickFirstString(record, ["model", "model_name", "modelName"]);
-  const reportedCostUsd = metrics.estimatedCostUsd;
-  const costSource: UsageCostSource =
-    reportedCostUsd > 0
-      ? "reported"
-      : metrics.totalTokens > 0
-        ? (estimateModelCostForSample(vendor, model, metrics)?.costSource ??
-          "unavailable")
-        : "unavailable";
-  const estimatedCostUsd =
-    reportedCostUsd > 0
-      ? reportedCostUsd
-      : (estimateModelCostForSample(vendor, model, metrics)?.estimatedCostUsd ??
-        0);
-
-  return {
-    vendor,
-    timestampMs,
-    sourcePath,
-    sourceType: "jsonl",
-    sessionId: pickFirstString(record, [
-      "session_id",
-      "sessionId",
-      "conversation_id",
-      "conversationId",
-      "request_id",
-      "requestId"
-    ]),
-    threadId: pickFirstString(record, [
-      "thread_id",
-      "threadId",
-      "conversation_id",
-      "conversationId",
-      "id"
-    ]),
-    requestId: pickFirstOwnString(record, ["request_id", "requestId"]),
-    model,
-    cwd: normalizePathValue(
-      pickFirstString(record, ["cwd", "current_working_directory", "path"])
-    ),
-    projectPath: normalizePathValue(
-      pickFirstString(record, ["project_path", "projectPath", "worktree"])
-    ),
-    inputTokens: metrics.inputTokens,
-    outputTokens: metrics.outputTokens,
-    thinkingTokens: metrics.thinkingTokens,
-    cacheReadTokens: metrics.cacheReadTokens,
-    cacheWriteTokens: metrics.cacheWriteTokens,
-    cacheWriteTokensKnown: true,
-    cacheTokens: metrics.cacheTokens,
-    totalTokens: metrics.totalTokens,
-    estimatedCostUsd,
-    costSource
-  };
-}
-
-function extractUsageSamplesFromJsonDocument(
-  vendor: UsageVendor,
-  record: Record<string, unknown>,
-  sourcePath: string,
-  range: UsageTimeRange,
-  _state: {
-    antigravityWorkspaceByConversation: Map<string, string>;
-  }
-): UsageEventSample[] {
-  if (vendor === "claude") {
-    const sample = extractClaudeUsageSample(record, sourcePath);
-    return sample && isTimestampInRange(sample.timestampMs, range)
-      ? [sample]
-      : [];
-  }
-
-  const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
-  return sample && isTimestampInRange(sample.timestampMs, range)
-    ? [sample]
-    : [];
-}
-
-function extractUsageSamplesFromJsonLine(
-  vendor: UsageVendor,
-  record: Record<string, unknown>,
-  sourcePath: string,
-  range: UsageTimeRange,
-  state: {
-    codexContexts: Map<string, CodexSessionContext>;
-    codexTotals: Map<string, TokenUsageTotals>;
-    antigravityContexts: Map<string, AntigravitySessionContext>;
-    antigravityWorkspaceByConversation: Map<string, string>;
-  }
-): UsageEventSample[] {
-  if (vendor === "codex") {
-    return extractCodexUsageSamples(
-      record,
-      sourcePath,
-      range,
-      state.codexContexts,
-      state.codexTotals
-    );
-  }
-  if (vendor === "antigravity") {
-    return extractAntigravityUsageSamples(
-      record,
-      sourcePath,
-      range,
-      state.antigravityContexts,
-      state.antigravityWorkspaceByConversation
-    );
-  }
-  if (vendor === "claude") {
-    const sample = extractClaudeUsageSample(record, sourcePath);
-    return sample && isTimestampInRange(sample.timestampMs, range)
-      ? [sample]
-      : [];
-  }
-
-  const sample = extractUsageSampleFromRecord(vendor, record, sourcePath);
-  return sample && isTimestampInRange(sample.timestampMs, range)
-    ? [sample]
-    : [];
-}
-
-function extractClaudeUsageSample(
-  record: Record<string, unknown>,
-  sourcePath: string
-): UsageEventSample | null {
-  const message = isRecord(record.message) ? record.message : null;
-  const usage = message && isRecord(message.usage) ? message.usage : null;
-  const recordType = typeof record.type === "string" ? record.type : undefined;
-  const hasClaudeCodeMarker =
-    "uuid" in record ||
-    "parentUuid" in record ||
-    "userType" in record ||
-    "isSidechain" in record ||
-    "agentId" in record;
-
-  if (message && recordType === "assistant") {
-    if (!usage) {
-      return null;
-    }
-    return extractUsageSampleFromRecord("claude", record, sourcePath, usage);
-  }
-
-  if (hasClaudeCodeMarker && isClaudeCodeNonUsageRecordType(recordType)) {
-    return null;
-  }
-
-  return extractUsageSampleFromRecord("claude", record, sourcePath);
-}
-
-function isClaudeCodeNonUsageRecordType(type: string | undefined): boolean {
-  return (
-    type === "user" ||
-    type === "attachment" ||
-    type === "system" ||
-    type === "mode" ||
-    type === "permission-mode" ||
-    type === "file-history-snapshot" ||
-    type === "ai-title" ||
-    type === "last-prompt" ||
-    type === "queue-operation" ||
-    type === "pr-link" ||
-    type === "agent-name"
-  );
-}
-
-function consumeJsonLine(
-  output: UsageEventSample[],
-  vendor: UsageVendor,
-  sourcePath: string,
-  range: UsageTimeRange,
-  line: string,
-  offset: number,
-  hasTrailingNewline: boolean,
-  codexContexts: Map<string, CodexSessionContext>,
-  codexTotals: Map<string, TokenUsageTotals>,
-  antigravityContexts: Map<string, AntigravitySessionContext>,
-  antigravityWorkspaceByConversation: Map<string, string>
-): number {
-  const nextOffset =
-    offset + Buffer.byteLength(line, "utf8") + (hasTrailingNewline ? 1 : 0);
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return nextOffset;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    output.push(
-      ...extractUsageSamplesFromJsonLine(vendor, parsed, sourcePath, range, {
-        codexContexts,
-        codexTotals,
-        antigravityContexts,
-        antigravityWorkspaceByConversation
-      })
-    );
-    return nextOffset;
-  } catch {
-    return hasTrailingNewline ? nextOffset : offset;
-  }
-}
-
-function extractCodexUsageSamples(
-  record: Record<string, unknown>,
-  sourcePath: string,
-  range: UsageTimeRange,
-  contexts: Map<string, CodexSessionContext>,
-  totals: Map<string, TokenUsageTotals>
-): UsageEventSample[] {
-  const recordType = typeof record.type === "string" ? record.type : undefined;
-  if (!recordType) {
-    const sample = extractUsageSampleFromRecord("codex", record, sourcePath);
-    return sample && isTimestampInRange(sample.timestampMs, range)
-      ? [sample]
-      : [];
-  }
-
-  if (recordType === "session_meta") {
-    const payload = isRecord(record.payload) ? record.payload : {};
-    const previous = contexts.get(sourcePath) ?? {};
-    const isFirstMetadata = !previous.hasSessionMetadata;
-    contexts.set(sourcePath, {
-      ...previous,
-      cwd: isFirstMetadata
-        ? (normalizePathValue(
-            pickFirstString(payload, ["cwd", "project_path", "projectPath"])
-          ) ?? previous.cwd)
-        : previous.cwd,
-      hasSessionMetadata: true,
-      isSubagent: isFirstMetadata
-        ? isCodexSubagentSessionMetadata(payload)
-        : previous.isSubagent,
-      model: isFirstMetadata
-        ? (pickFirstString(payload, ["model", "model_name", "modelName"]) ??
-          previous.model)
-        : previous.model,
-      projectPath: isFirstMetadata
-        ? (normalizePathValue(
-            pickFirstString(payload, ["project_path", "projectPath", "cwd"])
-          ) ?? previous.projectPath)
-        : previous.projectPath,
-      sessionId: isFirstMetadata
-        ? (pickFirstString(payload, ["id", "session_id", "sessionId"]) ??
-          previous.sessionId)
-        : previous.sessionId
-    });
-    return [];
-  }
-
-  if (recordType === "turn_context") {
-    const payload = isRecord(record.payload) ? record.payload : {};
-    const previous = contexts.get(sourcePath) ?? {};
-    contexts.set(sourcePath, {
-      ...previous,
-      model:
-        pickFirstString(payload, ["model", "model_name", "modelName"]) ??
-        previous.model
-    });
-    return [];
-  }
-
-  if (recordType !== "event_msg") {
-    return [];
-  }
-
-  const payload = isRecord(record.payload) ? record.payload : null;
-  if (!payload || payload.type !== "token_count") {
-    return [];
-  }
-  const context = contexts.get(sourcePath);
-  if (context?.isSubagent) {
-    return [];
-  }
-  const info = isRecord(payload.info) ? payload.info : null;
-  if (!info) {
-    return [];
-  }
-  const totalUsage = isRecord(info.total_token_usage)
-    ? info.total_token_usage
-    : null;
-  if (!totalUsage) {
-    return [];
-  }
-
-  const absoluteInputTokens = toFiniteNumber(totalUsage.input_tokens) ?? 0;
-  const absoluteCacheReadTokens =
-    toFiniteNumber(totalUsage.cached_input_tokens) ?? 0;
-  const absoluteOutputTokens = toFiniteNumber(totalUsage.output_tokens) ?? 0;
-  const absoluteThinkingTokens =
-    toFiniteNumber(totalUsage.reasoning_output_tokens) ?? 0;
-  const absoluteTotalTokens =
-    toFiniteNumber(totalUsage.total_tokens) ??
-    absoluteInputTokens + absoluteOutputTokens;
-  const previous = totals.get(sourcePath) ?? {
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    cacheTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    thinkingTokens: 0,
-    totalTokens: 0
-  };
-
-  const deltaInputTokens = Math.max(
-    0,
-    absoluteInputTokens - previous.inputTokens
-  );
-  const deltaCacheReadTokens = Math.max(
-    0,
-    absoluteCacheReadTokens - previous.cacheReadTokens
-  );
-  const deltaOutputTokens = Math.max(
-    0,
-    absoluteOutputTokens - previous.outputTokens
-  );
-  const deltaThinkingTokens = Math.max(
-    0,
-    absoluteThinkingTokens - previous.thinkingTokens
-  );
-  const deltaVisibleOutputTokens = Math.max(
-    0,
-    deltaOutputTokens - deltaThinkingTokens
-  );
-  const deltaTotalTokens = Math.max(
-    0,
-    absoluteTotalTokens - previous.totalTokens
-  );
-  totals.set(sourcePath, {
-    cacheReadTokens: absoluteCacheReadTokens,
-    cacheWriteTokens: 0,
-    cacheTokens: absoluteCacheReadTokens,
-    inputTokens: absoluteInputTokens,
-    outputTokens: absoluteOutputTokens,
-    thinkingTokens: absoluteThinkingTokens,
-    totalTokens: absoluteTotalTokens
-  });
-
-  if (deltaTotalTokens <= 0) {
-    return [];
-  }
-
-  const timestampMs = normalizeTimestamp(
-    record.timestamp ?? payload.timestamp,
-    Date.now()
-  );
-  if (!isTimestampInRange(timestampMs, range)) {
-    return [];
-  }
-
-  const estimatedCostUsd =
-    estimateModelCost({
-      vendor: "codex",
-      model: context?.model,
-      inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
-      outputTokens: deltaVisibleOutputTokens,
-      cacheTokens: deltaCacheReadTokens,
-      thinkingTokens: deltaThinkingTokens,
-      cacheCreateTokens: 0,
-      cacheCreateTokensKnown: false
-    })?.estimatedCostUsd ?? 0;
-  const costSource: UsageCostSource =
-    estimatedCostUsd > 0 ? "estimated" : "unavailable";
-
-  return [
-    {
-      vendor: "codex",
-      timestampMs,
-      sourcePath,
-      sourceType: "jsonl",
-      sessionId: context?.sessionId,
-      threadId: context?.sessionId,
-      eventId: [
-        "codex-token-count",
-        context?.sessionId ?? "",
-        timestampMs,
-        absoluteInputTokens,
-        absoluteCacheReadTokens,
-        absoluteOutputTokens,
-        absoluteThinkingTokens,
-        absoluteTotalTokens
-      ].join(":"),
-      model: context?.model,
-      cwd: context?.cwd,
-      projectPath: context?.projectPath ?? context?.cwd,
-      inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
-      outputTokens: deltaVisibleOutputTokens,
-      thinkingTokens: deltaThinkingTokens,
-      cacheReadTokens: deltaCacheReadTokens,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: false,
-      cacheTokens: deltaCacheReadTokens,
-      totalTokens: deltaTotalTokens,
-      estimatedCostUsd,
-      costSource
-    }
-  ];
-}
-
-function extractAntigravityUsageSamples(
-  record: Record<string, unknown>,
-  sourcePath: string,
-  range: UsageTimeRange,
-  contexts: Map<string, AntigravitySessionContext>,
-  workspaceByConversation: Map<string, string>
-): UsageEventSample[] {
-  const conversationId =
-    antigravityConversationIdFromPath(sourcePath) ??
-    pickFirstString(record, ["conversationId", "conversation_id"]);
-  const cwd = conversationId
-    ? workspaceByConversation.get(conversationId)
-    : undefined;
-  const inferredModel = inferAntigravityModelFromRecord(record);
-  const previousContext = contexts.get(sourcePath);
-  const model = inferredModel ?? previousContext?.model;
-  if (inferredModel && previousContext?.model !== inferredModel) {
-    contexts.set(sourcePath, { model: inferredModel });
-  }
-  const augmentedRecord: Record<string, unknown> = { ...record };
-  if (conversationId && !pickFirstString(augmentedRecord, ["conversationId"])) {
-    augmentedRecord.conversationId = conversationId;
-  }
-  if (cwd && !pickFirstString(augmentedRecord, ["cwd"])) {
-    augmentedRecord.cwd = cwd;
-  }
-  if (cwd && !pickFirstString(augmentedRecord, ["projectPath"])) {
-    augmentedRecord.projectPath = cwd;
-  }
-  if (model && !pickFirstString(augmentedRecord, ["model"])) {
-    augmentedRecord.model = model;
-  }
-
-  const reportedSample = extractUsageSampleFromRecord(
-    "antigravity",
-    augmentedRecord,
-    sourcePath
-  );
-  if (reportedSample && isTimestampInRange(reportedSample.timestampMs, range)) {
-    return [
-      {
-        ...reportedSample,
-        sessionId: reportedSample.sessionId ?? conversationId,
-        threadId:
-          reportedSample.threadId ??
-          antigravityThreadId(
-            conversationId,
-            record,
-            reportedSample.timestampMs
-          ),
-        model: reportedSample.model ?? model,
-        cwd: reportedSample.cwd ?? cwd,
-        projectPath: reportedSample.projectPath ?? cwd,
-        costSource: reportedSample.costSource ?? "unavailable"
-      }
-    ];
-  }
-
-  const timestampMs = normalizeTimestamp(
-    record.created_at ??
-      record.createdAt ??
-      record.timestamp ??
-      record.updated_at ??
-      record.updatedAt,
-    Date.now()
-  );
-  if (!isTimestampInRange(timestampMs, range)) {
-    return [];
-  }
-
-  const transcriptText = extractAntigravityTranscriptText(record);
-  const inputTokens = estimateAntigravityTranscriptTokens(
-    transcriptText.inputText
-  );
-  const outputTokens = estimateAntigravityTranscriptTokens(
-    transcriptText.outputText
-  );
-  const totalTokens = inputTokens + outputTokens;
-  if (totalTokens <= 0) {
-    return [];
-  }
-  const estimated = estimateModelCostForSample("antigravity", model, {
-    inputTokens,
-    outputTokens,
-    thinkingTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    cacheTokens: 0,
-    totalTokens,
-    estimatedCostUsd: 0,
-    score: 0
-  });
-
-  return [
-    {
-      vendor: "antigravity",
-      timestampMs,
-      sourcePath,
-      sourceType: "jsonl",
-      sessionId: conversationId,
-      threadId: antigravityThreadId(conversationId, record, timestampMs),
-      model,
-      cwd,
-      projectPath: cwd,
-      inputTokens,
-      outputTokens,
-      thinkingTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: false,
-      cacheTokens: 0,
-      totalTokens,
-      estimatedCostUsd: estimated?.estimatedCostUsd ?? 0,
-      costSource: estimated?.costSource ?? "unavailable"
-    }
-  ];
-}
-
-function extractAntigravityTranscriptText(record: Record<string, unknown>): {
-  inputText: string;
-  outputText: string;
-} {
-  const type = typeof record.type === "string" ? record.type.toUpperCase() : "";
-  const source =
-    typeof record.source === "string" ? record.source.toUpperCase() : "";
-  const content = stringifyAntigravityTranscriptValue(record.content);
-  const toolCalls = Array.isArray(record.tool_calls)
-    ? stringifyAntigravityTranscriptValue(record.tool_calls)
-    : "";
-  const isModelResponse =
-    source === "MODEL" && (type.endsWith("_RESPONSE") || Boolean(toolCalls));
-
-  if (isModelResponse) {
-    return {
-      inputText: "",
-      outputText: [content, toolCalls].filter(Boolean).join("\n")
-    };
-  }
-
-  return {
-    inputText: content,
-    outputText: ""
-  };
-}
-
-function stringifyAntigravityTranscriptValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value === null || value === undefined) {
-    return "";
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
-  }
-}
-
-function estimateAntigravityTranscriptTokens(value: string): number {
-  const normalized = value.trim();
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
-}
-
-function antigravityConversationIdFromPath(
-  sourcePath: string
-): string | undefined {
-  const normalizedPath = sourcePath.replace(/\\/g, "/");
-  return normalizedPath.match(
-    /\/([^/]+)\/\.system_generated\/logs\/transcript\.jsonl$/u
-  )?.[1];
-}
-
-function antigravityThreadId(
-  conversationId: string | undefined,
-  record: Record<string, unknown>,
-  timestampMs: number
-): string | undefined {
-  const explicitId = pickFirstString(record, [
-    "thread_id",
-    "threadId",
-    "id",
-    "messageId",
-    "eventId"
-  ]);
-  if (explicitId) {
-    return explicitId;
-  }
-  const stepIndex = toFiniteNumber(record.step_index ?? record.stepIndex);
-  if (conversationId && stepIndex !== undefined) {
-    return `${conversationId}:${stepIndex}`;
-  }
-  return conversationId ? `${conversationId}:${timestampMs}` : undefined;
-}
-
-function inferAntigravityModelFromRecord(
-  record: Record<string, unknown>
-): string | undefined {
-  const explicit = pickFirstString(record, [
-    "model",
-    "model_name",
-    "modelName"
-  ]);
-  if (explicit) {
-    return explicit;
-  }
-  const content = stringifyAntigravityTranscriptValue(record.content);
-  const modelIdMatch = content.match(/gemini-[A-Za-z0-9._-]+/iu);
-  if (modelIdMatch?.[0]) {
-    return modelIdMatch[0];
-  }
-  const humanLabelMatch = content.match(
-    /Gemini\s+\d+(?:\.\d+)?\s+(?:Pro|Flash(?:[- ]Lite)?)(?:\s*\((?:Low|Medium|High)\))?/iu
-  );
-  if (humanLabelMatch?.[0]) {
-    return humanLabelMatch[0].trim().replace(/[.。]+$/u, "");
-  }
-  return undefined;
-}
-
-function pickBestUsageMetrics(
-  vendor: UsageVendor,
-  root: Record<string, unknown>
-): ParsedUsageMetrics | null {
-  const candidates = collectObjectCandidates(root);
-  let best: ParsedUsageMetrics | null = null;
-
-  for (const candidate of candidates) {
-    const parsed = parseUsageMetrics(vendor, candidate.value);
-    if (!parsed) {
-      continue;
-    }
-    if (
-      !best ||
-      parsed.score > best.score ||
-      (parsed.score === best.score && parsed.totalTokens > best.totalTokens) ||
-      (parsed.score === best.score &&
-        parsed.totalTokens === best.totalTokens &&
-        parsed.estimatedCostUsd > best.estimatedCostUsd)
-    ) {
-      best = parsed;
-    }
-  }
-
-  return best;
-}
-
-function collectObjectCandidates(
-  root: Record<string, unknown>,
-  depth = 0,
-  path = "$",
-  output: ObjectCandidate[] = []
-): ObjectCandidate[] {
-  if (depth > 5) {
-    return output;
-  }
-  output.push({ path, value: root });
-  for (const [key, value] of Object.entries(root)) {
-    if (Array.isArray(value)) {
-      value.slice(0, 12).forEach((item, index) => {
-        if (isRecord(item)) {
-          collectObjectCandidates(
-            item,
-            depth + 1,
-            `${path}.${key}[${index}]`,
-            output
-          );
-        }
-      });
-      continue;
-    }
-    if (isRecord(value)) {
-      collectObjectCandidates(value, depth + 1, `${path}.${key}`, output);
-    }
-  }
-  return output;
-}
-
-function parseUsageMetrics(
-  vendor: UsageVendor,
-  record: Record<string, unknown>
-): ParsedUsageMetrics | null {
-  const rawInputTokens =
-    readNumericField(record, ["input_tokens", "inputTokens"]) ??
-    readNumericField(record, ["prompt_tokens", "promptTokens"]) ??
-    0;
-  const rawOutputTokens =
-    readNumericField(record, ["output_tokens", "outputTokens"]) ??
-    readNumericField(record, ["completion_tokens", "completionTokens"]) ??
-    0;
-  const cacheReadTokens =
-    readNumericField(record, [
-      "cache_read_input_tokens",
-      "cacheReadInputTokens"
-    ]) ??
-    readNumericField(record, [
-      "cache_read_tokens",
-      "cacheReadTokens",
-      "cache_tokens",
-      "cacheTokens"
-    ]) ??
-    readNestedNumericField(
-      record,
-      ["prompt_tokens_details", "input_tokens_details"],
-      ["cached_tokens", "cachedTokens"]
-    ) ??
-    0;
-  const cacheWriteTokens =
-    readNumericField(record, [
-      "cache_creation_input_tokens",
-      "cacheCreationInputTokens"
-    ]) ??
-    readNumericField(record, [
-      "cache_creation_tokens",
-      "cacheCreationTokens",
-      "cache_write_tokens",
-      "cacheWriteTokens"
-    ]) ??
-    readNestedNumericField(
-      record,
-      ["prompt_tokens_details", "input_tokens_details"],
-      [
-        "cache_write_tokens",
-        "cacheWriteTokens",
-        "cache_creation_tokens",
-        "cacheCreationTokens"
-      ]
-    ) ??
-    0;
-  const thinkingTokens =
-    readNumericField(record, [
-      "reasoning_tokens",
-      "reasoningTokens",
-      "thinking_tokens",
-      "thinkingTokens"
-    ]) ??
-    readNestedNumericField(
-      record,
-      ["completion_tokens_details", "output_tokens_details"],
-      [
-        "reasoning_tokens",
-        "reasoningTokens",
-        "thinking_tokens",
-        "thinkingTokens"
-      ]
-    ) ??
-    0;
-  const inputTokens = treatsInputTokensAsUncached(vendor, record)
-    ? Math.max(0, rawInputTokens)
-    : Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens);
-  const outputTokens = Math.max(0, rawOutputTokens - thinkingTokens);
-  const cacheTokens = cacheReadTokens + cacheWriteTokens;
-  const totalTokens =
-    readNumericField(record, ["total_tokens", "totalTokens"]) ??
-    inputTokens + outputTokens + thinkingTokens + cacheTokens;
-  const estimatedCostUsd =
-    readNumericField(record, [
-      "estimated_cost",
-      "estimatedCost",
-      "estimated_cost_usd",
-      "estimatedCostUsd",
-      "total_cost_usd",
-      "totalCostUsd",
-      "cost_usd",
-      "costUsd",
-      "price_usd",
-      "priceUsd"
-    ]) ?? 0;
-
-  if (totalTokens <= 0 && estimatedCostUsd <= 0) {
-    return null;
-  }
-
-  let score = 0;
-  if (inputTokens > 0) {
-    score += 2;
-  }
-  if (outputTokens > 0) {
-    score += 2;
-  }
-  if (thinkingTokens > 0) {
-    score += 1;
-  }
-  if (cacheTokens > 0) {
-    score += 1;
-  }
-  if (totalTokens > 0) {
-    score += 2;
-  }
-  if (estimatedCostUsd > 0) {
-    score += 3;
-  }
-
-  return {
-    inputTokens,
-    outputTokens,
-    thinkingTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    cacheTokens,
-    totalTokens,
-    estimatedCostUsd,
-    score
-  };
-}
-
-function estimateModelCostForSample(
-  vendor: UsageVendor,
-  model: string | undefined,
-  metrics: ParsedUsageMetrics
-): { estimatedCostUsd: number; costSource: UsageCostSource } | null {
-  if (vendor === "unknown") {
-    return null;
-  }
-  const estimated = estimateModelCost({
-    vendor: vendor === "antigravity" ? "gemini" : vendor,
-    model,
-    inputTokens: metrics.inputTokens,
-    outputTokens: metrics.outputTokens,
-    cacheTokens: metrics.cacheReadTokens,
-    cacheCreateTokens: metrics.cacheWriteTokens,
-    cacheCreateTokensKnown: true,
-    thinkingTokens: metrics.thinkingTokens
-  });
-  if (!estimated) {
-    return null;
-  }
-  return {
-    estimatedCostUsd: estimated.estimatedCostUsd,
-    costSource: "estimated"
-  };
-}
-
-function isTimestampInRange(
-  timestampMs: number,
-  range: UsageTimeRange
-): boolean {
-  return (
-    timestampMs >= range.fromMs &&
-    (typeof range.toMs !== "number" || timestampMs <= range.toMs)
-  );
-}
-
 function normalizeSampleCostSource(sample: UsageEventSample): UsageCostSource {
   if (sample.costSource) {
     return sample.costSource;
@@ -2288,198 +1391,20 @@ function pricedCostForSample(
 }
 
 export function usageSampleIdentity(sample: UsageEventSample): string {
-  const claudeIdentity = claudeCanonicalUsageIdentity(sample);
-  if (claudeIdentity) {
-    return claudeIdentity;
-  }
-  const eventKey =
-    sample.eventId ??
-    sample.threadId ??
-    [
-      sample.sessionId ?? "",
-      sample.timestampMs,
-      sample.inputTokens,
-      sample.outputTokens,
-      sample.thinkingTokens ?? 0,
-      sample.cacheReadTokens ?? sample.cacheTokens,
-      sample.cacheWriteTokens ?? 0,
-      sample.totalTokens
-    ].join(":");
-  if (
-    (sample.vendor === "codex" || sample.vendor === "antigravity") &&
-    (sample.eventId || sample.threadId)
-  ) {
-    return [sample.vendor, sample.sessionId ?? "", eventKey].join("\t");
-  }
-  return [sample.vendor, sample.sourcePath, eventKey].join("\t");
+  return coreUsageSampleIdentity(sample);
 }
 
 export function shouldReplaceUsageSample(
   existing: UsageEventSample,
   candidate: UsageEventSample
 ): boolean {
-  const existingClaudeIdentity = claudeCanonicalUsageIdentity(existing);
-  const candidateClaudeIdentity = claudeCanonicalUsageIdentity(candidate);
-  if (
-    existingClaudeIdentity &&
-    candidateClaudeIdentity &&
-    existingClaudeIdentity === candidateClaudeIdentity
-  ) {
-    return shouldReplaceClaudeCanonicalSample(existing, candidate);
-  }
-  return true;
+  return shouldReplaceCoreUsageSample(existing, candidate);
 }
 
 function usageHistorySampleIdentity(sample: UsageEventSample): string {
   return [dayKeyFor(sample.timestampMs), usageSampleIdentity(sample)].join(
     "\t"
   );
-}
-
-function claudeCanonicalUsageIdentity(sample: UsageEventSample): string | null {
-  if (sample.vendor !== "claude" || !sample.threadId || !sample.requestId) {
-    return null;
-  }
-  return [sample.vendor, sample.threadId, sample.requestId].join("\t");
-}
-
-function shouldReplaceClaudeCanonicalSample(
-  existing: UsageEventSample,
-  candidate: UsageEventSample
-): boolean {
-  if (candidate.totalTokens !== existing.totalTokens) {
-    return candidate.totalTokens > existing.totalTokens;
-  }
-  const existingSubagent = isClaudeSubagentSource(existing);
-  const candidateSubagent = isClaudeSubagentSource(candidate);
-  if (existingSubagent !== candidateSubagent) {
-    return existingSubagent && !candidateSubagent;
-  }
-  if (existing.sourcePath === candidate.sourcePath) {
-    return candidate.timestampMs >= existing.timestampMs;
-  }
-  return candidate.sourcePath < existing.sourcePath;
-}
-
-function isClaudeSubagentSource(sample: UsageEventSample): boolean {
-  return sample.sourcePath.replace(/\\/g, "/").includes("/subagents/");
-}
-
-function pickFirstOwnString(
-  root: Record<string, unknown>,
-  keys: string[]
-): string | undefined {
-  for (const key of keys) {
-    const value = root[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function pickFirstString(
-  root: Record<string, unknown>,
-  keys: string[]
-): string | undefined {
-  for (const candidate of collectObjectCandidates(root)) {
-    for (const key of keys) {
-      const value = candidate.value[key];
-      if (typeof value === "string" && value.trim()) {
-        return value.trim();
-      }
-    }
-  }
-  return undefined;
-}
-
-function pickFirstNumber(
-  root: Record<string, unknown>,
-  keys: string[]
-): number | undefined {
-  for (const candidate of collectObjectCandidates(root)) {
-    for (const key of keys) {
-      const value = toFiniteNumber(candidate.value[key]);
-      if (value !== undefined) {
-        return value;
-      }
-    }
-  }
-  return undefined;
-}
-
-function readNumericField(
-  record: Record<string, unknown>,
-  keys: string[]
-): number | undefined {
-  for (const key of keys) {
-    const value = toFiniteNumber(record[key]);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function readNestedNumericField(
-  record: Record<string, unknown>,
-  parentKeys: string[],
-  childKeys: string[]
-): number | undefined {
-  for (const parentKey of parentKeys) {
-    const parent = record[parentKey];
-    if (!isRecord(parent)) {
-      continue;
-    }
-    const value = readNumericField(parent, childKeys);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function treatsInputTokensAsUncached(
-  vendor: UsageVendor,
-  record: Record<string, unknown>
-): boolean {
-  return (
-    vendor === "claude" &&
-    readNumericField(record, ["input_tokens", "inputTokens"]) !== undefined
-  );
-}
-
-function toFiniteNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function normalizeTimestamp(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value < 1_000_000_000_000 ? value * 1000 : value;
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsedNumber = Number(value);
-    if (Number.isFinite(parsedNumber)) {
-      return normalizeTimestamp(parsedNumber, fallback);
-    }
-    const parsedDate = Date.parse(value);
-    if (Number.isFinite(parsedDate)) {
-      return parsedDate;
-    }
-  }
-  return fallback;
-}
-
-function normalizePathValue(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

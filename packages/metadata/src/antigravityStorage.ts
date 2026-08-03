@@ -14,12 +14,14 @@ import {
   classifySessionInventoryCandidate,
   type SessionInventoryCandidate
 } from "./sessionInventory";
+import {
+  parseAntigravityConversationRows,
+  parseCoreHistorySource,
+  type AntigravityConversationStepRow,
+  type CoreHistoryRecord
+} from "./core/history";
 
 const MAX_BINARY_SCAN_BYTES = 512 * 1024;
-const MAX_TITLE_LENGTH = 96;
-const MAX_PROMPT_PAYLOAD_BYTES = 1024 * 1024;
-const MAX_PROMPT_FIELD_BYTES = 128 * 1024;
-const MAX_PROMPT_PARSE_DEPTH = 8;
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -102,20 +104,16 @@ export function readAntigravityConversationMetadataFromInventory(
     if (role !== "antigravity-history") {
       continue;
     }
-    for (const value of parseJsonlFile(candidate.path)) {
-      if (!isRecord(value)) {
-        continue;
-      }
-      const workspace = normalizePathValue(
-        pickFirstString(value, ["workspace"])
-      );
-      const conversationId = pickFirstString(value, ["conversationId"]);
-      if (!conversationId) {
-        continue;
-      }
+    for (const record of parseCoreHistorySource({
+      vendor: "antigravity",
+      role: "antigravity-history",
+      logicalName: candidate.path,
+      mtimeMs: candidate.mtimeMs,
+      records: parseJsonlFile(candidate.path)
+    })) {
       upsertConversation(
         conversations,
-        buildHistoryConversationRecord(conversationId, value, workspace)
+        coreHistoryToAntigravityConversation(record)
       );
     }
   }
@@ -160,10 +158,7 @@ export function readAntigravityConversationMetadataFromInventory(
       conversationId,
       ...optionalStringProperty(
         "workspace",
-        inferAntigravityConversationWorkspace(
-          candidate.path,
-          projectWorkspaces
-        )
+        inferAntigravityConversationWorkspace(candidate.path, projectWorkspaces)
       ),
       ...(details.title ? { title: details.title } : {}),
       ...(details.recentConversation
@@ -188,20 +183,17 @@ function readAntigravityConversationMetadataUncached(
 ): AntigravityConversationMetadata[] {
   const conversations = new Map<string, AntigravityConversationMetadata>();
 
-  for (const record of parseJsonlFile(join(antigravityRoot, "history.jsonl"))) {
-    if (!isRecord(record)) {
-      continue;
-    }
-    const workspace = normalizePathValue(
-      pickFirstString(record, ["workspace"])
-    );
-    const conversationId = pickFirstString(record, ["conversationId"]);
-    if (!conversationId) {
-      continue;
-    }
+  const historyPath = join(antigravityRoot, "history.jsonl");
+  for (const record of parseCoreHistorySource({
+    vendor: "antigravity",
+    role: "antigravity-history",
+    logicalName: historyPath,
+    mtimeMs: fileMtimeMs(historyPath),
+    records: parseJsonlFile(historyPath)
+  })) {
     upsertConversation(
       conversations,
-      buildHistoryConversationRecord(conversationId, record, workspace)
+      coreHistoryToAntigravityConversation(record)
     );
   }
 
@@ -223,6 +215,30 @@ function cloneConversationMetadata(
   records: AntigravityConversationMetadata[]
 ): AntigravityConversationMetadata[] {
   return records.map((record) => ({ ...record }));
+}
+
+function coreHistoryToAntigravityConversation(
+  record: CoreHistoryRecord
+): AntigravityConversationMetadata {
+  return {
+    conversationId: record.sessionId,
+    ...(record.cwd ? { workspace: record.cwd } : {}),
+    ...(record.title ? { title: record.title } : {}),
+    ...(record.recentConversation
+      ? { recentConversation: record.recentConversation }
+      : {}),
+    ...(record.createdAt ? { createdAt: record.createdAt } : {}),
+    ...(record.updatedAt ? { updatedAt: record.updatedAt } : {}),
+    mtimeMs: record.updatedAtMs
+  };
+}
+
+function fileMtimeMs(filePath: string): number {
+  try {
+    return Number(statSync(filePath).mtimeMs);
+  } catch {
+    return 0;
+  }
 }
 
 function antigravityStorageSignature(
@@ -321,29 +337,6 @@ export function readAntigravityWorkspaceByConversationFromRoot(
         conversation.workspace as string
       ])
   );
-}
-
-function buildHistoryConversationRecord(
-  conversationId: string,
-  record: Record<string, unknown> | undefined,
-  workspace: string | undefined
-): AntigravityConversationMetadata {
-  const timestampMs = numericField(record, "timestamp");
-  const timestamp =
-    typeof timestampMs === "number"
-      ? new Date(timestampMs).toISOString()
-      : undefined;
-  const display = pickFirstString(record, ["display"]);
-  const title = sanitizeTitle(display);
-  const recentConversation = sanitizePreview(display);
-  return {
-    conversationId,
-    ...(workspace ? { workspace } : {}),
-    ...(title ? { title } : {}),
-    ...(recentConversation ? { recentConversation } : {}),
-    ...(timestamp ? { createdAt: timestamp, updatedAt: timestamp } : {}),
-    mtimeMs: timestampMs ?? 0
-  };
 }
 
 function listAntigravityConversationFiles(
@@ -533,63 +526,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function pickFirstString(
-  object: Record<string, unknown> | undefined,
-  keys: string[]
-): string | undefined {
-  if (!object) {
-    return undefined;
-  }
-  for (const key of keys) {
-    const value = object[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function numericField(
-  object: Record<string, unknown> | undefined,
-  key: string
-): number | undefined {
-  const value = object?.[key];
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
 function normalizePathValue(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized.replace(/\/+$/u, "") : undefined;
-}
-
-function sanitizeTitle(value: string | undefined): string | undefined {
-  const firstLine = value
-    ?.split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) {
-    return undefined;
-  }
-  const compact = firstLine.replace(/\s+/gu, " ").trim();
-  if (!compact) {
-    return undefined;
-  }
-  return compact.length > MAX_TITLE_LENGTH
-    ? `${compact.slice(0, MAX_TITLE_LENGTH - 1)}…`
-    : compact;
-}
-
-function sanitizePreview(value: string | undefined): string | undefined {
-  const normalized = value?.replace(/\s+/gu, " ").trim();
-  if (!normalized) {
-    return undefined;
-  }
-  const maxLength = 220;
-  return normalized.length > maxLength
-    ? `${normalized.slice(0, maxLength - 3)}...`
-    : normalized;
 }
 
 function optionalStringProperty<K extends string>(
@@ -645,21 +584,25 @@ function extractConversationDetailsFromDb(dbPath: string): {
     db = new DatabaseSync(dbPath, { readOnly: true });
     const firstRow = db
       .prepare(
-        "SELECT step_payload FROM steps WHERE idx = 0 AND step_type = 14 LIMIT 1"
+        "SELECT idx, step_type, CASE WHEN length(step_payload) <= 131072 THEN step_payload END AS step_payload FROM steps WHERE idx = 0 AND step_type = 14 LIMIT 1"
       )
       .get() as unknown;
     const latestRow = db
       .prepare(
-        "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1"
+        "SELECT idx, step_type, CASE WHEN length(step_payload) <= 131072 THEN step_payload END AS step_payload FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1"
       )
       .get() as unknown;
-    const firstPrompt = promptFromStepRow(firstRow);
-    const latestPrompt = promptFromStepRow(latestRow);
+    const rows = [firstRow, latestRow].flatMap(coreConversationStepRow);
+    const parsed = parseAntigravityConversationRows({
+      logicalName: `/${basename(dbPath)}`,
+      mtimeMs: 0,
+      rows
+    });
     return {
-      ...optionalStringProperty("title", sanitizeTitle(firstPrompt)),
+      ...optionalStringProperty("title", parsed?.title),
       ...optionalStringProperty(
         "recentConversation",
-        sanitizePreview(latestPrompt)
+        parsed?.recentConversation
       )
     };
   } catch {
@@ -674,11 +617,32 @@ function extractConversationDetailsFromDb(dbPath: string): {
   return {};
 }
 
-function promptFromStepRow(row: unknown): string | undefined {
-  const payload = isRecord(row) ? row.step_payload : undefined;
-  return payload instanceof Uint8Array
-    ? extractPromptFromPayload(Buffer.from(payload))
-    : undefined;
+function coreConversationStepRow(
+  row: unknown
+): AntigravityConversationStepRow[] {
+  if (!isRecord(row)) return [];
+  const index = row.idx;
+  const stepType = row.step_type;
+  const payload = row.step_payload;
+  if (
+    !Number.isSafeInteger(index) ||
+    (index as number) < 0 ||
+    !Number.isSafeInteger(stepType) ||
+    (stepType as number) < 0 ||
+    (payload !== null && !(payload instanceof Uint8Array))
+  ) {
+    return [];
+  }
+  return [
+    {
+      index: index as number,
+      stepType: stepType as number,
+      payloadBase64:
+        payload instanceof Uint8Array
+          ? Buffer.from(payload).toString("base64")
+          : ""
+    }
+  ];
 }
 
 function loadDatabaseSync(): DatabaseSyncConstructor | undefined {
@@ -697,106 +661,4 @@ function loadDatabaseSync(): DatabaseSyncConstructor | undefined {
     cachedDatabaseSync = null;
   }
   return cachedDatabaseSync ?? undefined;
-}
-
-function readVarint(
-  buffer: Buffer,
-  offset: number
-): { value: number; nextOffset: number } | undefined {
-  let value = 0;
-  let multiplier = 1;
-  for (
-    let bytesRead = 0;
-    bytesRead < 10 && offset < buffer.length;
-    bytesRead += 1
-  ) {
-    const byte = buffer[offset++];
-    value += (byte & 0x7f) * multiplier;
-    if (!Number.isSafeInteger(value)) {
-      return undefined;
-    }
-    if ((byte & 0x80) === 0) {
-      return { value, nextOffset: offset };
-    }
-    multiplier *= 128;
-  }
-  return undefined;
-}
-
-function isPrintableUtf8(str: string): boolean {
-  if (str.length < 2) return false;
-  const printableRegex = /^[\s\w\p{L}\p{N}\p{P}\p{S}]+$/u;
-  return printableRegex.test(str);
-}
-
-function extractPromptFromPayload(
-  payload: Buffer,
-  depth = 0
-): string | undefined {
-  if (
-    payload.length > MAX_PROMPT_PAYLOAD_BYTES ||
-    depth > MAX_PROMPT_PARSE_DEPTH
-  ) {
-    return undefined;
-  }
-  let offset = 0;
-  while (offset < payload.length) {
-    const tagResult = readVarint(payload, offset);
-    if (!tagResult || tagResult.value === 0) {
-      break;
-    }
-    offset = tagResult.nextOffset;
-    const tag = tagResult.value;
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >> 3;
-
-    if (wireType === 2) {
-      // length-delimited
-      const lengthResult = readVarint(payload, offset);
-      if (!lengthResult) {
-        break;
-      }
-      offset = lengthResult.nextOffset;
-      const len = lengthResult.value;
-      if (offset + len > payload.length) {
-        break;
-      }
-      if (len > MAX_PROMPT_FIELD_BYTES) {
-        offset += len;
-        continue;
-      }
-      if (fieldNumber === 2) {
-        // field 2 is the prompt text
-        const str = payload.subarray(offset, offset + len).toString("utf8");
-        if (isPrintableUtf8(str)) {
-          return str.trim();
-        }
-      }
-      // Recurse into the submessage
-      const nested = extractPromptFromPayload(
-        payload.subarray(offset, offset + len),
-        depth + 1
-      );
-      if (nested) {
-        return nested;
-      }
-      offset += len;
-    } else if (wireType === 0) {
-      // varint
-      const valueResult = readVarint(payload, offset);
-      if (!valueResult) {
-        break;
-      }
-      offset = valueResult.nextOffset;
-    } else if (wireType === 1) {
-      // 64-bit
-      offset += 8;
-    } else if (wireType === 5) {
-      // 32-bit
-      offset += 4;
-    } else {
-      break;
-    }
-  }
-  return undefined;
 }

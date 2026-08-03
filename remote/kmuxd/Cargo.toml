@@ -31,6 +31,7 @@ license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+base64 = "0.22.1"
 clap = { version = "4.5.60", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 crc32fast = "1.5.0"
@@ -38,7 +39,7 @@ hex = "0.4.3"
 libc = "0.2.182"
 nix = { version = "0.31.2", features = ["fs", "process", "signal", "term", "user"] }
 parking_lot = "0.12.5"
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["bundled", "hooks"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"

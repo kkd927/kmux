@@ -18,14 +18,17 @@ use kmux_compat::{
     CohortProxyRequest, CohortProxyResponse, ConversionPreparedResponse,
     ConversionPromotedResponse, DesiredForwardResponse, EventsAcknowledgedResponse,
     EventsReplayedResponse, ForwardsObservedResponse, GitInspectedResponse, GitRepositoryResponse,
-    HelloResponse, HistoryScannedResponse, KeeperAttachRequest, ObservedKeeper, ObservedResponse,
+    HelloResponse, HistoryScannedResponse, KeeperAttachRequest, MetadataSourcesListedResponse,
+    MetadataSourcesQueriedResponse, MetadataSourcesReadResponse, ObservedKeeper, ObservedResponse,
     ObservedWorkspace, OperationResult, PortsInspectedResponse, ProvisionalReclaimedResponse,
     REMOTE_PROTOCOL_VERSION, RemoteAuthority, RemoteControlError, RemoteFrameKind,
-    RemoteHistoryRecord, RemoteOperationIntent, RemoteOperationPayload, RemotePersistenceLevel,
-    RemotePrincipal, RemoteResourceKey, RemoteRetentionPolicy, RemoteRuntimeRoots,
-    RemoteSessionLaunchPayload, RemoteSessionStorageStatus, RemoteSpoolEvent, RemoteUsageRecord,
-    SurfaceCaptureChunkResponse, SurfaceCaptureCompletedResponse, TerminalInputAckResponse,
-    TerminalProxyEndpoint, UsageScannedResponse, read_control, read_remote_frame, write_control,
+    RemoteHistoryRecord, RemoteMetadataClaim, RemoteMetadataQueryRow, RemoteMetadataSource,
+    RemoteMetadataSourceClaim, RemoteOperationIntent, RemoteOperationPayload,
+    RemotePersistenceLevel, RemotePrincipal, RemoteResourceKey, RemoteRetentionPolicy,
+    RemoteRuntimeRoots, RemoteSessionLaunchPayload, RemoteSessionStorageStatus, RemoteSpoolEvent,
+    RemoteUsageRecord, SurfaceCaptureChunkResponse, SurfaceCaptureCompletedResponse,
+    TerminalInputAckResponse, TerminalProxyEndpoint, UsageScannedResponse, read_control,
+    read_remote_frame, write_control,
 };
 use kmux_doctor::{DoctorPaths, run_doctor};
 use kmux_hook::{
@@ -44,8 +47,9 @@ use kmux_keeper::{
 };
 use kmux_metadata::{
     ExternalAgentScanSettings, ExternalAgentSettings, ExternalSessionClaim,
-    ExternalSourceCacheKind, ExternalSourceCacheUpdate, scan_owned_external_history_with_settings,
-    scan_owned_external_usage_with_settings,
+    ExternalSourceCacheKind, ExternalSourceCacheUpdate, MetadataPurpose, MetadataSourceError,
+    MetadataSourceHandle, list_owned_metadata_sources, query_metadata_source, read_metadata_source,
+    scan_owned_external_history_with_settings, scan_owned_external_usage_with_settings,
 };
 use kmux_platform::{
     current_authenticated_home, current_authenticated_principal, effective_uid, spawn_detached,
@@ -89,6 +93,8 @@ const COMMAND_WAIT_POLL: Duration = Duration::from_millis(10);
 const MAX_PORT_INSPECTION_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_INSPECTED_PORTS: usize = 64;
 const MAX_DESIRED_FORWARDS: usize = 4_096;
+const MAX_BRIDGE_METADATA_CONTENT_BYTES: usize = 256 * 1024;
+const MAX_BRIDGE_METADATA_RESPONSE_BYTES: usize = 896 * 1024;
 
 #[derive(Debug, Error)]
 pub enum BridgeRuntimeError {
@@ -104,6 +110,8 @@ pub enum BridgeRuntimeError {
     Keeper(#[from] kmux_keeper::KeeperRuntimeError),
     #[error("bridge hook spool failed: {0}")]
     Hook(#[from] kmux_hook::HookError),
+    #[error("bridge metadata source failed: {0}")]
+    MetadataSource(#[from] MetadataSourceError),
     #[error("bridge request is invalid: {0}")]
     Invalid(String),
     #[error("bridge operation is temporarily unavailable: {0}")]
@@ -153,6 +161,18 @@ struct BridgeTokenScope {
 #[derive(Clone, Debug)]
 struct VerifiedBridgeToken {
     scope: Option<BridgeTokenScope>,
+}
+
+#[derive(Default)]
+struct BridgeMetadataHandles {
+    sources: BTreeMap<String, BridgeMetadataHandle>,
+}
+
+struct BridgeMetadataHandle {
+    desktop_installation_id: String,
+    target_id: String,
+    purpose: MetadataPurpose,
+    source: MetadataSourceHandle,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -327,6 +347,7 @@ pub fn run_bridge_server(
     let bridge_generation = format!("bridge_{}", Uuid::new_v4());
     let executable = std::env::current_exe()?;
     let mut connection_binding: Option<BridgeConnectionBinding> = None;
+    let mut metadata_handles = BridgeMetadataHandles::default();
     loop {
         let frame = match read_remote_frame(&mut reader)? {
             Some(frame) => frame,
@@ -351,6 +372,7 @@ pub fn run_bridge_server(
                     &bridge_generation,
                     &executable,
                     connection_binding.as_ref(),
+                    &mut metadata_handles,
                 )
             });
         let request_result = match request_result {
@@ -512,7 +534,15 @@ fn bridge_request_scope(request: &BridgeRequest) -> Option<(&str, &str)> {
             desktop_installation_id,
             target_id,
             ..
+        }
+        | BridgeRequest::MetadataSourcesList {
+            desktop_installation_id,
+            target_id,
+            ..
         } => Some((desktop_installation_id, target_id)),
+        BridgeRequest::MetadataSourcesRead { .. } | BridgeRequest::MetadataSourcesQuery { .. } => {
+            None
+        }
         BridgeRequest::PortsInspect { resource_key } => Some((
             &resource_key.desktop_installation_id,
             &resource_key.target_id,
@@ -1020,6 +1050,7 @@ fn handle_request(
     bridge_generation: &str,
     executable: &Path,
     binding: Option<&BridgeConnectionBinding>,
+    metadata_handles: &mut BridgeMetadataHandles,
 ) -> Result<(BridgeHandledResponse, VerifiedBridgeToken), BridgeRuntimeError> {
     if envelope.protocol_version != REMOTE_PROTOCOL_VERSION {
         return Err(BridgeRuntimeError::Invalid(
@@ -1059,6 +1090,7 @@ fn handle_request(
             bridge_generation,
             executable,
             request,
+            metadata_handles,
         )
         .map(BridgeHandledResponse::Single),
     }?;
@@ -1071,6 +1103,7 @@ fn handle_single_request(
     bridge_generation: &str,
     executable: &Path,
     request: BridgeRequest,
+    metadata_handles: &mut BridgeMetadataHandles,
 ) -> Result<BridgeResponseBody, BridgeRuntimeError> {
     match request {
         BridgeRequest::Hello {} => hello(roots, bridge_generation),
@@ -1126,6 +1159,40 @@ fn handle_single_request(
             agent_settings,
         )
         .map(BridgeResponseBody::UsageScanned),
+        BridgeRequest::MetadataSourcesList {
+            desktop_installation_id,
+            target_id,
+            purpose,
+            agent_settings,
+        } => inspect_metadata_sources(
+            roots,
+            &desktop_installation_id,
+            &target_id,
+            &purpose,
+            agent_settings,
+            metadata_handles,
+        )
+        .map(BridgeResponseBody::MetadataSourcesListed),
+        BridgeRequest::MetadataSourcesRead {
+            source_id,
+            offset,
+            max_bytes,
+        } => inspect_metadata_source_read(roots, &source_id, &offset, max_bytes, metadata_handles)
+            .map(BridgeResponseBody::MetadataSourcesRead),
+        BridgeRequest::MetadataSourcesQuery {
+            source_id,
+            query_id,
+            page_token,
+            max_rows,
+        } => inspect_metadata_source_query(
+            roots,
+            &source_id,
+            &query_id,
+            page_token.as_deref(),
+            max_rows,
+            metadata_handles,
+        )
+        .map(BridgeResponseBody::MetadataSourcesQueried),
         BridgeRequest::ForwardsObserve {
             desktop_installation_id,
             target_id,
@@ -1272,6 +1339,7 @@ fn hello(
             "history.scan-bounded-v1".to_owned(),
             "history.scan-partial-v2".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
+            "agent-metadata-sources-v1".to_owned(),
             "agent-sessions.kmux-owned-v1".to_owned(),
             "agents.settings-scan-v2".to_owned(),
             "worktree.durable-v1".to_owned(),
@@ -2220,6 +2288,248 @@ fn inspect_external_history(
         truncated: scan.truncated,
         records,
     })
+}
+
+fn inspect_metadata_sources(
+    roots: &RemoteRuntimeRoots,
+    desktop_installation_id: &str,
+    target_id: &str,
+    purpose: &str,
+    agent_settings: Option<AgentScopeSettings>,
+    handles: &mut BridgeMetadataHandles,
+) -> Result<MetadataSourcesListedResponse, BridgeRuntimeError> {
+    validate_id(desktop_installation_id, "desktopInstallationId")?;
+    validate_id(target_id, "targetId")?;
+    let purpose = MetadataPurpose::try_from(purpose)?;
+    let principal = current_authenticated_principal().map_err(|error| {
+        BridgeRuntimeError::Invalid(format!("metadata principal is unavailable: {error}"))
+    })?;
+    let home = current_authenticated_home().map_err(|error| {
+        BridgeRuntimeError::Invalid(format!("metadata home is unavailable: {error}"))
+    })?;
+    let settings = metadata_agent_scan_settings(agent_settings);
+    let owned_sessions = load_owned_agent_sessions(
+        Path::new(&roots.state_root),
+        desktop_installation_id,
+        target_id,
+    )?;
+    let claims = owned_sessions
+        .iter()
+        .map(metadata_session_claim)
+        .collect::<Vec<_>>();
+    let inventory = list_owned_metadata_sources(&home, purpose, &settings, &claims, principal.uid)?;
+    handles.sources.retain(|_, handle| {
+        handle.desktop_installation_id != desktop_installation_id
+            || handle.target_id != target_id
+            || handle.purpose != purpose
+    });
+    let mut claims = Vec::with_capacity(inventory.claims.len());
+    let mut sources = Vec::with_capacity(inventory.sources.len());
+    let mut response_bytes = 0_usize;
+    let mut truncated = inventory.truncated;
+    for claim in inventory.claims {
+        let response_claim = remote_metadata_claim(&claim);
+        let claim_bytes = serde_json::to_vec(&response_claim)?.len();
+        if response_bytes.saturating_add(claim_bytes) > MAX_BRIDGE_METADATA_RESPONSE_BYTES {
+            truncated = true;
+            break;
+        }
+        response_bytes = response_bytes.saturating_add(claim_bytes);
+        claims.push(response_claim);
+    }
+    let listed_claims = claims
+        .iter()
+        .map(|claim| (claim.vendor.as_str(), claim.session_id.as_str()))
+        .collect::<BTreeSet<_>>();
+    for source in inventory.sources {
+        if purpose == MetadataPurpose::History
+            && !listed_claims.contains(&(
+                source.claim.vendor.as_str(),
+                source.claim.vendor_session_id.as_str(),
+            ))
+        {
+            truncated = true;
+            continue;
+        }
+        let source_id = format!("metadata_source_{}", Uuid::new_v4());
+        let response_source = remote_metadata_source(&source_id, &source);
+        let source_bytes = serde_json::to_vec(&response_source)?.len();
+        if response_bytes.saturating_add(source_bytes) > MAX_BRIDGE_METADATA_RESPONSE_BYTES {
+            truncated = true;
+            break;
+        }
+        response_bytes = response_bytes.saturating_add(source_bytes);
+        sources.push(response_source);
+        handles.sources.insert(
+            source_id,
+            BridgeMetadataHandle {
+                desktop_installation_id: desktop_installation_id.to_owned(),
+                target_id: target_id.to_owned(),
+                purpose,
+                source,
+            },
+        );
+    }
+    Ok(MetadataSourcesListedResponse {
+        target_id: target_id.to_owned(),
+        purpose: purpose.as_str().to_owned(),
+        contract_version: 1,
+        truncated,
+        claims,
+        sources,
+    })
+}
+
+fn inspect_metadata_source_read(
+    roots: &RemoteRuntimeRoots,
+    source_id: &str,
+    offset: &str,
+    max_bytes: usize,
+    handles: &BridgeMetadataHandles,
+) -> Result<MetadataSourcesReadResponse, BridgeRuntimeError> {
+    validate_id(source_id, "sourceId")?;
+    if max_bytes == 0 || max_bytes > kmux_metadata::MAX_METADATA_CHUNK_BYTES {
+        return Err(BridgeRuntimeError::Invalid(
+            "metadata source read bound is invalid".to_owned(),
+        ));
+    }
+    let offset = parse_u64(offset)?;
+    let handle = handles
+        .sources
+        .get(source_id)
+        .ok_or(MetadataSourceError::StaleSource)?;
+    require_metadata_handle_owned(roots, handle)?;
+    let principal = current_authenticated_principal().map_err(|error| {
+        BridgeRuntimeError::Invalid(format!("metadata principal is unavailable: {error}"))
+    })?;
+    let read = read_metadata_source(
+        &handle.source,
+        offset,
+        max_bytes.min(MAX_BRIDGE_METADATA_CONTENT_BYTES),
+        principal.uid,
+    )?;
+    Ok(MetadataSourcesReadResponse {
+        source_id: source_id.to_owned(),
+        offset: read.offset.to_string(),
+        next_offset: read.next_offset.to_string(),
+        eof: read.eof,
+        file_identity: read.file_identity,
+        content: read.content,
+    })
+}
+
+fn inspect_metadata_source_query(
+    roots: &RemoteRuntimeRoots,
+    source_id: &str,
+    query_id: &str,
+    page_token: Option<&str>,
+    max_rows: usize,
+    handles: &BridgeMetadataHandles,
+) -> Result<MetadataSourcesQueriedResponse, BridgeRuntimeError> {
+    validate_id(source_id, "sourceId")?;
+    let handle = handles
+        .sources
+        .get(source_id)
+        .ok_or(MetadataSourceError::StaleSource)?;
+    require_metadata_handle_owned(roots, handle)?;
+    let principal = current_authenticated_principal().map_err(|error| {
+        BridgeRuntimeError::Invalid(format!("metadata principal is unavailable: {error}"))
+    })?;
+    let page = query_metadata_source(
+        &handle.source,
+        query_id,
+        page_token,
+        max_rows,
+        principal.uid,
+    )?;
+    Ok(MetadataSourcesQueriedResponse {
+        source_id: source_id.to_owned(),
+        query_id: query_id.to_owned(),
+        file_identity: page.file_identity,
+        rows: page
+            .rows
+            .into_iter()
+            .map(|row| RemoteMetadataQueryRow {
+                index: row.index,
+                step_type: row.step_type,
+                payload_base64: row.payload_base64,
+            })
+            .collect(),
+        next_page_token: page.next_page_token,
+    })
+}
+
+fn require_metadata_handle_owned(
+    roots: &RemoteRuntimeRoots,
+    handle: &BridgeMetadataHandle,
+) -> Result<(), BridgeRuntimeError> {
+    let sessions = load_owned_agent_sessions(
+        Path::new(&roots.state_root),
+        &handle.desktop_installation_id,
+        &handle.target_id,
+    )?;
+    if !sessions.iter().any(|session| {
+        session.vendor == handle.source.claim.vendor
+            && session.vendor_session_id == handle.source.claim.vendor_session_id
+    }) {
+        return Err(MetadataSourceError::StaleSource.into());
+    }
+    Ok(())
+}
+
+fn remote_metadata_source(source_id: &str, source: &MetadataSourceHandle) -> RemoteMetadataSource {
+    RemoteMetadataSource {
+        source_id: source_id.to_owned(),
+        vendor: source.vendor.clone(),
+        role: source.role.as_str().to_owned(),
+        format: source.format.as_str().to_owned(),
+        logical_name: source.logical_name.clone(),
+        size: source.size.to_string(),
+        mtime_unix_ms: source.mtime_unix_ms.to_string(),
+        file_identity: source.file_identity.clone(),
+        claim: RemoteMetadataSourceClaim {
+            session_id: source.claim.vendor_session_id.clone(),
+            claimed_at_unix_ms: source.claim.claimed_at_unix_ms.to_string(),
+            last_seen_at_unix_ms: source.claim.last_kmux_seen_at_unix_ms.to_string(),
+            cwd: source.claim.cwd.clone(),
+            workspace_paths: source.claim.workspace_paths.clone(),
+            launch_title: source
+                .claim
+                .launch_title
+                .as_deref()
+                .and_then(|value| bounded_metadata_string(value, 4 * 1024)),
+        },
+    }
+}
+
+fn remote_metadata_claim(claim: &ExternalSessionClaim) -> RemoteMetadataClaim {
+    RemoteMetadataClaim {
+        vendor: claim.vendor.clone(),
+        session_id: claim.vendor_session_id.clone(),
+        claimed_at_unix_ms: claim.claimed_at_unix_ms.to_string(),
+        last_seen_at_unix_ms: claim.last_kmux_seen_at_unix_ms.to_string(),
+        cwd: claim.cwd.clone(),
+        workspace_paths: claim.workspace_paths.clone(),
+        launch_title: claim
+            .launch_title
+            .as_deref()
+            .and_then(|value| bounded_metadata_string(value, 4 * 1024)),
+    }
+}
+
+fn bounded_metadata_string(value: &str, maximum_bytes: usize) -> Option<String> {
+    let mut output = String::new();
+    for character in value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+    {
+        if output.len().saturating_add(character.len_utf8()) > maximum_bytes {
+            break;
+        }
+        output.push(character);
+    }
+    (!output.is_empty()).then_some(output)
 }
 
 fn inspect_external_usage(
@@ -5824,6 +6134,27 @@ impl Write for DigestWriter<'_> {
 
 fn to_control_error(error: &BridgeRuntimeError) -> RemoteControlError {
     match error {
+        BridgeRuntimeError::MetadataSource(MetadataSourceError::StaleSource) => {
+            RemoteControlError {
+                code: "stale_source".to_owned(),
+                message: "metadata source handle is stale".to_owned(),
+                retryable: true,
+            }
+        }
+        BridgeRuntimeError::MetadataSource(MetadataSourceError::InvalidUtf8) => {
+            RemoteControlError {
+                code: "invalid-utf8".to_owned(),
+                message: "metadata source is not valid UTF-8".to_owned(),
+                retryable: false,
+            }
+        }
+        BridgeRuntimeError::MetadataSource(MetadataSourceError::InvalidRequest) => {
+            RemoteControlError {
+                code: "invalid-request".to_owned(),
+                message: "metadata source request is invalid".to_owned(),
+                retryable: false,
+            }
+        }
         BridgeRuntimeError::Retryable(message) => RemoteControlError {
             code: "temporarily-unavailable".to_owned(),
             message: message.clone(),

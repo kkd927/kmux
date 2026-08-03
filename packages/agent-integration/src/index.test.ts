@@ -18,6 +18,7 @@ import {
   ensureAgentIntegrations,
   ensureAgentIntegrationVendor,
   mergeAgentIntegrationConfig,
+  planAgentIntegrationSnapshot,
   type AgentIntegrationVendor
 } from "./index";
 
@@ -76,6 +77,36 @@ describe("agent integration contract", () => {
         continue;
       }
       expect(merge(), fixture.name).toEqual(fixture.output);
+    }
+  });
+
+  it("plans the same merge for local and remote snapshots and is idempotent", () => {
+    for (const fixture of fixtures as MergeFixture[]) {
+      if (fixture.output === undefined) continue;
+      const planned = planAgentIntegrationSnapshot({
+        vendor: fixture.vendor,
+        path: `/home/test/${fixture.vendor}.json`,
+        state: "present",
+        sha256: "a".repeat(64),
+        content: JSON.stringify(fixture.input)
+      });
+      expect(JSON.parse(planned.desiredContent), fixture.name).toEqual(
+        fixture.output
+      );
+      expect(planned.expected).toEqual({
+        state: "present",
+        sha256: "a".repeat(64)
+      });
+      expect(
+        planAgentIntegrationSnapshot({
+          vendor: fixture.vendor,
+          path: planned.path,
+          state: "present",
+          sha256: "b".repeat(64),
+          content: planned.desiredContent
+        }).changed,
+        fixture.name
+      ).toBe(false);
     }
   });
 

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -113,6 +114,58 @@ pub struct DoctorReport {
     pub vendors: Vec<VendorReport>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotReport {
+    pub contract_version: u16,
+    pub agent_bin_dir: PathBuf,
+    pub vendors: Vec<VendorSnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VendorSnapshot {
+    pub vendor: String,
+    pub path: PathBuf,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlannedApplyRequest {
+    pub operation_id: String,
+    pub contract_version: u16,
+    pub vendor: String,
+    pub path: PathBuf,
+    pub expected: PlannedApplyExpected,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
+pub enum PlannedApplyExpected {
+    Absent,
+    Present { sha256: String },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedApplyReport {
+    pub operation_id: String,
+    pub contract_version: u16,
+    pub vendor: String,
+    pub path: PathBuf,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 pub fn ensure_all(home: &Path, agent_bin_dir: &Path) -> Result<EnsureReport, IntegrationError> {
     ensure_all_with_codex_home(home, agent_bin_dir, None)
 }
@@ -152,6 +205,373 @@ pub fn ensure_vendor_path(vendor: &str, path: &Path) -> Result<VendorReport, Int
         )));
     }
     Ok(ensure_vendor_file(path.to_path_buf(), vendor, &contract))
+}
+
+pub fn snapshot_all_with_codex_home(
+    home: &Path,
+    agent_bin_dir: &Path,
+    codex_home: Option<&Path>,
+) -> Result<SnapshotReport, IntegrationError> {
+    require_absolute(home, "home")?;
+    require_absolute(agent_bin_dir, "agent bin directory")?;
+    let contract = contract()?;
+    let vendors = contract
+        .vendors
+        .iter()
+        .map(|(vendor, definition)| {
+            let path = vendor_settings_path(home, codex_home, vendor, definition);
+            match snapshot_vendor_path(vendor, &path, settings_root(home, codex_home, vendor)) {
+                Ok(snapshot) => snapshot,
+                Err(error) => VendorSnapshot {
+                    vendor: vendor.clone(),
+                    path,
+                    state: "degraded",
+                    sha256: None,
+                    content: None,
+                    warning: Some(bounded_warning(&error.to_string())),
+                },
+            }
+        })
+        .collect();
+    Ok(SnapshotReport {
+        contract_version: contract.contract_version,
+        agent_bin_dir: agent_bin_dir.to_path_buf(),
+        vendors,
+    })
+}
+
+pub fn apply_planned_with_codex_home(
+    home: &Path,
+    codex_home: Option<&Path>,
+    request: &PlannedApplyRequest,
+) -> Result<PlannedApplyReport, IntegrationError> {
+    require_absolute(home, "home")?;
+    if request.operation_id.is_empty()
+        || request.operation_id.len() > 256
+        || request.operation_id.chars().any(char::is_control)
+        || request.vendor.is_empty()
+        || request.content.len() as u64 > MAX_CONFIG_BYTES
+    {
+        return Err(IntegrationError::Invalid(
+            "planned apply request is invalid".to_owned(),
+        ));
+    }
+    let contract = contract()?;
+    if request.contract_version != contract.contract_version {
+        return Err(IntegrationError::Invalid(
+            "planned apply contract version is unsupported".to_owned(),
+        ));
+    }
+    let definition = contract
+        .vendors
+        .get(&request.vendor)
+        .ok_or_else(|| IntegrationError::Invalid("planned apply vendor is invalid".to_owned()))?;
+    let expected_path = vendor_settings_path(home, codex_home, &request.vendor, definition);
+    if request.path != expected_path || !request.path.is_absolute() {
+        return Err(IntegrationError::Invalid(
+            "planned apply path is outside its vendor contract".to_owned(),
+        ));
+    }
+    if let PlannedApplyExpected::Present { sha256 } = &request.expected
+        && (sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(IntegrationError::Invalid(
+            "planned apply expected digest is invalid".to_owned(),
+        ));
+    }
+    let desired: Value = serde_json::from_str(&request.content)?;
+    if !desired.is_object() {
+        return Err(IntegrationError::UnsupportedSettings(
+            "planned settings must contain a JSON object".to_owned(),
+        ));
+    }
+    let root = settings_root(home, codex_home, &request.vendor);
+    ensure_safe_settings_parent(root, &request.path)?;
+    with_lock(&request.path, || {
+        ensure_safe_settings_parent(root, &request.path)?;
+        let current = read_settings_bytes(&request.path, root)?;
+        let desired_bytes = request.content.as_bytes();
+        if current.as_deref() == Some(desired_bytes) {
+            return Ok(PlannedApplyReport {
+                operation_id: request.operation_id.clone(),
+                contract_version: contract.contract_version,
+                vendor: request.vendor.clone(),
+                path: request.path.clone(),
+                status: "current",
+                sha256: Some(hash_bytes(desired_bytes)),
+            });
+        }
+        let matches = match (&request.expected, current.as_ref()) {
+            (PlannedApplyExpected::Absent, None) => true,
+            (PlannedApplyExpected::Present { sha256 }, Some(bytes)) => {
+                hash_bytes(bytes) == sha256.to_ascii_lowercase()
+            }
+            _ => false,
+        };
+        if !matches {
+            return Ok(PlannedApplyReport {
+                operation_id: request.operation_id.clone(),
+                contract_version: contract.contract_version,
+                vendor: request.vendor.clone(),
+                path: request.path.clone(),
+                status: "conflict",
+                sha256: current.as_deref().map(hash_bytes),
+            });
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&request.path)
+            && metadata.mode() & 0o200 == 0
+        {
+            return Err(IntegrationError::Invalid(format!(
+                "{} is not user-writable",
+                request.path.display()
+            )));
+        }
+        write_content_atomic(&request.path, desired_bytes)?;
+        Ok(PlannedApplyReport {
+            operation_id: request.operation_id.clone(),
+            contract_version: contract.contract_version,
+            vendor: request.vendor.clone(),
+            path: request.path.clone(),
+            status: "changed",
+            sha256: Some(hash_bytes(desired_bytes)),
+        })
+    })
+}
+
+fn snapshot_vendor_path(
+    vendor: &str,
+    path: &Path,
+    root: &Path,
+) -> Result<VendorSnapshot, IntegrationError> {
+    let current = read_settings_bytes(path, root)?;
+    Ok(match current {
+        Some(bytes) => {
+            let sha256 = hash_bytes(&bytes);
+            let content = String::from_utf8(bytes).map_err(|_| {
+                IntegrationError::Invalid("settings file is not valid UTF-8".to_owned())
+            })?;
+            if content
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+            {
+                return Err(IntegrationError::Invalid(
+                    "settings file contains unsupported control characters".to_owned(),
+                ));
+            }
+            VendorSnapshot {
+                vendor: vendor.to_owned(),
+                path: path.to_path_buf(),
+                state: "present",
+                sha256: Some(sha256),
+                content: Some(content),
+                warning: None,
+            }
+        }
+        None => VendorSnapshot {
+            vendor: vendor.to_owned(),
+            path: path.to_path_buf(),
+            state: "absent",
+            sha256: None,
+            content: None,
+            warning: None,
+        },
+    })
+}
+
+fn settings_root<'a>(home: &'a Path, codex_home: Option<&'a Path>, vendor: &str) -> &'a Path {
+    if vendor == "codex"
+        && let Some(codex_home) = codex_home.filter(|path| path.is_absolute())
+    {
+        return codex_home;
+    }
+    home
+}
+
+fn read_settings_bytes(path: &Path, root: &Path) -> Result<Option<Vec<u8>>, IntegrationError> {
+    if !validate_settings_parent(root, path, false)? {
+        return Ok(None);
+    }
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.len() > MAX_CONFIG_BYTES
+    {
+        return Err(IntegrationError::Invalid(format!(
+            "{} is not a safe bounded owned file",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut file)
+        .take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(IntegrationError::Invalid(
+            "settings file is oversized".to_owned(),
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+fn ensure_safe_settings_parent(root: &Path, path: &Path) -> Result<(), IntegrationError> {
+    validate_settings_parent(root, path, true).map(|_| ())
+}
+
+fn validate_settings_parent(
+    root: &Path,
+    path: &Path,
+    create: bool,
+) -> Result<bool, IntegrationError> {
+    require_absolute(root, "settings root")?;
+    require_absolute(path, "settings path")?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| IntegrationError::Invalid("settings path has no parent".to_owned()))?;
+    let relative = parent.strip_prefix(root).map_err(|_| {
+        IntegrationError::Invalid("settings path is outside its settings root".to_owned())
+    })?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(IntegrationError::Invalid(
+            "settings path contains an invalid component".to_owned(),
+        ));
+    }
+
+    if !ensure_or_validate_settings_root(root, create)? {
+        return Ok(false);
+    }
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => validate_owned_directory(&current, &metadata)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !create => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&current)?;
+                fs::set_permissions(&current, fs::Permissions::from_mode(0o700))?;
+                validate_owned_directory(&current, &fs::symlink_metadata(&current)?)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(true)
+}
+
+fn ensure_or_validate_settings_root(root: &Path, create: bool) -> Result<bool, IntegrationError> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) => {
+            validate_owned_directory(root, &metadata)?;
+            return Ok(true);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !create => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut missing = Vec::new();
+    let mut ancestor = root;
+    loop {
+        missing.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| IntegrationError::Invalid("settings root is invalid".to_owned()))?
+                .to_owned(),
+        );
+        ancestor = ancestor.parent().ok_or_else(|| {
+            IntegrationError::Invalid("settings root has no existing ancestor".to_owned())
+        })?;
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                    return Err(IntegrationError::Invalid(format!(
+                        "{} is not a safe directory",
+                        ancestor.display()
+                    )));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut current = ancestor.to_path_buf();
+    for component in missing.iter().rev() {
+        current.push(component);
+        match fs::create_dir(&current) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o700))?;
+        validate_owned_directory(&current, &fs::symlink_metadata(&current)?)?;
+    }
+    Ok(true)
+}
+
+fn validate_owned_directory(path: &Path, metadata: &fs::Metadata) -> Result<(), IntegrationError> {
+    if !metadata.file_type().is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+    {
+        return Err(IntegrationError::Invalid(format!(
+            "{} is not a safe owned directory",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn bounded_warning(value: &str) -> String {
+    let mut output = String::new();
+    for character in value.chars().filter(|character| !character.is_control()) {
+        if output.len().saturating_add(character.len_utf8()) > 4 * 1024 {
+            break;
+        }
+        output.push(character);
+    }
+    if output.is_empty() {
+        "agent integration operation failed".to_owned()
+    } else {
+        output
+    }
+}
+
+fn write_content_atomic(path: &Path, bytes: &[u8]) -> Result<(), IntegrationError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| IntegrationError::Invalid("settings path has no parent".to_owned()))?;
+    let temporary = parent.join(format!(".agent-integration-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(OFlag::O_NOFOLLOW.bits())
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temporary);
+    result
 }
 
 pub fn doctor(home: &Path, agent_bin_dir: &Path) -> Result<DoctorReport, IntegrationError> {
@@ -251,6 +671,10 @@ fn remote_transport_readiness() -> (bool, Option<&'static str>) {
 pub fn merge_config(vendor: &str, input: Value) -> Result<Value, IntegrationError> {
     let contract = contract()?;
     merge_value(vendor, input, &contract)
+}
+
+pub fn contract_version() -> Result<u16, IntegrationError> {
+    Ok(contract()?.contract_version)
 }
 
 pub fn ensure_runtime_shims(
@@ -1283,6 +1707,104 @@ mod tests {
             fs::metadata(&codex_path).unwrap().modified().unwrap(),
             original_mtime
         );
+    }
+
+    #[test]
+    fn planned_apply_is_idempotent_and_uses_snapshot_compare_and_swap() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let home = sandbox.path().join("home");
+        let bin = sandbox.path().join("bin");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let path = home.join(".codex/hooks.json");
+
+        let snapshot = snapshot_all_with_codex_home(&home, &bin, None).unwrap();
+        let codex = snapshot
+            .vendors
+            .iter()
+            .find(|vendor| vendor.vendor == "codex")
+            .unwrap();
+        assert_eq!(codex.state, "absent");
+        let desired = merge_config("codex", serde_json::json!({ "user": "first" })).unwrap();
+        let request = PlannedApplyRequest {
+            operation_id: "operation-1".to_owned(),
+            contract_version: snapshot.contract_version,
+            vendor: "codex".to_owned(),
+            path: path.clone(),
+            expected: PlannedApplyExpected::Absent,
+            content: format!("{}\n", serde_json::to_string_pretty(&desired).unwrap()),
+        };
+        let changed = apply_planned_with_codex_home(&home, None, &request).unwrap();
+        assert_eq!(changed.status, "changed");
+        let repeated = apply_planned_with_codex_home(&home, None, &request).unwrap();
+        assert_eq!(repeated.status, "current");
+
+        let current = snapshot_all_with_codex_home(&home, &bin, None).unwrap();
+        let current_codex = current
+            .vendors
+            .iter()
+            .find(|vendor| vendor.vendor == "codex")
+            .unwrap();
+        assert_eq!(current_codex.state, "present");
+        assert_eq!(current_codex.sha256, changed.sha256);
+
+        let user_content = b"{\"user\":\"second\"}\n";
+        fs::write(&path, user_content).unwrap();
+        let conflict = apply_planned_with_codex_home(
+            &home,
+            None,
+            &PlannedApplyRequest {
+                operation_id: "operation-2".to_owned(),
+                contract_version: current.contract_version,
+                vendor: "codex".to_owned(),
+                path: path.clone(),
+                expected: PlannedApplyExpected::Present {
+                    sha256: current_codex.sha256.clone().unwrap(),
+                },
+                content: request.content.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(conflict.status, "conflict");
+        assert_eq!(fs::read(&path).unwrap(), user_content);
+    }
+
+    #[test]
+    fn planned_snapshot_and_apply_reject_settings_symlinks_without_touching_targets() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let home = sandbox.path().join("home");
+        let bin = sandbox.path().join("bin");
+        let parent = home.join(".codex");
+        fs::create_dir_all(&parent).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let target = sandbox.path().join("target.json");
+        let original = b"{\"keep\":true}\n";
+        fs::write(&target, original).unwrap();
+        let path = parent.join("hooks.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let snapshot = snapshot_all_with_codex_home(&home, &bin, None).unwrap();
+        let codex = snapshot
+            .vendors
+            .iter()
+            .find(|vendor| vendor.vendor == "codex")
+            .unwrap();
+        assert_eq!(codex.state, "degraded");
+        let desired = merge_config("codex", serde_json::json!({})).unwrap();
+        let result = apply_planned_with_codex_home(
+            &home,
+            None,
+            &PlannedApplyRequest {
+                operation_id: "operation-symlink".to_owned(),
+                contract_version: snapshot.contract_version,
+                vendor: "codex".to_owned(),
+                path,
+                expected: PlannedApplyExpected::Absent,
+                content: format!("{}\n", serde_json::to_string_pretty(&desired).unwrap()),
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
     }
 
     #[test]
