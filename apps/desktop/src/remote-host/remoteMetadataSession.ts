@@ -1118,6 +1118,9 @@ function toRemoteUsageRecord(
     ...(sample.model === undefined
       ? {}
       : { model: boundedText(sample.model, 128) }),
+    ...(sample.pricingMode === undefined
+      ? {}
+      : { pricingMode: sample.pricingMode }),
     ...(absolutePath(sample.cwd) === undefined
       ? {}
       : { cwd: absolutePath(sample.cwd) }),

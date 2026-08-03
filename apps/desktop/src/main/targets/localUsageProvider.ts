@@ -67,6 +67,9 @@ function toTargetUsageRecord(
     ...(sample.requestId === undefined ? {} : { requestId: sample.requestId }),
     ...(sample.eventId === undefined ? {} : { eventId: sample.eventId }),
     ...(sample.model === undefined ? {} : { model: sample.model }),
+    ...(sample.pricingMode === undefined
+      ? {}
+      : { pricingMode: sample.pricingMode }),
     ...(cwd === undefined ? {} : { cwd }),
     ...(projectPath === undefined ? {} : { projectPath }),
     inputTokens: sample.inputTokens,

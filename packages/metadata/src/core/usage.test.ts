@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  aggregateCoreUsageSamples,
-  type CoreUsageEventSample
-} from "./usage";
+import { aggregateCoreUsageSamples, type CoreUsageEventSample } from "./usage";
 
 describe("metadata usage core", () => {
   it("aggregates deduplicated usage by owned session before applying result limits", () => {
@@ -25,6 +22,36 @@ describe("metadata usage core", () => {
         inputTokens: 12,
         outputTokens: 5,
         totalTokens: 17
+      })
+    ]);
+  });
+
+  it("preserves Codex pricing-mode boundaries while aggregating a session", () => {
+    const records = aggregateCoreUsageSamples([
+      sample({
+        vendor: "codex",
+        pricingMode: "fast",
+        timestampMs: 10,
+        inputTokens: 5
+      }),
+      sample({
+        vendor: "codex",
+        pricingMode: "standard",
+        timestampMs: 20,
+        inputTokens: 7
+      })
+    ]);
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        aggregateId: "codex:session-1:fast",
+        pricingMode: "fast",
+        inputTokens: 5
+      }),
+      expect.objectContaining({
+        aggregateId: "codex:session-1:standard",
+        pricingMode: "standard",
+        inputTokens: 7
       })
     ]);
   });

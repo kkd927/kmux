@@ -1057,6 +1057,180 @@ describe("usage adapters", () => {
     ]);
   });
 
+  it("prices Codex token deltas with the active Fast service tier and applies mid-session changes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-fast-"));
+    cleanupPaths.push(root);
+    const codexDir = path.join(root, "sessions", "2026", "04", "17");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      path.join(codexDir, "rollout-codex-fast.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "codex-fast-session",
+            cwd: "/tmp/kmux-codex-fast"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:01.000Z",
+          type: "turn_context",
+          payload: { model: "synthetic-codex-model" }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:01.500Z",
+          type: "event_msg",
+          payload: {
+            type: "session_configured",
+            model: "synthetic-codex-model",
+            service_tier: "fast"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:01.750Z",
+          type: "turn_context",
+          payload: {
+            model: "synthetic-codex-model"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:02.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 1_000,
+                cached_input_tokens: 0,
+                output_tokens: 100,
+                total_tokens: 1_100
+              }
+            }
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:03.000Z",
+          type: "event_msg",
+          payload: {
+            type: "thread_settings_applied",
+            thread_settings: {
+              model: "synthetic-codex-model",
+              service_tier: null
+            }
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-04-17T09:00:04.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 2_000,
+                cached_input_tokens: 0,
+                output_tokens: 200,
+                total_tokens: 2_200
+              }
+            }
+          }
+        }),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const [, codexAdapter] = createUsageAdapters({
+      env: { KMUX_CODEX_USAGE_DIR: path.join(root, "sessions") },
+      homeDir: root
+    });
+    const initial = await codexAdapter.initialScan(
+      startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+    );
+
+    expect(initial.samples).toEqual([
+      expect.objectContaining({
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100
+      }),
+      expect.objectContaining({
+        pricingMode: "standard",
+        inputTokens: 1_000,
+        outputTokens: 100
+      })
+    ]);
+  });
+
+  it.each([
+    ["priority", "fast"],
+    ["default", "standard"],
+    ["flex", "standard"],
+    ["unknown-tier", "standard"]
+  ] as const)(
+    "normalizes the %s Codex service tier to %s pricing",
+    async (serviceTier, pricingMode) => {
+      const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-tier-"));
+      cleanupPaths.push(root);
+      const codexDir = path.join(root, "sessions", "2026", "04", "17");
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(
+        path.join(codexDir, `rollout-codex-${serviceTier}.jsonl`),
+        [
+          JSON.stringify({
+            timestamp: "2026-04-17T09:00:00.000Z",
+            type: "session_meta",
+            payload: {
+              id: `codex-${serviceTier}`,
+              ...(serviceTier === "priority"
+                ? { service_tier: serviceTier }
+                : {})
+            }
+          }),
+          JSON.stringify({
+            timestamp: "2026-04-17T09:00:01.000Z",
+            type: "turn_context",
+            payload: {
+              model: "synthetic-codex-model",
+              ...(serviceTier === "priority" ? {} : { serviceTier })
+            }
+          }),
+          JSON.stringify({
+            timestamp: "2026-04-17T09:00:02.000Z",
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                total_token_usage: {
+                  input_tokens: 1_000,
+                  cached_input_tokens: 0,
+                  output_tokens: 100,
+                  total_tokens: 1_100
+                }
+              }
+            }
+          }),
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const [, codexAdapter] = createUsageAdapters({
+        env: { KMUX_CODEX_USAGE_DIR: path.join(root, "sessions") },
+        homeDir: root
+      });
+      const initial = await codexAdapter.initialScan(
+        startOfLocalDay(new Date("2026-04-17T09:00:00.000Z").getTime())
+      );
+
+      expect(initial.samples).toEqual([
+        expect.objectContaining({
+          pricingMode
+        })
+      ]);
+    }
+  );
+
   it("counts Codex team usage from the root rollout without replaying subagent histories", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-team-"));
     cleanupPaths.push(root);

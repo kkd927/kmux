@@ -20,6 +20,7 @@ describe("remote usage provider", () => {
           timestampUnixMs: "1000",
           sessionId: "session-1",
           model: "gpt-5.4-mini",
+          pricingMode: "fast" as const,
           cwd: "/srv/repo",
           projectPath: "/srv/repo",
           inputTokens: "100",
@@ -58,6 +59,7 @@ describe("remote usage provider", () => {
         {
           vendor: "codex",
           sessionId: "session-1",
+          pricingMode: "fast",
           totalTokens: 135,
           costSource: "estimated"
         }

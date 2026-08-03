@@ -1,5 +1,5 @@
 import { isCodexSubagentSessionMetadata } from "../codexSession";
-import { estimateModelCost } from "../modelPricing";
+import { estimateModelCost, type PricingMode } from "../modelPricing";
 import type { MetadataVendor } from "./sourceContract";
 
 export type CoreUsageVendor = MetadataVendor | "unknown";
@@ -16,6 +16,7 @@ export interface CoreUsageEventSample {
   requestId?: string;
   eventId?: string;
   model?: string;
+  pricingMode?: PricingMode;
   cwd?: string;
   projectPath?: string;
   inputTokens: number;
@@ -40,6 +41,7 @@ interface CodexSessionContext {
   hasSessionMetadata?: boolean;
   isSubagent?: boolean;
   model?: string;
+  pricingMode: PricingMode;
   projectPath?: string;
   sessionId?: string;
 }
@@ -331,11 +333,13 @@ function extractUsageSampleFromRecord(
     Date.now()
   );
   const model = pickFirstString(record, ["model", "model_name", "modelName"]);
+  const pricingMode =
+    vendor === "codex" ? pricingModeFromRecord(record, "standard") : undefined;
   const reportedCostUsd = metrics.estimatedCostUsd;
   const estimate =
     reportedCostUsd > 0
       ? null
-      : estimateModelCostForSample(vendor, model, metrics);
+      : estimateModelCostForSample(vendor, model, metrics, pricingMode);
   const costSource: CoreUsageCostSource =
     reportedCostUsd > 0
       ? "reported"
@@ -364,6 +368,7 @@ function extractUsageSampleFromRecord(
     ]),
     requestId: pickFirstOwnString(record, ["request_id", "requestId"]),
     model,
+    pricingMode,
     cwd: normalizePathValue(
       pickFirstString(record, ["cwd", "current_working_directory", "path"])
     ),
@@ -440,7 +445,9 @@ function extractCodexUsageSamples(
   }
   if (recordType === "session_meta") {
     const payload = isRecord(record.payload) ? record.payload : {};
-    const previous = contexts.get(sourcePath) ?? {};
+    const previous: CodexSessionContext = contexts.get(sourcePath) ?? {
+      pricingMode: "standard"
+    };
     const first = !previous.hasSessionMetadata;
     contexts.set(sourcePath, {
       ...previous,
@@ -457,6 +464,10 @@ function extractCodexUsageSamples(
         ? (pickFirstString(payload, ["model", "model_name", "modelName"]) ??
           previous.model)
         : previous.model,
+      pricingMode: pricingModeFromRecord(
+        payload,
+        previous.pricingMode ?? "standard"
+      ),
       projectPath: first
         ? (normalizePathValue(
             pickFirstString(payload, ["project_path", "projectPath", "cwd"])
@@ -471,18 +482,67 @@ function extractCodexUsageSamples(
   }
   if (recordType === "turn_context") {
     const payload = isRecord(record.payload) ? record.payload : {};
-    const previous = contexts.get(sourcePath) ?? {};
+    const previous: CodexSessionContext = contexts.get(sourcePath) ?? {
+      pricingMode: "standard"
+    };
     contexts.set(sourcePath, {
       ...previous,
       model:
         pickFirstString(payload, ["model", "model_name", "modelName"]) ??
-        previous.model
+        previous.model,
+      pricingMode: pricingModeFromRecord(
+        payload,
+        previous.pricingMode ?? "standard"
+      )
     });
     return [];
   }
   if (recordType !== "event_msg") return [];
   const payload = isRecord(record.payload) ? record.payload : null;
-  if (!payload || payload.type !== "token_count") return [];
+  if (!payload) return [];
+  if (payload.type === "session_configured") {
+    const previous = contexts.get(sourcePath) ?? { pricingMode: "standard" };
+    contexts.set(sourcePath, {
+      ...previous,
+      cwd:
+        normalizePathValue(
+          pickFirstString(payload, ["cwd", "project_path", "projectPath"])
+        ) ?? previous.cwd,
+      model:
+        pickFirstString(payload, ["model", "model_name", "modelName"]) ??
+        previous.model,
+      pricingMode: pricingModeFromRecord(payload, "standard"),
+      sessionId:
+        pickFirstString(payload, [
+          "session_id",
+          "sessionId",
+          "thread_id",
+          "threadId"
+        ]) ?? previous.sessionId
+    });
+    return [];
+  }
+  if (payload.type === "thread_settings_applied") {
+    const settings = isRecord(payload.thread_settings)
+      ? payload.thread_settings
+      : isRecord(payload.threadSettings)
+        ? payload.threadSettings
+        : {};
+    const previous = contexts.get(sourcePath) ?? { pricingMode: "standard" };
+    contexts.set(sourcePath, {
+      ...previous,
+      cwd:
+        normalizePathValue(
+          pickFirstString(settings, ["cwd", "project_path", "projectPath"])
+        ) ?? previous.cwd,
+      model:
+        pickFirstString(settings, ["model", "model_name", "modelName"]) ??
+        previous.model,
+      pricingMode: pricingModeFromRecord(settings, previous.pricingMode)
+    });
+    return [];
+  }
+  if (payload.type !== "token_count") return [];
   const context = contexts.get(sourcePath);
   if (context?.isSubagent) return [];
   const info = isRecord(payload.info) ? payload.info : null;
@@ -550,6 +610,7 @@ function extractCodexUsageSamples(
     estimateModelCost({
       vendor: "codex",
       model: context?.model,
+      pricingMode: context?.pricingMode ?? "standard",
       inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
       outputTokens: deltaVisibleOutputTokens,
       cacheTokens: deltaCacheReadTokens,
@@ -576,6 +637,7 @@ function extractCodexUsageSamples(
         absoluteTotalTokens
       ].join(":"),
       model: context?.model,
+      pricingMode: context?.pricingMode ?? "standard",
       cwd: context?.cwd,
       projectPath: context?.projectPath ?? context?.cwd,
       inputTokens: Math.max(0, deltaInputTokens - deltaCacheReadTokens),
@@ -938,12 +1000,14 @@ function parseUsageMetrics(
 function estimateModelCostForSample(
   vendor: CoreUsageVendor,
   model: string | undefined,
-  metrics: ParsedUsageMetrics
+  metrics: ParsedUsageMetrics,
+  pricingMode?: PricingMode
 ): { estimatedCostUsd: number; costSource: CoreUsageCostSource } | null {
   if (vendor === "unknown") return null;
   const estimated = estimateModelCost({
     vendor: vendor === "antigravity" ? "gemini" : vendor,
     model,
+    pricingMode,
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,
     cacheTokens: metrics.cacheReadTokens,
@@ -954,6 +1018,28 @@ function estimateModelCostForSample(
   return estimated
     ? { estimatedCostUsd: estimated.estimatedCostUsd, costSource: "estimated" }
     : null;
+}
+
+function pricingModeFromRecord(
+  record: Record<string, unknown>,
+  fallback: PricingMode
+): PricingMode {
+  for (const key of [
+    "service_tier",
+    "serviceTier",
+    "pricing_mode",
+    "pricingMode"
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    const value = record[key];
+    return typeof value === "string" &&
+      ["fast", "priority"].includes(value.trim().toLowerCase())
+      ? "fast"
+      : "standard";
+  }
+  return fallback;
 }
 
 export function coreUsageSampleIdentity(sample: CoreUsageEventSample): string {
@@ -1042,7 +1128,11 @@ export function aggregateCoreUsageSamples(
       });
       continue;
     }
-    const aggregateId = `${sample.vendor}:${sample.sessionId}`;
+    const aggregateId = [
+      sample.vendor,
+      sample.sessionId,
+      ...(sample.pricingMode ? [sample.pricingMode] : [])
+    ].join(":");
     const key = `session\t${aggregateId}`;
     const identity = coreUsageSampleIdentity(sample);
     const existing = aggregates.get(key);

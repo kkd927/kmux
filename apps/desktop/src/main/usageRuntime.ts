@@ -2189,6 +2189,9 @@ function scopedUsageSample(
     ...(record.requestId === undefined ? {} : { requestId: record.requestId }),
     eventId: record.eventId ?? record.sampleId,
     ...(record.model === undefined ? {} : { model: record.model }),
+    ...(record.pricingMode === undefined
+      ? {}
+      : { pricingMode: record.pricingMode }),
     ...(cwd === undefined ? {} : { cwd }),
     ...(projectPath === undefined ? {} : { projectPath }),
     inputTokens: record.inputTokens,
@@ -2650,6 +2653,7 @@ function applyTokenCostBreakdown(
   const estimate = estimateUsageComponentCosts({
     vendor: pricingVendor,
     model: sample.model,
+    pricingMode: sample.pricingMode,
     inputTokens: sample.inputTokens,
     outputTokens: sample.outputTokens,
     thinkingTokens,

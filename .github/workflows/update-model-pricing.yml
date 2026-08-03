@@ -20,7 +20,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run update:model-pricing
-      - run: npm run test -- packages/metadata/src/modelPricing.test.ts
+      - run: >-
+          npm run test --
+          scripts/update-model-pricing.test.mjs
+          packages/metadata/src/modelPricing.test.ts
+          packages/metadata/src/usage.test.ts
+      - run: npm run typecheck
+      - run: npm run check:model-pricing
       - uses: peter-evans/create-pull-request@v7
         with:
           branch: codex/update-model-pricing
@@ -31,6 +37,7 @@ jobs:
 
             Sources:
             - https://docs.anthropic.com/en/docs/about-claude/pricing
-            - https://developers.openai.com/api/docs/pricing
+            - https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens
+            - https://developers.openai.com/api/docs/pricing?latest-pricing=fast#text-tokens
             - https://ai.google.dev/gemini-api/docs/pricing
           labels: automated

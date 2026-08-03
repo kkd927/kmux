@@ -62,6 +62,7 @@ function decodeUsageRecord(
   const estimate = estimateUsageComponentCosts({
     vendor: record.vendor === "antigravity" ? "gemini" : record.vendor,
     model: record.model,
+    pricingMode: record.pricingMode,
     inputTokens,
     outputTokens,
     thinkingTokens,
@@ -76,6 +77,9 @@ function decodeUsageRecord(
     timestampUnixMs: safeUint64(record.timestampUnixMs, "timestampUnixMs"),
     ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
     ...(record.model === undefined ? {} : { model: record.model }),
+    ...(record.pricingMode === undefined
+      ? {}
+      : { pricingMode: record.pricingMode }),
     ...(record.cwd === undefined
       ? {}
       : { cwd: decodeAbsoluteRemotePath(record.cwd, decodeRemotePath) }),

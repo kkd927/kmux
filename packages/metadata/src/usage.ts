@@ -39,6 +39,7 @@ import {
   parseCoreUsageJsonDocument,
   shouldReplaceCoreUsageSample
 } from "./core/usage";
+import type { PricingMode } from "./modelPricing";
 
 const JSON_EXTENSIONS = new Set([".json"]);
 const JSONL_EXTENSIONS = new Set([".jsonl", ".ndjson"]);
@@ -63,6 +64,7 @@ export interface UsageEventSample {
   requestId?: string;
   eventId?: string;
   model?: string;
+  pricingMode?: PricingMode;
   cwd?: string;
   projectPath?: string;
   inputTokens: number;

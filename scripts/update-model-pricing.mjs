@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,12 +12,18 @@ const MODEL_PRICING_PATH = path.join(
 
 const SOURCES = {
   claude: "https://docs.anthropic.com/en/docs/about-claude/pricing",
-  codex:
-    "https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens",
+  codex: {
+    standard:
+      "https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens",
+    fast: "https://developers.openai.com/api/docs/pricing?latest-pricing=fast#text-tokens"
+  },
   gemini: "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
 };
 
 const MANUAL_ALIASES = {
+  codex: {
+    "gpt-5.6-sol": ["gpt-5.6"]
+  },
   gemini: {
     "gemini-3.5-flash": [
       "Gemini 3.5 Flash (Low)",
@@ -33,24 +39,75 @@ const MANUAL_ALIASES = {
 const MANUAL_ENTRIES = {};
 
 const VENDOR_ORDER = ["claude", "codex", "gemini"];
+const PRICING_MODE_ORDER = ["standard", "fast"];
+const PRICING_ENTRY_KEYS = [
+  "modelId",
+  "retiredAt",
+  "inputCostPerToken",
+  "outputCostPerToken",
+  "cacheReadCostPerToken",
+  "cacheCreateCostPerToken",
+  "inputCostPerTokenAboveThreshold",
+  "outputCostPerTokenAboveThreshold",
+  "cacheReadCostPerTokenAboveThreshold",
+  "cacheCreateCostPerTokenAboveThreshold",
+  "tieredPricingThresholdTokens",
+  "aliases"
+];
 
 async function main() {
   const check = process.argv.includes("--check");
+  const pricingDate = resolveModelPricingDate();
   const pricing = {
-    claude: await fetchClaudePricing(),
+    claude: { standard: await fetchClaudePricing(pricingDate) },
     codex: await fetchCodexPricing(),
-    gemini: await fetchGeminiPricing()
+    gemini: { standard: await fetchGeminiPricing() }
   };
 
   for (const vendor of VENDOR_ORDER) {
-    pricing[vendor] = mergeManualEntries(vendor, pricing[vendor]);
-    applyManualAliases(vendor, pricing[vendor]);
-    assertEntries(vendor, pricing[vendor]);
+    for (const mode of PRICING_MODE_ORDER) {
+      const entries = pricing[vendor][mode];
+      if (!entries) {
+        continue;
+      }
+      pricing[vendor][mode] = mergeManualEntries(vendor, entries);
+      applyManualAliases(vendor, pricing[vendor][mode]);
+      assertEntries(`${vendor}/${mode}`, pricing[vendor][mode]);
+    }
   }
 
   const current = await readFile(MODEL_PRICING_PATH, "utf8");
+  const previousPricing = parseGeneratedPricingCatalog(
+    current,
+    "MODEL_PRICING"
+  );
+  const previousHistoricalPricing = parseGeneratedPricingCatalog(
+    current,
+    "HISTORICAL_MODEL_PRICING"
+  );
+  const historicalPricing = reconcileHistoricalPricing({
+    previousPricing,
+    currentPricing: pricing,
+    historicalPricing: previousHistoricalPricing,
+    retiredAt: pricingDate
+  });
+  for (const vendor of VENDOR_ORDER) {
+    for (const mode of PRICING_MODE_ORDER) {
+      const entries = historicalPricing[vendor][mode] ?? [];
+      if (entries.length === 0) {
+        continue;
+      }
+      assertEntries(`historical ${vendor}/${mode}`, entries);
+      for (const entry of entries) {
+        assertPricingDayKey(
+          entry.retiredAt,
+          `retiredAt for ${vendor}/${mode}/${entry.modelId}`
+        );
+      }
+    }
+  }
   const next = await formatSource(
-    replacePricingBlock(current, pricing),
+    replacePricingBlocks(current, pricing, historicalPricing),
     MODEL_PRICING_PATH
   );
 
@@ -66,13 +123,19 @@ async function main() {
     process.exit(1);
   }
 
-  await writeFile(MODEL_PRICING_PATH, next);
+  const temporaryPath = `${MODEL_PRICING_PATH}.${process.pid}.tmp`;
+  try {
+    await writeFile(temporaryPath, next);
+    await rename(temporaryPath, MODEL_PRICING_PATH);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
   console.log("Updated packages/metadata/src/modelPricing.ts.");
 }
 
-async function fetchClaudePricing() {
+async function fetchClaudePricing(activeDate) {
   const html = await fetchText(SOURCES.claude);
-  return parseClaudePricingHtml(html, resolveModelPricingDate());
+  return parseClaudePricingHtml(html, activeDate);
 }
 
 export function parseClaudePricingHtml(
@@ -104,60 +167,78 @@ export function parseClaudePricingTable(
 }
 
 async function fetchCodexPricing() {
-  const html = await fetchText(SOURCES.codex);
-  const textTokenEntries = parseOpenAiTextTokenPricingHtml(html);
-  const tables = parseAstroPricingTables(html);
-  const standardCodexTable = tables.find(
-    (table) =>
-      table.kind === "GroupedPricingTable" &&
-      table.headings.join("|") === "Category|Model|Input|Cached input|Output" &&
-      table.rows.some((row) => row[0] === "Codex" && row[1] === "gpt-5-codex")
+  const pairs = await Promise.all(
+    PRICING_MODE_ORDER.map(async (mode) => {
+      const html = await fetchText(SOURCES.codex[mode]);
+      return [mode, parseOpenAiPricingHtml(html, mode)];
+    })
   );
-
-  if (!standardCodexTable) {
-    throw new Error("Could not find OpenAI Codex pricing table.");
-  }
-
-  const codexEntries = standardCodexTable.rows
-    .filter((row) => row[0] === "Codex")
-    .map((row) => ({
-      modelId: row[1],
-      inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[2])),
-      outputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[4])),
-      cacheReadCostPerToken: dollarsPerMillion(parseRequiredNumber(row[3]))
-    }));
-
-  return [...textTokenEntries, ...codexEntries];
+  return Object.fromEntries(pairs);
 }
 
-export function parseOpenAiTextTokenPricingHtml(html) {
-  const standardTextTokenTable = parseTextTokenPricingTables(html).find(
-    (table) => table.tier === "standard"
+export function parseOpenAiPricingHtml(html, mode) {
+  assertOpenAiPricingMode(mode);
+  try {
+    const flagshipEntries = parseOpenAiTextTokenPricingHtml(html, mode);
+    const specializedEntries = parseOpenAiSpecializedCodexPricingHtml(
+      html,
+      mode
+    );
+    return mergeOpenAiPricingEntries(mode, [
+      ...flagshipEntries,
+      ...specializedEntries
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message} ${openAiPricingDiagnostics(html, mode)}`,
+      error instanceof Error ? { cause: error } : undefined
+    );
+  }
+}
+
+export function parseOpenAiTextTokenPricingHtml(html, mode = "standard") {
+  assertOpenAiPricingMode(mode);
+  const tables = parseTextTokenPricingTables(html).filter(
+    (table) => table.tier === mode && table.section === "Flagship models"
   );
 
-  if (!standardTextTokenTable) {
-    throw new Error("Could not find OpenAI standard text-token pricing table.");
+  if (tables.length !== 1) {
+    throw new Error(
+      openAiTableSelectionError(
+        `Expected one OpenAI ${mode} flagship text-token pricing table, found ${tables.length}.`,
+        parseTextTokenPricingTables(html)
+      )
+    );
   }
+  const textTokenTable = tables[0];
 
   const thresholdByModel = new Map(
-    standardTextTokenTable.propsRows
+    textTokenTable.propsRows
       .map((row) => openAiTextModelInfo(row[0]))
       .filter((model) => model.thresholdTokens)
       .map((model) => [model.modelId, model.thresholdTokens])
   );
   const sharedLongContextThreshold = sharedMapValue(thresholdByModel);
-  const rows = standardTextTokenTable.renderedRows;
+  const rows = textTokenTable.renderedRows;
   if (rows.length === 0) {
-    throw new Error("Could not find rendered OpenAI text-token pricing rows.");
+    throw new Error(
+      `Could not find rendered OpenAI ${mode} text-token pricing rows.`
+    );
   }
-  const columns = openAiTextTokenPricingColumns(rows);
+  const columns = openAiTextTokenPricingColumns(rows, mode, textTokenTable);
 
-  return rows
-    .map((row) => [openAiTextModelInfo(row[0]).modelId, ...row.slice(1)])
-    .filter((row) => isOpenAiGptTextModelId(row[0]))
+  const renderedEntries = rows
+    .filter(
+      (row) =>
+        String(row[columns.model] ?? "").trim() !== "" &&
+        normalizePricingHeader(row[columns.model]) !== "model"
+    )
     .map((row) => {
+      const modelId = openAiTextModelInfo(row[columns.model]).modelId;
+      assertOpenAiModelId(modelId, mode);
       const entry = {
-        modelId: row[0],
+        modelId,
         inputCostPerToken: dollarsPerMillion(
           parseRequiredNumber(row[columns.input[0]])
         ),
@@ -210,27 +291,134 @@ export function parseOpenAiTextTokenPricingHtml(html) {
       }
       return entry;
     });
+  const propsEntries = textTokenTable.propsRows.map((row) =>
+    parseOpenAiTextTokenPropsRow(row, mode)
+  );
+  return mergeOpenAiPricingEntries(mode, [...propsEntries, ...renderedEntries]);
 }
 
-function openAiTextTokenPricingColumns(rows) {
+function parseOpenAiTextTokenPropsRow(row, mode) {
+  if (row.length !== 4 && row.length !== 5) {
+    throw new Error(
+      `Unsupported OpenAI ${mode} text-token pricing row shape: ${JSON.stringify(
+        row
+      )}`
+    );
+  }
+  const model = openAiTextModelInfo(row[0]);
+  assertOpenAiModelId(model.modelId, mode);
+  const hasCacheWriteColumn = row.length === 5;
+  const entry = {
+    modelId: model.modelId,
+    inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[1])),
+    outputCostPerToken: dollarsPerMillion(
+      parseRequiredNumber(row[hasCacheWriteColumn ? 4 : 3])
+    ),
+    cacheReadCostPerToken: dollarsPerMillion(parseOptionalNumber(row[2]))
+  };
+  if (hasCacheWriteColumn && hasPrice(row[3])) {
+    entry.cacheCreateCostPerToken = dollarsPerMillion(
+      parseRequiredNumber(row[3])
+    );
+  }
+  return entry;
+}
+
+function parseOpenAiSpecializedCodexPricingHtml(html, mode) {
+  const allTables = parseAstroPricingTables(html);
+  const tables = allTables.filter(
+    (table) =>
+      table.kind === "GroupedPricingTable" &&
+      table.section === "Specialized models" &&
+      table.tier === mode &&
+      hasPricingHeaders(table.headings, [
+        "Category",
+        "Model",
+        "Input",
+        "Cached input",
+        "Output"
+      ])
+  );
+  if (tables.length !== 1) {
+    throw new Error(
+      openAiTableSelectionError(
+        `Expected one OpenAI ${mode} specialized Codex pricing table, found ${tables.length}.`,
+        allTables
+      )
+    );
+  }
+
+  const table = tables[0];
+  const columns = pricingColumnsFromHeader(table.headings, mode, [
+    "Category",
+    "Model",
+    "Input",
+    "Cached input",
+    "Output"
+  ]);
+  const rows = table.rows.filter(
+    (row) =>
+      String(row[columns.category] ?? "")
+        .trim()
+        .toLowerCase() === "codex"
+  );
+  if (rows.length === 0) {
+    throw new Error(
+      `OpenAI ${mode} specialized pricing table contains no Codex rows.`
+    );
+  }
+
+  return rows.map((row) => {
+    const modelId = String(row[columns.model] ?? "").trim();
+    assertOpenAiModelId(modelId, mode);
+    return {
+      modelId,
+      inputCostPerToken: dollarsPerMillion(
+        parseRequiredNumber(row[columns.input])
+      ),
+      outputCostPerToken: dollarsPerMillion(
+        parseRequiredNumber(row[columns.output])
+      ),
+      cacheReadCostPerToken: dollarsPerMillion(
+        parseOptionalNumber(row[columns.cachedInput])
+      )
+    };
+  });
+}
+
+function openAiTextTokenPricingColumns(rows, mode, table) {
   const header = rows.find(
     (row) =>
-      row[0] === "Model" && row.includes("Input") && row.includes("Output")
+      row.some((cell) => normalizePricingHeader(cell) === "model") &&
+      row.some((cell) => normalizePricingHeader(cell) === "input") &&
+      row.some((cell) => normalizePricingHeader(cell) === "output")
   );
   if (!header) {
-    throw new Error("Could not find OpenAI text-token pricing column headers.");
+    throw new Error(
+      openAiTableSelectionError(
+        `Could not find OpenAI ${mode} text-token pricing column headers.`,
+        [table]
+      )
+    );
   }
 
   const columns = {
-    input: findColumnIndexes(header, "Input"),
-    cachedInput: findColumnIndexes(header, "Cached input"),
-    cacheWrites: findColumnIndexes(header, "Cache writes"),
-    output: findColumnIndexes(header, "Output")
+    model: findColumnIndexes(header, "model")[0],
+    input: findColumnIndexes(header, "input"),
+    cachedInput: findColumnIndexes(header, "cached input"),
+    cacheWrites: findColumnIndexes(header, "cache writes"),
+    output: findColumnIndexes(header, "output")
   };
-  for (const key of ["input", "cachedInput", "output"]) {
-    if (columns[key].length === 0) {
+  for (const key of ["model", "input", "cachedInput", "output"]) {
+    if (
+      columns[key] === undefined ||
+      (Array.isArray(columns[key]) && columns[key].length === 0)
+    ) {
       throw new Error(
-        `Could not find OpenAI text-token pricing ${key} column.`
+        openAiTableSelectionError(
+          `Could not find OpenAI ${mode} text-token pricing ${key} column.`,
+          [table]
+        )
       );
     }
   }
@@ -238,7 +426,9 @@ function openAiTextTokenPricingColumns(rows) {
 }
 
 function findColumnIndexes(header, label) {
-  return header.flatMap((value, index) => (value === label ? [index] : []));
+  return header.flatMap((value, index) =>
+    normalizePricingHeader(value) === label ? [index] : []
+  );
 }
 
 function sharedMapValue(valuesByKey) {
@@ -246,14 +436,53 @@ function sharedMapValue(valuesByKey) {
   return values.length === 1 ? values[0] : undefined;
 }
 
-function isOpenAiGptTextModelId(modelId) {
-  if (!/^gpt-/iu.test(modelId)) {
-    return false;
+function assertOpenAiPricingMode(mode) {
+  if (!PRICING_MODE_ORDER.includes(mode)) {
+    throw new Error(`Unsupported OpenAI pricing mode: ${mode}`);
   }
-  if (!/^gpt-\d+(?:\.\d+)?(?:-[a-z0-9]+)*$/u.test(modelId)) {
-    throw new Error(`Unsupported OpenAI GPT text model ID: ${modelId}`);
+}
+
+function assertOpenAiModelId(modelId, mode) {
+  if (typeof modelId !== "string" || modelId.trim() === "") {
+    throw new Error(`OpenAI ${mode} pricing row has an empty model ID.`);
   }
-  return true;
+}
+
+function mergeOpenAiPricingEntries(mode, entries) {
+  const merged = new Map();
+  for (const entry of entries) {
+    const existing = merged.get(entry.modelId);
+    if (!existing) {
+      merged.set(entry.modelId, entry);
+      continue;
+    }
+    const combined = mergeCompatibleOpenAiPricingEntries(existing, entry);
+    if (!combined) {
+      throw new Error(
+        `Conflicting OpenAI ${mode} pricing for ${entry.modelId}: ${JSON.stringify(
+          existing
+        )} vs ${JSON.stringify(entry)}`
+      );
+    }
+    merged.set(entry.modelId, combined);
+  }
+  if (merged.size === 0) {
+    throw new Error(`No OpenAI ${mode} pricing entries were generated.`);
+  }
+  return [...merged.values()];
+}
+
+function mergeCompatibleOpenAiPricingEntries(left, right) {
+  for (const key of PRICING_ENTRY_KEYS) {
+    if (
+      left[key] !== undefined &&
+      right[key] !== undefined &&
+      JSON.stringify(left[key]) !== JSON.stringify(right[key])
+    ) {
+      return null;
+    }
+  }
+  return { ...left, ...right };
 }
 
 async function fetchGeminiPricing() {
@@ -333,6 +562,8 @@ function parseAstroPricingTables(html) {
     if (kind === "GroupedPricingTable") {
       tables.push({
         kind,
+        section: nearestPricingHeading(html, match.index),
+        tier: pricingPaneValueAt(html, match.index),
         headings: props.headings,
         rows: (props.groups ?? []).flatMap((group) =>
           (group.rows ?? []).map((row) => [
@@ -344,6 +575,8 @@ function parseAstroPricingTables(html) {
     } else {
       tables.push({
         kind,
+        section: nearestPricingHeading(html, match.index),
+        tier: pricingPaneValueAt(html, match.index),
         headings: props.headings,
         rows: (props.rows ?? []).map((row) => row.map(cellText))
       });
@@ -359,12 +592,116 @@ function parseTextTokenPricingTables(html) {
   )) {
     const props = reviveAstroJson(JSON.parse(decodeHtml(match[1])));
     tables.push({
+      kind: "TextTokenPricingTables",
+      section: nearestPricingHeading(html, match.index),
       tier: props.tier,
+      headings: [],
       propsRows: (props.rows ?? []).map((row) => row.map(cellText)),
       renderedRows: parseHtmlTable(`<table>${match[2]}</table>`)
     });
   }
   return tables;
+}
+
+function nearestPricingHeading(html, index) {
+  const headings = [
+    ...html.slice(0, index).matchAll(/<h[23][^>]*>([\s\S]*?)<\/h[23]>/gu)
+  ];
+  return headings.length > 0 ? stripHtml(headings.at(-1)[1]) : undefined;
+}
+
+function pricingPaneValueAt(html, index) {
+  const paneIndex = html.lastIndexOf(
+    'data-content-switcher-pane="true"',
+    index
+  );
+  if (paneIndex < 0) {
+    return undefined;
+  }
+  const paneTagEnd = html.indexOf(">", paneIndex);
+  if (paneTagEnd < 0 || paneTagEnd > index) {
+    return undefined;
+  }
+  return /data-value="([^"]+)"/u.exec(html.slice(paneIndex, paneTagEnd))?.[1];
+}
+
+function normalizePricingHeader(value) {
+  return String(value ?? "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function hasPricingHeaders(actual, expected) {
+  const normalized = new Set(actual.map(normalizePricingHeader));
+  return expected.every((header) =>
+    normalized.has(normalizePricingHeader(header))
+  );
+}
+
+function pricingColumnsFromHeader(header, mode, required) {
+  const columns = Object.fromEntries(
+    header.map((value, index) => [
+      normalizePricingHeader(value).replace(/\s+(.)/gu, (_, char) =>
+        char.toUpperCase()
+      ),
+      index
+    ])
+  );
+  for (const label of required) {
+    const key = normalizePricingHeader(label).replace(/\s+(.)/gu, (_, char) =>
+      char.toUpperCase()
+    );
+    if (columns[key] === undefined) {
+      throw new Error(
+        `Could not find OpenAI ${mode} specialized pricing ${label} column.`
+      );
+    }
+  }
+  return columns;
+}
+
+function openAiTableSelectionError(message, tables) {
+  const candidates = tables.map((table) => ({
+    kind: table.kind,
+    section: table.section,
+    tier: table.tier,
+    headings:
+      table.headings?.length > 0
+        ? table.headings
+        : table.renderedRows?.find((row) =>
+            row.some((cell) => normalizePricingHeader(cell) === "model")
+          ),
+    rowCount: table.rows?.length ?? table.renderedRows?.length ?? 0
+  }));
+  return `${message} Candidates: ${JSON.stringify(candidates)}`;
+}
+
+function openAiPricingDiagnostics(html, mode) {
+  try {
+    return `Diagnostics: ${JSON.stringify({
+      requestedTier: mode,
+      tables: [
+        ...parseTextTokenPricingTables(html),
+        ...parseAstroPricingTables(html)
+      ].map((table) => ({
+        kind: table.kind,
+        section: table.section,
+        tier: table.tier,
+        headings:
+          table.headings?.length > 0
+            ? table.headings
+            : table.renderedRows?.find((row) =>
+                row.some((cell) => normalizePricingHeader(cell) === "model")
+              ),
+        rowCount: table.rows?.length ?? table.renderedRows?.length ?? 0
+      }))
+    })}`;
+  } catch (error) {
+    return `Diagnostics unavailable for requested tier ${mode}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
 }
 
 function parseHtmlTable(tableHtml) {
@@ -427,14 +764,100 @@ function applyManualAliases(vendor, entries) {
   }
 }
 
-function replacePricingBlock(source, pricing) {
-  const generated = `const MODEL_PRICING: Record<SupportedVendor, PricingEntry[]> = ${formatPricingObject(
+function replacePricingBlocks(source, pricing, historicalPricing) {
+  const currentBlock = `const MODEL_PRICING: Record<SupportedVendor, PricingCatalog> = ${formatPricingObject(
     pricing
   )};`;
-  return source.replace(
-    /const MODEL_PRICING: Record<SupportedVendor, PricingEntry\[\]> = \{[\s\S]*?\n\};/u,
-    generated
+  const historicalBlock = `const HISTORICAL_MODEL_PRICING: Record<SupportedVendor, HistoricalPricingCatalog> = ${formatPricingObject(
+    historicalPricing
+  )};`;
+  return source
+    .replace(
+      /const MODEL_PRICING: Record<SupportedVendor, (?:PricingEntry\[\]|PricingCatalog)> = \{[\s\S]*?\n\};/u,
+      currentBlock
+    )
+    .replace(
+      /const HISTORICAL_MODEL_PRICING: Record<SupportedVendor, HistoricalPricingCatalog> = \{[\s\S]*?\n\};/u,
+      historicalBlock
+    );
+}
+
+export function parseGeneratedPricingCatalog(source, variableName) {
+  const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = new RegExp(
+    `const ${escapedName}:[^=]+ = (\\{[\\s\\S]*?\\n\\});`,
+    "u"
+  ).exec(source);
+  if (!match) {
+    throw new Error(`Could not find generated ${variableName} catalog.`);
+  }
+
+  const json = match[1]
+    .replace(/(?<=\d)_(?=\d)/gu, "")
+    .replace(/^(\s*)([A-Za-z][A-Za-z0-9]*):/gmu, '$1"$2":');
+  const parsed = JSON.parse(json);
+  return Object.fromEntries(
+    VENDOR_ORDER.map((vendor) => {
+      const vendorCatalog = parsed[vendor];
+      return [
+        vendor,
+        Array.isArray(vendorCatalog)
+          ? { standard: vendorCatalog }
+          : { standard: [], ...vendorCatalog }
+      ];
+    })
   );
+}
+
+export function reconcileHistoricalPricing({
+  previousPricing,
+  currentPricing,
+  historicalPricing,
+  retiredAt
+}) {
+  assertPricingDayKey(retiredAt, "retiredAt");
+  const reconciled = Object.fromEntries(
+    VENDOR_ORDER.map((vendor) => [
+      vendor,
+      Object.fromEntries(
+        PRICING_MODE_ORDER.flatMap((mode) => {
+          const entries = historicalPricing[vendor]?.[mode] ?? [];
+          return entries.length > 0 || mode === "standard"
+            ? [[mode, entries.map((entry) => ({ ...entry }))]]
+            : [];
+        })
+      )
+    ])
+  );
+
+  for (const vendor of VENDOR_ORDER) {
+    for (const mode of PRICING_MODE_ORDER) {
+      const currentModelIds = new Set(
+        (currentPricing[vendor]?.[mode] ?? []).map((entry) => entry.modelId)
+      );
+      const retiredEntries = (previousPricing[vendor]?.[mode] ?? []).filter(
+        (entry) => !currentModelIds.has(entry.modelId)
+      );
+      if (retiredEntries.length === 0) {
+        continue;
+      }
+
+      const entriesByModelId = new Map(
+        (reconciled[vendor][mode] ?? []).map((entry) => [
+          entry.modelId,
+          entry
+        ])
+      );
+      for (const entry of retiredEntries) {
+        entriesByModelId.set(entry.modelId, { ...entry, retiredAt });
+      }
+      reconciled[vendor][mode] = sortModelPricingEntries(vendor, [
+        ...entriesByModelId.values()
+      ]);
+    }
+  }
+
+  return reconciled;
 }
 
 async function formatSource(source, filepath) {
@@ -446,31 +869,25 @@ async function formatSource(source, filepath) {
 function formatPricingObject(pricing) {
   const lines = ["{"];
   for (const [vendorIndex, vendor] of VENDOR_ORDER.entries()) {
-    lines.push(`  ${vendor}: [`);
-    pricing[vendor].forEach((entry, entryIndex) => {
-      lines.push("    {");
-      const keys = [
-        "modelId",
-        "inputCostPerToken",
-        "outputCostPerToken",
-        "cacheReadCostPerToken",
-        "cacheCreateCostPerToken",
-        "inputCostPerTokenAboveThreshold",
-        "outputCostPerTokenAboveThreshold",
-        "cacheReadCostPerTokenAboveThreshold",
-        "cacheCreateCostPerTokenAboveThreshold",
-        "tieredPricingThresholdTokens",
-        "aliases"
-      ].filter((key) => entry[key] !== undefined);
-      keys.forEach((key, keyIndex) => {
-        const suffix = keyIndex === keys.length - 1 ? "" : ",";
-        lines.push(`      ${key}: ${formatValue(entry[key])}${suffix}`);
+    lines.push(`  ${vendor}: {`);
+    const modes = PRICING_MODE_ORDER.filter((mode) => pricing[vendor][mode]);
+    modes.forEach((mode, modeIndex) => {
+      const entries = pricing[vendor][mode];
+      lines.push(`    ${mode}: [`);
+      entries.forEach((entry, entryIndex) => {
+        lines.push("      {");
+        const keys = PRICING_ENTRY_KEYS.filter(
+          (key) => entry[key] !== undefined
+        );
+        keys.forEach((key, keyIndex) => {
+          const suffix = keyIndex === keys.length - 1 ? "" : ",";
+          lines.push(`        ${key}: ${formatValue(entry[key])}${suffix}`);
+        });
+        lines.push(`      }${entryIndex === entries.length - 1 ? "" : ","}`);
       });
-      lines.push(
-        `    }${entryIndex === pricing[vendor].length - 1 ? "" : ","}`
-      );
+      lines.push(`    ]${modeIndex === modes.length - 1 ? "" : ","}`);
     });
-    lines.push(`  ]${vendorIndex === VENDOR_ORDER.length - 1 ? "" : ","}`);
+    lines.push(`  }${vendorIndex === VENDOR_ORDER.length - 1 ? "" : ","}`);
   }
   lines.push("}");
   return lines.join("\n");
@@ -512,7 +929,11 @@ function assertEntries(vendor, entries) {
       "outputCostPerToken",
       "cacheReadCostPerToken"
     ]) {
-      if (typeof entry[key] !== "number" || Number.isNaN(entry[key])) {
+      if (
+        typeof entry[key] !== "number" ||
+        !Number.isFinite(entry[key]) ||
+        entry[key] < 0
+      ) {
         throw new Error(`Invalid ${key} for ${vendor}/${entry.modelId}`);
       }
     }
@@ -812,12 +1233,11 @@ function parseFirstDollar(value) {
 }
 
 function parseRequiredNumber(value) {
-  if (typeof value === "number") {
-    return value;
-  }
-  const normalized = String(value).replace(/[$,]/gu, "").trim();
-  const parsed = Number(normalized);
-  if (Number.isNaN(parsed)) {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(String(value).replace(/[$,]/gu, "").trim());
+  if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(`Expected numeric price, got ${value}`);
   }
   return parsed;
@@ -840,7 +1260,9 @@ function openAiTextModelInfo(value) {
   const text = cellText(value);
   const thresholdMatch = /\(<\s*([0-9.]+)K context length\)/iu.exec(text);
   return {
-    modelId: text.replace(/\s*\(<\s*[0-9.]+K context length\)\s*$/iu, ""),
+    modelId: text
+      .replace(/\s*\(<\s*[0-9.]+K context length\)\s*$/iu, "")
+      .trim(),
     thresholdTokens: thresholdMatch
       ? Math.round(Number(thresholdMatch[1]) * 1_000)
       : undefined

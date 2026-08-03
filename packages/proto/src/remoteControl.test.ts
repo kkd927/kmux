@@ -170,6 +170,7 @@ describe("remote control v1", () => {
               sampleId: "codex:session_1",
               timestampUnixMs: "1",
               sessionId: "session_1",
+              pricingMode: "fast",
               cwd: "/srv/repo",
               inputTokens: "10",
               outputTokens: "2",
@@ -187,7 +188,13 @@ describe("remote control v1", () => {
     expect(usage.body).toMatchObject({
       type: "usage.scanned",
       targetId: "target_1",
-      records: [{ sampleId: "codex:session_1", totalTokens: "16" }]
+      records: [
+        {
+          sampleId: "codex:session_1",
+          pricingMode: "fast",
+          totalTokens: "16"
+        }
+      ]
     });
 
     expect(() =>

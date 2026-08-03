@@ -368,6 +368,7 @@ export type RemoteBridgeResponseBody =
         timestampUnixMs: string;
         sessionId?: string;
         model?: string;
+        pricingMode?: "standard" | "fast";
         cwd?: string;
         projectPath?: string;
         inputTokens: string;
@@ -1884,6 +1885,7 @@ function decodeRemoteUsageRecord(
     "timestampUnixMs",
     "sessionId",
     "model",
+    "pricingMode",
     "cwd",
     "projectPath",
     "inputTokens",
@@ -1916,6 +1918,14 @@ function decodeRemoteUsageRecord(
     ...(record.model === undefined
       ? {}
       : { model: requireString(record.model, "usage.model", 512) }),
+    ...(record.pricingMode === undefined
+      ? {}
+      : {
+          pricingMode: requirePricingMode(
+            record.pricingMode,
+            "usage.pricingMode"
+          )
+        }),
     ...(record.cwd === undefined
       ? {}
       : {
@@ -2692,6 +2702,16 @@ function requirePort(value: unknown, field: string): number {
 function requireAccess(value: unknown): "read" | "write" {
   if (value !== "read" && value !== "write") {
     throw new TypeError("attachment access is invalid");
+  }
+  return value;
+}
+
+function requirePricingMode(
+  value: unknown,
+  field: string
+): "standard" | "fast" {
+  if (value !== "standard" && value !== "fast") {
+    throw new TypeError(`${field} is invalid`);
   }
   return value;
 }

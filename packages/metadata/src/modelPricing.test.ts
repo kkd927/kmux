@@ -2,8 +2,70 @@ import { describe, expect, it } from "vitest";
 
 import {
   estimateUsageComponentCosts,
-  resolveCanonicalModelId
+  estimateUsageComponentCostsForCatalog,
+  resolveCanonicalModelId,
+  type HistoricalPricingCatalog,
+  type PricingCatalog,
+  type PricingEntry
 } from "./modelPricing";
+
+const SYNTHETIC_CODEX_PRICING = {
+  standard: [
+    pricingEntry("gpt-7.1-codex", 1, 5, 0.1),
+    pricingEntry("gpt-7.1", 2, 10, 0.2, {
+      cacheCreateCostPerToken: 2.5 / 1_000_000,
+      inputCostPerTokenAboveThreshold: 4 / 1_000_000,
+      outputCostPerTokenAboveThreshold: 15 / 1_000_000,
+      cacheReadCostPerTokenAboveThreshold: 0.4 / 1_000_000,
+      cacheCreateCostPerTokenAboveThreshold: 5 / 1_000_000,
+      tieredPricingThresholdTokens: 200_000
+    }),
+    pricingEntry("gpt-7.1-pro", 30, 180, 0, {
+      inputCostPerTokenAboveThreshold: 60 / 1_000_000,
+      outputCostPerTokenAboveThreshold: 270 / 1_000_000,
+      cacheReadCostPerTokenAboveThreshold: 0,
+      tieredPricingThresholdTokens: 200_000
+    }),
+    pricingEntry("gpt-7.1-nano", 0.5, 1, 0.05),
+    pricingEntry("gpt-7.1-sol", 3, 15, 0.3),
+    pricingEntry("gpt-7.1-terra", 2, 10, 0.2)
+  ],
+  fast: [
+    pricingEntry("gpt-7.1-codex", 2, 10, 0.2),
+    pricingEntry("gpt-7.0-sol", 4, 20, 0.4)
+  ]
+} satisfies PricingCatalog;
+
+const SYNTHETIC_HISTORICAL_CODEX_PRICING = {
+  standard: [
+    {
+      ...pricingEntry("gpt-7.2-codex", 1.5, 6, 0.375),
+      retiredAt: "2026-08-04"
+    }
+  ],
+  fast: [
+    {
+      ...pricingEntry("gpt-7.2-codex", 3, 12, 0.75),
+      retiredAt: "2026-08-04"
+    }
+  ]
+} satisfies HistoricalPricingCatalog;
+
+function pricingEntry(
+  modelId: string,
+  inputPerMillion: number,
+  outputPerMillion: number,
+  cachedInputPerMillion: number,
+  overrides: Partial<PricingEntry> = {}
+): PricingCatalog["standard"][number] {
+  return {
+    modelId,
+    inputCostPerToken: inputPerMillion / 1_000_000,
+    outputCostPerToken: outputPerMillion / 1_000_000,
+    cacheReadCostPerToken: cachedInputPerMillion / 1_000_000,
+    ...overrides
+  };
+}
 
 describe("model pricing", () => {
   it.each([
@@ -24,11 +86,71 @@ describe("model pricing", () => {
     ).toBe("claude-opus-4-8");
   });
 
+  it("canonicalizes the official GPT-5.6 alias to GPT-5.6 Sol", () => {
+    expect(
+      resolveCanonicalModelId({ vendor: "codex", model: "gpt-5.6" })
+    ).toBe("gpt-5.6-sol");
+  });
+
+  it("uses GPT-5.6 Sol pricing for the GPT-5.6 alias in Fast mode", () => {
+    const aliasEstimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5.6",
+      pricingMode: "fast",
+      inputTokens: 1_000,
+      outputTokens: 100
+    });
+    const canonicalEstimate = estimateUsageComponentCosts({
+      vendor: "codex",
+      model: "gpt-5.6-sol",
+      pricingMode: "fast",
+      inputTokens: 1_000,
+      outputTokens: 100
+    });
+
+    expect(aliasEstimate).toEqual(canonicalEstimate);
+    expect(aliasEstimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-5.6-sol",
+        inputCostUsd: expect.closeTo(0.01, 8),
+        outputCostUsd: expect.closeTo(0.006, 8)
+      })
+    );
+  });
+
+  it.each([
+    ["gpt-5.2-codex", 1.75, 14],
+    ["gpt-5.1-codex-max", 1.25, 10],
+    ["gpt-5.1-codex", 1.25, 10],
+    ["gpt-5.1-codex-mini", 0.25, 2],
+    ["gpt-5-codex", 1.25, 10],
+    ["codex-mini-latest", 1.5, 6]
+  ])(
+    "keeps retired Codex model usage priceable: %s",
+    (model, inputPerMillion, outputPerMillion) => {
+      expect(
+        estimateUsageComponentCosts({
+          vendor: "codex",
+          model,
+          pricingMode: "fast",
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000
+        })
+      ).toEqual(
+        expect.objectContaining({
+          modelId: model,
+          inputCostUsd: expect.closeTo(inputPerMillion, 8),
+          outputCostUsd: expect.closeTo(outputPerMillion, 8)
+        })
+      );
+      expect(resolveCanonicalModelId({ vendor: "codex", model })).toBe(model);
+    }
+  );
+
   it.each([
     ["gemini", "Gemini 4.0"],
     ["claude", "claude-tapdancer-6"],
     ["codex", "gpt-hyper-6"],
-    ["codex", "gpt-5.6"],
     ["claude", "claude-sonnet-4-7"],
     ["gemini", "gemini-3.2-pro-preview-06-15"],
     ["codex", "gpt-5.5-2026-01-01"],
@@ -42,176 +164,310 @@ describe("model pricing", () => {
     }
   );
 
-  it("uses exact pricing for the latest published Codex model entries", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5-codex",
-      inputTokens: 2_000,
-      outputTokens: 400,
-      thinkingTokens: 100,
-      cacheReadTokens: 800,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
+  it("uses Standard pricing by default with a synthetic catalog", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1-codex",
+        inputTokens: 2_000,
+        outputTokens: 400,
+        thinkingTokens: 100,
+        cacheReadTokens: 800,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
 
     expect(estimate).toEqual(
       expect.objectContaining({
-        modelId: "gpt-5-codex",
-        inputCostUsd: expect.closeTo(0.0025, 8),
+        modelId: "gpt-7.1-codex",
+        inputCostUsd: expect.closeTo(0.002, 8),
+        outputCostUsd: expect.closeTo(0.002, 8),
+        thinkingCostUsd: expect.closeTo(0.0005, 8),
+        cacheReadCostUsd: expect.closeTo(0.00008, 8)
+      })
+    );
+  });
+
+  it("uses an exact historical price before current forward compatibility", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.2-codex",
+        inputTokens: 1_000,
+        outputTokens: 100
+      },
+      SYNTHETIC_HISTORICAL_CODEX_PRICING
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.2-codex",
+        inputCostUsd: expect.closeTo(0.0015, 8),
+        outputCostUsd: expect.closeTo(0.0006, 8)
+      })
+    );
+  });
+
+  it("keeps retired Fast pricing independent from retired Standard pricing", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.2-codex",
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100
+      },
+      SYNTHETIC_HISTORICAL_CODEX_PRICING
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.2-codex",
+        inputCostUsd: expect.closeTo(0.003, 8),
+        outputCostUsd: expect.closeTo(0.0012, 8)
+      })
+    );
+  });
+
+  it("does not use historical prices for forward compatibility", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      { standard: [] },
+      {
+        vendor: "codex",
+        model: "gpt-7.3-codex",
+        inputTokens: 1_000,
+        outputTokens: 100
+      },
+      SYNTHETIC_HISTORICAL_CODEX_PRICING
+    );
+
+    expect(estimate).toBeNull();
+  });
+
+  it("prefers a current Standard exact price over a retired Fast price", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1-nano",
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100
+      },
+      {
+        standard: [],
+        fast: [
+          {
+            ...pricingEntry("gpt-7.1-nano", 9, 9, 9),
+            retiredAt: "2026-08-04"
+          }
+        ]
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.1-nano",
+        inputCostUsd: expect.closeTo(0.0005, 8),
+        outputCostUsd: expect.closeTo(0.0001, 8)
+      })
+    );
+  });
+
+  it("uses distinct Fast prices for the same synthetic model", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1-codex",
+        pricingMode: "fast",
+        inputTokens: 2_000,
+        outputTokens: 400,
+        thinkingTokens: 100,
+        cacheReadTokens: 800,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.1-codex",
+        inputCostUsd: expect.closeTo(0.004, 8),
         outputCostUsd: expect.closeTo(0.004, 8),
         thinkingCostUsd: expect.closeTo(0.001, 8),
-        cacheReadCostUsd: expect.closeTo(0.0001, 8)
+        cacheReadCostUsd: expect.closeTo(0.00016, 8)
       })
     );
   });
 
-  it("uses exact pricing for the latest OpenAI text-token Codex model entries", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.6-sol",
-      inputTokens: 2_000,
-      outputTokens: 400,
-      thinkingTokens: 100,
-      cacheReadTokens: 800,
-      cacheWriteTokens: 200,
-      cacheWriteTokensKnown: true
-    });
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gpt-5.6-sol",
-        inputCostUsd: expect.closeTo(0.01, 8),
-        outputCostUsd: expect.closeTo(0.012, 8),
-        thinkingCostUsd: expect.closeTo(0.003, 8),
-        cacheReadCostUsd: expect.closeTo(0.0004, 8),
-        cacheWriteCostUsd: expect.closeTo(0.00125, 8),
-        cacheWriteCostKnown: true
-      })
-    );
-  });
-
-  it("applies GPT-5.5 long-context pricing above the published threshold", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.5",
-      inputTokens: 300_000,
-      outputTokens: 1_000,
-      thinkingTokens: 500,
-      cacheReadTokens: 20_000,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gpt-5.5",
-        inputCostUsd: expect.closeTo(3, 8),
-        outputCostUsd: expect.closeTo(0.045, 8),
-        thinkingCostUsd: expect.closeTo(0.0225, 8),
-        cacheReadCostUsd: expect.closeTo(0.02, 8)
-      })
-    );
-  });
-
-  it.each(["gpt-5.5-pro", "gpt-5.4-pro"])(
-    "applies OpenAI pro long-context pricing above the published threshold for %s",
-    (model) => {
-      const estimate = estimateUsageComponentCosts({
+  it("applies synthetic long-context and cache-write pricing above its threshold", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
         vendor: "codex",
-        model,
+        model: "gpt-7.1",
+        inputTokens: 300_000,
+        outputTokens: 1_000,
+        thinkingTokens: 500,
+        cacheReadTokens: 20_000,
+        cacheWriteTokens: 10_000,
+        cacheWriteTokensKnown: true
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.1",
+        inputCostUsd: expect.closeTo(1.2, 8),
+        outputCostUsd: expect.closeTo(0.015, 8),
+        thinkingCostUsd: expect.closeTo(0.0075, 8),
+        cacheReadCostUsd: expect.closeTo(0.008, 8),
+        cacheWriteCostUsd: expect.closeTo(0.05, 8)
+      })
+    );
+  });
+
+  it("applies synthetic pro long-context pricing above its threshold", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1-pro",
         inputTokens: 300_000,
         outputTokens: 1_000,
         thinkingTokens: 500,
         cacheReadTokens: 20_000,
         cacheWriteTokens: 0,
         cacheWriteTokensKnown: true
-      });
-
-      expect(estimate).toEqual(
-        expect.objectContaining({
-          modelId: model,
-          inputCostUsd: expect.closeTo(18, 8),
-          outputCostUsd: expect.closeTo(0.27, 8),
-          thinkingCostUsd: expect.closeTo(0.135, 8),
-          cacheReadCostUsd: 0
-        })
-      );
-    }
-  );
-
-  it("uses exact pricing for current non-GPT Codex table entries", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "codex-mini-latest",
-      inputTokens: 2_000,
-      outputTokens: 400,
-      thinkingTokens: 100,
-      cacheReadTokens: 800,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
+      }
+    );
 
     expect(estimate).toEqual(
       expect.objectContaining({
-        modelId: "codex-mini-latest",
-        inputCostUsd: expect.closeTo(0.003, 8),
-        outputCostUsd: expect.closeTo(0.0024, 8),
-        thinkingCostUsd: expect.closeTo(0.0006, 8),
-        cacheReadCostUsd: expect.closeTo(0.0003, 8)
+        modelId: "gpt-7.1-pro",
+        inputCostUsd: expect.closeTo(18, 8),
+        outputCostUsd: expect.closeTo(0.27, 8),
+        thinkingCostUsd: expect.closeTo(0.135, 8),
+        cacheReadCostUsd: 0
       })
     );
-  });
-
-  it("does not preserve manual Codex entries that are absent from current pricing tables", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.3-codex-spark",
-      inputTokens: 2_000,
-      outputTokens: 400,
-      thinkingTokens: 100,
-      cacheReadTokens: 800,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
-
-    expect(estimate).toBeNull();
   });
 
   it("falls back to the nearest lower Codex main-tier pricing for newer same-major models", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.6",
-      inputTokens: 2_000,
-      outputTokens: 400,
-      thinkingTokens: 100,
-      cacheReadTokens: 800,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.2",
+        inputTokens: 2_000,
+        outputTokens: 400,
+        thinkingTokens: 100,
+        cacheReadTokens: 800,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
 
     expect(estimate).toEqual(
       expect.objectContaining({
-        modelId: "gpt-5.5",
-        inputCostUsd: expect.closeTo(0.01, 8),
-        outputCostUsd: expect.closeTo(0.012, 8),
-        thinkingCostUsd: expect.closeTo(0.003, 8),
-        cacheReadCostUsd: expect.closeTo(0.0004, 8)
+        modelId: "gpt-7.1",
+        inputCostUsd: expect.closeTo(0.004, 8),
+        outputCostUsd: expect.closeTo(0.004, 8),
+        thinkingCostUsd: expect.closeTo(0.001, 8),
+        cacheReadCostUsd: expect.closeTo(0.00016, 8)
       })
     );
   });
 
-  it("does not apply Codex-specific pricing to a bare GPT model without explicit pricing", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5",
-      inputTokens: 1_000,
-      outputTokens: 100,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
+  it("does not apply Codex-specific pricing to an unknown bare GPT model", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-8",
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
 
     expect(estimate).toBeNull();
+  });
+
+  it("falls back to exact Standard pricing when Fast does not list the model", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1-nano",
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.1-nano",
+        inputCostUsd: expect.closeTo(0.0005, 8),
+        outputCostUsd: expect.closeTo(0.0001, 8)
+      })
+    );
+  });
+
+  it("uses Fast forward-compatible pricing before Standard fallback pricing", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.2-sol",
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.0-sol",
+        inputCostUsd: expect.closeTo(0.004, 8),
+        outputCostUsd: expect.closeTo(0.002, 8)
+      })
+    );
+  });
+
+  it("uses Standard forward-compatible pricing when Fast has no matching family", () => {
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.2-terra",
+        pricingMode: "fast",
+        inputTokens: 1_000,
+        outputTokens: 100
+      }
+    );
+
+    expect(estimate).toEqual(
+      expect.objectContaining({
+        modelId: "gpt-7.1-terra",
+        inputCostUsd: expect.closeTo(0.002, 8),
+        outputCostUsd: expect.closeTo(0.001, 8)
+      })
+    );
   });
 
   it("falls back to the nearest lower Claude family pricing within the same line", () => {
@@ -296,15 +552,18 @@ describe("model pricing", () => {
   );
 
   it("does not cross Codex major versions when no same-major fallback exists", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-6.0",
-      inputTokens: 1_000,
-      outputTokens: 100,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-8.0",
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: true
+      }
+    );
 
     expect(estimate).toBeNull();
   });
@@ -431,41 +690,20 @@ describe("model pricing", () => {
     );
   });
 
-  it("applies tiered pricing when prompt context exceeds the published threshold", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.4",
-      inputTokens: 300_000,
-      outputTokens: 1_000,
-      thinkingTokens: 500,
-      cacheReadTokens: 20_000,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: true
-    });
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        inputCostUsd: expect.closeTo(1.5, 8),
-        outputCostUsd: expect.closeTo(0.0225, 8),
-        thinkingCostUsd: expect.closeTo(0.01125, 8),
-        cacheReadCostUsd: expect.closeTo(0.01, 8),
-        cacheWriteCostUsd: 0,
-        cacheWriteCostKnown: true
-      })
-    );
-  });
-
   it("marks cache create cost unknown when the source cannot surface cache creation tokens", () => {
-    const estimate = estimateUsageComponentCosts({
-      vendor: "codex",
-      model: "gpt-5.4",
-      inputTokens: 100,
-      outputTokens: 20,
-      thinkingTokens: 10,
-      cacheReadTokens: 50,
-      cacheWriteTokens: 0,
-      cacheWriteTokensKnown: false
-    });
+    const estimate = estimateUsageComponentCostsForCatalog(
+      SYNTHETIC_CODEX_PRICING,
+      {
+        vendor: "codex",
+        model: "gpt-7.1",
+        inputTokens: 100,
+        outputTokens: 20,
+        thinkingTokens: 10,
+        cacheReadTokens: 50,
+        cacheWriteTokens: 0,
+        cacheWriteTokensKnown: false
+      }
+    );
 
     expect(estimate).toEqual(
       expect.objectContaining({

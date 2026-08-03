@@ -12,6 +12,7 @@ import type {
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import type {
+  PricingMode,
   UsageAdapterDirtyOptions,
   UsageHistoryDay,
   UsageVendor
@@ -79,6 +80,7 @@ export interface TargetUsageRecord<
   requestId?: string;
   eventId?: string;
   model?: string;
+  pricingMode?: PricingMode;
   cwd?: TPath;
   projectPath?: TPath;
   inputTokens: number;
