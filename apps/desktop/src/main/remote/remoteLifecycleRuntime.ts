@@ -1570,7 +1570,7 @@ export class RemoteLifecycleRuntime {
             current.intent,
             current.payload
           );
-          return mapRuntimeOutcome(operationId, outcome);
+          return mapRuntimeOutcome(operationId, outcome, current.payload);
         },
         {
           afterResult: async () => {
@@ -1668,7 +1668,11 @@ export class RemoteLifecycleRuntime {
     } catch {
       return { status: "pending", reason: "ambiguous" };
     }
-    const outcome = mapRuntimeOutcome(termination.operationId, runtimeOutcome);
+    const outcome = mapRuntimeOutcome(
+      termination.operationId,
+      runtimeOutcome,
+      payload
+    );
     if (outcome.status === "succeeded") {
       inventory.recordTerminationResult(
         current.resourceKey,
@@ -1705,11 +1709,13 @@ export class RemoteLifecycleRuntime {
     ) {
       return;
     }
+    if (operation.payload.launch.initialInput === undefined) return;
     const initialInputOutcome =
       executionOutcome?.status === "succeeded"
-        ? executionOutcome.initialInputOutcome
+        ? (executionOutcome.initialInputOutcome ?? "outcome-unknown")
         : operation.result?.authoritative.outcome === "succeeded"
-          ? operation.result.authoritative.initialInputOutcome
+          ? (operation.result.authoritative.initialInputOutcome ??
+            "outcome-unknown")
           : undefined;
     if (initialInputOutcome !== "outcome-unknown") return;
     this.warnInitialInputOutcomeOnce({
@@ -2508,29 +2514,36 @@ export function selectVerifiedRemoteRuntimeArtifact(
 
 function mapRuntimeOutcome(
   operationId: Id,
-  outcome: RemoteRuntimeOperationOutcome
+  outcome: RemoteRuntimeOperationOutcome,
+  payload: RemoteOperationPayloadDto
 ): Exclude<RemoteOperationExecutionOutcome, { status: "pending" }> {
   if (outcome.operationId !== operationId) {
     throw new Error("remote operation result identity does not match");
   }
-  return outcome.status === "succeeded"
-    ? {
-        status: "succeeded",
-        remoteResourceRevision: outcome.remoteResourceRevision,
-        resultDigest: outcome.resultDigest,
-        ...(outcome.keeperGeneration === undefined
-          ? {}
-          : { keeperGeneration: outcome.keeperGeneration }),
-        ...(outcome.initialInputOutcome === undefined
-          ? {}
-          : { initialInputOutcome: outcome.initialInputOutcome })
-      }
-    : {
-        status: "failed",
-        resultDigest: outcome.resultDigest,
-        code: outcome.code,
-        message: outcome.message
-      };
+  if (outcome.status === "succeeded") {
+    const initialInputRequested =
+      (payload.kind === "session.create" ||
+        payload.kind === "session.restart") &&
+      payload.launch.initialInput !== undefined;
+    const initialInputOutcome =
+      outcome.initialInputOutcome ??
+      (initialInputRequested ? "outcome-unknown" : undefined);
+    return {
+      status: "succeeded",
+      remoteResourceRevision: outcome.remoteResourceRevision,
+      resultDigest: outcome.resultDigest,
+      ...(outcome.keeperGeneration === undefined
+        ? {}
+        : { keeperGeneration: outcome.keeperGeneration }),
+      ...(initialInputOutcome === undefined ? {} : { initialInputOutcome })
+    };
+  }
+  return {
+    status: "failed",
+    resultDigest: outcome.resultDigest,
+    code: outcome.code,
+    message: outcome.message
+  };
 }
 
 function retainedTerminationPayload(

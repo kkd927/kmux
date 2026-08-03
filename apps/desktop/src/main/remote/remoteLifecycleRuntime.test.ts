@@ -1426,16 +1426,9 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
-  it("keeps a created session and warns once when inline input has an unknown outcome", async () => {
+  it("keeps a created session and warns once when the runtime omits the inline input outcome", async () => {
     const fixture = remoteFixture();
-    const child = new ScriptedUtilityProcess(
-      new Map(),
-      hello(),
-      false,
-      [],
-      true,
-      "outcome-unknown"
-    );
+    const child = new ScriptedUtilityProcess(new Map());
     const host = new RemoteHostManager(
       () => child as unknown as UtilityProcess
     );

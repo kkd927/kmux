@@ -7454,6 +7454,13 @@ mod tests {
             Some("written")
         );
 
+        descriptor.launch_input.as_mut().unwrap().written_offset = 0;
+        descriptor.launch_input.as_mut().unwrap().outcome = LaunchInputOutcome::Accepted;
+        assert_eq!(
+            initial_input_outcome(&descriptor, &intent).as_deref(),
+            Some("outcome-unknown")
+        );
+
         descriptor.launch_input.as_mut().unwrap().written_offset = 2;
         descriptor.launch_input.as_mut().unwrap().outcome = LaunchInputOutcome::OutcomeUnknown;
         assert_eq!(

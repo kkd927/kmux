@@ -251,15 +251,17 @@ describe("transactional workspace conversion", () => {
     });
 
     expect(record).toMatchObject({
-      version: 3,
+      version: 4,
       state: "cleanup-complete",
-      initialInput: "codex resume session-1\r",
+      initialInputOutcome: "outcome-unknown",
+      launch: { initialInput: "codex resume session-1\r" },
       agentSessionRef: {
         vendor: "codex",
         externalKey: "ssh:target_1:codex:session-1",
         sessionId: "session-1"
       }
     });
+    expect(record).not.toHaveProperty("initialInput");
     const remoteSnapshot = JSON.parse(
       fixture.remote.remoteSnapshot ?? "null"
     ) as { launch?: Record<string, unknown> };

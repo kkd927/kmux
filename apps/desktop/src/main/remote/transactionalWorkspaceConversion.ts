@@ -332,7 +332,13 @@ export function createTransactionalSshWorkspaceRuntime(
       if (evidence.remoteSnapshotHash !== remoteSnapshotHash) {
         throw new Error("remote conversion snapshot hash does not match");
       }
-      record = options.wal.recordRemoteCreated(transactionId, evidence);
+      record = options.wal.recordRemoteCreated(transactionId, {
+        ...evidence,
+        ...(record.launch.initialInput !== undefined &&
+        evidence.initialInputOutcome === undefined
+          ? { initialInputOutcome: "outcome-unknown" }
+          : {})
+      });
       notify("remote-created-persisted", record);
     }
 
@@ -563,9 +569,6 @@ export function createTransactionalSshWorkspaceRuntime(
         ...(request.agentSessionRef === undefined
           ? {}
           : { agentSessionRef: structuredClone(request.agentSessionRef) }),
-        ...(request.initialInput === undefined
-          ? {}
-          : { initialInput: request.initialInput }),
         preparedAt: now()
       });
       reserveProductCommit(record);
@@ -632,9 +635,9 @@ function createPatch(record: ConversionRemoteCreatedRecord, state: AppState) {
     keeperGeneration: record.keeperGeneration,
     remoteResourceRevision: parseUint64Decimal(record.remoteResourceRevision),
     launch: record.launch,
-    ...(record.initialInput === undefined
+    ...(record.launch.initialInput === undefined
       ? {}
-      : { initialInput: record.initialInput }),
+      : { initialInput: record.launch.initialInput }),
     ...(record.agentSessionRef === undefined
       ? {}
       : { agentSessionRef: record.agentSessionRef })

@@ -1057,9 +1057,9 @@ pub fn run_keeper_server(
 
     // Runs before the accept loop starts, so no attachment can yet have been
     // granted the writer lease that permanently fences launch input. Keep it
-    // after the `Running` transition above: a crash in between then leaves the
-    // input undelivered rather than letting the bridge respawn this generation
-    // and type it twice.
+    // after the `Running` transition above: that descriptor durably records
+    // accepted evidence before any PTY write, so a crash can be reported as an
+    // unknown outcome without letting the bridge type the input twice.
     write_launch_initial_input(&mut child, &mut descriptor, descriptor_path, &launch)?;
 
     let (commands, receiver) = bounded(OWNER_COMMAND_CAPACITY);
@@ -3498,19 +3498,31 @@ fn write_launch_initial_input<W: PtyInputWriter>(
         return Ok(());
     };
     let data = input.as_bytes();
-    let mut written_offset = 0;
+    let payload_hash = format!("{:x}", Sha256::digest(data));
+    let record = descriptor
+        .launch_input
+        .as_mut()
+        .ok_or(KeeperRuntimeError::Invalid(
+            "launch-input accepted evidence is missing",
+        ))?;
+    if record.operation_id != descriptor.last_operation_id
+        || record.payload_hash != payload_hash
+        || record.byte_length != data.len()
+        || record.written_offset != 0
+        || record.outcome != LaunchInputOutcome::Accepted
+    {
+        return Err(KeeperRuntimeError::Invalid(
+            "launch-input accepted evidence does not match",
+        ));
+    }
+    let mut written_offset = record.written_offset;
     let write_result = write_pty_suffix(child, data, &mut written_offset);
-    descriptor.launch_input = Some(LaunchInputRecord {
-        operation_id: descriptor.last_operation_id.clone(),
-        payload_hash: format!("{:x}", Sha256::digest(data)),
-        byte_length: data.len(),
-        written_offset,
-        outcome: if write_result.is_ok() {
-            LaunchInputOutcome::Written
-        } else {
-            LaunchInputOutcome::OutcomeUnknown
-        },
-    });
+    record.written_offset = written_offset;
+    record.outcome = if write_result.is_ok() {
+        LaunchInputOutcome::Written
+    } else {
+        LaunchInputOutcome::OutcomeUnknown
+    };
     descriptor.updated_at = now_rfc3339();
     write_session_descriptor(descriptor_path, descriptor)
 }
@@ -3523,10 +3535,20 @@ fn transition_descriptor_to_running(
     descriptor.state = SessionDescriptorState::Running;
     descriptor.keeper_pid = Some(keeper_pid);
     descriptor.child_pid = Some(child_pid);
-    // The input is a one-shot at-spawn directive. Strip it from the first
-    // Running descriptor so observation, adoption, restart, and crash recovery
-    // can never rediscover plaintext bytes or automatically retype them.
-    descriptor.launch.initial_input = None;
+    // Atomically replace the one-shot plaintext directive with non-secret
+    // accepted evidence in the first Running descriptor. Crash recovery can
+    // then report an unknown outcome without ever rediscovering or retyping the
+    // original bytes.
+    descriptor.launch_input = descriptor.launch.initial_input.take().map(|input| {
+        let data = input.as_bytes();
+        LaunchInputRecord {
+            operation_id: descriptor.last_operation_id.clone(),
+            payload_hash: format!("{:x}", Sha256::digest(data)),
+            byte_length: data.len(),
+            written_offset: 0,
+            outcome: LaunchInputOutcome::Accepted,
+        }
+    });
     descriptor.updated_at = now_rfc3339();
 }
 
@@ -6066,8 +6088,9 @@ mod tests {
         let mut descriptor = test_session_descriptor(sandbox.path());
         descriptor.last_operation_id = "restart_2".to_owned();
         descriptor.launch.initial_input = Some(input.to_owned());
-        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
         let launch = descriptor.launch.clone();
+        transition_descriptor_to_running(&mut descriptor, 101, 202);
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
         let mut child = ScriptedInputWriter {
             steps: VecDeque::from([InputWriteStep::Accept(input.len())]),
             accepted: Vec::new(),
@@ -6091,17 +6114,31 @@ mod tests {
     }
 
     #[test]
-    fn first_running_descriptor_removes_plaintext_launch_input() {
+    fn first_running_descriptor_replaces_plaintext_with_accepted_evidence() {
         let sandbox = tempfile::TempDir::new().unwrap();
+        let descriptor_path = sandbox.path().join("session.json");
+        let input = "codex resume session-1\r";
         let mut descriptor = test_session_descriptor(sandbox.path());
-        descriptor.launch.initial_input = Some("codex resume session-1\r".to_owned());
+        descriptor.last_operation_id = "restart_2".to_owned();
+        descriptor.launch.initial_input = Some(input.to_owned());
 
         transition_descriptor_to_running(&mut descriptor, 101, 202);
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
+        let running = load_session_descriptor(&descriptor_path).unwrap();
 
-        assert_eq!(descriptor.state, SessionDescriptorState::Running);
-        assert_eq!(descriptor.keeper_pid, Some(101));
-        assert_eq!(descriptor.child_pid, Some(202));
-        assert!(descriptor.launch.initial_input.is_none());
+        assert_eq!(running.state, SessionDescriptorState::Running);
+        assert_eq!(running.keeper_pid, Some(101));
+        assert_eq!(running.child_pid, Some(202));
+        assert!(running.launch.initial_input.is_none());
+        let record = running.launch_input.expect("accepted launch input");
+        assert_eq!(record.operation_id, "restart_2");
+        assert_eq!(record.outcome, LaunchInputOutcome::Accepted);
+        assert_eq!(record.byte_length, input.len());
+        assert_eq!(record.written_offset, 0);
+        assert_eq!(
+            record.payload_hash,
+            format!("{:x}", Sha256::digest(input.as_bytes()))
+        );
     }
 
     #[test]
@@ -6130,8 +6167,9 @@ mod tests {
         let input = "agy --conversation 00bce6e4\r";
         let mut descriptor = test_session_descriptor(sandbox.path());
         descriptor.launch.initial_input = Some(input.to_owned());
-        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
         let launch = descriptor.launch.clone();
+        transition_descriptor_to_running(&mut descriptor, 101, 202);
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
         let mut child = ScriptedInputWriter {
             steps: VecDeque::from([InputWriteStep::Accept(4), InputWriteStep::Fail]),
             accepted: Vec::new(),

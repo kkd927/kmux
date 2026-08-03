@@ -29,7 +29,7 @@ import type {
 
 import { durableAtomicReplace } from "./durableAtomicWrite";
 
-const CONVERSION_WAL_VERSION = 3;
+const CONVERSION_WAL_VERSION = 4;
 const MAX_CONVERSION_RECORD_BYTES = 1024 * 1024;
 const MAX_CONVERSION_RECORDS = 64;
 const MAX_CONVERSION_DIRECTORY_ENTRIES = MAX_CONVERSION_RECORDS * 2;
@@ -71,13 +71,11 @@ export type SshWorkspaceProductIntent =
     };
 
 export interface ConversionPreparingRecord {
-  version: 3;
+  version: 4;
   state: "preparing";
   transactionId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
-  /** Legacy 1.1.1 field accepted while old WAL records are upgraded. */
-  launchInputOperationId?: Id;
   workspaceResourceKey: RemoteResourceKey;
   sessionResourceKey: RemoteResourceKey & { sessionId: Id };
   effectiveConnectionPolicyHash: string;
@@ -93,12 +91,12 @@ export interface ConversionPreparingRecord {
     /**
      * One-shot bytes written by the keeper at spawn. They are covered by the
      * remote snapshot hash so a replayed prepare cannot deliver different
-     * bytes, but remain separate from the desktop Session launch below.
+     * bytes. The desktop Session launch is derived from this same value when
+     * the product patch is decided.
      */
     initialInput?: string;
   };
   agentSessionRef?: ExternalAgentSessionRef;
-  initialInput?: string;
   preparedAt: string;
 }
 
@@ -455,7 +453,6 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     "transactionId",
     "workspaceCreateOperationId",
     "sessionCreateOperationId",
-    "launchInputOperationId",
     "workspaceResourceKey",
     "sessionResourceKey",
     "effectiveConnectionPolicyHash",
@@ -464,7 +461,6 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     "defaultCwd",
     "launch",
     "agentSessionRef",
-    "initialInput",
     "preparedAt"
   ];
   const remoteKeys = [
@@ -543,14 +539,6 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
       record.sessionCreateOperationId,
       "sessionCreateOperationId"
     ),
-    ...(record.launchInputOperationId === undefined
-      ? {}
-      : {
-          launchInputOperationId: validateId(
-            record.launchInputOperationId,
-            "launchInputOperationId"
-          )
-        }),
     workspaceResourceKey,
     sessionResourceKey,
     effectiveConnectionPolicyHash: requireDigest(
@@ -566,11 +554,6 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     defaultCwd: requirePath(record.defaultCwd, "defaultCwd"),
     launch,
     ...(agentSessionRef === undefined ? {} : { agentSessionRef }),
-    ...(record.initialInput === undefined
-      ? {}
-      : {
-          initialInput: requireInitialInput(record.initialInput)
-        }),
     preparedAt: requireTimestamp(record.preparedAt, "preparedAt")
   };
   if (state === "preparing") return common;
@@ -697,12 +680,10 @@ export function conversionPatchHash(
 }
 
 function encodeEnvelope(record: ConversionWalRecord): ConversionWalEnvelope {
-  const decoded = decodeConversionWalRecord(record);
-  const { launchInputOperationId: _legacyLaunchInputOperationId, ...encoded } =
-    decoded;
+  const encoded = decodeConversionWalRecord(record);
   return {
     version: 1,
-    record: encoded as ConversionWalRecord,
+    record: encoded,
     recordDigest: sha256(canonicalJson(encoded))
   };
 }
