@@ -877,6 +877,35 @@ async function bootstrap(): Promise<void> {
   remoteLifecycle.recover();
   const providerRemoteHost = remoteHost;
   const providerRemoteLifecycle = remoteLifecycle;
+  const isSshTargetProductReferenced = (targetId: string): boolean => {
+    if (
+      Object.values(runtime.getState().workspaces).some(
+        (workspace) =>
+          workspace.location.target.kind === "ssh" &&
+          workspace.location.target.targetId === targetId
+      )
+    ) {
+      return true;
+    }
+    if (
+      sshWorkspaceTransactionWal
+        .loadAll()
+        .some(
+          (record) =>
+            record.workspaceResourceKey.targetId === targetId &&
+            record.state !== "cleanup-complete"
+        )
+    ) {
+      return true;
+    }
+    return remoteOperationStore
+      .loadAll()
+      .some(
+        (record) =>
+          record.intent.resourceKey.targetId === targetId &&
+          record.result === undefined
+      );
+  };
   sshConnections = createSshConnectionRuntime({
     desktopInstallationId,
     profiles: sshProfiles,
@@ -898,16 +927,9 @@ async function bootstrap(): Promise<void> {
     askpassBroker: sshAskpass,
     getEventCheckpointConflict: (targetId) =>
       remoteEventCheckpointConflicts.get(targetId),
+    isTargetDeletionBlocked: isSshTargetProductReferenced,
     isTargetReferenced: (targetId) => {
-      if (
-        Object.values(runtime.getState().workspaces).some(
-          (workspace) =>
-            workspace.location.target.kind === "ssh" &&
-            workspace.location.target.targetId === targetId
-        )
-      ) {
-        return true;
-      }
+      if (isSshTargetProductReferenced(targetId)) return true;
       if (
         retainedSessionInventory
           .loadAll()
@@ -915,24 +937,7 @@ async function bootstrap(): Promise<void> {
       ) {
         return true;
       }
-      if (
-        sshWorkspaceTransactionWal
-          .loadAll()
-          .some(
-            (record) =>
-              record.workspaceResourceKey.targetId === targetId &&
-              record.state !== "cleanup-complete"
-          )
-      ) {
-        return true;
-      }
-      return remoteOperationStore
-        .loadAll()
-        .some(
-          (record) =>
-            record.intent.resourceKey.targetId === targetId &&
-            record.result === undefined
-        );
+      return false;
     }
   });
   const sshWorkspaceCreator = createSshWorkspaceCreationRuntime({

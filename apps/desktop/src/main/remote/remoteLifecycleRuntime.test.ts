@@ -197,6 +197,40 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
+  it("forgets retained sessions after interactive deletion cleanup fails", async () => {
+    const fixture = remoteFixture();
+    const inventory = createRetainedSessionInventoryStore(
+      join(sandbox, "retained.json")
+    );
+    retainFixtureSession(fixture, inventory);
+    const host = new RemoteHostManager(vi.fn());
+    host.on("error", vi.fn());
+    const errors: Error[] = [];
+    const ensureRetainedTargetConnected = vi.fn(async () => {
+      throw new Error("SSH authentication was cancelled");
+    });
+    const runtime = createRetainedRuntime(
+      fixture,
+      host,
+      sandbox,
+      inventory,
+      ensureRetainedTargetConnected,
+      errors
+    );
+    runtime.recover();
+
+    await expect(
+      runtime.deleteRetainedSessionsForTarget("target_1")
+    ).resolves.toBeUndefined();
+
+    expect(ensureRetainedTargetConnected).toHaveBeenCalledOnce();
+    expect(inventory.loadAll()).toEqual([]);
+    expect(errors).toMatchObject([
+      { message: "SSH authentication was cancelled" }
+    ]);
+    await runtime.stop();
+  });
+
   it("treats a terminal connection observation as success without admitting termination", async () => {
     const fixture = remoteFixture();
     const inventory = createRetainedSessionInventoryStore(
@@ -1924,14 +1958,15 @@ function createRetainedRuntime(
   host: RemoteHostManager,
   sandbox: string,
   inventory: ReturnType<typeof createRetainedSessionInventoryStore>,
-  ensureRetainedTargetConnected: (targetId: string) => Promise<unknown>
+  ensureRetainedTargetConnected: (targetId: string) => Promise<unknown>,
+  errors: Error[] = []
 ): RemoteLifecycleRuntime {
   return createRuntime(
     fixture.state,
     host,
     binding(),
     sandbox,
-    [],
+    errors,
     inventory,
     undefined,
     undefined,

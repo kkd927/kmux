@@ -94,7 +94,7 @@ export interface SshConnectionRuntime {
     draft: SshProfileDraftDto
   ): SshProfileDto;
   duplicateProfile(profileId: Id): SshProfileDto;
-  deleteProfile(profileId: Id): void;
+  deleteProfile(profileId: Id): Promise<void>;
   connectProfile(
     profileId: Id,
     request?: { signal?: AbortSignal; explicitRebind?: boolean }
@@ -124,6 +124,7 @@ export function createSshConnectionRuntime(options: {
   askpassPath?: string;
   askpassBroker?: SshAskpassBroker;
   isTargetReferenced: (targetId: Id) => boolean;
+  isTargetDeletionBlocked?: (targetId: Id) => boolean;
   getEventCheckpointConflict?: (
     targetId: Id
   ) => RemoteEventCheckpointConflictError | undefined;
@@ -157,6 +158,7 @@ export function createSshConnectionRuntime(options: {
       promise: Promise<SshProfileVm | null>;
     }
   >();
+  const deletingProfiles = new Set<Id>();
   const activeTargets = new Map<Id, ActiveSshTarget>();
   // Authority verification may run concurrently, but choosing the immutable
   // target ID and persisting the promoted binding is one Main-owned
@@ -187,7 +189,11 @@ export function createSshConnectionRuntime(options: {
 
   const isStoredProfileCurrent = (profile: SshProfileDto): boolean => {
     const current = options.profiles.get(profile.id);
-    return Boolean(current && isDeepStrictEqual(current, profile));
+    return Boolean(
+      !deletingProfiles.has(profile.id) &&
+      current &&
+      isDeepStrictEqual(current, profile)
+    );
   };
 
   const assertStoredProfileCurrent = (profile: SshProfileDto): void => {
@@ -232,6 +238,7 @@ export function createSshConnectionRuntime(options: {
   const rememberActiveTarget = (
     connected: ConnectedSshProfile
   ): ConnectedSshProfile => {
+    assertStoredProfileCurrent(connected.profile);
     activeTargets.set(connected.binding.id, {
       profile: structuredClone(connected.profile),
       binding: structuredClone(connected.binding),
@@ -371,6 +378,9 @@ export function createSshConnectionRuntime(options: {
       profileId: Id | undefined,
       draft: SshProfileDraftDto
     ): SshProfileDto {
+      if (profileId !== undefined && deletingProfiles.has(profileId)) {
+        throw new Error("SSH profile deletion is in progress");
+      }
       const saved = options.profiles.save(profileId, draft);
       if (profileId !== undefined) {
         for (const [targetId, target] of activeTargets) {
@@ -388,20 +398,52 @@ export function createSshConnectionRuntime(options: {
       return duplicate;
     },
 
-    deleteProfile(profileId: Id): void {
-      const bindings = options.bindings
-        .list()
-        .filter((binding) => binding.locator.profileId === profileId);
-      if (bindings.some((binding) => options.isTargetReferenced(binding.id))) {
-        throw new Error(
-          "SSH profile is referenced by a workspace or retained remote session"
-        );
+    async deleteProfile(profileId: Id): Promise<void> {
+      const profileBindings = (): RemoteTargetBinding[] =>
+        options.bindings
+          .list()
+          .filter((binding) => binding.locator.profileId === profileId);
+      const assertDeletionAllowed = (bindings: RemoteTargetBinding[]): void => {
+        const isBlocked =
+          options.isTargetDeletionBlocked ?? options.isTargetReferenced;
+        if (bindings.some((binding) => isBlocked(binding.id))) {
+          throw new Error(
+            "SSH profile is referenced by a workspace or pending remote operation"
+          );
+        }
+      };
+      assertDeletionAllowed(profileBindings());
+      if (deletingProfiles.has(profileId)) {
+        throw new Error("SSH profile deletion is already in progress");
       }
-      for (const binding of bindings) options.bindings.remove(binding.id);
-      for (const binding of bindings) activeTargets.delete(binding.id);
-      options.profiles.remove(profileId);
+      deletingProfiles.add(profileId);
       invalidateEffectiveResolution(profileId);
-      touch();
+      try {
+        let bindings = profileBindings();
+        assertDeletionAllowed(bindings);
+        for (const binding of bindings) {
+          await options.lifecycle
+            .deleteRetainedSessionsForTarget(binding.id)
+            .catch(() => undefined);
+        }
+        // A workspace or durable operation can appear while interactive SSH
+        // cleanup is in flight. Retained cleanup never blocks deletion, but a
+        // new product owner still must. Re-read bindings after fencing any
+        // concurrent connection attempt so none can outlive its profile.
+        bindings = profileBindings();
+        assertDeletionAllowed(bindings);
+        for (const binding of bindings) {
+          await options.lifecycle
+            .disconnectTarget(binding.id)
+            .catch(() => undefined);
+        }
+        for (const binding of bindings) options.bindings.remove(binding.id);
+        for (const binding of bindings) activeTargets.delete(binding.id);
+        options.profiles.remove(profileId);
+        touch();
+      } finally {
+        deletingProfiles.delete(profileId);
+      }
     },
 
     async connectProfile(

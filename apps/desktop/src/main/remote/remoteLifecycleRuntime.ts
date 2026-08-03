@@ -944,6 +944,59 @@ export class RemoteLifecycleRuntime {
     });
   }
 
+  async deleteRetainedSessionsForTarget(targetId: Id): Promise<void> {
+    const inventory = this.requireRetainedInventory();
+    const retained = inventory
+      .listRetained()
+      .filter((entry) => entry.resourceKey.targetId === targetId);
+    if (retained.length === 0) return;
+
+    try {
+      let canAttemptRemoteTermination = this.connectedTargets.has(targetId);
+      if (!canAttemptRemoteTermination) {
+        try {
+          if (!this.options.ensureRetainedTargetConnected) {
+            throw new Error(
+              "retained-session deletion requires an SSH connection"
+            );
+          }
+          await this.options.ensureRetainedTargetConnected(targetId);
+          canAttemptRemoteTermination = this.connectedTargets.has(targetId);
+          if (!canAttemptRemoteTermination) {
+            throw new Error(
+              "retained-session deletion did not establish an SSH connection"
+            );
+          }
+        } catch (error) {
+          this.report(error);
+        }
+      }
+
+      if (canAttemptRemoteTermination) {
+        for (const entry of retained) {
+          if (inventory.get(entry.resourceKey)?.ownership !== "retained") {
+            continue;
+          }
+          try {
+            await this.terminateRetainedSession(entry.resourceKey);
+          } catch (error) {
+            // Deleting a saved connection is also an explicit request to
+            // forget its retained sessions locally. Remote cleanup remains
+            // best-effort: an unavailable or incompatible target must not pin
+            // credentials.
+            this.report(error);
+          }
+        }
+      }
+    } finally {
+      for (const entry of retained) {
+        if (inventory.get(entry.resourceKey)?.ownership === "retained") {
+          inventory.remove(entry.resourceKey);
+        }
+      }
+    }
+  }
+
   async reconcileTarget(targetId: Id): Promise<void> {
     if (!this.connectedTargets.has(targetId)) {
       this.markObservationUnknown(targetId);

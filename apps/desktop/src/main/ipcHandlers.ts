@@ -97,7 +97,7 @@ interface IpcHandlersOptions {
   ) => Promise<SshConnectionsSnapshot>;
   saveSshProfile: (request: SshProfileSaveRequest) => SshProfileDto;
   duplicateSshProfile: (profileId: Id) => SshProfileDto;
-  deleteSshProfile: (profileId: Id) => void;
+  deleteSshProfile: (profileId: Id) => Promise<void>;
   testSshProfile: (profileId: Id) => Promise<SshConnectionsSnapshot>;
   rebindSshProfile: (profileId: Id) => Promise<SshConnectionsSnapshot>;
   cleanSshRuntime: (profileId: Id) => Promise<SshRuntimeCleanReport>;
@@ -293,7 +293,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   });
   ipcMain.handle("kmux:ssh-connections:delete", (event, profileId: Id) => {
     assertTrustedMainFrame(event, "SSH connection delete");
-    options.deleteSshProfile(profileId);
+    return options.deleteSshProfile(profileId);
   });
   ipcMain.handle("kmux:ssh-connections:test", (event, profileId: Id) => {
     assertTrustedMainFrame(event, "SSH connection test");

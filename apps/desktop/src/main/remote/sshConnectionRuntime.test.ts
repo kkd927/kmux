@@ -262,12 +262,57 @@ describe("SSH connection runtime", () => {
 
       const current = profiles.get(profile.id)!;
       const staleAfterDelete = runtime.resolveProfile(profile.id);
-      runtime.deleteProfile(profile.id);
+      await runtime.deleteProfile(profile.id);
       secondPending.resolve(resolvedConnection(current));
       await expect(staleAfterDelete).resolves.toBeNull();
       await expect(runtime.getSnapshot()).resolves.toMatchObject({
         profiles: []
       });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("fences an in-flight connection before deleting its profile", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_deleting"
+      });
+      const profile = profiles.save(undefined, {
+        name: "deleting",
+        host: "deleting.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      const host = new FakeHost();
+      const lifecycle = new FakeLifecycle(bindings);
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: host as unknown as RemoteHostManager,
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        now: () => NOW,
+        makeTargetId: () => "target_deleting",
+        makeVerificationId: () => "verification_deleting",
+        makeToken: () => "a".repeat(64)
+      });
+
+      const connecting = runtime.connectProfile(profile.id);
+      await host.verified;
+      await runtime.deleteProfile(profile.id);
+
+      await expect(connecting).rejects.toBeInstanceOf(
+        SshConnectionAttemptSupersededError
+      );
+      expect(profiles.get(profile.id)).toBeUndefined();
+      expect(bindings.list()).toEqual([]);
+      expect(lifecycle.promotions).toEqual([]);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -661,7 +706,7 @@ describe("SSH connection runtime", () => {
     }
   });
 
-  it("prevents deletion while a target binding remains product-referenced", () => {
+  it("prevents deletion while a target binding remains product-referenced", async () => {
     const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
     try {
       const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
@@ -676,21 +721,68 @@ describe("SSH connection runtime", () => {
         join(sandbox, "bindings.json")
       );
       bindings.replace(binding("target_1", profile.id));
+      const lifecycle = new FakeLifecycle(bindings);
       const runtime = createSshConnectionRuntime({
         desktopInstallationId: "desktop_1",
         profiles,
         bindings,
         resolver: resolver(profile.id),
         host: new FakeHost() as unknown as RemoteHostManager,
-        lifecycle: new FakeLifecycle(
-          bindings
-        ) as unknown as RemoteLifecycleRuntime,
-        isTargetReferenced: (targetId) => targetId === "target_1",
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => false,
+        isTargetDeletionBlocked: (targetId) => targetId === "target_1",
         now: () => NOW
       });
 
-      expect(() => runtime.deleteProfile(profile.id)).toThrow(/referenced/u);
+      await expect(runtime.deleteProfile(profile.id)).rejects.toThrow(
+        /referenced/u
+      );
       expect(profiles.get(profile.id)).toBeDefined();
+      expect(lifecycle.deletionEvents).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a profile after retained cleanup fails", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-ssh-connection-"));
+    try {
+      const profiles = createSshProfileStore(join(sandbox, "profiles.json"), {
+        now: () => NOW,
+        makeProfileId: () => "profile_1"
+      });
+      const profile = profiles.save(undefined, {
+        name: "retained",
+        host: "retained.example.com"
+      });
+      const bindings = createRemoteTargetBindingStore(
+        join(sandbox, "bindings.json")
+      );
+      bindings.replace(binding("target_1", profile.id));
+      const lifecycle = new FakeLifecycle(bindings);
+      lifecycle.retainedDeletionError = new Error(
+        "remote retained cleanup failed"
+      );
+      const runtime = createSshConnectionRuntime({
+        desktopInstallationId: "desktop_1",
+        profiles,
+        bindings,
+        resolver: resolver(profile.id),
+        host: new FakeHost() as unknown as RemoteHostManager,
+        lifecycle: lifecycle as unknown as RemoteLifecycleRuntime,
+        isTargetReferenced: () => true,
+        isTargetDeletionBlocked: () => false,
+        now: () => NOW
+      });
+
+      await expect(runtime.deleteProfile(profile.id)).resolves.toBeUndefined();
+
+      expect(lifecycle.deletionEvents).toEqual([
+        "retained:target_1",
+        "disconnect:target_1"
+      ]);
+      expect(profiles.get(profile.id)).toBeUndefined();
+      expect(bindings.get("target_1")).toBeUndefined();
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
@@ -1315,6 +1407,8 @@ class FakeLifecycle {
   promotions: unknown[] = [];
   cleanCalls: string[] = [];
   resetCalls: string[] = [];
+  deletionEvents: string[] = [];
+  retainedDeletionError?: Error;
   connected = false;
   maximumActivePromotions = 0;
   private activePromotions = 0;
@@ -1330,8 +1424,14 @@ class FakeLifecycle {
     return this.connected;
   }
 
-  disconnectTarget(): Promise<void> {
+  disconnectTarget(targetId: string): Promise<void> {
+    this.deletionEvents.push(`disconnect:${targetId}`);
     return Promise.resolve();
+  }
+
+  async deleteRetainedSessionsForTarget(targetId: string): Promise<void> {
+    this.deletionEvents.push(`retained:${targetId}`);
+    if (this.retainedDeletionError) throw this.retainedDeletionError;
   }
 
   cleanTargetRuntime(targetId: string) {

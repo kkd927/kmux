@@ -97,6 +97,7 @@ function registerTestHandlers(options: {
     resourceKey: RetainedRemoteSessionResourceKey
   ) => Promise<void>;
   resolveSshProfile?: (profileId: string) => Promise<SshProfileVm | null>;
+  deleteSshProfile?: (profileId: string) => Promise<void>;
   respondSshAskpass?: (request: SshAskpassResponseRequest) => void;
   claimSshAskpassPresenter?: (presenterId: number) => SshAskpassPrompt[];
   reconnectSshWorkspace?: (workspaceId: string) => Promise<{
@@ -149,8 +150,7 @@ function registerTestHandlers(options: {
         updatedAt: "2026-07-18T00:00:00.000Z"
       })),
     terminateRetainedRemoteSession:
-      options.terminateRetainedRemoteSession ??
-      vi.fn(async () => undefined),
+      options.terminateRetainedRemoteSession ?? vi.fn(async () => undefined),
     getSshConnections: vi.fn(async () => ({
       profiles: [],
       updatedAt: "2026-07-19T00:00:00.000Z"
@@ -163,7 +163,7 @@ function registerTestHandlers(options: {
     })),
     saveSshProfile: vi.fn(),
     duplicateSshProfile: vi.fn(),
-    deleteSshProfile: vi.fn(),
+    deleteSshProfile: options.deleteSshProfile ?? vi.fn(async () => undefined),
     testSshProfile: vi.fn(async () => ({
       profiles: [],
       updatedAt: "2026-07-19T00:00:00.000Z"
@@ -379,6 +379,38 @@ describe("ipc handlers", () => {
         sender: { mainFrame }
       } as unknown as IpcMainInvokeEvent)
     ).toThrow(/trusted main frame/u);
+  });
+
+  it("waits for SSH profile deletion through the trusted boundary", async () => {
+    const deleteSshProfile = vi.fn(async () => {
+      throw new Error("profile deletion blocked");
+    });
+    registerTestHandlers({
+      snapshot: {
+        updatedAt: "2026-06-10T00:00:00.000Z",
+        sessions: []
+      },
+      resumeResult: {
+        workspaceId: "workspace-1",
+        surfaceId: "surface-1"
+      },
+      deleteSshProfile
+    });
+    const mainFrame = {
+      detached: false,
+      isDestroyed: () => false
+    };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+
+    await expect(
+      Promise.resolve(
+        handlers.get("kmux:ssh-connections:delete")!(event, "profile_1")
+      )
+    ).rejects.toThrow(/profile deletion blocked/u);
+    expect(deleteSshProfile).toHaveBeenCalledWith("profile_1");
   });
 
   it("routes profile-backed SSH workspace preparation, commit, and cancellation through trusted boundaries", async () => {
