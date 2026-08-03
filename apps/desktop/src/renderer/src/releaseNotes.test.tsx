@@ -5,10 +5,12 @@ import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  RELEASE_NOTES_CONTENT_PRELOAD_TIMEOUT_MS,
   RELEASE_NOTES_IMAGE_PRELOAD_TIMEOUT_MS,
   releaseNotesSeenStorageKey,
   selectReleaseNotes,
   type BundledReleaseNotesCatalog,
+  type ReleaseNotesPreparationContext,
   useReleaseNotesModal
 } from "./releaseNotes";
 
@@ -249,6 +251,125 @@ describe("useReleaseNotesModal", () => {
     expect(isOpen()).toBe(true);
   });
 
+  it("does not open while modal content loads, then opens once ready", async () => {
+    const content = deferred<void>();
+
+    await render({
+      shellReady: true,
+      prepareContent: () => content.promise
+    });
+
+    expect(isOpen()).toBe(false);
+
+    await act(async () => {
+      content.resolve(undefined);
+      await content.promise;
+    });
+    expect(isOpen()).toBe(true);
+  });
+
+  it("starts a new Help attempt after modal content preparation fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const languages = deferred<string[]>();
+    const prepareContent = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("chunk unavailable"))
+      .mockResolvedValueOnce(undefined);
+    getPreferredSystemLanguages = vi.fn(() => languages.promise);
+    exposeKmuxBridge();
+
+    await render({ shellReady: true, prepareContent });
+    expect(prepareContent).not.toHaveBeenCalled();
+
+    act(() => openRequest?.());
+    expect(isOpen()).toBe(false);
+
+    await act(async () => {
+      languages.resolve(["en-US"]);
+      await languages.promise;
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    expect(isOpen()).toBe(false);
+    expect(prepareContent).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    expect(prepareContent).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      openRequest?.();
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    expect(isOpen()).toBe(true);
+    expect(prepareContent).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to prepare release notes",
+      expect.any(Error)
+    );
+    warn.mockRestore();
+  });
+
+  it("times out stalled modal content and starts a fresh Help attempt", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stalledContent = deferred<void>();
+    let firstSignal: AbortSignal | undefined;
+    const prepareContent = vi
+      .fn<(context: ReleaseNotesPreparationContext) => Promise<void>>()
+      .mockImplementationOnce(({ signal }) => {
+        firstSignal = signal;
+        return stalledContent.promise;
+      })
+      .mockResolvedValueOnce(undefined);
+    stored.set(releaseNotesSeenStorageKey("1.2"), "1");
+
+    await render({ shellReady: true, prepareContent });
+    await act(async () => {
+      openRequest?.();
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    expect(prepareContent).toHaveBeenCalledTimes(1);
+    expect(isOpen()).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(
+        RELEASE_NOTES_CONTENT_PRELOAD_TIMEOUT_MS
+      );
+    });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(isOpen()).toBe(false);
+    expect(prepareContent).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      openRequest?.();
+      for (let index = 0; index < 4; index += 1) {
+        await Promise.resolve();
+      }
+    });
+    expect(isOpen()).toBe(true);
+    expect(prepareContent).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      stalledContent.resolve(undefined);
+      await stalledContent.promise;
+    });
+    expect(isOpen()).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to prepare release notes",
+      expect.objectContaining({ name: "TimeoutError" })
+    );
+    warn.mockRestore();
+  });
+
   it("opens after the image preload timeout when decode remains pending", async () => {
     vi.useFakeTimers();
     await render({
@@ -388,13 +509,19 @@ describe("useReleaseNotesModal", () => {
   async function render(options: {
     shellReady: boolean;
     blockingDialogOpen?: boolean;
+    contentPreparationTimeoutMs?: number;
     releaseNotesCatalog?: BundledReleaseNotesCatalog;
+    prepareContent?: (
+      context: ReleaseNotesPreparationContext
+    ) => Promise<unknown>;
     storage?: Pick<Storage, "getItem" | "setItem">;
   }): Promise<void> {
     await act(async () => {
       root.render(
         <Harness
           blockingDialogOpen={options.blockingDialogOpen ?? false}
+          contentPreparationTimeoutMs={options.contentPreparationTimeoutMs}
+          prepareContent={options.prepareContent}
           releaseNotesCatalog={options.releaseNotesCatalog ?? releaseNotes}
           shellReady={options.shellReady}
           storage={options.storage ?? storage}
@@ -417,6 +544,10 @@ describe("useReleaseNotesModal", () => {
 
   function Harness(props: {
     blockingDialogOpen: boolean;
+    contentPreparationTimeoutMs?: number;
+    prepareContent?: (
+      context: ReleaseNotesPreparationContext
+    ) => Promise<unknown>;
     releaseNotesCatalog: BundledReleaseNotesCatalog;
     shellReady: boolean;
     storage: Pick<Storage, "getItem" | "setItem">;
@@ -425,6 +556,8 @@ describe("useReleaseNotesModal", () => {
       releaseNotes: props.releaseNotesCatalog,
       shellReady: props.shellReady,
       blockingDialogOpen: props.blockingDialogOpen,
+      contentPreparationTimeoutMs: props.contentPreparationTimeoutMs,
+      prepareContent: props.prepareContent,
       storage: props.storage
     });
     return modal.open ? (

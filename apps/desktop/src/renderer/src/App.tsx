@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import bundledReleaseNotes from "virtual:kmux-release-notes";
 
 import type { AppAction } from "@kmux/core";
@@ -60,7 +60,15 @@ import {
   useSidebarResize
 } from "./hooks/useSidebarResize";
 import { useWorkspaceContextMenu } from "./hooks/useWorkspaceContextMenu";
-import { useReleaseNotesModal } from "./releaseNotes";
+import {
+  type ReleaseNotesPreparationContext,
+  useReleaseNotesModal
+} from "./releaseNotes";
+import {
+  getLoadedReleaseNotesModal,
+  loadReleaseNotesModal,
+  type ReleaseNotesModalComponent
+} from "./releaseNotesModalLoader";
 import {
   findWorkspaceContext,
   runWorkspaceContextAction as runSharedWorkspaceContextAction,
@@ -169,10 +177,6 @@ const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
   { key: "sessions", label: "Sessions" }
 ] as const;
-const LazyReleaseNotesModal = lazy(async () => {
-  const module = await import("./components/ReleaseNotesModal");
-  return { default: module.ReleaseNotesModal };
-});
 
 function createRendererRequestId(prefix: string): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
@@ -605,10 +609,23 @@ export function App(): JSX.Element {
     Boolean(worktreeDialog) ||
     Boolean(sshWorkspaceDialog) ||
     sshAskpassPrompts.length > 0;
+  const [ReleaseNotesModal, setReleaseNotesModal] =
+    useState<ReleaseNotesModalComponent | null>(getLoadedReleaseNotesModal);
+  const prepareReleaseNotesModal = useCallback(
+    async ({ signal }: ReleaseNotesPreparationContext) => {
+      const component = await loadReleaseNotesModal(signal);
+      if (signal.aborted) {
+        throw signal.reason;
+      }
+      setReleaseNotesModal(() => component);
+    },
+    []
+  );
   const releaseNotesModal = useReleaseNotesModal({
     releaseNotes: bundledReleaseNotes,
     shellReady,
-    blockingDialogOpen: releaseNotesBlockingDialogOpen
+    blockingDialogOpen: releaseNotesBlockingDialogOpen,
+    prepareContent: prepareReleaseNotesModal
   });
   const releaseNotesLinkSurfaceId = activeWorkspacePaneTree
     ? activeWorkspacePaneTree.panes[activeWorkspacePaneTree.activePaneId]
@@ -617,6 +634,7 @@ export function App(): JSX.Element {
   const releaseNotesVisible =
     releaseNotesModal.open &&
     releaseNotesModal.releaseNotes !== null &&
+    ReleaseNotesModal !== null &&
     releaseNotesLinkSurfaceId !== undefined;
 
   dismissibleUiStateRef.current = {
@@ -1399,22 +1417,14 @@ export function App(): JSX.Element {
       />
       {releaseNotesModal.open &&
       releaseNotesModal.releaseNotes &&
-      releaseNotesLinkSurfaceId ? (
-        <Suspense
-          fallback={
-            <ReleaseNotesModalFallback
-              onClose={releaseNotesModal.close}
-              version={releaseNotesModal.releaseNotes.version}
-            />
-          }
-        >
-          <LazyReleaseNotesModal
-            colorTheme={resolvedColorTheme}
-            onClose={releaseNotesModal.close}
-            releaseNotes={releaseNotesModal.releaseNotes}
-            surfaceId={releaseNotesLinkSurfaceId}
-          />
-        </Suspense>
+      releaseNotesLinkSurfaceId &&
+      ReleaseNotesModal ? (
+        <ReleaseNotesModal
+          colorTheme={resolvedColorTheme}
+          onClose={releaseNotesModal.close}
+          releaseNotes={releaseNotesModal.releaseNotes}
+          surfaceId={releaseNotesLinkSurfaceId}
+        />
       ) : null}
     </div>
   );
@@ -2120,49 +2130,6 @@ export function App(): JSX.Element {
     item.run();
     closePalette();
   }
-}
-
-function ReleaseNotesModalFallback({
-  onClose,
-  version
-}: {
-  onClose: () => void;
-  version: string;
-}): JSX.Element {
-  return (
-    <div
-      className={`${styles.overlay} ${styles.settingsOverlay}`}
-      data-testid="release-notes-overlay"
-    >
-      <section
-        className={styles.releaseNotesDialog}
-        role="dialog"
-        aria-busy="true"
-        aria-label={`Loading release notes for ${version}`}
-        aria-modal="true"
-      >
-        <header className={styles.modalHeader}>
-          <h2>Release Notes · {version}</h2>
-          <button
-            autoFocus
-            type="button"
-            aria-label="Close release notes"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-        <div className={styles.releaseNotesBody} role="status">
-          Loading release notes…
-        </div>
-        <footer className={styles.modalActions}>
-          <button type="button" data-primary="true" onClick={onClose}>
-            Close
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
 }
 
 function omitDeprecatedShortcuts(
