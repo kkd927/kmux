@@ -125,12 +125,17 @@ describe("RemoteOperationCoordinator", () => {
         sessionId: "session_stable",
         surfaceId: "surface_stable",
         paneId,
-        launch: { cwd: "/srv/app" }
+        launch: {
+          cwd: "/srv/app",
+          initialInput: "codex resume session-stable\r"
+        }
       }
     };
 
     const first = coordinator.admit(command, {}, "operation_stable_create");
-    expect(fixture.state.sessions.session_stable).toBeDefined();
+    expect(fixture.state.sessions.session_stable).toMatchObject({
+      launch: { initialInput: "codex resume session-stable\r" }
+    });
     expect(coordinator.admit(command, {}, "operation_stable_create")).toEqual(
       first
     );

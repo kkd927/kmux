@@ -40,7 +40,6 @@ export type RemoteOperationExecutionOutcome =
   CoreRemoteOperationExecutionOutcome;
 
 export interface RemoteOperationProductMetadata {
-  initialInput?: string;
   worktree?: RemoteWorktreeProductMetadata;
 }
 
@@ -197,7 +196,6 @@ export function createRemoteOperationCoordinator(
         state,
         intent,
         validated.payload,
-        product.initialInput,
         product.worktree
       );
       applyMainRemoteOperationFact(cloneState(state), pendingFact);

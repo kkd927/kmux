@@ -266,16 +266,12 @@ describe("Main-only remote operation facts", () => {
       launch: {
         cwd: "/srv/created",
         shell: "/bin/sh",
-        title: "remote agent"
+        title: "remote agent",
+        initialInput: "codex resume remote-session\r"
       }
     };
     const intent = createIntent(state, workspaceId, payload, 0n, "create_1");
-    const pending = createRemoteOperationPendingFact(
-      state,
-      intent,
-      payload,
-      "codex resume remote-session\r"
-    );
+    const pending = createRemoteOperationPendingFact(state, intent, payload);
 
     applyMainRemoteOperationFact(state, pending);
     expect(state.sessions[payload.sessionId]).toMatchObject({
@@ -392,6 +388,69 @@ describe("Main-only remote operation facts", () => {
       remoteResourceRevision: 2n,
       lastAcknowledgedMutationSequence: 7n
     });
+  });
+
+  it("applies restart initial input from the canonical payload", () => {
+    const { state, workspaceId, sessionId } = createRemoteState();
+    const session = state.sessions[sessionId];
+    session.launch.initialInput = "old resume command\r";
+    const firstPayload = {
+      kind: "session.restart" as const,
+      sessionId,
+      surfaceId: session.surfaceId,
+      launch: {
+        cwd: "/srv/restarted",
+        initialInput: "new resume command\r"
+      }
+    };
+    const firstIntent = createIntent(
+      state,
+      workspaceId,
+      firstPayload,
+      0n,
+      "restart_1"
+    );
+
+    applyMainRemoteOperationFact(
+      state,
+      createRemoteOperationPendingFact(state, firstIntent, firstPayload)
+    );
+    applyMainRemoteOperationFact(state, {
+      type: "remote-operation.succeeded",
+      operationId: firstIntent.operationId,
+      remoteResourceRevision: uint64(1n),
+      resultDigest: "a".repeat(64),
+      completedAt: "2026-07-17T00:00:01.000Z",
+      keeperGeneration: "keeper_restart_1"
+    });
+    expect(session.launch.initialInput).toBe("new resume command\r");
+
+    const secondPayload = {
+      kind: "session.restart" as const,
+      sessionId,
+      surfaceId: session.surfaceId,
+      launch: { cwd: "/srv/restarted-again" }
+    };
+    const secondIntent = createIntent(
+      state,
+      workspaceId,
+      secondPayload,
+      1n,
+      "restart_2"
+    );
+    applyMainRemoteOperationFact(
+      state,
+      createRemoteOperationPendingFact(state, secondIntent, secondPayload)
+    );
+    applyMainRemoteOperationFact(state, {
+      type: "remote-operation.succeeded",
+      operationId: secondIntent.operationId,
+      remoteResourceRevision: uint64(2n),
+      resultDigest: "b".repeat(64),
+      completedAt: "2026-07-17T00:00:02.000Z",
+      keeperGeneration: "keeper_restart_2"
+    });
+    expect(session.launch).not.toHaveProperty("initialInput");
   });
 
   it("rolls back an exact pending split when creation authoritatively fails", () => {
@@ -598,7 +657,6 @@ describe("Main-only remote operation facts", () => {
       state,
       createOperationIntent,
       createPayload,
-      undefined,
       { kind: "worktree.create", worktree }
     );
 
@@ -650,13 +708,10 @@ describe("Main-only remote operation facts", () => {
     );
     applyMainRemoteOperationFact(
       state,
-      createRemoteOperationPendingFact(
-        state,
-        removeIntent,
-        removePayload,
-        undefined,
-        { kind: "worktree.remove", expectedWorktree: worktree }
-      )
+      createRemoteOperationPendingFact(state, removeIntent, removePayload, {
+        kind: "worktree.remove",
+        expectedWorktree: worktree
+      })
     );
 
     stored.branch = "changed-after-admission";

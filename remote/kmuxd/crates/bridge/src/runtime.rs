@@ -3756,8 +3756,16 @@ fn wait_for_keeper(
             && descriptor.keeper_generation == generation
             && descriptor.state == SessionDescriptorState::Running
             && require_keeper_running(&descriptor).is_ok()
+            && let Ok(refreshed) = load_session_descriptor(descriptor_path)
+            && refreshed.keeper_generation == generation
+            && refreshed.state != SessionDescriptorState::Creating
         {
-            return Ok(descriptor);
+            // The keeper binds its socket before persisting launch-input's
+            // final outcome. A health request can therefore queue behind the
+            // first Running/Accepted descriptor and complete only after the
+            // descriptor becomes Written or OutcomeUnknown. Return the
+            // post-health snapshot rather than the stale pre-health read.
+            return Ok(refreshed);
         }
         thread::sleep(Duration::from_millis(20));
     }
@@ -7593,6 +7601,62 @@ mod tests {
             authorized.terminal_proxy,
             TerminalProxyEndpoint::Direct
         ));
+    }
+
+    #[test]
+    fn keeper_readiness_returns_the_descriptor_persisted_before_health_response() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let descriptor_path = sandbox.path().join("session.json");
+        let mut descriptor = test_session_descriptor(
+            sandbox.path(),
+            test_resource_key("workspace_ready", Some("session_ready")),
+            "ready",
+            "create_ready",
+            &"a".repeat(64),
+            false,
+        );
+        descriptor.state = SessionDescriptorState::Running;
+        descriptor.keeper_pid = Some(std::process::id());
+        descriptor.child_pid = Some(std::process::id());
+        descriptor.exit_code = None;
+        descriptor.launch_input = Some(kmux_keeper::LaunchInputRecord {
+            operation_id: descriptor.last_operation_id.clone(),
+            payload_hash: "b".repeat(64),
+            byte_length: 5,
+            written_offset: 0,
+            outcome: LaunchInputOutcome::Accepted,
+        });
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
+
+        let listener = UnixListener::bind(&descriptor.socket_path).unwrap();
+        let mut written = descriptor.clone();
+        let final_descriptor_path = descriptor_path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request: Value = read_control(&mut stream).unwrap().unwrap();
+            assert_eq!(request["type"], "keeper.health");
+            let record = written.launch_input.as_mut().unwrap();
+            record.written_offset = record.byte_length;
+            record.outcome = LaunchInputOutcome::Written;
+            written.state = SessionDescriptorState::Exited;
+            written.exit_code = Some(0);
+            write_session_descriptor(&final_descriptor_path, &written).unwrap();
+            write_control(
+                &mut stream,
+                &KeeperRpcResponse::Health {
+                    outcome: "running".to_owned(),
+                    storage: RemoteSessionStorageStatus::default(),
+                },
+            )
+            .unwrap();
+        });
+
+        let ready = wait_for_keeper(&descriptor_path, &descriptor.keeper_generation).unwrap();
+        server.join().unwrap();
+        assert_eq!(ready.state, SessionDescriptorState::Exited);
+        let record = ready.launch_input.expect("final launch-input evidence");
+        assert_eq!(record.outcome, LaunchInputOutcome::Written);
+        assert_eq!(record.written_offset, record.byte_length);
     }
 
     #[test]

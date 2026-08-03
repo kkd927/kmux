@@ -609,15 +609,12 @@ export class RemoteLifecycleRuntime {
         ...(initialInput === undefined ? {} : { initialInput })
       }
     };
-    await this.executeCommand(
-      {
-        type: "remote-operation.command",
-        workspaceId: workspace.id,
-        payload,
-        expectedRemoteResourceRevision: uint64(0n)
-      },
-      initialInput === undefined ? {} : { initialInput }
-    );
+    await this.executeCommand({
+      type: "remote-operation.command",
+      workspaceId: workspace.id,
+      payload,
+      expectedRemoteResourceRevision: uint64(0n)
+    });
   }
 
   private async restartProductSession(surfaceId: Id): Promise<void> {

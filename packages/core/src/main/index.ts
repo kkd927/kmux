@@ -159,7 +159,6 @@ export function createRemoteOperationPendingFact(
   state: AppState | undefined,
   intent: RemoteOperationIntent,
   payload: RemoteOperationPayloadDto,
-  productInitialInput?: string,
   worktreeProduct?: RemoteWorktreeProductMetadata
 ): Extract<MainRemoteOperationFact, { type: "remote-operation.pending" }> {
   if (intent.kind !== payload.kind) {
@@ -171,12 +170,9 @@ export function createRemoteOperationPendingFact(
       ? createSessionProductProjection(
           requirePendingProjectionState(state),
           intent,
-          payload,
-          productInitialInput
+          payload
         )
-      : productInitialInput === undefined
-        ? undefined
-        : invalidProductInitialInput(payload.kind),
+      : undefined,
     worktreeProduct
   );
   return {
@@ -1493,8 +1489,7 @@ function createSessionProductProjection(
   payload: Extract<
     RemoteOperationPayloadDto,
     { kind: "session.create" | "session.adopt" }
-  >,
-  initialInput?: string
+  >
 ): SessionOwnershipPendingProduct["product"] {
   const workspace = state.workspaces[intent.resourceKey.workspaceId];
   const targetPane = state.panes[payload.paneId];
@@ -1512,6 +1507,8 @@ function createSessionProductProjection(
   }
   const direction =
     payload.kind === "session.create" ? payload.direction : undefined;
+  const initialInput =
+    payload.kind === "session.create" ? payload.launch.initialInput : undefined;
   const product = {
     authToken: stableProductId("auth", intent.operationId, "auth-token"),
     projectedPaneId:
@@ -1757,9 +1754,9 @@ function applySucceededProductProjection(
         ...(product.launch.title === undefined
           ? {}
           : { title: product.launch.title }),
-        ...(session.launch.initialInput === undefined
+        ...(product.launch.initialInput === undefined
           ? {}
-          : { initialInput: session.launch.initialInput })
+          : { initialInput: product.launch.initialInput })
       };
       session.runtimeMetadata.cwd = cwd;
       if (product.launch.title?.trim()) {
@@ -2034,12 +2031,6 @@ function stableProductId(prefix: string, operationId: Id, role: string): Id {
     .update(`kmux-product\0${role}\0${operationId}`, "utf8")
     .digest("hex")
     .slice(0, 32)}`;
-}
-
-function invalidProductInitialInput(kind: string): never {
-  throw new TypeError(
-    `product initial input is not valid for remote operation ${kind}`
-  );
 }
 
 function findLeafIdForPane(
