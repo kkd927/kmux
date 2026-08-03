@@ -52,6 +52,7 @@ const cargoArguments = [
 ];
 await run(process.env.KMUX_CARGO_PATH ?? "cargo", cargoArguments, {
   ...process.env,
+  CARGO_PROFILE_DEV_DEBUG: "0",
   CARGO_TARGET_DIR: parityTargetRoot
 });
 const binaryName = process.platform === "win32" ? "kmuxd.exe" : "kmuxd";
@@ -71,6 +72,7 @@ await run(
   [...cargoArguments, "--features", "fixture-keeper-local-protocol-2"],
   {
     ...process.env,
+    CARGO_PROFILE_DEV_DEBUG: "0",
     CARGO_TARGET_DIR: parityTargetRoot
   }
 );
@@ -80,6 +82,7 @@ await run(
   [...cargoArguments, "--features", "fixture-keeper-local-protocol-2"],
   {
     ...process.env,
+    CARGO_PROFILE_DEV_DEBUG: "0",
     CARGO_TARGET_DIR: secondIncompatibleTargetRoot,
     RUSTFLAGS:
       `${process.env.RUSTFLAGS ?? ""} -C metadata=kmux_cohort_generation_b`.trim()
