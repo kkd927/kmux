@@ -17,6 +17,7 @@ import { uint64 } from "@kmux/proto";
 import {
   MainFactConflictError,
   applyMainRemoteOperationCheckpointFact,
+  applyMainRemoteOperationDiscardedFact,
   applyMainRemoteOperationFact,
   applyMainRemoteSessionCursorFact,
   applyMainRemoteSessionObservationFact,
@@ -723,6 +724,31 @@ describe("Main-only remote operation facts", () => {
     expect(applyMainRemoteOperationFact(state, pending).applied).toBe(false);
     expect(applyMainRemoteOperationFact(state, success).applied).toBe(false);
     expect(cloneState(state)).toEqual(state);
+  });
+
+  it("discards only the internal recovery projection", () => {
+    const { state, workspaceId, sessionId } = createRemoteState();
+    const intent = createTerminateIntent(state, workspaceId, sessionId);
+    applyMainRemoteOperationFact(
+      state,
+      createPendingTerminateFact(state, intent)
+    );
+
+    expect(
+      applyMainRemoteOperationDiscardedFact(state, {
+        type: "remote-operation.discarded",
+        operationId: intent.operationId
+      })
+    ).toMatchObject({ applied: true, effects: [{ type: "persist" }] });
+    expect(state.remoteRecovery.operations[intent.operationId]).toBeUndefined();
+    expect(state.workspaces[workspaceId]).toBeDefined();
+    expect(state.sessions[sessionId]).toBeDefined();
+    expect(
+      applyMainRemoteOperationDiscardedFact(state, {
+        type: "remote-operation.discarded",
+        operationId: intent.operationId
+      }).applied
+    ).toBe(false);
   });
 
   it("removes a closed remote surface only after termination succeeds", () => {

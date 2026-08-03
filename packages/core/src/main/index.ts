@@ -93,9 +93,18 @@ export type MainRemoteOperationCheckpointFact = {
   resultDigest: string;
 };
 
+/** Internal recovery fact. It is intentionally not part of the durable
+ * operation record codec because it only checkpoints removal of an orphaned
+ * local projection before Main deletes that record. */
+export type MainRemoteOperationDiscardedFact = {
+  type: "remote-operation.discarded";
+  operationId: Id;
+};
+
 export type MainFact =
   | MainRemoteOperationFact
   | MainRemoteOperationCheckpointFact
+  | MainRemoteOperationDiscardedFact
   | MainRemoteSessionObservationFact
   | MainRemoteSessionCursorFact;
 
@@ -1063,6 +1072,8 @@ export function applyMainFact(
   switch (fact.type) {
     case "remote-operation.checkpointed":
       return applyMainRemoteOperationCheckpointFact(state, fact);
+    case "remote-operation.discarded":
+      return applyMainRemoteOperationDiscardedFact(state, fact);
     case "remote-session.observation-unknown":
     case "remote-session.observed":
     case "remote-session.absent":
@@ -1072,6 +1083,15 @@ export function applyMainFact(
     default:
       return applyMainRemoteOperationFact(state, fact);
   }
+}
+
+export function applyMainRemoteOperationDiscardedFact(
+  state: AppState,
+  fact: MainRemoteOperationDiscardedFact
+): ApplyMainFactResult {
+  if (!state.remoteRecovery.operations[fact.operationId]) return noChange();
+  delete state.remoteRecovery.operations[fact.operationId];
+  return changed();
 }
 
 export function applyMainRemoteOperationCheckpointFact(

@@ -287,7 +287,13 @@ export class RemoteLifecycleRuntime {
       store: options.operationStore,
       getState: options.getState,
       getTargetBinding: options.getTargetBinding,
-      dispatchFact: (fact) => options.dispatchFact(fact)
+      dispatchFact: (fact) => options.dispatchFact(fact),
+      ...(options.persistDurableProductSnapshot === undefined
+        ? {}
+        : {
+            dispatchDiscardedFact: (fact) => options.dispatchFact(fact),
+            persistDurableProductSnapshot: options.persistDurableProductSnapshot
+          })
     });
     this.reconciler = createRemoteReconciler({
       desktopInstallationId: options.desktopInstallationId,

@@ -178,6 +178,7 @@ export interface DurableRemoteOperationStore {
   ): DurableRemoteResourceReceipt | null;
   listResourceReceipts(): DurableRemoteResourceReceipt[];
   removeResourceReceipts(resourceKeys: readonly RemoteResourceKey[]): number;
+  discardAfterDurableSnapshot(operationId: string, snapshot: AppState): boolean;
   compactAfterDurableSnapshot(
     operationIds: readonly string[],
     snapshot: AppState
@@ -407,6 +408,24 @@ export function createDurableRemoteOperationStore(
         if (removed > 0) fsyncDirectory(resourceRoot);
       }
       return removed;
+    },
+
+    discardAfterDurableSnapshot(
+      operationId: string,
+      snapshot: AppState
+    ): boolean {
+      validateOperationId(operationId);
+      encodeAppStateDto(snapshot);
+      if (snapshot.remoteRecovery.operations[operationId]) {
+        throw new DurableOperationConflictError(
+          `operation ${operationId} still has a product projection`
+        );
+      }
+      const operation = get(operationId);
+      if (!operation) return false;
+      unlinkSync(join(root, fileNameForOperation(operationId)));
+      fsyncDirectory(root);
+      return true;
     },
 
     compactAfterDurableSnapshot(

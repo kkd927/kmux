@@ -13,6 +13,7 @@ import {
   type RemoteOperationExecutionOutcome as CoreRemoteOperationExecutionOutcome,
   type RemoteOperationIntent,
   type RemoteOperationPayloadDto,
+  type RemoteOperationProjection,
   type RemoteResourceKey,
   type RemoteTargetBinding,
   type RemoteWorktreeProductMetadata
@@ -22,6 +23,7 @@ import {
   computeWorkspaceRevision,
   createRemoteOperationPendingFact,
   MainFactConflictError,
+  type MainRemoteOperationDiscardedFact,
   type MainRemoteOperationFact
 } from "@kmux/core/main";
 import { incrementUint64, makeId, uint64, type Id } from "@kmux/proto";
@@ -70,6 +72,8 @@ export interface CreateRemoteOperationCoordinatorOptions {
   getState: () => AppState;
   getTargetBinding: (targetId: Id) => RemoteTargetBinding | undefined;
   dispatchFact: (fact: MainRemoteOperationFact) => void;
+  dispatchDiscardedFact?: (fact: MainRemoteOperationDiscardedFact) => void;
+  persistDurableProductSnapshot?: (state: AppState) => void;
   makeOperationId?: () => Id;
   now?: () => string;
 }
@@ -261,8 +265,7 @@ export function createRemoteOperationCoordinator(
           options.desktopInstallationId
         );
       }
-      replayPersistedFacts(operations, options.dispatchFact);
-      return operations;
+      return replayPersistedOperations(operations, options);
     }
   });
 }
@@ -280,46 +283,147 @@ function assertDesktopInstallationScope(
   }
 }
 
-function replayPersistedFacts(
+function replayPersistedOperations(
   operations: DurableRemoteOperationRecord[],
-  dispatchFact: (fact: MainRemoteOperationFact) => void
-): void {
-  let remaining = operations.flatMap((operation) => [
-    operation.pendingFact,
-    ...(operation.result ? [operation.result.fact] : [])
-  ]);
+  options: CreateRemoteOperationCoordinatorOptions
+): DurableRemoteOperationRecord[] {
+  let remaining = [...operations];
+  const discardedOperationIds = new Set<Id>();
   while (remaining.length > 0) {
-    const deferred: MainRemoteOperationFact[] = [];
+    const deferred: DurableRemoteOperationRecord[] = [];
     let applied = 0;
-    for (const fact of remaining) {
+    for (const operation of remaining) {
       try {
-        dispatchFact(fact);
-        applied += 1;
+        options.dispatchFact(operation.pendingFact);
       } catch (error) {
         if (
           error instanceof MainFactConflictError &&
           (error.code === "workspace-revision-conflict" ||
             error.code === "operation-missing")
         ) {
-          deferred.push(fact);
+          deferred.push(operation);
+          continue;
+        }
+        if (
+          error instanceof MainFactConflictError &&
+          error.code === "workspace-missing" &&
+          productOwnershipIsGone(
+            options.getState(),
+            operation.pendingFact.projection
+          )
+        ) {
+          discardOrphanedOperation(operation, options);
+          discardedOperationIds.add(operation.intent.operationId);
+          applied += 1;
           continue;
         }
         throw error;
       }
+      if (
+        !options.getState().workspaces[operation.intent.resourceKey.workspaceId]
+      ) {
+        if (
+          productOwnershipIsGone(
+            options.getState(),
+            operation.pendingFact.projection
+          )
+        ) {
+          discardOrphanedOperation(operation, options);
+          discardedOperationIds.add(operation.intent.operationId);
+          applied += 1;
+          continue;
+        }
+        throw new MainFactConflictError(
+          "workspace-missing",
+          `workspace ${operation.intent.resourceKey.workspaceId} does not exist`
+        );
+      }
+      if (operation.result) {
+        options.dispatchFact(operation.result.fact);
+      }
+      applied += 1;
     }
     if (applied === 0) {
       throw new Error(
         `durable remote operation facts have unresolved dependencies: ${deferred
-          .map((fact) =>
-            fact.type === "remote-operation.pending"
-              ? fact.projection.operationId
-              : fact.operationId
-          )
+          .map((operation) => operation.intent.operationId)
           .join(", ")}`
       );
     }
     remaining = deferred;
   }
+  return operations.filter(
+    (operation) => !discardedOperationIds.has(operation.intent.operationId)
+  );
+}
+
+function discardOrphanedOperation(
+  operation: DurableRemoteOperationRecord,
+  options: CreateRemoteOperationCoordinatorOptions
+): void {
+  if (
+    !options.dispatchDiscardedFact ||
+    !options.persistDurableProductSnapshot
+  ) {
+    throw new MainFactConflictError(
+      "workspace-missing",
+      `workspace ${operation.intent.resourceKey.workspaceId} does not exist`
+    );
+  }
+  options.dispatchDiscardedFact({
+    type: "remote-operation.discarded",
+    operationId: operation.intent.operationId
+  });
+  const state = options.getState();
+  options.persistDurableProductSnapshot(state);
+  options.store.discardAfterDurableSnapshot(
+    operation.intent.operationId,
+    state
+  );
+}
+
+function productOwnershipIsGone(
+  state: AppState,
+  projection: RemoteOperationProjection
+): boolean {
+  if (state.workspaces[projection.resourceKey.workspaceId]) return false;
+  const sessionId = projection.resourceKey.sessionId;
+  if (
+    sessionId !== undefined &&
+    (state.sessions[sessionId] ||
+      Object.values(state.surfaces).some(
+        (surface) =>
+          surface.content.kind === "terminal" &&
+          surface.content.sessionId === sessionId
+      ))
+  ) {
+    return false;
+  }
+  const product = projection.pendingProduct;
+  if (
+    !product ||
+    (product.kind !== "session.create" && product.kind !== "session.adopt")
+  ) {
+    return true;
+  }
+  if (state.sessions[product.sessionId] || state.surfaces[product.surfaceId]) {
+    return false;
+  }
+  if (product.kind === "session.create" && product.direction !== undefined) {
+    if (state.panes[product.product.projectedPaneId]) return false;
+    const nodeIds = new Set([
+      product.product.splitLeafNodeId,
+      product.product.splitNodeId
+    ]);
+    if (
+      Object.values(state.workspaces).some((workspace) =>
+        Object.keys(workspace.nodeMap).some((nodeId) => nodeIds.has(nodeId))
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function decodeRemoteOperationAdmissionCommand(

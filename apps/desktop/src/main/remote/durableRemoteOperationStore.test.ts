@@ -143,6 +143,29 @@ describe("durable remote operation store", () => {
     ).toThrow(DurableOperationConflictError);
   });
 
+  it("discards an orphan only after its projection is absent from the durable snapshot", () => {
+    const store = createDurableRemoteOperationStore(root);
+    const admission = createAdmission();
+    store.admit(admission);
+    const snapshot = createInitialState("/bin/sh");
+    snapshot.remoteRecovery.operations[admission.intent.operationId] =
+      structuredClone(admission.pendingFact.projection);
+
+    expect(() =>
+      store.discardAfterDurableSnapshot(admission.intent.operationId, snapshot)
+    ).toThrow(/still has a product projection/u);
+    expect(store.get(admission.intent.operationId)).not.toBeNull();
+
+    delete snapshot.remoteRecovery.operations[admission.intent.operationId];
+    expect(
+      store.discardAfterDurableSnapshot(admission.intent.operationId, snapshot)
+    ).toBe(true);
+    expect(store.get(admission.intent.operationId)).toBeNull();
+    expect(
+      store.discardAfterDurableSnapshot(admission.intent.operationId, snapshot)
+    ).toBe(false);
+  });
+
   it("fails closed on corruption and unsafe record permissions", () => {
     const store = createDurableRemoteOperationStore(root);
     const admission = createAdmission();

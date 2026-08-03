@@ -12,6 +12,8 @@ import {
   type RemoteTargetBinding
 } from "@kmux/core";
 import {
+  MainFactConflictError,
+  applyMainRemoteOperationDiscardedFact,
   applyMainRemoteOperationFact,
   type MainRemoteOperationFact
 } from "@kmux/core/main";
@@ -220,6 +222,79 @@ describe("RemoteOperationCoordinator", () => {
       recoveredState.remoteRecovery.operations[persisted.intent.operationId]
         .state
     ).toBe("succeeded");
+  });
+
+  it("discards a workspace-missing orphan before replaying its result fact", () => {
+    const fixture = createRemoteFixture();
+    const beforeAdmission = cloneState(fixture.state);
+    const store = createDurableRemoteOperationStore(join(sandbox, "ops"));
+    const coordinator = createRemoteOperationCoordinator(
+      coordinatorOptions(fixture.state, store)
+    );
+    const operation = coordinator.admit(
+      terminateCommand(fixture.workspaceId, fixture.sessionId)
+    );
+    coordinator.recordAuthoritativeResult(operation.intent.operationId, {
+      status: "succeeded",
+      remoteResourceRevision: uint64(1n),
+      resultDigest,
+      completedAt: "2026-07-17T00:00:01.000Z"
+    });
+
+    const recoveredState = cloneState(beforeAdmission);
+    applyAction(recoveredState, {
+      type: "workspace.close",
+      workspaceId: fixture.workspaceId
+    });
+    const replayed: string[] = [];
+    const persistDurableProductSnapshot = vi.fn((state: AppState) => {
+      expect(
+        state.remoteRecovery.operations[operation.intent.operationId]
+      ).toBeUndefined();
+      expect(store.get(operation.intent.operationId)).not.toBeNull();
+    });
+    const recovered = createRemoteOperationCoordinator({
+      ...coordinatorOptions(recoveredState, store),
+      dispatchFact: (fact) => {
+        replayed.push(fact.type);
+        applyMainRemoteOperationFact(recoveredState, fact);
+      },
+      dispatchDiscardedFact: (fact) => {
+        replayed.push(fact.type);
+        applyMainRemoteOperationDiscardedFact(recoveredState, fact);
+      },
+      persistDurableProductSnapshot
+    }).recover();
+
+    expect(recovered).toEqual([]);
+    expect(replayed).toEqual([
+      "remote-operation.pending",
+      "remote-operation.discarded"
+    ]);
+    expect(persistDurableProductSnapshot).toHaveBeenCalledTimes(1);
+    expect(store.get(operation.intent.operationId)).toBeNull();
+  });
+
+  it("keeps a workspace-missing operation when its session product remains", () => {
+    const fixture = createRemoteFixture();
+    const store = createDurableRemoteOperationStore(join(sandbox, "ops"));
+    const operation = createRemoteOperationCoordinator(
+      coordinatorOptions(fixture.state, store)
+    ).admit(terminateCommand(fixture.workspaceId, fixture.sessionId));
+    const recoveredState = cloneState(fixture.state);
+    delete recoveredState.workspaces[fixture.workspaceId];
+    const persistDurableProductSnapshot = vi.fn();
+
+    expect(() =>
+      createRemoteOperationCoordinator({
+        ...coordinatorOptions(recoveredState, store),
+        dispatchDiscardedFact: (fact) =>
+          applyMainRemoteOperationDiscardedFact(recoveredState, fact),
+        persistDurableProductSnapshot
+      }).recover()
+    ).toThrow(MainFactConflictError);
+    expect(persistDurableProductSnapshot).not.toHaveBeenCalled();
+    expect(store.get(operation.intent.operationId)).not.toBeNull();
   });
 
   it("topologically replays dependent facts when hashed record order is reversed", () => {
@@ -546,6 +621,7 @@ function instrumentStore(
     getResourceReceipt: store.getResourceReceipt,
     listResourceReceipts: store.listResourceReceipts,
     removeResourceReceipts: store.removeResourceReceipts,
+    discardAfterDurableSnapshot: store.discardAfterDurableSnapshot,
     compactAfterDurableSnapshot: store.compactAfterDurableSnapshot
   };
 }
