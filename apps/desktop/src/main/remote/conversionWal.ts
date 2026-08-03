@@ -21,7 +21,11 @@ import {
   type SshWorkspaceAdditionPatchDto,
   type SshWorkspaceReplacementPatchDto
 } from "@kmux/core/main";
-import type { ExternalAgentSessionRef, Id } from "@kmux/proto";
+import type {
+  ExternalAgentSessionRef,
+  Id,
+  RemoteInitialInputOutcome
+} from "@kmux/proto";
 
 import { durableAtomicReplace } from "./durableAtomicWrite";
 
@@ -85,6 +89,12 @@ export interface ConversionPreparingRecord {
     args?: string[];
     env?: Record<string, string>;
     title?: string;
+    /**
+     * One-shot bytes written by the keeper at spawn. They are covered by the
+     * remote snapshot hash so a replayed prepare cannot deliver different
+     * bytes, but remain separate from the desktop Session launch below.
+     */
+    initialInput?: string;
   };
   agentSessionRef?: ExternalAgentSessionRef;
   initialInput?: string;
@@ -98,6 +108,7 @@ export interface ConversionRemoteCreatedEvidence {
   keeperGeneration: Id;
   remoteResourceRevision: string;
   remoteCreatedAt: string;
+  initialInputOutcome?: RemoteInitialInputOutcome;
 }
 
 export interface ConversionRemoteCreatedRecord
@@ -461,7 +472,8 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
     "sessionDescriptorHash",
     "keeperGeneration",
     "remoteResourceRevision",
-    "remoteCreatedAt"
+    "remoteCreatedAt",
+    "initialInputOutcome"
   ];
   const decisionKeys = [
     "replacementPatch",
@@ -578,7 +590,17 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
       record.remoteResourceRevision,
       "remoteResourceRevision"
     ),
-    remoteCreatedAt: requireTimestamp(record.remoteCreatedAt, "remoteCreatedAt")
+    remoteCreatedAt: requireTimestamp(
+      record.remoteCreatedAt,
+      "remoteCreatedAt"
+    ),
+    ...(record.initialInputOutcome === undefined
+      ? {}
+      : {
+          initialInputOutcome: requireInitialInputOutcome(
+            record.initialInputOutcome
+          )
+        })
   };
   if (state === "remote-created") return remote;
 
@@ -903,7 +925,14 @@ function decodeCleanupAcknowledgements(
 
 function decodeLaunch(value: unknown): ConversionPreparingRecord["launch"] {
   const record = requireRecord(value, "conversion launch");
-  assertExactKeys(record, ["cwd", "shell", "args", "env", "title"]);
+  assertExactKeys(record, [
+    "cwd",
+    "shell",
+    "args",
+    "env",
+    "title",
+    "initialInput"
+  ]);
   const args = record.args;
   if (
     args !== undefined &&
@@ -947,7 +976,12 @@ function decodeLaunch(value: unknown): ConversionPreparingRecord["launch"] {
     ...(decodedEnv === undefined ? {} : { env: decodedEnv }),
     ...(record.title === undefined
       ? {}
-      : { title: requireText(record.title, "launch.title", 4 * 1024) })
+      : { title: requireText(record.title, "launch.title", 4 * 1024) }),
+    ...(record.initialInput === undefined
+      ? {}
+      : {
+          initialInput: requireInitialInput(record.initialInput)
+        })
   };
 }
 
@@ -984,6 +1018,13 @@ function requireInitialInput(value: unknown): string {
     throw new TypeError("initialInput is invalid");
   }
   return input;
+}
+
+function requireInitialInputOutcome(value: unknown): RemoteInitialInputOutcome {
+  if (value !== "written" && value !== "outcome-unknown") {
+    throw new TypeError("initialInputOutcome is invalid");
+  }
+  return value;
 }
 
 function decodeResourceKey<const RequireSession extends boolean>(

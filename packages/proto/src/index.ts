@@ -57,6 +57,7 @@ export type {
   RemoteBridgeResponseEnvelope,
   RemoteKeeperAttachRequest,
   RemoteKeeperControlMessage,
+  RemoteInitialInputOutcome,
   RemoteMetadataPurposeDto,
   RemoteMetadataClaimDto,
   RemoteMetadataQueryRowDto,

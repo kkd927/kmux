@@ -4,6 +4,8 @@ import type { AgentScopeSettings, Id, RemotePersistenceLevel } from "./index";
 
 export const REMOTE_PROTOCOL_VERSION = 1 as const;
 
+export type RemoteInitialInputOutcome = "written" | "outcome-unknown";
+
 export interface RemoteSessionStorageStatusDto {
   state: "normal" | "degraded" | "backpressured";
   journalAdmitted: string;
@@ -95,6 +97,8 @@ export interface RemoteConversionSessionLaunchDto {
   args?: string[];
   env?: Record<string, string>;
   title?: string;
+  /** Written to the PTY at keeper spawn; see RemoteSessionLaunchPayloadDto. */
+  initialInput?: string;
 }
 
 export interface RemoteConversionPrepareRequestDto {
@@ -273,6 +277,7 @@ export type RemoteBridgeResponseBody =
       resultDigest: string;
       keeperGeneration?: Id;
       agentIntegration?: AgentIntegrationDiagnosticDto;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       type: "operation.result";
@@ -429,6 +434,7 @@ export type RemoteBridgeResponseBody =
       keeperGeneration: Id;
       remoteResourceRevision: string;
       remoteCreatedAt: string;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       type: "conversion.promoted";
@@ -879,7 +885,8 @@ export function decodeRemoteBridgeResponseBody(
           "remoteResourceRevision",
           "resultDigest",
           "keeperGeneration",
-          "agentIntegration"
+          "agentIntegration",
+          "initialInputOutcome"
         ]);
         return {
           type: record.type,
@@ -903,6 +910,13 @@ export function decodeRemoteBridgeResponseBody(
             : {
                 agentIntegration: decodeAgentIntegrationDiagnostic(
                   record.agentIntegration
+                )
+              }),
+          ...(record.initialInputOutcome === undefined
+            ? {}
+            : {
+                initialInputOutcome: requireRemoteInitialInputOutcome(
+                  record.initialInputOutcome
                 )
               })
         };
@@ -1217,7 +1231,8 @@ export function decodeRemoteBridgeResponseBody(
         "sessionDescriptorHash",
         "keeperGeneration",
         "remoteResourceRevision",
-        "remoteCreatedAt"
+        "remoteCreatedAt",
+        "initialInputOutcome"
       ]);
       return {
         type: record.type,
@@ -1245,7 +1260,14 @@ export function decodeRemoteBridgeResponseBody(
         remoteCreatedAt: requireTimestamp(
           record.remoteCreatedAt,
           "remoteCreatedAt"
-        )
+        ),
+        ...(record.initialInputOutcome === undefined
+          ? {}
+          : {
+              initialInputOutcome: requireRemoteInitialInputOutcome(
+                record.initialInputOutcome
+              )
+            })
       };
     case "conversion.promoted":
       assertExactKeys(record, [
@@ -2413,7 +2435,14 @@ function decodeConversionLaunch(
   value: unknown
 ): RemoteConversionSessionLaunchDto {
   const record = requireRecord(value, "conversion launch");
-  assertExactKeys(record, ["cwd", "shell", "args", "env", "title"]);
+  assertExactKeys(record, [
+    "cwd",
+    "shell",
+    "args",
+    "env",
+    "title",
+    "initialInput"
+  ]);
   if (
     record.args !== undefined &&
     (!Array.isArray(record.args) || record.args.length > 256)
@@ -2451,7 +2480,16 @@ function decodeConversionLaunch(
         }),
     ...(record.title === undefined
       ? {}
-      : { title: requireString(record.title, "launch.title", 4 * 1024) })
+      : { title: requireString(record.title, "launch.title", 4 * 1024) }),
+    ...(record.initialInput === undefined
+      ? {}
+      : {
+          initialInput: requireString(
+            record.initialInput,
+            "launch.initialInput",
+            64 * 1024
+          )
+        })
   };
 }
 
@@ -2712,6 +2750,15 @@ function requirePricingMode(
 ): "standard" | "fast" {
   if (value !== "standard" && value !== "fast") {
     throw new TypeError(`${field} is invalid`);
+  }
+  return value;
+}
+
+function requireRemoteInitialInputOutcome(
+  value: unknown
+): RemoteInitialInputOutcome {
+  if (value !== "written" && value !== "outcome-unknown") {
+    throw new TypeError("initial input outcome is invalid");
   }
   return value;
 }

@@ -30,6 +30,7 @@ import {
   type Id,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
+  type RemoteInitialInputOutcome,
   type RemoteProvisionalReclaimRequestDto,
   type RemoteSpoolEventDto,
   type RemoteSurfaceCaptureRequestDto,
@@ -139,6 +140,7 @@ export type RemoteRuntimeOperationOutcome =
       resultDigest: string;
       keeperGeneration?: Id;
       agentIntegration?: AgentIntegrationDiagnosticDto;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       status: "failed";
@@ -326,7 +328,10 @@ export class LinuxX64RemoteRuntime {
             : { keeperGeneration: body.keeperGeneration }),
           ...(body.agentIntegration === undefined
             ? {}
-            : { agentIntegration: body.agentIntegration })
+            : { agentIntegration: body.agentIntegration }),
+          ...(body.initialInputOutcome === undefined
+            ? {}
+            : { initialInputOutcome: body.initialInputOutcome })
         }
       : {
           status: "failed",

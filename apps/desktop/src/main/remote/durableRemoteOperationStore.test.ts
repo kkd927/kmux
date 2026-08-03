@@ -102,6 +102,7 @@ describe("durable remote operation store", () => {
         operationId: admission.intent.operationId,
         remoteResourceRevision: uint64(5n),
         resultDigest,
+        initialInputOutcome: "outcome-unknown",
         completedAt
       },
       fact
@@ -113,6 +114,7 @@ describe("durable remote operation store", () => {
         operationId: admission.intent.operationId,
         remoteResourceRevision: uint64(5n),
         resultDigest,
+        initialInputOutcome: "outcome-unknown",
         completedAt
       },
       fact

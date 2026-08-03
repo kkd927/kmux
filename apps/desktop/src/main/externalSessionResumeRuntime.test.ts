@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ExternalSessionResumeSpec } from "./externalSessions";
 import {
   ExternalSessionConnectionError,
+  ExternalSessionInitialInputOutcomeUnknownError,
   ExternalSessionLaunchError,
   createExternalSessionResumeRuntime
 } from "./externalSessionResumeRuntime";
@@ -150,6 +151,64 @@ describe("external session resume runtime", () => {
       state.workspaces[state.windows[state.activeWindowId].activeWorkspaceId]
         .location.target
     ).toEqual({ kind: "ssh", targetId: "target_1" });
+  });
+
+  it("resumes without a launch-input result when the keeper wrote the command at spawn", async () => {
+    const state = createInitialState("/bin/zsh");
+    // Targets that accept inline launch input never admit the operation, so
+    // creation reports no resume-input result at all.
+    const createSshWorkspace = vi.fn(async () =>
+      createRemoteWorkspaceInState(state)
+    );
+    const fixture = createFixture(sshSpec(), {
+      state,
+      createSshWorkspace
+    });
+
+    const result = await resume(fixture, "ssh:target_1:codex:session-1");
+
+    expect(result).toMatchObject({
+      workspaceId: expect.any(String),
+      surfaceId: expect.any(String)
+    });
+    expect(
+      state.workspaces[state.windows[state.activeWindowId].activeWorkspaceId]
+        .location.target
+    ).toEqual({ kind: "ssh", targetId: "target_1" });
+  });
+
+  it("preserves and focuses the created surface before reporting an unknown inline input outcome", async () => {
+    const state = createInitialState("/bin/zsh");
+    const createSshWorkspace = vi.fn(async () => ({
+      ...createRemoteWorkspaceInState(state),
+      initialInputOutcome: "outcome-unknown" as const
+    }));
+    const fixture = createFixture(sshSpec(), {
+      state,
+      createSshWorkspace
+    });
+
+    const attempt = resume(fixture, "ssh:target_1:codex:session-1");
+    await expect(attempt).rejects.toBeInstanceOf(
+      ExternalSessionInitialInputOutcomeUnknownError
+    );
+    await expect(attempt).rejects.toThrow(
+      "The session was created, but its resume command may not have been delivered completely. Check the terminal before retrying."
+    );
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const workspace = state.workspaces[workspaceId];
+    expect(workspace.location.target).toEqual({
+      kind: "ssh",
+      targetId: "target_1"
+    });
+    expect(state.panes[workspace.activePaneId].activeSurfaceId).toBe(
+      state.sessions[
+        Object.keys(state.sessions).find(
+          (sessionId) =>
+            state.sessions[sessionId].agentSessionRef?.id === "session-1"
+        )!
+      ].surfaceId
+    );
   });
 });
 

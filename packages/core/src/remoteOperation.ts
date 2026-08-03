@@ -3,6 +3,7 @@ import {
   incrementUint64,
   parseUint64Decimal,
   type Id,
+  type RemoteInitialInputOutcome,
   type Uint64,
   type WorkspaceWorktreeMetadata
 } from "@kmux/proto";
@@ -49,6 +50,12 @@ export interface RemoteSessionLaunchPayloadDto {
   args?: string[];
   env?: Record<string, string>;
   title?: string;
+  /**
+   * Bytes the remote keeper writes to the PTY at spawn. Connected targets are
+   * required to advertise `session.launch-input-inline-v1` before Main admits
+   * operations that can carry this field.
+   */
+  initialInput?: string;
 }
 
 export type RemoteOperationPayloadDto =
@@ -123,6 +130,7 @@ export type RemoteOperationExecutionOutcome =
       remoteResourceRevision: Uint64;
       resultDigest: string;
       keeperGeneration?: Id;
+      initialInputOutcome?: RemoteInitialInputOutcome;
       completedAt?: string;
     }
   | {
@@ -1061,7 +1069,14 @@ function decodeRemoteSessionLaunchPayload(
   value: unknown
 ): RemoteSessionLaunchPayloadDto {
   const record = requireRecord(value, "session launch payload");
-  assertExactKeys(record, ["cwd", "shell", "args", "env", "title"]);
+  assertExactKeys(record, [
+    "cwd",
+    "shell",
+    "args",
+    "env",
+    "title",
+    "initialInput"
+  ]);
   return {
     cwd: requirePath(record.cwd, "launch.cwd"),
     ...(record.shell === undefined
@@ -1079,6 +1094,15 @@ function decodeRemoteSessionLaunchPayload(
       ? {}
       : {
           title: requireString(record.title, "launch.title", MAX_NAME_BYTES)
+        }),
+    ...(record.initialInput === undefined
+      ? {}
+      : {
+          initialInput: requireString(
+            record.initialInput,
+            "launch.initialInput",
+            MAX_LAUNCH_INPUT_BYTES
+          )
         })
   };
 }

@@ -18,6 +18,7 @@ import {
   type Id,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
+  type RemoteInitialInputOutcome,
   type RemoteProvisionalReclaimRequestDto,
   type RemoteSurfaceCaptureRequestDto,
   type RemoteTerminalInjectRequestDto,
@@ -438,6 +439,7 @@ export type DecodedRemoteHostOperationOutcome =
       resultDigest: string;
       keeperGeneration?: Id;
       agentIntegration?: AgentIntegrationDiagnosticDto;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       status: "failed";
@@ -1260,7 +1262,14 @@ function decodeConversionLaunch(
   value: unknown
 ): RemoteConversionPrepareRequestDto["launch"] {
   const record = requireRecord(value, "conversion launch");
-  assertExactKeys(record, ["cwd", "shell", "args", "env", "title"]);
+  assertExactKeys(record, [
+    "cwd",
+    "shell",
+    "args",
+    "env",
+    "title",
+    "initialInput"
+  ]);
   if (
     record.args !== undefined &&
     (!Array.isArray(record.args) || record.args.length > 256)
@@ -1298,7 +1307,16 @@ function decodeConversionLaunch(
         }),
     ...(record.title === undefined
       ? {}
-      : { title: requireString(record.title, "launch.title", 4 * 1024) })
+      : { title: requireString(record.title, "launch.title", 4 * 1024) }),
+    ...(record.initialInput === undefined
+      ? {}
+      : {
+          initialInput: requireString(
+            record.initialInput,
+            "launch.initialInput",
+            64 * 1024
+          )
+        })
   };
 }
 
@@ -1459,7 +1477,8 @@ export function decodeRemoteHostOperationOutcome(
       "remoteResourceRevision",
       "resultDigest",
       "keeperGeneration",
-      "agentIntegration"
+      "agentIntegration",
+      "initialInputOutcome"
     ]);
     if (typeof record.remoteResourceRevision !== "bigint") {
       throw new TypeError(
@@ -1485,6 +1504,13 @@ export function decodeRemoteHostOperationOutcome(
             agentIntegration: decodeAgentIntegrationDiagnostic(
               record.agentIntegration
             )
+          }),
+      ...(record.initialInputOutcome === undefined
+        ? {}
+        : {
+            initialInputOutcome: decodeRemoteInitialInputOutcome(
+              record.initialInputOutcome
+            )
           })
     };
   }
@@ -1505,6 +1531,15 @@ export function decodeRemoteHostOperationOutcome(
     code: requireString(record.code, "code", 256),
     message: requireString(record.message, "message", 4 * 1024)
   };
+}
+
+function decodeRemoteInitialInputOutcome(
+  value: unknown
+): RemoteInitialInputOutcome {
+  if (value !== "written" && value !== "outcome-unknown") {
+    throw new TypeError("remote-host initial input outcome is invalid");
+  }
+  return value;
 }
 
 function decodeRuntimeRootOverrides(

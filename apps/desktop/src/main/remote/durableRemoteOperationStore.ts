@@ -35,6 +35,7 @@ import {
 import {
   formatUint64Decimal,
   parseUint64Decimal,
+  type RemoteInitialInputOutcome,
   type Uint64
 } from "@kmux/proto";
 
@@ -58,6 +59,7 @@ export type AuthoritativeRemoteOperationResult =
       resultDigest: string;
       completedAt: string;
       keeperGeneration?: string;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       outcome: "failed";
@@ -122,6 +124,7 @@ type AuthoritativeRemoteOperationResultDto =
       resultDigest: string;
       completedAt: string;
       keeperGeneration?: string;
+      initialInputOutcome?: RemoteInitialInputOutcome;
     }
   | {
       outcome: "failed";
@@ -1040,7 +1043,8 @@ function decodeAuthoritativeResult(
       "remoteResourceRevision",
       "resultDigest",
       "completedAt",
-      "keeperGeneration"
+      "keeperGeneration",
+      "initialInputOutcome"
     ]);
     return {
       outcome: "succeeded",
@@ -1050,7 +1054,14 @@ function decodeAuthoritativeResult(
       completedAt: fact.completedAt,
       ...(fact.keeperGeneration === undefined
         ? {}
-        : { keeperGeneration: fact.keeperGeneration })
+        : { keeperGeneration: fact.keeperGeneration }),
+      ...(record.initialInputOutcome === undefined
+        ? {}
+        : {
+            initialInputOutcome: requireInitialInputOutcome(
+              record.initialInputOutcome
+            )
+          })
     };
   }
   if (record.outcome === "failed") {
@@ -1083,6 +1094,13 @@ function decodeAuthoritativeResult(
     };
   }
   throw new TypeError("authoritative operation result outcome is invalid");
+}
+
+function requireInitialInputOutcome(value: unknown): RemoteInitialInputOutcome {
+  if (value !== "written" && value !== "outcome-unknown") {
+    throw new TypeError("authoritative initial input outcome is invalid");
+  }
+  return value;
 }
 
 function ensurePrivateStoreRoot(root: string, uid: number | undefined): void {

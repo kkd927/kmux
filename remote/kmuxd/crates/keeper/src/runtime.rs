@@ -76,6 +76,10 @@ pub struct KeeperLaunchConfig {
     pub title: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// Written to the PTY at spawn, before the keeper socket accepts its first
+    /// attachment. Descriptors created by an older bridge omit the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_input: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1064,11 +1068,15 @@ pub fn run_keeper_server(
     )?;
     child.set_nonblocking(true)?;
     let child_pid = child.process_id();
-    descriptor.state = SessionDescriptorState::Running;
-    descriptor.keeper_pid = Some(std::process::id());
-    descriptor.child_pid = Some(child_pid);
-    descriptor.updated_at = now_rfc3339();
+    transition_descriptor_to_running(&mut descriptor, std::process::id(), child_pid);
     write_session_descriptor(descriptor_path, &descriptor)?;
+
+    // Runs before the accept loop starts, so no attachment can yet have been
+    // granted the writer lease that permanently fences launch input. Keep it
+    // after the `Running` transition above: a crash in between then leaves the
+    // input undelivered rather than letting the bridge respawn this generation
+    // and type it twice.
+    write_launch_initial_input(&mut child, &mut descriptor, descriptor_path, &launch)?;
 
     let (commands, receiver) = bounded(OWNER_COMMAND_CAPACITY);
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -3529,6 +3537,59 @@ fn write_pty_suffix<W: PtyInputWriter>(
     Ok(())
 }
 
+/// Delivers the launch's inline initial input during keeper startup.
+///
+/// The bridge's `launch-input` operation cannot be used for this: it arrives
+/// after the desktop has published the session, by which time the renderer has
+/// usually attached and taken the writer lease, which fences launch input for
+/// the rest of the generation. Writing here has no such window — the owner loop
+/// has not started, so no lease can exist.
+///
+/// A failed PTY write is recorded and tolerated: the session still comes up and
+/// the user can run the command themselves, which beats failing session
+/// creation outright.
+fn write_launch_initial_input<W: PtyInputWriter>(
+    child: &mut W,
+    descriptor: &mut SessionDescriptor,
+    descriptor_path: &Path,
+    launch: &KeeperLaunchConfig,
+) -> Result<(), KeeperRuntimeError> {
+    let Some(input) = launch.initial_input.as_deref() else {
+        return Ok(());
+    };
+    let data = input.as_bytes();
+    let mut written_offset = 0;
+    let write_result = write_pty_suffix(child, data, &mut written_offset);
+    descriptor.launch_input = Some(LaunchInputRecord {
+        operation_id: descriptor.last_operation_id.clone(),
+        payload_hash: format!("{:x}", Sha256::digest(data)),
+        byte_length: data.len(),
+        written_offset,
+        outcome: if write_result.is_ok() {
+            LaunchInputOutcome::Written
+        } else {
+            LaunchInputOutcome::OutcomeUnknown
+        },
+    });
+    descriptor.updated_at = now_rfc3339();
+    write_session_descriptor(descriptor_path, descriptor)
+}
+
+fn transition_descriptor_to_running(
+    descriptor: &mut SessionDescriptor,
+    keeper_pid: u32,
+    child_pid: u32,
+) {
+    descriptor.state = SessionDescriptorState::Running;
+    descriptor.keeper_pid = Some(keeper_pid);
+    descriptor.child_pid = Some(child_pid);
+    // The input is a one-shot at-spawn directive. Strip it from the first
+    // Running descriptor so observation, adoption, restart, and crash recovery
+    // can never rediscover plaintext bytes or automatically retype them.
+    descriptor.launch.initial_input = None;
+    descriptor.updated_at = now_rfc3339();
+}
+
 fn apply_launch_input<W: PtyInputWriter>(
     child: &mut W,
     descriptor: &mut SessionDescriptor,
@@ -4868,6 +4929,9 @@ fn validate_launch(launch: &KeeperLaunchConfig) -> Result<(), KeeperRuntimeError
         .title
         .as_ref()
         .is_some_and(|title| title.is_empty() || title.len() > 4 * 1024 || title.contains('\0'));
+    let initial_input_is_invalid = launch.initial_input.as_ref().is_some_and(|input| {
+        input.is_empty() || input.len() > kmux_compat::REMOTE_TERMINAL_INPUT_HARD_MAX_BYTES
+    });
     if !Path::new(&launch.cwd).is_absolute()
         || launch.cwd.len() > 32 * 1024
         || launch.cwd.contains('\0')
@@ -4879,6 +4943,7 @@ fn validate_launch(launch: &KeeperLaunchConfig) -> Result<(), KeeperRuntimeError
         || args_are_invalid
         || env_is_invalid
         || title_is_invalid
+        || initial_input_is_invalid
     {
         return Err(KeeperRuntimeError::Invalid("keeper launch is invalid"));
     }
@@ -5227,6 +5292,7 @@ mod tests {
                 title: None,
                 cols: 80,
                 rows: 24,
+                initial_input: None,
             },
             keeper_pid: Some(std::process::id()),
             child_pid: Some(std::process::id()),
@@ -6252,6 +6318,7 @@ mod tests {
                 title: None,
                 cols: 80,
                 rows: 24,
+                initial_input: None,
             },
             keeper_pid: Some(std::process::id()),
             child_pid: Some(std::process::id()),
@@ -6526,6 +6593,116 @@ mod tests {
         ));
         assert!(child.attempted.is_empty());
         assert!(child.accepted.is_empty());
+    }
+
+    #[test]
+    fn launch_initial_input_is_written_and_recorded_against_the_current_operation() {
+        let sandbox = tempfile::TempDir::new().unwrap();
+        let descriptor_path = sandbox.path().join("session.json");
+        let input = "agy --conversation 00bce6e4\r";
+        let mut descriptor = test_session_descriptor(sandbox.path());
+        descriptor.last_operation_id = "restart_2".to_owned();
+        descriptor.launch.initial_input = Some(input.to_owned());
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
+        let launch = descriptor.launch.clone();
+        let mut child = ScriptedInputWriter {
+            steps: VecDeque::from([InputWriteStep::Accept(input.len())]),
+            accepted: Vec::new(),
+            attempted: Vec::new(),
+        };
+
+        write_launch_initial_input(&mut child, &mut descriptor, &descriptor_path, &launch).unwrap();
+
+        assert_eq!(child.accepted, input.as_bytes());
+        let record = load_session_descriptor(&descriptor_path)
+            .unwrap()
+            .launch_input
+            .expect("launch input record");
+        assert_eq!(record.operation_id, "restart_2");
+        assert_eq!(record.outcome, LaunchInputOutcome::Written);
+        assert_eq!(record.written_offset, input.len());
+        assert_eq!(
+            record.payload_hash,
+            format!("{:x}", Sha256::digest(input.as_bytes()))
+        );
+    }
+
+    #[test]
+    fn first_running_descriptor_removes_plaintext_launch_input() {
+        let sandbox = tempfile::TempDir::new().unwrap();
+        let mut descriptor = test_session_descriptor(sandbox.path());
+        descriptor.launch.initial_input = Some("codex resume session-1\r".to_owned());
+
+        transition_descriptor_to_running(&mut descriptor, 101, 202);
+
+        assert_eq!(descriptor.state, SessionDescriptorState::Running);
+        assert_eq!(descriptor.keeper_pid, Some(101));
+        assert_eq!(descriptor.child_pid, Some(202));
+        assert!(descriptor.launch.initial_input.is_none());
+    }
+
+    #[test]
+    fn launch_without_initial_input_leaves_the_pty_untouched() {
+        let sandbox = tempfile::TempDir::new().unwrap();
+        let descriptor_path = sandbox.path().join("session.json");
+        let mut descriptor = test_session_descriptor(sandbox.path());
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
+        let launch = descriptor.launch.clone();
+        let mut child = ScriptedInputWriter {
+            steps: VecDeque::new(),
+            accepted: Vec::new(),
+            attempted: Vec::new(),
+        };
+
+        write_launch_initial_input(&mut child, &mut descriptor, &descriptor_path, &launch).unwrap();
+
+        assert!(child.attempted.is_empty());
+        assert!(descriptor.launch_input.is_none());
+    }
+
+    #[test]
+    fn failed_launch_initial_input_write_records_outcome_unknown_and_starts_the_session() {
+        let sandbox = tempfile::TempDir::new().unwrap();
+        let descriptor_path = sandbox.path().join("session.json");
+        let input = "agy --conversation 00bce6e4\r";
+        let mut descriptor = test_session_descriptor(sandbox.path());
+        descriptor.launch.initial_input = Some(input.to_owned());
+        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
+        let launch = descriptor.launch.clone();
+        let mut child = ScriptedInputWriter {
+            steps: VecDeque::from([InputWriteStep::Accept(4), InputWriteStep::Fail]),
+            accepted: Vec::new(),
+            attempted: Vec::new(),
+        };
+
+        // Startup still succeeds: a shell the user can type into beats failing
+        // session creation because the resume command could not be delivered.
+        write_launch_initial_input(&mut child, &mut descriptor, &descriptor_path, &launch).unwrap();
+
+        let record = load_session_descriptor(&descriptor_path)
+            .unwrap()
+            .launch_input
+            .expect("launch input record");
+        assert_eq!(record.outcome, LaunchInputOutcome::OutcomeUnknown);
+        assert_eq!(record.written_offset, 4);
+    }
+
+    #[test]
+    fn oversized_launch_initial_input_is_rejected_by_launch_validation() {
+        let mut launch = test_session_descriptor(Path::new("/tmp")).launch;
+        launch.initial_input =
+            Some("x".repeat(kmux_compat::REMOTE_TERMINAL_INPUT_HARD_MAX_BYTES + 1));
+        assert!(matches!(
+            validate_launch(&launch),
+            Err(KeeperRuntimeError::Invalid(_))
+        ));
+        launch.initial_input = Some(String::new());
+        assert!(matches!(
+            validate_launch(&launch),
+            Err(KeeperRuntimeError::Invalid(_))
+        ));
+        launch.initial_input = Some("agy\r".to_owned());
+        assert!(validate_launch(&launch).is_ok());
     }
 
     #[test]

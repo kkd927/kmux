@@ -435,7 +435,8 @@ export function createTransactionalSshWorkspaceRuntime(
     }
     if (
       record.state === "cleanup-complete" &&
-      record.initialInput !== undefined
+      record.initialInput !== undefined &&
+      record.launch.initialInput === undefined
     ) {
       await options.afterCommit?.(structuredClone(record));
     }
@@ -515,7 +516,10 @@ export function createTransactionalSshWorkspaceRuntime(
           : { env: { ...request.launch.env } }),
         ...(request.launch?.title === undefined
           ? {}
-          : { title: request.launch.title })
+          : { title: request.launch.title }),
+        ...(request.initialInput === undefined
+          ? {}
+          : { initialInput: request.initialInput })
       };
       const productIntent =
         request.kind === "convert-existing"

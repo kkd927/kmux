@@ -2,6 +2,7 @@ import type { AppState, RemoteOperationCommandResult } from "@kmux/core";
 import type {
   ExternalAgentSessionRef,
   Id,
+  RemoteInitialInputOutcome,
   SessionLaunchConfig
 } from "@kmux/proto";
 
@@ -33,6 +34,7 @@ export interface SshWorkspaceCreationResult {
   targetId: Id;
   continuation: "convert" | "create";
   resumeInputResult?: RemoteOperationCommandResult;
+  initialInputOutcome?: RemoteInitialInputOutcome;
 }
 
 export interface SshWorkspaceCreationRuntime {
@@ -118,6 +120,9 @@ export function createSshWorkspaceCreationRuntime(options: {
         targetId: record.workspaceResourceKey.targetId,
         continuation:
           request.kind === "convert-existing" ? "convert" : "create",
+        ...(record.initialInputOutcome === undefined
+          ? {}
+          : { initialInputOutcome: record.initialInputOutcome }),
         ...(resumeInputResult === null ? {} : { resumeInputResult })
       };
     }

@@ -1142,7 +1142,7 @@ describe("RemoteLifecycleRuntime", () => {
         arch: "x86_64",
         abi: "musl",
         runtimeVersion: "0.1.0",
-        capabilities: ["terminal-v1"],
+        capabilities: ["terminal-v1", "session.launch-input-inline-v1"],
         persistenceLevel: "ssh-disconnect"
       }
     });
@@ -1258,7 +1258,7 @@ describe("RemoteLifecycleRuntime", () => {
     }
   });
 
-  it("orders an offline create before its separately durable launch input", async () => {
+  it("durably carries offline create input inline without a second operation", async () => {
     const fixture = remoteFixture();
     const host = new RemoteHostManager(vi.fn());
     host.on("error", vi.fn());
@@ -1275,18 +1275,18 @@ describe("RemoteLifecycleRuntime", () => {
       fixture.state.remoteRecovery.operations
     ).sort(compareRemoteOperationRetryOrder);
     expect(operations.map((operation) => operation.kind)).toEqual([
-      "session.create",
-      "launch-input"
+      "session.create"
     ]);
     expect(
       operations.map((operation) => [
         operation.expectedRemoteResourceRevision,
         operation.nextRemoteResourceRevision
       ])
-    ).toEqual([
-      [0n, 1n],
-      [1n, 2n]
-    ]);
+    ).toEqual([[0n, 1n]]);
+    expect(operations[0]?.pendingProduct).toMatchObject({
+      kind: "session.create",
+      launch: { initialInput: "codex\r" }
+    });
     const createdSurfaceId = fixture.state.panes[
       fixture.paneId
     ].surfaceIds.find(
@@ -1392,7 +1392,7 @@ describe("RemoteLifecycleRuntime", () => {
     ).sessionId;
     expect(fixture.state.sessions[createdSessionId]).toMatchObject({
       launch: { cwd: { kind: "ssh" }, initialInput: "echo ready\r" },
-      remoteRuntime: { remoteResourceRevision: 2n }
+      remoteRuntime: { remoteResourceRevision: 1n }
     });
 
     await runtime.executeRendererLifecycleAction({
@@ -1402,7 +1402,7 @@ describe("RemoteLifecycleRuntime", () => {
     expect(
       fixture.state.sessions[createdSessionId].remoteRuntime
         ?.remoteResourceRevision
-    ).toBe(4n);
+    ).toBe(2n);
 
     await runtime.executeRendererLifecycleAction({
       type: "surface.close",
@@ -1422,14 +1422,98 @@ describe("RemoteLifecycleRuntime", () => {
       child.messages
         .filter((message) => message.type === "operation.execute")
         .map((message) => (message.payload as { kind: string }).kind)
-    ).toEqual([
-      "session.create",
-      "launch-input",
-      "session.restart",
-      "launch-input",
-      "session.terminate"
-    ]);
+    ).toEqual(["session.create", "session.restart", "session.terminate"]);
     await runtime.stop();
+  });
+
+  it("keeps a created session and warns once when inline input has an unknown outcome", async () => {
+    const fixture = remoteFixture();
+    const child = new ScriptedUtilityProcess(
+      new Map(),
+      hello(),
+      false,
+      [],
+      true,
+      "outcome-unknown"
+    );
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const operationStore = createDurableRemoteOperationStore(
+      join(sandbox, "operations")
+    );
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      operationStore
+    );
+    runtime.recover();
+    await runtime.connectTarget(connection());
+
+    await runtime.executeRendererLifecycleAction({
+      type: "surface.create",
+      paneId: fixture.paneId,
+      launch: { cwd: "/srv/tool", initialInput: "codex resume one\r" }
+    });
+
+    const operation = operationStore
+      .loadAll()
+      .find((candidate) => candidate.payload.kind === "session.create")!;
+    expect(operation.result?.authoritative).toMatchObject({
+      outcome: "succeeded",
+      initialInputOutcome: "outcome-unknown"
+    });
+    const createdSession =
+      fixture.state.sessions[
+        (operation.payload as { sessionId: string }).sessionId
+      ];
+    expect(createdSession.runtimeStatus.processState).toBe("running");
+    expect(fixture.state.notifications).toHaveLength(1);
+    expect(fixture.state.notifications[0]).toMatchObject({
+      surfaceId: createdSession.surfaceId,
+      source: "system",
+      title: "Session command may need attention"
+    });
+
+    await runtime.executeCommand(
+      {
+        type: "remote-operation.command",
+        workspaceId: operation.intent.resourceKey.workspaceId,
+        payload: operation.payload,
+        expectedRemoteResourceRevision:
+          operation.intent.expectedRemoteResourceRevision
+      },
+      {},
+      operation.intent.operationId
+    );
+    expect(fixture.state.notifications).toHaveLength(1);
+
+    await runtime.stop();
+
+    applyAction(fixture.state, { type: "notification.clear" });
+    const recoveryHost = new RemoteHostManager(vi.fn());
+    recoveryHost.on("error", vi.fn());
+    const recoveryRuntime = createRuntime(
+      fixture.state,
+      recoveryHost,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      operationStore
+    );
+    recoveryRuntime.recover();
+    expect(fixture.state.notifications).toHaveLength(1);
+    expect(fixture.state.notifications[0]).toMatchObject({
+      surfaceId: createdSession.surfaceId,
+      source: "system"
+    });
+    await recoveryRuntime.stop();
   });
 
   it("compacts a terminal operation only after its product state and exact remote receipt are durably checkpointed", async () => {
@@ -1519,6 +1603,49 @@ describe("RemoteLifecycleRuntime", () => {
       fixture.state.sessions[fixture.initialSessionId].runtimeStatus
         .observationState
     ).toBe("unknown");
+
+    await runtime.stop();
+  });
+
+  it("disconnects with upgrade-required and leaves observation unknown when inline launch input is unsupported", async () => {
+    const fixture = remoteFixture();
+    const child = new ScriptedUtilityProcess(
+      new Map(),
+      hello({ capabilities: ["terminal-v1"] })
+    );
+    const host = new RemoteHostManager(
+      () => child as unknown as UtilityProcess
+    );
+    host.on("error", vi.fn());
+    const observedBindings: RemoteTargetBinding[] = [];
+    const runtime = createRuntime(
+      fixture.state,
+      host,
+      binding(),
+      sandbox,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      observedBindings
+    );
+    runtime.recover();
+
+    await expect(runtime.connectTarget(connection())).rejects.toMatchObject({
+      name: "RemoteHostManagerError",
+      code: "upgrade-required",
+      retryable: false
+    });
+    expect(runtime.isTargetConnected("target_1")).toBe(false);
+    expect(observedBindings).toEqual([]);
+    expect(
+      fixture.state.sessions[fixture.initialSessionId].runtimeStatus
+        .observationState
+    ).toBe("unknown");
+    expect(
+      child.messages.some((message) => message.type === "target.disconnect")
+    ).toBe(true);
 
     await runtime.stop();
   });
@@ -1769,12 +1896,12 @@ function createRuntime(
     dispatchFact: (fact) => {
       applyMainFact(state, fact);
     },
+    dispatchAppAction: (action: Parameters<typeof applyAction>[1]) => {
+      applyAction(state, action);
+    },
     ...(phase6 === undefined
       ? {}
       : {
-          dispatchAppAction: (action: Parameters<typeof applyAction>[1]) => {
-            applyAction(state, action);
-          },
           eventReceiptStore: phase6.receiptStore,
           getSurfaceVendor: phase6.getSurfaceVendor,
           isSurfaceVisibleToUser: phase6.isSurfaceVisibleToUser
@@ -1980,7 +2107,8 @@ class ScriptedUtilityProcess extends EventEmitter {
     private readonly handshake = hello(),
     private readonly failObserve = false,
     private readonly events: RemoteSpoolEventDto[] = [],
-    private readonly sendReady = true
+    private readonly sendReady = true,
+    private readonly initialInputOutcome?: "written" | "outcome-unknown"
   ) {
     super();
   }
@@ -2189,7 +2317,12 @@ class ScriptedUtilityProcess extends EventEmitter {
             operationId: intent.operationId,
             remoteResourceRevision: BigInt(intent.nextRemoteResourceRevision),
             resultDigest: "f".repeat(64),
-            ...(keeperGeneration === undefined ? {} : { keeperGeneration })
+            ...(keeperGeneration === undefined ? {} : { keeperGeneration }),
+            ...(this.initialInputOutcome === undefined ||
+            (payload.kind !== "session.create" &&
+              payload.kind !== "session.restart")
+              ? {}
+              : { initialInputOutcome: this.initialInputOutcome })
           }
         });
         return;
@@ -2280,13 +2413,21 @@ class ScriptedUtilityProcess extends EventEmitter {
   }
 }
 
-function hello(authority: Partial<ReturnType<typeof baseAuthority>> = {}) {
+function hello(
+  options: Partial<ReturnType<typeof baseAuthority>> & {
+    capabilities?: string[];
+  } = {}
+) {
+  const { capabilities, ...authority } = options;
   return {
     type: "hello",
     protocolVersion: 1,
     runtimeVersion: "0.1.0",
     bridgeGeneration: "bridge_1",
-    capabilities: ["terminal-v1"],
+    capabilities: capabilities ?? [
+      "terminal-v1",
+      "session.launch-input-inline-v1"
+    ],
     authority: { ...baseAuthority(), ...authority },
     platform: "linux",
     arch: "x86_64",

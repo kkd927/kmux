@@ -232,7 +232,7 @@ describe("transactional workspace conversion", () => {
     );
   });
 
-  it("commits session identity and input locally while keeping remote creation launch input-free", async () => {
+  it("commits session identity while delivering launch input inline", async () => {
     const fixture = createFixture(sandbox);
     const afterCommit = vi.fn(async () => undefined);
     const record = await fixture.createRuntime(undefined, afterCommit).start({
@@ -261,16 +261,13 @@ describe("transactional workspace conversion", () => {
         sessionId: "session-1"
       }
     });
-    expect(record.launchInputOperationId).toMatch(/^operation_[a-f0-9]{32}$/u);
-    expect(afterCommit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        launchInputOperationId: record.launchInputOperationId
-      })
-    );
+    expect(afterCommit).not.toHaveBeenCalled();
     const remoteSnapshot = JSON.parse(
       fixture.remote.remoteSnapshot ?? "null"
-    ) as Record<string, unknown>;
-    expect(remoteSnapshot).not.toHaveProperty("initialInput");
+    ) as { launch?: Record<string, unknown> };
+    expect(remoteSnapshot.launch?.initialInput).toBe(
+      "codex resume session-1\r"
+    );
     expect(remoteSnapshot).not.toHaveProperty("agentSessionRef");
     const session =
       fixture.currentState().sessions[record.sessionResourceKey.sessionId];
@@ -282,41 +279,28 @@ describe("transactional workspace conversion", () => {
     });
   });
 
-  it("replays the same launch-input operation ID after a pre-admission crash", async () => {
+  it("persists the conversion initial input outcome without changing remote revision", async () => {
     const fixture = createFixture(sandbox);
-    const attemptedIds: string[] = [];
-    await expect(
-      fixture
-        .createRuntime(undefined, async (record) => {
-          attemptedIds.push(record.launchInputOperationId);
-          throw new Error("injected input admission crash");
-        })
-        .start({
-          kind: "create-new",
-          destinationWindowId: fixture.currentState().activeWindowId,
-          targetId: "target_1",
-          effectiveConnectionPolicyHash: policyHash,
-          initialWorkspaceName: "remote agent",
-          defaultCwd: "/srv/history",
-          initialInput: "codex resume session-1\r"
-        })
-    ).rejects.toThrow(/input admission crash/u);
+    fixture.remote.initialInputOutcome = "outcome-unknown";
 
-    fixture.simulateDesktopRestart();
-    await fixture
-      .createRuntime(undefined, async (record) => {
-        attemptedIds.push(record.launchInputOperationId);
-      })
-      .recover();
+    const record = await fixture.createRuntime().start({
+      kind: "create-new",
+      destinationWindowId: fixture.currentState().activeWindowId,
+      targetId: "target_1",
+      effectiveConnectionPolicyHash: policyHash,
+      initialWorkspaceName: "remote agent",
+      defaultCwd: "/srv/history",
+      initialInput: "codex resume session-1\r"
+    });
 
-    expect(attemptedIds).toHaveLength(2);
-    expect(new Set(attemptedIds)).toHaveLength(1);
-    expect(fixture.remote.createdKeeperCount).toBe(1);
-    expect(
-      Object.values(fixture.currentState().workspaces).filter(
-        (workspace) => workspace.location.target.kind === "ssh"
-      )
-    ).toHaveLength(1);
+    expect(record).toMatchObject({
+      state: "cleanup-complete",
+      remoteResourceRevision: "1",
+      initialInputOutcome: "outcome-unknown"
+    });
+    expect(fixture.wal.get(record.transactionId)).toMatchObject({
+      initialInputOutcome: "outcome-unknown"
+    });
   });
 
   it("prepares two history resumes in parallel and installs them in same-window admission order", async () => {
@@ -382,19 +366,8 @@ describe("transactional workspace conversion", () => {
       firstRecord.workspaceResourceKey.workspaceId,
       secondRecord.workspaceResourceKey.workspaceId
     ]);
-    expect(fixture.launchInputs).toHaveLength(2);
-    expect(fixture.launchInputs).toEqual(
-      expect.arrayContaining([
-        {
-          operationId: firstRecord.launchInputOperationId,
-          input: "codex resume first\r"
-        },
-        {
-          operationId: secondRecord.launchInputOperationId,
-          input: "claude --resume second\r"
-        }
-      ])
-    );
+    expect(firstRecord.launch.initialInput).toBe("codex resume first\r");
+    expect(secondRecord.launch.initialInput).toBe("claude --resume second\r");
     expect(new Set(fixture.remote.promoteCalls)).toEqual(
       new Set(["transaction_1", "transaction_2"])
     );
@@ -782,7 +755,10 @@ function createConcurrentFixture(
   };
 }
 
-function createFixture(sandbox: string) {
+function createFixture(
+  sandbox: string,
+  options: { capabilities?: string[] } = {}
+) {
   let state = createInitialState("/bin/zsh");
   const workspaceId = Object.keys(state.workspaces)[0]!;
   const workspace = state.workspaces[workspaceId];
@@ -802,7 +778,7 @@ function createFixture(sandbox: string) {
   const wal = createConversionWalStore(join(sandbox, "wal"));
   const remote = new FakeConversionRemote();
   const uniqueLocalTerminations = new Set<string>();
-  const binding = remoteBinding();
+  const binding = remoteBinding(options.capabilities);
 
   const createRuntime = (
     faultPoint?: (point: ConversionFaultPoint) => void,
@@ -864,6 +840,7 @@ class FakeConversionRemote implements ConversionRemoteGateway {
   createdKeeperCount = 0;
   failPrepare = false;
   remoteSnapshot?: string;
+  initialInputOutcome?: "written" | "outcome-unknown";
   private transactionId?: string;
   private snapshotHash?: string;
 
@@ -889,7 +866,10 @@ class FakeConversionRemote implements ConversionRemoteGateway {
       sessionDescriptorHash: "c".repeat(64),
       keeperGeneration: "keeper_conversion_1",
       remoteResourceRevision: "1",
-      remoteCreatedAt: "2026-07-18T00:00:10.000Z"
+      remoteCreatedAt: "2026-07-18T00:00:10.000Z",
+      ...(this.initialInputOutcome === undefined
+        ? {}
+        : { initialInputOutcome: this.initialInputOutcome })
     };
   }
 
@@ -953,9 +933,21 @@ class ConcurrentConversionRemote implements ConversionRemoteGateway {
   }
 }
 
-function remoteBinding(): RemoteTargetBinding {
+function remoteBinding(capabilities?: string[]): RemoteTargetBinding {
   return {
     id: "target_1",
+    ...(capabilities === undefined
+      ? {}
+      : {
+          observation: {
+            platform: "linux",
+            arch: "x86_64",
+            abi: "musl",
+            runtimeVersion: "1.1.1",
+            capabilities: [...capabilities],
+            persistenceLevel: "ssh-disconnect" as const
+          }
+        }),
     authority: {
       remoteInstallationId: "installation_1",
       executionNodeId: "node_1",

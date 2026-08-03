@@ -482,6 +482,9 @@ function toAuthoritativeResult(
       ...(outcome.keeperGeneration === undefined
         ? {}
         : { keeperGeneration: outcome.keeperGeneration }),
+      ...(outcome.initialInputOutcome === undefined
+        ? {}
+        : { initialInputOutcome: outcome.initialInputOutcome }),
       completedAt
     };
   }
@@ -530,6 +533,9 @@ function fromAuthoritativeResult(
         ...(result.keeperGeneration === undefined
           ? {}
           : { keeperGeneration: result.keeperGeneration }),
+        ...(result.initialInputOutcome === undefined
+          ? {}
+          : { initialInputOutcome: result.initialInputOutcome }),
         completedAt: result.completedAt
       }
     : {

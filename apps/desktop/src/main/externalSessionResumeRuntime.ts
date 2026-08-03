@@ -45,6 +45,18 @@ export class ExternalSessionLaunchError extends Error {
   }
 }
 
+export class ExternalSessionInitialInputOutcomeUnknownError extends Error {
+  readonly result: ExternalAgentSessionResumeResult;
+
+  constructor(result: ExternalAgentSessionResumeResult) {
+    super(
+      "The session was created, but its resume command may not have been delivered completely. Check the terminal before retrying."
+    );
+    this.name = "ExternalSessionInitialInputOutcomeUnknownError";
+    this.result = result;
+  }
+}
+
 export function createExternalSessionResumeRuntime(options: {
   resolveExternalAgentSession: (
     key: string
@@ -169,6 +181,10 @@ export function createExternalSessionResumeRuntime(options: {
       type: "surface.focus",
       surfaceId: created.surfaceId
     });
+    if (created.initialInputOutcome === "outcome-unknown") {
+      logStage("resume-outcome-unknown");
+      throw new ExternalSessionInitialInputOutcomeUnknownError(result);
+    }
     const outcome = created.resumeInputResult?.outcome;
     if (outcome?.status === "failed") {
       logStage("resume-failed");
@@ -219,9 +235,7 @@ export function decodeExternalAgentSessionResumeRequest(
     record.key.length === 0 ||
     record.key.length > 4 * 1024 ||
     typeof record.destinationWindowId !== "string" ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(
-      record.destinationWindowId
-    )
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(record.destinationWindowId)
   ) {
     throw new TypeError("external session resume request is invalid");
   }

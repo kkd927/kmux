@@ -33,7 +33,10 @@ export function createRemoteHostSshWorkspaceTransactionGateway(
         sessionDescriptorHash: prepared.sessionDescriptorHash,
         keeperGeneration: prepared.keeperGeneration,
         remoteResourceRevision: prepared.remoteResourceRevision,
-        remoteCreatedAt: prepared.remoteCreatedAt
+        remoteCreatedAt: prepared.remoteCreatedAt,
+        ...(prepared.initialInputOutcome === undefined
+          ? {}
+          : { initialInputOutcome: prepared.initialInputOutcome })
       };
     },
 

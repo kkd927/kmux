@@ -107,6 +107,23 @@ describe("remote operation codecs", () => {
     );
   });
 
+  it("carries inline launch input through the canonical payload hash", () => {
+    const payload = decodeRemoteOperationPayload({
+      kind: "session.create",
+      sessionId: "session_2",
+      surfaceId: "surface_2",
+      paneId: "pane_1",
+      launch: { cwd: "/srv/app", initialInput: "codex resume session-1\r" }
+    });
+
+    // The keeper writes these bytes at spawn, so they have to be part of the
+    // operation identity: a replay must not be able to deliver different input
+    // behind an unchanged hash.
+    expect(canonicalizeRemoteOperationPayload(payload)).toBe(
+      '{"kind":"session.create","launch":{"cwd":"/srv/app","initialInput":"codex resume session-1\\r"},"paneId":"pane_1","sessionId":"session_2","surfaceId":"surface_2"}'
+    );
+  });
+
   it("rejects unknown fields, unsafe forward binds, and oversized launch input", () => {
     expect(() =>
       decodeRemoteOperationPayload({
@@ -137,9 +154,12 @@ describe("remote operation codecs", () => {
         sessionId: "session_1",
         surfaceId: "surface_1",
         paneId: "pane_1",
-        launch: { cwd: "/srv/app", initialInput: "echo duplicated" }
+        launch: {
+          cwd: "/srv/app",
+          initialInput: "x".repeat(64 * 1024 + 1)
+        }
       })
-    ).toThrow(/unexpected/);
+    ).toThrow(/byte limit/);
     expect(() =>
       decodeRemoteOperationPayload({
         kind: "session.create",

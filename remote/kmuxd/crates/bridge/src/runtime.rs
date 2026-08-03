@@ -1265,7 +1265,7 @@ fn handle_single_request(
                 session_resource_key,
                 remote_snapshot,
                 remote_snapshot_hash,
-                launch,
+                launch: *launch,
                 prepared_at,
             },
         )
@@ -1334,6 +1334,7 @@ fn hello(
             "hook.spool-v1".to_owned(),
             "agent-integration-v2".to_owned(),
             "conversion.provisional-v1".to_owned(),
+            "session.launch-input-inline-v1".to_owned(),
             "git.inspect-bounded-v1".to_owned(),
             "ports.inspect-bounded-v1".to_owned(),
             "history.scan-bounded-v1".to_owned(),
@@ -3533,6 +3534,7 @@ fn create_keeper(
             title: launch.title,
             cols: 80,
             rows: 24,
+            initial_input: launch.initial_input,
         },
         keeper_pid: None,
         child_pid: None,
@@ -3562,7 +3564,12 @@ fn create_keeper(
     write_session_descriptor(&descriptor_path, &descriptor)?;
     spawn_keeper(executable, &descriptor_path, &generation)?;
     let running = wait_for_keeper(&descriptor_path, &generation)?;
-    let mut result = operation_success(intent, result_digest, Some(running.keeper_generation));
+    let mut result = operation_success(
+        intent,
+        result_digest,
+        Some(running.keeper_generation.clone()),
+    );
+    result.initial_input_outcome = initial_input_outcome(&running, intent);
     result.agent_integration = Some(agent_integration);
     Ok(result)
 }
@@ -3646,6 +3653,7 @@ fn resolve_existing_session_operation(
     if result.outcome != "succeeded" {
         return Ok(result);
     }
+    result.initial_input_outcome = initial_input_outcome(descriptor, intent);
     let agent_bin_dir = descriptor
         .launch
         .env
@@ -4106,6 +4114,7 @@ fn prepare_conversion(
                 .unwrap_or_else(|| "conversion keeper creation failed".to_owned()),
         ));
     }
+    let initial_input_outcome = creation.initial_input_outcome;
     let session_path =
         session_descriptor_path(Path::new(&roots.state_root), &input.session_resource_key);
     let _session_lock = acquire_resource_lock(&session_path)?;
@@ -4159,6 +4168,7 @@ fn prepare_conversion(
         keeper_generation: session.keeper_generation,
         remote_resource_revision: session.remote_resource_revision,
         remote_created_at: session.provisional_created_at.unwrap_or(input.prepared_at),
+        initial_input_outcome,
     })
 }
 
@@ -4820,6 +4830,10 @@ fn observe(
                 args: descriptor.launch.args,
                 env: user_launch_env(descriptor.launch.env.as_ref()),
                 title: descriptor.launch.title,
+                // Launch input is an at-spawn directive, not part of the
+                // session's steady-state launch. Echoing it back would make an
+                // adopt or restart retype the command.
+                initial_input: None,
             },
             lifecycle_state: match descriptor.lifecycle_state {
                 SessionLifecycleState::Committed => "committed",
@@ -5697,6 +5711,7 @@ fn operation_success(
         result_digest,
         keeper_generation,
         agent_integration: None,
+        initial_input_outcome: None,
         code: None,
         message: None,
     }
@@ -5715,9 +5730,27 @@ fn operation_failure(operation_id: &str, code: &str, message: &str) -> Operation
         result_digest,
         keeper_generation: None,
         agent_integration: None,
+        initial_input_outcome: None,
         code: Some(code.to_owned()),
         message: Some(message),
     }
+}
+
+fn initial_input_outcome(
+    descriptor: &SessionDescriptor,
+    intent: &RemoteOperationIntent,
+) -> Option<String> {
+    let record = descriptor
+        .launch_input
+        .as_ref()
+        .filter(|record| record.operation_id == intent.operation_id)?;
+    Some(
+        match record.outcome {
+            LaunchInputOutcome::Written => "written",
+            LaunchInputOutcome::Accepted | LaunchInputOutcome::OutcomeUnknown => "outcome-unknown",
+        }
+        .to_owned(),
+    )
 }
 
 fn operation_result_digest(
@@ -6648,6 +6681,7 @@ mod tests {
                 args: None,
                 env: None,
                 title: None,
+                initial_input: None,
             },
         };
         let canonical = r#"{"kind":"session.create","launch":{"cwd":"/tmp"},"paneId":"pane_1","sessionId":"session_1","surfaceId":"surface_1"}"#;
@@ -6669,6 +6703,7 @@ mod tests {
                 args: None,
                 env: None,
                 title: None,
+                initial_input: None,
             },
         };
         let canonical = r#"{"kind":"session.adopt","launch":{"cwd":"/tmp"},"paneId":"pane_1","sessionId":"session_1","surfaceId":"surface_adopted"}"#;
@@ -6736,6 +6771,7 @@ mod tests {
                 title: None,
                 cols: 80,
                 rows: 24,
+                initial_input: None,
             },
             keeper_pid: Some(1),
             child_pid: Some(2),
@@ -7416,6 +7452,38 @@ mod tests {
     }
 
     #[test]
+    fn session_operation_result_reports_inline_initial_input_outcome() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut descriptor = test_session_descriptor(
+            sandbox.path(),
+            test_resource_key("workspace_1", Some("session_1")),
+            "tx_1",
+            "create_1",
+            &"a".repeat(64),
+            false,
+        );
+        let intent = operation_intent("session.create", &"a".repeat(64));
+        descriptor.launch_input = Some(kmux_keeper::LaunchInputRecord {
+            operation_id: intent.operation_id.clone(),
+            payload_hash: "b".repeat(64),
+            byte_length: 5,
+            written_offset: 5,
+            outcome: LaunchInputOutcome::Written,
+        });
+        assert_eq!(
+            initial_input_outcome(&descriptor, &intent).as_deref(),
+            Some("written")
+        );
+
+        descriptor.launch_input.as_mut().unwrap().written_offset = 2;
+        descriptor.launch_input.as_mut().unwrap().outcome = LaunchInputOutcome::OutcomeUnknown;
+        assert_eq!(
+            initial_input_outcome(&descriptor, &intent).as_deref(),
+            Some("outcome-unknown")
+        );
+    }
+
+    #[test]
     fn managed_remote_environment_does_not_change_the_user_launch_descriptor() {
         let env = BTreeMap::from([
             ("KMUX_CLI_PATH".to_owned(), "/kmux/bin/kmux".to_owned()),
@@ -7752,6 +7820,7 @@ mod tests {
                 title: None,
                 cols: 80,
                 rows: 24,
+                initial_input: None,
             },
             keeper_pid: Some(1),
             child_pid: Some(2),

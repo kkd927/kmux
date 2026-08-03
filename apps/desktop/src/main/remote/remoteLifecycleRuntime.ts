@@ -13,6 +13,7 @@ import {
   uint64,
   type Id,
   type RemoteBridgeResponseBody,
+  type RemoteInitialInputOutcome,
   type RemotePersistenceLevel,
   type RemoteSpoolEventDto,
   type RetainedRemoteSessionsSnapshot,
@@ -43,6 +44,7 @@ import {
   type MainFact
 } from "@kmux/core/main";
 
+import { RemoteHostManagerError } from "../remoteHost";
 import type {
   RemoteRuntimeOperationOutcome,
   RemoteSurfaceCaptureResult,
@@ -58,6 +60,8 @@ import type {
   RemoteHostTargetVerification
 } from "../remoteHost";
 import type { DurableRemoteOperationStore } from "./durableRemoteOperationStore";
+import type { DurableRemoteOperationRecord } from "./durableRemoteOperationStore";
+import { logDiagnostics } from "../../shared/diagnostics";
 import { classifyAgentTerminalNotification } from "../agentTerminalNotificationPolicy";
 import type {
   ConversionCleanupAcknowledgement,
@@ -136,6 +140,10 @@ export type RemoteRendererLifecycleAction = Extract<
   }
 >;
 
+const SESSION_LAUNCH_INPUT_INLINE_CAPABILITY = "session.launch-input-inline-v1";
+const INITIAL_INPUT_OUTCOME_UNKNOWN_MESSAGE =
+  "The session was created, but its initial command may not have been delivered completely. Check the terminal before retrying.";
+
 /**
  * Main-owned remote control-plane composition. It is deliberately absent from
  * terminal byte handling: its only terminal responsibility is returning an
@@ -159,6 +167,7 @@ export class RemoteLifecycleRuntime {
   >();
   private readonly targetQueues = new Map<Id, Promise<unknown>>();
   private readonly eventReplayScheduled = new Set<Id>();
+  private readonly warnedInitialInputOperations = new Set<Id>();
   private readonly eventReplayTimer?: ReturnType<typeof setInterval>;
   private runtimeReconnectTimer?: ReturnType<typeof setTimeout>;
   private consecutiveRuntimeLosses = 0;
@@ -337,7 +346,10 @@ export class RemoteLifecycleRuntime {
   /** Replays durable facts without starting the remote UtilityProcess. */
   recover(): void {
     if (this.recovered) return;
-    this.coordinator.recover();
+    const recovered = this.coordinator.recover();
+    for (const operation of recovered) {
+      this.warnForInitialInputOutcome(operation);
+    }
     this.pruneCheckpointedOperationProjections();
     this.recovered = true;
   }
@@ -514,6 +526,10 @@ export class RemoteLifecycleRuntime {
   ): Promise<RemoteOperationCommandResult | null> {
     if (
       record.initialInput === undefined ||
+      // The keeper already wrote these bytes at spawn; sending the operation
+      // too would retype the command and collide with the durable record the
+      // keeper wrote against its create operation.
+      record.launch.initialInput !== undefined ||
       (record.state !== "committed" && record.state !== "cleanup-complete")
     ) {
       return null;
@@ -641,10 +657,11 @@ export class RemoteLifecycleRuntime {
         ...(requestedLaunch?.env === undefined
           ? {}
           : { env: { ...requestedLaunch.env } }),
-        ...(title === undefined ? {} : { title })
+        ...(title === undefined ? {} : { title }),
+        ...(initialInput === undefined ? {} : { initialInput })
       }
     };
-    const create = await this.executeCommand(
+    await this.executeCommand(
       {
         type: "remote-operation.command",
         workspaceId: workspace.id,
@@ -652,13 +669,6 @@ export class RemoteLifecycleRuntime {
         expectedRemoteResourceRevision: uint64(0n)
       },
       initialInput === undefined ? {} : { initialInput }
-    );
-    await this.admitLaunchInputAfter(
-      workspace.id,
-      sessionId,
-      initialInput,
-      create,
-      uint64(1n)
     );
   }
 
@@ -675,8 +685,7 @@ export class RemoteLifecycleRuntime {
       return;
     }
     const expectedRevision = session.remoteRuntime.remoteResourceRevision;
-    const initialInput = normalizeInitialInput(session.launch.initialInput);
-    const restart = await this.executeCommand({
+    await this.executeCommand({
       type: "remote-operation.command",
       workspaceId: workspace.id,
       expectedRemoteResourceRevision: expectedRevision,
@@ -686,34 +695,6 @@ export class RemoteLifecycleRuntime {
         surfaceId: surface.id,
         launch: encodeStoredLaunch(session.launch)
       }
-    });
-    await this.admitLaunchInputAfter(
-      workspace.id,
-      session.id,
-      initialInput,
-      restart,
-      incrementUint64(expectedRevision)
-    );
-  }
-
-  private async admitLaunchInputAfter(
-    workspaceId: Id,
-    sessionId: Id,
-    initialInput: string | undefined,
-    predecessor: RemoteOperationCommandResult,
-    pendingRevision: ReturnType<typeof uint64>
-  ): Promise<void> {
-    if (initialInput === undefined || predecessor.outcome.status === "failed") {
-      return;
-    }
-    await this.executeCommand({
-      type: "remote-operation.command",
-      workspaceId,
-      expectedRemoteResourceRevision:
-        predecessor.outcome.status === "succeeded"
-          ? predecessor.outcome.remoteResourceRevision
-          : pendingRevision,
-      payload: { kind: "launch-input", sessionId, input: initialInput }
     });
   }
 
@@ -773,6 +754,7 @@ export class RemoteLifecycleRuntime {
     }
     const record = await this.sshWorkspaceTransactionRuntime.start(validated);
     if (record.state === "cleanup-complete") {
+      this.warnForConversionInitialInputOutcome(record);
       await this.tryReconcile(validated.targetId);
       this.sshWorkspaceTransactionRuntime.compactCompleted(
         record.transactionId
@@ -1289,7 +1271,6 @@ export class RemoteLifecycleRuntime {
     try {
       assertVerifiedAuthority(binding, hello);
       selectVerifiedRemoteRuntimeArtifact(hello);
-      observedBinding = observedBindingFromHello(binding, hello);
     } catch (error) {
       this.connectedTargets.delete(connection.targetId);
       this.markTargetMismatch(connection.targetId);
@@ -1298,7 +1279,20 @@ export class RemoteLifecycleRuntime {
         .catch(() => undefined);
       throw error;
     }
+    if (!hello.capabilities.includes(SESSION_LAUNCH_INPUT_INLINE_CAPABILITY)) {
+      this.connectedTargets.delete(connection.targetId);
+      this.markObservationUnknown(connection.targetId);
+      await this.options.host
+        .disconnectTarget(connection.targetId)
+        .catch(() => undefined);
+      throw new RemoteHostManagerError(
+        "upgrade-required",
+        "The remote kmux runtime must be upgraded before SSH sessions can be created safely.",
+        false
+      );
+    }
     try {
+      observedBinding = observedBindingFromHello(binding, hello);
       this.options.replaceTargetBinding(observedBinding);
     } catch (error) {
       this.connectedTargets.delete(connection.targetId);
@@ -1326,6 +1320,7 @@ export class RemoteLifecycleRuntime {
         for (const record of recovered) {
           this.sshWorkspaceLaunchInputResults.delete(record.transactionId);
           if (record.state === "cleanup-complete") {
+            this.warnForConversionInitialInputOutcome(record);
             this.sshWorkspaceTransactionRuntime.compactCompleted(
               record.transactionId
             );
@@ -1616,23 +1611,33 @@ export class RemoteLifecycleRuntime {
       );
     }
     const targetId = operation.intent.resourceKey.targetId;
-    return this.coordinator.execute(
-      operationId,
-      async (current) => {
-        if (!this.connectedTargets.has(targetId)) {
-          return { status: "pending", reason: "offline" };
+    return this.coordinator
+      .execute(
+        operationId,
+        async (current) => {
+          if (!this.connectedTargets.has(targetId)) {
+            return { status: "pending", reason: "offline" };
+          }
+          const outcome = await this.options.host.executeOperation(
+            targetId,
+            current.intent,
+            current.payload
+          );
+          return mapRuntimeOutcome(operationId, outcome);
+        },
+        {
+          afterResult: async () => {
+            const current = this.options.operationStore.get(operationId);
+            if (current) this.warnForInitialInputOutcome(current);
+            await this.tryReconcile(targetId);
+          }
         }
-        const outcome = await this.options.host.executeOperation(
-          targetId,
-          current.intent,
-          current.payload
-        );
-        return mapRuntimeOutcome(operationId, outcome);
-      },
-      {
-        afterResult: () => this.tryReconcile(targetId)
-      }
-    );
+      )
+      .then((outcome) => {
+        const current = this.options.operationStore.get(operationId);
+        if (current) this.warnForInitialInputOutcome(current, outcome);
+        return outcome;
+      });
   }
 
   private async retryPendingForTarget(targetId: Id): Promise<void> {
@@ -1741,6 +1746,95 @@ export class RemoteLifecycleRuntime {
     } catch (error) {
       this.report(error);
     }
+  }
+
+  private warnForInitialInputOutcome(
+    operation: DurableRemoteOperationRecord,
+    executionOutcome?: RemoteOperationExecutionOutcome
+  ): void {
+    if (
+      operation.payload.kind !== "session.create" &&
+      operation.payload.kind !== "session.restart"
+    ) {
+      return;
+    }
+    const initialInputOutcome =
+      executionOutcome?.status === "succeeded"
+        ? executionOutcome.initialInputOutcome
+        : operation.result?.authoritative.outcome === "succeeded"
+          ? operation.result.authoritative.initialInputOutcome
+          : undefined;
+    if (initialInputOutcome !== "outcome-unknown") return;
+    this.warnInitialInputOutcomeOnce({
+      key: operation.intent.operationId,
+      kind: operation.payload.kind,
+      workspaceId: operation.intent.resourceKey.workspaceId,
+      sessionId: operation.payload.sessionId,
+      surfaceId: operation.payload.surfaceId,
+      initialInputOutcome
+    });
+  }
+
+  private warnForConversionInitialInputOutcome(
+    record: ConversionWalRecord
+  ): void {
+    if (
+      record.state === "preparing" ||
+      record.initialInputOutcome !== "outcome-unknown"
+    ) {
+      return;
+    }
+    const session =
+      this.options.getState().sessions[record.sessionResourceKey.sessionId];
+    this.warnInitialInputOutcomeOnce({
+      key: record.transactionId,
+      kind: "conversion.prepare",
+      workspaceId: record.workspaceResourceKey.workspaceId,
+      sessionId: record.sessionResourceKey.sessionId,
+      surfaceId: session?.surfaceId,
+      initialInputOutcome: record.initialInputOutcome
+    });
+  }
+
+  private warnInitialInputOutcomeOnce(input: {
+    key: Id;
+    kind: "session.create" | "session.restart" | "conversion.prepare";
+    workspaceId: Id;
+    sessionId: Id;
+    surfaceId?: Id;
+    initialInputOutcome: RemoteInitialInputOutcome;
+  }): void {
+    if (this.warnedInitialInputOperations.has(input.key)) return;
+    this.warnedInitialInputOperations.add(input.key);
+    const state = this.options.getState();
+    const surface = input.surfaceId
+      ? state.surfaces[input.surfaceId]
+      : undefined;
+    const pane = surface ? state.panes[surface.paneId] : undefined;
+    if (
+      surface &&
+      pane?.workspaceId === input.workspaceId &&
+      state.workspaces[input.workspaceId]
+    ) {
+      this.options.dispatchAppAction?.({
+        type: "notification.create",
+        workspaceId: input.workspaceId,
+        paneId: pane.id,
+        surfaceId: surface.id,
+        title: "Session command may need attention",
+        message: INITIAL_INPUT_OUTCOME_UNKNOWN_MESSAGE,
+        source: "system",
+        kind: "generic"
+      });
+    }
+    logDiagnostics("main.remote.initial-input", {
+      operationId: input.key,
+      operationKind: input.kind,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+      outcome: input.initialInputOutcome
+    });
   }
 
   private markObservationUnknown(targetId: Id): void {
@@ -2190,7 +2284,10 @@ function encodeStoredLaunch(
     ...(launch.shell === undefined ? {} : { shell: launch.shell }),
     ...(launch.args === undefined ? {} : { args: [...launch.args] }),
     ...(launch.env === undefined ? {} : { env: { ...launch.env } }),
-    ...(launch.title === undefined ? {} : { title: launch.title })
+    ...(launch.title === undefined ? {} : { title: launch.title }),
+    ...(launch.initialInput === undefined
+      ? {}
+      : { initialInput: launch.initialInput })
   };
 }
 
@@ -2476,7 +2573,10 @@ function mapRuntimeOutcome(
         resultDigest: outcome.resultDigest,
         ...(outcome.keeperGeneration === undefined
           ? {}
-          : { keeperGeneration: outcome.keeperGeneration })
+          : { keeperGeneration: outcome.keeperGeneration }),
+        ...(outcome.initialInputOutcome === undefined
+          ? {}
+          : { initialInputOutcome: outcome.initialInputOutcome })
       }
     : {
         status: "failed",

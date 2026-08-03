@@ -614,7 +614,9 @@ pub enum BridgeRequest {
         remote_snapshot: String,
         #[serde(rename = "remoteSnapshotHash")]
         remote_snapshot_hash: String,
-        launch: RemoteSessionLaunchPayload,
+        // Boxed to keep BridgeRequest's variants close in size, like the
+        // operation intent above.
+        launch: Box<RemoteSessionLaunchPayload>,
         #[serde(rename = "preparedAt")]
         prepared_at: String,
     },
@@ -730,6 +732,11 @@ pub struct RemoteSessionLaunchPayload {
     pub env: Option<std::collections::BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Bytes the keeper writes to the PTY at spawn, before its socket accepts
+    /// the first attachment. Delivering launch input here keeps it clear of the
+    /// writer-lease fence that a post-hoc `launch-input` operation races.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_input: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -989,6 +996,8 @@ pub struct OperationResult {
     pub keeper_generation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_integration: Option<AgentIntegrationDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_input_outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1252,6 +1261,8 @@ pub struct ConversionPreparedResponse {
     pub keeper_generation: String,
     pub remote_resource_revision: String,
     pub remote_created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_input_outcome: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

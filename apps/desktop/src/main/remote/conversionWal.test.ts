@@ -51,9 +51,11 @@ describe("conversion WAL", () => {
       sessionDescriptorHash: "d".repeat(64),
       keeperGeneration: "keeper_1",
       remoteResourceRevision: "1",
-      remoteCreatedAt: "2026-07-18T00:00:01.000Z"
+      remoteCreatedAt: "2026-07-18T00:00:01.000Z",
+      initialInputOutcome: "outcome-unknown"
     });
     expect(remoteCreated.state).toBe("remote-created");
+    expect(remoteCreated.initialInputOutcome).toBe("outcome-unknown");
     expect(() => store.compact("conversion_1")).toThrow(
       ConversionWalConflictError
     );

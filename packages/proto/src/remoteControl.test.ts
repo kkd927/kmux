@@ -370,6 +370,7 @@ describe("remote control v1", () => {
             remoteResourceRevision: "18446744073709551615",
             resultDigest: "a".repeat(64),
             keeperGeneration: "keeper_1",
+            initialInputOutcome: "outcome-unknown",
             agentIntegration: {
               status: "degraded",
               contractVersion: 2,
@@ -398,6 +399,7 @@ describe("remote control v1", () => {
         remoteResourceRevision: "18446744073709551615",
         resultDigest: "a".repeat(64),
         keeperGeneration: "keeper_1",
+        initialInputOutcome: "outcome-unknown",
         agentIntegration: {
           status: "degraded",
           contractVersion: 2,
@@ -466,9 +468,15 @@ describe("remote control v1", () => {
         sessionDescriptorHash: "c".repeat(64),
         keeperGeneration: "keeper_1",
         remoteResourceRevision: "1",
-        remoteCreatedAt: "2026-07-18T00:00:00.000Z"
+        remoteCreatedAt: "2026-07-18T00:00:00.000Z",
+        initialInputOutcome: "written"
       })
-    ).toMatchObject({ body: { type: "conversion.prepared" } });
+    ).toMatchObject({
+      body: {
+        type: "conversion.prepared",
+        initialInputOutcome: "written"
+      }
+    });
     expect(
       envelope("promote_1", {
         type: "conversion.promoted",
