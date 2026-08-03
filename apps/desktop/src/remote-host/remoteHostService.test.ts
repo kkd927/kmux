@@ -48,6 +48,7 @@ describe("RemoteHostService", () => {
       { type: "remote-host.ready", protocolVersion: 1 }
     ]);
 
+    const responsePromise = transport.nextResponse();
     transport.receive({
       type: "ssh-config.resolve",
       requestId: "resolve_config_1",
@@ -56,7 +57,7 @@ describe("RemoteHostService", () => {
       host: "target-alias"
     });
 
-    await eventually(() => transport.sent.length === 1);
+    const response = await responsePromise;
     expect(resolved).toEqual([
       {
         sshPath: "/usr/bin/ssh",
@@ -64,7 +65,7 @@ describe("RemoteHostService", () => {
         host: "target-alias"
       }
     ]);
-    expect(transport.sent[0]).toMatchObject({
+    expect(response).toMatchObject({
       type: "response",
       requestId: "resolve_config_1",
       status: "ok",
@@ -767,6 +768,9 @@ describe("RemoteHostService", () => {
 class FakeControlTransport implements RemoteHostControlTransport {
   readonly sent: RemoteHostResponse[] = [];
   readonly ready: RemoteHostResponse[] = [];
+  private readonly responseWaiters: Array<
+    (response: RemoteHostResponse) => void
+  > = [];
   private listener:
     | ((message: unknown, ports: RemoteTerminalDataPortLike[]) => void)
     | null = null;
@@ -776,7 +780,14 @@ class FakeControlTransport implements RemoteHostControlTransport {
       this.ready.push(message);
     } else {
       this.sent.push(message);
+      this.responseWaiters.shift()?.(message);
     }
+  }
+
+  nextResponse(): Promise<RemoteHostResponse> {
+    return new Promise((resolve) => {
+      this.responseWaiters.push(resolve);
+    });
   }
 
   onMessage(
