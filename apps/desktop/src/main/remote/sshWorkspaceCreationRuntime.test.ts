@@ -4,7 +4,6 @@ import {
   requireTerminalSurfaceContent,
   type AppState
 } from "@kmux/core";
-import { uint64 } from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ConversionWalRecord } from "./conversionWal";
@@ -13,23 +12,14 @@ import type { ActiveSshTarget } from "./sshConnectionRuntime";
 import { createSshWorkspaceCreationRuntime } from "./sshWorkspaceCreationRuntime";
 
 describe("SSH workspace creation runtime", () => {
-  it("merges history launch settings over profile defaults and keeps resume input out of remote launch", async () => {
+  it("merges history launch settings and passes resume input to the inline transaction", async () => {
     const state = createInitialState("/bin/zsh");
     const startSshWorkspaceTransaction = vi.fn(async (request) =>
       installCreatedWorkspace(state, request)
     );
-    const takeSshWorkspaceLaunchInputResult = vi.fn(() => ({
-      operationId: "operation_launch_input",
-      outcome: {
-        status: "succeeded" as const,
-        remoteResourceRevision: uint64(2n),
-        resultDigest: "f".repeat(64)
-      }
-    }));
     const runtime = createSshWorkspaceCreationRuntime({
       lifecycle: {
-        startSshWorkspaceTransaction,
-        takeSshWorkspaceLaunchInputResult
+        startSshWorkspaceTransaction
       } as unknown as RemoteLifecycleRuntime,
       getState: () => state
     });
@@ -87,17 +77,9 @@ describe("SSH workspace creation runtime", () => {
     expect(
       startSshWorkspaceTransaction.mock.calls[0]![0].launch
     ).not.toHaveProperty("initialInput");
-    expect(takeSshWorkspaceLaunchInputResult).toHaveBeenCalledTimes(1);
-    expect(takeSshWorkspaceLaunchInputResult).toHaveBeenCalledWith(
-      "conversion_1"
-    );
     expect(result).toMatchObject({
       targetId: "target_1",
-      continuation: "create",
-      resumeInputResult: {
-        operationId: "operation_launch_input",
-        outcome: { status: "succeeded" }
-      }
+      continuation: "create"
     });
   });
 
@@ -108,8 +90,7 @@ describe("SSH workspace creation runtime", () => {
     );
     const runtime = createSshWorkspaceCreationRuntime({
       lifecycle: {
-        startSshWorkspaceTransaction,
-        takeSshWorkspaceLaunchInputResult: vi.fn(() => null)
+        startSshWorkspaceTransaction
       } as unknown as RemoteLifecycleRuntime,
       getState: () => state
     });
@@ -197,7 +178,6 @@ function installCreatedWorkspace(
     transactionId: "conversion_1",
     workspaceCreateOperationId: "operation_workspace",
     sessionCreateOperationId: "operation_session",
-    launchInputOperationId: "operation_launch_input",
     workspaceResourceKey: {
       desktopInstallationId: "desktop_1",
       targetId: request.targetId,

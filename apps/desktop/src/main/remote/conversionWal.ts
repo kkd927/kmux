@@ -76,7 +76,8 @@ export interface ConversionPreparingRecord {
   transactionId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
-  launchInputOperationId: Id;
+  /** Legacy 1.1.1 field accepted while old WAL records are upgraded. */
+  launchInputOperationId?: Id;
   workspaceResourceKey: RemoteResourceKey;
   sessionResourceKey: RemoteResourceKey & { sessionId: Id };
   effectiveConnectionPolicyHash: string;
@@ -542,10 +543,14 @@ export function decodeConversionWalRecord(value: unknown): ConversionWalRecord {
       record.sessionCreateOperationId,
       "sessionCreateOperationId"
     ),
-    launchInputOperationId: validateId(
-      record.launchInputOperationId,
-      "launchInputOperationId"
-    ),
+    ...(record.launchInputOperationId === undefined
+      ? {}
+      : {
+          launchInputOperationId: validateId(
+            record.launchInputOperationId,
+            "launchInputOperationId"
+          )
+        }),
     workspaceResourceKey,
     sessionResourceKey,
     effectiveConnectionPolicyHash: requireDigest(
@@ -693,10 +698,12 @@ export function conversionPatchHash(
 
 function encodeEnvelope(record: ConversionWalRecord): ConversionWalEnvelope {
   const decoded = decodeConversionWalRecord(record);
+  const { launchInputOperationId: _legacyLaunchInputOperationId, ...encoded } =
+    decoded;
   return {
     version: 1,
-    record: decoded,
-    recordDigest: sha256(canonicalJson(decoded))
+    record: encoded as ConversionWalRecord,
+    recordDigest: sha256(canonicalJson(encoded))
   };
 }
 

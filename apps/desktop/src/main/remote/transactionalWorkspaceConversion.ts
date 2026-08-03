@@ -200,7 +200,6 @@ export interface TransactionalSshWorkspaceRuntimeOptions {
     point: ConversionFaultPoint,
     record: ConversionWalRecord
   ) => void;
-  afterCommit?: (record: ConversionWalRecord) => Promise<void>;
 }
 
 export interface TransactionalSshWorkspaceRuntime {
@@ -433,13 +432,6 @@ export function createTransactionalSshWorkspaceRuntime(
       );
       notify("cleanup-complete-persisted", record);
     }
-    if (
-      record.state === "cleanup-complete" &&
-      record.initialInput !== undefined &&
-      record.launch.initialInput === undefined
-    ) {
-      await options.afterCommit?.(structuredClone(record));
-    }
     return record;
   };
 
@@ -551,7 +543,6 @@ export function createTransactionalSshWorkspaceRuntime(
         transactionId,
         workspaceCreateOperationId: ids.workspaceCreateOperationId,
         sessionCreateOperationId: ids.sessionCreateOperationId,
-        launchInputOperationId: ids.launchInputOperationId,
         workspaceResourceKey: {
           desktopInstallationId: options.desktopInstallationId,
           targetId: binding.id,
@@ -755,7 +746,6 @@ function conversionIds(transactionId: Id): {
   workspaceId: Id;
   workspaceCreateOperationId: Id;
   sessionCreateOperationId: Id;
-  launchInputOperationId: Id;
   paneId: Id;
   nodeId: Id;
   surfaceId: Id;
@@ -773,11 +763,6 @@ function conversionIds(transactionId: Id): {
       "operation",
       transactionId,
       "session-create"
-    ),
-    launchInputOperationId: stableId(
-      "operation",
-      transactionId,
-      "launch-input"
     ),
     paneId: stableId("pane", transactionId, "replacement"),
     nodeId: stableId("node", transactionId, "replacement"),

@@ -160,6 +160,7 @@ export type {
   RemoteOperationIntent,
   RemoteOperationIntentDto,
   RemoteOperationAdmissionCommand,
+  RemoteOperationAdmissionPayloadDto,
   RemoteOperationCommandResult,
   RemoteOperationExecutionOutcome,
   RemoteOperationKind,

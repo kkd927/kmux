@@ -5,14 +5,12 @@ import {
   type AppAction,
   type AppState
 } from "@kmux/core";
-import { uint64 } from "@kmux/proto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalSessionResumeSpec } from "./externalSessions";
 import {
   ExternalSessionConnectionError,
   ExternalSessionInitialInputOutcomeUnknownError,
-  ExternalSessionLaunchError,
   createExternalSessionResumeRuntime
 } from "./externalSessionResumeRuntime";
 import type { ActiveSshTarget } from "./remote/sshConnectionRuntime";
@@ -120,39 +118,6 @@ describe("external session resume runtime", () => {
     expect(fixture.createSshWorkspace).not.toHaveBeenCalled();
   });
 
-  it("preserves a created workspace when durable resume input fails", async () => {
-    const state = createInitialState("/bin/zsh");
-    const workspaceCount = Object.keys(state.workspaces).length;
-    const createSshWorkspace = vi.fn(async () => {
-      const result = createRemoteWorkspaceInState(state);
-      return {
-        ...result,
-        resumeInputResult: {
-          operationId: "operation_launch_input",
-          outcome: {
-            status: "failed" as const,
-            resultDigest: "f".repeat(64),
-            code: "resume-rejected",
-            message: "resume command rejected"
-          }
-        }
-      };
-    });
-    const fixture = createFixture(sshSpec(), {
-      state,
-      createSshWorkspace
-    });
-
-    await expect(
-      resume(fixture, "ssh:target_1:codex:session-1")
-    ).rejects.toBeInstanceOf(ExternalSessionLaunchError);
-    expect(Object.keys(state.workspaces)).toHaveLength(workspaceCount + 1);
-    expect(
-      state.workspaces[state.windows[state.activeWindowId].activeWorkspaceId]
-        .location.target
-    ).toEqual({ kind: "ssh", targetId: "target_1" });
-  });
-
   it("resumes without a launch-input result when the keeper wrote the command at spawn", async () => {
     const state = createInitialState("/bin/zsh");
     // Targets that accept inline launch input never admit the operation, so
@@ -230,15 +195,7 @@ function createFixture(
       surfaceId: "surface_remote",
       sessionId: "session_remote",
       targetId: "target_1",
-      continuation: "create" as const,
-      resumeInputResult: {
-        operationId: "operation_launch_input",
-        outcome: {
-          status: "succeeded" as const,
-          remoteResourceRevision: uint64(2n),
-          resultDigest: "f".repeat(64)
-        }
-      }
+      continuation: "create" as const
     }));
   const dispatchAppAction = (action: AppAction): void => {
     applyAction(state, action);

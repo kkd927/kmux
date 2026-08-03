@@ -1,4 +1,4 @@
-import type { AppState, RemoteOperationCommandResult } from "@kmux/core";
+import type { AppState } from "@kmux/core";
 import type {
   ExternalAgentSessionRef,
   Id,
@@ -33,7 +33,6 @@ export interface SshWorkspaceCreationResult {
   sessionId: Id;
   targetId: Id;
   continuation: "convert" | "create";
-  resumeInputResult?: RemoteOperationCommandResult;
   initialInputOutcome?: RemoteInitialInputOutcome;
 }
 
@@ -109,10 +108,6 @@ export function createSshWorkspaceCreationRuntime(options: {
           "SSH workspace transaction did not install its session"
         );
       }
-      const resumeInputResult =
-        options.lifecycle.takeSshWorkspaceLaunchInputResult(
-          record.transactionId
-        );
       return {
         workspaceId: record.workspaceResourceKey.workspaceId,
         surfaceId: session.surfaceId,
@@ -122,8 +117,7 @@ export function createSshWorkspaceCreationRuntime(options: {
           request.kind === "convert-existing" ? "convert" : "create",
         ...(record.initialInputOutcome === undefined
           ? {}
-          : { initialInputOutcome: record.initialInputOutcome }),
-        ...(resumeInputResult === null ? {} : { resumeInputResult })
+          : { initialInputOutcome: record.initialInputOutcome })
       };
     }
   });

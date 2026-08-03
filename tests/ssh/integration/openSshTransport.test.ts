@@ -3215,7 +3215,7 @@ describe("real system OpenSSH transport spike", () => {
         resultDigest:
           created.status === "succeeded" ? created.resultDigest : undefined
       });
-      const keeperGeneration = requireKeeperGeneration(created);
+      let keeperGeneration = requireKeeperGeneration(created);
       expect(requireKeeperGeneration(createRetry)).toBe(keeperGeneration);
       expect(state.sessions[sessionId]).toMatchObject({
         surfaceId,
@@ -3230,26 +3230,32 @@ describe("real system OpenSSH transport spike", () => {
         }
       });
       const launchMarker = `launch-marker-${suffix}`;
-      const launchInput = coordinator.admit({
+      const initialInputRestart = coordinator.admit({
         type: "remote-operation.command",
         workspaceId,
         expectedRemoteResourceRevision: uint64(1n),
         payload: {
-          kind: "launch-input",
+          kind: "session.restart",
           sessionId,
-          input: `printf 'launch-marker-%s\\n' '${suffix}'\n`
+          surfaceId,
+          launch: {
+            cwd: "/home/kmux",
+            shell: "/bin/sh",
+            args: ["-c", "stty -echo; exec /bin/sh"],
+            initialInput: `printf 'launch-marker-%s\\n' '${suffix}'\n`
+          }
         }
       });
       pauseBridgeAcknowledgements(firstRuntime);
       const ambiguousLaunch = coordinator.execute(
-        launchInput.intent.operationId,
+        initialInputRestart.intent.operationId,
         runtimeExecutor(firstRuntime)
       );
       try {
         await eventually(() =>
           remoteLaunchInputIsWritten(
             roots.stateRoot,
-            launchInput.intent.operationId
+            initialInputRestart.intent.operationId
           )
         );
       } catch (error) {
@@ -3259,7 +3265,7 @@ describe("real system OpenSSH transport spike", () => {
           `ps -ef | grep '[k]muxd'; find ${roots.stateRoot}/sessions -maxdepth 1 -name '*.json' -print -exec cat {} \\;`
         ]);
         throw new Error(
-          `launch-input did not become durable: ${error instanceof Error ? error.message : String(error)}\n${diagnostics.stdout}\n${diagnostics.stderr}`,
+          `restart initial input did not become durable: ${error instanceof Error ? error.message : String(error)}\n${diagnostics.stdout}\n${diagnostics.stderr}`,
           { cause: error }
         );
       }
@@ -3268,20 +3274,26 @@ describe("real system OpenSSH transport spike", () => {
         status: "pending",
         reason: "ambiguous"
       });
-      expect(store.get(launchInput.intent.operationId)?.result).toBeUndefined();
+      expect(
+        store.get(initialInputRestart.intent.operationId)?.result
+      ).toBeUndefined();
 
       expectAuthority(await firstRuntime.connect(), binding);
       const launched = await coordinator.execute(
-        launchInput.intent.operationId,
+        initialInputRestart.intent.operationId,
         runtimeExecutor(firstRuntime)
       );
       expect(launched).toMatchObject({
         status: "succeeded",
         remoteResourceRevision: 2n
       });
-      phase3Diagnostic("launch-input");
+      keeperGeneration = requireKeeperGeneration(launched);
+      phase3Diagnostic("restart-initial-input");
       await expect(
-        firstRuntime.executeOperation(launchInput.intent, launchInput.payload)
+        firstRuntime.executeOperation(
+          initialInputRestart.intent,
+          initialInputRestart.payload
+        )
       ).resolves.toMatchObject({
         status: "succeeded",
         resultDigest:

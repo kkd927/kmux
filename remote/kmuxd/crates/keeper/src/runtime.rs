@@ -242,16 +242,6 @@ enum KeeperSocketRequest {
         #[serde(rename = "lastReceivedSequence")]
         last_received_sequence: Option<String>,
     },
-    #[serde(rename = "keeper.launch-input")]
-    LaunchInput {
-        #[serde(rename = "keeperGeneration")]
-        keeper_generation: String,
-        #[serde(rename = "operationId")]
-        operation_id: String,
-        #[serde(rename = "payloadHash")]
-        payload_hash: String,
-        input: String,
-    },
     #[serde(rename = "keeper.operation-input")]
     OperationInput {
         #[serde(rename = "resourceKey")]
@@ -391,12 +381,6 @@ enum OwnerCommand {
     },
     Detach {
         attachment_id: String,
-    },
-    LaunchInput {
-        operation_id: String,
-        payload_hash: String,
-        data: Vec<u8>,
-        response: Sender<Result<KeeperRpcResponse, KeeperRuntimeError>>,
     },
     OperationInput {
         operation_id: String,
@@ -1499,7 +1483,6 @@ fn owner_loop(
     let mut input_deduplication = InputDeduplication::default();
     let mut uncertain_operation_inputs = HashMap::new();
     let mut input_epoch = 0_u64;
-    let mut launch_input_fenced = false;
     let mut output_normalizer = Utf8OutputNormalizer::default();
     let mut side_effect_scanner = TerminalSideEffectScanner::default();
     let mut pending_side_effects = VecDeque::new();
@@ -1636,11 +1619,6 @@ fn owner_loop(
                                 continue;
                             }
                         }
-                        // The first ordinary writer permanently fences the
-                        // reserved launch writer. A completed launch operation
-                        // remains queryable by ID, but no pending launch bytes
-                        // can be injected after interactive input begins.
-                        launch_input_fenced = true;
                         let lease = format!("lease_{}", Uuid::new_v4());
                         // A newly granted lease permanently fences every older
                         // attachment, so its generation-local retry records no
@@ -1820,33 +1798,6 @@ fn owner_loop(
                         writer = None;
                     }
                 }
-                OwnerCommand::LaunchInput {
-                    operation_id,
-                    payload_hash,
-                    data,
-                    response,
-                } => {
-                    let result = if pending_termination.is_some() {
-                        Err(KeeperRuntimeError::Retryable(
-                            "session termination is in progress",
-                        ))
-                    } else if storage_write_backpressured(&journal, &emergency, &retention) {
-                        Err(KeeperRuntimeError::Retryable(
-                            "journal storage is applying PTY backpressure",
-                        ))
-                    } else {
-                        apply_launch_input(
-                            child,
-                            &mut descriptor,
-                            descriptor_path,
-                            &operation_id,
-                            &payload_hash,
-                            &data,
-                            launch_input_fenced,
-                        )
-                    };
-                    let _ = response.send(result);
-                }
                 OwnerCommand::OperationInput {
                     operation_id,
                     payload_hash,
@@ -1874,16 +1825,6 @@ fn owner_loop(
                             &mut uncertain_operation_inputs,
                         )
                     };
-                    // Any accepted one-shot operation permanently fences the
-                    // reserved launch writer, just like ordinary interactive
-                    // input. This prevents delayed launch input from being
-                    // interleaved after a CLI command.
-                    if !matches!(
-                        &result,
-                        Err(KeeperRuntimeError::Invalid(_)) | Err(KeeperRuntimeError::Fenced(_))
-                    ) {
-                        launch_input_fenced = true;
-                    }
                     let _ = response.send(result);
                 }
                 OwnerCommand::Capture {
@@ -1972,7 +1913,6 @@ fn owner_loop(
                         }
                     }
                     writer = None;
-                    launch_input_fenced = true;
                     pending_termination = Some(PendingTermination {
                         operation_id,
                         payload_hash,
@@ -3590,138 +3530,6 @@ fn transition_descriptor_to_running(
     descriptor.updated_at = now_rfc3339();
 }
 
-fn apply_launch_input<W: PtyInputWriter>(
-    child: &mut W,
-    descriptor: &mut SessionDescriptor,
-    descriptor_path: &Path,
-    operation_id: &str,
-    payload_hash: &str,
-    data: &[u8],
-    launch_input_fenced: bool,
-) -> Result<KeeperRpcResponse, KeeperRuntimeError> {
-    if !is_valid_id(operation_id)
-        || !is_sha256(payload_hash)
-        || data.len() > kmux_compat::REMOTE_TERMINAL_INPUT_HARD_MAX_BYTES
-        || format!("{:x}", Sha256::digest(data)) != payload_hash
-    {
-        return Err(KeeperRuntimeError::Invalid("launch-input is invalid"));
-    }
-    // Bridge operations are serialized by a bridge-only operation lock, but
-    // callers never retain the shared descriptor lock while waiting on this
-    // owner loop. The keeper therefore owns descriptor serialization for the
-    // complete acceptance, PTY-write, and durable-completion transaction.
-    let _descriptor_lock = acquire_descriptor_lock(descriptor_path)?;
-    let in_memory_progress = descriptor.launch_input.clone();
-    if let Some(record) = in_memory_progress.as_ref() {
-        validate_launch_input_identity(record, operation_id, payload_hash, data.len())?;
-        if record.outcome == LaunchInputOutcome::Written {
-            return Ok(KeeperRpcResponse::Result {
-                outcome: "written".to_owned(),
-                written_offset: Some(record.written_offset),
-                exit_code: None,
-            });
-        }
-        if record.outcome == LaunchInputOutcome::Accepted {
-            return Err(KeeperRuntimeError::OutcomeUnknown(
-                "persisted launch-input acceptance may already have reached the PTY",
-            ));
-        }
-    }
-    refresh_live_descriptor(descriptor_path, descriptor)?;
-    if let Some(in_memory) = in_memory_progress {
-        validate_launch_input_identity(&in_memory, operation_id, payload_hash, data.len())?;
-        match descriptor.launch_input.as_ref() {
-            Some(durable) => {
-                validate_launch_input_identity(durable, operation_id, payload_hash, data.len())?;
-                if in_memory.written_offset > durable.written_offset
-                    || (in_memory.written_offset == durable.written_offset
-                        && launch_input_outcome_rank(&in_memory.outcome)
-                            > launch_input_outcome_rank(&durable.outcome))
-                {
-                    descriptor.launch_input = Some(in_memory);
-                }
-            }
-            None => descriptor.launch_input = Some(in_memory),
-        }
-    }
-    if let Some(record) = descriptor.launch_input.as_mut() {
-        validate_launch_input_identity(record, operation_id, payload_hash, data.len())?;
-        if record.outcome == LaunchInputOutcome::Written {
-            return Ok(KeeperRpcResponse::Result {
-                outcome: "written".to_owned(),
-                written_offset: Some(record.written_offset),
-                exit_code: None,
-            });
-        }
-    }
-    if launch_input_fenced {
-        return Err(KeeperRuntimeError::OutcomeUnknown(
-            "launch-input was fenced by an interactive writer",
-        ));
-    }
-    if descriptor.launch_input.is_none() {
-        let mut accepted = descriptor.clone();
-        accepted.launch_input = Some(LaunchInputRecord {
-            operation_id: operation_id.to_owned(),
-            payload_hash: payload_hash.to_owned(),
-            byte_length: data.len(),
-            written_offset: 0,
-            outcome: LaunchInputOutcome::Accepted,
-        });
-        accepted.updated_at = now_rfc3339();
-        write_session_descriptor(descriptor_path, &accepted)?;
-        *descriptor = accepted;
-    }
-    let current_offset = descriptor
-        .launch_input
-        .as_ref()
-        .expect("launch record exists")
-        .written_offset;
-    let mut offset = current_offset;
-    let result = write_pty_suffix(child, data, &mut offset);
-    let record = descriptor
-        .launch_input
-        .as_mut()
-        .expect("launch record exists");
-    record.written_offset = offset;
-    record.outcome = if result.is_ok() {
-        LaunchInputOutcome::Written
-    } else {
-        LaunchInputOutcome::OutcomeUnknown
-    };
-    descriptor.updated_at = now_rfc3339();
-    write_session_descriptor(descriptor_path, descriptor)?;
-    result?;
-    Ok(KeeperRpcResponse::Result {
-        outcome: "written".to_owned(),
-        written_offset: Some(offset),
-        exit_code: None,
-    })
-}
-
-fn validate_launch_input_identity(
-    record: &LaunchInputRecord,
-    operation_id: &str,
-    payload_hash: &str,
-    byte_length: usize,
-) -> Result<(), KeeperRuntimeError> {
-    if record.operation_id != operation_id
-        || record.payload_hash != payload_hash
-        || record.byte_length != byte_length
-    {
-        return Err(KeeperRuntimeError::Fenced("launch-input identity changed"));
-    }
-    Ok(())
-}
-
-fn launch_input_outcome_rank(outcome: &LaunchInputOutcome) -> u8 {
-    match outcome {
-        LaunchInputOutcome::Accepted => 0,
-        LaunchInputOutcome::OutcomeUnknown => 1,
-        LaunchInputOutcome::Written => 2,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply_operation_input<W: PtyInputWriter>(
     child: &mut W,
@@ -4222,26 +4030,6 @@ fn handle_connection(
             },
             shutdown,
         ),
-        KeeperSocketRequest::LaunchInput {
-            keeper_generation,
-            operation_id,
-            payload_hash,
-            input,
-        } => {
-            if keeper_generation != descriptor.keeper_generation {
-                return write_rpc_error(&mut stream, "generation-mismatch", false);
-            }
-            let (response, receiver) = bounded(1);
-            commands
-                .send(OwnerCommand::LaunchInput {
-                    operation_id,
-                    payload_hash,
-                    data: input.into_bytes(),
-                    response,
-                })
-                .map_err(|_| KeeperRuntimeError::OutcomeUnknown("keeper owner stopped"))?;
-            write_rpc_result(&mut stream, receiver.recv())
-        }
         KeeperSocketRequest::OperationInput {
             resource_key,
             keeper_generation,
@@ -5232,7 +5020,6 @@ mod tests {
 
     enum InputPersistenceSabotage {
         DirectoryToFile { path: PathBuf, backup: PathBuf },
-        FileToDirectory { path: PathBuf, backup: PathBuf },
     }
 
     struct SabotagingInputWriter {
@@ -5249,10 +5036,6 @@ mod tests {
                 Some(InputPersistenceSabotage::DirectoryToFile { path, backup }) => {
                     fs::rename(&path, backup).unwrap();
                     fs::write(path, b"blocked").unwrap();
-                }
-                Some(InputPersistenceSabotage::FileToDirectory { path, backup }) => {
-                    fs::rename(&path, backup).unwrap();
-                    fs::create_dir(path).unwrap();
                 }
                 None => {}
             }
@@ -6273,326 +6056,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn launch_input_persists_partial_offset_and_retries_only_the_suffix() {
-        let sandbox = tempfile::TempDir::new().unwrap();
-        let descriptor_path = sandbox.path().join("session.json");
-        let mut descriptor = SessionDescriptor {
-            version: SESSION_DESCRIPTOR_VERSION,
-            resource_key: RemoteResourceKey {
-                desktop_installation_id: "desktop_1".to_owned(),
-                target_id: "target_1".to_owned(),
-                workspace_id: "workspace_1".to_owned(),
-                session_id: Some("session_1".to_owned()),
-            },
-            keeper_generation: "keeper_1".to_owned(),
-            executable_generation: "d".repeat(64),
-            executable_path: "/tmp/kmuxd".to_owned(),
-            keeper_local_protocol_major: kmux_compat::KEEPER_LOCAL_PROTOCOL_MAJOR,
-            terminal_wire_version: kmux_compat::TERMINAL_WIRE_VERSION,
-            create_operation_id: "create_1".to_owned(),
-            canonical_create_payload_hash: "a".repeat(64),
-            create_result_digest: "b".repeat(64),
-            remote_resource_revision: "1".to_owned(),
-            last_operation_id: "create_1".to_owned(),
-            last_operation_payload_hash: "a".repeat(64),
-            last_result_digest: "b".repeat(64),
-            state: SessionDescriptorState::Running,
-            socket_path: sandbox
-                .path()
-                .join("keeper.sock")
-                .to_string_lossy()
-                .into_owned(),
-            journal_path: sandbox
-                .path()
-                .join("terminal.journal")
-                .to_string_lossy()
-                .into_owned(),
-            launch: KeeperLaunchConfig {
-                cwd: "/tmp".to_owned(),
-                shell: Some("/bin/sh".to_owned()),
-                args: None,
-                env: None,
-                title: None,
-                cols: 80,
-                rows: 24,
-                initial_input: None,
-            },
-            keeper_pid: Some(std::process::id()),
-            child_pid: Some(std::process::id()),
-            exit_code: None,
-            launch_input: None,
-            updated_at: now_rfc3339(),
-            lifecycle_state: SessionLifecycleState::Committed,
-            conversion_transaction_id: None,
-            remote_snapshot_hash: None,
-            provisional_created_at: None,
-            ever_granted_writer_lease: false,
-            storage_status: RemoteSessionStorageStatus::default(),
-            retention_policy: RemoteRetentionPolicy::default(),
-            retained_checkpoint: None,
-            truncated_before_sequence: None,
-        };
-        let payload_hash = format!("{:x}", Sha256::digest(b"hello"));
-        let mut durable_descriptor = descriptor.clone();
-        durable_descriptor.remote_resource_revision = "2".to_owned();
-        durable_descriptor.last_operation_id = "adopt_2".to_owned();
-        durable_descriptor.last_operation_payload_hash = "e".repeat(64);
-        durable_descriptor.last_result_digest = "f".repeat(64);
-        durable_descriptor.lifecycle_state = SessionLifecycleState::Provisional;
-        durable_descriptor.conversion_transaction_id = Some("conversion_1".to_owned());
-        durable_descriptor.remote_snapshot_hash = Some("9".repeat(64));
-        durable_descriptor.provisional_created_at = Some(now_rfc3339());
-        write_session_descriptor(&descriptor_path, &durable_descriptor).unwrap();
-
-        let mut rejected_descriptor = descriptor.clone();
-        let mut rejected_writer = ScriptedInputWriter {
-            steps: VecDeque::new(),
-            accepted: Vec::new(),
-            attempted: Vec::new(),
-        };
-        assert!(matches!(
-            apply_launch_input(
-                &mut rejected_writer,
-                &mut rejected_descriptor,
-                &descriptor_path,
-                "launch_late",
-                &payload_hash,
-                b"hello",
-                true,
-            ),
-            Err(KeeperRuntimeError::OutcomeUnknown(_))
-        ));
-        assert!(rejected_descriptor.launch_input.is_none());
-        assert!(rejected_writer.attempted.is_empty());
-
-        let oversized = vec![b'x'; kmux_compat::REMOTE_TERMINAL_INPUT_HARD_MAX_BYTES + 1];
-        assert!(matches!(
-            apply_launch_input(
-                &mut rejected_writer,
-                &mut rejected_descriptor,
-                &descriptor_path,
-                "launch_oversized",
-                &payload_hash,
-                &oversized,
-                false,
-            ),
-            Err(KeeperRuntimeError::Invalid(_))
-        ));
-        assert!(rejected_descriptor.launch_input.is_none());
-        assert!(rejected_writer.attempted.is_empty());
-
-        let blocked_parent = sandbox.path().join("not-a-directory");
-        fs::write(&blocked_parent, b"fixture").unwrap();
-        assert!(
-            apply_launch_input(
-                &mut rejected_writer,
-                &mut rejected_descriptor,
-                &blocked_parent.join("session.json"),
-                "launch_unpersisted",
-                &payload_hash,
-                b"hello",
-                false,
-            )
-            .is_err()
-        );
-        assert!(rejected_descriptor.launch_input.is_none());
-        assert!(rejected_writer.attempted.is_empty());
-
-        let mut child = ScriptedInputWriter {
-            steps: VecDeque::from([
-                InputWriteStep::Accept(2),
-                InputWriteStep::Fail,
-                InputWriteStep::Accept(3),
-            ]),
-            accepted: Vec::new(),
-            attempted: Vec::new(),
-        };
-
-        let first = apply_launch_input(
-            &mut child,
-            &mut descriptor,
-            &descriptor_path,
-            "launch_1",
-            &payload_hash,
-            b"hello",
-            false,
-        );
-        assert!(first.is_err());
-        assert_eq!(child.accepted, b"he");
-
-        descriptor = load_session_descriptor(&descriptor_path).unwrap();
-        assert_eq!(
-            descriptor.launch_input,
-            Some(LaunchInputRecord {
-                operation_id: "launch_1".to_owned(),
-                payload_hash: payload_hash.clone(),
-                byte_length: 5,
-                written_offset: 2,
-                outcome: LaunchInputOutcome::OutcomeUnknown,
-            })
-        );
-
-        let retried = apply_launch_input(
-            &mut child,
-            &mut descriptor,
-            &descriptor_path,
-            "launch_1",
-            &payload_hash,
-            b"hello",
-            false,
-        )
-        .unwrap();
-        assert!(matches!(
-            retried,
-            KeeperRpcResponse::Result {
-                outcome,
-                written_offset: Some(5),
-                ..
-            } if outcome == "written"
-        ));
-        assert_eq!(child.accepted, b"hello");
-        assert_eq!(
-            child.attempted,
-            [b"hello".to_vec(), b"llo".to_vec(), b"llo".to_vec()]
-        );
-
-        descriptor = load_session_descriptor(&descriptor_path).unwrap();
-        let attempts_after_completion = child.attempted.len();
-        apply_launch_input(
-            &mut child,
-            &mut descriptor,
-            &descriptor_path,
-            "launch_1",
-            &payload_hash,
-            b"hello",
-            true,
-        )
-        .unwrap();
-        assert_eq!(child.attempted.len(), attempts_after_completion);
-
-        let mismatched = apply_launch_input(
-            &mut child,
-            &mut descriptor,
-            &descriptor_path,
-            "launch_2",
-            &payload_hash,
-            b"hello",
-            false,
-        );
-        assert!(matches!(mismatched, Err(KeeperRuntimeError::Fenced(_))));
-        assert_eq!(child.attempted.len(), attempts_after_completion);
-        let preserved = load_session_descriptor(&descriptor_path).unwrap();
-        assert_eq!(preserved.remote_resource_revision, "2");
-        assert_eq!(
-            preserved.lifecycle_state,
-            SessionLifecycleState::Provisional
-        );
-        assert_eq!(
-            preserved.conversion_transaction_id.as_deref(),
-            Some("conversion_1")
-        );
-    }
-
-    #[test]
-    fn launch_input_is_not_reissued_when_only_completion_persistence_fails() {
-        let sandbox = tempfile::TempDir::new().unwrap();
-        let descriptor_path = sandbox.path().join("session.json");
-        let descriptor_backup = sandbox.path().join("session-backup.json");
-        let mut descriptor = test_session_descriptor(sandbox.path());
-        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
-        let input = b"hello";
-        let payload_hash = format!("{:x}", Sha256::digest(input));
-        let mut child = SabotagingInputWriter {
-            sabotage: Some(InputPersistenceSabotage::FileToDirectory {
-                path: descriptor_path.clone(),
-                backup: descriptor_backup,
-            }),
-            accepted: Vec::new(),
-            attempted: Vec::new(),
-        };
-
-        assert!(
-            apply_launch_input(
-                &mut child,
-                &mut descriptor,
-                &descriptor_path,
-                "launch_1",
-                &payload_hash,
-                input,
-                false,
-            )
-            .is_err()
-        );
-        assert_eq!(child.accepted, input);
-        assert_eq!(child.attempted, [input.to_vec()]);
-        assert_eq!(
-            descriptor
-                .launch_input
-                .as_ref()
-                .map(|record| &record.outcome),
-            Some(&LaunchInputOutcome::Written)
-        );
-
-        let attempts_after_completion = child.attempted.len();
-        assert!(matches!(
-            apply_launch_input(
-                &mut child,
-                &mut descriptor,
-                &descriptor_path,
-                "launch_1",
-                &payload_hash,
-                input,
-                false,
-            )
-            .unwrap(),
-            KeeperRpcResponse::Result {
-                outcome,
-                written_offset: Some(5),
-                ..
-            } if outcome == "written"
-        ));
-        assert_eq!(child.attempted.len(), attempts_after_completion);
-        assert_eq!(child.accepted, input);
-    }
-
-    #[test]
-    fn recovered_accepted_launch_input_is_never_reissued() {
-        let sandbox = tempfile::TempDir::new().unwrap();
-        let descriptor_path = sandbox.path().join("session.json");
-        let input = b"hello";
-        let payload_hash = format!("{:x}", Sha256::digest(input));
-        let mut descriptor = test_session_descriptor(sandbox.path());
-        descriptor.launch_input = Some(LaunchInputRecord {
-            operation_id: "launch_1".to_owned(),
-            payload_hash: payload_hash.clone(),
-            byte_length: input.len(),
-            written_offset: 0,
-            outcome: LaunchInputOutcome::Accepted,
-        });
-        write_session_descriptor(&descriptor_path, &descriptor).unwrap();
-        let mut child = ScriptedInputWriter {
-            steps: VecDeque::from([InputWriteStep::Accept(input.len())]),
-            accepted: Vec::new(),
-            attempted: Vec::new(),
-        };
-
-        assert!(matches!(
-            apply_launch_input(
-                &mut child,
-                &mut descriptor,
-                &descriptor_path,
-                "launch_1",
-                &payload_hash,
-                input,
-                false,
-            ),
-            Err(KeeperRuntimeError::OutcomeUnknown(_))
-        ));
-        assert!(child.attempted.is_empty());
-        assert!(child.accepted.is_empty());
     }
 
     #[test]

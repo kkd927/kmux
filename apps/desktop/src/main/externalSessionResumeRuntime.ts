@@ -185,18 +185,6 @@ export function createExternalSessionResumeRuntime(options: {
       logStage("resume-outcome-unknown");
       throw new ExternalSessionInitialInputOutcomeUnknownError(result);
     }
-    const outcome = created.resumeInputResult?.outcome;
-    if (outcome?.status === "failed") {
-      logStage("resume-failed");
-      throw new ExternalSessionLaunchError(result, outcome.message);
-    }
-    if (outcome?.status === "pending") {
-      logStage("resume-pending");
-      throw new ExternalSessionLaunchError(
-        result,
-        "it is pending and will retry after SSH reconnects"
-      );
-    }
     logStage("created");
     return result;
   };

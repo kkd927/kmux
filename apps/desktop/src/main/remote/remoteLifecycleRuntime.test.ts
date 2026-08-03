@@ -1479,6 +1479,9 @@ describe("RemoteLifecycleRuntime", () => {
       source: "system",
       title: "Session command may need attention"
     });
+    if (operation.payload.kind !== "session.create") {
+      throw new Error("fixture operation is not session.create");
+    }
 
     await runtime.executeCommand(
       {

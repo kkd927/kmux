@@ -155,10 +155,6 @@ export class RemoteLifecycleRuntime {
   private readonly reconciler;
   private readonly sshWorkspaceTransactionRuntime;
   private readonly sshWorkspaceTransactionOptions;
-  private readonly sshWorkspaceLaunchInputResults = new Map<
-    Id,
-    RemoteOperationCommandResult | null
-  >();
   private readonly connections = new Map<Id, RemoteHostTargetConnectOptions>();
   private readonly connectedTargets = new Set<Id>();
   private readonly targetPersistenceLevels = new Map<
@@ -316,14 +312,7 @@ export class RemoteLifecycleRuntime {
           installDesktopState:
             this.sshWorkspaceTransactionOptions.installDesktopState,
           terminateLocalSession:
-            this.sshWorkspaceTransactionOptions.terminateLocalSession,
-          afterCommit: async (record) => {
-            const result = await this.executeSshWorkspaceLaunchInput(record);
-            this.sshWorkspaceLaunchInputResults.set(
-              record.transactionId,
-              result
-            );
-          }
+            this.sshWorkspaceTransactionOptions.terminateLocalSession
         })
       : undefined;
     options.host.on("cursor", this.onCursor);
@@ -519,53 +508,6 @@ export class RemoteLifecycleRuntime {
       ).catch((error: unknown) => this.report(error));
     }
     return { operationId: operation.intent.operationId, outcome };
-  }
-
-  async executeSshWorkspaceLaunchInput(
-    record: ConversionWalRecord
-  ): Promise<RemoteOperationCommandResult | null> {
-    if (
-      record.initialInput === undefined ||
-      // The keeper already wrote these bytes at spawn; sending the operation
-      // too would retype the command and collide with the durable record the
-      // keeper wrote against its create operation.
-      record.launch.initialInput !== undefined ||
-      (record.state !== "committed" && record.state !== "cleanup-complete")
-    ) {
-      return null;
-    }
-    return await this.executeCommand(
-      {
-        type: "remote-operation.command",
-        workspaceId: record.workspaceResourceKey.workspaceId,
-        expectedRemoteResourceRevision: parseUint64Decimal(
-          record.remoteResourceRevision
-        ),
-        payload: {
-          kind: "launch-input",
-          sessionId: record.sessionResourceKey.sessionId,
-          input: record.initialInput
-        }
-      },
-      {},
-      record.launchInputOperationId
-    );
-  }
-
-  takeSshWorkspaceLaunchInputResult(
-    transactionId: Id
-  ): RemoteOperationCommandResult | null {
-    const result =
-      this.sshWorkspaceLaunchInputResults.get(transactionId) ?? null;
-    this.sshWorkspaceLaunchInputResults.delete(transactionId);
-    return result;
-  }
-
-  /** @deprecated Use executeSshWorkspaceLaunchInput. */
-  async executeConversionLaunchInput(
-    record: ConversionWalRecord
-  ): Promise<RemoteOperationCommandResult | null> {
-    return await this.executeSshWorkspaceLaunchInput(record);
   }
 
   async executeRendererLifecycleAction(
@@ -1318,7 +1260,6 @@ export class RemoteLifecycleRuntime {
             connection.targetId
           );
         for (const record of recovered) {
-          this.sshWorkspaceLaunchInputResults.delete(record.transactionId);
           if (record.state === "cleanup-complete") {
             this.warnForConversionInitialInputOutcome(record);
             this.sshWorkspaceTransactionRuntime.compactCompleted(

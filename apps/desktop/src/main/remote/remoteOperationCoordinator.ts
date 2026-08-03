@@ -9,6 +9,7 @@ import {
   validateRemoteTargetBinding,
   type AppState,
   type RemoteOperationAdmissionCommand,
+  type RemoteOperationAdmissionPayloadDto,
   type RemoteOperationExecutionOutcome as CoreRemoteOperationExecutionOutcome,
   type RemoteOperationIntent,
   type RemoteOperationPayloadDto,
@@ -340,10 +341,14 @@ export function decodeRemoteOperationAdmissionCommand(
       "expectedRemoteResourceRevision must be an in-memory bigint"
     );
   }
+  const payload = decodeRemoteOperationPayload(record.payload);
+  if (payload.kind === "launch-input") {
+    throw new TypeError("launch-input operations are retired");
+  }
   return {
     type: record.type,
     workspaceId,
-    payload: decodeRemoteOperationPayload(record.payload),
+    payload: payload as RemoteOperationAdmissionPayloadDto,
     expectedRemoteResourceRevision: uint64(
       record.expectedRemoteResourceRevision
     )

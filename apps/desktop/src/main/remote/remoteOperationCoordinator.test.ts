@@ -245,9 +245,10 @@ describe("RemoteOperationCoordinator", () => {
       workspaceId: fixture.workspaceId,
       expectedRemoteResourceRevision: uint64(1n),
       payload: {
-        kind: "launch-input",
+        kind: "session.restart",
         sessionId: fixture.sessionId,
-        input: "echo ready\n"
+        surfaceId: fixture.state.sessions[fixture.sessionId].surfaceId,
+        launch: { cwd: "/srv/app" }
       }
     });
     expect(store.loadAll().map((record) => record.intent.operationId)).toEqual([
@@ -312,9 +313,10 @@ describe("RemoteOperationCoordinator", () => {
       workspaceId: fixture.workspaceId,
       expectedRemoteResourceRevision: uint64(1n),
       payload: {
-        kind: "launch-input",
+        kind: "session.restart",
         sessionId: fixture.sessionId,
-        input: "echo ready\n"
+        surfaceId: fixture.state.sessions[fixture.sessionId].surfaceId,
+        launch: { cwd: "/srv/app" }
       }
     });
     const started: string[] = [];
@@ -366,6 +368,18 @@ describe("RemoteOperationCoordinator", () => {
         expectedRemoteResourceRevision: 0
       })
     ).toThrow(/bigint/);
+    expect(() =>
+      decodeRemoteOperationAdmissionCommand({
+        type: "remote-operation.command",
+        workspaceId: fixture.workspaceId,
+        expectedRemoteResourceRevision: 0n,
+        payload: {
+          kind: "launch-input",
+          sessionId: fixture.sessionId,
+          input: "codex resume session-1\r"
+        }
+      })
+    ).toThrow(/retired/);
   });
 
   it("fails closed without the exact verified target binding", () => {

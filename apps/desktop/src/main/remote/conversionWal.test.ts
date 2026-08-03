@@ -195,6 +195,48 @@ describe("conversion WAL", () => {
     );
   });
 
+  it("loads a 1.1.1 launch input operation ID and removes it on the next write", () => {
+    const root = join(sandbox, "wal-1.1.1");
+    const candidate = preparingRecord(replacementPatch());
+    createConversionWalStore(root).begin(candidate);
+    const legacyRecord = {
+      version: 3,
+      state: "preparing",
+      ...candidate,
+      launchInputOperationId: "operation_launch_input_1"
+    };
+    const legacyPath = join(
+      root,
+      `${sha256ForTest(legacyRecord.transactionId)}.json`
+    );
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        version: 1,
+        record: legacyRecord,
+        recordDigest: sha256ForTest(canonicalJsonForTest(legacyRecord))
+      }),
+      { mode: 0o600 }
+    );
+
+    const store = createConversionWalStore(root);
+    expect(store.loadAll()[0]).toMatchObject({
+      launchInputOperationId: "operation_launch_input_1"
+    });
+    store.recordRemoteCreated("conversion_1", {
+      remoteSnapshotHash: "b".repeat(64),
+      workspaceDescriptorHash: "c".repeat(64),
+      sessionDescriptorHash: "d".repeat(64),
+      keeperGeneration: "keeper_1",
+      remoteResourceRevision: "1",
+      remoteCreatedAt: "2026-07-18T00:00:01.000Z"
+    });
+    const persisted = JSON.parse(readFileSync(legacyPath, "utf8")) as {
+      record: Record<string, unknown>;
+    };
+    expect(persisted.record).not.toHaveProperty("launchInputOperationId");
+  });
+
   it("round-trips a source-free create-new V3 intent and rejects mixed intent fields", () => {
     const root = join(sandbox, "wal-create");
     const store = createConversionWalStore(root);
@@ -245,7 +287,6 @@ function preparingRecord(
     transactionId: "conversion_1",
     workspaceCreateOperationId: "operation_workspace_1",
     sessionCreateOperationId: "operation_session_1",
-    launchInputOperationId: "operation_launch_input_1",
     workspaceResourceKey: {
       desktopInstallationId: "desktop_1",
       targetId: "target_1",

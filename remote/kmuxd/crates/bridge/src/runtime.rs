@@ -280,17 +280,6 @@ struct KeeperHealthRequest<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct KeeperLaunchInputRequest<'a> {
-    #[serde(rename = "type")]
-    message_type: &'static str,
-    keeper_generation: &'a str,
-    operation_id: &'a str,
-    payload_hash: &'a str,
-    input: &'a str,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct KeeperTerminateRequest<'a> {
     #[serde(rename = "type")]
     message_type: &'static str,
@@ -1400,9 +1389,7 @@ fn execute_operation(
         RemoteOperationPayload::SessionTerminate { .. } => {
             execute_session_terminate(roots, &intent)
         }
-        RemoteOperationPayload::LaunchInput { input, .. } => {
-            execute_launch_input(roots, &intent, &input)
-        }
+        RemoteOperationPayload::LaunchInput { .. } => execute_retired_launch_input(roots, &intent),
         payload @ (RemoteOperationPayload::WorktreeCreate { .. }
         | RemoteOperationPayload::WorktreeRemove { .. }
         | RemoteOperationPayload::ForwardEnsure { .. }
@@ -3238,124 +3225,71 @@ fn execute_session_terminate(
     Ok(operation_success(intent, result_digest, None))
 }
 
-fn execute_launch_input(
+fn execute_retired_launch_input(
     roots: &RemoteRuntimeRoots,
     intent: &RemoteOperationIntent,
-    input: &str,
 ) -> Result<OperationResult, BridgeRuntimeError> {
     let descriptor_path =
         session_descriptor_path(Path::new(&roots.state_root), &intent.resource_key);
     let _operation_lock = acquire_session_operation_lock(&descriptor_path)?;
-    let observed = {
-        let _lock = acquire_resource_lock(&descriptor_path)?;
-        let descriptor = load_session_descriptor(&descriptor_path)?;
-        if descriptor.last_operation_id == intent.operation_id {
-            return resolve_existing_operation(&descriptor, intent);
-        }
-        if let Some(failure) = revision_failure(&descriptor, intent) {
-            return Ok(failure);
-        }
-        descriptor
-    };
-    require_keeper_running(&observed)?;
-    let input_payload_hash = format!("{:x}", Sha256::digest(input.as_bytes()));
-    let response = invoke_keeper_rpc(
-        &observed,
-        &KeeperLaunchInputRequest {
-            message_type: "keeper.launch-input",
-            keeper_generation: &observed.keeper_generation,
-            operation_id: &intent.operation_id,
-            payload_hash: &input_payload_hash,
-            input,
-        },
-    )?;
-    let written_offset = require_launch_input_written(response, input.len())?;
-    // Reload under the descriptor lock because the keeper durably recorded
-    // acceptance/written offset while no bridge descriptor lock was held.
     let _lock = acquire_resource_lock(&descriptor_path)?;
-    let mut descriptor = load_session_descriptor(&descriptor_path)?;
-    if descriptor.keeper_generation != observed.keeper_generation
-        || descriptor.state != SessionDescriptorState::Running
-    {
-        return Err(BridgeRuntimeError::Retryable(
-            "session generation advanced during launch input".to_owned(),
-        ));
-    }
-    if descriptor.last_operation_id == intent.operation_id {
-        return resolve_existing_operation(&descriptor, intent);
-    }
-    if let Some(failure) = revision_failure(&descriptor, intent) {
-        return Ok(failure);
-    }
-    mark_launch_input_written(
-        &mut descriptor,
-        &intent.operation_id,
-        &input_payload_hash,
-        input.len(),
-        written_offset,
-    )?;
-    let result_digest =
-        operation_result_digest(intent, Some(&descriptor.keeper_generation), "succeeded");
-    descriptor.remote_resource_revision = intent.next_remote_resource_revision.clone();
-    descriptor.last_operation_id = intent.operation_id.clone();
-    descriptor.last_operation_payload_hash = intent.canonical_payload_hash.clone();
-    descriptor.last_result_digest = result_digest.clone();
-    descriptor.updated_at = now_rfc3339();
-    write_session_descriptor(&descriptor_path, &descriptor)?;
-    Ok(operation_success(
-        intent,
-        result_digest,
-        Some(descriptor.keeper_generation),
-    ))
-}
-
-fn require_launch_input_written(
-    response: KeeperRpcResponse,
-    expected_byte_length: usize,
-) -> Result<usize, BridgeRuntimeError> {
-    match response {
-        KeeperRpcResponse::Result {
-            outcome,
-            written_offset: Some(written_offset),
-            ..
-        } if outcome == "written" && written_offset == expected_byte_length => Ok(written_offset),
-        KeeperRpcResponse::Error {
-            code,
-            message,
-            retryable,
-        } if retryable => Err(BridgeRuntimeError::Retryable(format!("{code}: {message}"))),
-        KeeperRpcResponse::Error { code, message, .. } => {
-            Err(BridgeRuntimeError::Invalid(format!("{code}: {message}")))
+    let descriptor = match load_session_descriptor(&descriptor_path) {
+        Ok(descriptor) => Some(descriptor),
+        Err(kmux_keeper::KeeperRuntimeError::Io(error))
+            if error.kind() == io::ErrorKind::NotFound =>
+        {
+            None
         }
-        _ => Err(BridgeRuntimeError::Invalid(
-            "keeper returned an invalid launch-input result".to_owned(),
-        )),
-    }
-}
-
-fn mark_launch_input_written(
-    descriptor: &mut SessionDescriptor,
-    operation_id: &str,
-    payload_hash: &str,
-    byte_length: usize,
-    written_offset: usize,
-) -> Result<(), BridgeRuntimeError> {
-    let record = descriptor.launch_input.as_mut().ok_or_else(|| {
-        BridgeRuntimeError::Invalid("keeper omitted the accepted launch-input record".to_owned())
-    })?;
-    if record.operation_id != operation_id
-        || record.payload_hash != payload_hash
-        || record.byte_length != byte_length
-        || written_offset != byte_length
-        || record.written_offset > written_offset
+        Err(error) => return Err(error.into()),
+    };
+    if descriptor
+        .as_ref()
+        .is_some_and(|descriptor| descriptor.resource_key != intent.resource_key)
     {
         return Err(BridgeRuntimeError::Invalid(
-            "keeper launch-input record changed identity or offset".to_owned(),
+            "session descriptor resource identity is invalid".to_owned(),
         ));
     }
-    record.written_offset = written_offset;
-    record.outcome = LaunchInputOutcome::Written;
-    Ok(())
+    Ok(resolve_retired_launch_input(descriptor.as_ref(), intent))
+}
+
+fn resolve_retired_launch_input(
+    descriptor: Option<&SessionDescriptor>,
+    intent: &RemoteOperationIntent,
+) -> OperationResult {
+    let Some(descriptor) = descriptor else {
+        return operation_failure(
+            &intent.operation_id,
+            "resource-missing",
+            "session resource does not exist",
+        );
+    };
+    if descriptor.last_operation_id == intent.operation_id {
+        if descriptor.last_operation_payload_hash != intent.canonical_payload_hash {
+            return operation_failure(
+                &intent.operation_id,
+                "idempotency-conflict",
+                "operation ID was reused with another payload",
+            );
+        }
+        return operation_success(
+            intent,
+            descriptor.last_result_digest.clone(),
+            Some(descriptor.keeper_generation.clone()),
+        );
+    }
+    if descriptor.remote_resource_revision != intent.expected_remote_resource_revision {
+        return operation_failure(
+            &intent.operation_id,
+            "operation-stale",
+            "session resource revision is stale",
+        );
+    }
+    operation_failure(
+        &intent.operation_id,
+        "operation-retired",
+        "launch-input operations are retired",
+    )
 }
 
 fn create_keeper(
@@ -5528,6 +5462,15 @@ fn validate_operation(
             "payload session identity does not match its resource".to_owned(),
         ));
     }
+    if matches!(
+        payload,
+        RemoteOperationPayload::SessionAdopt { launch, .. }
+            if launch.initial_input.is_some()
+    ) {
+        return Err(BridgeRuntimeError::Invalid(
+            "session adopt launch input is not allowed".to_owned(),
+        ));
+    }
     match payload {
         RemoteOperationPayload::WorktreeCreate {
             workspace_id,
@@ -6714,6 +6657,75 @@ mod tests {
     }
 
     #[test]
+    fn session_adopt_rejects_initial_input() {
+        let payload = RemoteOperationPayload::SessionAdopt {
+            session_id: "session_1".to_owned(),
+            surface_id: "surface_adopted".to_owned(),
+            pane_id: "pane_1".to_owned(),
+            launch: kmux_compat::RemoteSessionLaunchPayload {
+                cwd: "/tmp".to_owned(),
+                shell: None,
+                args: None,
+                env: None,
+                title: None,
+                initial_input: Some("codex resume session-1\r".to_owned()),
+            },
+        };
+        let payload_hash = canonical_payload_hash(&payload).unwrap();
+        let intent = operation_intent("session.adopt", &payload_hash);
+
+        assert!(matches!(
+            validate_operation(&intent, &payload),
+            Err(BridgeRuntimeError::Invalid(message))
+                if message.contains("adopt launch input")
+        ));
+    }
+
+    #[test]
+    fn retired_launch_input_recovers_only_an_identical_success() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut descriptor = test_session_descriptor(
+            sandbox.path(),
+            resource_key(),
+            "tx_1",
+            "create_1",
+            &"c".repeat(64),
+            false,
+        );
+        descriptor.remote_resource_revision = "1".to_owned();
+        descriptor.last_operation_id = "other_1".to_owned();
+        let mut intent = operation_intent("launch-input", &"a".repeat(64));
+        intent.operation_id = "launch_legacy_1".to_owned();
+        intent.expected_remote_resource_revision = "1".to_owned();
+        intent.next_remote_resource_revision = "2".to_owned();
+
+        let retired = resolve_retired_launch_input(Some(&descriptor), &intent);
+        assert_eq!(retired.code.as_deref(), Some("operation-retired"));
+
+        let missing = resolve_retired_launch_input(None, &intent);
+        assert_eq!(missing.code.as_deref(), Some("resource-missing"));
+
+        descriptor.remote_resource_revision = "2".to_owned();
+        let stale = resolve_retired_launch_input(Some(&descriptor), &intent);
+        assert_eq!(stale.code.as_deref(), Some("operation-stale"));
+
+        descriptor.last_operation_id = intent.operation_id.clone();
+        descriptor.last_operation_payload_hash = intent.canonical_payload_hash.clone();
+        descriptor.last_result_digest = "f".repeat(64);
+        let recovered = resolve_retired_launch_input(Some(&descriptor), &intent);
+        assert_eq!(recovered.outcome, "succeeded");
+        assert_eq!(recovered.result_digest, "f".repeat(64));
+        assert_eq!(
+            recovered.keeper_generation,
+            Some(descriptor.keeper_generation.clone())
+        );
+
+        descriptor.last_operation_payload_hash = "b".repeat(64);
+        let conflict = resolve_retired_launch_input(Some(&descriptor), &intent);
+        assert_eq!(conflict.code.as_deref(), Some("idempotency-conflict"));
+    }
+
+    #[test]
     fn create_retry_uses_permanent_create_result_after_later_mutation() {
         let sandbox = tempfile::tempdir().unwrap();
         let home = sandbox.path().join("home");
@@ -7416,39 +7428,6 @@ mod tests {
             .unwrap();
         assert!(json.status.success());
         assert_eq!(json.stdout, b"{\"decision\":\"allow\"}\n");
-    }
-
-    #[test]
-    fn launch_input_ack_repairs_an_older_durable_completion_record() {
-        let sandbox = tempfile::tempdir().unwrap();
-        let mut descriptor = test_session_descriptor(
-            sandbox.path(),
-            test_resource_key("workspace_1", Some("session_1")),
-            "tx_1",
-            "create_1",
-            &"a".repeat(64),
-            false,
-        );
-        let payload_hash = format!("{:x}", Sha256::digest(b"hello"));
-        descriptor.launch_input = Some(kmux_keeper::LaunchInputRecord {
-            operation_id: "launch_1".to_owned(),
-            payload_hash: payload_hash.clone(),
-            byte_length: 5,
-            written_offset: 2,
-            outcome: LaunchInputOutcome::OutcomeUnknown,
-        });
-
-        mark_launch_input_written(&mut descriptor, "launch_1", &payload_hash, 5, 5).unwrap();
-        assert_eq!(
-            descriptor.launch_input,
-            Some(kmux_keeper::LaunchInputRecord {
-                operation_id: "launch_1".to_owned(),
-                payload_hash,
-                byte_length: 5,
-                written_offset: 5,
-                outcome: LaunchInputOutcome::Written,
-            })
-        );
     }
 
     #[test]

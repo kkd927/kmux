@@ -116,11 +116,18 @@ export type RemoteOperationPayloadDto =
   | { kind: "forward.remove"; forwardId: Id }
   | { kind: "launch-input"; sessionId: Id; input: string };
 
+/** Payloads admitted by current Main producers. Legacy launch-input records
+ * remain decodable through RemoteOperationPayloadDto for durable replay. */
+export type RemoteOperationAdmissionPayloadDto = Exclude<
+  RemoteOperationPayloadDto,
+  { kind: "launch-input" }
+>;
+
 /** External command shape; Main converts it into durable authority facts. */
 export interface RemoteOperationAdmissionCommand {
   type: "remote-operation.command";
   workspaceId: Id;
-  payload: RemoteOperationPayloadDto;
+  payload: RemoteOperationAdmissionPayloadDto;
   expectedRemoteResourceRevision: Uint64;
 }
 

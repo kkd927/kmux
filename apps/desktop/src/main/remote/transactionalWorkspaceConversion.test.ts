@@ -234,8 +234,7 @@ describe("transactional workspace conversion", () => {
 
   it("commits session identity while delivering launch input inline", async () => {
     const fixture = createFixture(sandbox);
-    const afterCommit = vi.fn(async () => undefined);
-    const record = await fixture.createRuntime(undefined, afterCommit).start({
+    const record = await fixture.createRuntime().start({
       kind: "create-new",
       destinationWindowId: fixture.currentState().activeWindowId,
       targetId: "target_1",
@@ -261,7 +260,6 @@ describe("transactional workspace conversion", () => {
         sessionId: "session-1"
       }
     });
-    expect(afterCommit).not.toHaveBeenCalled();
     const remoteSnapshot = JSON.parse(
       fixture.remote.remoteSnapshot ?? "null"
     ) as { launch?: Record<string, unknown> };
@@ -672,7 +670,6 @@ function createConcurrentFixture(
   const transactionIds = ["transaction_1", "transaction_2"];
   const productInstallOrder: string[] = [];
   const installedRemoteWorkspaceIds = new Set<string>();
-  const launchInputs: Array<{ operationId: string; input: string }> = [];
   const terminatedSessions = new Set<string>();
   let concurrentSnapshots = 0;
   let maxConcurrentSnapshots = 0;
@@ -724,14 +721,6 @@ function createConcurrentFixture(
         return transactionId;
       },
       now,
-      afterCommit: async (record) => {
-        if (record.initialInput !== undefined) {
-          launchInputs.push({
-            operationId: record.launchInputOperationId,
-            input: record.initialInput
-          });
-        }
-      },
       ...(faultPoint === undefined
         ? {}
         : {
@@ -748,7 +737,6 @@ function createConcurrentFixture(
     sourceSessionIds,
     windowIds,
     productInstallOrder,
-    launchInputs,
     terminatedSessions,
     maxConcurrentSnapshots: () => maxConcurrentSnapshots,
     currentState: () => state
@@ -780,12 +768,7 @@ function createFixture(
   const uniqueLocalTerminations = new Set<string>();
   const binding = remoteBinding(options.capabilities);
 
-  const createRuntime = (
-    faultPoint?: (point: ConversionFaultPoint) => void,
-    afterCommit?: Parameters<
-      typeof createTransactionalWorkspaceConversionRuntime
-    >[0]["afterCommit"]
-  ) =>
+  const createRuntime = (faultPoint?: (point: ConversionFaultPoint) => void) =>
     createTransactionalWorkspaceConversionRuntime({
       desktopInstallationId: "desktop_1",
       wal,
@@ -815,8 +798,7 @@ function createFixture(
       now: monotonicClock(),
       ...(faultPoint === undefined
         ? {}
-        : { faultPoint: (point: ConversionFaultPoint) => faultPoint(point) }),
-      ...(afterCommit === undefined ? {} : { afterCommit })
+        : { faultPoint: (point: ConversionFaultPoint) => faultPoint(point) })
     });
 
   return {
