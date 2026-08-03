@@ -85,10 +85,10 @@ export function installRendererDiagnostics(): () => void {
   window.addEventListener("unhandledrejection", onUnhandledRejection);
 
   const sampleTimer = window.setInterval(() => {
+    if (!enabled) return;
     const sampledAt = performance.now();
     const eventLoopDelayMs = Math.max(0, sampledAt - expectedSampleAt);
     expectedSampleAt = sampledAt + SAMPLE_INTERVAL_MS;
-    if (!enabled) return;
     const memory = (
       performance as Performance & { memory?: ChromiumPerformanceMemory }
     ).memory;

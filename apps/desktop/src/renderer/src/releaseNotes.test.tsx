@@ -179,6 +179,15 @@ describe("useReleaseNotesModal", () => {
     expect(isOpen()).toBe(false);
   });
 
+  it("suppresses only automatic opening when the runtime disables it", async () => {
+    await render({ shellReady: true, automaticOpenEnabled: false });
+    expect(isOpen()).toBe(false);
+
+    act(() => openRequest?.());
+
+    expect(isOpen()).toBe(true);
+  });
+
   it.each(["1.2.3", "1.2.0-alpha.1"])(
     "migrates legacy seen key %s and suppresses the automatic dialog",
     async (legacyVersion) => {
@@ -508,6 +517,7 @@ describe("useReleaseNotesModal", () => {
 
   async function render(options: {
     shellReady: boolean;
+    automaticOpenEnabled?: boolean;
     blockingDialogOpen?: boolean;
     contentPreparationTimeoutMs?: number;
     releaseNotesCatalog?: BundledReleaseNotesCatalog;
@@ -519,6 +529,7 @@ describe("useReleaseNotesModal", () => {
     await act(async () => {
       root.render(
         <Harness
+          automaticOpenEnabled={options.automaticOpenEnabled}
           blockingDialogOpen={options.blockingDialogOpen ?? false}
           contentPreparationTimeoutMs={options.contentPreparationTimeoutMs}
           prepareContent={options.prepareContent}
@@ -543,6 +554,7 @@ describe("useReleaseNotesModal", () => {
   }
 
   function Harness(props: {
+    automaticOpenEnabled?: boolean;
     blockingDialogOpen: boolean;
     contentPreparationTimeoutMs?: number;
     prepareContent?: (
@@ -556,6 +568,7 @@ describe("useReleaseNotesModal", () => {
       releaseNotes: props.releaseNotesCatalog,
       shellReady: props.shellReady,
       blockingDialogOpen: props.blockingDialogOpen,
+      automaticOpenEnabled: props.automaticOpenEnabled,
       contentPreparationTimeoutMs: props.contentPreparationTimeoutMs,
       prepareContent: props.prepareContent,
       storage: props.storage

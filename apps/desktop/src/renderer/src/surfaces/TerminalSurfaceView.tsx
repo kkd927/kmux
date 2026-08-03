@@ -51,6 +51,7 @@ import {
 } from "../terminalForegroundFit";
 import { SurfaceTerminalCheckpointController } from "../terminalCheckpointController";
 import {
+  createTerminalDiagnosticMetadata,
   createTerminalBundle,
   type TerminalBundle,
   type TerminalDiagnosticMetadata,
@@ -362,6 +363,7 @@ export function TerminalSurfaceView(
   const activeSurfaceRef = useRef<SurfaceVm<"terminal"> | null>(activeSurface);
   const paneFocusedRef = useRef(props.focused);
   const terminalDiagnosticsEnabledRef = useRef(terminalDiagnosticsEnabled);
+  const terminalDiagnosticsWindowRef = useRef(0);
   const foregroundFitRef = useRef<TerminalForegroundFitController | null>(null);
   const terminalInstanceKey = activeSurface.id;
   const terminalStreamEligible =
@@ -452,11 +454,76 @@ export function TerminalSurfaceView(
     })
   );
 
+  function clearTerminalDiagnosticDataset(element: HTMLElement): void {
+    delete element.dataset.terminalHydratedSequence;
+    delete element.dataset.terminalRenderedSequence;
+    delete element.dataset.terminalAttachAvailableSequence;
+    delete element.dataset.terminalRenderGeneration;
+    delete element.dataset.terminalLastOnRenderAt;
+    delete element.dataset.terminalViewportY;
+    delete element.dataset.terminalBaseY;
+    delete element.dataset.terminalBracketedPasteMode;
+    delete element.dataset.terminalLastInputRoute;
+    delete element.dataset.terminalLastInputBytes;
+  }
+
+  function seedTerminalDiagnosticDataset(
+    element: HTMLElement,
+    diagnostics: TerminalDiagnosticMetadata
+  ): void {
+    if (diagnostics.hydratedSequence !== null) {
+      element.dataset.terminalHydratedSequence = String(
+        diagnostics.hydratedSequence
+      );
+    }
+    if (diagnostics.renderedSequence !== null) {
+      element.dataset.terminalRenderedSequence = String(
+        diagnostics.renderedSequence
+      );
+    }
+  }
+
+  function resetTerminalDiagnosticsForLoggingWindow(): void {
+    terminalDiagnosticsWindowRef.current += 1;
+    for (const [surfaceId, wrapper] of surfaceWrapperRefs.current) {
+      const bundle = terminalInstanceStore.getTerminalBundle(surfaceId);
+      if (!bundle) {
+        continue;
+      }
+      const currentSequence =
+        terminalInstanceStore.getLastHydratedSurfaceId(surfaceId) === surfaceId
+          ? terminalInstanceStore.getLastHydratedSurfaceSequence(surfaceId)
+          : null;
+      const elements = [bundle.host, wrapper as TerminalHostElement] as const;
+      for (const element of elements) {
+        if (element.__kmuxTerminal !== bundle.terminal) {
+          continue;
+        }
+        const diagnostics = createTerminalDiagnosticMetadata(currentSequence);
+        element.__kmuxTerminalDiagnostics = diagnostics;
+        clearTerminalDiagnosticDataset(element);
+        seedTerminalDiagnosticDataset(element, diagnostics);
+      }
+    }
+  }
+
+  function syncCurrentTerminalDiagnosticMetrics(): void {
+    for (const [surfaceId] of surfaceWrapperRefs.current) {
+      const bundle = terminalInstanceStore.getTerminalBundle(surfaceId);
+      if (bundle) {
+        syncSurfaceTerminalMetrics(surfaceId, bundle.terminal);
+      }
+    }
+  }
+
   function updateTerminalDiagnostics(
     surfaceId: string,
     terminal: Terminal,
     patch: Partial<TerminalDiagnosticMetadata>
   ): void {
+    if (!terminalDiagnosticsEnabledRef.current) {
+      return;
+    }
     const elements = [
       containerRef.current as TerminalHostElement | null,
       surfaceWrapperRefs.current.get(surfaceId) as
@@ -468,51 +535,8 @@ export function TerminalSurfaceView(
         continue;
       }
       const diagnostics = {
-        hydratedSequence:
-          element.__kmuxTerminalDiagnostics?.hydratedSequence ?? null,
-        renderedSequence:
-          element.__kmuxTerminalDiagnostics?.renderedSequence ?? null,
-        attachAvailableSequence:
-          element.__kmuxTerminalDiagnostics?.attachAvailableSequence ?? null,
-        renderGeneration:
-          element.__kmuxTerminalDiagnostics?.renderGeneration ?? 0,
-        lastOnRenderAt:
-          element.__kmuxTerminalDiagnostics?.lastOnRenderAt ?? null,
-        lastOnRenderSequence:
-          element.__kmuxTerminalDiagnostics?.lastOnRenderSequence ?? null,
-        lastScreenOnRenderAt:
-          element.__kmuxTerminalDiagnostics?.lastScreenOnRenderAt ?? null,
-        lastScreenOnRenderSequence:
-          element.__kmuxTerminalDiagnostics?.lastScreenOnRenderSequence ?? null,
-        lastReceiveAt: element.__kmuxTerminalDiagnostics?.lastReceiveAt ?? null,
-        lastReceiveSequence:
-          element.__kmuxTerminalDiagnostics?.lastReceiveSequence ?? null,
-        lastScreenReceiveAt:
-          element.__kmuxTerminalDiagnostics?.lastScreenReceiveAt ?? null,
-        lastScreenReceiveSequence:
-          element.__kmuxTerminalDiagnostics?.lastScreenReceiveSequence ?? null,
-        lastWriteAt: element.__kmuxTerminalDiagnostics?.lastWriteAt ?? null,
-        lastWriteSequence:
-          element.__kmuxTerminalDiagnostics?.lastWriteSequence ?? null,
-        lastScreenWriteAt:
-          element.__kmuxTerminalDiagnostics?.lastScreenWriteAt ?? null,
-        lastScreenWriteSequence:
-          element.__kmuxTerminalDiagnostics?.lastScreenWriteSequence ?? null,
-        lastParsedAt: element.__kmuxTerminalDiagnostics?.lastParsedAt ?? null,
-        lastParsedSequence:
-          element.__kmuxTerminalDiagnostics?.lastParsedSequence ?? null,
-        lastScreenParsedAt:
-          element.__kmuxTerminalDiagnostics?.lastScreenParsedAt ?? null,
-        lastScreenParsedSequence:
-          element.__kmuxTerminalDiagnostics?.lastScreenParsedSequence ?? null,
-        lastInputAt: element.__kmuxTerminalDiagnostics?.lastInputAt ?? null,
-        lastInputKind: element.__kmuxTerminalDiagnostics?.lastInputKind ?? null,
-        lastInputBytes:
-          element.__kmuxTerminalDiagnostics?.lastInputBytes ?? null,
-        lastFocusEventAt:
-          element.__kmuxTerminalDiagnostics?.lastFocusEventAt ?? null,
-        lastFocusEvent:
-          element.__kmuxTerminalDiagnostics?.lastFocusEvent ?? null,
+        ...(element.__kmuxTerminalDiagnostics ??
+          createTerminalDiagnosticMetadata()),
         ...patch
       };
       element.__kmuxTerminalDiagnostics = diagnostics;
@@ -560,14 +584,7 @@ export function TerminalSurfaceView(
     }
     delete diagnosticWrapper.__kmuxTerminal;
     delete diagnosticWrapper.__kmuxTerminalDiagnostics;
-    delete diagnosticWrapper.dataset.terminalHydratedSequence;
-    delete diagnosticWrapper.dataset.terminalRenderedSequence;
-    delete diagnosticWrapper.dataset.terminalAttachAvailableSequence;
-    delete diagnosticWrapper.dataset.terminalRenderGeneration;
-    delete diagnosticWrapper.dataset.terminalLastOnRenderAt;
-    delete diagnosticWrapper.dataset.terminalViewportY;
-    delete diagnosticWrapper.dataset.terminalBaseY;
-    delete diagnosticWrapper.dataset.terminalBracketedPasteMode;
+    clearTerminalDiagnosticDataset(diagnosticWrapper);
   }
 
   function attachTerminalHostToCurrentWrapper(
@@ -769,6 +786,9 @@ export function TerminalSurfaceView(
     surfaceId: string,
     terminal: Terminal
   ): void {
+    if (!terminalDiagnosticsEnabledRef.current) {
+      return;
+    }
     const wrapper = surfaceWrapperRefs.current.get(surfaceId);
     if (!wrapper) {
       return;
@@ -832,7 +852,9 @@ export function TerminalSurfaceView(
     preferredStream?: AttachedTerminalStream | null
   ): void {
     const stream = inputStreamForSession(surfaceId, sessionId, preferredStream);
-    const diagnosticWrapper = surfaceWrapperRefs.current.get(surfaceId);
+    const diagnosticWrapper = terminalDiagnosticsEnabledRef.current
+      ? surfaceWrapperRefs.current.get(surfaceId)
+      : undefined;
     if (
       terminalDiagnosticsEnabledRef.current &&
       activeSurfaceRef.current?.id === surfaceId &&
@@ -1126,51 +1148,56 @@ export function TerminalSurfaceView(
       return true;
     }
 
-    const applyStartedAt = performance.now();
+    const diagnosticsEnabled = isRendererSmoothnessProfileEnabled();
+    const applyStartedAt = diagnosticsEnabled ? performance.now() : null;
     try {
       resizeTerminalKeepingBottomAnchor(terminal, cols, rows);
-      const applyEndedAt = performance.now();
-      recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
-        paneId: props.paneId,
-        surfaceId,
-        generation,
-        previousCols,
-        previousRows,
-        cols,
-        rows,
-        trigger,
-        durationMs: applyEndedAt - applyStartedAt
-      });
-      requestAnimationFrame(() => {
-        if (terminalRef.current !== terminal) {
-          return;
-        }
-        recordRendererSmoothnessProfileEvent("terminal.reflow", {
+      if (applyStartedAt !== null) {
+        const applyEndedAt = performance.now();
+        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
           paneId: props.paneId,
           surfaceId,
           generation,
+          previousCols,
+          previousRows,
           cols,
           rows,
           trigger,
-          viewportY: terminal.buffer.active.viewportY,
-          baseY: terminal.buffer.active.baseY,
-          durationMs: performance.now() - applyEndedAt
+          durationMs: applyEndedAt - applyStartedAt
         });
-      });
+        requestAnimationFrame(() => {
+          if (terminalRef.current !== terminal) {
+            return;
+          }
+          recordRendererSmoothnessProfileEvent("terminal.reflow", {
+            paneId: props.paneId,
+            surfaceId,
+            generation,
+            cols,
+            rows,
+            trigger,
+            viewportY: terminal.buffer.active.viewportY,
+            baseY: terminal.buffer.active.baseY,
+            durationMs: performance.now() - applyEndedAt
+          });
+        });
+      }
       return true;
     } catch {
-      recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
-        paneId: props.paneId,
-        surfaceId,
-        generation,
-        previousCols,
-        previousRows,
-        cols,
-        rows,
-        trigger,
-        failed: true,
-        durationMs: performance.now() - applyStartedAt
-      });
+      if (applyStartedAt !== null) {
+        recordRendererSmoothnessProfileEvent("terminal.resize.apply", {
+          paneId: props.paneId,
+          surfaceId,
+          generation,
+          previousCols,
+          previousRows,
+          cols,
+          rows,
+          trigger,
+          failed: true,
+          durationMs: performance.now() - applyStartedAt
+        });
+      }
       return false;
     }
   }
@@ -1265,9 +1292,10 @@ export function TerminalSurfaceView(
       }
       return;
     }
-    const fitStartedAt = performance.now();
+    const fitStartedAt = diagnosticsEnabled ? performance.now() : null;
     const dims = fit.proposeDimensions();
-    const fitDurationMs = performance.now() - fitStartedAt;
+    const fitDurationMs =
+      fitStartedAt === null ? null : performance.now() - fitStartedAt;
     const terminalSizeChanged = Boolean(
       dims &&
       Number.isFinite(dims.cols) &&
@@ -1301,7 +1329,7 @@ export function TerminalSurfaceView(
         changed: validDims ? terminalSizeChanged : false,
         surfaceSynced: validDims ? surfaceSizeSynced : false,
         ...diagnosticContext,
-        durationMs: fitDurationMs
+        durationMs: fitDurationMs ?? 0
       });
     }
     if (
@@ -1698,15 +1726,27 @@ export function TerminalSurfaceView(
     };
   }, []);
 
-  useEffect(
-    () =>
-      subscribeRendererDiagnosticsLogging(() => {
-        const enabled = isRendererSmoothnessProfileEnabled();
-        terminalDiagnosticsEnabledRef.current = enabled;
-        setTerminalDiagnosticsEnabled(enabled);
-      }),
-    []
-  );
+  useEffect(() => {
+    resetTerminalDiagnosticsForLoggingWindow();
+    if (terminalDiagnosticsEnabledRef.current) {
+      syncCurrentTerminalDiagnosticMetrics();
+    }
+    return subscribeRendererDiagnosticsLogging(() => {
+      const enabled = isRendererSmoothnessProfileEnabled();
+      if (enabled === terminalDiagnosticsEnabledRef.current) {
+        return;
+      }
+      if (!enabled) {
+        terminalDiagnosticsEnabledRef.current = false;
+      }
+      resetTerminalDiagnosticsForLoggingWindow();
+      if (enabled) {
+        terminalDiagnosticsEnabledRef.current = true;
+        syncCurrentTerminalDiagnosticMetrics();
+      }
+      setTerminalDiagnosticsEnabled(enabled);
+    });
+  }, []);
 
   useEffect(() => {
     return window.kmux.subscribeSurfaceContextMenuAction((event) => {
@@ -1923,33 +1963,31 @@ export function TerminalSurfaceView(
       return;
     }
     const renderListener = terminal.onRender(() => {
-      const diagnostics = (containerRef.current as TerminalHostElement | null)
-        ?.__kmuxTerminalDiagnostics;
-      const renderedAt = terminalDataPlaneNowMs(performance);
-      const pendingScreenSequence =
-        diagnostics?.lastScreenParsedSequence ?? null;
-      const screenRenderPending =
-        pendingScreenSequence !== null &&
-        (diagnostics?.lastScreenOnRenderSequence === null ||
-          diagnostics?.lastScreenOnRenderSequence === undefined ||
-          pendingScreenSequence > diagnostics.lastScreenOnRenderSequence);
-      updateTerminalDiagnostics(activeSurface.id, terminal, {
-        lastOnRenderAt: renderedAt,
-        ...(terminalDiagnosticsEnabledRef.current
-          ? {
-              lastOnRenderSequence:
-                diagnostics?.lastParsedSequence ??
-                diagnostics?.renderedSequence ??
-                null,
-              ...(screenRenderPending
-                ? {
-                    lastScreenOnRenderAt: renderedAt,
-                    lastScreenOnRenderSequence: pendingScreenSequence
-                  }
-                : {})
-            }
-          : {})
-      });
+      if (terminalDiagnosticsEnabledRef.current) {
+        const diagnostics = (containerRef.current as TerminalHostElement | null)
+          ?.__kmuxTerminalDiagnostics;
+        const renderedAt = terminalDataPlaneNowMs(performance);
+        const pendingScreenSequence =
+          diagnostics?.lastScreenParsedSequence ?? null;
+        const screenRenderPending =
+          pendingScreenSequence !== null &&
+          (diagnostics?.lastScreenOnRenderSequence === null ||
+            diagnostics?.lastScreenOnRenderSequence === undefined ||
+            pendingScreenSequence > diagnostics.lastScreenOnRenderSequence);
+        updateTerminalDiagnostics(activeSurface.id, terminal, {
+          lastOnRenderAt: renderedAt,
+          lastOnRenderSequence:
+            diagnostics?.lastParsedSequence ??
+            diagnostics?.renderedSequence ??
+            null,
+          ...(screenRenderPending
+            ? {
+                lastScreenOnRenderAt: renderedAt,
+                lastScreenOnRenderSequence: pendingScreenSequence
+              }
+            : {})
+        });
+      }
       terminalStreamRef.current?.registration.notifyRendered();
     });
     return () => renderListener.dispose();
@@ -2924,12 +2962,18 @@ export function TerminalSurfaceView(
         const currentTerminal = bundle.terminal;
         const lineCwds = bundle.lineCwds;
         const cwd = cwdAtDataOffset(context.delta, context.dataOffset);
-        const screenAffecting = outputRangeAffectsScreen(
-          context.delta,
-          context.dataOffset,
-          data.length
-        );
-        if (terminalDiagnosticsEnabledRef.current) {
+        const diagnosticsEnabled = terminalDiagnosticsEnabledRef.current;
+        const diagnosticsWindow = diagnosticsEnabled
+          ? terminalDiagnosticsWindowRef.current
+          : null;
+        const screenAffecting = diagnosticsEnabled
+          ? outputRangeAffectsScreen(
+              context.delta,
+              context.dataOffset,
+              data.length
+            )
+          : false;
+        if (diagnosticsEnabled) {
           const writeAt = terminalDataPlaneNowMs(performance);
           updateTerminalDiagnostics(surfaceId, currentTerminal, {
             lastWriteAt: writeAt,
@@ -2978,24 +3022,25 @@ export function TerminalSurfaceView(
                 surfaceId,
                 context.delta.sequence
               );
-              const parsedAt = terminalDiagnosticsEnabledRef.current
-                ? terminalDataPlaneNowMs(performance)
-                : null;
-              updateTerminalDiagnostics(surfaceId, currentTerminal, {
-                renderedSequence: context.delta.sequence,
-                ...(parsedAt !== null
-                  ? {
-                      lastParsedAt: parsedAt,
-                      lastParsedSequence: context.delta.sequence,
-                      ...(screenAffecting
-                        ? {
-                            lastScreenParsedAt: parsedAt,
-                            lastScreenParsedSequence: context.delta.sequence
-                          }
-                        : {})
-                    }
-                  : {})
-              });
+              if (
+                diagnosticsEnabled &&
+                terminalDiagnosticsEnabledRef.current &&
+                diagnosticsWindow !== null &&
+                terminalDiagnosticsWindowRef.current === diagnosticsWindow
+              ) {
+                const parsedAt = terminalDataPlaneNowMs(performance);
+                updateTerminalDiagnostics(surfaceId, currentTerminal, {
+                  renderedSequence: context.delta.sequence,
+                  lastParsedAt: parsedAt,
+                  lastParsedSequence: context.delta.sequence,
+                  ...(screenAffecting
+                    ? {
+                        lastScreenParsedAt: parsedAt,
+                        lastScreenParsedSequence: context.delta.sequence
+                      }
+                    : {})
+                });
+              }
             }
           } catch (error) {
             console.warn("Failed to update parsed terminal metadata", error);

@@ -45,6 +45,38 @@ export type TerminalHostElement = HTMLDivElement & {
   __kmuxTerminalDiagnostics?: TerminalDiagnosticMetadata;
 };
 
+export function createTerminalDiagnosticMetadata(
+  currentSequence: Uint64 | null = null
+): TerminalDiagnosticMetadata {
+  return {
+    hydratedSequence: currentSequence,
+    renderedSequence: currentSequence,
+    attachAvailableSequence: null,
+    renderGeneration: 0,
+    lastOnRenderAt: null,
+    lastOnRenderSequence: null,
+    lastScreenOnRenderAt: null,
+    lastScreenOnRenderSequence: null,
+    lastReceiveAt: null,
+    lastReceiveSequence: null,
+    lastScreenReceiveAt: null,
+    lastScreenReceiveSequence: null,
+    lastWriteAt: null,
+    lastWriteSequence: null,
+    lastScreenWriteAt: null,
+    lastScreenWriteSequence: null,
+    lastParsedAt: null,
+    lastParsedSequence: null,
+    lastScreenParsedAt: null,
+    lastScreenParsedSequence: null,
+    lastInputAt: null,
+    lastInputKind: null,
+    lastInputBytes: null,
+    lastFocusEventAt: null,
+    lastFocusEvent: null
+  };
+}
+
 /**
  * Everything whose lifetime is tied to one concrete xterm parser/widget.
  * Surface attachment and cache metadata deliberately live outside this bundle
@@ -86,33 +118,7 @@ export function createTerminalBundle({
   host.style.cssText = "width:100%;height:100%;min-height:0;overflow:hidden;";
   const terminal = createTerminal();
   host.__kmuxTerminal = terminal;
-  host.__kmuxTerminalDiagnostics = {
-    hydratedSequence: null,
-    renderedSequence: null,
-    attachAvailableSequence: null,
-    renderGeneration: 0,
-    lastOnRenderAt: null,
-    lastOnRenderSequence: null,
-    lastScreenOnRenderAt: null,
-    lastScreenOnRenderSequence: null,
-    lastReceiveAt: null,
-    lastReceiveSequence: null,
-    lastScreenReceiveAt: null,
-    lastScreenReceiveSequence: null,
-    lastWriteAt: null,
-    lastWriteSequence: null,
-    lastScreenWriteAt: null,
-    lastScreenWriteSequence: null,
-    lastParsedAt: null,
-    lastParsedSequence: null,
-    lastScreenParsedAt: null,
-    lastScreenParsedSequence: null,
-    lastInputAt: null,
-    lastInputKind: null,
-    lastInputBytes: null,
-    lastFocusEventAt: null,
-    lastFocusEvent: null
-  };
+  host.__kmuxTerminalDiagnostics = createTerminalDiagnosticMetadata();
 
   const fit = new FitAddon();
   const search = new SearchAddon();

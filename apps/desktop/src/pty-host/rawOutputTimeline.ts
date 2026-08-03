@@ -25,6 +25,7 @@ export interface RawOutputTimelineSnapshot {
   timeline: SurfaceSnapshotRawOutputTimeline;
   progress: Pick<
     SurfaceSnapshotPipelineProgress,
+    | "ptyRecordingWindow"
     | "lastAnyPtyReadAt"
     | "lastAnyPtyChunkSequence"
     | "lastScreenPtyReadAt"
@@ -37,14 +38,16 @@ export interface RawOutputTimelineSnapshot {
 }
 
 export interface RawOutputTimeline {
-  record(chunk: string, observation?: RawOutputObservation): void;
+  append(chunk: string): void;
+  record(chunk: string, observation: RawOutputObservation): void;
   snapshot(enabled: boolean): RawOutputTimelineSnapshot;
 }
 
 /**
- * Retains content-free, unsampled PTY read metadata in a bounded circular
- * buffer. The existing raw tail remains the source of truth for byte content;
- * absolute offsets join that tail to this per-read timeline.
+ * Retains the raw-output tail continuously, but records per-read metadata only
+ * while terminal telemetry is enabled. Timeline offsets are relative to the
+ * current uninterrupted recording window; a negative raw-tail start means the
+ * retained tail also contains output from before that window.
  */
 export function createRawOutputTimeline(options?: {
   maxChunks?: number;
@@ -67,9 +70,10 @@ export function createRawOutputTimeline(options?: {
   let retainedStart = 0;
   let retainedCount = 0;
   let droppedChunks = 0;
-  let unobservedChunks = 0;
   let rawOutputTail = "";
   let rawOutputTailTruncated = false;
+  let recordingActive = false;
+  let recordingWindow = 0;
   let lastAny: SurfaceSnapshotRawOutputChunk | null = null;
   let lastScreen: SurfaceSnapshotRawOutputChunk | null = null;
   let lastTitleOnly: SurfaceSnapshotRawOutputChunk | null = null;
@@ -86,10 +90,47 @@ export function createRawOutputTimeline(options?: {
     droppedChunks += 1;
   };
 
+  const appendTail = (chunk: string): void => {
+    rawOutputTail += chunk;
+    if (rawOutputTail.length > maxTailChars) {
+      rawOutputTail = rawOutputTail.slice(-maxTailChars);
+      rawOutputTailTruncated = true;
+    }
+  };
+
+  const resetRecording = (): void => {
+    chunks.fill(undefined);
+    chunkSequence = uint64(0n);
+    totalBytes = 0;
+    totalChars = 0;
+    retainedStart = 0;
+    retainedCount = 0;
+    droppedChunks = 0;
+    lastAny = null;
+    lastScreen = null;
+    lastTitleOnly = null;
+    lastIndeterminate = null;
+  };
+
   return {
+    append(chunk): void {
+      if (!chunk) {
+        return;
+      }
+      if (recordingActive) {
+        recordingActive = false;
+        resetRecording();
+      }
+      appendTail(chunk);
+    },
     record(chunk, observation): void {
       if (!chunk) {
         return;
+      }
+      if (!recordingActive) {
+        resetRecording();
+        recordingActive = true;
+        recordingWindow += 1;
       }
       const byteStart = totalBytes;
       const charStart = totalChars;
@@ -97,16 +138,7 @@ export function createRawOutputTimeline(options?: {
       chunkSequence = incrementUint64(chunkSequence);
       totalBytes += utf8Bytes;
       totalChars += chunk.length;
-      rawOutputTail += chunk;
-      if (rawOutputTail.length > maxTailChars) {
-        rawOutputTail = rawOutputTail.slice(-maxTailChars);
-        rawOutputTailTruncated = true;
-      }
-
-      if (!observation) {
-        unobservedChunks += 1;
-        return;
-      }
+      appendTail(chunk);
       const entry: SurfaceSnapshotRawOutputChunk = {
         chunkSequence,
         ptyReadAt: observation.ptyReadAt,
@@ -150,17 +182,20 @@ export function createRawOutputTimeline(options?: {
         rawOutputTailTruncated,
         timeline: {
           enabled,
+          offsetOrigin: "recording-window",
+          recordingWindow,
           sampleEvery: 1,
           maxChunks,
           totalChunks: chunkSequence,
           retainedChunks: retained.length,
           droppedChunks,
-          unobservedChunks,
+          unobservedChunks: 0,
           rawTailCharStart: totalChars - rawOutputTail.length,
           rawTailCharEnd: totalChars,
           chunks: retained
         },
         progress: {
+          ptyRecordingWindow: recordingWindow,
           lastAnyPtyReadAt: lastAny?.ptyReadAt ?? null,
           lastAnyPtyChunkSequence: lastAny?.chunkSequence ?? null,
           lastScreenPtyReadAt: lastScreen?.ptyReadAt ?? null,

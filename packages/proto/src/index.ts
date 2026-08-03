@@ -620,9 +620,10 @@ export interface SurfaceSnapshotPayload {
 
 /**
  * Unsampled metadata recorded at the node-pty onData boundary. Character and
- * byte offsets are absolute within the session output stream, so a capture can
- * map these entries back to the retained raw-output tail without storing more
- * terminal content.
+ * byte offsets are relative to the timeline's uninterrupted recording window,
+ * so disabled diagnostics add no per-read accounting to the production path.
+ * A negative rawTailCharStart means the retained tail begins before that
+ * recording window.
  */
 export interface SurfaceSnapshotRawOutputChunk {
   chunkSequence: Uint64;
@@ -641,12 +642,17 @@ export interface SurfaceSnapshotRawOutputChunk {
 
 export interface SurfaceSnapshotRawOutputTimeline {
   enabled: boolean;
+  offsetOrigin: "recording-window";
+  recordingWindow: number;
   sampleEvery: 1;
   maxChunks: number;
+  /** Observed chunks in the current recording window. */
   totalChunks: Uint64;
   retainedChunks: number;
   droppedChunks: number;
-  unobservedChunks: number;
+  /** @deprecated Disabled windows are no longer counted on the PTY hot path. */
+  unobservedChunks: 0;
+  /** May be negative when the raw tail includes pre-window output. */
   rawTailCharStart: number;
   rawTailCharEnd: number;
   chunks: SurfaceSnapshotRawOutputChunk[];
@@ -654,6 +660,8 @@ export interface SurfaceSnapshotRawOutputTimeline {
 
 /** All *At fields use high-resolution Unix epoch milliseconds. */
 export interface SurfaceSnapshotPipelineProgress {
+  /** Identifies the recording window for every PTY chunk sequence below. */
+  ptyRecordingWindow: number;
   lastAnyPtyReadAt: number | null;
   lastAnyPtyChunkSequence: Uint64 | null;
   lastScreenPtyReadAt: number | null;

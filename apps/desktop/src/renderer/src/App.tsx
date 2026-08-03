@@ -625,6 +625,7 @@ export function App(): JSX.Element {
     releaseNotes: bundledReleaseNotes,
     shellReady,
     blockingDialogOpen: releaseNotesBlockingDialogOpen,
+    automaticOpenEnabled: window.kmux.automaticReleaseNotesEnabled?.() ?? true,
     prepareContent: prepareReleaseNotesModal
   });
   const releaseNotesLinkSurfaceId = activeWorkspacePaneTree

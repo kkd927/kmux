@@ -652,52 +652,60 @@ export class TerminalStreamClient {
     const surfaceId = active.stream.grant.session.surfaceId;
     this.cancelPendingResumeSettle(surfaceId, true);
     const generation = ++this.nextResumeSettleGeneration;
-    const startedAt = performance.now();
+    const startedAt = isRendererSmoothnessProfileEnabled()
+      ? performance.now()
+      : null;
     const promise = resumeSettled
       .catch(() => ({ kind: "discarded" }) as TerminalDetachOutcome)
       .then((result) => {
         const pending = this.pendingResumeSettles.get(surfaceId);
         if (pending?.generation !== generation) {
-          recordRendererSmoothnessProfileEvent(
-            "terminal.data-plane.resume-settle",
-            {
-              surfaceId,
-              sessionId: active.stream.grant.session.sessionId,
-              epoch: active.stream.grant.session.epoch,
-              outcome: "superseded",
-              durationMs: performance.now() - startedAt
-            }
-          );
+          if (startedAt !== null) {
+            recordRendererSmoothnessProfileEvent(
+              "terminal.data-plane.resume-settle",
+              {
+                surfaceId,
+                sessionId: active.stream.grant.session.sessionId,
+                epoch: active.stream.grant.session.epoch,
+                outcome: "superseded",
+                durationMs: performance.now() - startedAt
+              }
+            );
+          }
           return;
         }
         this.pendingResumeSettles.delete(surfaceId);
         if (pending.cancelled) {
+          if (startedAt !== null) {
+            recordRendererSmoothnessProfileEvent(
+              "terminal.data-plane.resume-settle",
+              {
+                surfaceId,
+                sessionId: active.stream.grant.session.sessionId,
+                epoch: active.stream.grant.session.epoch,
+                outcome: "cancelled",
+                durationMs: performance.now() - startedAt
+              }
+            );
+          }
+          return;
+        }
+        if (startedAt !== null) {
           recordRendererSmoothnessProfileEvent(
             "terminal.data-plane.resume-settle",
             {
               surfaceId,
               sessionId: active.stream.grant.session.sessionId,
               epoch: active.stream.grant.session.epoch,
-              outcome: "cancelled",
+              outcome: result.kind,
+              sequence:
+                result.kind === "resumable"
+                  ? formatUint64Decimal(result.cursor.sequence)
+                  : null,
               durationMs: performance.now() - startedAt
             }
           );
-          return;
         }
-        recordRendererSmoothnessProfileEvent(
-          "terminal.data-plane.resume-settle",
-          {
-            surfaceId,
-            sessionId: active.stream.grant.session.sessionId,
-            epoch: active.stream.grant.session.epoch,
-            outcome: result.kind,
-            sequence:
-              result.kind === "resumable"
-                ? formatUint64Decimal(result.cursor.sequence)
-                : null,
-            durationMs: performance.now() - startedAt
-          }
-        );
         if (result.kind !== "resumable" || this.disposed) {
           this.invalidateResume(surfaceId, pending.invalidateResume);
           return;

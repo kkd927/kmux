@@ -677,6 +677,9 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       ),
       showSurfaceContextMenu: vi.fn(async () => {}),
       subscribeSurfaceContextMenuAction: vi.fn(() => vi.fn()),
+      profileSmoothnessEnabled: vi.fn(() => false),
+      subscribeDiagnosticsLogging: vi.fn(() => vi.fn()),
+      recordSmoothnessProfileEvents: vi.fn(async () => {}),
       reportTerminalStreamError: vi.fn(async () => {}),
       reportTerminalTitle: vi.fn(async () => {}),
       captureSurfaceDiagnostics: vi.fn(async () => ({}) as never)
@@ -754,6 +757,73 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       await flushMicrotasks();
     });
     expect(diagnosticListenerDispose).toHaveBeenCalledOnce();
+    await flushRendererSmoothnessProfileEvents();
+  });
+
+  it("resets window diagnostics while preserving terminal readiness", async () => {
+    let diagnosticsEnabled = true;
+    let notifyDiagnosticsLogging: ((enabled: boolean) => void) | null = null;
+    window.kmux.profileSmoothnessEnabled = vi.fn(() => diagnosticsEnabled);
+    window.kmux.subscribeDiagnosticsLogging = vi.fn((listener) => {
+      notifyDiagnosticsLogging = listener;
+      return vi.fn();
+    });
+    window.kmux.recordSmoothnessProfileEvents = vi.fn(async () => {});
+
+    await act(async () => {
+      root.render(<TerminalSurfaceView {...createProps("surface_1")} />);
+      await flushMicrotasks(10);
+    });
+
+    const terminal = vi.mocked(Terminal).mock.results[0]?.value as {
+      input(data: string): void;
+    };
+    const wrapper = container.querySelector<
+      HTMLElement & {
+        __kmuxTerminalDiagnostics?: {
+          renderedSequence: Uint64 | null;
+          lastInputAt: number | null;
+        };
+      }
+    >("[data-testid='terminal-surface_1']");
+    expect(wrapper).not.toBeNull();
+
+    terminalInstanceStore.markSurfaceHydrated("surface_1", "surface_1", u(7));
+    terminalInstanceStore.markSurfaceRendered("surface_1", "surface_1", u(8));
+    wrapper!.dataset.terminalInputReady = "true";
+    wrapper!.dataset.terminalStreamReady = "attach_keep";
+    terminal.input("before-disable");
+    expect(wrapper?.__kmuxTerminalDiagnostics?.lastInputAt).toEqual(
+      expect.any(Number)
+    );
+    expect(wrapper?.dataset.terminalLastInputRoute).toBeDefined();
+
+    diagnosticsEnabled = false;
+    await act(async () => {
+      notifyDiagnosticsLogging?.(false);
+      await flushMicrotasks();
+    });
+    expect(wrapper?.__kmuxTerminalDiagnostics).toMatchObject({
+      renderedSequence: u(8),
+      lastInputAt: null
+    });
+    expect(wrapper?.dataset.terminalLastInputRoute).toBeUndefined();
+    expect(wrapper?.dataset.terminalLastInputBytes).toBeUndefined();
+    expect(wrapper?.dataset.terminalInputReady).toBe("true");
+    expect(wrapper?.dataset.terminalStreamReady).toBe("attach_keep");
+
+    terminalInstanceStore.markSurfaceRendered("surface_1", "surface_1", u(9));
+    diagnosticsEnabled = true;
+    await act(async () => {
+      notifyDiagnosticsLogging?.(true);
+      await flushMicrotasks();
+    });
+    expect(wrapper?.__kmuxTerminalDiagnostics).toMatchObject({
+      renderedSequence: u(9),
+      lastInputAt: null
+    });
+    expect(wrapper?.dataset.terminalInputReady).toBe("true");
+    expect(wrapper?.dataset.terminalStreamReady).toBe("attach_keep");
     await flushRendererSmoothnessProfileEvents();
   });
 
@@ -877,10 +947,8 @@ describe("TerminalSurfaceView visibility cleanup", () => {
       const wrapper = container.querySelector<HTMLElement>(
         "[data-testid='terminal-surface_1']"
       );
-      expect(Number(wrapper?.dataset.terminalRenderGeneration)).toBe(1);
-      expect(Number(wrapper?.dataset.terminalLastOnRenderAt)).toBeGreaterThan(
-        0
-      );
+      expect(wrapper?.dataset.terminalRenderGeneration).toBeUndefined();
+      expect(wrapper?.dataset.terminalLastOnRenderAt).toBeUndefined();
       expect(port.sent).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ type: "input:text", text: "text-v2" }),

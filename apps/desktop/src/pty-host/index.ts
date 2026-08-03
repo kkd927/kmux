@@ -677,22 +677,26 @@ async function writeTerminalOutputRun(
               if (chunkSequence > record.parsedSequence) {
                 record.parsedSequence = chunkSequence;
               }
-              const headlessCommitAt = terminalDataPlaneNowMs(performance);
-              record.lastHeadlessCommitAt = headlessCommitAt;
-              record.lastHeadlessCommitSequence = chunkSequence;
-              if (
-                segment.telemetry?.outputKind === "screen" ||
-                segment.telemetry?.outputKind === "mixed"
-              ) {
-                record.lastScreenHeadlessCommitAt = headlessCommitAt;
-                record.lastScreenHeadlessCommitSequence = chunkSequence;
+              const headlessCommitAt = segment.telemetry
+                ? terminalDataPlaneNowMs(performance)
+                : undefined;
+              if (headlessCommitAt !== undefined) {
+                record.lastHeadlessCommitAt = headlessCommitAt;
+                record.lastHeadlessCommitSequence = chunkSequence;
+                if (
+                  segment.telemetry?.outputKind === "screen" ||
+                  segment.telemetry?.outputKind === "mixed"
+                ) {
+                  record.lastScreenHeadlessCommitAt = headlessCommitAt;
+                  record.lastScreenHeadlessCommitSequence = chunkSequence;
+                }
               }
               committedSegments.push({
                 sequence: chunkSequence,
                 data: segment.chunk,
                 byteLength,
                 cwd: chunkCwd,
-                ...(segment.telemetry
+                ...(segment.telemetry && headlessCommitAt !== undefined
                   ? {
                       telemetry: {
                         ptyReadAt: segment.telemetry.ptyReadAt,
@@ -1231,7 +1235,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       writeOrQueueDirectInput(record, encodeTerminalKeyInput(input)),
     resize: (resizeRequest) => requestDirectResize(record, resizeRequest),
     onInputObserved: (message) => {
-      const inputAcceptedAt = terminalMetricsProfile.enabled
+      const telemetryEnabled = terminalMetricsProfile.enabled;
+      const inputAcceptedAt = telemetryEnabled
         ? terminalDataPlaneNowMs(performance)
         : undefined;
       const inputKind =
@@ -1252,31 +1257,36 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           inputKind
         };
       }
-      const inputBytes =
-        message.type === "input:text"
-          ? Buffer.byteLength(message.text, "utf8")
-          : message.type === "input:binary"
-            ? message.data.length
-            : Buffer.byteLength(encodeTerminalKeyInput(message.input), "utf8");
-      terminalMetricsProfile.record({
-        source: "pty-host",
-        name: "terminal.data-plane.input",
-        at: profileNowMs(),
-        details: {
-          surfaceId: record.surfaceId,
-          sessionId: record.sessionId,
-          kind: message.type,
-          inputKind,
-          bytes: inputBytes,
-          inputAcceptedAt,
-          inputSequence: formatUint64Decimal(record.inputTelemetrySequence),
-          shellInputReady: record.shellInputReady,
-          pendingDirectInputBytes: record.pendingDirectInputBytes,
-          queue: record.mutationQueue.stats(),
-          ring: deltaStore.sessionStats(record.sessionId),
-          stream: record.stream.stats()
-        }
-      });
+      if (telemetryEnabled) {
+        const inputBytes =
+          message.type === "input:text"
+            ? Buffer.byteLength(message.text, "utf8")
+            : message.type === "input:binary"
+              ? message.data.length
+              : Buffer.byteLength(
+                  encodeTerminalKeyInput(message.input),
+                  "utf8"
+                );
+        terminalMetricsProfile.record({
+          source: "pty-host",
+          name: "terminal.data-plane.input",
+          at: profileNowMs(),
+          details: {
+            surfaceId: record.surfaceId,
+            sessionId: record.sessionId,
+            kind: message.type,
+            inputKind,
+            bytes: inputBytes,
+            inputAcceptedAt,
+            inputSequence: formatUint64Decimal(record.inputTelemetrySequence),
+            shellInputReady: record.shellInputReady,
+            pendingDirectInputBytes: record.pendingDirectInputBytes,
+            queue: record.mutationQueue.stats(),
+            ring: deltaStore.sessionStats(record.sessionId),
+            stream: record.stream.stats()
+          }
+        });
+      }
       send({
         type: "input.observed",
         session: sessionRef(record),
@@ -1642,22 +1652,21 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     if (outputKind !== undefined && ptyReadAt !== undefined) {
       recordPtyChunk(record, chunk, outputKind, ptyReadAt);
     }
-    record.rawOutputTimeline.record(
-      chunk,
-      ptyReadAt === undefined || outputKind === undefined
-        ? undefined
-        : {
-            ptyReadAt,
-            outputKind,
-            visibleAtPtyRead,
-            ...(pendingInputTelemetry
-              ? {
-                  inputSequence: pendingInputTelemetry.inputSequence,
-                  inputKind: pendingInputTelemetry.inputKind
-                }
-              : {})
-          }
-    );
+    if (ptyReadAt === undefined || outputKind === undefined) {
+      record.rawOutputTimeline.append(chunk);
+    } else {
+      record.rawOutputTimeline.record(chunk, {
+        ptyReadAt,
+        outputKind,
+        visibleAtPtyRead,
+        ...(pendingInputTelemetry
+          ? {
+              inputSequence: pendingInputTelemetry.inputSequence,
+              inputKind: pendingInputTelemetry.inputKind
+            }
+          : {})
+      });
+    }
     record.lastActivityAt = Date.now();
     const splitOutput = splitTerminalOutputByOsc7({
       chunk,

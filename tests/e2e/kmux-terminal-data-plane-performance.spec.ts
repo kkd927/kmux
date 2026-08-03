@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -18,6 +18,10 @@ import {
 const shouldRun = process.env.KMUX_RUN_TERMINAL_DATA_PLANE_GATE === "1";
 const sampleForVersionedBaseline =
   process.env.KMUX_LOCAL_REGRESSION_SAMPLE_ONLY === "1";
+const instrumentDataPlane =
+  process.env.KMUX_TERMINAL_DATA_PLANE_PROFILE !== "0";
+const enableDiagnosticLogging =
+  process.env.KMUX_TERMINAL_DATA_PLANE_DIAGNOSTIC_LOGGING === "1";
 test.skip(
   !shouldRun,
   "Set KMUX_RUN_TERMINAL_DATA_PLANE_GATE=1 to run the 16-session data-plane gate"
@@ -45,13 +49,17 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
   const profileDir = mkdtempSync(join(tmpdir(), "kmux-data-plane-gate-"));
   const profilePath = join(profileDir, "profile.jsonl");
   const launched = await launchKmux("kmux-e2e-data-plane-gate-", {
-    env: {
-      KMUX_PROFILE_LOG_PATH: profilePath
-    }
+    env: instrumentDataPlane
+      ? { KMUX_PROFILE_LOG_PATH: profilePath }
+      : {
+          KMUX_DEBUG_LOG_PATH: undefined,
+          KMUX_PROFILE_LOG_PATH: undefined
+        }
   });
 
   try {
     const { page } = launched;
+    await enableRequestedDiagnosticLogging(page, launched.sandbox.stateDir);
     const workspaces: Array<{
       id: string;
       surfaceIds: string[];
@@ -109,23 +117,44 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
         workspaceId: workspace.id
       });
       await expect(page.locator("[data-pane-id]:visible")).toHaveCount(4);
-      for (const surfaceId of workspace.surfaceIds) {
-        await waitForTerminalAttachCatchUp(page, surfaceId, 2_000);
+      if (instrumentDataPlane) {
+        for (const surfaceId of workspace.surfaceIds) {
+          await waitForTerminalAttachCatchUp(page, surfaceId, 2_000);
+        }
       }
       await waitForTerminalInputReady(page, workspace.probeSurfaceId, 1_000);
       await waitForTerminalStreamReady(page, workspace.probeSurfaceId, 1_000);
+      const warmupProbe = "echo-probe-warmup";
+      const warmupMarker = `[kmux-echo:${warmupProbe}]`;
+      if (!instrumentDataPlane) {
+        await startTerminalEchoFrameMonitor(
+          page,
+          workspace.probeSurfaceId,
+          warmupMarker,
+          echoProbeToken(warmupProbe)
+        );
+      }
       const warmInputStartedAt = await page.evaluate(() => performance.now());
       await injectTerminalUserInput(
         page,
         workspace.probeSurfaceId,
-        "echo-probe-warmup\r"
+        `${warmupProbe}\r`
       );
-      await waitForTerminalPaintAfter(
-        page,
-        workspace.probeSurfaceId,
-        warmInputStartedAt,
-        1_000
-      );
+      if (instrumentDataPlane) {
+        await waitForTerminalPaintAfter(
+          page,
+          workspace.probeSurfaceId,
+          warmInputStartedAt,
+          1_000
+        );
+      } else {
+        await waitForTerminalEchoFrameMonitor(
+          page,
+          workspace.probeSurfaceId,
+          warmupMarker,
+          1_000
+        );
+      }
     }
     await page.waitForTimeout(150);
 
@@ -149,8 +178,10 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
       await expect(page.locator("[data-pane-id]:visible")).toHaveCount(4);
       warmPaintLatencies.push(await warmPaintPromise);
 
-      for (const visibleSurfaceId of workspace.surfaceIds) {
-        await waitForTerminalAttachCatchUp(page, visibleSurfaceId, 2_000);
+      if (instrumentDataPlane) {
+        for (const visibleSurfaceId of workspace.surfaceIds) {
+          await waitForTerminalAttachCatchUp(page, visibleSurfaceId, 2_000);
+        }
       }
       await waitForTerminalInputReady(page, workspace.probeSurfaceId, 1_000);
       await waitForTerminalStreamReady(page, workspace.probeSurfaceId, 1_000);
@@ -187,7 +218,7 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
     expect(Date.now() - workloadStartedAt).toBeGreaterThanOrEqual(29_000);
 
     await page.waitForTimeout(1_200);
-    const events = readProfile(profilePath);
+    const events = instrumentDataPlane ? readProfile(profilePath) : [];
     const allRenderEvents = events.filter(
       (event) =>
         event.name === "terminal.data-plane.render" &&
@@ -241,14 +272,15 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
     const metrics = {
       echoP95Ms: percentile(echoLatencies, 95),
       echoP99Ms: percentile(echoLatencies, 99),
-      renderP95Ms: percentile(renderLatencies, 95),
-      renderP99Ms: percentile(renderLatencies, 99),
-      paintP95Ms: percentile(paintIntervals, 95),
-      schedulerMaxMs: Math.max(0, ...plainSchedulerDelays),
-      eventLoopP95Ms: percentile(
-        detailValues(supervisor, "eventLoopDelayP95Ms"),
-        95
-      ),
+      renderP95Ms: instrumentDataPlane ? percentile(renderLatencies, 95) : null,
+      renderP99Ms: instrumentDataPlane ? percentile(renderLatencies, 99) : null,
+      paintP95Ms: instrumentDataPlane ? percentile(paintIntervals, 95) : null,
+      schedulerMaxMs: instrumentDataPlane
+        ? Math.max(0, ...plainSchedulerDelays)
+        : null,
+      eventLoopP95Ms: instrumentDataPlane
+        ? percentile(detailValues(supervisor, "eventLoopDelayP95Ms"), 95)
+        : null,
       warmSwitchMaxMs: Math.max(...warmPaintLatencies),
       cacheBoundViolations: terminalCache?.boundViolationCount ?? null,
       supervisorBoundViolations: Math.max(
@@ -265,36 +297,44 @@ test("16 sessions / 4 visible stay bounded and responsive", async ({}, testInfo)
     });
     console.log(`[kmux-steady-metrics] ${JSON.stringify(metrics)}`);
 
-    expect(renderLatencies.length).toBeGreaterThan(100);
     expect(echoLatencies.length).toBeGreaterThanOrEqual(45);
-    expect(parsedInputEvents.length).toBeGreaterThanOrEqual(45);
-    expect(plainSchedulerDelays.length).toBeGreaterThan(100);
-    expect(paintIntervals.length).toBeGreaterThan(100);
-    expect(droppedRenderEvents).toHaveLength(0);
-    expect(
-      Math.max(
-        0,
-        ...allRenderEvents.map((event) =>
-          Number(event.details.renderMetricOverflowCount ?? 0)
+    if (instrumentDataPlane) {
+      expect(renderLatencies.length).toBeGreaterThan(100);
+      expect(parsedInputEvents.length).toBeGreaterThanOrEqual(45);
+      expect(plainSchedulerDelays.length).toBeGreaterThan(100);
+      expect(paintIntervals.length).toBeGreaterThan(100);
+      expect(droppedRenderEvents).toHaveLength(0);
+      expect(
+        Math.max(
+          0,
+          ...allRenderEvents.map((event) =>
+            Number(event.details.renderMetricOverflowCount ?? 0)
+          )
         )
-      )
-    ).toBe(0);
+      ).toBe(0);
+    }
     if (!sampleForVersionedBaseline) {
       expect(
         percentile(echoLatencies, 95),
         `steady echo latencies: ${echoLatencies.map((value) => value.toFixed(1)).join(", ")}`
       ).toBeLessThanOrEqual(75);
       expect(percentile(echoLatencies, 99)).toBeLessThanOrEqual(150);
-      expect(percentile(renderLatencies, 95)).toBeLessThanOrEqual(100);
-      expect(percentile(renderLatencies, 99)).toBeLessThanOrEqual(250);
-      expect(percentile(paintIntervals, 95)).toBeLessThanOrEqual(50);
-      expect(Math.max(0, ...plainSchedulerDelays)).toBeLessThanOrEqual(32);
+      if (instrumentDataPlane) {
+        expect(percentile(renderLatencies, 95)).toBeLessThanOrEqual(100);
+        expect(percentile(renderLatencies, 99)).toBeLessThanOrEqual(250);
+        expect(percentile(paintIntervals, 95)).toBeLessThanOrEqual(50);
+        expect(Math.max(0, ...plainSchedulerDelays)).toBeLessThanOrEqual(32);
+      }
       expect(Math.max(...warmPaintLatencies)).toBeLessThanOrEqual(100);
-      expect(
-        percentile(detailValues(supervisor, "eventLoopDelayP95Ms"), 95)
-      ).toBeLessThanOrEqual(20);
+      if (instrumentDataPlane) {
+        expect(
+          percentile(detailValues(supervisor, "eventLoopDelayP95Ms"), 95)
+        ).toBeLessThanOrEqual(20);
+      }
     }
-    assertSupervisorBounds(supervisor);
+    if (instrumentDataPlane) {
+      assertSupervisorBounds(supervisor);
+    }
     expect(terminalCache).toMatchObject({
       boundViolationCount: 0,
       maxWarmTerminals: 4,
@@ -330,6 +370,7 @@ test("4 MiB burst preserves input echo and catches up within two seconds", async
   const launched = await launchKmux("kmux-e2e-data-plane-burst-");
   try {
     const { page } = launched;
+    await enableRequestedDiagnosticLogging(page, launched.sandbox.stateDir);
     const view = await getView(page);
     const surfaceId =
       view.activeWorkspace.panes[view.activeWorkspace.activePaneId]
@@ -457,6 +498,7 @@ test("ring gap swaps a complete alternate-screen checkpoint without a blank fram
 
   try {
     const { page } = launched;
+    await enableRequestedDiagnosticLogging(page, launched.sandbox.stateDir);
     const initial = await getView(page);
     const targetWorkspaceId = initial.activeWorkspace.id;
     const targetSurfaceId =
@@ -1111,7 +1153,7 @@ async function startTerminalFrameMonitor(
   finalMarker: string
 ): Promise<void> {
   await page.evaluate(
-    ({ targetSurfaceId, marker }) => {
+    ({ targetSurfaceId, marker, requireDiagnosticTimestamp }) => {
       type Monitor = TerminalFrameMonitorState & { startedAt: number };
       type MonitorWindow = Window & { __kmuxTerminalFrameMonitor?: Monitor };
       const monitorWindow = window as MonitorWindow;
@@ -1149,8 +1191,9 @@ async function startTerminalFrameMonitor(
           const lastOnRenderAt = Number(element.dataset.terminalLastOnRenderAt);
           if (
             rows.includes(marker) &&
-            Number.isFinite(lastOnRenderAt) &&
-            lastOnRenderAt >= state.startedAt
+            (!requireDiagnosticTimestamp ||
+              (Number.isFinite(lastOnRenderAt) &&
+                lastOnRenderAt >= state.startedAt))
           ) {
             state.completed = true;
             state.completedAt = now;
@@ -1168,7 +1211,11 @@ async function startTerminalFrameMonitor(
       };
       requestAnimationFrame(frame);
     },
-    { targetSurfaceId: surfaceId, marker: finalMarker }
+    {
+      targetSurfaceId: surfaceId,
+      marker: finalMarker,
+      requireDiagnosticTimestamp: instrumentDataPlane
+    }
   );
 }
 
@@ -1300,9 +1347,18 @@ async function waitForRenderedSequence(
   await expect
     .poll(
       async () => {
-        const value = await page
-          .getByTestId(`terminal-${surfaceId}`)
-          .getAttribute("data-terminal-rendered-sequence");
+        const value = await page.evaluate((targetSurfaceId) => {
+          const element = document.querySelector<HTMLElement>(
+            `[data-testid="terminal-${CSS.escape(targetSurfaceId)}"]`
+          );
+          return (
+            element?.dataset.terminalRenderedSequence ??
+            window
+              .__kmuxTerminalStoreDiagnostics?.(targetSurfaceId)
+              ?.lastHydratedSurfaceSequence?.toString() ??
+            null
+          );
+        }, surfaceId);
         if (value === null) {
           return null;
         }
@@ -1314,4 +1370,25 @@ async function waitForRenderedSequence(
       { timeout }
     )
     .not.toBeNull();
+}
+
+async function enableRequestedDiagnosticLogging(
+  page: Page,
+  stateDir: string
+): Promise<void> {
+  if (!enableDiagnosticLogging) {
+    return;
+  }
+  await dispatch(page, {
+    type: "settings.update",
+    patch: { diagnosticLoggingEnabled: true }
+  });
+  const diagnosticsLogPath = join(stateDir, "diagnostics", "kmux-debug.log");
+  await expect
+    .poll(
+      () =>
+        existsSync(diagnosticsLogPath) && statSync(diagnosticsLogPath).size > 0,
+      { timeout: 2_000 }
+    )
+    .toBe(true);
 }

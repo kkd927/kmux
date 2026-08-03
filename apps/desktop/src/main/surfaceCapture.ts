@@ -900,6 +900,12 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     `rawOutputTimeline.enabled=${
       payload.snapshot?.rawOutputTimeline?.enabled ?? ""
     }`,
+    `rawOutputTimeline.offsetOrigin=${
+      payload.snapshot?.rawOutputTimeline?.offsetOrigin ?? ""
+    }`,
+    `rawOutputTimeline.recordingWindow=${
+      payload.snapshot?.rawOutputTimeline?.recordingWindow ?? ""
+    }`,
     `rawOutputTimeline.sampleEvery=${
       payload.snapshot?.rawOutputTimeline?.sampleEvery ?? ""
     }`,
@@ -914,6 +920,12 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     }`,
     `rawOutputTimeline.unobservedChunks=${
       payload.snapshot?.rawOutputTimeline?.unobservedChunks ?? ""
+    }`,
+    `rawOutputTimeline.rawTailCharStart=${
+      payload.snapshot?.rawOutputTimeline?.rawTailCharStart ?? ""
+    }`,
+    `rawOutputTimeline.rawTailCharEnd=${
+      payload.snapshot?.rawOutputTimeline?.rawTailCharEnd ?? ""
     }`,
     `pipeline.progress=${
       payload.snapshot?.pipelineProgress
@@ -966,7 +978,7 @@ function formatCaptureText(payload: SurfaceCapturePayload): string {
     "4. [renderer.xterm.buffer.rows]",
     "5. [renderer.dom.rows] and terminal.png when screenshot.trusted=true",
     "If raw PTY stream does not contain the missing text or contains later erase/overwrite sequences before the snapshot sequence, inspect the agent CLI terminal output. If raw PTY stream contains stable text but pty.snapshot does not, inspect pty-host headless ingestion/serialization. If pty.snapshot has it but renderer buffer does not, inspect bridge attach/replay/live delivery. If renderer buffer has it but DOM/screenshot do not, inspect xterm render/paint.",
-    "For an interaction stall, compare the unsampled screen-specific clocks from PTY read through renderer receive/write/parse/render. Any dropped, unobserved, truncated, or failed diagnostic count makes that boundary explicitly incomplete.",
+    "For an interaction stall, compare the unsampled screen-specific clocks from PTY read through renderer receive/write/parse/render. A disabled timeline or any dropped, truncated, or failed diagnostic count makes that boundary explicitly incomplete.",
     "inactive-cache is intentionally not sequence-waited or screenshotted; its buffer is a labeled historical hint, not a live renderer observation.",
     "osc-title-only means the PTY emitted title activity without a terminal-body mutation; indeterminate means logging began in the middle of an unobserved VT sequence.",
     "",

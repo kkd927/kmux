@@ -194,6 +194,8 @@ export function buildElectronLaunchOptions({
       NODE_ENV: "test",
       KMUX_E2E_WINDOW_MODE: env.KMUX_E2E_WINDOW_MODE ?? "background",
       KMUX_E2E_DISABLE_QUIT_CONFIRM: env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
+      KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES:
+        env.KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES ?? "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir,
       KMUX_STATE_DIR: sandbox.stateDir,

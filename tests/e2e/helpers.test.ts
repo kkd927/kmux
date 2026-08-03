@@ -39,6 +39,7 @@ describe("buildElectronLaunchOptions", () => {
       NODE_ENV: "test",
       KMUX_E2E_WINDOW_MODE: "visible",
       KMUX_E2E_DISABLE_QUIT_CONFIRM: "1",
+      KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES: "1",
       KMUX_CONFIG_DIR: sandbox.configDir,
       KMUX_RUNTIME_DIR: sandbox.runtimeDir,
       KMUX_STATE_DIR: sandbox.stateDir,
@@ -63,7 +64,8 @@ describe("buildElectronLaunchOptions", () => {
       options: {
         executablePath: packagedPath,
         env: {
-          KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath
+          KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath,
+          KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES: "0"
         }
       },
       env: {
@@ -76,7 +78,8 @@ describe("buildElectronLaunchOptions", () => {
     expect(options.args).not.toContain("--no-sandbox");
     const launchEnv = options.env ?? {};
     expect(launchEnv).toMatchObject({
-      KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath
+      KMUX_PACKAGED_EXECUTABLE_PATH: packagedPath,
+      KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES: "0"
     });
     expect(launchEnv.APPIMAGE).toBeUndefined();
     expect(launchEnv.APPIMAGE_EXTRACT_AND_RUN).toBeUndefined();

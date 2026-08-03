@@ -107,6 +107,9 @@ const api = {
   getPreferredSystemLanguages(): Promise<string[]> {
     return ipcRenderer.invoke("kmux:system-languages:get");
   },
+  automaticReleaseNotesEnabled(): boolean {
+    return process.env.KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES !== "1";
+  },
   getPathForFile(file: File): string {
     return webUtils.getPathForFile(file);
   },

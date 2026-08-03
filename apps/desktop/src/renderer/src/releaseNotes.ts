@@ -187,6 +187,7 @@ export function useReleaseNotesModal(options: {
   releaseNotes: BundledReleaseNotesCatalog | null;
   shellReady: boolean;
   blockingDialogOpen: boolean;
+  automaticOpenEnabled?: boolean;
   prepareContent?: (
     context: ReleaseNotesPreparationContext
   ) => Promise<unknown>;
@@ -201,6 +202,7 @@ export function useReleaseNotesModal(options: {
     releaseNotes: releaseNotesCatalog,
     shellReady,
     blockingDialogOpen,
+    automaticOpenEnabled = true,
     prepareContent,
     contentPreparationTimeoutMs = RELEASE_NOTES_CONTENT_PRELOAD_TIMEOUT_MS
   } = options;
@@ -273,6 +275,7 @@ export function useReleaseNotesModal(options: {
 
   useEffect(() => {
     if (
+      !automaticOpenEnabled ||
       !releaseNotes ||
       !shellReady ||
       modalState.phase !== "idle" ||
@@ -292,6 +295,7 @@ export function useReleaseNotesModal(options: {
     }
     dispatchModal({ type: "automatic-requested" });
   }, [
+    automaticOpenEnabled,
     modalState.attemptedVersion,
     modalState.phase,
     releaseNotes,
