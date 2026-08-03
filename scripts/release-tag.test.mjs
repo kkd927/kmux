@@ -11,20 +11,33 @@ describe("release tag classification", () => {
       version: "0.4.6",
       releaseNotesVersion: "0.4",
       releaseKind: "stable",
-      isPrerelease: false
+      isPrerelease: false,
+      publishesReleaseNotes: false
     });
     expect(classifyReleaseTag("v0.4.6-alpha.1")).toEqual({
       version: "0.4.6-alpha.1",
       releaseNotesVersion: "0.4",
       releaseKind: "prerelease",
-      isPrerelease: true
+      isPrerelease: true,
+      publishesReleaseNotes: false
     });
     expect(classifyReleaseTag("v0.4.6-beta.2")).toEqual({
       version: "0.4.6-beta.2",
       releaseNotesVersion: "0.4",
       releaseKind: "prerelease",
-      isPrerelease: true
+      isPrerelease: true,
+      publishesReleaseNotes: false
     });
+  });
+
+  it("carries the minor's release notes on its debut release alone", () => {
+    expect(classifyReleaseTag("v1.2.0").publishesReleaseNotes).toBe(true);
+    expect(classifyReleaseTag("v1.10.0").publishesReleaseNotes).toBe(true);
+    expect(classifyReleaseTag("v1.2.1").publishesReleaseNotes).toBe(false);
+    expect(classifyReleaseTag("v1.2.10").publishesReleaseNotes).toBe(false);
+    expect(classifyReleaseTag("v1.2.0-beta.1").publishesReleaseNotes).toBe(
+      false
+    );
   });
 
   it.each([

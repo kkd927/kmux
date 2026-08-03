@@ -21,6 +21,7 @@ jobs:
       release_notes_version: ${{ steps.release.outputs.release_notes_version }}
       release_kind: ${{ steps.release.outputs.release_kind }}
       is_prerelease: ${{ steps.release.outputs.is_prerelease }}
+      publishes_release_notes: ${{ steps.release.outputs.publishes_release_notes }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -322,6 +323,7 @@ jobs:
           RELEASE_NOTES_VERSION: ${{ needs.release-metadata.outputs.release_notes_version }}
           RELEASE_KIND: ${{ needs.release-metadata.outputs.release_kind }}
           IS_PRERELEASE: ${{ needs.release-metadata.outputs.is_prerelease }}
+          PUBLISHES_RELEASE_NOTES: ${{ needs.release-metadata.outputs.publishes_release_notes }}
         run: |
           shopt -s nullglob
           assets=(
@@ -345,6 +347,14 @@ jobs:
               exit 1
               ;;
           esac
+          case "$PUBLISHES_RELEASE_NOTES" in
+            true | false)
+              ;;
+            *)
+              echo "Invalid release metadata: publishes_release_notes=$PUBLISHES_RELEASE_NOTES" >&2
+              exit 1
+              ;;
+          esac
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" \
               --draft=false \
@@ -353,7 +363,9 @@ jobs:
           else
             notes_args=(--generate-notes)
             release_notes_path="docs/release-notes/v${RELEASE_NOTES_VERSION}.md"
-            if [ -f "$release_notes_path" ] && grep -q '[^[:space:]]' "$release_notes_path"; then
+            if [ "$PUBLISHES_RELEASE_NOTES" = "true" ] &&
+              [ -f "$release_notes_path" ] &&
+              grep -q '[^[:space:]]' "$release_notes_path"; then
               temporary_release_notes="$RUNNER_TEMP/${GITHUB_REF_NAME}-release-notes.md"
               node scripts/release-notes.mjs \
                 --tag "$GITHUB_REF_NAME" \

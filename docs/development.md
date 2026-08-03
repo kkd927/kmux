@@ -130,6 +130,18 @@ the release tag's minor. It writes a temporary copy whose local image paths
 point to the exact tagged files on `raw.githubusercontent.com`, while leaving
 the source file unchanged and retaining GitHub's generated release notes.
 
+Because one document covers a whole minor, only that minor's debut release
+carries it: the stable `vX.Y.0` tag, and only when the document exists and is
+not whitespace. Every later patch and every prerelease publishes GitHub's
+generated notes alone rather than repeating a body readers already saw on the
+earlier release. `classifyReleaseTag` decides this from the tag itself, so the
+release job never has to ask GitHub what an earlier release published.
+
+Writing the document after `X.Y.0` shipped is the one case this rule does not
+cover, since no later tag of that minor carries it. Publish those notes by
+editing the release on GitHub directly; the desktop app already shows them
+from the bundled document.
+
 ## Smoothness Profiling
 
 Use smoothness profiling when investigating terminal output jank, React rerender churn, or sidebar/metadata patch flooding during Claude Code, Codex, Antigravity, or similar agent workloads.

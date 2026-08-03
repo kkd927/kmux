@@ -25,7 +25,8 @@ export function classifyReleaseTag(tag) {
       version: stableMatch[1],
       releaseNotesVersion: releaseNotesVersionFor(stableMatch[1]),
       releaseKind: "stable",
-      isPrerelease: false
+      isPrerelease: false,
+      publishesReleaseNotes: isMinorDebut(stableMatch[1])
     };
   }
 
@@ -35,13 +36,23 @@ export function classifyReleaseTag(tag) {
       version: prereleaseMatch[1],
       releaseNotesVersion: releaseNotesVersionFor(prereleaseMatch[1]),
       releaseKind: "prerelease",
-      isPrerelease: true
+      isPrerelease: true,
+      publishesReleaseNotes: false
     };
   }
 
   throw new Error(
     `Invalid release tag ${JSON.stringify(tag)}. Expected vX.Y.Z, vX.Y.Z-alpha.N, or vX.Y.Z-beta.N with no leading zeroes.`
   );
+}
+
+/**
+ * One document covers a whole minor, so only that minor's debut release
+ * carries it on GitHub. Later patches and prereleases keep the generated notes
+ * instead of repeating a body readers already saw on the earlier release.
+ */
+function isMinorDebut(version) {
+  return version.split(".")[2] === "0";
 }
 
 export function validateVersionConsistency(expectedVersion, entries) {
@@ -160,7 +171,8 @@ async function main() {
     `version=${metadata.version}`,
     `release_notes_version=${metadata.releaseNotesVersion}`,
     `release_kind=${metadata.releaseKind}`,
-    `is_prerelease=${String(metadata.isPrerelease)}`
+    `is_prerelease=${String(metadata.isPrerelease)}`,
+    `publishes_release_notes=${String(metadata.publishesReleaseNotes)}`
   ].join("\n");
   await appendFile(outputPath, `${output}\n`, "utf8");
   console.log(
