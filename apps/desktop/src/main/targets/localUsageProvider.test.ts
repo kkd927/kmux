@@ -63,28 +63,15 @@ describe("local usage provider", () => {
   });
 
   it("forces a complete snapshot after a partial scan", async () => {
-    const historyDays = [
-      {
-        dayKey: "2026-07-17",
-        totalCostUsd: 0,
-        reportedCostUsd: 0,
-        estimatedCostUsd: 0,
-        unknownCostTokens: 0,
-        totalTokens: 0,
-        vendors: []
-      }
-    ];
     const scanService: UsageScanService = {
       watch: vi.fn(() => () => undefined),
       scan: vi
         .fn<UsageScanService["scan"]>()
         .mockResolvedValueOnce({
-          reads: [{ sourceCount: 1, samples: [], truncated: true }],
-          historyDays
+          reads: [{ sourceCount: 1, samples: [], truncated: true }]
         })
         .mockResolvedValueOnce({
-          reads: [{ sourceCount: 1, samples: [], truncated: false }],
-          historyDays
+          reads: [{ sourceCount: 1, samples: [], truncated: false }]
         })
         .mockResolvedValueOnce({
           reads: [{ sourceCount: 1, samples: [], truncated: false }]
@@ -100,7 +87,6 @@ describe("local usage provider", () => {
       maxRecords: 100
     });
     expect(partial).toMatchObject({ truncated: true, incremental: false });
-    expect(partial.historyDays).toBeUndefined();
     await expect(
       provider.refresh({
         startAtUnixMs: 0,
@@ -109,8 +95,7 @@ describe("local usage provider", () => {
       })
     ).resolves.toMatchObject({
       truncated: false,
-      incremental: false,
-      historyDays
+      incremental: false
     });
     await expect(
       provider.refresh({
@@ -130,7 +115,7 @@ describe("local usage provider", () => {
     );
   });
 
-  it("keeps complete history aggregates when only the record wire limit truncates", async () => {
+  it("does not force a source rescan when only the record wire limit truncates", async () => {
     const sample = {
       vendor: "claude" as const,
       timestampMs: 1_000,
@@ -142,23 +127,6 @@ describe("local usage provider", () => {
       totalTokens: 12,
       estimatedCostUsd: 0.01
     };
-    const historyDays = [
-      {
-        dayKey: "2026-07-17",
-        totalCostUsd: 0.01,
-        reportedCostUsd: 0,
-        estimatedCostUsd: 0.01,
-        unknownCostTokens: 0,
-        totalTokens: 24,
-        vendors: [
-          {
-            vendor: "claude" as const,
-            totalCostUsd: 0.01,
-            totalTokens: 24
-          }
-        ]
-      }
-    ];
     const scanService: UsageScanService = {
       watch: vi.fn(() => () => undefined),
       scan: vi
@@ -172,8 +140,7 @@ describe("local usage provider", () => {
                 { ...sample, sessionId: "session-2" }
               ]
             }
-          ],
-          historyDays
+          ]
         })
         .mockResolvedValueOnce({
           reads: [{ sourceCount: 1, samples: [] }]
@@ -186,13 +153,11 @@ describe("local usage provider", () => {
     const bounded = await provider.refresh({
       startAtUnixMs: 0,
       initial: true,
-      maxRecords: 1,
-      historyRange: { fromMs: 0, toMs: 2_000 }
+      maxRecords: 1
     });
     expect(bounded).toMatchObject({
       truncated: true,
-      incremental: false,
-      historyDays
+      incremental: false
     });
     expect(bounded.records).toHaveLength(1);
 

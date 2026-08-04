@@ -468,10 +468,7 @@ describe("file-store persistence", () => {
   it("roundtrips usage history with a versioned envelope", async () => {
     const usageHistoryPath = join(sandboxDir, "usage-history.json");
     const persistenceModule = (await import("./index")) as {
-      createUsageHistoryStore?: (
-        path: string,
-        pricingRevision?: string
-      ) => {
+      createUsageHistoryStore?: (path: string) => {
         load(): unknown;
         save(value: unknown): void;
       };
@@ -479,10 +476,7 @@ describe("file-store persistence", () => {
 
     expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
 
-    const store = persistenceModule.createUsageHistoryStore!(
-      usageHistoryPath,
-      "pricing-revision-a"
-    );
+    const store = persistenceModule.createUsageHistoryStore!(usageHistoryPath);
     const days = [
       {
         dayKey: "2026-04-15",
@@ -510,22 +504,15 @@ describe("file-store persistence", () => {
 
     expect(store.load()).toEqual(days);
     expect(JSON.parse(readFileSync(usageHistoryPath, "utf8"))).toEqual({
-      version: 1,
-      pricingRevision: "pricing-revision-a",
+      version: 2,
       days
     });
   });
 
-  it("treats usage history as stale when the pricing revision changes", async () => {
-    const usageHistoryPath = join(
-      sandboxDir,
-      "usage-history-pricing-revision.json"
-    );
+  it("loads v1 usage history regardless of legacy revision metadata and saves it as v2", async () => {
+    const usageHistoryPath = join(sandboxDir, "usage-history-v1.json");
     const persistenceModule = (await import("./index")) as {
-      createUsageHistoryStore?: (
-        path: string,
-        pricingRevision?: string
-      ) => {
+      createUsageHistoryStore?: (path: string) => {
         load(): unknown;
         save(value: unknown): void;
       };
@@ -533,10 +520,6 @@ describe("file-store persistence", () => {
 
     expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
 
-    const initialStore = persistenceModule.createUsageHistoryStore!(
-      usageHistoryPath,
-      "pricing-revision-a"
-    );
     const days = [
       {
         dayKey: "2026-04-16",
@@ -548,57 +531,24 @@ describe("file-store persistence", () => {
         vendors: []
       }
     ];
-    initialStore.save(days);
-
-    const repricedStore = persistenceModule.createUsageHistoryStore!(
+    writeFileSync(
       usageHistoryPath,
-      "pricing-revision-b"
+      JSON.stringify({
+        version: 1,
+        pricingRevision: "obsolete-pricing",
+        aggregationRevision: "obsolete-aggregation",
+        days
+      })
     );
 
-    expect(repricedStore.load()).toEqual([]);
-  });
+    const store = persistenceModule.createUsageHistoryStore!(usageHistoryPath);
+    expect(store.load()).toEqual(days);
 
-  it("treats usage history as stale when the aggregation revision changes", async () => {
-    const usageHistoryPath = join(
-      sandboxDir,
-      "usage-history-aggregation-revision.json"
-    );
-    const persistenceModule = (await import("./index")) as {
-      createUsageHistoryStore?: (
-        path: string,
-        pricingRevision?: string,
-        aggregationRevision?: string
-      ) => {
-        load(): unknown;
-        save(value: unknown): void;
-      };
-    };
-
-    expect(typeof persistenceModule.createUsageHistoryStore).toBe("function");
-
-    const initialStore = persistenceModule.createUsageHistoryStore!(
-      usageHistoryPath,
-      "pricing-revision-a",
-      "aggregation-revision-a"
-    );
-    initialStore.save([
-      {
-        dayKey: "2026-07-12",
-        totalCostUsd: 0,
-        reportedCostUsd: 0,
-        estimatedCostUsd: 0,
-        unknownCostTokens: 100,
-        totalTokens: 100,
-        vendors: []
-      }
-    ]);
-
-    const correctedStore = persistenceModule.createUsageHistoryStore!(
-      usageHistoryPath,
-      "pricing-revision-a",
-      "aggregation-revision-b"
-    );
-    expect(correctedStore.load()).toEqual([]);
+    store.save(days);
+    expect(JSON.parse(readFileSync(usageHistoryPath, "utf8"))).toEqual({
+      version: 2,
+      days
+    });
   });
 
   it("returns the dedicated usage history path in the default app paths", async () => {

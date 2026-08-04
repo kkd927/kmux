@@ -18,10 +18,7 @@ export function createLocalUsageProvider(options: {
       const initial = request.initial || requiresFullRescan;
       const result = await options.scanService.scan({
         startOfDayMs: request.startAtUnixMs,
-        initial,
-        ...(request.historyRange === undefined
-          ? {}
-          : { historyRange: { ...request.historyRange } })
+        initial
       });
       const samples = result.reads.flatMap((read) => read.samples);
       const inventoryTruncated = result.reads.some(
@@ -36,12 +33,7 @@ export function createLocalUsageProvider(options: {
           return record ? [record] : [];
         }),
         truncated,
-        incremental: !initial,
-        ...(result.historyDays === undefined || inventoryTruncated
-          ? {}
-          : {
-              historyDays: result.historyDays.map((day) => structuredClone(day))
-            })
+        incremental: !initial
       };
     },
     watch: (onChange) => options.scanService.watch(onChange),

@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildModelPricingCatalog,
   parseClaudePricingTable,
-  parseGeneratedPricingCatalog,
   parseOpenAiPricingHtml,
   parseOpenAiTextTokenPricingHtml,
-  reconcileHistoricalPricing,
   sortModelPricingEntries
 } from "./update-model-pricing.mjs";
 
@@ -28,73 +27,54 @@ const SONNET_WINDOW_ROWS = [
   ]
 ];
 
-describe("update-model-pricing history", () => {
-  it("reads generated catalogs and carries removed models into exact history", () => {
-    const previousPricing = parseGeneratedPricingCatalog(
-      generatedCatalogSource("MODEL_PRICING", {
-        codex: {
-          standard: [pricingEntry("gpt-7.0-codex", 1_000_000)],
-          fast: [pricingEntry("gpt-7.0-fast-only", 272_000)]
-        }
-      }),
-      "MODEL_PRICING"
-    );
-    const historicalPricing = parseGeneratedPricingCatalog(
-      generatedCatalogSource("HISTORICAL_MODEL_PRICING", {
-        codex: {
-          standard: [
-            {
-              ...pricingEntry("gpt-6.0-codex", 500_000),
-              retiredAt: "2026-01-01"
-            }
-          ]
-        }
-      }),
-      "HISTORICAL_MODEL_PRICING"
-    );
+describe("update-model-pricing catalog versions", () => {
+  it("keeps catalog metadata unchanged when the models payload is unchanged", () => {
+    const models = emptyPricingCatalogs();
+    const currentCatalog = {
+      schemaVersion: 1,
+      catalogVersion: 7,
+      publishedAt: "2026-08-03T00:00:00.000Z",
+      revision: "previous-revision",
+      models
+    };
 
-    const reconciled = reconcileHistoricalPricing({
-      previousPricing,
-      currentPricing: emptyPricingCatalogs(),
-      historicalPricing,
-      retiredAt: "2026-08-04"
-    });
-
-    expect(reconciled.codex.standard).toEqual([
-      expect.objectContaining({
-        modelId: "gpt-7.0-codex",
-        retiredAt: "2026-08-04",
-        tieredPricingThresholdTokens: 1_000_000
-      }),
-      expect.objectContaining({
-        modelId: "gpt-6.0-codex",
-        retiredAt: "2026-01-01",
-        tieredPricingThresholdTokens: 500_000
+    expect(
+      buildModelPricingCatalog({
+        currentCatalog,
+        models: emptyPricingCatalogs(),
+        publishedAt: "2026-08-04T00:00:00.000Z"
       })
-    ]);
-    expect(reconciled.codex.fast).toEqual([
-      expect.objectContaining({
-        modelId: "gpt-7.0-fast-only",
-        retiredAt: "2026-08-04"
-      })
-    ]);
+    ).toBe(currentCatalog);
   });
 
-  it("does not archive models that remain in the current official catalog", () => {
-    const entry = pricingEntry("gpt-7.0-codex", 272_000);
-    const previousPricing = emptyPricingCatalogs();
-    previousPricing.codex.standard = [entry];
-    const currentPricing = emptyPricingCatalogs();
-    currentPricing.codex.standard = [entry];
+  it("increments the version and reproducibly hashes only a changed models payload", () => {
+    const currentModels = emptyPricingCatalogs();
+    const currentCatalog = {
+      schemaVersion: 1,
+      catalogVersion: 7,
+      publishedAt: "2026-08-03T00:00:00.000Z",
+      revision: "previous-revision",
+      models: currentModels
+    };
+    const models = emptyPricingCatalogs();
+    models.codex.standard = [pricingEntry("gpt-7.0", 272_000)];
+    const options = {
+      currentCatalog,
+      models,
+      publishedAt: "2026-08-04T00:00:00.000Z"
+    };
 
-    const reconciled = reconcileHistoricalPricing({
-      previousPricing,
-      currentPricing,
-      historicalPricing: emptyPricingCatalogs(),
-      retiredAt: "2026-08-04"
+    const first = buildModelPricingCatalog(options);
+    const second = buildModelPricingCatalog(options);
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      schemaVersion: 1,
+      catalogVersion: 8,
+      publishedAt: "2026-08-04T00:00:00.000Z",
+      revision: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      models
     });
-
-    expect(reconciled.codex.standard).toEqual([]);
   });
 });
 
@@ -580,18 +560,6 @@ function pricingEntry(modelId, tieredPricingThresholdTokens) {
     cacheReadCostPerToken: 0.0000001,
     tieredPricingThresholdTokens
   };
-}
-
-function generatedCatalogSource(variableName, partialPricing) {
-  const pricing = emptyPricingCatalogs();
-  for (const [vendor, catalog] of Object.entries(partialPricing)) {
-    pricing[vendor] = catalog;
-  }
-  return `const ${variableName}: Record<string, unknown> = ${JSON.stringify(
-    pricing,
-    null,
-    2
-  )};`;
 }
 
 function table(rows) {

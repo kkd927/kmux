@@ -49,8 +49,6 @@ const WATCH_ROOT_RETRY_MS = 60_000;
 const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
 const MAX_USAGE_PARSE_CANDIDATES = 4_096 * 8;
 
-export const USAGE_AGGREGATION_REVISION = "codex-root-authoritative-v2";
-
 export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
 export type UsageCostSource = "reported" | "estimated" | "unavailable";
 
@@ -94,10 +92,6 @@ export interface UsageAdapterDirtyOptions {
 export interface UsageAdapter {
   readonly vendor: UsageVendor;
   initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult>;
-  initialScanRange?(
-    range: UsageTimeRange,
-    cursorDayStartMs: number
-  ): Promise<UsageAdapterReadResult>;
   readIncremental(startOfDayMs: number): Promise<UsageAdapterReadResult>;
   markDirty?(options?: UsageAdapterDirtyOptions): void;
   watch(onChange: () => void): () => void;
@@ -112,20 +106,6 @@ export interface CreateUsageAdaptersOptions {
   platform?: NodeJS.Platform;
 }
 
-export interface UsageHistoryDay {
-  dayKey: string;
-  totalCostUsd: number;
-  reportedCostUsd: number;
-  estimatedCostUsd: number;
-  unknownCostTokens: number;
-  totalTokens: number;
-  vendors: Array<{
-    vendor: Exclude<UsageVendor, "unknown">;
-    totalCostUsd: number;
-    totalTokens: number;
-  }>;
-}
-
 type UsageTimeRange = {
   fromMs: number;
   toMs?: number;
@@ -133,7 +113,6 @@ type UsageTimeRange = {
 
 export interface UsageStartupScanResult {
   reads: UsageAdapterReadResult[];
-  historyDays?: UsageHistoryDay[];
 }
 
 interface JsonlCursor {
@@ -246,15 +225,7 @@ class FileUsageAdapter implements UsageAdapter {
 
   async initialScan(startOfDayMs: number): Promise<UsageAdapterReadResult> {
     this.resetForInitialScan(startOfDayMs);
-    return this.readAllSources({ fromMs: startOfDayMs }, true);
-  }
-
-  async initialScanRange(
-    range: UsageTimeRange,
-    cursorDayStartMs: number
-  ): Promise<UsageAdapterReadResult> {
-    this.resetForInitialScan(cursorDayStartMs);
-    return this.readAllSources(range, true, dayKeyFor(cursorDayStartMs));
+    return this.readAllSources({ fromMs: startOfDayMs });
   }
 
   private resetForInitialScan(startOfDayMs: number): void {
@@ -273,14 +244,7 @@ class FileUsageAdapter implements UsageAdapter {
     if (this.dayKey !== nextDayKey) {
       return this.initialScan(startOfDayMs);
     }
-    return this.readAllSources({ fromMs: startOfDayMs }, true);
-  }
-
-  async scanRange(range: UsageTimeRange): Promise<UsageAdapterReadResult> {
-    this.codexContexts.clear();
-    this.codexTotals.clear();
-    this.antigravityContexts.clear();
-    return this.readAllSources(range, false);
+    return this.readAllSources({ fromMs: startOfDayMs });
   }
 
   markDirty(options: UsageAdapterDirtyOptions = {}): void {
@@ -347,32 +311,21 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   private async readAllSources(
-    range: UsageTimeRange,
-    useCursors: boolean,
-    cursorDayKey = dayKeyFor(range.fromMs)
+    range: UsageTimeRange
   ): Promise<UsageAdapterReadResult> {
     this.refreshAntigravityWorkspaceByConversation();
     const samples: UsageEventSample[] = [];
-    const sources = this.resolveSourcesForRead(useCursors);
+    const sources = this.resolveSourcesForRead();
+    const cursorDayKey = dayKeyFor(range.fromMs);
 
     for (const source of sources) {
       if (source.kind === "json") {
-        for (const sample of this.readJsonSource(
-          source,
-          range,
-          useCursors,
-          cursorDayKey
-        )) {
+        for (const sample of this.readJsonSource(source, range, cursorDayKey)) {
           samples.push(sample);
         }
         continue;
       }
-      for (const sample of this.readJsonlSource(
-        source,
-        range,
-        useCursors,
-        cursorDayKey
-      )) {
+      for (const sample of this.readJsonlSource(source, range, cursorDayKey)) {
         samples.push(sample);
       }
     }
@@ -425,12 +378,7 @@ class FileUsageAdapter implements UsageAdapter {
     }
   }
 
-  private resolveSourcesForRead(useCursors: boolean): SourceDescriptor[] {
-    if (!useCursors) {
-      this.refreshSourceIndex(true);
-      return Array.from(this.sources.values());
-    }
-
+  private resolveSourcesForRead(): SourceDescriptor[] {
     const shouldResyncSourceIndex = this.shouldResyncSourceIndex();
     if (this.sourceIndexDirty || shouldResyncSourceIndex) {
       // A low-frequency resync must also revisit known files so append-only
@@ -571,7 +519,6 @@ class FileUsageAdapter implements UsageAdapter {
   private readJsonlSource(
     source: SourceDescriptor,
     range: UsageTimeRange,
-    useCursors: boolean,
     cursorDayKey: string
   ): UsageEventSample[] {
     const stats = safeStat(source.path);
@@ -584,21 +531,18 @@ class FileUsageAdapter implements UsageAdapter {
     // rollout files replay that same counter, so reading them would count the
     // team's usage once per subagent. The root rollout remains authoritative.
     if (this.isCodexSubagentSource(source.path, Number(stats.ino))) {
-      if (useCursors) {
-        this.cursors.set(source.path, {
-          kind: "jsonl",
-          dayKey: cursorDayKey,
-          offset: Number(stats.size),
-          inode: Number(stats.ino),
-          mtimeMs: Number(stats.mtimeMs)
-        });
-      }
+      this.cursors.set(source.path, {
+        kind: "jsonl",
+        dayKey: cursorDayKey,
+        offset: Number(stats.size),
+        inode: Number(stats.ino),
+        mtimeMs: Number(stats.mtimeMs)
+      });
       return [];
     }
 
     const previous = this.cursors.get(source.path);
     let offset =
-      useCursors &&
       previous?.kind === "jsonl" &&
       previous.dayKey === cursorDayKey &&
       previous.inode === stats.ino &&
@@ -641,15 +585,13 @@ class FileUsageAdapter implements UsageAdapter {
       );
     }
 
-    if (useCursors) {
-      this.cursors.set(source.path, {
-        kind: "jsonl",
-        dayKey: cursorDayKey,
-        offset,
-        inode: Number(stats.ino),
-        mtimeMs: Number(stats.mtimeMs)
-      });
-    }
+    this.cursors.set(source.path, {
+      kind: "jsonl",
+      dayKey: cursorDayKey,
+      offset,
+      inode: Number(stats.ino),
+      mtimeMs: Number(stats.mtimeMs)
+    });
 
     return samples;
   }
@@ -677,7 +619,6 @@ class FileUsageAdapter implements UsageAdapter {
   private readJsonSource(
     source: SourceDescriptor,
     range: UsageTimeRange,
-    useCursors: boolean,
     cursorDayKey: string
   ): UsageEventSample[] {
     const stats = safeStat(source.path);
@@ -688,7 +629,6 @@ class FileUsageAdapter implements UsageAdapter {
 
     const previous = this.cursors.get(source.path);
     if (
-      useCursors &&
       previous?.kind === "json" &&
       previous.dayKey === cursorDayKey &&
       previous.inode === Number(stats.ino) &&
@@ -709,14 +649,12 @@ class FileUsageAdapter implements UsageAdapter {
         range,
         state: this.coreParserState
       });
-      if (useCursors) {
-        this.cursors.set(source.path, {
-          kind: "json",
-          dayKey: cursorDayKey,
-          inode: Number(stats.ino),
-          mtimeMs: Number(stats.mtimeMs)
-        });
-      }
+      this.cursors.set(source.path, {
+        kind: "json",
+        dayKey: cursorDayKey,
+        inode: Number(stats.ino),
+        mtimeMs: Number(stats.mtimeMs)
+      });
       return samples;
     } catch {
       return [];
@@ -986,195 +924,13 @@ export async function scanUsageAdaptersAtStartup(
   adapters: UsageAdapter[],
   options: {
     startOfDayMs: number;
-    historyRange?: { fromMs: number; toMs: number };
   }
 ): Promise<UsageStartupScanResult> {
-  if (!options.historyRange) {
-    return {
-      reads: await Promise.all(
-        adapters.map((adapter) => adapter.initialScan(options.startOfDayMs))
-      )
-    };
-  }
-
-  const scanResults = await Promise.all(
-    adapters.map(async (adapter) => {
-      if (!adapter.initialScanRange) {
-        const read = await adapter.initialScan(options.startOfDayMs);
-        return { read, historySamples: read.samples };
-      }
-      const historyRead = await adapter.initialScanRange(
-        options.historyRange!,
-        options.startOfDayMs
-      );
-      return {
-        read: {
-          sourceCount: historyRead.sourceCount,
-          truncated: historyRead.truncated,
-          ...(historyRead.diagnostics === undefined
-            ? {}
-            : {
-                diagnostics: historyRead.diagnostics.map((diagnostic) => ({
-                  ...diagnostic
-                }))
-              }),
-          samples: historyRead.samples.filter(
-            (sample) => sample.timestampMs >= options.startOfDayMs
-          )
-        },
-        historySamples: historyRead.samples
-      };
-    })
-  );
-
   return {
-    reads: scanResults.map((result) => result.read),
-    historyDays: summarizeUsageHistorySampleGroups(
-      scanResults.map((result) => result.historySamples)
+    reads: await Promise.all(
+      adapters.map((adapter) => adapter.initialScan(options.startOfDayMs))
     )
   };
-}
-
-export async function scanUsageHistoryDays(options: {
-  env?: NodeJS.ProcessEnv;
-  homeDir?: string;
-  agentStorageRoots?: AgentStorageRoots;
-  agentSettings?: AgentScopeSettings;
-  platform?: NodeJS.Platform;
-  fromMs: number;
-  toMs: number;
-}): Promise<UsageHistoryDay[]> {
-  const adapters = createUsageAdapters({
-    env: options.env,
-    homeDir: options.homeDir,
-    agentStorageRoots: options.agentStorageRoots,
-    agentSettings: options.agentSettings,
-    platform: options.platform
-  });
-  const historySamples = new Map<string, UsageEventSample>();
-
-  try {
-    for (const adapter of adapters) {
-      if (!(adapter instanceof FileUsageAdapter)) {
-        continue;
-      }
-      const result = await adapter.scanRange({
-        fromMs: options.fromMs,
-        toMs: options.toMs
-      });
-      appendUsageHistorySamples(historySamples, result.samples);
-    }
-  } finally {
-    for (const adapter of adapters) {
-      adapter.close();
-    }
-  }
-
-  return summarizeDedupedUsageHistorySamples(historySamples.values());
-}
-
-function summarizeUsageHistorySampleGroups(
-  sampleGroups: Iterable<Iterable<UsageEventSample>>
-): UsageHistoryDay[] {
-  const historySamples = new Map<string, UsageEventSample>();
-  for (const samples of sampleGroups) {
-    appendUsageHistorySamples(historySamples, samples);
-  }
-  return summarizeDedupedUsageHistorySamples(historySamples.values());
-}
-
-function appendUsageHistorySamples(
-  historySamples: Map<string, UsageEventSample>,
-  samples: Iterable<UsageEventSample>
-): void {
-  for (const sample of samples) {
-    if (sample.vendor === "unknown") {
-      continue;
-    }
-    const identity = usageHistorySampleIdentity(sample);
-    const existingSample = historySamples.get(identity);
-    if (existingSample) {
-      if (shouldReplaceUsageSample(existingSample, sample)) {
-        historySamples.set(identity, sample);
-      }
-      continue;
-    }
-    historySamples.set(identity, sample);
-  }
-}
-
-function summarizeDedupedUsageHistorySamples(
-  historySamples: Iterable<UsageEventSample>
-): UsageHistoryDay[] {
-  const bucketMap = new Map<
-    string,
-    {
-      dayKey: string;
-      totalCostUsd: number;
-      reportedCostUsd: number;
-      estimatedCostUsd: number;
-      unknownCostTokens: number;
-      totalTokens: number;
-      vendors: Map<
-        Exclude<UsageVendor, "unknown">,
-        {
-          vendor: Exclude<UsageVendor, "unknown">;
-          totalCostUsd: number;
-          totalTokens: number;
-        }
-      >;
-    }
-  >();
-  for (const sample of historySamples) {
-    const dayKey = dayKeyFor(sample.timestampMs);
-    const dayBucket = bucketMap.get(dayKey) ?? {
-      dayKey,
-      totalCostUsd: 0,
-      reportedCostUsd: 0,
-      estimatedCostUsd: 0,
-      unknownCostTokens: 0,
-      totalTokens: 0,
-      vendors: new Map()
-    };
-    const sampleCostSource = normalizeSampleCostSource(sample);
-    dayBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
-    dayBucket.totalTokens += sample.totalTokens;
-    if (sampleCostSource === "reported") {
-      dayBucket.reportedCostUsd += sample.estimatedCostUsd;
-    } else if (sampleCostSource === "estimated") {
-      dayBucket.estimatedCostUsd += sample.estimatedCostUsd;
-    } else {
-      dayBucket.unknownCostTokens += sample.totalTokens;
-    }
-
-    const vendorBucket = dayBucket.vendors.get(sample.vendor) ?? {
-      vendor: sample.vendor,
-      totalCostUsd: 0,
-      totalTokens: 0
-    };
-    vendorBucket.totalCostUsd += pricedCostForSample(sample, sampleCostSource);
-    vendorBucket.totalTokens += sample.totalTokens;
-    dayBucket.vendors.set(sample.vendor, vendorBucket);
-    bucketMap.set(dayKey, dayBucket);
-  }
-
-  return Array.from(bucketMap.values())
-    .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
-    .map((bucket) => ({
-      dayKey: bucket.dayKey,
-      totalCostUsd: bucket.totalCostUsd,
-      reportedCostUsd: bucket.reportedCostUsd,
-      estimatedCostUsd: bucket.estimatedCostUsd,
-      unknownCostTokens: bucket.unknownCostTokens,
-      totalTokens: bucket.totalTokens,
-      vendors: Array.from(bucket.vendors.values())
-        .map((vendor) => ({
-          vendor: vendor.vendor,
-          totalCostUsd: vendor.totalCostUsd,
-          totalTokens: vendor.totalTokens
-        }))
-        .sort((left, right) => right.totalCostUsd - left.totalCostUsd)
-    }));
 }
 
 function shouldUseRecursiveUsageWatch(platform: NodeJS.Platform): boolean {
@@ -1378,20 +1134,6 @@ function stringMapEquals(
   return true;
 }
 
-function normalizeSampleCostSource(sample: UsageEventSample): UsageCostSource {
-  if (sample.costSource) {
-    return sample.costSource;
-  }
-  return sample.estimatedCostUsd > 0 ? "reported" : "unavailable";
-}
-
-function pricedCostForSample(
-  sample: UsageEventSample,
-  costSource = normalizeSampleCostSource(sample)
-): number {
-  return costSource === "unavailable" ? 0 : sample.estimatedCostUsd;
-}
-
 export function usageSampleIdentity(sample: UsageEventSample): string {
   return coreUsageSampleIdentity(sample);
 }
@@ -1401,12 +1143,6 @@ export function shouldReplaceUsageSample(
   candidate: UsageEventSample
 ): boolean {
   return shouldReplaceCoreUsageSample(existing, candidate);
-}
-
-function usageHistorySampleIdentity(sample: UsageEventSample): string {
-  return [dayKeyFor(sample.timestampMs), usageSampleIdentity(sample)].join(
-    "\t"
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

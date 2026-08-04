@@ -1,0 +1,606 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": 1,
+  "publishedAt": "2026-08-04T00:00:00.000Z",
+  "revision": "a3bd7c8a8b4144f50447493eaa57dcdd62c89b51dc0d03ef9f56112ec04b6745",
+  "models": {
+    "claude": {
+      "standard": [
+        {
+          "modelId": "claude-sonnet-5",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.00001,
+          "cacheReadCostPerToken": 2e-7,
+          "cacheCreateCostPerToken": 0.0000025,
+          "aliases": ["claude-sonnet-5"]
+        },
+        {
+          "modelId": "claude-opus-5",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000025,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "aliases": ["claude-opus-5"]
+        },
+        {
+          "modelId": "claude-mythos-5",
+          "inputCostPerToken": 0.00001,
+          "outputCostPerToken": 0.00005,
+          "cacheReadCostPerToken": 0.000001,
+          "cacheCreateCostPerToken": 0.0000125,
+          "aliases": ["claude-mythos-5"]
+        },
+        {
+          "modelId": "claude-fable-5",
+          "inputCostPerToken": 0.00001,
+          "outputCostPerToken": 0.00005,
+          "cacheReadCostPerToken": 0.000001,
+          "cacheCreateCostPerToken": 0.0000125,
+          "aliases": ["claude-fable-5"]
+        },
+        {
+          "modelId": "claude-opus-4-8",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000025,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "aliases": ["claude-opus-4.8"]
+        },
+        {
+          "modelId": "claude-opus-4-7",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000025,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "aliases": ["claude-opus-4.7"]
+        },
+        {
+          "modelId": "claude-sonnet-4-6",
+          "inputCostPerToken": 0.000003,
+          "outputCostPerToken": 0.000015,
+          "cacheReadCostPerToken": 3e-7,
+          "cacheCreateCostPerToken": 0.00000375,
+          "aliases": ["claude-sonnet-4.6"]
+        },
+        {
+          "modelId": "claude-opus-4-6",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000025,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "aliases": ["claude-opus-4.6"]
+        },
+        {
+          "modelId": "claude-sonnet-4-5",
+          "inputCostPerToken": 0.000003,
+          "outputCostPerToken": 0.000015,
+          "cacheReadCostPerToken": 3e-7,
+          "cacheCreateCostPerToken": 0.00000375,
+          "aliases": ["claude-sonnet-4.5"]
+        },
+        {
+          "modelId": "claude-opus-4-5",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000025,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "aliases": ["claude-opus-4.5"]
+        },
+        {
+          "modelId": "claude-haiku-4-5",
+          "inputCostPerToken": 0.000001,
+          "outputCostPerToken": 0.000005,
+          "cacheReadCostPerToken": 1e-7,
+          "cacheCreateCostPerToken": 0.00000125,
+          "aliases": ["claude-haiku-4.5"]
+        },
+        {
+          "modelId": "claude-opus-4-1",
+          "inputCostPerToken": 0.000015,
+          "outputCostPerToken": 0.000075,
+          "cacheReadCostPerToken": 0.0000015,
+          "cacheCreateCostPerToken": 0.00001875,
+          "aliases": ["claude-opus-4.1"]
+        },
+        {
+          "modelId": "claude-sonnet-4",
+          "inputCostPerToken": 0.000003,
+          "outputCostPerToken": 0.000015,
+          "cacheReadCostPerToken": 3e-7,
+          "cacheCreateCostPerToken": 0.00000375,
+          "aliases": ["claude-sonnet-4"]
+        },
+        {
+          "modelId": "claude-opus-4",
+          "inputCostPerToken": 0.000015,
+          "outputCostPerToken": 0.000075,
+          "cacheReadCostPerToken": 0.0000015,
+          "cacheCreateCostPerToken": 0.00001875,
+          "aliases": ["claude-opus-4"]
+        },
+        {
+          "modelId": "claude-haiku-3-5",
+          "inputCostPerToken": 8e-7,
+          "outputCostPerToken": 0.000004,
+          "cacheReadCostPerToken": 8e-8,
+          "cacheCreateCostPerToken": 0.000001,
+          "aliases": ["claude-haiku-3.5"]
+        }
+      ]
+    },
+    "codex": {
+      "standard": [
+        {
+          "modelId": "gpt-5.6-sol",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.00003,
+          "cacheReadCostPerToken": 5e-7,
+          "cacheCreateCostPerToken": 0.00000625,
+          "inputCostPerTokenAboveThreshold": 0.00001,
+          "outputCostPerTokenAboveThreshold": 0.000045,
+          "cacheReadCostPerTokenAboveThreshold": 0.000001,
+          "cacheCreateCostPerTokenAboveThreshold": 0.0000125,
+          "tieredPricingThresholdTokens": 272000,
+          "aliases": ["gpt-5.6"]
+        },
+        {
+          "modelId": "gpt-5.6-terra",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000012,
+          "cacheReadCostPerToken": 2e-7,
+          "cacheCreateCostPerToken": 0.0000025,
+          "inputCostPerTokenAboveThreshold": 0.000004,
+          "outputCostPerTokenAboveThreshold": 0.000018,
+          "cacheReadCostPerTokenAboveThreshold": 4e-7,
+          "cacheCreateCostPerTokenAboveThreshold": 0.000005,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.6-luna",
+          "inputCostPerToken": 2e-7,
+          "outputCostPerToken": 0.0000012,
+          "cacheReadCostPerToken": 2e-8,
+          "cacheCreateCostPerToken": 2.5e-7,
+          "inputCostPerTokenAboveThreshold": 4e-7,
+          "outputCostPerTokenAboveThreshold": 0.0000018,
+          "cacheReadCostPerTokenAboveThreshold": 4e-8,
+          "cacheCreateCostPerTokenAboveThreshold": 5e-7,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.5",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.00003,
+          "cacheReadCostPerToken": 5e-7,
+          "inputCostPerTokenAboveThreshold": 0.00001,
+          "outputCostPerTokenAboveThreshold": 0.000045,
+          "cacheReadCostPerTokenAboveThreshold": 0.000001,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.5-pro",
+          "inputCostPerToken": 0.00003,
+          "outputCostPerToken": 0.00018,
+          "cacheReadCostPerToken": 0,
+          "inputCostPerTokenAboveThreshold": 0.00006,
+          "outputCostPerTokenAboveThreshold": 0.00027,
+          "cacheReadCostPerTokenAboveThreshold": 0,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.4",
+          "inputCostPerToken": 0.0000025,
+          "outputCostPerToken": 0.000015,
+          "cacheReadCostPerToken": 2.5e-7,
+          "inputCostPerTokenAboveThreshold": 0.000005,
+          "outputCostPerTokenAboveThreshold": 0.0000225,
+          "cacheReadCostPerTokenAboveThreshold": 5e-7,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.4-mini",
+          "inputCostPerToken": 7.5e-7,
+          "outputCostPerToken": 0.0000045,
+          "cacheReadCostPerToken": 7.5e-8
+        },
+        {
+          "modelId": "gpt-5.4-nano",
+          "inputCostPerToken": 2e-7,
+          "outputCostPerToken": 0.00000125,
+          "cacheReadCostPerToken": 2e-8
+        },
+        {
+          "modelId": "gpt-5.4-pro",
+          "inputCostPerToken": 0.00003,
+          "outputCostPerToken": 0.00018,
+          "cacheReadCostPerToken": 0,
+          "inputCostPerTokenAboveThreshold": 0.00006,
+          "outputCostPerTokenAboveThreshold": 0.00027,
+          "cacheReadCostPerTokenAboveThreshold": 0,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
+          "modelId": "gpt-5.3-codex",
+          "inputCostPerToken": 0.00000175,
+          "outputCostPerToken": 0.000014,
+          "cacheReadCostPerToken": 1.75e-7
+        },
+        {
+          "modelId": "gpt-5.2",
+          "inputCostPerToken": 0.00000175,
+          "outputCostPerToken": 0.000014,
+          "cacheReadCostPerToken": 1.75e-7
+        },
+        {
+          "modelId": "gpt-5.2-pro",
+          "inputCostPerToken": 0.000021,
+          "outputCostPerToken": 0.000168,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-5.1",
+          "inputCostPerToken": 0.00000125,
+          "outputCostPerToken": 0.00001,
+          "cacheReadCostPerToken": 1.25e-7
+        },
+        {
+          "modelId": "gpt-5",
+          "inputCostPerToken": 0.00000125,
+          "outputCostPerToken": 0.00001,
+          "cacheReadCostPerToken": 1.25e-7
+        },
+        {
+          "modelId": "gpt-5-mini",
+          "inputCostPerToken": 2.5e-7,
+          "outputCostPerToken": 0.000002,
+          "cacheReadCostPerToken": 2.5e-8
+        },
+        {
+          "modelId": "gpt-5-nano",
+          "inputCostPerToken": 5e-8,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 5e-9
+        },
+        {
+          "modelId": "gpt-5-pro",
+          "inputCostPerToken": 0.000015,
+          "outputCostPerToken": 0.00012,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-4.1",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000008,
+          "cacheReadCostPerToken": 5e-7
+        },
+        {
+          "modelId": "gpt-4.1-mini",
+          "inputCostPerToken": 4e-7,
+          "outputCostPerToken": 0.0000016,
+          "cacheReadCostPerToken": 1e-7
+        },
+        {
+          "modelId": "gpt-4.1-nano",
+          "inputCostPerToken": 1e-7,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 2.5e-8
+        },
+        {
+          "modelId": "gpt-4-turbo-2024-04-09",
+          "inputCostPerToken": 0.00001,
+          "outputCostPerToken": 0.00003,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-4-0613",
+          "inputCostPerToken": 0.00003,
+          "outputCostPerToken": 0.00006,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-3.5-turbo",
+          "inputCostPerToken": 5e-7,
+          "outputCostPerToken": 0.0000015,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-3.5-turbo-0125",
+          "inputCostPerToken": 5e-7,
+          "outputCostPerToken": 0.0000015,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-3.5-turbo-1106",
+          "inputCostPerToken": 0.000001,
+          "outputCostPerToken": 0.000002,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-3.5-turbo-instruct",
+          "inputCostPerToken": 0.0000015,
+          "outputCostPerToken": 0.000002,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gpt-4o-2024-05-13",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.000015,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "o4-mini",
+          "inputCostPerToken": 0.0000011,
+          "outputCostPerToken": 0.0000044,
+          "cacheReadCostPerToken": 2.75e-7
+        },
+        {
+          "modelId": "gpt-4o-mini",
+          "inputCostPerToken": 1.5e-7,
+          "outputCostPerToken": 6e-7,
+          "cacheReadCostPerToken": 7.5e-8
+        },
+        {
+          "modelId": "gpt-4o",
+          "inputCostPerToken": 0.0000025,
+          "outputCostPerToken": 0.00001,
+          "cacheReadCostPerToken": 0.00000125
+        },
+        {
+          "modelId": "o3-pro",
+          "inputCostPerToken": 0.00002,
+          "outputCostPerToken": 0.00008,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "o3-mini",
+          "inputCostPerToken": 0.0000011,
+          "outputCostPerToken": 0.0000044,
+          "cacheReadCostPerToken": 5.5e-7
+        },
+        {
+          "modelId": "o3",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000008,
+          "cacheReadCostPerToken": 5e-7
+        },
+        {
+          "modelId": "davinci-002",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000002,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "babbage-002",
+          "inputCostPerToken": 4e-7,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "o1-pro",
+          "inputCostPerToken": 0.00015,
+          "outputCostPerToken": 0.0006,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "o1",
+          "inputCostPerToken": 0.000015,
+          "outputCostPerToken": 0.00006,
+          "cacheReadCostPerToken": 0.0000075
+        }
+      ],
+      "fast": [
+        {
+          "modelId": "gpt-5.6-sol",
+          "inputCostPerToken": 0.00001,
+          "outputCostPerToken": 0.00006,
+          "cacheReadCostPerToken": 0.000001,
+          "cacheCreateCostPerToken": 0.0000125,
+          "aliases": ["gpt-5.6"]
+        },
+        {
+          "modelId": "gpt-5.6-terra",
+          "inputCostPerToken": 0.000004,
+          "outputCostPerToken": 0.000024,
+          "cacheReadCostPerToken": 4e-7,
+          "cacheCreateCostPerToken": 0.000005
+        },
+        {
+          "modelId": "gpt-5.6-luna",
+          "inputCostPerToken": 4e-7,
+          "outputCostPerToken": 0.0000024,
+          "cacheReadCostPerToken": 4e-8,
+          "cacheCreateCostPerToken": 5e-7
+        },
+        {
+          "modelId": "gpt-5.5",
+          "inputCostPerToken": 0.0000125,
+          "outputCostPerToken": 0.000075,
+          "cacheReadCostPerToken": 0.00000125
+        },
+        {
+          "modelId": "gpt-5.4",
+          "inputCostPerToken": 0.000005,
+          "outputCostPerToken": 0.00003,
+          "cacheReadCostPerToken": 5e-7
+        },
+        {
+          "modelId": "gpt-5.4-mini",
+          "inputCostPerToken": 0.0000015,
+          "outputCostPerToken": 0.000009,
+          "cacheReadCostPerToken": 1.5e-7
+        },
+        {
+          "modelId": "gpt-5.3-codex",
+          "inputCostPerToken": 0.0000035,
+          "outputCostPerToken": 0.000028,
+          "cacheReadCostPerToken": 3.5e-7
+        },
+        {
+          "modelId": "gpt-5.2",
+          "inputCostPerToken": 0.0000035,
+          "outputCostPerToken": 0.000028,
+          "cacheReadCostPerToken": 3.5e-7
+        },
+        {
+          "modelId": "gpt-5.1",
+          "inputCostPerToken": 0.0000025,
+          "outputCostPerToken": 0.00002,
+          "cacheReadCostPerToken": 2.5e-7
+        },
+        {
+          "modelId": "gpt-5",
+          "inputCostPerToken": 0.0000025,
+          "outputCostPerToken": 0.00002,
+          "cacheReadCostPerToken": 2.5e-7
+        },
+        {
+          "modelId": "gpt-5-mini",
+          "inputCostPerToken": 4.5e-7,
+          "outputCostPerToken": 0.0000036,
+          "cacheReadCostPerToken": 4.5e-8
+        },
+        {
+          "modelId": "gpt-4.1",
+          "inputCostPerToken": 0.0000035,
+          "outputCostPerToken": 0.000014,
+          "cacheReadCostPerToken": 8.75e-7
+        },
+        {
+          "modelId": "gpt-4.1-mini",
+          "inputCostPerToken": 7e-7,
+          "outputCostPerToken": 0.0000028,
+          "cacheReadCostPerToken": 1.75e-7
+        },
+        {
+          "modelId": "gpt-4.1-nano",
+          "inputCostPerToken": 2e-7,
+          "outputCostPerToken": 8e-7,
+          "cacheReadCostPerToken": 5e-8
+        },
+        {
+          "modelId": "gpt-4o-2024-05-13",
+          "inputCostPerToken": 0.00000875,
+          "outputCostPerToken": 0.00002625,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "o4-mini",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000008,
+          "cacheReadCostPerToken": 5e-7
+        },
+        {
+          "modelId": "gpt-4o-mini",
+          "inputCostPerToken": 2.5e-7,
+          "outputCostPerToken": 0.000001,
+          "cacheReadCostPerToken": 1.25e-7
+        },
+        {
+          "modelId": "gpt-4o",
+          "inputCostPerToken": 0.00000425,
+          "outputCostPerToken": 0.000017,
+          "cacheReadCostPerToken": 0.000002125
+        },
+        {
+          "modelId": "o3",
+          "inputCostPerToken": 0.0000035,
+          "outputCostPerToken": 0.000014,
+          "cacheReadCostPerToken": 8.75e-7
+        }
+      ]
+    },
+    "gemini": {
+      "standard": [
+        {
+          "modelId": "gemini-3.6-flash",
+          "inputCostPerToken": 0.0000015,
+          "outputCostPerToken": 0.0000075,
+          "cacheReadCostPerToken": 1.5e-7
+        },
+        {
+          "modelId": "gemini-3.5-flash-lite",
+          "inputCostPerToken": 3e-7,
+          "outputCostPerToken": 0.0000025,
+          "cacheReadCostPerToken": 3e-8
+        },
+        {
+          "modelId": "gemini-3.5-flash",
+          "inputCostPerToken": 0.0000015,
+          "outputCostPerToken": 0.000009,
+          "cacheReadCostPerToken": 1.5e-7,
+          "aliases": [
+            "Gemini 3.5 Flash (Low)",
+            "Gemini 3.5 Flash (Medium)",
+            "Gemini 3.5 Flash (High)",
+            "gemini-3.5-flash-low",
+            "gemini-3.5-flash-medium",
+            "gemini-3.5-flash-high"
+          ]
+        },
+        {
+          "modelId": "gemini-3.1-pro-preview",
+          "inputCostPerToken": 0.000002,
+          "outputCostPerToken": 0.000012,
+          "cacheReadCostPerToken": 2e-7,
+          "inputCostPerTokenAboveThreshold": 0.000004,
+          "outputCostPerTokenAboveThreshold": 0.000018,
+          "cacheReadCostPerTokenAboveThreshold": 4e-7,
+          "cacheCreateCostPerTokenAboveThreshold": 4e-7,
+          "aliases": ["gemini-3.1-pro-preview-customtools"]
+        },
+        {
+          "modelId": "gemini-3.1-flash-lite",
+          "inputCostPerToken": 2.5e-7,
+          "outputCostPerToken": 0.0000015,
+          "cacheReadCostPerToken": 2.5e-8
+        },
+        {
+          "modelId": "gemini-3-flash-preview",
+          "inputCostPerToken": 5e-7,
+          "outputCostPerToken": 0.000003,
+          "cacheReadCostPerToken": 5e-8
+        },
+        {
+          "modelId": "gemini-2.5-pro",
+          "inputCostPerToken": 0.00000125,
+          "outputCostPerToken": 0.00001,
+          "cacheReadCostPerToken": 1.25e-7,
+          "inputCostPerTokenAboveThreshold": 0.0000025,
+          "outputCostPerTokenAboveThreshold": 0.000015,
+          "cacheReadCostPerTokenAboveThreshold": 2.5e-7,
+          "cacheCreateCostPerTokenAboveThreshold": 2.5e-7
+        },
+        {
+          "modelId": "gemini-2.5-flash-lite-preview",
+          "inputCostPerToken": 1e-7,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 1e-8
+        },
+        {
+          "modelId": "gemini-2.5-flash-lite",
+          "inputCostPerToken": 1e-7,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 1e-8
+        },
+        {
+          "modelId": "gemini-2.5-flash",
+          "inputCostPerToken": 3e-7,
+          "outputCostPerToken": 0.0000025,
+          "cacheReadCostPerToken": 3e-8
+        },
+        {
+          "modelId": "gemini-2.0-flash-lite",
+          "inputCostPerToken": 7.5e-8,
+          "outputCostPerToken": 3e-7,
+          "cacheReadCostPerToken": 0
+        },
+        {
+          "modelId": "gemini-2.0-flash",
+          "inputCostPerToken": 1e-7,
+          "outputCostPerToken": 4e-7,
+          "cacheReadCostPerToken": 2.5e-8
+        }
+      ]
+    }
+  }
+}

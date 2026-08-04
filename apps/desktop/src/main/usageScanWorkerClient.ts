@@ -8,7 +8,6 @@ import type {
   AgentStorageRoots,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
-  UsageHistoryDay,
   UsageVendor
 } from "@kmux/metadata";
 import type { AgentScopeSettings } from "@kmux/proto";
@@ -21,7 +20,6 @@ import type {
 
 export interface UsageScanResult {
   reads: UsageAdapterReadResult[];
-  historyDays?: UsageHistoryDay[];
 }
 
 export interface UsageScanService {
@@ -29,7 +27,6 @@ export interface UsageScanService {
   scan(options: {
     startOfDayMs: number;
     initial: boolean;
-    historyRange?: { fromMs: number; toMs: number };
   }): Promise<UsageScanResult>;
   markDirty(
     vendor: Exclude<UsageVendor, "unknown">,
@@ -293,17 +290,13 @@ export function createUsageScanWorkerClient(
         type: "scan",
         requestId,
         startOfDayMs: scanOptions.startOfDayMs,
-        initial: scanOptions.initial,
-        ...(scanOptions.historyRange
-          ? { historyRange: scanOptions.historyRange }
-          : {})
+        initial: scanOptions.initial
       });
       if (message.type !== "scan-result") {
         throw new Error("usage scan worker returned an invalid scan response");
       }
       return {
-        reads: message.reads,
-        ...(message.historyDays ? { historyDays: message.historyDays } : {})
+        reads: message.reads
       };
     },
     markDirty(vendor, dirtyOptions) {

@@ -2,7 +2,7 @@ name: Update model pricing
 
 on:
   schedule:
-    - cron: "17 18 * * 0"
+    - cron: "17 18 * * *"
   workflow_dispatch:
 
 permissions:
@@ -25,15 +25,17 @@ jobs:
           scripts/update-model-pricing.test.mjs
           packages/metadata/src/modelPricing.test.ts
           packages/metadata/src/usage.test.ts
+          apps/desktop/src/main/modelPricingCatalogRuntime.test.ts
+          apps/desktop/src/main/usageRuntime.test.ts
       - run: npm run typecheck
       - run: npm run check:model-pricing
       - uses: peter-evans/create-pull-request@v7
         with:
-          branch: codex/update-model-pricing
+          branch: update-model-pricing
           commit-message: Update model pricing metadata
           title: Update model pricing metadata
           body: |
-            Automated weekly refresh from official model pricing pages.
+            Automated daily refresh from official model pricing pages.
 
             Sources:
             - https://docs.anthropic.com/en/docs/about-claude/pricing

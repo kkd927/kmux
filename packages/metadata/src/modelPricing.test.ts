@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BUNDLED_MODEL_PRICING_CATALOG,
+  calculateModelPricingRevision,
+  createModelPricingResolver,
   estimateUsageComponentCosts,
   estimateUsageComponentCostsForCatalog,
   resolveCanonicalModelId,
-  type HistoricalPricingCatalog,
+  validateModelPricingCatalog,
+  type ModelPricingCatalogDocument,
   type PricingCatalog,
   type PricingEntry
 } from "./modelPricing";
@@ -36,21 +40,6 @@ const SYNTHETIC_CODEX_PRICING = {
   ]
 } satisfies PricingCatalog;
 
-const SYNTHETIC_HISTORICAL_CODEX_PRICING = {
-  standard: [
-    {
-      ...pricingEntry("gpt-7.2-codex", 1.5, 6, 0.375),
-      retiredAt: "2026-08-04"
-    }
-  ],
-  fast: [
-    {
-      ...pricingEntry("gpt-7.2-codex", 3, 12, 0.75),
-      retiredAt: "2026-08-04"
-    }
-  ]
-} satisfies HistoricalPricingCatalog;
-
 function pricingEntry(
   modelId: string,
   inputPerMillion: number,
@@ -68,6 +57,67 @@ function pricingEntry(
 }
 
 describe("model pricing", () => {
+  it("loads a canonical bundled catalog with a verified models revision", () => {
+    expect(BUNDLED_MODEL_PRICING_CATALOG).toMatchObject({
+      schemaVersion: 1,
+      catalogVersion: 1,
+      publishedAt: "2026-08-04T00:00:00.000Z"
+    });
+    expect(BUNDLED_MODEL_PRICING_CATALOG.revision).toBe(
+      calculateModelPricingRevision(BUNDLED_MODEL_PRICING_CATALOG.models)
+    );
+  });
+
+  it("creates isolated resolvers from validated catalog documents", () => {
+    const catalog = structuredClone(BUNDLED_MODEL_PRICING_CATALOG);
+    const sonnet = catalog.models.claude.standard.find(
+      (entry) => entry.modelId === "claude-sonnet-5"
+    )!;
+    sonnet.inputCostPerToken = 0.25;
+    catalog.catalogVersion += 1;
+    catalog.revision = calculateModelPricingRevision(catalog.models);
+
+    const resolver = createModelPricingResolver(catalog);
+
+    expect(
+      resolver.estimateUsageComponentCosts({
+        vendor: "claude",
+        model: "claude-sonnet-5",
+        inputTokens: 2,
+        outputTokens: 0
+      })?.inputCostUsd
+    ).toBe(0.5);
+    expect(
+      estimateUsageComponentCosts({
+        vendor: "claude",
+        model: "claude-sonnet-5",
+        inputTokens: 2,
+        outputTokens: 0
+      })?.inputCostUsd
+    ).not.toBe(0.5);
+  });
+
+  it("rejects unsupported keys and invalid prices", () => {
+    const withUnsupportedKey = {
+      ...structuredClone(BUNDLED_MODEL_PRICING_CATALOG),
+      unexpected: true
+    };
+    expect(() => validateModelPricingCatalog(withUnsupportedKey)).toThrow(
+      /catalog keys are invalid/u
+    );
+
+    const withNegativePrice = structuredClone(
+      BUNDLED_MODEL_PRICING_CATALOG
+    ) as ModelPricingCatalogDocument;
+    withNegativePrice.models.claude.standard[0].inputCostPerToken = -1;
+    withNegativePrice.revision = calculateModelPricingRevision(
+      withNegativePrice.models
+    );
+    expect(() => validateModelPricingCatalog(withNegativePrice)).toThrow(
+      /finite non-negative/u
+    );
+  });
+
   it.each([
     ["Gemini 3.5 Flash (Medium)", "gemini-3.5-flash"],
     ["Gemini 3.5 Flash (High)", "gemini-3.5-flash"],
@@ -87,9 +137,9 @@ describe("model pricing", () => {
   });
 
   it("canonicalizes the official GPT-5.6 alias to GPT-5.6 Sol", () => {
-    expect(
-      resolveCanonicalModelId({ vendor: "codex", model: "gpt-5.6" })
-    ).toBe("gpt-5.6-sol");
+    expect(resolveCanonicalModelId({ vendor: "codex", model: "gpt-5.6" })).toBe(
+      "gpt-5.6-sol"
+    );
   });
 
   it("uses GPT-5.6 Sol pricing for the GPT-5.6 alias in Fast mode", () => {
@@ -117,35 +167,6 @@ describe("model pricing", () => {
       })
     );
   });
-
-  it.each([
-    ["gpt-5.2-codex", 1.75, 14],
-    ["gpt-5.1-codex-max", 1.25, 10],
-    ["gpt-5.1-codex", 1.25, 10],
-    ["gpt-5.1-codex-mini", 0.25, 2],
-    ["gpt-5-codex", 1.25, 10],
-    ["codex-mini-latest", 1.5, 6]
-  ])(
-    "keeps retired Codex model usage priceable: %s",
-    (model, inputPerMillion, outputPerMillion) => {
-      expect(
-        estimateUsageComponentCosts({
-          vendor: "codex",
-          model,
-          pricingMode: "fast",
-          inputTokens: 1_000_000,
-          outputTokens: 1_000_000
-        })
-      ).toEqual(
-        expect.objectContaining({
-          modelId: model,
-          inputCostUsd: expect.closeTo(inputPerMillion, 8),
-          outputCostUsd: expect.closeTo(outputPerMillion, 8)
-        })
-      );
-      expect(resolveCanonicalModelId({ vendor: "codex", model })).toBe(model);
-    }
-  );
 
   it.each([
     ["gemini", "Gemini 4.0"],
@@ -186,94 +207,6 @@ describe("model pricing", () => {
         outputCostUsd: expect.closeTo(0.002, 8),
         thinkingCostUsd: expect.closeTo(0.0005, 8),
         cacheReadCostUsd: expect.closeTo(0.00008, 8)
-      })
-    );
-  });
-
-  it("uses an exact historical price before current forward compatibility", () => {
-    const estimate = estimateUsageComponentCostsForCatalog(
-      SYNTHETIC_CODEX_PRICING,
-      {
-        vendor: "codex",
-        model: "gpt-7.2-codex",
-        inputTokens: 1_000,
-        outputTokens: 100
-      },
-      SYNTHETIC_HISTORICAL_CODEX_PRICING
-    );
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gpt-7.2-codex",
-        inputCostUsd: expect.closeTo(0.0015, 8),
-        outputCostUsd: expect.closeTo(0.0006, 8)
-      })
-    );
-  });
-
-  it("keeps retired Fast pricing independent from retired Standard pricing", () => {
-    const estimate = estimateUsageComponentCostsForCatalog(
-      SYNTHETIC_CODEX_PRICING,
-      {
-        vendor: "codex",
-        model: "gpt-7.2-codex",
-        pricingMode: "fast",
-        inputTokens: 1_000,
-        outputTokens: 100
-      },
-      SYNTHETIC_HISTORICAL_CODEX_PRICING
-    );
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gpt-7.2-codex",
-        inputCostUsd: expect.closeTo(0.003, 8),
-        outputCostUsd: expect.closeTo(0.0012, 8)
-      })
-    );
-  });
-
-  it("does not use historical prices for forward compatibility", () => {
-    const estimate = estimateUsageComponentCostsForCatalog(
-      { standard: [] },
-      {
-        vendor: "codex",
-        model: "gpt-7.3-codex",
-        inputTokens: 1_000,
-        outputTokens: 100
-      },
-      SYNTHETIC_HISTORICAL_CODEX_PRICING
-    );
-
-    expect(estimate).toBeNull();
-  });
-
-  it("prefers a current Standard exact price over a retired Fast price", () => {
-    const estimate = estimateUsageComponentCostsForCatalog(
-      SYNTHETIC_CODEX_PRICING,
-      {
-        vendor: "codex",
-        model: "gpt-7.1-nano",
-        pricingMode: "fast",
-        inputTokens: 1_000,
-        outputTokens: 100
-      },
-      {
-        standard: [],
-        fast: [
-          {
-            ...pricingEntry("gpt-7.1-nano", 9, 9, 9),
-            retiredAt: "2026-08-04"
-          }
-        ]
-      }
-    );
-
-    expect(estimate).toEqual(
-      expect.objectContaining({
-        modelId: "gpt-7.1-nano",
-        inputCostUsd: expect.closeTo(0.0005, 8),
-        outputCostUsd: expect.closeTo(0.0001, 8)
       })
     );
   });

@@ -28,7 +28,7 @@ import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
 const SNAPSHOT_STORE_VERSION = 4;
 const WINDOW_STATE_STORE_VERSION = 1;
-const USAGE_HISTORY_STORE_VERSION = 1;
+const USAGE_HISTORY_STORE_VERSION = 2;
 const DEFAULT_SOCKET_FILE_NAME = "control.sock";
 const POSIX_SOCKET_PATH_MAX_BYTES = 103;
 
@@ -148,11 +148,14 @@ interface WindowStateEnvelope {
 }
 
 interface UsageHistoryEnvelope {
-  version: number;
-  aggregationRevision?: string;
-  pricingRevision?: string;
+  version: 2;
   days: UsageHistoryDayRecord[];
 }
+
+type ReadableUsageHistoryEnvelope = Partial<{
+  version: number;
+  days: UsageHistoryDayRecord[];
+}>;
 
 export interface SnapshotFileStore {
   path: string;
@@ -684,9 +687,7 @@ export function createSettingsStore(settingsPath: string): SettingsFileStore {
 }
 
 export function createUsageHistoryStore(
-  usageHistoryPath: string,
-  pricingRevision?: string,
-  aggregationRevision?: string
+  usageHistoryPath: string
 ): UsageHistoryFileStore {
   mkdirSync(dirname(usageHistoryPath), { recursive: true });
 
@@ -694,11 +695,14 @@ export function createUsageHistoryStore(
     path: usageHistoryPath,
     load() {
       const envelope =
-        readJsonFile<Partial<UsageHistoryEnvelope>>(usageHistoryPath);
+        readJsonFile<ReadableUsageHistoryEnvelope>(usageHistoryPath);
       if (!envelope) {
         return [];
       }
-      if (envelope.version !== USAGE_HISTORY_STORE_VERSION) {
+      if (
+        envelope.version !== 1 &&
+        envelope.version !== USAGE_HISTORY_STORE_VERSION
+      ) {
         warnInvalidFile(
           usageHistoryPath,
           `unsupported version ${String(envelope.version)}`
@@ -709,17 +713,6 @@ export function createUsageHistoryStore(
         warnInvalidFile(usageHistoryPath, "missing usage history payload");
         return [];
       }
-      if (pricingRevision && envelope.pricingRevision !== pricingRevision) {
-        warnInvalidFile(usageHistoryPath, "stale usage pricing revision");
-        return [];
-      }
-      if (
-        aggregationRevision &&
-        envelope.aggregationRevision !== aggregationRevision
-      ) {
-        warnInvalidFile(usageHistoryPath, "stale usage aggregation revision");
-        return [];
-      }
       return envelope.days as UsageHistoryDayRecord[];
     },
     save(days) {
@@ -727,8 +720,6 @@ export function createUsageHistoryStore(
         usageHistoryPath,
         JSON.stringify({
           version: USAGE_HISTORY_STORE_VERSION,
-          aggregationRevision,
-          pricingRevision,
           days
         } satisfies UsageHistoryEnvelope)
       );

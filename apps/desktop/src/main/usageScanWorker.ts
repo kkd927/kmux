@@ -29,11 +29,7 @@ function send(message: UsageScanWorkerResponse): void {
   }
 }
 
-function sendError(
-  requestId: string,
-  error: unknown,
-  context: string
-): void {
+function sendError(requestId: string, error: unknown, context: string): void {
   send({
     type: "error",
     requestId,
@@ -103,15 +99,13 @@ async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
   try {
     if (request.initial || !scanInitialized) {
       const result = await scanUsageAdaptersAtStartup(adapters, {
-        startOfDayMs: request.startOfDayMs,
-        ...(request.historyRange ? { historyRange: request.historyRange } : {})
+        startOfDayMs: request.startOfDayMs
       });
       scanInitialized = true;
       send({
         type: "scan-result",
         requestId: request.requestId,
-        reads: result.reads,
-        ...(result.historyDays ? { historyDays: result.historyDays } : {})
+        reads: result.reads
       });
       return;
     }

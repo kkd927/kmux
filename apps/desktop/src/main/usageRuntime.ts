@@ -26,17 +26,16 @@ import {
   type UsageViewSnapshot
 } from "@kmux/proto";
 import {
+  BUNDLED_MODEL_PRICING_RESOLVER,
   resolveAiCliProcessMatches,
   isProcessAlive,
   type AgentStorageRoots,
   type AiCliProcessMatch,
   type AiCliProcessProbe,
-  estimateUsageComponentCosts,
-  resolveCanonicalModelId,
-  scanUsageHistoryDays,
   shouldReplaceUsageSample,
   usageSampleIdentity,
   type SupportedPricingVendor,
+  type ModelPricingResolver,
   type UsageAdapter,
   type UsageAdapterReadResult,
   type UsageCostSource as SampleCostSource,
@@ -274,6 +273,7 @@ interface UsageRuntimeOptions {
   resolveLocalPath: LocalPathResolver;
   targetServices?: () => TargetServiceRegistry | undefined;
   reportTargetUsageError?: (target: WorkspaceTarget, error: Error) => void;
+  pricingResolver?: ModelPricingResolver;
 }
 
 export interface UsageRuntime {
@@ -284,6 +284,7 @@ export interface UsageRuntime {
   handleAppAction(action: AppAction): void;
   handleTerminalInput(surfaceId: Id, text: string): void;
   setDashboardOpen(open: boolean): void;
+  setPricingResolver(resolver: ModelPricingResolver): void;
   refreshNow(): Promise<void>;
 }
 
@@ -310,6 +311,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       }
     });
   const now = options.now ?? (() => Date.now());
+  let pricingResolver =
+    options.pricingResolver ?? BUNDLED_MODEL_PRICING_RESOLVER;
   const resolveAiCliProcesses =
     options.resolveAiCliProcesses ??
     ((probes: AiCliProcessProbe[]) =>
@@ -358,8 +361,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   const initializedUsageTargets = new Set<string>();
   let dayKey = dayKeyFor(now());
   let historyDays = normalizeHistoryDays(options.historyStore?.load() ?? []);
-  let historyBackfillPromise: Promise<void> | null = null;
-  let workerHistoryBackfillComplete = false;
   let lastAuthVisibilityRefreshAtMs = Number.NEGATIVE_INFINITY;
 
   const bindings = new Map<Id, SurfaceBinding>();
@@ -417,9 +418,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     scheduleRefresh();
     scheduleSubscriptionRefresh();
     void refreshNow();
-    if (!scanService) {
-      void backfillHistoryIfNeeded();
-    }
   }
 
   function shutdown(): void {
@@ -448,6 +446,34 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
   function getSnapshot(): UsageViewSnapshot {
     return snapshot;
+  }
+
+  function setPricingResolver(nextResolver: ModelPricingResolver): void {
+    if (
+      pricingResolver.catalog.catalogVersion ===
+        nextResolver.catalog.catalogVersion &&
+      pricingResolver.catalog.revision === nextResolver.catalog.revision
+    ) {
+      return;
+    }
+    pricingResolver = nextResolver;
+    if (options.targetServices !== undefined) {
+      daySamples = [];
+      daySampleIndexes.clear();
+      for (const scan of targetUsageScans.values()) {
+        scan.records = scan.records.map((sample) =>
+          priceUsageSample(sample, pricingResolver)
+        );
+        for (const sample of scan.records) {
+          upsertDaySample(sample);
+        }
+      }
+    } else {
+      daySamples = daySamples.map((sample) =>
+        priceUsageSample(sample, pricingResolver)
+      );
+    }
+    rebuildSnapshot();
   }
 
   function setDashboardOpen(open: boolean): void {
@@ -858,22 +884,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     let reads: UsageAdapterReadResult[];
     const requestedInitialScan = !initialScanComplete;
     if (scanService) {
-      const historyRange = workerHistoryBackfillComplete
-        ? undefined
-        : resolveHistoryBackfillRange();
       try {
         const result = await scanService.scan({
           startOfDayMs,
-          initial: requestedInitialScan,
-          ...(historyRange ? { historyRange } : {})
+          initial: requestedInitialScan
         });
         reads = result.reads;
-        const truncated = reads.some((read) => read.truncated === true);
-        if (result.historyDays && !truncated) {
-          historyDays = normalizeHistoryDays(result.historyDays);
-          options.historyStore?.save(historyDays);
-        }
-        workerHistoryBackfillComplete = !truncated;
       } catch (error) {
         const hasWorkerDiagnostic =
           error instanceof Error &&
@@ -932,9 +948,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       return;
     }
     const targets = currentUsageTargets(options.getState());
-    const historyRange = workerHistoryBackfillComplete
-      ? undefined
-      : resolveHistoryBackfillRange();
     await Promise.all(
       targets.map(async (target) => {
         const key = usageTargetKey(target);
@@ -948,11 +961,13 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             startAtUnixMs: startOfLocalDay(now()),
             initial: !initializedUsageTargets.has(key),
             maxRecords: target.kind === "local" ? 4_096 : 64,
-            ...(agentSettings === undefined ? {} : { agentSettings }),
-            ...(target.kind === "local" && historyRange ? { historyRange } : {})
+            ...(agentSettings === undefined ? {} : { agentSettings })
           });
           const incoming = scan.records.map((record) =>
-            scopedUsageSample(target, scan.principal, record)
+            priceUsageSample(
+              scopedUsageSample(target, scan.principal, record),
+              pricingResolver
+            )
           );
           const previous = targetUsageScans.get(key)?.records ?? [];
           targetUsageScans.set(key, {
@@ -966,11 +981,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
                 : incoming
           });
           initializedUsageTargets.add(key);
-          if (target.kind === "local" && scan.historyDays) {
-            historyDays = normalizeHistoryDays(scan.historyDays);
-            options.historyStore?.save(historyDays);
-            workerHistoryBackfillComplete = true;
-          }
         } catch (error) {
           const failure =
             error instanceof Error ? error : new Error(String(error));
@@ -996,6 +1006,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   }
 
   function upsertDaySample(sample: ScopedUsageEventSample): void {
+    sample = priceUsageSample(sample, pricingResolver);
     const identity = `${usageTargetKey(sample.usageTarget)}\0${usageSampleIdentity(sample)}`;
     const existingIndex = daySampleIndexes.get(identity);
     if (existingIndex !== undefined) {
@@ -1007,71 +1018,6 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
     daySampleIndexes.set(identity, daySamples.length);
     daySamples.push(sample);
-  }
-
-  async function backfillHistoryIfNeeded(): Promise<void> {
-    if (!options.historyStore || historyBackfillPromise) {
-      return historyBackfillPromise ?? Promise.resolve();
-    }
-
-    const expectedDayKeys = buildRollingDayKeys(now(), USAGE_HISTORY_DAY_COUNT);
-    const shouldBackfill = expectedDayKeys.some(
-      (expectedDayKey) =>
-        !historyDays.some((day) => day.dayKey === expectedDayKey)
-    );
-    if (!shouldBackfill) {
-      return Promise.resolve();
-    }
-
-    historyBackfillPromise = (async () => {
-      const rangeStartMs = startOfRollingDayRange(
-        now(),
-        USAGE_HISTORY_DAY_COUNT
-      );
-      const backfilledDays = await scanUsageHistoryDays({
-        env: options.env,
-        homeDir: options.homeDir,
-        agentStorageRoots: options.agentStorageRoots,
-        agentSettings: options.agentSettings,
-        platform: options.platform,
-        fromMs: rangeStartMs,
-        toMs: endOfLocalDay(now())
-      });
-      historyDays = normalizeHistoryDays(backfilledDays);
-      options.historyStore?.save(historyDays);
-      rebuildSnapshot();
-    })()
-      .catch((error) => {
-        console.warn(
-          "[usage] history backfill failed:",
-          error instanceof Error ? error.message : String(error)
-        );
-      })
-      .finally(() => {
-        historyBackfillPromise = null;
-      });
-
-    return historyBackfillPromise;
-  }
-
-  function resolveHistoryBackfillRange():
-    | { fromMs: number; toMs: number }
-    | undefined {
-    if (!options.historyStore) {
-      return undefined;
-    }
-    const expectedDayKeys = buildRollingDayKeys(now(), USAGE_HISTORY_DAY_COUNT);
-    const shouldBackfill = expectedDayKeys.some(
-      (expectedDayKey) =>
-        !historyDays.some((day) => day.dayKey === expectedDayKey)
-    );
-    if (!shouldBackfill) {
-      return undefined;
-    }
-    return {
-      fromMs: startOfRollingDayRange(now(), USAGE_HISTORY_DAY_COUNT),
-      toMs: endOfLocalDay(now())
-    };
   }
 
   async function refreshManualCliBindings(): Promise<void> {
@@ -1538,7 +1484,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       todayTokenBreakdown.cacheWriteTokens += cacheWriteTokens;
       todayTokenBreakdown.thinkingTokens += sample.thinkingTokens ?? 0;
       todayTokenBreakdown.totalTokens += sample.totalTokens;
-      applyTokenCostBreakdown(todayTokenCostBreakdown, sample);
+      applyTokenCostBreakdown(todayTokenCostBreakdown, sample, pricingResolver);
       applyPricingCoverage(pricingCoverage, sample, sampleCostSource);
 
       const vendorTotal = vendorTotals.get(sample.vendor) ?? {
@@ -1570,7 +1516,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       applyCostBreakdown(targetTotal, sample, sampleCostSource);
       targetTotals.set(sampleTargetKey, targetTotal);
 
-      const modelIdentity = resolveModelUsageIdentity(sample);
+      const modelIdentity = resolveModelUsageIdentity(sample, pricingResolver);
       if (modelIdentity) {
         const modelKey = `${sample.vendor}:${modelIdentity.modelId}`;
         const modelTotal = modelTotals.get(modelKey) ?? {
@@ -2106,6 +2052,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     handleAppAction,
     handleTerminalInput,
     setDashboardOpen,
+    setPricingResolver,
     refreshNow
   };
 }
@@ -2572,10 +2519,35 @@ function applyTerminalInput(
 function normalizeUsageSampleCostSource(
   sample: UsageEventSample
 ): SampleCostSource {
-  if (sample.costSource) {
-    return sample.costSource;
+  return sample.costSource ?? "unavailable";
+}
+
+function priceUsageSample<T extends UsageEventSample>(
+  sample: T,
+  resolver: ModelPricingResolver
+): T {
+  if (sample.costSource === "reported") {
+    return sample;
   }
-  return sample.estimatedCostUsd > 0 ? "reported" : "unavailable";
+  const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
+  const estimate = pricingVendor
+    ? resolver.estimateUsageComponentCosts({
+        vendor: pricingVendor,
+        model: sample.model,
+        pricingMode: sample.pricingMode,
+        inputTokens: sample.inputTokens,
+        outputTokens: sample.outputTokens,
+        thinkingTokens: sample.thinkingTokens,
+        cacheReadTokens: sample.cacheReadTokens ?? sample.cacheTokens,
+        cacheWriteTokens: sample.cacheWriteTokens,
+        cacheWriteTokensKnown: sample.cacheWriteTokensKnown
+      })
+    : null;
+  return {
+    ...sample,
+    estimatedCostUsd: estimate?.totalCostUsd ?? 0,
+    costSource: estimate ? "estimated" : "unavailable"
+  };
 }
 
 function costedUsageSampleUsd(
@@ -2640,7 +2612,8 @@ function applyPricingCoverage(
 
 function applyTokenCostBreakdown(
   target: UsageTokenCostBreakdownVm,
-  sample: UsageEventSample
+  sample: UsageEventSample,
+  resolver: ModelPricingResolver
 ): void {
   const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
   if (!pricingVendor) {
@@ -2650,7 +2623,7 @@ function applyTokenCostBreakdown(
   const cacheReadTokens = sample.cacheReadTokens ?? sample.cacheTokens;
   const cacheWriteTokens = sample.cacheWriteTokens ?? 0;
   const thinkingTokens = sample.thinkingTokens ?? 0;
-  const estimate = estimateUsageComponentCosts({
+  const estimate = resolver.estimateUsageComponentCosts({
     vendor: pricingVendor,
     model: sample.model,
     pricingMode: sample.pricingMode,
@@ -2689,14 +2662,15 @@ function applyTokenCostBreakdown(
 }
 
 function resolveModelUsageIdentity(
-  sample: UsageEventSample
+  sample: UsageEventSample,
+  resolver: ModelPricingResolver
 ): { modelId: string; modelLabel: string } | null {
   if (!sample.model) {
     return null;
   }
   const pricingVendor = pricingVendorForUsageVendor(sample.vendor);
   const canonicalModelId = pricingVendor
-    ? resolveCanonicalModelId({
+    ? resolver.resolveCanonicalModelId({
         vendor: pricingVendor,
         model: sample.model
       })
@@ -2766,52 +2740,86 @@ function buildTodayHistoryRecord(
 }
 
 function normalizeHistoryDays(
-  days: UsageHistoryDayRecord[]
+  days: readonly unknown[]
 ): UsageHistoryDayRecord[] {
-  return days
-    .flatMap(normalizeHistoryDay)
+  const lastRecordByDay = new Map<string, UsageHistoryDayRecord>();
+  for (const day of days) {
+    const normalizedDay = normalizeHistoryDay(day);
+    if (!normalizedDay) {
+      continue;
+    }
+    lastRecordByDay.set(normalizedDay.dayKey, normalizedDay);
+  }
+  return Array.from(lastRecordByDay.values())
     .sort((left, right) => left.dayKey.localeCompare(right.dayKey))
     .slice(-USAGE_HISTORY_DAY_COUNT);
 }
 
-function normalizeHistoryDay(
-  day: UsageHistoryDayRecord
-): UsageHistoryDayRecord[] {
-  if (!Array.isArray(day.vendors)) {
-    return [];
+function normalizeHistoryDay(day: unknown): UsageHistoryDayRecord | null {
+  if (!isRecord(day)) {
+    return null;
   }
-  const vendors = day.vendors
-    .filter((vendorRecord) => isSubscriptionProvider(vendorRecord.vendor))
-    .map((vendorRecord) => ({
-      vendor: vendorRecord.vendor,
-      totalCostUsd: roundUsd(vendorRecord.totalCostUsd),
-      totalTokens: Math.round(vendorRecord.totalTokens)
-    }))
-    .filter(
-      (vendorRecord) =>
-        vendorRecord.totalCostUsd > 0 || vendorRecord.totalTokens > 0
-    )
-    .sort((left, right) => right.totalCostUsd - left.totalCostUsd);
-  if (vendors.length === 0) {
-    return [];
+  if (
+    typeof day.dayKey !== "string" ||
+    !isValidDayKey(day.dayKey) ||
+    !isNonNegativeFinite(day.totalCostUsd) ||
+    !isNonNegativeFinite(day.reportedCostUsd) ||
+    !isNonNegativeFinite(day.estimatedCostUsd) ||
+    !isNonNegativeFinite(day.unknownCostTokens) ||
+    !isNonNegativeFinite(day.totalTokens) ||
+    !Array.isArray(day.vendors)
+  ) {
+    return null;
   }
-  const totalCostUsd = roundUsd(
-    vendors.reduce((total, vendor) => total + vendor.totalCostUsd, 0)
-  );
-  const totalTokens = Math.round(
-    vendors.reduce((total, vendor) => total + vendor.totalTokens, 0)
-  );
-  return [
-    {
-      ...day,
-      totalCostUsd,
-      reportedCostUsd: 0,
-      estimatedCostUsd: totalCostUsd,
-      unknownCostTokens: 0,
-      totalTokens,
-      vendors
+  const vendors = new Map<
+    Exclude<UsageVendor, "unknown">,
+    UsageHistoryDayRecord["vendors"][number]
+  >();
+  for (const vendor of day.vendors) {
+    if (
+      !isRecord(vendor) ||
+      (vendor.vendor !== "claude" &&
+        vendor.vendor !== "codex" &&
+        vendor.vendor !== "antigravity") ||
+      !isNonNegativeFinite(vendor.totalCostUsd) ||
+      !isNonNegativeFinite(vendor.totalTokens)
+    ) {
+      continue;
     }
-  ];
+    vendors.set(vendor.vendor, {
+      vendor: vendor.vendor,
+      totalCostUsd: vendor.totalCostUsd,
+      totalTokens: vendor.totalTokens
+    });
+  }
+  return {
+    dayKey: day.dayKey,
+    totalCostUsd: day.totalCostUsd,
+    reportedCostUsd: day.reportedCostUsd,
+    estimatedCostUsd: day.estimatedCostUsd,
+    unknownCostTokens: day.unknownCostTokens,
+    totalTokens: day.totalTokens,
+    vendors: Array.from(vendors.values())
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isValidDayKey(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (!match) {
+    return false;
+  }
+  const date = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  );
+  return date.toISOString().slice(0, 10) === value;
 }
 
 function buildRollingDayKeys(nowMs: number, count: number): string[] {
@@ -2823,18 +2831,6 @@ function buildRollingDayKeys(nowMs: number, count: number): string[] {
     cursor.setDate(cursor.getDate() + 1);
   }
   return keys;
-}
-
-function startOfRollingDayRange(nowMs: number, count: number): number {
-  const date = new Date(startOfLocalDay(nowMs));
-  date.setDate(date.getDate() - (count - 1));
-  return date.getTime();
-}
-
-function endOfLocalDay(nowMs: number): number {
-  const date = new Date(startOfLocalDay(nowMs));
-  date.setHours(23, 59, 59, 999);
-  return date.getTime();
 }
 
 function resolveHistoryCostSource(

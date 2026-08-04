@@ -9,12 +9,17 @@ import {
 import { type AppAction } from "@kmux/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  UsageAdapter,
-  UsageAdapterReadResult,
-  UsageEventSample
+import {
+  BUNDLED_MODEL_PRICING_CATALOG,
+  calculateModelPricingRevision,
+  createModelPricingResolver,
+  type ModelPricingCatalogDocument,
+  type UsageAdapter,
+  type UsageAdapterReadResult,
+  type UsageEventSample
 } from "@kmux/metadata";
 import { uint64, type SubscriptionProviderUsageVm } from "@kmux/proto";
+import type { UsageHistoryDayRecord } from "@kmux/persistence";
 import { createUsageRuntime as createUsageRuntimeImpl } from "./usageRuntime";
 import type { UsageScanService } from "./usageScanWorkerClient";
 import type { TargetServiceRegistry } from "./targets/contracts";
@@ -513,151 +518,6 @@ describe("usage runtime", () => {
     restoredRuntime.shutdown();
   });
 
-  it("retries partial history backfills without replacing persisted daily totals", async () => {
-    const state = createInitialState();
-    const persistedDay = {
-      dayKey: "2026-07-17",
-      totalCostUsd: 1,
-      reportedCostUsd: 1,
-      estimatedCostUsd: 0,
-      unknownCostTokens: 0,
-      totalTokens: 100,
-      vendors: [
-        {
-          vendor: "codex" as const,
-          totalCostUsd: 1,
-          totalTokens: 100
-        }
-      ]
-    };
-    const replacementDay = {
-      ...persistedDay,
-      totalCostUsd: 2,
-      reportedCostUsd: 2,
-      totalTokens: 200,
-      vendors: [
-        {
-          vendor: "codex" as const,
-          totalCostUsd: 2,
-          totalTokens: 200
-        }
-      ]
-    };
-    let partial = true;
-    const refresh = vi.fn(async () => ({
-      records: [],
-      truncated: partial,
-      ...(partial ? {} : { historyDays: [replacementDay] })
-    }));
-    const historyStore = {
-      path: "/tmp/kmux-usage-history.json",
-      load: vi.fn(() => [persistedDay]),
-      save: vi.fn()
-    };
-    const targetServices = {
-      resolve: vi.fn(),
-      resolveLocated: vi.fn(
-        () =>
-          ({
-            usage: { refresh }
-          }) as never
-      )
-    } as unknown as TargetServiceRegistry;
-    const runtime = createUsageRuntime({
-      getState: () => state,
-      dispatchAppAction: vi.fn(),
-      emitSnapshot: vi.fn(),
-      targetServices: () => targetServices,
-      historyStore,
-      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
-    });
-
-    await runtime.refreshNow();
-
-    expect(historyStore.save).not.toHaveBeenCalled();
-    expect(
-      runtime
-        .getSnapshot()
-        .dailyActivity?.find((day) => day.dayKey === persistedDay.dayKey)
-    ).toMatchObject({ totalTokens: 100 });
-
-    partial = false;
-    await runtime.refreshNow();
-
-    expect(historyStore.save).toHaveBeenCalledWith([
-      expect.objectContaining({
-        dayKey: replacementDay.dayKey,
-        totalCostUsd: 2,
-        totalTokens: 200
-      })
-    ]);
-    expect(refresh).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ historyRange: expect.any(Object) })
-    );
-  });
-
-  it("persists complete history backfill when only live records are truncated", async () => {
-    const state = createInitialState();
-    const historyDay = {
-      dayKey: "2026-07-17",
-      totalCostUsd: 1,
-      reportedCostUsd: 1,
-      estimatedCostUsd: 0,
-      unknownCostTokens: 0,
-      totalTokens: 100,
-      vendors: [
-        {
-          vendor: "codex" as const,
-          totalCostUsd: 1,
-          totalTokens: 100
-        }
-      ]
-    };
-    const refresh = vi.fn(
-      async (_request: {
-        historyRange?: { fromMs: number; toMs: number };
-      }) => ({
-        records: [],
-        truncated: true,
-        historyDays: [historyDay]
-      })
-    );
-    const historyStore = {
-      path: "/tmp/kmux-usage-history.json",
-      load: vi.fn(() => []),
-      save: vi.fn()
-    };
-    const targetServices = {
-      resolve: vi.fn(),
-      resolveLocated: vi.fn(
-        () =>
-          ({
-            usage: { refresh }
-          }) as never
-      )
-    } as unknown as TargetServiceRegistry;
-    const runtime = createUsageRuntime({
-      getState: () => state,
-      dispatchAppAction: vi.fn(),
-      emitSnapshot: vi.fn(),
-      targetServices: () => targetServices,
-      historyStore,
-      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
-    });
-
-    await runtime.refreshNow();
-    await runtime.refreshNow();
-
-    expect(historyStore.save).toHaveBeenCalledWith([
-      expect.objectContaining({ dayKey: historyDay.dayKey, totalTokens: 100 })
-    ]);
-    expect(refresh.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ historyRange: expect.any(Object) })
-    );
-    expect(refresh.mock.calls[1]?.[0]).not.toHaveProperty("historyRange");
-  });
-
   it("starts without awaiting the scan worker and recovers from a worker error", async () => {
     const state = createInitialState();
     let rejectInitialScan!: (error: Error) => void;
@@ -1053,7 +913,8 @@ describe("usage runtime", () => {
                   totalTokens: 544,
                   inputTokens: 384,
                   cacheTokens: 128,
-                  outputTokens: 32
+                  outputTokens: 32,
+                  costSource: "unavailable"
                 })
               ]
             }
@@ -1283,7 +1144,7 @@ describe("usage runtime", () => {
         inputTokens: 3_400,
         outputTokens: 600,
         totalTokens: 4_000,
-        todayCostUsd: expect.closeTo(0.0099, 8),
+        todayCostUsd: expect.closeTo(0.0105, 8),
         costSource: "estimated"
       })
     ]);
@@ -1470,89 +1331,292 @@ describe("usage runtime", () => {
     );
   });
 
-  it("drops legacy Gemini usage history days during load normalization", async () => {
+  it("reprices only today's non-reported samples when the active catalog changes", async () => {
     const state = createInitialState();
+    const historyStore = createFakeUsageHistoryStore([
+      {
+        dayKey: "2026-04-16",
+        totalCostUsd: 9,
+        reportedCostUsd: 9,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0,
+        totalTokens: 900,
+        vendors: [{ vendor: "claude", totalCostUsd: 9, totalTokens: 900 }]
+      }
+    ]);
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
-      adapters: [],
-      emitSnapshot: vi.fn(),
-      now: () => new Date("2026-04-17T11:00:00.000Z").getTime(),
-      historyStore: createFakeUsageHistoryStore([
-        {
-          dayKey: "2026-04-16",
-          totalCostUsd: 9,
-          reportedCostUsd: 0,
-          estimatedCostUsd: 9,
-          unknownCostTokens: 0,
-          totalTokens: 9000,
-          vendors: [
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
             {
-              vendor: "gemini",
-              totalCostUsd: 9,
-              totalTokens: 9000
+              sourceCount: 1,
+              samples: [
+                {
+                  ...buildSample({
+                    vendor: "claude",
+                    sessionId: "reported-today",
+                    model: "claude-sonnet-5",
+                    inputTokens: 10,
+                    outputTokens: 0,
+                    totalTokens: 10,
+                    estimatedCostUsd: 4
+                  }),
+                  costSource: "reported"
+                },
+                buildSample({
+                  vendor: "codex",
+                  sessionId: "estimated-today",
+                  model: "gpt-5.4",
+                  inputTokens: 100,
+                  outputTokens: 0,
+                  totalTokens: 100,
+                  estimatedCostUsd: 999,
+                  costSource: undefined
+                })
+              ]
             }
           ]
-        }
-      ])
-    } as never);
+        })
+      ],
+      emitSnapshot: vi.fn(),
+      historyStore,
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
+    });
 
     await runtime.refreshNow();
+    expect(runtime.getSnapshot().pricingCoverage).toMatchObject({
+      reportedCostUsd: 4,
+      estimatedCostUsd: 0.00025,
+      unknownCostTokens: 0
+    });
 
-    const legacyDay = runtime
-      .getSnapshot()
-      .dailyActivity?.find((entry) => entry.dayKey === "2026-04-16");
-    expect(legacyDay).toEqual(
-      expect.objectContaining({
-        totalCostUsd: 0,
-        totalTokens: 0
-      })
-    );
+    const catalog = structuredClone(
+      BUNDLED_MODEL_PRICING_CATALOG
+    ) as ModelPricingCatalogDocument;
+    catalog.catalogVersion += 1;
+    catalog.models.codex.standard.find(
+      (entry) => entry.modelId === "gpt-5.4"
+    )!.inputCostPerToken = 0.000005;
+    catalog.revision = calculateModelPricingRevision(catalog.models);
+
+    runtime.setPricingResolver(createModelPricingResolver(catalog));
+
+    expect(runtime.getSnapshot().pricingCoverage).toMatchObject({
+      reportedCostUsd: 4,
+      estimatedCostUsd: 0.0005,
+      unknownCostTokens: 0
+    });
+    expect(runtime.getSnapshot().totalTodayCostUsd).toBe(4.0005);
+    expect(
+      runtime
+        .getSnapshot()
+        .dailyActivity?.find((day) => day.dayKey === "2026-04-16")
+    ).toMatchObject({ totalCostUsd: 9, totalTokens: 900 });
   });
 
-  it("preserves supported usage rows on legacy Gemini mixed history days", async () => {
+  it("reconstructs today on each run and never recalculates an earlier snapshot", async () => {
     const state = createInitialState();
+    const historyStore = createFakeUsageHistoryStore([
+      {
+        dayKey: "2026-04-16",
+        totalCostUsd: 7,
+        reportedCostUsd: 3,
+        estimatedCostUsd: 4,
+        unknownCostTokens: 12,
+        totalTokens: 700,
+        vendors: [{ vendor: "claude", totalCostUsd: 1, totalTokens: 100 }]
+      },
+      {
+        dayKey: "2026-04-17",
+        totalCostUsd: 999,
+        reportedCostUsd: 999,
+        estimatedCostUsd: 0,
+        unknownCostTokens: 0,
+        totalTokens: 999,
+        vendors: [{ vendor: "claude", totalCostUsd: 999, totalTokens: 999 }]
+      }
+    ]);
+    const firstRuntime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 1,
+              samples: [
+                {
+                  ...buildSample({
+                    timestampMs: new Date("2026-04-17T10:00:00.000Z").getTime(),
+                    totalTokens: 100,
+                    estimatedCostUsd: 1
+                  }),
+                  costSource: "reported"
+                }
+              ]
+            }
+          ]
+        })
+      ],
+      historyStore,
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T11:00:00.000Z").getTime()
+    });
+
+    await firstRuntime.refreshNow();
+    expect(historyStore.getState()).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-04-16",
+        totalCostUsd: 7,
+        reportedCostUsd: 3,
+        estimatedCostUsd: 4,
+        unknownCostTokens: 12,
+        totalTokens: 700,
+        vendors: [{ vendor: "claude", totalCostUsd: 1, totalTokens: 100 }]
+      }),
+      expect.objectContaining({
+        dayKey: "2026-04-17",
+        totalCostUsd: 1,
+        totalTokens: 100
+      })
+    ]);
+
+    const secondRuntime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [
+        new FakeUsageAdapter({
+          initialReads: [
+            {
+              sourceCount: 1,
+              samples: [
+                {
+                  ...buildSample({
+                    timestampMs: new Date("2026-04-17T10:30:00.000Z").getTime(),
+                    totalTokens: 200,
+                    estimatedCostUsd: 2
+                  }),
+                  costSource: "reported"
+                }
+              ]
+            }
+          ]
+        })
+      ],
+      historyStore,
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-04-17T12:00:00.000Z").getTime()
+    });
+
+    await secondRuntime.refreshNow();
+    expect(historyStore.getState()).toEqual([
+      expect.objectContaining({ dayKey: "2026-04-16", totalCostUsd: 7 }),
+      expect.objectContaining({
+        dayKey: "2026-04-17",
+        totalCostUsd: 2,
+        totalTokens: 200
+      })
+    ]);
+  });
+
+  it("preserves a legacy day's snapshot while removing unsupported vendor rows", async () => {
+    const state = createInitialState();
+    const historyStore = createFakeUsageHistoryStore([
+      {
+        dayKey: "2026-04-16",
+        totalCostUsd: 10,
+        reportedCostUsd: 3,
+        estimatedCostUsd: 6,
+        unknownCostTokens: 100,
+        totalTokens: 1_000,
+        vendors: [
+          { vendor: "gemini", totalCostUsd: 6, totalTokens: 600 },
+          { vendor: "codex", totalCostUsd: 4, totalTokens: 400 }
+        ]
+      } as unknown as UsageHistoryDayRecord
+    ]);
     const runtime = createUsageRuntime({
       getState: () => state,
       dispatchAppAction: vi.fn(),
       adapters: [],
+      historyStore,
       emitSnapshot: vi.fn(),
-      now: () => new Date("2026-04-17T11:00:00.000Z").getTime(),
-      historyStore: createFakeUsageHistoryStore([
-        {
-          dayKey: "2026-04-16",
-          totalCostUsd: 11.25,
-          reportedCostUsd: 2.25,
-          estimatedCostUsd: 9,
-          unknownCostTokens: 0,
-          totalTokens: 11250,
-          vendors: [
-            {
-              vendor: "gemini",
-              totalCostUsd: 9,
-              totalTokens: 9000
-            },
-            {
-              vendor: "codex",
-              totalCostUsd: 2.25,
-              totalTokens: 2250
-            }
-          ]
-        }
-      ])
-    } as never);
+      now: () => new Date("2026-04-17T12:00:00.000Z").getTime()
+    });
 
     await runtime.refreshNow();
 
-    const mixedDay = runtime
-      .getSnapshot()
-      .dailyActivity?.find((entry) => entry.dayKey === "2026-04-16");
-    expect(mixedDay).toEqual(
-      expect.objectContaining({
-        totalCostUsd: 2.25,
-        totalTokens: 2250
-      })
+    expect(historyStore.getState()).toContainEqual({
+      dayKey: "2026-04-16",
+      totalCostUsd: 10,
+      reportedCostUsd: 3,
+      estimatedCostUsd: 6,
+      unknownCostTokens: 100,
+      totalTokens: 1_000,
+      vendors: [{ vendor: "codex", totalCostUsd: 4, totalTokens: 400 }]
+    });
+    expect(
+      runtime
+        .getSnapshot()
+        .dailyActivity?.find((day) => day.dayKey === "2026-04-16")
+    ).toMatchObject({ totalCostUsd: 10, totalTokens: 1_000 });
+  });
+
+  it("keeps the last duplicate day and limits persisted snapshots to 210 days", async () => {
+    const state = createInitialState();
+    const days: UsageHistoryDayRecord[] = Array.from(
+      { length: 211 },
+      (_, index) => {
+        const date = new Date(2026, 0, 1 + index, 12, 0, 0, 0);
+        const dayKey = [
+          date.getFullYear(),
+          `${date.getMonth() + 1}`.padStart(2, "0"),
+          `${date.getDate()}`.padStart(2, "0")
+        ].join("-");
+        return {
+          dayKey,
+          totalCostUsd: index,
+          reportedCostUsd: index,
+          estimatedCostUsd: 0,
+          unknownCostTokens: 0,
+          totalTokens: index,
+          vendors: [
+            {
+              vendor: "codex" as const,
+              totalCostUsd: index,
+              totalTokens: index
+            }
+          ]
+        };
+      }
     );
+    const duplicatedDay = days.at(-2)!;
+    const historyStore = createFakeUsageHistoryStore([
+      ...days,
+      { ...duplicatedDay, totalCostUsd: 4321, reportedCostUsd: 4321 }
+    ]);
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      adapters: [],
+      historyStore,
+      emitSnapshot: vi.fn(),
+      now: () => new Date("2026-08-04T12:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+
+    const persisted = historyStore.getState();
+    expect(persisted).toHaveLength(210);
+    expect(persisted.map((day) => day.dayKey)).toEqual(
+      persisted.map((day) => day.dayKey).toSorted()
+    );
+    expect(
+      persisted.find((day) => day.dayKey === duplicatedDay.dayKey)
+    ).toMatchObject({ totalCostUsd: 4321, reportedCostUsd: 4321 });
+    expect(persisted.at(-1)).toMatchObject({ dayKey: "2026-08-04" });
   });
 
   it("aggregates thinking tokens into the token breakdown without double-counting output", async () => {
@@ -1713,7 +1777,7 @@ describe("usage runtime", () => {
         modelId: "gpt-5.5",
         modelLabel: "gpt-5.5",
         totalTokens: 1200,
-        todayCostUsd: expect.closeTo(0.004, 8),
+        todayCostUsd: expect.closeTo(0.00805, 8),
         costSource: "estimated"
       }),
       expect.objectContaining({
@@ -1721,7 +1785,7 @@ describe("usage runtime", () => {
         modelId: "claude-opus-4-8",
         modelLabel: "claude-opus-4-8",
         totalTokens: 900,
-        todayCostUsd: expect.closeTo(0.003, 8),
+        todayCostUsd: expect.closeTo(0.00605, 8),
         costSource: "estimated"
       })
     ]);
@@ -3077,18 +3141,23 @@ function buildSample(
     cacheTokens: 0,
     totalTokens: 140,
     estimatedCostUsd: 0.4,
+    costSource: "reported",
     ...overrides
   };
 }
 
-function createFakeUsageHistoryStore(days: unknown[]) {
+function createFakeUsageHistoryStore(days: UsageHistoryDayRecord[]) {
   let state = days;
   return {
+    path: "/tmp/kmux-usage-history.json",
     load() {
       return state;
     },
-    save(nextDays: unknown[]) {
+    save(nextDays: UsageHistoryDayRecord[]) {
       state = nextDays;
+    },
+    getState() {
+      return state;
     }
   };
 }

@@ -14,7 +14,6 @@ import type {
 import type {
   PricingMode,
   UsageAdapterDirtyOptions,
-  UsageHistoryDay,
   UsageVendor
 } from "@kmux/metadata";
 
@@ -102,8 +101,6 @@ export interface TargetUsageScan<
   truncated: boolean;
   incremental?: boolean;
   principal?: { uid: number; accountName: string };
-  /** Present only when the requested history range was scanned completely. */
-  historyDays?: UsageHistoryDay[];
 }
 
 export interface TargetHistoryScan<
@@ -197,7 +194,6 @@ export interface UsageProvider<TPath extends LocalPath | RemotePath> {
     initial: boolean;
     maxRecords: number;
     agentSettings?: AgentScopeSettings;
-    historyRange?: { fromMs: number; toMs: number };
   }): Promise<TargetUsageScan<TPath>>;
   watch?(onChange: (vendor: UsageVendor) => void): () => void;
   markDirty?(
@@ -337,7 +333,6 @@ export interface LocatedTargetServiceSet {
       initial: boolean;
       maxRecords: number;
       agentSettings?: AgentScopeSettings;
-      historyRange?: { fromMs: number; toMs: number };
     }): Promise<TargetUsageScan<LocatedPath>>;
     watch?(onChange: (vendor: UsageVendor) => void): () => void;
     markDirty?(

@@ -2,7 +2,6 @@ import type {
   AgentStorageRoots,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
-  UsageHistoryDay,
   UsageVendor
 } from "@kmux/metadata";
 import type { AgentScopeSettings } from "@kmux/proto";
@@ -26,7 +25,6 @@ export type UsageScanWorkerRequest =
       requestId: string;
       startOfDayMs: number;
       initial: boolean;
-      historyRange?: { fromMs: number; toMs: number };
     }
   | {
       type: "mark-dirty";
@@ -41,7 +39,6 @@ export type UsageScanWorkerResponse =
       type: "scan-result";
       requestId: string;
       reads: UsageAdapterReadResult[];
-      historyDays?: UsageHistoryDay[];
     }
   | { type: "changed"; vendor: UsageVendor }
   | {

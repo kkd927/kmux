@@ -13,11 +13,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
-import {
-  resolveAgentStorageRoots,
-  USAGE_AGGREGATION_REVISION,
-  USAGE_PRICING_REVISION
-} from "@kmux/metadata";
+import { resolveAgentStorageRoots } from "@kmux/metadata";
 import {
   formatUint64Decimal,
   type AgentIntegrationDiagnosticDto
@@ -55,6 +51,7 @@ import {
 } from "./imageAttachments";
 import { registerIpcHandlers } from "./ipcHandlers";
 import { createMetadataRuntime } from "./metadataRuntime";
+import { createModelPricingCatalogRuntime } from "./modelPricingCatalogRuntime";
 import { PtyHostManager } from "./ptyHost";
 import { RemoteHostManager } from "./remoteHost";
 import {
@@ -350,11 +347,7 @@ async function bootstrap(): Promise<void> {
   });
   const snapshotStore = createSnapshotStore(paths.statePath);
   const windowStateStore = createWindowStateStore(paths.windowStatePath);
-  const usageHistoryStore = createUsageHistoryStore(
-    paths.usageHistoryPath,
-    USAGE_PRICING_REVISION,
-    USAGE_AGGREGATION_REVISION
-  );
+  const usageHistoryStore = createUsageHistoryStore(paths.usageHistoryPath);
   const shellWrapperRuntime = createShellWrapperRuntime({
     platform: platformRuntime.platformId,
     tmpDir: join(paths.cacheDir, "shell-wrappers")
@@ -460,6 +453,10 @@ async function bootstrap(): Promise<void> {
   }
   let metadataRuntime!: ReturnType<typeof createMetadataRuntime>;
   let usageRuntime!: ReturnType<typeof createUsageRuntime>;
+  const modelPricingCatalogRuntime = createModelPricingCatalogRuntime({
+    cachePath: join(paths.cacheDir, "model-pricing", "catalog-cache.json"),
+    onCatalogChange: (resolver) => usageRuntime.setPricingResolver(resolver)
+  });
   let worktreeRuntime!: ReturnType<typeof createWorktreeRuntime>;
   let targetServices: TargetServiceRegistry | undefined;
   let targetHistoryRuntime: TargetHistoryRuntime | undefined;
@@ -609,6 +606,7 @@ async function bootstrap(): Promise<void> {
     agentSettings: localAgentSettings,
     sshAgentSettings,
     platform: platformRuntime.platformId,
+    pricingResolver: modelPricingCatalogRuntime.getResolver(),
     resolveLocalPath,
     targetServices: () => targetServices,
     reportTargetUsageError: (target, error) =>
@@ -1009,8 +1007,7 @@ async function bootstrap(): Promise<void> {
       }
     },
     history: createLocalHistoryProvider({
-      indexer: localExternalSessionIndexer,
-      refreshUsage: usageRuntime.refreshNow
+      indexer: localExternalSessionIndexer
     }),
     usage: localUsageProvider,
     ports: {
@@ -1800,6 +1797,7 @@ async function bootstrap(): Promise<void> {
     window.webContents.once("did-finish-load", () => {
       // The scan worker forks a Node helper. Starting it while Chromium is
       // establishing renderer/utility IPC can starve macOS Electron startup.
+      modelPricingCatalogRuntime.start();
       usageRuntime.start();
       if (process.env.KMUX_DEV_SMOKE === "1") {
         console.log("[main:window] did-finish-load");
@@ -2061,7 +2059,10 @@ async function bootstrap(): Promise<void> {
               },
               {
                 name: "usage-runtime",
-                stop: () => usageRuntime.shutdown()
+                stop: () => {
+                  modelPricingCatalogRuntime.shutdown();
+                  usageRuntime.shutdown();
+                }
               },
               {
                 name: "external-session-indexer",
@@ -2119,6 +2120,7 @@ async function bootstrap(): Promise<void> {
               preserveWorkspaceLayout: preserveRemoteWorkspaceLayout
             });
             metadataRuntime.dispose();
+            modelPricingCatalogRuntime.shutdown();
             usageRuntime.shutdown();
             localExternalSessionIndexer.close?.();
             documentService.close();

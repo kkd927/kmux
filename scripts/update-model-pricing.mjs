@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const MODEL_PRICING_PATH = path.join(
   ROOT_DIR,
-  "packages/metadata/src/modelPricing.ts"
+  "packages/metadata/src/modelPricing.json"
 );
 
 const SOURCES = {
@@ -42,7 +43,6 @@ const VENDOR_ORDER = ["claude", "codex", "gemini"];
 const PRICING_MODE_ORDER = ["standard", "fast"];
 const PRICING_ENTRY_KEYS = [
   "modelId",
-  "retiredAt",
   "inputCostPerToken",
   "outputCostPerToken",
   "cacheReadCostPerToken",
@@ -58,7 +58,7 @@ const PRICING_ENTRY_KEYS = [
 async function main() {
   const check = process.argv.includes("--check");
   const pricingDate = resolveModelPricingDate();
-  const pricing = {
+  const models = {
     claude: { standard: await fetchClaudePricing(pricingDate) },
     codex: await fetchCodexPricing(),
     gemini: { standard: await fetchGeminiPricing() }
@@ -66,59 +66,33 @@ async function main() {
 
   for (const vendor of VENDOR_ORDER) {
     for (const mode of PRICING_MODE_ORDER) {
-      const entries = pricing[vendor][mode];
+      const entries = models[vendor][mode];
       if (!entries) {
         continue;
       }
-      pricing[vendor][mode] = mergeManualEntries(vendor, entries);
-      applyManualAliases(vendor, pricing[vendor][mode]);
-      assertEntries(`${vendor}/${mode}`, pricing[vendor][mode]);
+      models[vendor][mode] = mergeManualEntries(vendor, entries);
+      applyManualAliases(vendor, models[vendor][mode]);
+      assertEntries(`${vendor}/${mode}`, models[vendor][mode]);
     }
   }
 
-  const current = await readFile(MODEL_PRICING_PATH, "utf8");
-  const previousPricing = parseGeneratedPricingCatalog(
-    current,
-    "MODEL_PRICING"
-  );
-  const previousHistoricalPricing = parseGeneratedPricingCatalog(
-    current,
-    "HISTORICAL_MODEL_PRICING"
-  );
-  const historicalPricing = reconcileHistoricalPricing({
-    previousPricing,
-    currentPricing: pricing,
-    historicalPricing: previousHistoricalPricing,
-    retiredAt: pricingDate
+  const current = JSON.parse(await readFile(MODEL_PRICING_PATH, "utf8"));
+  const nextCatalog = buildModelPricingCatalog({
+    currentCatalog: current,
+    models,
+    publishedAt: `${pricingDate}T00:00:00.000Z`
   });
-  for (const vendor of VENDOR_ORDER) {
-    for (const mode of PRICING_MODE_ORDER) {
-      const entries = historicalPricing[vendor][mode] ?? [];
-      if (entries.length === 0) {
-        continue;
-      }
-      assertEntries(`historical ${vendor}/${mode}`, entries);
-      for (const entry of entries) {
-        assertPricingDayKey(
-          entry.retiredAt,
-          `retiredAt for ${vendor}/${mode}/${entry.modelId}`
-        );
-      }
-    }
-  }
-  const next = await formatSource(
-    replacePricingBlocks(current, pricing, historicalPricing),
-    MODEL_PRICING_PATH
-  );
+  const next = `${JSON.stringify(nextCatalog, null, 2)}\n`;
+  const currentSource = `${JSON.stringify(current, null, 2)}\n`;
 
-  if (next === current) {
-    console.log("modelPricing.ts is already up to date.");
+  if (next === currentSource) {
+    console.log("modelPricing.json is already up to date.");
     return;
   }
 
   if (check) {
     console.error(
-      "modelPricing.ts is not up to date. Run npm run update:model-pricing."
+      "modelPricing.json is not up to date. Run npm run update:model-pricing."
     );
     process.exit(1);
   }
@@ -130,7 +104,38 @@ async function main() {
   } finally {
     await rm(temporaryPath, { force: true });
   }
-  console.log("Updated packages/metadata/src/modelPricing.ts.");
+  console.log("Updated packages/metadata/src/modelPricing.json.");
+}
+
+export function buildModelPricingCatalog({
+  currentCatalog,
+  models,
+  publishedAt
+}) {
+  if (
+    currentCatalog.schemaVersion !== 1 ||
+    !Number.isSafeInteger(currentCatalog.catalogVersion) ||
+    currentCatalog.catalogVersion < 1
+  ) {
+    throw new Error("Current model pricing catalog metadata is invalid.");
+  }
+  if (JSON.stringify(currentCatalog.models) === JSON.stringify(models)) {
+    return currentCatalog;
+  }
+  const publishedAtMs = Date.parse(publishedAt);
+  if (
+    !Number.isFinite(publishedAtMs) ||
+    new Date(publishedAtMs).toISOString() !== publishedAt
+  ) {
+    throw new Error("Model pricing publishedAt is invalid.");
+  }
+  return {
+    schemaVersion: 1,
+    catalogVersion: currentCatalog.catalogVersion + 1,
+    publishedAt,
+    revision: createHash("sha256").update(JSON.stringify(models)).digest("hex"),
+    models
+  };
 }
 
 async function fetchClaudePricing(activeDate) {
@@ -762,154 +767,6 @@ function applyManualAliases(vendor, entries) {
       entry.aliases = [...new Set(aliases)];
     }
   }
-}
-
-function replacePricingBlocks(source, pricing, historicalPricing) {
-  const currentBlock = `const MODEL_PRICING: Record<SupportedVendor, PricingCatalog> = ${formatPricingObject(
-    pricing
-  )};`;
-  const historicalBlock = `const HISTORICAL_MODEL_PRICING: Record<SupportedVendor, HistoricalPricingCatalog> = ${formatPricingObject(
-    historicalPricing
-  )};`;
-  return source
-    .replace(
-      /const MODEL_PRICING: Record<SupportedVendor, (?:PricingEntry\[\]|PricingCatalog)> = \{[\s\S]*?\n\};/u,
-      currentBlock
-    )
-    .replace(
-      /const HISTORICAL_MODEL_PRICING: Record<SupportedVendor, HistoricalPricingCatalog> = \{[\s\S]*?\n\};/u,
-      historicalBlock
-    );
-}
-
-export function parseGeneratedPricingCatalog(source, variableName) {
-  const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const match = new RegExp(
-    `const ${escapedName}:[^=]+ = (\\{[\\s\\S]*?\\n\\});`,
-    "u"
-  ).exec(source);
-  if (!match) {
-    throw new Error(`Could not find generated ${variableName} catalog.`);
-  }
-
-  const json = match[1]
-    .replace(/(?<=\d)_(?=\d)/gu, "")
-    .replace(/^(\s*)([A-Za-z][A-Za-z0-9]*):/gmu, '$1"$2":');
-  const parsed = JSON.parse(json);
-  return Object.fromEntries(
-    VENDOR_ORDER.map((vendor) => {
-      const vendorCatalog = parsed[vendor];
-      return [
-        vendor,
-        Array.isArray(vendorCatalog)
-          ? { standard: vendorCatalog }
-          : { standard: [], ...vendorCatalog }
-      ];
-    })
-  );
-}
-
-export function reconcileHistoricalPricing({
-  previousPricing,
-  currentPricing,
-  historicalPricing,
-  retiredAt
-}) {
-  assertPricingDayKey(retiredAt, "retiredAt");
-  const reconciled = Object.fromEntries(
-    VENDOR_ORDER.map((vendor) => [
-      vendor,
-      Object.fromEntries(
-        PRICING_MODE_ORDER.flatMap((mode) => {
-          const entries = historicalPricing[vendor]?.[mode] ?? [];
-          return entries.length > 0 || mode === "standard"
-            ? [[mode, entries.map((entry) => ({ ...entry }))]]
-            : [];
-        })
-      )
-    ])
-  );
-
-  for (const vendor of VENDOR_ORDER) {
-    for (const mode of PRICING_MODE_ORDER) {
-      const currentModelIds = new Set(
-        (currentPricing[vendor]?.[mode] ?? []).map((entry) => entry.modelId)
-      );
-      const retiredEntries = (previousPricing[vendor]?.[mode] ?? []).filter(
-        (entry) => !currentModelIds.has(entry.modelId)
-      );
-      if (retiredEntries.length === 0) {
-        continue;
-      }
-
-      const entriesByModelId = new Map(
-        (reconciled[vendor][mode] ?? []).map((entry) => [
-          entry.modelId,
-          entry
-        ])
-      );
-      for (const entry of retiredEntries) {
-        entriesByModelId.set(entry.modelId, { ...entry, retiredAt });
-      }
-      reconciled[vendor][mode] = sortModelPricingEntries(vendor, [
-        ...entriesByModelId.values()
-      ]);
-    }
-  }
-
-  return reconciled;
-}
-
-async function formatSource(source, filepath) {
-  const prettier = await import("prettier");
-  const options = await prettier.resolveConfig(filepath);
-  return prettier.format(source, { ...options, filepath });
-}
-
-function formatPricingObject(pricing) {
-  const lines = ["{"];
-  for (const [vendorIndex, vendor] of VENDOR_ORDER.entries()) {
-    lines.push(`  ${vendor}: {`);
-    const modes = PRICING_MODE_ORDER.filter((mode) => pricing[vendor][mode]);
-    modes.forEach((mode, modeIndex) => {
-      const entries = pricing[vendor][mode];
-      lines.push(`    ${mode}: [`);
-      entries.forEach((entry, entryIndex) => {
-        lines.push("      {");
-        const keys = PRICING_ENTRY_KEYS.filter(
-          (key) => entry[key] !== undefined
-        );
-        keys.forEach((key, keyIndex) => {
-          const suffix = keyIndex === keys.length - 1 ? "" : ",";
-          lines.push(`        ${key}: ${formatValue(entry[key])}${suffix}`);
-        });
-        lines.push(`      }${entryIndex === entries.length - 1 ? "" : ","}`);
-      });
-      lines.push(`    ]${modeIndex === modes.length - 1 ? "" : ","}`);
-    });
-    lines.push(`  }${vendorIndex === VENDOR_ORDER.length - 1 ? "" : ","}`);
-  }
-  lines.push("}");
-  return lines.join("\n");
-}
-
-function formatValue(value) {
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (typeof value === "number") {
-    if (Number.isInteger(value) && value >= 10_000) {
-      return value.toLocaleString("en-US").replace(/,/gu, "_");
-    }
-    if (value > 0 && value < 1) {
-      return value.toFixed(12).replace(/0+$/u, "").replace(/\.$/u, "");
-    }
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
-  }
-  throw new Error(`Unsupported generated value: ${value}`);
 }
 
 function assertEntries(vendor, entries) {

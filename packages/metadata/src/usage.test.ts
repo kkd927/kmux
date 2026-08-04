@@ -11,13 +11,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resolveAgentStorageRoots } from "./agentStorage";
-import {
-  createUsageAdapters,
-  scanUsageAdaptersAtStartup,
-  scanUsageHistoryDays,
-  type UsageAdapter,
-  type UsageEventSample
-} from "./usage";
+import { createUsageAdapters, scanUsageAdaptersAtStartup } from "./usage";
 
 const cleanupPaths: string[] = [];
 
@@ -165,24 +159,6 @@ describe("usage adapters", () => {
       ).samples
     ).toEqual([]);
     missingRootAdapter.close();
-
-    writeCodexUsage(roots.codex.sessionsDir, "shared-session", 11);
-    writeCodexUsage(additionalRoot, "shared-session", 11);
-    const days = await scanUsageHistoryDays({
-      homeDir,
-      agentStorageRoots: roots,
-      agentSettings: {
-        codex: { sessionRoot: additionalRoot }
-      },
-      fromMs: startOfLocalDay(new Date(timestamp).getTime()),
-      toMs: new Date(timestamp).getTime()
-    });
-
-    expect(days).toEqual([
-      expect.objectContaining({
-        totalTokens: 20
-      })
-    ]);
   });
 
   it("ignores blank or relative usage root overrides", async () => {
@@ -1338,22 +1314,6 @@ describe("usage adapters", () => {
         totalTokens: 70
       })
     ]);
-
-    const days = await scanUsageHistoryDays({
-      env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
-      homeDir: root,
-      fromMs: startOfDayMs,
-      toMs: new Date("2026-07-12T23:59:59.999Z").getTime()
-    });
-    expect(days).toEqual([
-      expect.objectContaining({
-        dayKey: "2026-07-12",
-        totalTokens: 180,
-        vendors: [
-          expect.objectContaining({ vendor: "codex", totalTokens: 180 })
-        ]
-      })
-    ]);
   });
 
   it("keeps the first Codex session metadata as the usage identity", async () => {
@@ -1576,78 +1536,7 @@ describe("usage adapters", () => {
     ]);
   });
 
-  it("scans recent usage history into daily buckets without reusing the live incremental cursors", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-scan-"));
-    cleanupPaths.push(root);
-    const usageDir = path.join(root, "claude");
-    mkdirSync(usageDir, { recursive: true });
-    const usagePath = path.join(usageDir, "usage.jsonl");
-
-    writeFileSync(
-      usagePath,
-      [
-        JSON.stringify({
-          timestamp: "2026-04-16T11:00:00.000Z",
-          session_id: "claude-history-day-1",
-          model: "claude-sonnet-4-5",
-          input_tokens: 1000,
-          output_tokens: 120,
-          estimated_cost: 1.2
-        }),
-        JSON.stringify({
-          timestamp: "2026-04-17T11:00:00.000Z",
-          session_id: "claude-history-day-2",
-          model: "claude-sonnet-4-5",
-          input_tokens: 600,
-          output_tokens: 80,
-          estimated_cost: 0.8
-        }),
-        ""
-      ].join("\n"),
-      "utf8"
-    );
-
-    const usageModule = (await import("./usage")) as {
-      scanUsageHistoryDays?: (options: {
-        env?: NodeJS.ProcessEnv;
-        homeDir?: string;
-        fromMs: number;
-        toMs: number;
-      }) => Promise<
-        Array<{
-          dayKey: string;
-          totalCostUsd: number;
-          totalTokens: number;
-        }>
-      >;
-    };
-
-    expect(typeof usageModule.scanUsageHistoryDays).toBe("function");
-
-    const days = await usageModule.scanUsageHistoryDays!({
-      env: {
-        KMUX_CLAUDE_USAGE_DIR: usageDir
-      },
-      homeDir: root,
-      fromMs: new Date("2026-04-16T00:00:00.000Z").getTime(),
-      toMs: new Date("2026-04-17T23:59:59.999Z").getTime()
-    });
-
-    expect(days).toEqual([
-      expect.objectContaining({
-        dayKey: "2026-04-16",
-        totalCostUsd: 1.2,
-        totalTokens: 1120
-      }),
-      expect.objectContaining({
-        dayKey: "2026-04-17",
-        totalCostUsd: 0.8,
-        totalTokens: 680
-      })
-    ]);
-  });
-
-  it("builds startup history and today's live cursor from one source scan", async () => {
+  it("scans only today's samples at startup and keeps the live cursor", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-startup-scan-"));
     cleanupPaths.push(root);
     const usageDir = path.join(root, "claude");
@@ -1686,17 +1575,9 @@ describe("usage adapters", () => {
     });
     try {
       const startup = await scanUsageAdaptersAtStartup(adapters, {
-        startOfDayMs: startOfCurrentDay,
-        historyRange: {
-          fromMs: new Date(2026, 3, 16, 0, 0, 0, 0).getTime(),
-          toMs: new Date(2026, 3, 17, 23, 59, 59, 999).getTime()
-        }
+        startOfDayMs: startOfCurrentDay
       });
 
-      expect(startup.historyDays).toEqual([
-        expect.objectContaining({ dayKey: "2026-04-16", totalTokens: 120 }),
-        expect.objectContaining({ dayKey: "2026-04-17", totalTokens: 230 })
-      ]);
       expect(startup.reads.flatMap((read) => read.samples)).toEqual([
         expect.objectContaining({ sessionId: "claude-startup-current" })
       ]);
@@ -1725,238 +1606,6 @@ describe("usage adapters", () => {
         adapter.close();
       }
     }
-  });
-
-  it("scans startup history larger than the JavaScript argument limit without dropping live samples", async () => {
-    const startOfDayMs = new Date(2026, 3, 17, 0, 0, 0, 0).getTime();
-    const priorDayMs = new Date(2026, 3, 16, 12, 0, 0, 0).getTime();
-    const currentDayMs = new Date(2026, 3, 17, 12, 0, 0, 0).getTime();
-    const sampleCount = 150_000;
-    const samples: UsageEventSample[] = Array.from(
-      { length: sampleCount },
-      (_, index) => ({
-        vendor: "claude",
-        timestampMs: index === sampleCount - 1 ? currentDayMs : priorDayMs,
-        sourcePath: "/tmp/large-usage-history.jsonl",
-        sourceType: "jsonl",
-        eventId: `large-history-${index}`,
-        inputTokens: 1,
-        outputTokens: 0,
-        cacheTokens: 0,
-        totalTokens: 1,
-        estimatedCostUsd: 0,
-        costSource: "unavailable"
-      })
-    );
-    const adapter: UsageAdapter = {
-      vendor: "claude",
-      initialScan: vi.fn(async () => ({ sourceCount: 1, samples: [] })),
-      initialScanRange: vi.fn(async () => ({ sourceCount: 1, samples })),
-      readIncremental: vi.fn(async () => ({ sourceCount: 1, samples: [] })),
-      watch: vi.fn(() => () => undefined),
-      close: vi.fn()
-    };
-
-    const startup = await scanUsageAdaptersAtStartup([adapter], {
-      startOfDayMs,
-      historyRange: {
-        fromMs: priorDayMs,
-        toMs: currentDayMs
-      }
-    });
-
-    expect(startup.reads).toEqual([
-      {
-        sourceCount: 1,
-        samples: [samples[sampleCount - 1]]
-      }
-    ]);
-    expect(startup.historyDays).toEqual([
-      expect.objectContaining({
-        dayKey: "2026-04-16",
-        totalTokens: sampleCount - 1
-      }),
-      expect.objectContaining({ dayKey: "2026-04-17", totalTokens: 1 })
-    ]);
-  });
-
-  it("dedupes canonical Claude samples when scanning usage history", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-dedupe-"));
-    cleanupPaths.push(root);
-    const usageDir = path.join(root, "claude");
-    const parentDir = path.join(usageDir, "project-session");
-    const subagentDir = path.join(parentDir, "subagents");
-    mkdirSync(subagentDir, { recursive: true });
-
-    writeFileSync(
-      path.join(parentDir, "session.jsonl"),
-      `${JSON.stringify({
-        timestamp: "2026-04-16T11:00:00.000Z",
-        type: "assistant",
-        sessionId: "claude-history-session",
-        requestId: "req_history_overlap",
-        message: {
-          id: "msg_history_overlap",
-          model: "claude-sonnet-4-5",
-          usage: {
-            input_tokens: 100,
-            cache_read_input_tokens: 10,
-            cache_creation_input_tokens: 20,
-            output_tokens: 30,
-            estimated_cost: 0.01
-          }
-        }
-      })}\n`,
-      "utf8"
-    );
-    writeFileSync(
-      path.join(subagentDir, "agent-a.jsonl"),
-      [
-        JSON.stringify({
-          timestamp: "2026-04-16T11:00:01.000Z",
-          type: "assistant",
-          sessionId: "claude-history-session",
-          requestId: "req_history_overlap",
-          parentUuid: "parent-message",
-          isSidechain: true,
-          agentId: "agent-a",
-          message: {
-            id: "msg_history_overlap",
-            model: "claude-sonnet-4-5",
-            usage: {
-              input_tokens: 100,
-              cache_read_input_tokens: 10,
-              cache_creation_input_tokens: 20,
-              output_tokens: 40,
-              estimated_cost: 0.012
-            }
-          }
-        }),
-        JSON.stringify({
-          timestamp: "2026-04-16T11:05:00.000Z",
-          type: "assistant",
-          sessionId: "claude-history-session",
-          requestId: "req_history_unique",
-          parentUuid: "parent-message",
-          isSidechain: true,
-          agentId: "agent-a",
-          message: {
-            id: "msg_history_unique",
-            model: "claude-sonnet-4-5",
-            usage: {
-              input_tokens: 70,
-              cache_read_input_tokens: 0,
-              cache_creation_input_tokens: 5,
-              output_tokens: 20,
-              estimated_cost: 0.005
-            }
-          }
-        }),
-        ""
-      ].join("\n"),
-      "utf8"
-    );
-
-    const days = await scanUsageHistoryDays({
-      env: {
-        KMUX_CLAUDE_USAGE_DIR: usageDir
-      },
-      homeDir: root,
-      fromMs: new Date("2026-04-16T00:00:00.000Z").getTime(),
-      toMs: new Date("2026-04-16T23:59:59.999Z").getTime()
-    });
-
-    expect(days).toEqual([
-      expect.objectContaining({
-        dayKey: "2026-04-16",
-        totalCostUsd: 0.017,
-        reportedCostUsd: 0.017,
-        totalTokens: 265,
-        vendors: [
-          expect.objectContaining({
-            vendor: "claude",
-            totalCostUsd: 0.017,
-            totalTokens: 265
-          })
-        ]
-      })
-    ]);
-  });
-
-  it("keeps multiple Codex history deltas from the same session file", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-history-codex-"));
-    cleanupPaths.push(root);
-    const codexDir = path.join(root, "sessions", "2026", "04", "16");
-    mkdirSync(codexDir, { recursive: true });
-
-    writeFileSync(
-      path.join(codexDir, "rollout-2026-04-16T09-00-00-codex.jsonl"),
-      [
-        JSON.stringify({
-          timestamp: "2026-04-16T09:00:00.000Z",
-          type: "session_meta",
-          payload: {
-            id: "codex-history-session",
-            cwd: "/tmp/kmux-codex-history",
-            model: "gpt-5.4"
-          }
-        }),
-        JSON.stringify({
-          timestamp: "2026-04-16T09:00:02.000Z",
-          type: "event_msg",
-          payload: {
-            type: "token_count",
-            info: {
-              total_token_usage: {
-                input_tokens: 1200,
-                cached_input_tokens: 200,
-                output_tokens: 80,
-                total_tokens: 1280
-              }
-            }
-          }
-        }),
-        JSON.stringify({
-          timestamp: "2026-04-16T09:01:02.000Z",
-          type: "event_msg",
-          payload: {
-            type: "token_count",
-            info: {
-              total_token_usage: {
-                input_tokens: 1800,
-                cached_input_tokens: 260,
-                output_tokens: 140,
-                total_tokens: 1940
-              }
-            }
-          }
-        }),
-        ""
-      ].join("\n"),
-      "utf8"
-    );
-
-    const days = await scanUsageHistoryDays({
-      env: {
-        KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
-      },
-      homeDir: root,
-      fromMs: new Date("2026-04-16T00:00:00.000Z").getTime(),
-      toMs: new Date("2026-04-16T23:59:59.999Z").getTime()
-    });
-
-    expect(days).toEqual([
-      expect.objectContaining({
-        dayKey: "2026-04-16",
-        totalTokens: 1940,
-        vendors: [
-          expect.objectContaining({
-            vendor: "codex",
-            totalTokens: 1940
-          })
-        ]
-      })
-    ]);
   });
 });
 

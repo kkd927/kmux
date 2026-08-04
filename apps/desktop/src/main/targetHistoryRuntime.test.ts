@@ -390,10 +390,8 @@ describe("target history runtime", () => {
 });
 
 describe("local history provider", () => {
-  it("refreshes target-local usage and normalizes the existing local index", async () => {
-    const refreshUsage = vi.fn(async () => undefined);
+  it("normalizes the existing local index without refreshing usage", async () => {
     const provider = createLocalHistoryProvider({
-      refreshUsage,
       indexer: {
         listExternalAgentSessions: () => ({
           updatedAt: "2026-07-18T00:00:00.000Z",
@@ -418,7 +416,6 @@ describe("local history provider", () => {
 
     const records = await provider.refresh({ maxRecords: 10 });
 
-    expect(refreshUsage).toHaveBeenCalledOnce();
     expect(records).toMatchObject({
       truncated: false,
       records: [

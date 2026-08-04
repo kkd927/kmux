@@ -28,12 +28,10 @@ const MAX_HISTORY_RECORDS = 100;
 
 export function createLocalHistoryProvider(options: {
   indexer: ExternalSessionIndexer;
-  refreshUsage: () => Promise<void>;
 }): HistoryProvider<LocalPath> {
   const provider: HistoryProvider<LocalPath> = {
     async refresh(request) {
       requireHistoryBound(request.maxRecords);
-      await options.refreshUsage();
       const snapshot = await options.indexer.listExternalAgentSessions();
       return {
         records: snapshot.sessions
