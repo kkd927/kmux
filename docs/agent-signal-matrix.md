@@ -257,6 +257,20 @@ Reducer behavior in [`packages/core/src/index.ts`](../packages/core/src/index.ts
 - `agent.attention.clear` clears surface-scoped `needs_input` status entries and structured `needs_input` notifications for the handled surface
 - `turn_complete` also clears stale `needs_input` UI before creating the completion notification
 
+Completion message body:
+
+- `turn_complete` notifications carry the agent's closing assistant text, not a constant. `normalizeAgentHookInvocation` reads the vendor `last_assistant_message` hook field and keeps its opening prose line, capped at 100 code points.
+- Structural lines (horizontal rules, code-fence openers) are skipped, markdown links are unwrapped to their text, and a leading section label — a markdown heading, or a whole line that is nothing but bold text — is joined to the line after it. That last rule exists because bare labels are common openers: Codex review turns open with `### Strengths` or `**Findings**` in 6.6% of completions, and a notification body of `Findings` is less useful than the constant it replaced.
+- Claude and Codex both ship that field on `Stop`. Antigravity's `Stop` payload has no equivalent, so its completions fall back to the `"Finished"` constant in the reducer.
+- This is what makes back-to-back completions distinguishable: a wake-driven turn (background task, cron, scheduled wakeup) produces a notification the user did not ask for, and the body is what explains why it arrived.
+
+History cap:
+
+- `state.notifications` is capped at `MAX_NOTIFICATION_HISTORY` (200). Without it an unattended session accrues one entry per agent turn until the user clears the list.
+- Eviction is oldest-first but kind-aware: `needs_input` entries are only evicted once every other entry is gone. They mark an agent still blocked on the user, and dropping one would silently clear that surface's attention badge.
+- Evicting an entry resyncs its surface via `syncSurfaceNotificationState`, because `surface.unreadCount` and `surface.attention` are derived from this list rather than tracked independently.
+- The cap applies when a notification is created, not on snapshot restore, so a persisted list that already exceeds it is trimmed by the next `notification.create`.
+
 Pre-reducer suppression in [`apps/desktop/src/main/socketServer.ts`](../apps/desktop/src/main/socketServer.ts):
 
 - a generic hook-driven `notification.create` (no structured `kind`) is dropped in `dispatchHookNotification` when a recent (`< 5min`) structured notification (`kind = "needs_input"` or `"turn_complete"`) for the same `agent + surfaceId` is still present. This prevents legacy/user-defined Claude `Notification` hook reminders from stacking on top of the structured needs-input or completion notification that already exists.

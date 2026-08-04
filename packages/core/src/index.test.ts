@@ -1187,6 +1187,124 @@ describe("core reducer", () => {
     );
   });
 
+  it("caps notification history and keeps surface unread counts in sync", () => {
+    const state = createInitialState();
+    const surfaceId = Object.keys(state.surfaces)[0];
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = Object.keys(state.panes)[0];
+
+    for (let index = 0; index < 205; index += 1) {
+      applyAction(state, {
+        type: "notification.create",
+        workspaceId,
+        paneId,
+        surfaceId,
+        title: "Claude finished",
+        message: `turn ${index}`,
+        source: "agent",
+        kind: "turn_complete",
+        agent: "claude"
+      });
+    }
+
+    expect(state.notifications).toHaveLength(200);
+    expect(state.notifications[0].message).toBe("turn 204");
+    expect(state.notifications.at(-1)?.message).toBe("turn 5");
+    expect(state.surfaces[surfaceId].unreadCount).toBe(200);
+    expect(state.surfaces[surfaceId].attention).toBe(true);
+  });
+
+  it("resyncs a bystander surface when the cap evicts its notification", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const idleSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId, title: "busy" });
+    const busySurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId: idleSurfaceId,
+      title: "Claude finished",
+      message: "old completion",
+      source: "agent",
+      kind: "turn_complete",
+      agent: "claude"
+    });
+    expect(state.surfaces[idleSurfaceId].attention).toBe(true);
+
+    for (let index = 0; index < 200; index += 1) {
+      applyAction(state, {
+        type: "notification.create",
+        workspaceId,
+        paneId,
+        surfaceId: busySurfaceId,
+        title: "Claude finished",
+        message: `turn ${index}`,
+        source: "agent",
+        kind: "turn_complete",
+        agent: "claude"
+      });
+    }
+
+    expect(state.notifications).toHaveLength(200);
+    expect(
+      state.notifications.some((entry) => entry.surfaceId === idleSurfaceId)
+    ).toBe(false);
+    expect(state.surfaces[idleSurfaceId].unreadCount).toBe(0);
+    expect(state.surfaces[idleSurfaceId].attention).toBe(false);
+    expect(state.surfaces[busySurfaceId].unreadCount).toBe(200);
+  });
+
+  it("evicts completions before an unanswered needs-input prompt", () => {
+    const state = createInitialState();
+    const workspaceId = Object.keys(state.workspaces)[0];
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const blockedSurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, { type: "surface.create", paneId, title: "busy" });
+    const busySurfaceId = state.panes[paneId].activeSurfaceId;
+
+    applyAction(state, {
+      type: "notification.create",
+      workspaceId,
+      paneId,
+      surfaceId: blockedSurfaceId,
+      title: "Claude needs input",
+      message: "Approve tool use?",
+      source: "agent",
+      kind: "needs_input",
+      agent: "claude"
+    });
+
+    for (let index = 0; index < 250; index += 1) {
+      applyAction(state, {
+        type: "notification.create",
+        workspaceId,
+        paneId,
+        surfaceId: busySurfaceId,
+        title: "Claude finished",
+        message: `turn ${index}`,
+        source: "agent",
+        kind: "turn_complete",
+        agent: "claude"
+      });
+    }
+
+    expect(state.notifications).toHaveLength(200);
+    expect(state.notifications.at(-1)).toEqual(
+      expect.objectContaining({
+        kind: "needs_input",
+        surfaceId: blockedSurfaceId
+      })
+    );
+    expect(state.surfaces[blockedSurfaceId].unreadCount).toBe(1);
+    expect(state.surfaces[blockedSurfaceId].attention).toBe(true);
+  });
+
   it("clears stale generic agent reminders when the agent transitions to idle", () => {
     const state = createInitialState();
     const surfaceId = Object.keys(state.surfaces)[0];

@@ -32,6 +32,8 @@ export interface NormalizedHookNotification {
 
 type HookPayload = Record<string, unknown>;
 
+const MAX_TURN_MESSAGE_LENGTH = 100;
+
 export function normalizeAgentHookInvocation(
   agentInput: string,
   hookEventInput: string,
@@ -48,7 +50,10 @@ export function normalizeAgentHookInvocation(
   }
 
   const target = resolveHookTarget(payload, environment);
-  const message = extractHookMessage(agent, event, payload);
+  const message =
+    event === "turn_complete"
+      ? summarizeTurnMessage(stringField(payload, "last_assistant_message"))
+      : extractHookMessage(agent, event, payload);
   const displayName = agentDisplayName(agent);
   const vendorSessionId = resolveVendorSessionId(agent, payload);
 
@@ -276,6 +281,66 @@ function resolveVendorSessionId(
   return undefined;
 }
 
+/**
+ * Turn-completion notifications used to read a constant "Finished", which made
+ * consecutive completions indistinguishable in the notification list. Claude and
+ * Codex both ship the closing assistant text as `last_assistant_message`, so use
+ * its opening line as the notification body. Vendors without that field (e.g.
+ * Antigravity) fall back to the constant downstream.
+ */
+function summarizeTurnMessage(text: string | undefined): string | undefined {
+  let label: string | undefined;
+  for (const rawLine of (text ?? "").split("\n")) {
+    const opensWithLabel = isSectionLabel(rawLine);
+    const line = stripInlineMarkdown(rawLine);
+    if (!line) {
+      continue;
+    }
+    // A leading section label is often bare ("Strengths", "Findings", "결론"), so
+    // carry it and join the line that follows rather than notifying on the label
+    // alone. Descriptive labels survive anyway: the join is truncated.
+    if (opensWithLabel && label === undefined) {
+      label = line;
+      continue;
+    }
+    return truncateByCodePoint(
+      label === undefined ? line : `${label} — ${line}`,
+      MAX_TURN_MESSAGE_LENGTH
+    );
+  }
+  return label === undefined
+    ? undefined
+    : truncateByCodePoint(label, MAX_TURN_MESSAGE_LENGTH);
+}
+
+/** A markdown heading, or a whole line that is nothing but bold text. */
+function isSectionLabel(line: string): boolean {
+  const trimmed = line.trim();
+  return /^#{1,6}\s/.test(trimmed) || /^\*\*[^*]+\*\*:?$/.test(trimmed);
+}
+
+/** Returns "" for lines that carry no prose, so the scan moves to the next one. */
+function stripInlineMarkdown(line: string): string {
+  const trimmed = line.trim();
+  if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed) || /^(?:```|~~~)/.test(trimmed)) {
+    return "";
+  }
+  return trimmed
+    .replace(/^(?:#{1,6}|>|[-*+]|\d+[.)])\s+/, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|`/g, "")
+    .trim();
+}
+
+/** Slices whole code points so an emoji is never cut into a lone surrogate. */
+function truncateByCodePoint(line: string, maxLength: number): string {
+  const codePoints = Array.from(line);
+  if (codePoints.length <= maxLength) {
+    return line;
+  }
+  return `${codePoints.slice(0, maxLength - 1).join("")}…`;
+}
+
 function extractHookMessage(
   agent: string,
   event: AgentEventName,
@@ -379,6 +444,7 @@ function compactDetails(payload: HookPayload): Record<string, unknown> {
     "toolName",
     "session_id",
     "sessionId",
+    "turn_id",
     "surface_id",
     "conversationId",
     "transcriptPath",

@@ -129,6 +129,158 @@ describe("agent hook normalization", () => {
     });
   });
 
+  it("summarizes the closing assistant message on Claude and Codex stop hooks", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "PR #5943 is fully green."
+      })
+    ).toMatchObject({
+      event: "turn_complete",
+      message: "PR #5943 is fully green."
+    });
+
+    expect(
+      normalizeAgentHookInvocation("codex", "Stop", {
+        last_assistant_message: "Rebased onto main and pushed."
+      })
+    ).toMatchObject({
+      event: "turn_complete",
+      message: "Rebased onto main and pushed."
+    });
+  });
+
+  it("keeps only the opening line of a multi-line completion message", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message:
+          "\n\n- PR #5943 is **fully green**; `sonar` passed too.\nsecond line"
+      })
+    ).toMatchObject({
+      event: "turn_complete",
+      message: "PR #5943 is fully green; sonar passed too."
+    });
+  });
+
+  it("joins a bare section heading with the line that follows it", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message:
+          "## Summary\n\nPR #5943 is **fully green**; `sonar` passed too.\n\n- runner died twice"
+      })?.message
+    ).toBe("Summary — PR #5943 is fully green; sonar passed too.");
+
+    expect(
+      normalizeAgentHookInvocation("codex", "Stop", {
+        last_assistant_message:
+          "### Strengths\n- Clear separation between transport and reducer"
+      })?.message
+    ).toBe("Strengths — Clear separation between transport and reducer");
+
+    expect(
+      normalizeAgentHookInvocation("codex", "Stop", {
+        last_assistant_message:
+          "**Findings**\n\n1. The reducer drops the stale epoch."
+      })?.message
+    ).toBe("Findings — The reducer drops the stale epoch.");
+  });
+
+  it("does not treat a partially bold line as a section label", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message:
+          "PR #5943 is **fully green**.\nSonarQube passed too."
+      })?.message
+    ).toBe("PR #5943 is fully green.");
+  });
+
+  it("keeps a descriptive heading when nothing follows it", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "## Review: one-release-per-minor gate"
+      })?.message
+    ).toBe("Review: one-release-per-minor gate");
+  });
+
+  it("skips structural-only lines when picking the completion summary", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "---\nDone."
+      })?.message
+    ).toBe("Done.");
+
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "***\n___\nRebase finished."
+      })?.message
+    ).toBe("Rebase finished.");
+
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "```bash\nnpm test\n```"
+      })?.message
+    ).toBe("npm test");
+  });
+
+  it("unwraps markdown links in the completion summary", () => {
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message:
+          "[PR #12](https://example.com/pr/12) is merged; `*.ts` untouched."
+      })?.message
+    ).toBe("PR #12 is merged; *.ts untouched.");
+  });
+
+  it("truncates long completion messages", () => {
+    const event = normalizeAgentHookInvocation("claude", "Stop", {
+      last_assistant_message: "x".repeat(400)
+    });
+
+    expect(event?.message).toHaveLength(100);
+    expect(event?.message?.endsWith("…")).toBe(true);
+  });
+
+  it("truncates on code point boundaries so emoji are never split", () => {
+    const message = normalizeAgentHookInvocation("claude", "Stop", {
+      last_assistant_message: `${"x".repeat(98)}🎉 all tests pass`
+    })?.message;
+
+    expect(Array.from(message ?? "")).toHaveLength(100);
+    expect(message).toMatch(/…$/);
+    expect(message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(message).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
+  it("keeps the Codex turn id in hook details", () => {
+    expect(
+      normalizeAgentHookInvocation("codex", "Stop", {
+        turn_id: "turn_789",
+        last_assistant_message: "Done."
+      })
+    ).toMatchObject({
+      event: "turn_complete",
+      details: { turn_id: "turn_789" }
+    });
+  });
+
+  it("omits the completion message when no assistant text is available", () => {
+    expect(
+      normalizeAgentHookInvocation("codex", "Stop", {
+        last_assistant_message: null
+      })?.message
+    ).toBeUndefined();
+
+    expect(
+      normalizeAgentHookInvocation("claude", "Stop", {
+        last_assistant_message: "   \n  \n"
+      })?.message
+    ).toBeUndefined();
+
+    expect(
+      normalizeAgentHookInvocation("antigravity", "Stop", { fullyIdle: true })
+        ?.message
+    ).toBeUndefined();
+  });
+
   it("maps Codex permission requests to needs_input events", () => {
     expect(
       normalizeAgentHookInvocation("codex", "PermissionRequest", {

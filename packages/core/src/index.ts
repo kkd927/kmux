@@ -274,6 +274,7 @@ const MAX_STATUS_TEXT_LENGTH = 256;
 const MAX_NOTIFICATION_MESSAGE_LENGTH = 512;
 const NOTIFICATION_DEDUPE_WINDOW_MS = 5000;
 const MAX_NOTIFICATION_DEDUPE_SCAN = 50;
+const MAX_NOTIFICATION_HISTORY = 200;
 const MAX_WORKSPACE_STATUS_ENTRIES = 16;
 const MAX_VIEW_STATUS_ENTRIES = 3;
 export const CURRENT_SETTINGS_VERSION = 6;
@@ -2901,7 +2902,53 @@ function createNotification(
     state.surfaces[action.surfaceId].attention = true;
     state.surfaces[action.surfaceId].unreadCount += 1;
   }
+  trimNotificationHistory(state);
   return [{ type: "notify.desktop", notification }, { type: "persist" }];
+}
+
+/**
+ * Nothing else bounds the notification list, so an unattended session accrues
+ * one entry per agent turn until the user clears it. Evict oldest-first, but only
+ * reach for `needs_input` once every other entry is gone: those mark an agent
+ * that is still blocked on the user, and dropping one silently clears its
+ * surface attention badge. Surfaces that lost an entry are resynced because
+ * their unread counts are derived from this list rather than tracked separately.
+ */
+function trimNotificationHistory(state: AppState): void {
+  let excess = state.notifications.length - MAX_NOTIFICATION_HISTORY;
+  if (excess <= 0) {
+    return;
+  }
+  const evicted = new Set<Id>();
+  for (const includeNeedsInput of [false, true]) {
+    for (let index = state.notifications.length - 1; index >= 0; index -= 1) {
+      if (excess <= 0) {
+        break;
+      }
+      const notification = state.notifications[index];
+      if (
+        evicted.has(notification.id) ||
+        (!includeNeedsInput && notification.kind === "needs_input")
+      ) {
+        continue;
+      }
+      evicted.add(notification.id);
+      excess -= 1;
+    }
+  }
+  const affectedSurfaceIds = new Set<Id>();
+  state.notifications = state.notifications.filter((notification) => {
+    if (!evicted.has(notification.id)) {
+      return true;
+    }
+    if (notification.surfaceId) {
+      affectedSurfaceIds.add(notification.surfaceId);
+    }
+    return false;
+  });
+  for (const surfaceId of affectedSurfaceIds) {
+    syncSurfaceNotificationState(state, surfaceId);
+  }
 }
 
 function normalizeStatusKey(keyInput?: string): string {
