@@ -10,6 +10,7 @@ import {
   type TerminalLineCwdTracker
 } from "./terminalLineCwdTracker";
 import { SupervisorTerminalQueryAuthorityAddon } from "./supervisorTerminalQueryAuthority";
+import { xtermCompositionTransactions } from "./xtermCompositionTransactions";
 
 export interface TerminalDiagnosticMetadata {
   hydratedSequence: Uint64 | null;
@@ -96,6 +97,7 @@ export interface TerminalBundle {
 
 export interface CreateTerminalBundleOptions {
   createTerminal(): Terminal;
+  reconcileCompositionTransactions: boolean;
   onWebLink(uri: string): void;
   registerFileLinks(
     terminal: Terminal,
@@ -110,6 +112,7 @@ export interface CreateTerminalBundleOptions {
 /** Shared by initial mount and offscreen checkpoint hydration. */
 export function createTerminalBundle({
   createTerminal,
+  reconcileCompositionTransactions,
   onWebLink,
   registerFileLinks,
   registerBufferTrimListener
@@ -142,6 +145,9 @@ export function createTerminalBundle({
   terminal.loadAddon(new SupervisorTerminalQueryAuthorityAddon());
   terminal.unicode.activeVersion = "11";
   terminal.open(host);
+  if (reconcileCompositionTransactions) {
+    xtermCompositionTransactions.install(terminal);
+  }
 
   return {
     host,

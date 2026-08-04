@@ -676,6 +676,21 @@ describe("terminal renderer helpers", () => {
     expect(controller.getPhase()).toBe("idle");
   });
 
+  it("uses xterm transaction ids for deferred navigation ownership", () => {
+    const controller = createTerminalImeInputController();
+
+    controller.compositionStart(41);
+    controller.deferNavigation("ArrowLeft");
+    expect(controller.compositionEnd(41)).toBe(41);
+
+    controller.compositionStart(57);
+    controller.deferNavigation("ArrowRight");
+    expect(controller.compositionEnd(57)).toBe(57);
+
+    expect(controller.finishComposition(41)).toEqual(["ArrowLeft"]);
+    expect(controller.finishComposition(57)).toEqual(["ArrowRight"]);
+  });
+
   it("applies pending Enter rewrites only to the originating surface CR", () => {
     expect(
       applyPendingTerminalEnterRewrite("surface_1", "가나다\r", {

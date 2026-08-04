@@ -58,6 +58,10 @@ import {
   type TerminalHostElement
 } from "../terminalBundle";
 import { refreshTerminalRenderer } from "../terminalRenderRefresh";
+import {
+  type XtermCompositionSettlementResult,
+  xtermCompositionTransactions
+} from "../xtermCompositionTransactions";
 import * as terminalInstanceStore from "../terminalInstanceStore";
 import {
   terminalStreamClient,
@@ -673,6 +677,7 @@ export function TerminalSurfaceView(
           theme: terminalTheme,
           linkHandler: terminalLinkHandler(surfaceId)
         }),
+      reconcileCompositionTransactions: props.keyboardPlatform === "linux",
       onWebLink: (url) => openExternalTerminalLink(surfaceId, url),
       registerBufferTrimListener: registerTerminalBufferTrimHandler,
       registerFileLinks: (terminal, lineCwds) => {
@@ -2176,6 +2181,9 @@ export function TerminalSurfaceView(
     }
     // Keep the last authoritative frame visible until the new epoch's
     // checkpoint has parsed in an offscreen xterm and commits atomically.
+    // The old session can no longer accept a delayed browser commit, so its
+    // composition owner is explicitly invalidated before the stream detaches.
+    xtermCompositionTransactions.invalidate(terminal);
     terminalCheckpointControllerRef.current?.cancelPending(
       "terminal session changed during checkpoint hydration"
     );
@@ -2526,13 +2534,19 @@ export function TerminalSurfaceView(
       if (!ownsTerminalInput()) {
         return;
       }
-      imeInputController.compositionStart();
+      imeInputController.compositionStart(
+        xtermCompositionTransactions.getSettlement(terminal)?.id
+      );
     };
     const handleCompositionEnd = (): void => {
       if (!ownsTerminalInput()) {
         return;
       }
-      const settlementId = imeInputController.compositionEnd();
+      const xtermSettlement =
+        xtermCompositionTransactions.getSettlement(terminal);
+      const settlementId = imeInputController.compositionEnd(
+        xtermSettlement?.id
+      );
       inputOwnerState.settling ??= inputOwnerToken;
       const stream = inputStreamForSession(inputSurfaceId, inputSessionId);
       const terminalPin =
@@ -2540,13 +2554,9 @@ export function TerminalSurfaceView(
       const releaseStream = stream
         ? terminalStreamClient.acquireSettlementLease(stream)
         : null;
-      // xterm is the sole owner of composition commits on every platform and
-      // defers its compositionend send with setTimeout(0). Run after that
-      // callback so Chromium can finish propagating the committed text.
-      // Once every composition has settled, clear the hidden textarea residue;
-      // otherwise a moved textarea caret can make xterm slice the previous
-      // Korean character as the next commit.
-      setTimeout(() => {
+      const finishSettlement = (
+        result?: XtermCompositionSettlementResult
+      ): void => {
         const settlement = imeSettlements.get(settlementId);
         if (!settlement) {
           return;
@@ -2554,10 +2564,20 @@ export function TerminalSurfaceView(
         try {
           const navigationKeys =
             imeInputController.finishComposition(settlementId);
-          if (xtermTextarea && imeInputController.getPhase() === "idle") {
+          if (
+            !xtermSettlement &&
+            xtermTextarea &&
+            imeInputController.getPhase() === "idle"
+          ) {
             xtermTextarea.value = "";
           }
-          replayDeferredImeNavigation(navigationKeys);
+          const ownerWasDiscarded =
+            result?.status === "cancelled" &&
+            (result.reason === "owner-invalidated" ||
+              result.reason === "disposed");
+          if (!ownerWasDiscarded) {
+            replayDeferredImeNavigation(navigationKeys);
+          }
         } finally {
           imeSettlements.delete(settlementId);
           if (
@@ -2584,12 +2604,27 @@ export function TerminalSurfaceView(
             );
           }
         }
-      }, 0);
+      };
       imeSettlements.set(settlementId, {
         stream,
         releaseStream,
         terminalPin
       });
+      // The xterm transaction reconciler owns the browser commit boundary.
+      // IBus can finish an empty compositionend by delivering insertText to a
+      // newly focused xterm, so retain the originating stream, input owner,
+      // and visibility pin until that exact transaction is sent or cancelled.
+      if (xtermSettlement) {
+        // Run synchronously after xterm emits the old transaction. A keydown
+        // can both settle that commit and emit the next session's key in the
+        // same stack, so a Promise continuation would release ownership too
+        // late and route the second emission to the old session.
+        xtermSettlement.onSettled(finishSettlement);
+      } else {
+        // Test doubles and unsupported unopened terminals retain xterm's
+        // native delayed compositionend ordering.
+        setTimeout(() => finishSettlement(), 0);
+      }
     };
     // Reset stale composition state if focus leaves the textarea (e.g. surface
     // switch, OS-level shortcut) without a matching compositionend.

@@ -272,6 +272,12 @@ vi.mock("@xterm/xterm", () => ({
 import { Terminal } from "@xterm/xterm";
 import { TerminalSurfaceView } from "./TerminalSurfaceView";
 import * as terminalInstanceStore from "../terminalInstanceStore";
+import { terminalStreamClient } from "../terminalStreamClient";
+import {
+  type XtermCompositionSettlement,
+  type XtermCompositionSettlementResult,
+  xtermCompositionTransactions
+} from "../xtermCompositionTransactions";
 import { flushRendererSmoothnessProfileEvents } from "../smoothnessProfile";
 
 (
@@ -422,6 +428,46 @@ function createCompositionEvent(
   const event = new Event(type, { bubbles: true }) as CompositionEvent;
   Object.defineProperty(event, "data", { value: data });
   return event;
+}
+
+function createControlledXtermSettlement(id: number): {
+  settlement: XtermCompositionSettlement;
+  settle(result?: XtermCompositionSettlementResult): void;
+} {
+  let settled = false;
+  let settlementResult: XtermCompositionSettlementResult | undefined;
+  const listeners = new Set<
+    (result: XtermCompositionSettlementResult) => void
+  >();
+  let resolvePromise!: (result: XtermCompositionSettlementResult) => void;
+  const promise = new Promise<XtermCompositionSettlementResult>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    settlement: {
+      id,
+      promise,
+      onSettled(listener) {
+        if (settled && settlementResult) {
+          listener(settlementResult);
+          return;
+        }
+        listeners.add(listener);
+      }
+    },
+    settle(result = { status: "committed" }) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      settlementResult = result;
+      for (const listener of listeners) {
+        listener(result);
+      }
+      listeners.clear();
+      resolvePromise(result);
+    }
+  };
 }
 
 function transferTerminalPort(attach: FakeTerminalStreamAttach): void {
@@ -2574,6 +2620,122 @@ describe("TerminalSurfaceView visibility cleanup", () => {
         message.type === "input:text" ? [message.text] : []
       )
     ).toEqual(["녕"]);
+  });
+
+  it("releases the origin stream and visibility pin from the reconciler settlement", async () => {
+    const controlled = createControlledXtermSettlement(901);
+    let settlementTerminal: unknown;
+    const settlementSpy = vi
+      .spyOn(xtermCompositionTransactions, "getSettlement")
+      .mockImplementation((terminal) =>
+        terminal === settlementTerminal ? controlled.settlement : null
+      );
+    const acquirePinSpy = vi.spyOn(
+      terminalInstanceStore,
+      "acquireSettlementPin"
+    );
+    const releasePinSpy = vi.spyOn(
+      terminalInstanceStore,
+      "releaseVisibilityPin"
+    );
+    const acquireLeaseSpy = vi.spyOn(
+      terminalStreamClient,
+      "acquireSettlementLease"
+    );
+
+    try {
+      const firstSurface = createSurface("surface_1");
+      const secondSurface = createSurface("surface_2");
+      const props = createProps("surface_1");
+      props.surfaces = [firstSurface, secondSurface];
+
+      await act(async () => {
+        root.render(<TerminalSurfaceView {...props} />);
+        await flushMicrotasks(10);
+      });
+
+      const firstTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | {
+            input(data: string): void;
+            textarea: HTMLTextAreaElement;
+          }
+        | undefined;
+      expect(firstTerminal).toBeDefined();
+      settlementTerminal = firstTerminal;
+      const firstAttach = latestTerminalStreamAttach("surface_1");
+      const pinResultIndex = acquirePinSpy.mock.results.length;
+
+      act(() => {
+        firstTerminal!.textarea.value = "";
+        firstTerminal!.textarea.dispatchEvent(
+          createCompositionEvent("compositionstart")
+        );
+        firstTerminal!.textarea.dispatchEvent(
+          createCompositionEvent("compositionend")
+        );
+        root.render(
+          <TerminalSurfaceView {...props} activeSurfaceId="surface_2" />
+        );
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await flushMicrotasks(10);
+      });
+
+      const settlementPin = acquirePinSpy.mock.results[pinResultIndex]?.value;
+      expect(settlementPin).not.toBeNull();
+      expect(acquireLeaseSpy).toHaveBeenCalledOnce();
+      expect(
+        firstAttach.port.sent.some((message) => message.type === "detach")
+      ).toBe(false);
+      expect(
+        releasePinSpy.mock.calls.some(
+          ([key, pin]) => key === "surface_1" && pin === settlementPin
+        )
+      ).toBe(false);
+
+      act(() => {
+        // Match the production order: xterm emits the origin transaction and
+        // only then synchronously notifies its settlement listeners.
+        firstTerminal!.input("녕");
+        controlled.settle();
+      });
+      await act(async () => {
+        await flushMicrotasks(10);
+      });
+
+      const firstInputIndex = firstAttach.port.sent.findIndex(
+        (message) => message.type === "input:text" && message.text === "녕"
+      );
+      const firstDetachIndex = firstAttach.port.sent.findIndex(
+        (message) => message.type === "detach"
+      );
+      expect(firstInputIndex).toBeGreaterThanOrEqual(0);
+      expect(firstDetachIndex).toBeGreaterThan(firstInputIndex);
+      expect(
+        releasePinSpy.mock.calls.some(
+          ([key, pin]) => key === "surface_1" && pin === settlementPin
+        )
+      ).toBe(true);
+
+      const secondTerminal = vi.mocked(Terminal).mock.results.at(-1)?.value as
+        | { input(data: string): void }
+        | undefined;
+      const secondAttach = latestTerminalStreamAttach("surface_2");
+      act(() => {
+        secondTerminal?.input("a");
+      });
+      expect(
+        secondAttach.port.sent.flatMap((message) =>
+          message.type === "input:text" ? [message.text] : []
+        )
+      ).toEqual(["a"]);
+    } finally {
+      settlementSpy.mockRestore();
+      acquirePinSpy.mockRestore();
+      releasePinSpy.mockRestore();
+      acquireLeaseSpy.mockRestore();
+    }
   });
 
   it("does not redirect a delayed IME commit into a replacement session", async () => {

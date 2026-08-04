@@ -36,8 +36,8 @@ export interface TerminalEnterRewriteResult {
 }
 
 export interface TerminalImeInputController {
-  compositionStart(): void;
-  compositionEnd(): number;
+  compositionStart(transactionId?: number): void;
+  compositionEnd(transactionId?: number): number;
   deferNavigation(key: TerminalImeNavigationKey): void;
   finishComposition(settlementId: number): TerminalImeNavigationKey[];
   getPhase(): TerminalImeCompositionPhase;
@@ -219,19 +219,36 @@ export function createTerminalImeInputController(): TerminalImeInputController {
   const settlingCompositionIds: number[] = [];
   const deferredNavigationKeys = new Map<number, TerminalImeNavigationKey[]>();
 
+  const allocateCompositionId = (transactionId?: number): number => {
+    if (transactionId !== undefined) {
+      nextCompositionId = Math.max(nextCompositionId, transactionId);
+      return transactionId;
+    }
+    nextCompositionId += 1;
+    return nextCompositionId;
+  };
+
   return {
-    compositionStart(): void {
-      activeCompositionId = ++nextCompositionId;
+    compositionStart(transactionId): void {
+      activeCompositionId = allocateCompositionId(transactionId);
       deferredNavigationKeys.set(activeCompositionId, []);
     },
-    compositionEnd(): number {
-      const settlementId = activeCompositionId ?? ++nextCompositionId;
+    compositionEnd(transactionId): number {
+      const settlementId =
+        transactionId ?? activeCompositionId ?? allocateCompositionId();
+      const deferred =
+        activeCompositionId === null
+          ? (deferredNavigationKeys.get(settlementId) ?? [])
+          : (deferredNavigationKeys.get(activeCompositionId) ?? []);
+      if (
+        activeCompositionId !== null &&
+        activeCompositionId !== settlementId
+      ) {
+        deferredNavigationKeys.delete(activeCompositionId);
+      }
       activeCompositionId = null;
       settlingCompositionIds.push(settlementId);
-      deferredNavigationKeys.set(
-        settlementId,
-        deferredNavigationKeys.get(settlementId) ?? []
-      );
+      deferredNavigationKeys.set(settlementId, deferred);
       return settlementId;
     },
     deferNavigation(key: TerminalImeNavigationKey): void {
