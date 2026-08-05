@@ -104,6 +104,7 @@ describe("electron builder config", () => {
     });
     expect(desktopEntry).toMatchObject({
       Name: "kmux",
+      "X-AppImage-Version": "",
       GenericName: "AI Coding Agent Terminal",
       Comment:
         "Run coding agents side by side without losing terminal output continuity.",
@@ -116,7 +117,7 @@ describe("electron builder config", () => {
     expect(desktopEntry).not.toHaveProperty("StartupWMClass");
   });
 
-  it("generates Linux desktop identity and categories from their source fields", async () => {
+  it("generates a stable Linux desktop identity without a version suffix", async () => {
     const config = readBuilderConfig();
     const linux = config.linux as Record<string, unknown>;
     const desktopPackage = JSON.parse(
@@ -140,13 +141,17 @@ describe("electron builder config", () => {
       platformSpecificBuildOptions: linux
     });
 
-    const desktopEntry = await helper.computeDesktopEntry(linux, null, {});
+    const desktopEntry = await helper.computeDesktopEntry(linux, null, {
+      "X-AppImage-Version": "9.9.9"
+    });
 
     expect(helper.getDesktopFileName()).toBe("kmux");
     expect(desktopEntry).toContain(
       "\nCategories=Development;TerminalEmulator;Utility;\n"
     );
     expect(desktopEntry).toContain("\nStartupWMClass=kmux\n");
+    expect(desktopEntry).toContain("\nX-AppImage-Version=\n");
+    expect(desktopEntry).not.toContain("\nX-AppImage-Version=9.9.9\n");
     expect(desktopEntry).not.toContain("--no-sandbox");
   });
 

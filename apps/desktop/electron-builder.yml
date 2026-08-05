@@ -59,6 +59,8 @@ linux:
   desktop:
     entry:
       Name: kmux
+      # Keep AppImageLauncher from appending the package version to Name.
+      X-AppImage-Version: ""
       GenericName: AI Coding Agent Terminal
       Comment: Run coding agents side by side without losing terminal output continuity.
       Icon: kmux
