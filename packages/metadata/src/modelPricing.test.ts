@@ -60,9 +60,14 @@ describe("model pricing", () => {
   it("loads a canonical bundled catalog with a verified models revision", () => {
     expect(BUNDLED_MODEL_PRICING_CATALOG).toMatchObject({
       schemaVersion: 1,
-      catalogVersion: 1,
-      publishedAt: "2026-08-04T00:00:00.000Z"
+      catalogVersion: expect.any(Number),
+      publishedAt: expect.stringMatching(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u
+      )
     });
+    expect(BUNDLED_MODEL_PRICING_CATALOG.catalogVersion).toBeGreaterThanOrEqual(
+      1
+    );
     expect(BUNDLED_MODEL_PRICING_CATALOG.revision).toBe(
       calculateModelPricingRevision(BUNDLED_MODEL_PRICING_CATALOG.models)
     );
