@@ -34,6 +34,7 @@ import {
   type SplitAxis,
   type SplitDirection,
   type SurfaceDiagnosticCaptureMode,
+  type SurfaceKind,
   type SurfaceVm,
   type WorkspaceDetectedWorktreeMetadata as WorkspaceDetectedWorktreeMetadataDto,
   type WorkspaceGitRepositoryMetadata as WorkspaceGitRepositoryMetadataDto,
@@ -92,7 +93,7 @@ export type {
   TerminalSurfaceContent,
   TerminalSurfaceInit
 } from "./surfaces/contracts";
-import { surfaceCoreModule } from "./surfaces/registry";
+import { surfaceCoreModule, surfaceCoreRegistry } from "./surfaces/registry";
 
 export {
   agentResumeOperationArgs,
@@ -1101,8 +1102,22 @@ export function encodeAppStateDto(snapshot: AppState): AppStateDto {
   };
 }
 
+export interface DroppedUnsupportedSurface {
+  surfaceId: Id;
+  kind: string;
+  title?: string;
+}
+
 export interface DecodeAppStateOptions {
   snapshotVersion?: 1 | 2 | 3 | 4;
+  /**
+   * When provided, surfaces whose content kind is not supported by this
+   * build (for example panes saved by a newer kmux) are dropped together
+   * with their sessions and emptied panes instead of failing the decode.
+   * Each dropped surface is appended to this array. Structurally invalid
+   * surfaces still fail the decode.
+   */
+  droppedUnsupportedSurfaces?: DroppedUnsupportedSurface[];
 }
 
 /** Decodes the current DTO and explicitly supported legacy snapshot schemas. */
@@ -1132,7 +1147,8 @@ export function decodeAppStateDto(
   }
   return sanitizeState(cloned, {
     allowLegacySurfaceFormat:
-      options.snapshotVersion === 1 || options.snapshotVersion === 2
+      options.snapshotVersion === 1 || options.snapshotVersion === 2,
+    droppedUnsupportedSurfaces: options.droppedUnsupportedSurfaces
   });
 }
 
@@ -4137,10 +4153,185 @@ function aggregateWorkspacePorts(
   return aggregate;
 }
 
+function isSupportedSurfaceKind(kind: unknown): kind is SurfaceKind {
+  return typeof kind === "string" && Object.hasOwn(surfaceCoreRegistry, kind);
+}
+
+/**
+ * Drops surfaces whose content kind this build does not support (for
+ * example panes saved by a newer kmux) so the rest of the snapshot can be
+ * restored. Sessions, status entries, and notifications attached to a
+ * dropped surface are removed with it, panes emptied by the removal
+ * collapse like user-closed panes, and a local workspace that loses every
+ * pane restarts with a fresh terminal pane. A remote workspace that would
+ * lose every pane and surfaces without a string content kind still fail
+ * the decode so those snapshots stay on the conservative incompatible
+ * path. See the amendment in ADR 0006 "Incompatible snapshot policy".
+ */
+function dropUnsupportedSurfaces(
+  state: AppState,
+  dropped: DroppedUnsupportedSurface[]
+): void {
+  if (!state.surfaces || typeof state.surfaces !== "object") {
+    return;
+  }
+  const droppedSurfaceIds = new Set<Id>();
+  for (const [surfaceId, surface] of Object.entries(state.surfaces)) {
+    const record = surface as unknown as Record<string, unknown> | null;
+    const content = record?.content;
+    if (!content || typeof content !== "object" || Array.isArray(content)) {
+      continue;
+    }
+    const kind = (content as Record<string, unknown>).kind;
+    if (typeof kind !== "string" || isSupportedSurfaceKind(kind)) {
+      continue;
+    }
+    const title = normalizeOptionalText(record?.title, 256);
+    const reportedKind = kind.slice(0, 64);
+    droppedSurfaceIds.add(surfaceId);
+    dropped.push(
+      title === undefined
+        ? { surfaceId, kind: reportedKind }
+        : { surfaceId, kind: reportedKind, title }
+    );
+    delete state.surfaces[surfaceId];
+  }
+  if (droppedSurfaceIds.size === 0) {
+    return;
+  }
+
+  if (state.sessions && typeof state.sessions === "object") {
+    for (const [sessionId, session] of Object.entries(state.sessions)) {
+      if (session && droppedSurfaceIds.has(session.surfaceId)) {
+        delete state.sessions[sessionId];
+      }
+    }
+  }
+
+  // Status entries and notifications referencing a dropped surface go the
+  // same way they would if the user had closed the pane.
+  for (const surfaceId of droppedSurfaceIds) {
+    purgeSurfaceReferences(state, surfaceId);
+  }
+
+  const emptiedWorkspaceIds = new Set<Id>();
+  if (state.panes && typeof state.panes === "object") {
+    for (const pane of Object.values(state.panes)) {
+      if (!pane || !Array.isArray(pane.surfaceIds)) {
+        continue;
+      }
+      if (!pane.surfaceIds.some((id) => droppedSurfaceIds.has(id))) {
+        continue;
+      }
+      pane.surfaceIds = pane.surfaceIds.filter(
+        (id) => !droppedSurfaceIds.has(id)
+      );
+      if (pane.surfaceIds.length > 0) {
+        if (!pane.surfaceIds.includes(pane.activeSurfaceId)) {
+          pane.activeSurfaceId = pane.surfaceIds[0];
+        }
+        continue;
+      }
+      delete state.panes[pane.id];
+      const workspace = state.workspaces?.[pane.workspaceId];
+      if (!workspace || typeof workspace !== "object") {
+        continue;
+      }
+      if (workspace.nodeMap && typeof workspace.nodeMap === "object") {
+        const leaf = Object.values(workspace.nodeMap).find(
+          (node) => node?.kind === "leaf" && node.paneId === pane.id
+        );
+        if (leaf) {
+          collapsePaneLeaf(workspace, leaf.id);
+        }
+      }
+      emptiedWorkspaceIds.add(workspace.id);
+    }
+  }
+
+  for (const workspaceId of emptiedWorkspaceIds) {
+    const workspace = state.workspaces[workspaceId];
+    if (!workspace) {
+      continue;
+    }
+    const hasPane = listPaneIds(workspace).some(
+      (paneId) => state.panes[paneId]?.workspaceId === workspaceId
+    );
+    if (hasPane) {
+      continue;
+    }
+    // Remote sessions only exist through durable session.create operations
+    // reconciled against the remote keeper, so a directly seeded Session
+    // would never spawn. Reject the snapshot instead: the conservative
+    // incompatible path preserves the original file.
+    const rawTargetKind = (
+      workspace as unknown as { location?: { target?: { kind?: unknown } } }
+    ).location?.target?.kind;
+    if (rawTargetKind !== undefined && rawTargetKind !== "local") {
+      throw new TypeError(
+        `workspace ${workspaceId} lost every pane to unsupported Surface kinds and cannot be reseeded on a ${String(rawTargetKind)} target`
+      );
+    }
+    seedWorkspaceTerminalPane(state, workspace);
+  }
+}
+
+/**
+ * Rebuilds a local-target workspace that lost every pane around a fresh
+ * terminal pane.
+ */
+function seedWorkspaceTerminalPane(
+  state: AppState,
+  workspace: WorkspaceState
+): void {
+  const paneId = makeId("pane");
+  const surfaceId = makeId("surface");
+  const sessionId = makeId("session");
+  const nodeId = makeId("node");
+  workspace.rootNodeId = nodeId;
+  workspace.nodeMap = { [nodeId]: { id: nodeId, kind: "leaf", paneId } };
+  workspace.activePaneId = paneId;
+  state.panes[paneId] = {
+    id: paneId,
+    workspaceId: workspace.id,
+    surfaceIds: [surfaceId],
+    activeSurfaceId: surfaceId
+  };
+  state.surfaces[surfaceId] = {
+    id: surfaceId,
+    paneId,
+    title:
+      typeof workspace.name === "string" && workspace.name.length > 0
+        ? workspace.name
+        : "new workspace",
+    titleLocked: false,
+    unreadCount: 0,
+    attention: false,
+    content: { kind: "terminal", sessionId }
+  };
+  // Launch config and runtime metadata are left empty so the Session
+  // sanitization pass resolves them to the workspace's default cwd.
+  state.sessions[sessionId] = {
+    id: sessionId,
+    surfaceId,
+    launch: {} as StoredSessionLaunchConfig,
+    authToken: makeId("auth"),
+    runtimeStatus: pendingSessionRuntimeStatus(),
+    shellInputReady: false,
+    runtimeMetadata: {} as TerminalRuntimeMetadata
+  };
+}
+
 function sanitizeState(
   state: AppState,
-  options: { allowLegacySurfaceFormat: boolean }
+  options: {
+    allowLegacySurfaceFormat: boolean;
+    droppedUnsupportedSurfaces?: DroppedUnsupportedSurface[];
+  }
 ): AppState {
+  if (options.droppedUnsupportedSurfaces) {
+    dropUnsupportedSurfaces(state, options.droppedUnsupportedSurfaces);
+  }
   const rawRemoteRecovery = (state as AppState & { remoteRecovery?: unknown })
     .remoteRecovery;
   const remoteRecovery =
@@ -4470,7 +4661,7 @@ function decodeSurfaceContent(value: unknown): SurfaceContentOf {
     throw new TypeError("Surface content must be an object");
   }
   const record = value as Record<string, unknown>;
-  if (record.kind !== "terminal" && record.kind !== "markdown") {
+  if (!isSupportedSurfaceKind(record.kind)) {
     throw new TypeError(`Unsupported Surface kind: ${String(record.kind)}`);
   }
   return surfaceCoreModule(record.kind).decodeContent(value);

@@ -746,6 +746,30 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
       }
     }
 
+    const droppedSurfaces = snapshotRecord?.droppedSurfaces ?? [];
+    if (shouldRestoreSnapshot && droppedSurfaces.length > 0) {
+      const window = initial.windows[initial.activeWindowId];
+      const workspace = window
+        ? initial.workspaces[window.activeWorkspaceId]
+        : undefined;
+      if (workspace) {
+        const kinds = [
+          ...new Set(droppedSurfaces.map((surface) => surface.kind))
+        ]
+          .join(", ")
+          .slice(0, 128);
+        initial.notifications.push({
+          id: makeId("notification"),
+          workspaceId: workspace.id,
+          title: "Some panes were not restored",
+          message: `Skipped ${droppedSurfaces.length} saved pane(s) this version of kmux does not support (${kinds}). They were likely created by a different kmux version.`,
+          source: "system",
+          kind: "generic",
+          createdAt: isoNow()
+        });
+      }
+    }
+
     const activeWindow = initial.windows[initial.activeWindowId];
     const persistedSidebarVisible = savedWindowState?.sidebarVisible;
     const persistedSidebarWidth = savedWindowState?.sidebarWidth;

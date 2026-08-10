@@ -14,7 +14,7 @@ import {
 import { LINUX_DEFAULT_SHORTCUTS } from "@kmux/ui";
 import { vi } from "vitest";
 
-import type { AppState } from "@kmux/core";
+import type { AppState, DroppedUnsupportedSurface } from "@kmux/core";
 import type { KmuxSettings, ShellPatch } from "@kmux/proto";
 import { uint64 } from "@kmux/proto";
 import type { PersistedWindowState } from "@kmux/persistence";
@@ -75,6 +75,7 @@ function createRuntime(
       schemaVersion?: 1 | 2 | 3 | 4;
       cleanShutdown: boolean;
       restoreOnLaunch?: boolean;
+      droppedSurfaces?: DroppedUnsupportedSurface[];
     } | null;
     settings?: KmuxSettings | null;
     windowState?: PersistedWindowState | null;
@@ -730,6 +731,52 @@ describe("app runtime restore", () => {
       expect("pid" in session).toBe(false);
       expect("exitCode" in session).toBe(false);
     }
+  });
+
+  it("notifies when unsupported panes were dropped from the restored snapshot", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: false,
+        droppedSurfaces: [
+          {
+            surfaceId: "surface_future",
+            kind: "agent-monitor",
+            title: "Monitor"
+          }
+        ]
+      }
+    });
+
+    const restored = runtime.restoreInitialState().state;
+
+    expect(restored.notifications).toHaveLength(1);
+    expect(restored.notifications[0]).toMatchObject({
+      title: "Some panes were not restored",
+      source: "system",
+      kind: "generic"
+    });
+    expect(restored.notifications[0].message).toContain("agent-monitor");
+  });
+
+  it("does not report dropped panes when the snapshot is not restored", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: false,
+        droppedSurfaces: [
+          {
+            surfaceId: "surface_future",
+            kind: "agent-monitor"
+          }
+        ]
+      }
+    });
+
+    expect(runtime.restoreInitialState().state.notifications).toEqual([]);
   });
 
   it("respawns persisted exited surfaces with fresh runtime epochs on the next launch", () => {

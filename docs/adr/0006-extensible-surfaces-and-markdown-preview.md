@@ -972,6 +972,26 @@ This policy must land with the version-3 reader. It protects forward-version and
 the current load-null-then-save behavior. Silently dropping one Surface is not allowed because it can leave
 pane membership and active IDs inconsistent and can convert a recoverable snapshot into permanent data loss.
 
+#### Amendment (2026-08-11): unknown Surface kinds degrade to a per-Surface drop
+
+Rejecting the whole snapshot for a single unknown kind locked the profile out of persistence whenever a
+build without a newer Surface kind opened a profile written by a build that had it (branch switching during
+Surface development, or a downgrade), so the unknown-kind case no longer rejects the snapshot. Snapshot
+loading (`decodeAppStateDto` with `droppedUnsupportedSurfaces`) now drops a Surface whose content `kind` is
+a string this build does not register, together with its Sessions, status entries, and notifications; a
+pane emptied by the drop collapses exactly like a user-closed pane, and a local workspace that loses every
+pane is reseeded with a fresh Terminal pane. Dropped Surfaces are reported to the caller, logged, and
+surfaced as a startup notification, and snapshot writes stay enabled — so the next save persists the pruned
+state without an archival copy, and switching back to the newer build does not restore the dropped panes.
+That data-loss tradeoff was accepted deliberately in favor of keeping persistence writable across
+branch/version switches; the reference-consistency risk is addressed by routing the drop through the same
+purge helpers as user-initiated closes.
+
+Everything else keeps the conservative policy above unchanged: structurally malformed content (missing or
+non-string `kind`), unsupported envelope versions, invalid cross-references, and a remote (non-local)
+workspace that would lose every pane all still reject the entire snapshot, leave the original bytes
+untouched, and disable writes for the run.
+
 ## Current-code change map
 
 | Area                                                                                     | Required change                                                                                                                          |

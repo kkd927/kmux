@@ -435,7 +435,7 @@ describe("file-store persistence", () => {
       string,
       Record<string, unknown>
     >;
-    surfaces[Object.keys(surfaces)[0]].content = { kind: "future" };
+    surfaces[Object.keys(surfaces)[0]].content = {};
     const original = JSON.stringify(envelope);
     writeFileSync(statePath, original);
     const store = createSnapshotStore(statePath);
@@ -445,6 +445,111 @@ describe("file-store persistence", () => {
     store.saveDurable(createInitialState("/bin/bash"));
 
     expect(readFileSync(statePath, "utf8")).toBe(original);
+  });
+
+  it("drops surfaces of unsupported kinds and keeps the store writable", () => {
+    const statePath = join(sandboxDir, "state-unsupported-surface.json");
+    const state = createInitialState("/bin/zsh");
+    const paneId = Object.keys(state.panes)[0]!;
+    const envelope = {
+      version: 4,
+      snapshot: encodeAppStateDto(state)
+    };
+    const surfaces = envelope.snapshot.surfaces as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const panes = envelope.snapshot.panes as Record<
+      string,
+      { surfaceIds: string[] }
+    >;
+    surfaces.surface_future = {
+      id: "surface_future",
+      paneId,
+      title: "Agent monitor",
+      titleLocked: false,
+      unreadCount: 0,
+      attention: false,
+      content: { kind: "agent-monitor", agentId: "agent_1" }
+    };
+    panes[paneId].surfaceIds.push("surface_future");
+    writeFileSync(statePath, JSON.stringify(envelope));
+    const store = createSnapshotStore(statePath);
+
+    expect(store.loadRecord()).toEqual({
+      status: "ok",
+      record: {
+        snapshot: state,
+        schemaVersion: 4,
+        cleanShutdown: false,
+        restoreOnLaunch: false,
+        droppedSurfaces: [
+          {
+            surfaceId: "surface_future",
+            kind: "agent-monitor",
+            title: "Agent monitor"
+          }
+        ]
+      }
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("unsupported kind (agent-monitor)")
+    );
+
+    const nextState = createInitialState("/bin/bash");
+    store.save(nextState);
+    expect(store.load()).toEqual(nextState);
+  });
+
+  it("reseeds a workspace whose only pane used an unsupported surface kind", () => {
+    const statePath = join(sandboxDir, "state-unsupported-workspace.json");
+    const state = createInitialState("/bin/zsh");
+    const originalSurfaceId = Object.keys(state.surfaces)[0]!;
+    const originalSessionId = Object.keys(state.sessions)[0]!;
+    const workspaceId = Object.keys(state.workspaces)[0]!;
+    const envelope = {
+      version: 4,
+      snapshot: encodeAppStateDto(state)
+    };
+    const surfaces = envelope.snapshot.surfaces as Record<
+      string,
+      Record<string, unknown>
+    >;
+    surfaces[originalSurfaceId].content = { kind: "agent-monitor" };
+    writeFileSync(statePath, JSON.stringify(envelope));
+
+    const result = createSnapshotStore(statePath).loadRecord();
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") {
+      throw new Error("expected the snapshot to load");
+    }
+    expect(result.record.droppedSurfaces).toEqual([
+      {
+        surfaceId: originalSurfaceId,
+        kind: "agent-monitor",
+        title: "new workspace"
+      }
+    ]);
+
+    const snapshot = result.record.snapshot;
+    expect(Object.keys(snapshot.workspaces)).toEqual([workspaceId]);
+    const paneIds = Object.keys(snapshot.panes);
+    expect(paneIds).toHaveLength(1);
+    expect(snapshot.panes[paneIds[0]!].workspaceId).toBe(workspaceId);
+    expect(snapshot.workspaces[workspaceId].activePaneId).toBe(paneIds[0]);
+
+    const seededSurfaces = Object.values(snapshot.surfaces);
+    expect(seededSurfaces).toHaveLength(1);
+    expect(seededSurfaces[0]!.id).not.toBe(originalSurfaceId);
+    expect(seededSurfaces[0]!.content.kind).toBe("terminal");
+
+    const seededSessions = Object.values(snapshot.sessions);
+    expect(seededSessions).toHaveLength(1);
+    expect(seededSessions[0]!.id).not.toBe(originalSessionId);
+    expect(seededSessions[0]!.runtimeStatus.processState).toBe("pending");
+    expect(seededSessions[0]!.launch.cwd).toEqual(
+      state.sessions[originalSessionId].launch.cwd
+    );
   });
 
   it("overwrites existing snapshot files atomically", () => {

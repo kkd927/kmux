@@ -22,7 +22,8 @@ import {
   encodeAppStateDto,
   sanitizeSettings,
   type AppState,
-  type AppStateDto
+  type AppStateDto,
+  type DroppedUnsupportedSurface
 } from "@kmux/core";
 import type { KmuxSettings, UsageVendor } from "@kmux/proto";
 
@@ -130,6 +131,8 @@ export interface SnapshotRecord {
   schemaVersion: 1 | 2 | 3 | 4;
   cleanShutdown: boolean;
   restoreOnLaunch: boolean;
+  /** Surfaces of unsupported kinds that were dropped while decoding. */
+  droppedSurfaces?: DroppedUnsupportedSurface[];
 }
 
 export type SnapshotLoadResult =
@@ -472,15 +475,27 @@ export function createSnapshotStore(statePath: string): SnapshotFileStore {
       return incompatible("missing snapshot payload");
     }
     try {
+      const droppedSurfaces: DroppedUnsupportedSurface[] = [];
+      const snapshot = decodeAppStateDto(envelope.snapshot, {
+        snapshotVersion: envelope.version,
+        droppedUnsupportedSurfaces: droppedSurfaces
+      });
+      if (droppedSurfaces.length > 0) {
+        const kinds = [
+          ...new Set(droppedSurfaces.map((surface) => surface.kind))
+        ].join(", ");
+        console.warn(
+          `[persistence] dropped ${droppedSurfaces.length} surface(s) of unsupported kind (${kinds}) from ${statePath}`
+        );
+      }
       return {
         status: "ok",
         record: {
-          snapshot: decodeAppStateDto(envelope.snapshot, {
-            snapshotVersion: envelope.version
-          }),
+          snapshot,
           schemaVersion: envelope.version,
           cleanShutdown: envelope.cleanShutdown === true,
-          restoreOnLaunch: envelope.restoreOnLaunch === true
+          restoreOnLaunch: envelope.restoreOnLaunch === true,
+          ...(droppedSurfaces.length > 0 ? { droppedSurfaces } : {})
         }
       };
     } catch (error) {

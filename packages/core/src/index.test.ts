@@ -32,7 +32,11 @@ import {
   resolveSurfaceDiagnosticCaptureEnabled,
   sanitizeSettings
 } from "./index";
-import type { SettingsPatch, SurfacePlacementRequest } from "./index";
+import type {
+  DroppedUnsupportedSurface,
+  SettingsPatch,
+  SurfacePlacementRequest
+} from "./index";
 
 function expectedHomeDirectory(): string {
   const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
@@ -709,6 +713,161 @@ describe("core reducer", () => {
     );
     expect(restored.surfaces[surfaceId]).toBeUndefined();
     expect(Object.keys(restored.sessions)).toEqual(sessionIdsBefore);
+  });
+
+  it("rejects unsupported Surface kinds when decoding without the drop option", () => {
+    const encoded = encodeAppStateDto(createInitialState());
+    Object.values(
+      encoded.surfaces as Record<string, Record<string, unknown>>
+    )[0]!.content = { kind: "agent-monitor" };
+
+    expect(() => decodeAppStateDto(encoded)).toThrow(
+      /Unsupported Surface kind: agent-monitor/
+    );
+  });
+
+  it("drops unsupported split panes with their sessions and collapses the tree", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const keptPaneId = state.workspaces[workspaceId].activePaneId;
+    applyAction(state, {
+      type: "surface.open",
+      workspaceId,
+      init: { kind: "terminal", title: "monitor host" },
+      placement: { kind: "split", paneId: keptPaneId, direction: "right" }
+    });
+    const droppedPaneId = Object.keys(state.panes).find(
+      (id) => id !== keptPaneId
+    )!;
+    const droppedSurfaceId = state.panes[droppedPaneId].activeSurfaceId;
+    const droppedSessionId = requireTerminalSurfaceContent(
+      state.surfaces[droppedSurfaceId]
+    ).sessionId;
+    state.notifications.push({
+      id: "notification_dropped",
+      workspaceId,
+      surfaceId: droppedSurfaceId,
+      title: "Monitor",
+      message: "done",
+      source: "system",
+      createdAt: "2026-08-11T00:00:00.000Z"
+    });
+
+    const encoded = encodeAppStateDto(state);
+    (encoded.surfaces as Record<string, Record<string, unknown>>)[
+      droppedSurfaceId
+    ]!.content = { kind: "agent-monitor", agentId: "agent_1" };
+
+    const dropped: DroppedUnsupportedSurface[] = [];
+    const restored = decodeAppStateDto(encoded, {
+      droppedUnsupportedSurfaces: dropped
+    });
+
+    expect(dropped).toEqual([
+      {
+        surfaceId: droppedSurfaceId,
+        kind: "agent-monitor",
+        title: state.surfaces[droppedSurfaceId].title
+      }
+    ]);
+    expect(Object.keys(restored.panes)).toEqual([keptPaneId]);
+    expect(restored.surfaces[droppedSurfaceId]).toBeUndefined();
+    expect(restored.sessions[droppedSessionId]).toBeUndefined();
+    expect(restored.notifications).toEqual([]);
+    const workspace = restored.workspaces[workspaceId];
+    expect(workspace.activePaneId).toBe(keptPaneId);
+    expect(listPaneIds(workspace)).toEqual([keptPaneId]);
+    expect(Object.keys(workspace.nodeMap)).toEqual([workspace.rootNodeId]);
+  });
+
+  it("keeps a multi-tab pane when its active tab is dropped and purges status entries", () => {
+    const state = createInitialState();
+    const workspaceId = state.windows[state.activeWindowId].activeWorkspaceId;
+    const paneId = state.workspaces[workspaceId].activePaneId;
+    const keptSurfaceId = state.panes[paneId].activeSurfaceId;
+    applyAction(state, {
+      type: "surface.open",
+      workspaceId,
+      init: { kind: "terminal", title: "monitor tab" },
+      placement: { kind: "tab", paneId }
+    });
+    const droppedSurfaceId = state.panes[paneId].activeSurfaceId;
+    expect(droppedSurfaceId).not.toBe(keptSurfaceId);
+    applyAction(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      key: "monitor",
+      text: "Watching",
+      surfaceId: droppedSurfaceId
+    });
+    applyAction(state, {
+      type: "sidebar.setStatus",
+      workspaceId,
+      key: "build",
+      text: "Building",
+      surfaceId: keptSurfaceId
+    });
+
+    const encoded = encodeAppStateDto(state);
+    (encoded.surfaces as Record<string, Record<string, unknown>>)[
+      droppedSurfaceId
+    ]!.content = { kind: "agent-monitor" };
+
+    const dropped: DroppedUnsupportedSurface[] = [];
+    const restored = decodeAppStateDto(encoded, {
+      droppedUnsupportedSurfaces: dropped
+    });
+
+    expect(dropped.map((entry) => entry.surfaceId)).toEqual([
+      droppedSurfaceId
+    ]);
+    expect(restored.panes[paneId].surfaceIds).toEqual([keptSurfaceId]);
+    expect(restored.panes[paneId].activeSurfaceId).toBe(keptSurfaceId);
+    expect(
+      Object.keys(restored.workspaces[workspaceId].statusEntries)
+    ).toEqual(["build"]);
+  });
+
+  it("drops prototype-inherited kinds instead of resolving them from the registry", () => {
+    const encoded = encodeAppStateDto(createInitialState());
+    Object.values(
+      encoded.surfaces as Record<string, Record<string, unknown>>
+    )[0]!.content = { kind: "toString" };
+
+    const dropped: DroppedUnsupportedSurface[] = [];
+    const restored = decodeAppStateDto(encoded, {
+      droppedUnsupportedSurfaces: dropped
+    });
+    expect(dropped.map((entry) => entry.kind)).toEqual(["toString"]);
+    expect(Object.values(restored.surfaces)).toHaveLength(1);
+
+    expect(() => decodeAppStateDto(encoded)).toThrow(
+      /Unsupported Surface kind: toString/
+    );
+  });
+
+  it("rejects the snapshot when a remote workspace would lose every pane", () => {
+    const state = createInitialState();
+    const existing = new Set(Object.keys(state.workspaces));
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/app"
+    });
+    const sshWorkspaceId = Object.keys(state.workspaces).find(
+      (id) => !existing.has(id)
+    )!;
+    const sshPaneId = state.workspaces[sshWorkspaceId].activePaneId;
+    const sshSurfaceId = state.panes[sshPaneId].activeSurfaceId;
+
+    const encoded = encodeAppStateDto(state);
+    (encoded.surfaces as Record<string, Record<string, unknown>>)[
+      sshSurfaceId
+    ]!.content = { kind: "agent-monitor" };
+
+    expect(() =>
+      decodeAppStateDto(encoded, { droppedUnsupportedSurfaces: [] })
+    ).toThrow(/cannot be reseeded on a ssh target/);
   });
 
   it.each(["tab", "split", "right-preview"] as const)(
