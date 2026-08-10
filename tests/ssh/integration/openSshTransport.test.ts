@@ -1061,6 +1061,7 @@ describe("real system OpenSSH transport spike", () => {
           launch: {
             cwd: "/home/kmux",
             shell: "/bin/sh",
+            args: ["-c", "stty -echo; exec /bin/sh"],
             env: {
               PATH: `${fakeCodexBin}:/usr/bin:/bin`,
               CODEX_HOME: "/home/kmux/.codex"
