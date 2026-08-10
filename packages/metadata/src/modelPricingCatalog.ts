@@ -19,14 +19,14 @@ export type ModelPricingCatalogDocument = {
 
 const PRICING_ENTRY_KEYS = new Set([
   "modelId",
-  "inputCostPerToken",
-  "outputCostPerToken",
-  "cacheReadCostPerToken",
-  "cacheCreateCostPerToken",
-  "inputCostPerTokenAboveThreshold",
-  "outputCostPerTokenAboveThreshold",
-  "cacheReadCostPerTokenAboveThreshold",
-  "cacheCreateCostPerTokenAboveThreshold",
+  "inputCostPerMillionTokens",
+  "outputCostPerMillionTokens",
+  "cacheReadCostPerMillionTokens",
+  "cacheCreateCostPerMillionTokens",
+  "inputCostPerMillionTokensAboveThreshold",
+  "outputCostPerMillionTokensAboveThreshold",
+  "cacheReadCostPerMillionTokensAboveThreshold",
+  "cacheCreateCostPerMillionTokensAboveThreshold",
   "tieredPricingThresholdTokens",
   "aliases"
 ]);
@@ -150,18 +150,18 @@ function validatePricingEntry(
     throw new TypeError(`${path}.modelId is invalid`);
   }
   for (const key of [
-    "inputCostPerToken",
-    "outputCostPerToken",
-    "cacheReadCostPerToken"
+    "inputCostPerMillionTokens",
+    "outputCostPerMillionTokens",
+    "cacheReadCostPerMillionTokens"
   ] as const) {
     requireNonNegativeFinite(value[key], `${path}.${key}`);
   }
   for (const key of [
-    "cacheCreateCostPerToken",
-    "inputCostPerTokenAboveThreshold",
-    "outputCostPerTokenAboveThreshold",
-    "cacheReadCostPerTokenAboveThreshold",
-    "cacheCreateCostPerTokenAboveThreshold"
+    "cacheCreateCostPerMillionTokens",
+    "inputCostPerMillionTokensAboveThreshold",
+    "outputCostPerMillionTokensAboveThreshold",
+    "cacheReadCostPerMillionTokensAboveThreshold",
+    "cacheCreateCostPerMillionTokensAboveThreshold"
   ] as const) {
     if (value[key] !== undefined) {
       requireNonNegativeFinite(value[key], `${path}.${key}`);

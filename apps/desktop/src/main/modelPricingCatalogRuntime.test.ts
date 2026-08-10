@@ -28,7 +28,7 @@ afterEach(() => {
 describe("model pricing catalog runtime", () => {
   it("selects the highest valid bundled or cached catalog version", () => {
     const cachePath = createCachePath();
-    const cachedCatalog = catalogAfterBundled(0.000007);
+    const cachedCatalog = catalogAfterBundled(7);
     writeCache(cachePath, cachedCatalog, "2026-08-04T00:00:00.000Z");
 
     const runtime = createModelPricingCatalogRuntime({ cachePath });
@@ -43,7 +43,7 @@ describe("model pricing catalog runtime", () => {
     const cachePath = createCachePath();
     writeCache(
       cachePath,
-      catalogVersion(BUNDLED_MODEL_PRICING_CATALOG.catalogVersion, 0.000007),
+      catalogVersion(BUNDLED_MODEL_PRICING_CATALOG.catalogVersion, 7),
       "2026-08-04T00:00:00.000Z"
     );
     const warn = vi.fn();
@@ -56,9 +56,28 @@ describe("model pricing catalog runtime", () => {
     );
   });
 
+  it("ignores a legacy per-token catalog cache", () => {
+    const cachePath = createCachePath();
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        catalog: legacyPerTokenCatalog(),
+        lastAttemptAt: "2026-08-04T00:00:00.000Z"
+      })
+    );
+    const warn = vi.fn();
+
+    const runtime = createModelPricingCatalogRuntime({ cachePath, warn });
+
+    expect(runtime.getCatalog()).toEqual(BUNDLED_MODEL_PRICING_CATALOG);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("ignored an invalid cached catalog")
+    );
+  });
+
   it("activates and caches only a higher remote version", async () => {
     const cachePath = createCachePath();
-    const remoteCatalog = catalogAfterBundled(0.000008);
+    const remoteCatalog = catalogAfterBundled(8);
     const onCatalogChange = vi.fn();
     const requestRemote = vi.fn(async () => ({
       status: 200 as const,
@@ -92,7 +111,7 @@ describe("model pricing catalog runtime", () => {
     ["invalid price", invalidPriceCatalogText()]
   ])("keeps the active catalog after a remote %s", async (_name, body) => {
     const cachePath = createCachePath();
-    const activeCatalog = catalogAfterBundled(0.000008);
+    const activeCatalog = catalogAfterBundled(8);
     writeCache(cachePath, activeCatalog, "2026-08-04T00:00:00.000Z");
     const runtime = createModelPricingCatalogRuntime({
       cachePath,
@@ -107,11 +126,8 @@ describe("model pricing catalog runtime", () => {
 
   it("rejects a remote revision conflict at the active version", async () => {
     const cachePath = createCachePath();
-    const activeCatalog = catalogAfterBundled(0.000008);
-    const conflictingCatalog = catalogVersion(
-      activeCatalog.catalogVersion,
-      0.000009
-    );
+    const activeCatalog = catalogAfterBundled(8);
+    const conflictingCatalog = catalogVersion(activeCatalog.catalogVersion, 9);
     writeCache(cachePath, activeCatalog, "2026-08-04T00:00:00.000Z");
     const warn = vi.fn();
     const runtime = createModelPricingCatalogRuntime({
@@ -133,7 +149,7 @@ describe("model pricing catalog runtime", () => {
 
   it("updates only the attempt timestamp and ETag after a 304", async () => {
     const cachePath = createCachePath();
-    const activeCatalog = catalogAfterBundled(0.000008);
+    const activeCatalog = catalogAfterBundled(8);
     writeCache(cachePath, activeCatalog, "2026-08-04T00:00:00.000Z", '"old"');
     const runtime = createModelPricingCatalogRuntime({
       cachePath,
@@ -209,11 +225,12 @@ function createCachePath(): string {
 
 function catalogVersion(
   version: number,
-  inputCostDelta: number
+  inputCostPerMillionTokensDelta: number
 ): ModelPricingCatalogDocument {
   const catalog = structuredClone(BUNDLED_MODEL_PRICING_CATALOG);
   catalog.catalogVersion = version;
-  catalog.models.claude.standard[0].inputCostPerToken += inputCostDelta;
+  catalog.models.claude.standard[0].inputCostPerMillionTokens +=
+    inputCostPerMillionTokensDelta;
   catalog.revision = calculateModelPricingRevision(catalog.models);
   return catalog;
 }
@@ -229,10 +246,50 @@ function catalogAfterBundled(
 }
 
 function invalidPriceCatalogText(): string {
-  const catalog = catalogAfterBundled(0.000008, 2);
-  catalog.models.claude.standard[0].inputCostPerToken = -1;
+  const catalog = catalogAfterBundled(8, 2);
+  catalog.models.claude.standard[0].inputCostPerMillionTokens = -1;
   catalog.revision = calculateModelPricingRevision(catalog.models);
   return JSON.stringify(catalog);
+}
+
+function legacyPerTokenCatalog(): unknown {
+  const catalog = catalogAfterBundled(8, 2);
+  const fieldMappings = [
+    ["inputCostPerMillionTokens", "inputCostPerToken"],
+    ["outputCostPerMillionTokens", "outputCostPerToken"],
+    ["cacheReadCostPerMillionTokens", "cacheReadCostPerToken"],
+    ["cacheCreateCostPerMillionTokens", "cacheCreateCostPerToken"],
+    [
+      "inputCostPerMillionTokensAboveThreshold",
+      "inputCostPerTokenAboveThreshold"
+    ],
+    [
+      "outputCostPerMillionTokensAboveThreshold",
+      "outputCostPerTokenAboveThreshold"
+    ],
+    [
+      "cacheReadCostPerMillionTokensAboveThreshold",
+      "cacheReadCostPerTokenAboveThreshold"
+    ],
+    [
+      "cacheCreateCostPerMillionTokensAboveThreshold",
+      "cacheCreateCostPerTokenAboveThreshold"
+    ]
+  ] as const;
+  for (const vendorCatalog of Object.values(catalog.models)) {
+    for (const mode of ["standard", "fast"] as const) {
+      for (const pricingEntry of vendorCatalog[mode] ?? []) {
+        const entry = pricingEntry as unknown as Record<string, unknown>;
+        for (const [perMillionKey, perTokenKey] of fieldMappings) {
+          if (typeof entry[perMillionKey] === "number") {
+            entry[perTokenKey] = Number(entry[perMillionKey]) / 1_000_000;
+            delete entry[perMillionKey];
+          }
+        }
+      }
+    }
+  }
+  return catalog;
 }
 
 function writeCache(

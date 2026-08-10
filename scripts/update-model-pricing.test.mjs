@@ -110,10 +110,10 @@ describe("update-model-pricing Claude parser", () => {
         aliases: ["claude-sonnet-5"]
       })
     );
-    expect(entry.inputCostPerToken).toBeCloseTo(0.000002, 12);
-    expect(entry.outputCostPerToken).toBeCloseTo(0.00001, 12);
-    expect(entry.cacheReadCostPerToken).toBeCloseTo(0.0000002, 12);
-    expect(entry.cacheCreateCostPerToken).toBeCloseTo(0.0000025, 12);
+    expect(entry.inputCostPerMillionTokens).toBe(2);
+    expect(entry.outputCostPerMillionTokens).toBe(10);
+    expect(entry.cacheReadCostPerMillionTokens).toBe(0.2);
+    expect(entry.cacheCreateCostPerMillionTokens).toBe(2.5);
   });
 
   it("selects the standard Claude Sonnet 5 price starting September 2026", () => {
@@ -128,10 +128,10 @@ describe("update-model-pricing Claude parser", () => {
         aliases: ["claude-sonnet-5"]
       })
     );
-    expect(entry.inputCostPerToken).toBeCloseTo(0.000003, 12);
-    expect(entry.outputCostPerToken).toBeCloseTo(0.000015, 12);
-    expect(entry.cacheReadCostPerToken).toBeCloseTo(0.0000003, 12);
-    expect(entry.cacheCreateCostPerToken).toBeCloseTo(0.00000375, 12);
+    expect(entry.inputCostPerMillionTokens).toBe(3);
+    expect(entry.outputCostPerMillionTokens).toBe(15);
+    expect(entry.cacheReadCostPerMillionTokens).toBe(0.3);
+    expect(entry.cacheCreateCostPerMillionTokens).toBe(3.75);
   });
 
   it("parses unknown Claude families without a hard-coded whitelist", () => {
@@ -143,7 +143,7 @@ describe("update-model-pricing Claude parser", () => {
             "$1 / MTok",
             "$1.25 / MTok",
             "$2 / MTok",
-            "$0.10 / MTok",
+            "$0.0125 / MTok",
             "$5 / MTok"
           ]
         ]),
@@ -152,6 +152,7 @@ describe("update-model-pricing Claude parser", () => {
     ).toEqual([
       expect.objectContaining({
         modelId: "claude-completely-new-6-2",
+        cacheReadCostPerMillionTokens: 0.0125,
         aliases: ["claude-completely-new-6.2"]
       })
     ]);
@@ -254,12 +255,12 @@ describe("update-model-pricing OpenAI parser", () => {
 
     expect(entry).toEqual({
       modelId: "gpt-7.0",
-      inputCostPerToken: 0.000005,
-      outputCostPerToken: 0.00003,
-      cacheReadCostPerToken: 0.0000005,
-      inputCostPerTokenAboveThreshold: 0.00001,
-      outputCostPerTokenAboveThreshold: 0.000045,
-      cacheReadCostPerTokenAboveThreshold: 0.000001,
+      inputCostPerMillionTokens: 5,
+      outputCostPerMillionTokens: 30,
+      cacheReadCostPerMillionTokens: 0.5,
+      inputCostPerMillionTokensAboveThreshold: 10,
+      outputCostPerMillionTokensAboveThreshold: 45,
+      cacheReadCostPerMillionTokensAboveThreshold: 1,
       tieredPricingThresholdTokens: 272_000
     });
   });
@@ -276,10 +277,10 @@ describe("update-model-pricing OpenAI parser", () => {
 
       expect(entry).toEqual({
         modelId,
-        inputCostPerToken: 0.000005,
-        outputCostPerToken: 0.00003,
-        cacheReadCostPerToken: 0.0000005,
-        cacheCreateCostPerToken: 0.00000625
+        inputCostPerMillionTokens: 5,
+        outputCostPerMillionTokens: 30,
+        cacheReadCostPerMillionTokens: 0.5,
+        cacheCreateCostPerMillionTokens: 6.25
       });
     }
   );
@@ -320,14 +321,14 @@ describe("update-model-pricing OpenAI parser", () => {
 
     expect(entry).toEqual({
       modelId: "gpt-7.1-orbit",
-      inputCostPerToken: 0.000005,
-      outputCostPerToken: 0.00003,
-      cacheReadCostPerToken: 0.0000005,
-      cacheCreateCostPerToken: 0.00000625,
-      inputCostPerTokenAboveThreshold: 0.00001,
-      outputCostPerTokenAboveThreshold: 0.000045,
-      cacheReadCostPerTokenAboveThreshold: 0.000001,
-      cacheCreateCostPerTokenAboveThreshold: 0.0000125,
+      inputCostPerMillionTokens: 5,
+      outputCostPerMillionTokens: 30,
+      cacheReadCostPerMillionTokens: 0.5,
+      cacheCreateCostPerMillionTokens: 6.25,
+      inputCostPerMillionTokensAboveThreshold: 10,
+      outputCostPerMillionTokensAboveThreshold: 45,
+      cacheReadCostPerMillionTokensAboveThreshold: 1,
+      cacheCreateCostPerMillionTokensAboveThreshold: 12.5,
       tieredPricingThresholdTokens: 272_000
     });
   });
@@ -343,9 +344,9 @@ describe("update-model-pricing OpenAI parser", () => {
     ).toEqual([
       {
         modelId: "o-next",
-        inputCostPerToken: 0.000002,
-        outputCostPerToken: 0.000008,
-        cacheReadCostPerToken: 0.0000005
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 8,
+        cacheReadCostPerMillionTokens: 0.5
       }
     ]);
   });
@@ -390,11 +391,11 @@ describe("update-model-pricing OpenAI parser", () => {
     expect(parseOpenAiPricingHtml(html, "fast")).toEqual([
       expect.objectContaining({
         modelId: "gpt-new",
-        inputCostPerToken: 0.000002
+        inputCostPerMillionTokens: 2
       }),
       expect.objectContaining({
         modelId: "codex-new",
-        inputCostPerToken: 0.000006
+        inputCostPerMillionTokens: 6
       })
     ]);
   });
@@ -431,16 +432,16 @@ describe("update-model-pricing OpenAI parser", () => {
     expect(parseOpenAiPricingHtml(html, "standard")).toEqual([
       {
         modelId: "gpt-reordered",
-        inputCostPerToken: 0.000001,
-        outputCostPerToken: 0.000005,
-        cacheReadCostPerToken: expect.closeTo(0.0000001, 12),
-        cacheCreateCostPerToken: 0.00000125
+        inputCostPerMillionTokens: 1,
+        outputCostPerMillionTokens: 5,
+        cacheReadCostPerMillionTokens: 0.1,
+        cacheCreateCostPerMillionTokens: 1.25
       },
       {
         modelId: "codex-reordered",
-        inputCostPerToken: 0.000002,
-        outputCostPerToken: 0.00001,
-        cacheReadCostPerToken: expect.closeTo(0.0000002, 12)
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 10,
+        cacheReadCostPerMillionTokens: 0.2
       }
     ]);
   });
@@ -471,9 +472,9 @@ describe("update-model-pricing OpenAI parser", () => {
     expect(parseOpenAiPricingHtml(html, "standard")).toEqual([
       {
         modelId: "shared-model",
-        inputCostPerToken: 0.000001,
-        outputCostPerToken: 0.000005,
-        cacheReadCostPerToken: expect.closeTo(0.0000001, 12)
+        inputCostPerMillionTokens: 1,
+        outputCostPerMillionTokens: 5,
+        cacheReadCostPerMillionTokens: 0.1
       }
     ]);
   });
@@ -555,9 +556,9 @@ function emptyPricingCatalogs() {
 function pricingEntry(modelId, tieredPricingThresholdTokens) {
   return {
     modelId,
-    inputCostPerToken: 0.000001,
-    outputCostPerToken: 0.000005,
-    cacheReadCostPerToken: 0.0000001,
+    inputCostPerMillionTokens: 1,
+    outputCostPerMillionTokens: 5,
+    cacheReadCostPerMillionTokens: 0.1,
     tieredPricingThresholdTokens
   };
 }

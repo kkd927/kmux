@@ -20,17 +20,18 @@ export type SupportedPricingVendor = SupportedVendor;
 export type PricingMode = "standard" | "fast";
 
 const DEFAULT_TIERED_PRICING_THRESHOLD_TOKENS = 200_000;
+const TOKENS_PER_MILLION = 1_000_000;
 
 export type PricingEntry = {
   modelId: string;
-  inputCostPerToken: number;
-  outputCostPerToken: number;
-  cacheReadCostPerToken: number;
-  cacheCreateCostPerToken?: number;
-  inputCostPerTokenAboveThreshold?: number;
-  outputCostPerTokenAboveThreshold?: number;
-  cacheReadCostPerTokenAboveThreshold?: number;
-  cacheCreateCostPerTokenAboveThreshold?: number;
+  inputCostPerMillionTokens: number;
+  outputCostPerMillionTokens: number;
+  cacheReadCostPerMillionTokens: number;
+  cacheCreateCostPerMillionTokens?: number;
+  inputCostPerMillionTokensAboveThreshold?: number;
+  outputCostPerMillionTokensAboveThreshold?: number;
+  cacheReadCostPerMillionTokensAboveThreshold?: number;
+  cacheCreateCostPerMillionTokensAboveThreshold?: number;
   tieredPricingThresholdTokens?: number;
   aliases?: string[];
 };
@@ -263,36 +264,36 @@ export function estimateUsageComponentCostsForCatalog(
   const useHighTier = shouldUseTieredPricing(entry, promptContextTokens);
 
   const inputRate = pickRate(
-    entry.inputCostPerToken,
-    entry.inputCostPerTokenAboveThreshold,
+    entry.inputCostPerMillionTokens,
+    entry.inputCostPerMillionTokensAboveThreshold,
     useHighTier
   );
   const outputRate = pickRate(
-    entry.outputCostPerToken,
-    entry.outputCostPerTokenAboveThreshold,
+    entry.outputCostPerMillionTokens,
+    entry.outputCostPerMillionTokensAboveThreshold,
     useHighTier
   );
   const cacheReadRate = pickRate(
-    entry.cacheReadCostPerToken,
-    entry.cacheReadCostPerTokenAboveThreshold,
+    entry.cacheReadCostPerMillionTokens,
+    entry.cacheReadCostPerMillionTokensAboveThreshold,
     useHighTier
   );
   const cacheWriteRate = pickOptionalRate(
-    entry.cacheCreateCostPerToken,
-    entry.cacheCreateCostPerTokenAboveThreshold,
+    entry.cacheCreateCostPerMillionTokens,
+    entry.cacheCreateCostPerMillionTokensAboveThreshold,
     useHighTier
   );
   const cacheWriteCostKnown =
     cacheWriteTokensKnown &&
     (cacheWriteTokens <= 0 || typeof cacheWriteRate === "number");
 
-  const inputCostUsd = params.inputTokens * inputRate;
-  const outputCostUsd = params.outputTokens * outputRate;
-  const thinkingCostUsd = thinkingTokens * outputRate;
-  const cacheReadCostUsd = cacheReadTokens * cacheReadRate;
+  const inputCostUsd = calculateTokenCost(params.inputTokens, inputRate);
+  const outputCostUsd = calculateTokenCost(params.outputTokens, outputRate);
+  const thinkingCostUsd = calculateTokenCost(thinkingTokens, outputRate);
+  const cacheReadCostUsd = calculateTokenCost(cacheReadTokens, cacheReadRate);
   const cacheWriteCostUsd =
     cacheWriteCostKnown && typeof cacheWriteRate === "number"
-      ? cacheWriteTokens * cacheWriteRate
+      ? calculateTokenCost(cacheWriteTokens, cacheWriteRate)
       : 0;
 
   return {
@@ -336,11 +337,15 @@ function shouldUseTieredPricing(
 
 function hasTieredPricing(entry: PricingEntry): boolean {
   return (
-    typeof entry.inputCostPerTokenAboveThreshold === "number" ||
-    typeof entry.outputCostPerTokenAboveThreshold === "number" ||
-    typeof entry.cacheReadCostPerTokenAboveThreshold === "number" ||
-    typeof entry.cacheCreateCostPerTokenAboveThreshold === "number"
+    typeof entry.inputCostPerMillionTokensAboveThreshold === "number" ||
+    typeof entry.outputCostPerMillionTokensAboveThreshold === "number" ||
+    typeof entry.cacheReadCostPerMillionTokensAboveThreshold === "number" ||
+    typeof entry.cacheCreateCostPerMillionTokensAboveThreshold === "number"
   );
+}
+
+function calculateTokenCost(tokens: number, ratePerMillion: number): number {
+  return (tokens * ratePerMillion) / TOKENS_PER_MILLION;
 }
 
 function pickRate(

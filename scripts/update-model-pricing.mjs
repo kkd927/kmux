@@ -43,14 +43,14 @@ const VENDOR_ORDER = ["claude", "codex", "gemini"];
 const PRICING_MODE_ORDER = ["standard", "fast"];
 const PRICING_ENTRY_KEYS = [
   "modelId",
-  "inputCostPerToken",
-  "outputCostPerToken",
-  "cacheReadCostPerToken",
-  "cacheCreateCostPerToken",
-  "inputCostPerTokenAboveThreshold",
-  "outputCostPerTokenAboveThreshold",
-  "cacheReadCostPerTokenAboveThreshold",
-  "cacheCreateCostPerTokenAboveThreshold",
+  "inputCostPerMillionTokens",
+  "outputCostPerMillionTokens",
+  "cacheReadCostPerMillionTokens",
+  "cacheCreateCostPerMillionTokens",
+  "inputCostPerMillionTokensAboveThreshold",
+  "outputCostPerMillionTokensAboveThreshold",
+  "cacheReadCostPerMillionTokensAboveThreshold",
+  "cacheCreateCostPerMillionTokensAboveThreshold",
   "tieredPricingThresholdTokens",
   "aliases"
 ];
@@ -244,22 +244,18 @@ export function parseOpenAiTextTokenPricingHtml(html, mode = "standard") {
       assertOpenAiModelId(modelId, mode);
       const entry = {
         modelId,
-        inputCostPerToken: dollarsPerMillion(
-          parseRequiredNumber(row[columns.input[0]])
-        ),
-        outputCostPerToken: dollarsPerMillion(
-          parseRequiredNumber(row[columns.output[0]])
-        ),
-        cacheReadCostPerToken: dollarsPerMillion(
-          parseOptionalNumber(row[columns.cachedInput[0]])
+        inputCostPerMillionTokens: parseRequiredNumber(row[columns.input[0]]),
+        outputCostPerMillionTokens: parseRequiredNumber(row[columns.output[0]]),
+        cacheReadCostPerMillionTokens: parseOptionalNumber(
+          row[columns.cachedInput[0]]
         )
       };
       if (
         columns.cacheWrites.length > 0 &&
         hasPrice(row[columns.cacheWrites[0]])
       ) {
-        entry.cacheCreateCostPerToken = dollarsPerMillion(
-          parseRequiredNumber(row[columns.cacheWrites[0]])
+        entry.cacheCreateCostPerMillionTokens = parseRequiredNumber(
+          row[columns.cacheWrites[0]]
         );
       }
       if (
@@ -275,22 +271,21 @@ export function parseOpenAiTextTokenPricingHtml(html, mode = "standard") {
             `Could not find OpenAI long-context threshold for ${entry.modelId}.`
           );
         }
-        entry.inputCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseRequiredNumber(row[columns.input[1]])
+        entry.inputCostPerMillionTokensAboveThreshold = parseRequiredNumber(
+          row[columns.input[1]]
         );
-        entry.outputCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseRequiredNumber(row[columns.output[1]])
+        entry.outputCostPerMillionTokensAboveThreshold = parseRequiredNumber(
+          row[columns.output[1]]
         );
-        entry.cacheReadCostPerTokenAboveThreshold = dollarsPerMillion(
-          parseOptionalNumber(row[columns.cachedInput[1]])
+        entry.cacheReadCostPerMillionTokensAboveThreshold = parseOptionalNumber(
+          row[columns.cachedInput[1]]
         );
         if (
           columns.cacheWrites.length > 1 &&
           hasPrice(row[columns.cacheWrites[1]])
         ) {
-          entry.cacheCreateCostPerTokenAboveThreshold = dollarsPerMillion(
-            parseRequiredNumber(row[columns.cacheWrites[1]])
-          );
+          entry.cacheCreateCostPerMillionTokensAboveThreshold =
+            parseRequiredNumber(row[columns.cacheWrites[1]]);
         }
         entry.tieredPricingThresholdTokens = threshold;
       }
@@ -315,16 +310,14 @@ function parseOpenAiTextTokenPropsRow(row, mode) {
   const hasCacheWriteColumn = row.length === 5;
   const entry = {
     modelId: model.modelId,
-    inputCostPerToken: dollarsPerMillion(parseRequiredNumber(row[1])),
-    outputCostPerToken: dollarsPerMillion(
-      parseRequiredNumber(row[hasCacheWriteColumn ? 4 : 3])
+    inputCostPerMillionTokens: parseRequiredNumber(row[1]),
+    outputCostPerMillionTokens: parseRequiredNumber(
+      row[hasCacheWriteColumn ? 4 : 3]
     ),
-    cacheReadCostPerToken: dollarsPerMillion(parseOptionalNumber(row[2]))
+    cacheReadCostPerMillionTokens: parseOptionalNumber(row[2])
   };
   if (hasCacheWriteColumn && hasPrice(row[3])) {
-    entry.cacheCreateCostPerToken = dollarsPerMillion(
-      parseRequiredNumber(row[3])
-    );
+    entry.cacheCreateCostPerMillionTokens = parseRequiredNumber(row[3]);
   }
   return entry;
 }
@@ -378,14 +371,10 @@ function parseOpenAiSpecializedCodexPricingHtml(html, mode) {
     assertOpenAiModelId(modelId, mode);
     return {
       modelId,
-      inputCostPerToken: dollarsPerMillion(
-        parseRequiredNumber(row[columns.input])
-      ),
-      outputCostPerToken: dollarsPerMillion(
-        parseRequiredNumber(row[columns.output])
-      ),
-      cacheReadCostPerToken: dollarsPerMillion(
-        parseOptionalNumber(row[columns.cachedInput])
+      inputCostPerMillionTokens: parseRequiredNumber(row[columns.input]),
+      outputCostPerMillionTokens: parseRequiredNumber(row[columns.output]),
+      cacheReadCostPerMillionTokens: parseOptionalNumber(
+        row[columns.cachedInput]
       )
     };
   });
@@ -522,9 +511,9 @@ async function fetchGeminiPricing() {
 
     const entry = {
       modelId: canonicalGeminiModelId(modelId),
-      inputCostPerToken: dollarsPerMillion(inputPrices.base),
-      outputCostPerToken: dollarsPerMillion(outputPrices.base),
-      cacheReadCostPerToken: dollarsPerMillion(cachePrices.base ?? 0)
+      inputCostPerMillionTokens: inputPrices.base,
+      outputCostPerMillionTokens: outputPrices.base,
+      cacheReadCostPerMillionTokens: cachePrices.base ?? 0
     };
     const aliases = modelIds.slice(1);
     if (aliases.length > 0) {
@@ -532,18 +521,15 @@ async function fetchGeminiPricing() {
     }
 
     if (inputPrices.above || outputPrices.above || cachePrices.above) {
-      entry.inputCostPerTokenAboveThreshold = dollarsPerMillion(
-        inputPrices.above ?? inputPrices.base
-      );
-      entry.outputCostPerTokenAboveThreshold = dollarsPerMillion(
-        outputPrices.above ?? outputPrices.base
-      );
+      entry.inputCostPerMillionTokensAboveThreshold =
+        inputPrices.above ?? inputPrices.base;
+      entry.outputCostPerMillionTokensAboveThreshold =
+        outputPrices.above ?? outputPrices.base;
       if (cachePrices.base !== null) {
-        entry.cacheReadCostPerTokenAboveThreshold = dollarsPerMillion(
-          cachePrices.above ?? cachePrices.base
-        );
-        entry.cacheCreateCostPerTokenAboveThreshold =
-          entry.cacheReadCostPerTokenAboveThreshold;
+        entry.cacheReadCostPerMillionTokensAboveThreshold =
+          cachePrices.above ?? cachePrices.base;
+        entry.cacheCreateCostPerMillionTokensAboveThreshold =
+          entry.cacheReadCostPerMillionTokensAboveThreshold;
       }
     }
 
@@ -782,9 +768,9 @@ function assertEntries(vendor, entries) {
     }
     seen.add(entry.modelId);
     for (const key of [
-      "inputCostPerToken",
-      "outputCostPerToken",
-      "cacheReadCostPerToken"
+      "inputCostPerMillionTokens",
+      "outputCostPerMillionTokens",
+      "cacheReadCostPerMillionTokens"
     ]) {
       if (
         typeof entry[key] !== "number" ||
@@ -863,10 +849,10 @@ function parseClaudePricingRow(row) {
     activeThrough: identity.activeThrough,
     entry: {
       modelId,
-      inputCostPerToken: dollarsPerMillion(prices[0]),
-      outputCostPerToken: dollarsPerMillion(prices[4]),
-      cacheReadCostPerToken: dollarsPerMillion(prices[3]),
-      cacheCreateCostPerToken: dollarsPerMillion(prices[1]),
+      inputCostPerMillionTokens: prices[0],
+      outputCostPerMillionTokens: prices[4],
+      cacheReadCostPerMillionTokens: prices[3],
+      cacheCreateCostPerMillionTokens: prices[1],
       aliases: [claudeDottedAlias(identity.modelName)]
     }
   };
@@ -1124,10 +1110,6 @@ function openAiTextModelInfo(value) {
       ? Math.round(Number(thresholdMatch[1]) * 1_000)
       : undefined
   };
-}
-
-function dollarsPerMillion(dollars) {
-  return dollars / 1_000_000;
 }
 
 async function fetchText(url) {

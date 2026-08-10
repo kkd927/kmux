@@ -1398,7 +1398,7 @@ describe("usage runtime", () => {
     catalog.catalogVersion += 1;
     catalog.models.codex.standard.find(
       (entry) => entry.modelId === "gpt-5.4"
-    )!.inputCostPerToken = 0.000005;
+    )!.inputCostPerMillionTokens = 5;
     catalog.revision = calculateModelPricingRevision(catalog.models);
 
     runtime.setPricingResolver(createModelPricingResolver(catalog));

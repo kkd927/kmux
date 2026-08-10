@@ -17,17 +17,17 @@ const SYNTHETIC_CODEX_PRICING = {
   standard: [
     pricingEntry("gpt-7.1-codex", 1, 5, 0.1),
     pricingEntry("gpt-7.1", 2, 10, 0.2, {
-      cacheCreateCostPerToken: 2.5 / 1_000_000,
-      inputCostPerTokenAboveThreshold: 4 / 1_000_000,
-      outputCostPerTokenAboveThreshold: 15 / 1_000_000,
-      cacheReadCostPerTokenAboveThreshold: 0.4 / 1_000_000,
-      cacheCreateCostPerTokenAboveThreshold: 5 / 1_000_000,
+      cacheCreateCostPerMillionTokens: 2.5,
+      inputCostPerMillionTokensAboveThreshold: 4,
+      outputCostPerMillionTokensAboveThreshold: 15,
+      cacheReadCostPerMillionTokensAboveThreshold: 0.4,
+      cacheCreateCostPerMillionTokensAboveThreshold: 5,
       tieredPricingThresholdTokens: 200_000
     }),
     pricingEntry("gpt-7.1-pro", 30, 180, 0, {
-      inputCostPerTokenAboveThreshold: 60 / 1_000_000,
-      outputCostPerTokenAboveThreshold: 270 / 1_000_000,
-      cacheReadCostPerTokenAboveThreshold: 0,
+      inputCostPerMillionTokensAboveThreshold: 60,
+      outputCostPerMillionTokensAboveThreshold: 270,
+      cacheReadCostPerMillionTokensAboveThreshold: 0,
       tieredPricingThresholdTokens: 200_000
     }),
     pricingEntry("gpt-7.1-nano", 0.5, 1, 0.05),
@@ -49,9 +49,9 @@ function pricingEntry(
 ): PricingCatalog["standard"][number] {
   return {
     modelId,
-    inputCostPerToken: inputPerMillion / 1_000_000,
-    outputCostPerToken: outputPerMillion / 1_000_000,
-    cacheReadCostPerToken: cachedInputPerMillion / 1_000_000,
+    inputCostPerMillionTokens: inputPerMillion,
+    outputCostPerMillionTokens: outputPerMillion,
+    cacheReadCostPerMillionTokens: cachedInputPerMillion,
     ...overrides
   };
 }
@@ -78,7 +78,7 @@ describe("model pricing", () => {
     const sonnet = catalog.models.claude.standard.find(
       (entry) => entry.modelId === "claude-sonnet-5"
     )!;
-    sonnet.inputCostPerToken = 0.25;
+    sonnet.inputCostPerMillionTokens = 250_000;
     catalog.catalogVersion += 1;
     catalog.revision = calculateModelPricingRevision(catalog.models);
 
@@ -111,10 +111,20 @@ describe("model pricing", () => {
       /catalog keys are invalid/u
     );
 
+    const withLegacyPrice = structuredClone(BUNDLED_MODEL_PRICING_CATALOG);
+    const legacyEntry = withLegacyPrice.models.claude
+      .standard[0] as unknown as Record<string, unknown>;
+    legacyEntry.inputCostPerToken =
+      Number(legacyEntry.inputCostPerMillionTokens) / 1_000_000;
+    delete legacyEntry.inputCostPerMillionTokens;
+    expect(() => validateModelPricingCatalog(withLegacyPrice)).toThrow(
+      /inputCostPerToken is not supported/u
+    );
+
     const withNegativePrice = structuredClone(
       BUNDLED_MODEL_PRICING_CATALOG
     ) as ModelPricingCatalogDocument;
-    withNegativePrice.models.claude.standard[0].inputCostPerToken = -1;
+    withNegativePrice.models.claude.standard[0].inputCostPerMillionTokens = -1;
     withNegativePrice.revision = calculateModelPricingRevision(
       withNegativePrice.models
     );
