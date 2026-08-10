@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildModelPricingCatalog,
+  extractOpenAiPricingChunkUrl,
   parseClaudePricingTable,
+  parseOpenAiLongContextPricing,
   parseOpenAiPricingHtml,
   parseOpenAiTextTokenPricingHtml,
   sortModelPricingEntries
@@ -333,6 +335,239 @@ describe("update-model-pricing OpenAI parser", () => {
     });
   });
 
+  it("restores long-context pricing for collapsed models from the chunk table", () => {
+    const entries = parseOpenAiTextTokenPricingHtml(
+      openAiTextTokenPricingPage(
+        [
+          "Model",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output",
+          "Input",
+          "Cached input",
+          "Cache writes",
+          "Output"
+        ],
+        [
+          "gpt-7.1-orbit",
+          "$5.00",
+          "$0.50",
+          "$6.25",
+          "$30.00",
+          "$10.00",
+          "$1.00",
+          "$12.50",
+          "$45.00"
+        ],
+        {
+          propsRows: [
+            ["gpt-7.1-orbit", 5, 0.5, 6.25, 30],
+            ["gpt-7.0 (< 272K context length)", 2.5, 0.25, "-", 15],
+            ["gpt-7.0-mini", 0.75, 0.075, "-", 4.5]
+          ]
+        }
+      ),
+      "standard",
+      {
+        standard: {
+          "gpt-7.1-orbit": {
+            input: 10,
+            output: 45,
+            cachedInput: 1,
+            cacheWrite: 12.5
+          },
+          "gpt-7.0": { input: 5, output: 22.5, cachedInput: 0.5, cacheWrite: "-" },
+          "gpt-7.0-mini": {
+            input: "-",
+            output: "-",
+            cachedInput: "-",
+            cacheWrite: "-"
+          },
+          "gpt-unknown": {
+            input: "-",
+            output: "-",
+            cachedInput: "-",
+            cacheWrite: "-"
+          }
+        }
+      }
+    );
+
+    expect(entries).toEqual([
+      {
+        modelId: "gpt-7.1-orbit",
+        inputCostPerMillionTokens: 5,
+        outputCostPerMillionTokens: 30,
+        cacheReadCostPerMillionTokens: 0.5,
+        cacheCreateCostPerMillionTokens: 6.25,
+        inputCostPerMillionTokensAboveThreshold: 10,
+        outputCostPerMillionTokensAboveThreshold: 45,
+        cacheReadCostPerMillionTokensAboveThreshold: 1,
+        cacheCreateCostPerMillionTokensAboveThreshold: 12.5,
+        tieredPricingThresholdTokens: 272_000
+      },
+      {
+        modelId: "gpt-7.0",
+        inputCostPerMillionTokens: 2.5,
+        outputCostPerMillionTokens: 15,
+        cacheReadCostPerMillionTokens: 0.25,
+        inputCostPerMillionTokensAboveThreshold: 5,
+        outputCostPerMillionTokensAboveThreshold: 22.5,
+        cacheReadCostPerMillionTokensAboveThreshold: 0.5,
+        tieredPricingThresholdTokens: 272_000
+      },
+      {
+        modelId: "gpt-7.0-mini",
+        inputCostPerMillionTokens: 0.75,
+        outputCostPerMillionTokens: 4.5,
+        cacheReadCostPerMillionTokens: 0.075
+      }
+    ]);
+  });
+
+  it("rejects chunk long-context prices that conflict with rendered rows", () => {
+    expect(() =>
+      parseOpenAiTextTokenPricingHtml(
+        openAiTextTokenPricingPage(
+          [
+            "Model",
+            "Input",
+            "Cached input",
+            "Cache writes",
+            "Output",
+            "Input",
+            "Cached input",
+            "Cache writes",
+            "Output"
+          ],
+          [
+            "gpt-7.1-orbit",
+            "$5.00",
+            "$0.50",
+            "$6.25",
+            "$30.00",
+            "$10.00",
+            "$1.00",
+            "$12.50",
+            "$45.00"
+          ],
+          {
+            propsRows: [
+              ["gpt-7.1-orbit", 5, 0.5, 6.25, 30],
+              ["gpt-7.0 (< 272K context length)", 2.5, 0.25, "-", 15]
+            ]
+          }
+        ),
+        "standard",
+        {
+          standard: {
+            "gpt-7.1-orbit": {
+              input: 999,
+              output: 45,
+              cachedInput: 1,
+              cacheWrite: 12.5
+            }
+          }
+        }
+      )
+    ).toThrow(/Conflicting OpenAI standard pricing for gpt-7.1-orbit/u);
+  });
+
+  it("throws when priced chunk models are missing from the pricing page", () => {
+    expect(() =>
+      parseOpenAiTextTokenPricingHtml(
+        openAiCollapsedPricingPage(),
+        "standard",
+        {
+          standard: {
+            "gpt-7.0-2026-03-01": {
+              input: 10,
+              output: 45,
+              cachedInput: 1,
+              cacheWrite: "-"
+            }
+          }
+        }
+      )
+    ).toThrow(/missing from the pricing page: gpt-7\.0-2026-03-01/u);
+  });
+
+  it("throws when threshold-labeled models receive no long-context pricing", () => {
+    expect(() =>
+      parseOpenAiTextTokenPricingHtml(
+        openAiCollapsedPricingPage(),
+        "standard",
+        {
+          standard: {
+            "gpt-7.0": {
+              input: "-",
+              output: "-",
+              cachedInput: "-",
+              cacheWrite: "-"
+            }
+          }
+        }
+      )
+    ).toThrow(/no entries although these models declare a context-length threshold: gpt-7\.0/u);
+  });
+
+  it("parses the long-context table when standard is not the first tier key", () => {
+    const chunk =
+      'X={fast:{"gpt-7.1-orbit":{input:20,output:90,cachedInput:2,cacheWrite:25}},' +
+      'standard:{"gpt-7.0":{input:10,output:45,cachedInput:.5,cacheWrite:"-"}}};';
+
+    expect(parseOpenAiLongContextPricing(chunk)).toEqual({
+      fast: {
+        "gpt-7.1-orbit": { input: 20, output: 90, cachedInput: 2, cacheWrite: 25 }
+      },
+      standard: {
+        "gpt-7.0": { input: 10, output: 45, cachedInput: 0.5, cacheWrite: "-" }
+      }
+    });
+  });
+
+  it("parses the long-context table from a minified pricing chunk", () => {
+    const chunk = [
+      'const decoy={standard:{}};',
+      'X={standard:{"gpt-7.0":{input:10,output:45,cachedInput:.5,cacheWrite:"-"},',
+      '"gpt-7.0-mini":{input:"-",output:"-",cachedInput:"-",cacheWrite:"-"}},',
+      'fast:{"gpt-7.1-orbit":{input:20,output:90,cachedInput:2,cacheWrite:25}}};',
+      'tt=new Intl.NumberFormat("en-US");'
+    ].join("");
+
+    expect(parseOpenAiLongContextPricing(chunk)).toEqual({
+      standard: {
+        "gpt-7.0": { input: 10, output: 45, cachedInput: 0.5, cacheWrite: "-" },
+        "gpt-7.0-mini": {
+          input: "-",
+          output: "-",
+          cachedInput: "-",
+          cacheWrite: "-"
+        }
+      },
+      fast: {
+        "gpt-7.1-orbit": { input: 20, output: 90, cachedInput: 2, cacheWrite: 25 }
+      }
+    });
+  });
+
+  it("throws when the pricing chunk has no long-context table", () => {
+    expect(() =>
+      parseOpenAiLongContextPricing('const decoy={standard:{}};')
+    ).toThrow(/long-context pricing table/u);
+  });
+
+  it("extracts the pricing component script URL", () => {
+    const html =
+      '<astro-island uid="1" component-url="/_astro/pricing.ABC123.js"' +
+      ' component-export="TextTokenPricingTables" props="{}"></astro-island>';
+    expect(extractOpenAiPricingChunkUrl(html)).toBe("/_astro/pricing.ABC123.js");
+    expect(() => extractOpenAiPricingChunkUrl("<div></div>")).toThrow(
+      /component script URL/u
+    );
+  });
+
   it("parses non-GPT flagship model IDs without an allowlist", () => {
     expect(
       parseOpenAiTextTokenPricingHtml(
@@ -593,6 +828,19 @@ function openAiTextTokenPricingPage(header, row, options = {}) {
       <tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>
     </table>
   </div>`;
+}
+
+function openAiCollapsedPricingPage() {
+  return openAiTextTokenPricingPage(
+    ["Model", "Input", "Cached input", "Cache writes", "Output"],
+    ["gpt-7.1-orbit", "$5.00", "$0.50", "$6.25", "$30.00"],
+    {
+      propsRows: [
+        ["gpt-7.1-orbit", 5, 0.5, 6.25, 30],
+        ["gpt-7.0 (< 272K context length)", 2.5, 0.25, "-", 15]
+      ]
+    }
+  );
 }
 
 function openAiPropsOnlyPricingPage() {

@@ -172,19 +172,34 @@ export function parseClaudePricingTable(
 }
 
 async function fetchCodexPricing() {
+  const chunkSourceByUrl = new Map();
   const pairs = await Promise.all(
     PRICING_MODE_ORDER.map(async (mode) => {
       const html = await fetchText(SOURCES.codex[mode]);
-      return [mode, parseOpenAiPricingHtml(html, mode)];
+      const chunkUrl = new URL(
+        extractOpenAiPricingChunkUrl(html),
+        SOURCES.codex[mode]
+      ).toString();
+      if (!chunkSourceByUrl.has(chunkUrl)) {
+        chunkSourceByUrl.set(chunkUrl, fetchText(chunkUrl));
+      }
+      const longContextPricing = parseOpenAiLongContextPricing(
+        await chunkSourceByUrl.get(chunkUrl)
+      );
+      return [mode, parseOpenAiPricingHtml(html, mode, longContextPricing)];
     })
   );
   return Object.fromEntries(pairs);
 }
 
-export function parseOpenAiPricingHtml(html, mode) {
+export function parseOpenAiPricingHtml(html, mode, longContextPricing) {
   assertOpenAiPricingMode(mode);
   try {
-    const flagshipEntries = parseOpenAiTextTokenPricingHtml(html, mode);
+    const flagshipEntries = parseOpenAiTextTokenPricingHtml(
+      html,
+      mode,
+      longContextPricing
+    );
     const specializedEntries = parseOpenAiSpecializedCodexPricingHtml(
       html,
       mode
@@ -202,7 +217,11 @@ export function parseOpenAiPricingHtml(html, mode) {
   }
 }
 
-export function parseOpenAiTextTokenPricingHtml(html, mode = "standard") {
+export function parseOpenAiTextTokenPricingHtml(
+  html,
+  mode = "standard",
+  longContextPricing = undefined
+) {
   assertOpenAiPricingMode(mode);
   const tables = parseTextTokenPricingTables(html).filter(
     (table) => table.tier === mode && table.section === "Flagship models"
@@ -294,7 +313,212 @@ export function parseOpenAiTextTokenPricingHtml(html, mode = "standard") {
   const propsEntries = textTokenTable.propsRows.map((row) =>
     parseOpenAiTextTokenPropsRow(row, mode)
   );
-  return mergeOpenAiPricingEntries(mode, [...propsEntries, ...renderedEntries]);
+  const longContextEntries = openAiLongContextEntries({
+    tierTable: longContextPricing?.[mode],
+    knownEntries: [...propsEntries, ...renderedEntries],
+    thresholdByModel,
+    sharedLongContextThreshold
+  });
+  return mergeOpenAiPricingEntries(mode, [
+    ...propsEntries,
+    ...renderedEntries,
+    ...longContextEntries
+  ]);
+}
+
+function openAiLongContextEntries({
+  tierTable,
+  knownEntries,
+  thresholdByModel,
+  sharedLongContextThreshold
+}) {
+  if (!tierTable) {
+    return [];
+  }
+  const knownModelIds = new Set(knownEntries.map((entry) => entry.modelId));
+  const entries = [];
+  const unknownPricedModelIds = [];
+  for (const [modelId, prices] of Object.entries(tierTable)) {
+    if (
+      typeof prices.input !== "number" ||
+      typeof prices.output !== "number"
+    ) {
+      continue;
+    }
+    if (!knownModelIds.has(modelId)) {
+      unknownPricedModelIds.push(modelId);
+      continue;
+    }
+    const threshold =
+      thresholdByModel.get(modelId) ?? sharedLongContextThreshold;
+    if (!threshold) {
+      throw new Error(
+        `Could not find OpenAI long-context threshold for ${modelId}.`
+      );
+    }
+    const entry = {
+      modelId,
+      inputCostPerMillionTokensAboveThreshold: prices.input,
+      outputCostPerMillionTokensAboveThreshold: prices.output,
+      cacheReadCostPerMillionTokensAboveThreshold:
+        typeof prices.cachedInput === "number" ? prices.cachedInput : 0,
+      tieredPricingThresholdTokens: threshold
+    };
+    if (typeof prices.cacheWrite === "number") {
+      entry.cacheCreateCostPerMillionTokensAboveThreshold = prices.cacheWrite;
+    }
+    entries.push(entry);
+  }
+  if (unknownPricedModelIds.length > 0) {
+    throw new Error(
+      `OpenAI long-context pricing lists models missing from the pricing page: ${unknownPricedModelIds.join(
+        ", "
+      )}. Page models: ${[...knownModelIds].join(", ")}.`
+    );
+  }
+  if (entries.length === 0 && thresholdByModel.size > 0) {
+    throw new Error(
+      `OpenAI long-context pricing produced no entries although these models declare a context-length threshold: ${[
+        ...thresholdByModel.keys()
+      ].join(", ")}. Long-context table keys: ${Object.keys(tierTable).join(
+        ", "
+      )}.`
+    );
+  }
+  return entries;
+}
+
+export function extractOpenAiPricingChunkUrl(html) {
+  const islandTag = html.match(
+    /<[^>]*component-export="TextTokenPricingTables"[^>]*>/u
+  )?.[0];
+  const chunkUrl = islandTag?.match(/component-url="([^"]+)"/u)?.[1];
+  if (!chunkUrl) {
+    throw new Error(
+      "Could not find the OpenAI pricing component script URL for TextTokenPricingTables."
+    );
+  }
+  return chunkUrl;
+}
+
+// The pricing page only server-renders the collapsed "latest models" rows.
+// Long-context prices for the remaining flagship models live in a lookup
+// table hardcoded inside the component script, keyed by tier and model ID.
+export function parseOpenAiLongContextPricing(chunkSource) {
+  const candidateStarts = new Set();
+  for (const match of chunkSource.matchAll(
+    /[{,]\s*["']?standard["']?\s*:\s*\{/gu
+  )) {
+    const start =
+      chunkSource[match.index] === "{"
+        ? match.index
+        : findEnclosingObjectStart(chunkSource, match.index);
+    if (start !== undefined) {
+      candidateStarts.add(start);
+    }
+  }
+  for (const start of candidateStarts) {
+    const objectSource = readBalancedObject(chunkSource, start);
+    if (!objectSource) {
+      continue;
+    }
+    const table = parseLongContextTableObject(objectSource);
+    if (table) {
+      return table;
+    }
+  }
+  throw new Error(
+    "Could not find the OpenAI long-context pricing table in the pricing component script."
+  );
+}
+
+function findEnclosingObjectStart(source, index) {
+  let depth = 0;
+  for (let position = index - 1; position >= 0; position -= 1) {
+    const char = source[position];
+    if (char === "}") {
+      depth += 1;
+    } else if (char === "{") {
+      if (depth === 0) {
+        return position;
+      }
+      depth -= 1;
+    }
+  }
+  return undefined;
+}
+
+function readBalancedObject(source, start) {
+  let depth = 0;
+  let inString = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (char === "\\") {
+        index += 1;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseLongContextTableObject(objectSource) {
+  const json = objectSource
+    .replace(/([{,])\s*([A-Za-z_$][\w$]*)\s*:/gu, '$1"$2":')
+    .replace(/:\s*\.(\d)/gu, ":0.$1");
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  let hasPricedModel = false;
+  for (const tierTable of Object.values(parsed)) {
+    if (typeof tierTable !== "object" || tierTable === null) {
+      return undefined;
+    }
+    for (const prices of Object.values(tierTable)) {
+      if (typeof prices !== "object" || prices === null) {
+        return undefined;
+      }
+      const values = [
+        prices.input,
+        prices.output,
+        prices.cachedInput,
+        prices.cacheWrite
+      ];
+      if (
+        values.some(
+          (value) =>
+            !(typeof value === "number" && Number.isFinite(value)) &&
+            value !== "-" &&
+            value !== undefined
+        )
+      ) {
+        return undefined;
+      }
+      if (
+        typeof prices.input === "number" &&
+        typeof prices.output === "number"
+      ) {
+        hasPricedModel = true;
+      }
+    }
+  }
+  return hasPricedModel ? parsed : undefined;
 }
 
 function parseOpenAiTextTokenPropsRow(row, mode) {
