@@ -7,6 +7,10 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 import { loadBundledReleaseNotes } from "../../scripts/release-notes.mjs";
 import { createReleaseNotesPlugin } from "./build/releaseNotesPlugin";
+import {
+  createRendererContentSecurityPolicyPlugin,
+  resolveReactRefreshPreamble
+} from "./build/rendererContentSecurityPolicy";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../..");
@@ -116,6 +120,9 @@ export default defineConfig({
       alias
     },
     plugins: [
+      createRendererContentSecurityPolicyPlugin({
+        reactRefreshPreamble: resolveReactRefreshPreamble(react.preambleCode)
+      }),
       createReleaseNotesPlugin({
         repoRoot,
         releaseNotes: bundledReleaseNotes
