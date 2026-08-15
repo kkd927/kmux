@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 2,
-  "publishedAt": "2026-08-10T00:00:00.000Z",
-  "revision": "5bc9de497bd11742e4705ebf003518963f90070d0ebb67674b78b896551e4432",
+  "catalogVersion": 3,
+  "publishedAt": "2026-08-15T00:00:00.000Z",
+  "revision": "25404ee2692aca31c51d2e0d5e4a00a667c1cbf7c8f784955770e812cff4aa60",
   "models": {
     "claude": {
       "standard": [
@@ -561,10 +561,16 @@
     "gemini": {
       "standard": [
         {
+          "modelId": "gemini-3.7-flash",
+          "inputCostPerMillionTokens": 0.75,
+          "outputCostPerMillionTokens": 3.75,
+          "cacheReadCostPerMillionTokens": 0.075
+        },
+        {
           "modelId": "gemini-3.6-flash",
-          "inputCostPerMillionTokens": 1.5,
-          "outputCostPerMillionTokens": 7.5,
-          "cacheReadCostPerMillionTokens": 0.15
+          "inputCostPerMillionTokens": 0.75,
+          "outputCostPerMillionTokens": 3.75,
+          "cacheReadCostPerMillionTokens": 0.075
         },
         {
           "modelId": "gemini-3.5-flash-lite",
