@@ -18,8 +18,10 @@ export interface QuitConfirmationOptions {
 }
 
 interface MainLifecycleOptions {
-  isMac: boolean;
+  keepProcessAliveWhenLastWindowCloses: boolean;
   shouldConfirmQuit?: boolean;
+  onQuitConfirmationCanceled?: () => void;
+  onQuitConfirmationConfirmed?: () => void;
   app: {
     quit(): void;
   };
@@ -40,9 +42,11 @@ interface MainLifecycleOptions {
 
 export interface MainLifecycleController {
   allowQuit(): void;
+  isQuitConfirmationPending(): boolean;
   isQuitInProgress(): boolean;
   handleActivate(): void;
   handleBeforeQuit(event: BeforeQuitEventLike): void;
+  handleWindowClose(event: BeforeQuitEventLike): void;
   handleWindowAllClosed(): void;
 }
 
@@ -77,12 +81,67 @@ export function createMainLifecycleController(
     });
   };
 
+  const notifyQuitConfirmation = (outcome: "canceled" | "confirmed"): void => {
+    try {
+      if (outcome === "confirmed") {
+        options.onQuitConfirmationConfirmed?.();
+      } else {
+        options.onQuitConfirmationCanceled?.();
+      }
+    } catch (error) {
+      console.error(`[main:quit-confirmation:${outcome}]`, error);
+    }
+  };
+
+  const requestQuit = (): void => {
+    if (quitPhase !== "idle") {
+      return;
+    }
+
+    const shouldWarn =
+      shouldConfirmQuit && !confirmationBypassed && options.getWarnBeforeQuit();
+
+    if (!shouldWarn) {
+      beginShutdown();
+      return;
+    }
+
+    quitPhase = "confirming";
+    void options
+      .confirmQuit(options.getCurrentWindow(), {
+        restoreWorkspacesAfterQuit: options.getRestoreWorkspacesAfterQuit()
+      })
+      .then((result) => {
+        if (!result.confirmed) {
+          quitPhase = "idle";
+          notifyQuitConfirmation("canceled");
+          return;
+        }
+        if (result.suppressFutureWarnings) {
+          options.setWarnBeforeQuit(false);
+        }
+        options.setRestoreWorkspacesAfterQuit(
+          result.restoreWorkspacesAfterQuit
+        );
+        beginShutdown();
+        notifyQuitConfirmation("confirmed");
+      })
+      .catch((error) => {
+        quitPhase = "idle";
+        notifyQuitConfirmation("canceled");
+        console.error("[main:quit-confirmation]", error);
+      });
+  };
+
   return {
     allowQuit(): void {
       confirmationBypassed = true;
     },
+    isQuitConfirmationPending(): boolean {
+      return quitPhase === "confirming";
+    },
     isQuitInProgress(): boolean {
-      return quitPhase !== "idle";
+      return quitPhase === "shutting-down" || quitPhase === "complete";
     },
     handleActivate(): void {
       if (options.getWindowCount() === 0) {
@@ -101,44 +160,23 @@ export function createMainLifecycleController(
       if (quitPhase === "confirming" || quitPhase === "shutting-down") {
         return;
       }
-
-      const shouldWarn =
-        options.isMac &&
-        shouldConfirmQuit &&
-        !confirmationBypassed &&
-        options.getWarnBeforeQuit();
-
-      if (!shouldWarn) {
-        beginShutdown();
+      requestQuit();
+    },
+    handleWindowClose(event: BeforeQuitEventLike): void {
+      if (
+        options.keepProcessAliveWhenLastWindowCloses ||
+        quitPhase === "complete"
+      ) {
         return;
       }
 
-      quitPhase = "confirming";
-      void options
-        .confirmQuit(options.getCurrentWindow(), {
-          restoreWorkspacesAfterQuit: options.getRestoreWorkspacesAfterQuit()
-        })
-        .then((result) => {
-          if (!result.confirmed) {
-            quitPhase = "idle";
-            return;
-          }
-          if (result.suppressFutureWarnings) {
-            options.setWarnBeforeQuit(false);
-          }
-          options.setRestoreWorkspacesAfterQuit(
-            result.restoreWorkspacesAfterQuit
-          );
-          beginShutdown();
-        })
-        .catch((error) => {
-          quitPhase = "idle";
-          console.error("[main:quit-confirmation]", error);
-        });
+      event.preventDefault();
+      requestQuit();
     },
     handleWindowAllClosed(): void {
       if (
-        !options.isMac &&
+        !options.keepProcessAliveWhenLastWindowCloses &&
+        quitPhase === "idle" &&
         options.getWindowCount() === 0 &&
         !options.isReplacingRenderer?.()
       ) {
@@ -364,7 +402,7 @@ function buildQuitConfirmationHtml(
         <div class="options">
           <label>
             <input id="suppress-warning" type="checkbox" />
-            <span>Don't warn again for Cmd+Q</span>
+            <span>Don't warn again before quitting</span>
           </label>
           <label>
             <input id="restore-workspaces" type="checkbox"${restoreWorkspacesAfterQuit ? " checked" : ""} />

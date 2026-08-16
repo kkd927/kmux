@@ -19,6 +19,7 @@ interface RendererRecoveryControllerOptions {
     recoveryState: MainWindowRecoveryState
   ) => BrowserWindow;
   isAppQuitting: () => boolean;
+  isQuitConfirmationPending?: () => boolean;
   getDiagnosticContext: () => RendererRecoveryDiagnosticContext;
   log: (scope: string, details: Record<string, unknown>) => void;
   showRecoveryLimitDialog: () => Promise<"reopen" | "quit">;
@@ -29,12 +30,19 @@ interface RendererRecoveryControllerOptions {
 }
 
 export interface RendererRecoveryController {
+  discardPendingRecovery(): void;
   registerWindow(window: BrowserWindow): void;
+  resumePendingRecovery(): void;
   isReplacingRenderer(): boolean;
 }
 
 interface ActiveRecoveryAttempt {
   id: number;
+}
+
+interface PendingRendererRecovery {
+  window: BrowserWindow;
+  recoveryState: MainWindowRecoveryState;
 }
 
 const DEFAULT_CRASH_LIMIT = 3;
@@ -52,12 +60,16 @@ export function createRendererRecoveryController(
   let activeRecoveryAttempt: ActiveRecoveryAttempt | null = null;
   let nextRecoveryAttemptId = 1;
   let recoveryChoiceOpen = false;
+  let recoveryTransitionActive = false;
   let recentCrashes: number[] = [];
+  let pendingRecovery: PendingRendererRecovery | null = null;
 
   const registerWindow = (window: BrowserWindow): void => {
     currentWindow = window;
-    window.once("close", () => {
-      expectedClose.add(window);
+    window.on("close", (event) => {
+      if (!event.defaultPrevented) {
+        expectedClose.add(window);
+      }
     });
     window.once("closed", () => {
       if (currentWindow === window) {
@@ -226,6 +238,23 @@ export function createRendererRecoveryController(
     }
   };
 
+  const continueRendererRecovery = (pending: PendingRendererRecovery): void => {
+    recoveryTransitionActive = true;
+    try {
+      if (!pending.window.isDestroyed()) {
+        pending.window.destroy();
+      }
+
+      if (recentCrashes.length >= crashLimit) {
+        void showRecoveryChoice(pending.recoveryState, "crash-limit");
+        return;
+      }
+      replaceWindow(pending.recoveryState, "render-process-gone");
+    } finally {
+      recoveryTransitionActive = false;
+    }
+  };
+
   const handleGone = (
     window: BrowserWindow,
     details: RenderProcessGoneDetails
@@ -237,9 +266,10 @@ export function createRendererRecoveryController(
     };
     options.log("main.renderer.render-process-gone", diagnosticDetails);
 
+    const appQuitting = options.isAppQuitting();
     if (
       details.reason === "clean-exit" ||
-      options.isAppQuitting() ||
+      appQuitting ||
       expectedClose.has(window) ||
       currentWindow !== window
     ) {
@@ -248,7 +278,7 @@ export function createRendererRecoveryController(
         skipReason:
           details.reason === "clean-exit"
             ? "clean-exit"
-            : options.isAppQuitting()
+            : appQuitting
               ? "app-quitting"
               : expectedClose.has(window)
                 ? "window-closing"
@@ -265,21 +295,54 @@ export function createRendererRecoveryController(
     recentCrashes.push(crashAt);
     expectedClose.add(window);
     currentWindow = null;
-    if (!window.isDestroyed()) {
-      window.destroy();
-    }
 
-    if (recentCrashes.length >= crashLimit) {
-      void showRecoveryChoice(recoveryState, "crash-limit");
+    const pending = { window, recoveryState } satisfies PendingRendererRecovery;
+    if (options.isQuitConfirmationPending?.()) {
+      pendingRecovery = pending;
+      options.log("main.renderer.recovery.deferred", {
+        reason: "quit-confirmation-pending",
+        recentCrashCount: recentCrashes.length,
+        ...options.getDiagnosticContext()
+      });
       return;
     }
-    replaceWindow(recoveryState, "render-process-gone");
+    continueRendererRecovery(pending);
   };
 
   return {
+    discardPendingRecovery(): void {
+      if (!pendingRecovery) {
+        return;
+      }
+      pendingRecovery = null;
+      options.log("main.renderer.recovery.discarded", {
+        reason: "quit-confirmed",
+        ...options.getDiagnosticContext()
+      });
+    },
     registerWindow,
+    resumePendingRecovery(): void {
+      const pending = pendingRecovery;
+      if (!pending) {
+        return;
+      }
+      options.log("main.renderer.recovery.resumed", {
+        reason: "quit-canceled",
+        ...options.getDiagnosticContext()
+      });
+      try {
+        continueRendererRecovery(pending);
+      } finally {
+        pendingRecovery = null;
+      }
+    },
     isReplacingRenderer(): boolean {
-      return activeRecoveryAttempt !== null || recoveryChoiceOpen;
+      return (
+        activeRecoveryAttempt !== null ||
+        recoveryChoiceOpen ||
+        recoveryTransitionActive ||
+        pendingRecovery !== null
+      );
     }
   };
 }

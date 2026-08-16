@@ -90,10 +90,10 @@ describe("main lifecycle controller", () => {
     nextDialogResult.current = null;
   });
 
-  it("keeps the app alive when the last macOS window closes", () => {
+  it("allows a macOS window close and keeps the app alive afterward", () => {
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       app,
       getWindowCount: () => 0,
       openMainWindow: vi.fn(),
@@ -106,15 +106,18 @@ describe("main lifecycle controller", () => {
       shutdown: vi.fn(async () => undefined)
     });
 
+    const closeEvent = createEvent();
+    controller.handleWindowClose(closeEvent);
     controller.handleWindowAllClosed();
 
+    expect(closeEvent.preventDefault).not.toHaveBeenCalled();
     expect(app.quit).not.toHaveBeenCalled();
   });
 
   it("quits on last window close outside macOS", () => {
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: false,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 0,
       openMainWindow: vi.fn(),
@@ -135,7 +138,7 @@ describe("main lifecycle controller", () => {
   it("keeps a non-macOS app alive while its renderer window is replaced", () => {
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: false,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 0,
       openMainWindow: vi.fn(),
@@ -157,7 +160,7 @@ describe("main lifecycle controller", () => {
   it("ignores a stale window-all-closed event after replacement opens", () => {
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: false,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -179,7 +182,7 @@ describe("main lifecycle controller", () => {
   it("reopens a main window on activate when none are open", () => {
     const openMainWindow = vi.fn();
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       app: { quit: vi.fn() },
       getWindowCount: () => 0,
       openMainWindow,
@@ -201,7 +204,7 @@ describe("main lifecycle controller", () => {
   it("does not create a second window on activate when one is already open", () => {
     const openMainWindow = vi.fn();
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       app: { quit: vi.fn() },
       getWindowCount: () => 1,
       openMainWindow,
@@ -225,9 +228,11 @@ describe("main lifecycle controller", () => {
     const app = { quit: vi.fn() };
     const setWarnBeforeQuit = vi.fn();
     const setRestoreWorkspacesAfterQuit = vi.fn();
+    const onQuitConfirmationConfirmed = vi.fn();
     const confirmQuit = vi.fn(() => deferred.promise);
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
+      onQuitConfirmationConfirmed,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -247,6 +252,8 @@ describe("main lifecycle controller", () => {
     expect(confirmQuit).toHaveBeenCalledTimes(1);
     expect(app.quit).not.toHaveBeenCalled();
     expect(shutdown).not.toHaveBeenCalled();
+    expect(controller.isQuitConfirmationPending()).toBe(true);
+    expect(controller.isQuitInProgress()).toBe(false);
 
     deferred.resolve({
       confirmed: true,
@@ -259,12 +266,147 @@ describe("main lifecycle controller", () => {
     expect(setRestoreWorkspacesAfterQuit).toHaveBeenCalledWith(false);
     expect(app.quit).toHaveBeenCalledTimes(1);
     expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(onQuitConfirmationConfirmed).toHaveBeenCalledOnce();
+    expect(controller.isQuitConfirmationPending()).toBe(false);
+    expect(controller.isQuitInProgress()).toBe(true);
 
     const completedEvent = createEvent();
     controller.handleBeforeQuit(completedEvent);
 
     expect(shutdown).toHaveBeenCalledTimes(1);
     expect(completedEvent.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("blocks overlapping Linux window closes and can retry after cancel", async () => {
+    const firstConfirmation = createDeferredResult();
+    const secondConfirmation = createDeferredResult();
+    const shutdown = vi.fn(async () => undefined);
+    const app = { quit: vi.fn() };
+    const confirmQuit = vi
+      .fn()
+      .mockReturnValueOnce(firstConfirmation.promise)
+      .mockReturnValueOnce(secondConfirmation.promise);
+    const controller = createMainLifecycleController({
+      keepProcessAliveWhenLastWindowCloses: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => true,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit,
+      shutdown
+    });
+
+    const firstEvent = createEvent();
+    const overlappingEvent = createEvent();
+    controller.handleWindowClose(firstEvent);
+    controller.handleWindowClose(overlappingEvent);
+
+    expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(overlappingEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(confirmQuit).toHaveBeenCalledOnce();
+
+    firstConfirmation.resolve({
+      confirmed: false,
+      suppressFutureWarnings: false,
+      restoreWorkspacesAfterQuit: true
+    });
+    await flushMicrotasks();
+
+    expect(controller.isQuitInProgress()).toBe(false);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(app.quit).not.toHaveBeenCalled();
+
+    const retryEvent = createEvent();
+    controller.handleWindowClose(retryEvent);
+
+    expect(retryEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(confirmQuit).toHaveBeenCalledTimes(2);
+
+    secondConfirmation.resolve({
+      confirmed: false,
+      suppressFutureWarnings: false,
+      restoreWorkspacesAfterQuit: true
+    });
+    await flushMicrotasks();
+  });
+
+  it("shuts down once after a confirmed Linux window close and allows the final close", async () => {
+    const deferredShutdown = createDeferredShutdown();
+    const shutdown = vi.fn(() => deferredShutdown.promise);
+    const app = { quit: vi.fn() };
+    const controller = createMainLifecycleController({
+      keepProcessAliveWhenLastWindowCloses: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => true,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit: vi.fn(async () => ({
+        confirmed: true,
+        suppressFutureWarnings: false,
+        restoreWorkspacesAfterQuit: true
+      })),
+      shutdown
+    });
+
+    const initialEvent = createEvent();
+    controller.handleWindowClose(initialEvent);
+    await flushMicrotasks();
+
+    expect(initialEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(app.quit).not.toHaveBeenCalled();
+
+    const inFlightEvent = createEvent();
+    controller.handleWindowClose(inFlightEvent);
+    expect(inFlightEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+
+    deferredShutdown.resolve();
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledOnce();
+    const finalEvent = createEvent();
+    controller.handleWindowClose(finalEvent);
+    expect(finalEvent.preventDefault).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("gracefully quits a Linux window close without a dialog when warnings are disabled", async () => {
+    const shutdown = vi.fn(async () => undefined);
+    const confirmQuit = vi.fn();
+    const app = { quit: vi.fn() };
+    const controller = createMainLifecycleController({
+      keepProcessAliveWhenLastWindowCloses: false,
+      app,
+      getWindowCount: () => 1,
+      openMainWindow: vi.fn(),
+      getCurrentWindow: () => null,
+      getWarnBeforeQuit: () => false,
+      setWarnBeforeQuit: vi.fn(),
+      getRestoreWorkspacesAfterQuit: () => true,
+      setRestoreWorkspacesAfterQuit: vi.fn(),
+      confirmQuit,
+      shutdown
+    });
+
+    const event = createEvent();
+    controller.handleWindowClose(event);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(confirmQuit).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledOnce();
+
+    await flushMicrotasks();
+
+    expect(app.quit).toHaveBeenCalledOnce();
   });
 
   it("cancels quit when the confirmation dialog is dismissed", async () => {
@@ -275,9 +417,11 @@ describe("main lifecycle controller", () => {
       suppressFutureWarnings: false,
       restoreWorkspacesAfterQuit: false
     }));
+    const onQuitConfirmationCanceled = vi.fn();
     const setRestoreWorkspacesAfterQuit = vi.fn();
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
+      onQuitConfirmationCanceled,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -297,13 +441,16 @@ describe("main lifecycle controller", () => {
     expect(app.quit).not.toHaveBeenCalled();
     expect(shutdown).not.toHaveBeenCalled();
     expect(setRestoreWorkspacesAfterQuit).not.toHaveBeenCalled();
+    expect(onQuitConfirmationCanceled).toHaveBeenCalledOnce();
+    expect(controller.isQuitConfirmationPending()).toBe(false);
+    expect(controller.isQuitInProgress()).toBe(false);
   });
 
   it("dedupes overlapping quit dialogs", () => {
     const deferred = createDeferredResult();
     const confirmQuit = vi.fn(() => deferred.promise);
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       app: { quit: vi.fn() },
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -327,7 +474,7 @@ describe("main lifecycle controller", () => {
     const confirmQuit = vi.fn();
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -358,7 +505,7 @@ describe("main lifecycle controller", () => {
     const shutdown = vi.fn(() => deferred.promise);
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: false,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -400,7 +547,7 @@ describe("main lifecycle controller", () => {
       .spyOn(console, "error")
       .mockImplementation(() => {});
     const controller = createMainLifecycleController({
-      isMac: false,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -441,7 +588,7 @@ describe("main lifecycle controller", () => {
     const confirmQuit = vi.fn();
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: true,
       shouldConfirmQuit: false,
       app,
       getWindowCount: () => 1,
@@ -472,7 +619,7 @@ describe("main lifecycle controller", () => {
     const confirmQuit = vi.fn();
     const app = { quit: vi.fn() };
     const controller = createMainLifecycleController({
-      isMac: true,
+      keepProcessAliveWhenLastWindowCloses: false,
       app,
       getWindowCount: () => 1,
       openMainWindow: vi.fn(),
@@ -518,7 +665,7 @@ describe("main lifecycle controller", () => {
       suppressFutureWarnings: false,
       restoreWorkspacesAfterQuit: true
     });
-    expect(html).toContain("Don't warn again for Cmd+Q");
+    expect(html).toContain("Don't warn again before quitting");
     expect(html).toContain("Restore workspaces next launch");
     expect(
       dialogWindow.webContents.executeJavaScript.mock.calls[0]?.[0]
