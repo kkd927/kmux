@@ -34,6 +34,10 @@ function isProcessAlive(pid: number): boolean {
 }
 
 test("closing the last window keeps kmux alive and live-reopens the same session state", async () => {
+  test.skip(
+    process.platform !== "darwin",
+    "last-window live reopen is a macOS lifecycle contract"
+  );
   const sandbox = createSandbox("kmux-e2e-live-reopen-");
   let launched = await launchKmuxWithSandbox(sandbox);
 

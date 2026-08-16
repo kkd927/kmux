@@ -54,6 +54,7 @@
     "gate:walking-skeleton:linux": "node scripts/gate-walking-skeleton.mjs --require-linux-desktop",
     "test:e2e": "npm run smoke:dev && npm run build && playwright test",
     "test:e2e:shell-integration": "npm run smoke:dev && npm run build && playwright test tests/e2e/kmux-shell-integration.spec.ts",
+    "test:e2e:linux-focused": "npm run smoke:dev && npm run build && playwright test tests/e2e/kmux-shell-integration.spec.ts tests/e2e/kmux-linux-quit-confirm.spec.ts",
     "test:e2e:visible": "npm run smoke:dev && KMUX_E2E_WINDOW_MODE=visible npm run build && playwright test",
     "profile:smoothness": "npm run smoke:dev && npm run build && KMUX_RUN_SMOOTHNESS_PROFILE=1 playwright test tests/e2e/kmux-smoothness-profile.spec.ts",
     "profile:terminal-data-plane": "npm run smoke:dev && npm run build && npm run profile:terminal-data-plane:sample",

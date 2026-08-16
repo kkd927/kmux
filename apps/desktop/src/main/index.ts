@@ -1766,7 +1766,11 @@ async function bootstrap(): Promise<void> {
       loadWindowState: () => windowStateStore.load(),
       ...(recoveryState ? { recoveryState } : {}),
       platform: platformRuntime.desktop.window,
-      onClose: (closingWindow) => {
+      onClose: (closingWindow, event) => {
+        lifecycle.handleWindowClose(event);
+        if (event.defaultPrevented) {
+          return;
+        }
         persistWindowState({
           windowStateStore,
           window: closingWindow,
@@ -1825,6 +1829,7 @@ async function bootstrap(): Promise<void> {
     openMainWindow: (reason, recoveryState) =>
       openMainWindow(reason, recoveryState),
     isAppQuitting: () => lifecycle.isQuitInProgress(),
+    isQuitConfirmationPending: () => lifecycle.isQuitConfirmationPending(),
     getDiagnosticContext: () => ({
       ...getActiveRuntimeContext(runtime.getState()),
       lastInteraction: lastRendererInteraction,
@@ -2147,10 +2152,13 @@ async function bootstrap(): Promise<void> {
     return shutdownPromise;
   };
   lifecycle = createMainLifecycleController({
-    isMac: platformRuntime.desktop.isMac,
+    keepProcessAliveWhenLastWindowCloses:
+      platformRuntime.desktop.keepProcessAliveWhenLastWindowCloses,
     // E2E cleanup should not depend on mutating persisted warn-before-quit
-    // settings or dismissing a native macOS dialog.
+    // settings or dismissing a quit confirmation dialog.
     shouldConfirmQuit: process.env.KMUX_E2E_DISABLE_QUIT_CONFIRM !== "1",
+    onQuitConfirmationCanceled: rendererRecovery.resumePendingRecovery,
+    onQuitConfirmationConfirmed: rendererRecovery.discardPendingRecovery,
     app,
     getWindowCount: () => BrowserWindow.getAllWindows().length,
     openMainWindow: (reason) => {

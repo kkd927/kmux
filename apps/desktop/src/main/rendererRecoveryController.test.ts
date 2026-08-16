@@ -45,6 +45,11 @@ function createWindow(id: number) {
       handlers.push(handler);
       windowHandlers.set(event, handlers);
     },
+    on: (event: string, handler: Handler) => {
+      const handlers = windowHandlers.get(event) ?? [];
+      handlers.push(handler);
+      windowHandlers.set(event, handlers);
+    },
     removeListener: (event: string, handler: Handler) => {
       windowHandlers.set(
         event,
@@ -130,7 +135,7 @@ describe("renderer recovery controller", () => {
     });
 
     controller.registerWindow(clean.window);
-    clean.emitWindow("close");
+    clean.emitWindow("close", { defaultPrevented: false });
     clean.emitWebContents("render-process-gone", gone());
     controller.registerWindow(stale.window);
     controller.registerWindow(current.window);
@@ -139,6 +144,60 @@ describe("renderer recovery controller", () => {
     current.emitWebContents("render-process-gone", gone());
 
     expect(openMainWindow).not.toHaveBeenCalled();
+  });
+
+  it("defers a crash during quit confirmation and resumes recovery after cancel", () => {
+    const first = createWindow(1);
+    const replacement = createWindow(2);
+    const openMainWindow = vi.fn(() => replacement.window);
+    let confirmationPending = true;
+    const controller = createRendererRecoveryController({
+      openMainWindow,
+      isAppQuitting: () => false,
+      isQuitConfirmationPending: () => confirmationPending,
+      getDiagnosticContext: () => ({}),
+      log: vi.fn(),
+      showRecoveryLimitDialog: vi.fn(),
+      quit: vi.fn()
+    });
+    controller.registerWindow(first.window);
+
+    first.emitWindow("close", { defaultPrevented: true });
+    first.emitWebContents("render-process-gone", gone());
+
+    expect(first.window.destroy).not.toHaveBeenCalled();
+    expect(openMainWindow).not.toHaveBeenCalled();
+    expect(controller.isReplacingRenderer()).toBe(true);
+
+    confirmationPending = false;
+    controller.resumePendingRecovery();
+
+    expect(first.window.destroy).toHaveBeenCalledOnce();
+    expect(openMainWindow).toHaveBeenCalledOnce();
+  });
+
+  it("discards a deferred recovery after quit is confirmed", () => {
+    const first = createWindow(1);
+    const openMainWindow = vi.fn(() => createWindow(2).window);
+    const controller = createRendererRecoveryController({
+      openMainWindow,
+      isAppQuitting: () => false,
+      isQuitConfirmationPending: () => true,
+      getDiagnosticContext: () => ({}),
+      log: vi.fn(),
+      showRecoveryLimitDialog: vi.fn(),
+      quit: vi.fn()
+    });
+    controller.registerWindow(first.window);
+
+    first.emitWindow("close", { defaultPrevented: true });
+    first.emitWebContents("render-process-gone", gone());
+    controller.discardPendingRecovery();
+    controller.resumePendingRecovery();
+
+    expect(first.window.destroy).not.toHaveBeenCalled();
+    expect(openMainWindow).not.toHaveBeenCalled();
+    expect(controller.isReplacingRenderer()).toBe(false);
   });
 
   it("ends only the current recovery attempt when its window closes before load", () => {

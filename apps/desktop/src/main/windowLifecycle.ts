@@ -4,6 +4,7 @@ import {
   nativeImage,
   shell,
   type BrowserWindowConstructorOptions,
+  type Event,
   type Rectangle,
   type WebContents
 } from "electron";
@@ -26,7 +27,7 @@ export interface MainWindowRecoveryState {
 interface CreateMainWindowOptions {
   currentDir: string;
   loadWindowState: () => PersistedWindowState | null;
-  onClose: (window: BrowserWindow) => void;
+  onClose: (window: BrowserWindow, event: Event) => void;
   platform: MainWindowPlatformPolicy;
   recoveryState?: MainWindowRecoveryState;
 }
@@ -108,7 +109,7 @@ export function createMainWindow(
       window.setFullScreen(true);
     }
   });
-  window.on("close", () => options.onClose(window));
+  window.on("close", (event) => options.onClose(window, event));
 
   return window;
 }
