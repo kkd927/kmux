@@ -24,6 +24,7 @@ interface RendererRecoveryControllerOptions {
   log: (scope: string, details: Record<string, unknown>) => void;
   showRecoveryLimitDialog: () => Promise<"reopen" | "quit">;
   quit: () => void;
+  deferWindowDestruction?: (callback: () => void) => void;
   now?: () => number;
   crashLimit?: number;
   crashWindowMs?: number;
@@ -55,6 +56,8 @@ export function createRendererRecoveryController(
   const now = options.now ?? Date.now;
   const crashLimit = options.crashLimit ?? DEFAULT_CRASH_LIMIT;
   const crashWindowMs = options.crashWindowMs ?? DEFAULT_CRASH_WINDOW_MS;
+  const deferWindowDestruction =
+    options.deferWindowDestruction ?? ((callback) => setImmediate(callback));
   const expectedClose = new WeakSet<BrowserWindow>();
   let currentWindow: BrowserWindow | null = null;
   let activeRecoveryAttempt: ActiveRecoveryAttempt | null = null;
@@ -241,17 +244,27 @@ export function createRendererRecoveryController(
   const continueRendererRecovery = (pending: PendingRendererRecovery): void => {
     recoveryTransitionActive = true;
     try {
-      if (!pending.window.isDestroyed()) {
-        pending.window.destroy();
-      }
-
       if (recentCrashes.length >= crashLimit) {
         void showRecoveryChoice(pending.recoveryState, "crash-limit");
-        return;
+      } else {
+        replaceWindow(pending.recoveryState, "render-process-gone");
       }
-      replaceWindow(pending.recoveryState, "render-process-gone");
-    } finally {
+
+      // On Linux/X11, destroying a crashed modal parent in the same native
+      // turn that closes the quit dialog can segfault Electron. Establish the
+      // replacement path first, then release the crashed window next turn.
+      deferWindowDestruction(() => {
+        try {
+          if (!pending.window.isDestroyed()) {
+            pending.window.destroy();
+          }
+        } finally {
+          recoveryTransitionActive = false;
+        }
+      });
+    } catch (error) {
       recoveryTransitionActive = false;
+      throw error;
     }
   };
 

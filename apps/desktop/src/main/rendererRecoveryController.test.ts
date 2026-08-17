@@ -89,25 +89,29 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => queueMicrotask(resolve));
 }
 
+const runImmediately = (callback: () => void): void => callback();
+
 describe("renderer recovery controller", () => {
   it("replaces an unexpectedly gone renderer once and preserves window state", () => {
     const first = createWindow(1);
     const replacement = createWindow(2);
     const openMainWindow = vi.fn(() => replacement.window);
+    const deferredDestructions: Array<() => void> = [];
     const controller = createRendererRecoveryController({
       openMainWindow,
       isAppQuitting: () => false,
       getDiagnosticContext: () => ({ surfaceId: "surface-1" }),
       log: vi.fn(),
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: (callback) => deferredDestructions.push(callback)
     });
     controller.registerWindow(first.window);
 
     first.emitWebContents("render-process-gone", gone());
     first.emitWebContents("render-process-gone", gone());
 
-    expect(first.window.destroy).toHaveBeenCalledOnce();
+    expect(first.window.destroy).not.toHaveBeenCalled();
     expect(openMainWindow).toHaveBeenCalledOnce();
     expect(openMainWindow).toHaveBeenCalledWith("recovery", {
       bounds: { x: 10, y: 20, width: 1200, height: 800 },
@@ -115,6 +119,10 @@ describe("renderer recovery controller", () => {
       fullscreen: false
     });
     expect(controller.isReplacingRenderer()).toBe(true);
+
+    deferredDestructions[0]?.();
+
+    expect(first.window.destroy).toHaveBeenCalledOnce();
     replacement.emitWebContents("did-finish-load");
     expect(controller.isReplacingRenderer()).toBe(false);
   });
@@ -131,7 +139,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log: vi.fn(),
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
 
     controller.registerWindow(clean.window);
@@ -150,6 +159,7 @@ describe("renderer recovery controller", () => {
     const first = createWindow(1);
     const replacement = createWindow(2);
     const openMainWindow = vi.fn(() => replacement.window);
+    const deferredDestructions: Array<() => void> = [];
     let confirmationPending = true;
     const controller = createRendererRecoveryController({
       openMainWindow,
@@ -158,7 +168,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log: vi.fn(),
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: (callback) => deferredDestructions.push(callback)
     });
     controller.registerWindow(first.window);
 
@@ -171,6 +182,16 @@ describe("renderer recovery controller", () => {
 
     confirmationPending = false;
     controller.resumePendingRecovery();
+
+    expect(deferredDestructions).toHaveLength(1);
+    expect(first.window.destroy).not.toHaveBeenCalled();
+    expect(openMainWindow).toHaveBeenCalledOnce();
+    expect(controller.isReplacingRenderer()).toBe(true);
+
+    controller.resumePendingRecovery();
+    expect(deferredDestructions).toHaveLength(1);
+
+    deferredDestructions[0]?.();
 
     expect(first.window.destroy).toHaveBeenCalledOnce();
     expect(openMainWindow).toHaveBeenCalledOnce();
@@ -186,7 +207,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log: vi.fn(),
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
@@ -210,7 +232,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log,
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
@@ -244,7 +267,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log,
       showRecoveryLimitDialog,
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
@@ -305,7 +329,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({}),
       log: vi.fn(),
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
@@ -336,7 +361,8 @@ describe("renderer recovery controller", () => {
       log: vi.fn(),
       showRecoveryLimitDialog,
       quit,
-      now: () => 1_000
+      now: () => 1_000,
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
@@ -360,7 +386,8 @@ describe("renderer recovery controller", () => {
       getDiagnosticContext: () => ({ workspaceId: "workspace-1" }),
       log,
       showRecoveryLimitDialog: vi.fn(),
-      quit: vi.fn()
+      quit: vi.fn(),
+      deferWindowDestruction: runImmediately
     });
     controller.registerWindow(first.window);
 
