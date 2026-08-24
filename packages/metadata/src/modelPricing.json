@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 3,
-  "publishedAt": "2026-08-15T00:00:00.000Z",
-  "revision": "25404ee2692aca31c51d2e0d5e4a00a667c1cbf7c8f784955770e812cff4aa60",
+  "catalogVersion": 4,
+  "publishedAt": "2026-08-24T00:00:00.000Z",
+  "revision": "f6c8b1cb10252ea8b66207fa56b9c01a1112940545398bf5c71f8742a89522b7",
   "models": {
     "claude": {
       "standard": [
@@ -162,14 +162,14 @@
       "standard": [
         {
           "modelId": "gpt-5.6-sol",
-          "inputCostPerMillionTokens": 5,
-          "outputCostPerMillionTokens": 30,
-          "cacheReadCostPerMillionTokens": 0.5,
-          "cacheCreateCostPerMillionTokens": 6.25,
-          "inputCostPerMillionTokensAboveThreshold": 10,
-          "outputCostPerMillionTokensAboveThreshold": 45,
-          "cacheReadCostPerMillionTokensAboveThreshold": 1,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 12.5,
+          "inputCostPerMillionTokens": 4,
+          "outputCostPerMillionTokens": 20,
+          "cacheReadCostPerMillionTokens": 0.4,
+          "cacheCreateCostPerMillionTokens": 5,
+          "inputCostPerMillionTokensAboveThreshold": 8,
+          "outputCostPerMillionTokensAboveThreshold": 30,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.8,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 10,
           "tieredPricingThresholdTokens": 272000,
           "aliases": [
             "gpt-5.6"
@@ -423,14 +423,14 @@
       "fast": [
         {
           "modelId": "gpt-5.6-sol",
-          "inputCostPerMillionTokens": 10,
-          "outputCostPerMillionTokens": 60,
-          "cacheReadCostPerMillionTokens": 1,
-          "cacheCreateCostPerMillionTokens": 12.5,
-          "inputCostPerMillionTokensAboveThreshold": 20,
-          "outputCostPerMillionTokensAboveThreshold": 90,
-          "cacheReadCostPerMillionTokensAboveThreshold": 2,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 25,
+          "inputCostPerMillionTokens": 8,
+          "outputCostPerMillionTokens": 40,
+          "cacheReadCostPerMillionTokens": 0.8,
+          "cacheCreateCostPerMillionTokens": 10,
+          "inputCostPerMillionTokensAboveThreshold": 16,
+          "outputCostPerMillionTokensAboveThreshold": 60,
+          "cacheReadCostPerMillionTokensAboveThreshold": 1.6,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 20,
           "tieredPricingThresholdTokens": 272000,
           "aliases": [
             "gpt-5.6"
