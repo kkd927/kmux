@@ -174,9 +174,9 @@ describe("model pricing", () => {
     });
 
     expect(aliasEstimate).toEqual(canonicalEstimate);
-    expect(aliasEstimate.modelId).toBe("gpt-5.6-sol");
-    expect(aliasEstimate.inputCostUsd).toBeGreaterThan(0);
-    expect(aliasEstimate.outputCostUsd).toBeGreaterThan(0);
+    expect(aliasEstimate!.modelId).toBe("gpt-5.6-sol");
+    expect(aliasEstimate!.inputCostUsd).toBeGreaterThan(0);
+    expect(aliasEstimate!.outputCostUsd).toBeGreaterThan(0);
   });
 
   it.each([
