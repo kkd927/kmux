@@ -1,17 +1,24 @@
 import type {
+  ExternalSessionResumeSpec,
+  ExternalSessionScanPurpose
+} from "@kmux/agents";
+import type {
   AgentStorageRoots,
+  UsageAdapterScanFailure,
   UsageAdapterDirtyOptions,
   UsageAdapterReadResult,
   UsageVendor
 } from "@kmux/metadata";
 import type { AgentScopeSettings } from "@kmux/proto";
+import type { ExternalAgentSessionsSnapshot } from "@kmux/proto";
 
 export interface UsageScanWorkerConfig {
   env: NodeJS.ProcessEnv;
-  homeDir?: string;
+  homeDir: string;
   agentStorageRoots?: AgentStorageRoots;
   agentSettings?: AgentScopeSettings;
   platform: NodeJS.Platform;
+  antigravitySessionIndexPath?: string;
 }
 
 export type UsageScanWorkerRequest =
@@ -27,6 +34,16 @@ export type UsageScanWorkerRequest =
       initial: boolean;
     }
   | {
+      type: "external-sessions-scan";
+      requestId: string;
+      purpose: ExternalSessionScanPurpose;
+    }
+  | {
+      type: "reconfigure";
+      requestId: string;
+      agentSettings?: AgentScopeSettings;
+    }
+  | {
       type: "mark-dirty";
       vendor: Exclude<UsageVendor, "unknown">;
       options?: UsageAdapterDirtyOptions;
@@ -39,6 +56,14 @@ export type UsageScanWorkerResponse =
       type: "scan-result";
       requestId: string;
       reads: UsageAdapterReadResult[];
+      failures: UsageAdapterScanFailure[];
+    }
+  | {
+      type: "external-sessions-scan-result";
+      requestId: string;
+      purpose: ExternalSessionScanPurpose;
+      snapshot: ExternalAgentSessionsSnapshot;
+      resumeSpecs: ExternalSessionResumeSpec[];
     }
   | { type: "changed"; vendor: UsageVendor }
   | {

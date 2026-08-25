@@ -1,0 +1,16 @@
+{
+  "name": "@kmux/agents",
+  "version": "1.1.3",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./composition": "./src/composition.ts",
+    "./builtin-hooks": "./src/builtinHooks.ts",
+    "./generated-hook-responses": "./src/generatedHookResponses.ts",
+    "./generated-command-wrappers": "./src/generatedCommandWrappers.ts",
+    "./builtin-subscriptions": "./src/builtinSubscriptions.ts",
+    "./builtin-runtime": "./src/builtinRuntime.ts",
+    "./antigravity-session-index": "./src/builtins/antigravity/sessionIndex.ts"
+  }
+}

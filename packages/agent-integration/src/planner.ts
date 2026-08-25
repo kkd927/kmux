@@ -1,6 +1,7 @@
 import rawContract from "../contract.json";
+import type { AgentId } from "@kmux/proto";
 
-export type AgentIntegrationPlannerVendor = "claude" | "codex" | "antigravity";
+export type AgentIntegrationPlannerVendor = AgentId;
 
 type JsonObject = Record<string, unknown>;
 
@@ -11,6 +12,10 @@ interface HookSpec {
 
 interface VendorContract {
   format: "grouped-hooks" | "namespaced-hooks";
+  pathRoot?: {
+    defaultHomeRelativePath: string;
+    environmentVariable: string;
+  };
   relativePath: string;
   namespace?: string;
   marker: string;
@@ -24,13 +29,19 @@ interface VendorContract {
 export interface AgentIntegrationPlannerContract {
   contractVersion: number;
   commandTemplate: string;
-  codexWrapper: {
-    contractMarker: string;
+  commandWrappers: Array<{
+    agentId: AgentId;
+    executable: string;
+    homeEnvironmentVariable: string;
+    defaultHomeRelativePath: string;
+    integrationRelativePath: string;
+    integrationContractMarker: string;
+    integrationManagedMarker: string;
     legacyHooksFeature: string;
     currentHooksFeature: string;
     currentHooksFeatureMinor: number;
     notificationMethod: string;
-  };
+  }>;
   vendors: Record<AgentIntegrationPlannerVendor, VendorContract>;
 }
 
@@ -90,7 +101,8 @@ export function buildPlannedAgentHookCommand(
   vendor: AgentIntegrationPlannerVendor,
   event: string
 ): string {
-  const definition = AGENT_INTEGRATION_PLANNER_CONTRACT.vendors[vendor];
+  const definition = vendorDefinition(vendor);
+  if (!definition) throw new TypeError(`unknown agent integration ${vendor}`);
   const fallback =
     definition.fallbackByEvent?.[event] ?? definition.fallback ?? "true";
   return AGENT_INTEGRATION_PLANNER_CONTRACT.commandTemplate
@@ -108,10 +120,19 @@ export function mergePlannedAgentIntegrationConfig(
   if (!isPlainObject(input)) {
     throw new TypeError(`${vendor} agent integration config must be an object`);
   }
-  const definition = AGENT_INTEGRATION_PLANNER_CONTRACT.vendors[vendor];
+  const definition = vendorDefinition(vendor);
+  if (!definition) throw new TypeError(`unknown agent integration ${vendor}`);
   return definition.format === "namespaced-hooks"
     ? mergeNamespacedHooks(vendor, definition, input)
     : mergeGroupedHooks(vendor, definition, input);
+}
+
+function vendorDefinition(
+  vendor: AgentIntegrationPlannerVendor
+): VendorContract | undefined {
+  return Object.hasOwn(AGENT_INTEGRATION_PLANNER_CONTRACT.vendors, vendor)
+    ? AGENT_INTEGRATION_PLANNER_CONTRACT.vendors[vendor]
+    : undefined;
 }
 
 function requireSnapshot(snapshot: AgentIntegrationSnapshot): void {

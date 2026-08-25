@@ -1,9 +1,8 @@
 # Agent settings
 
-kmux can launch a compatible wrapper instead of a vendor's native CLI and can
-replace its transcript store. Edit the kmux `settings.json` file through
-**Settings → Open settings.json**, then restart the app. Manual changes are
-loaded only during app startup.
+kmux can launch a compatible wrapper instead of an agent's native CLI and can
+replace its transcript store. Edit `settings.json` through **Settings → Open
+settings.json**. Manual file changes are loaded during app startup.
 
 ```json
 {
@@ -29,12 +28,13 @@ loaded only during app startup.
 }
 ```
 
-Local vendor profiles live directly under `agents`. Optional SSH profiles live
-under `agents.ssh`. The supported vendors are `claude`, `codex`, and
-`antigravity`. A local profile is never inherited by SSH.
+Local profiles continue to live directly under `agents`; optional SSH profiles
+live under the reserved `agents.ssh` key. All other keys are open, validated
+agent IDs. Unknown IDs are preserved and shown with a neutral label, but this
+build will not execute them. A local profile is never inherited by SSH.
 
 - `command` is a command found through `PATH` or an executable path. Omitting
-  it uses the native command (`claude`, `codex`, or `agy`).
+  it uses the command declared by the registered agent.
 - `args` are fixed arguments inserted after `command` and before kmux's
   operation arguments. For example, the Claude configuration above resumes a
   session as `ccs enterprise -- --resume <id>`. A literal `--` can be included
@@ -55,7 +55,7 @@ ln -s ~/.ccs/shared/context-groups/default/projects ~/.claude/projects
 
 kmux checks the configured command on the target where the session would run.
 If it is unavailable, resume is disabled; kmux does not silently fall back to
-the native vendor command. Agent settings do not change authentication files,
-vendor settings, hooks, subscription quota checks, or commands typed manually
-in a terminal. Configure at most one active execution profile per vendor and
-environment.
+the native agent command. Agent settings do not change authentication files,
+agent-native configuration, hooks, subscription quota checks, or commands typed
+manually in a terminal. Configure at most one active execution profile per
+agent and environment.

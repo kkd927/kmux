@@ -25,12 +25,24 @@ export interface AiCliProcessMatch {
   commandLine: string;
 }
 
+export interface AiCliProcessMatcher {
+  readonly agentId: KnownUsageVendor;
+  matches(commandLine: string): boolean;
+}
+
 export async function resolveAiCliProcessMatches(
   probes: AiCliProcessProbe[],
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  matchers: readonly AiCliProcessMatcher[] = []
 ): Promise<Map<number, AiCliProcessMatch>> {
+  const matchersByAgent = new Map(
+    matchers.map((matcher) => [matcher.agentId, matcher])
+  );
   const normalizedProbes = probes.filter(
-    (probe) => Number.isFinite(probe.parentPid) && probe.parentPid > 0
+    (probe) =>
+      Number.isFinite(probe.parentPid) &&
+      probe.parentPid > 0 &&
+      matchersByAgent.has(probe.vendor)
   );
   if (normalizedProbes.length === 0) {
     return new Map();
@@ -57,6 +69,7 @@ export async function resolveAiCliProcessMatches(
     const match = findAiCliDescendant(
       probe.parentPid,
       probe.vendor,
+      matchersByAgent.get(probe.vendor)!,
       entriesByPid,
       childrenByParent
     );
@@ -84,6 +97,7 @@ export function isProcessAlive(pid: number): boolean {
 function findAiCliDescendant(
   parentPid: number,
   vendor: KnownUsageVendor,
+  matcher: AiCliProcessMatcher,
   entriesByPid: Map<number, ProcessEntry>,
   childrenByParent: Map<number, number[]>
 ): AiCliProcessMatch | null {
@@ -102,7 +116,7 @@ function findAiCliDescendant(
       continue;
     }
 
-    if (detectVendorFromCommandLine(entry.commandLine) === vendor) {
+    if (matcher.matches(entry.commandLine)) {
       return {
         parentPid,
         pid: entry.pid,
@@ -136,96 +150,4 @@ function parseProcessTable(output: string): ProcessEntry[] {
         entry.parentPid >= 0 &&
         entry.commandLine.length > 0
     );
-}
-
-const MAX_COMMAND_TOKENS_TO_INSPECT = 12;
-const SCRIPT_EXTENSIONS = [".js", ".cjs", ".mjs"] as const;
-
-function detectVendorFromCommandLine(commandLine: string): UsageVendor {
-  const commandNames = commandNameHints(commandLine);
-
-  if (commandNames.includes("codex")) {
-    return "codex";
-  }
-  if (
-    commandNames.includes("agy") ||
-    commandNames.includes("antigravity") ||
-    commandNames.includes("antigravity-cli")
-  ) {
-    return "antigravity";
-  }
-  if (commandNames.includes("claude") || commandNames.includes("claude-code")) {
-    return "claude";
-  }
-  return "unknown";
-}
-
-function commandNameHints(commandLine: string): string[] {
-  return uniqueStrings(
-    commandLine
-      .split(/\s+/u)
-      .filter(Boolean)
-      .filter((token) => !token.startsWith("-"))
-      .slice(0, MAX_COMMAND_TOKENS_TO_INSPECT)
-      .flatMap(commandTokenNameHints)
-  );
-}
-
-function commandTokenNameHints(rawToken: string): string[] {
-  const token = stripShellQuotes(rawToken).trim().toLowerCase();
-  if (!token || token.startsWith("-") || isEnvironmentAssignment(token)) {
-    return [];
-  }
-
-  const basename = pathBasename(token);
-  return uniqueStrings([
-    basename,
-    stripScriptExtension(basename),
-    nodeModulesPackageBasename(token)
-  ]);
-}
-
-function pathBasename(value: string): string {
-  const segments = value.split(/[\\/]+/u).filter(Boolean);
-  return segments.at(-1) ?? value;
-}
-
-function stripScriptExtension(value: string): string {
-  const extension = SCRIPT_EXTENSIONS.find((candidate) =>
-    value.endsWith(candidate)
-  );
-  return extension ? value.slice(0, -extension.length) : value;
-}
-
-function nodeModulesPackageBasename(value: string): string {
-  const segments = value.split(/[\\/]+/u).filter(Boolean);
-  const nodeModulesIndex = segments.lastIndexOf("node_modules");
-  if (nodeModulesIndex < 0) {
-    return "";
-  }
-
-  const packageName = segments[nodeModulesIndex + 1];
-  if (!packageName) {
-    return "";
-  }
-
-  if (packageName.startsWith("@")) {
-    return segments[nodeModulesIndex + 2] ?? "";
-  }
-
-  return packageName;
-}
-
-function isEnvironmentAssignment(value: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(value);
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(
-    new Set(values.map((value) => value.trim()).filter(Boolean))
-  );
-}
-
-function stripShellQuotes(value: string): string {
-  return value.replace(/^['"]+|['"]+$/gu, "");
 }

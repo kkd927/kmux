@@ -18,6 +18,14 @@ const agentEventSchema = z.enum([
   "idle",
   "session_end"
 ]);
+const agentIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9._-]*$/u)
+  .refine(
+    (value) => value !== "unknown" && Buffer.byteLength(value, "utf8") <= 64
+  );
 const remoteControlIdSchema = z
   .string()
   .min(1)
@@ -187,7 +195,7 @@ const socketParamSchemas = {
     .strict(),
   "agent.integration.ensure": z
     .object({
-      vendor: z.enum(["claude", "codex", "antigravity"]),
+      vendor: agentIdSchema,
       path: agentIntegrationPathSchema
     })
     .strict(),

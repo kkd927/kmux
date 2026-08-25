@@ -13,14 +13,18 @@ describe("agent terminal notification policy", () => {
     ).toEqual({
       disposition: "needs_input",
       reason: "plan-mode-prompt",
-      inferredFromUnknownVendor: false
+      inferredFromUnknownVendor: false,
+      agentId: "codex",
+      displayName: "Codex"
     });
     expect(
       classifyAgentTerminalNotification("codex", "kmux", "Waiting for input")
     ).toEqual({
       disposition: "needs_input",
       reason: "waiting-for-input",
-      inferredFromUnknownVendor: false
+      inferredFromUnknownVendor: false,
+      agentId: "codex",
+      displayName: "Codex"
     });
     expect(
       classifyAgentTerminalNotification(
@@ -44,10 +48,19 @@ describe("agent terminal notification policy", () => {
     ).toEqual({
       disposition: "needs_input",
       reason: "question-unanswered",
-      inferredFromUnknownVendor: true
+      inferredFromUnknownVendor: true,
+      agentId: "codex",
+      displayName: "Codex"
     });
     expect(
       classifyAgentTerminalNotification("unknown", "shell", "Needs input")
+    ).toEqual({ disposition: "generic" });
+    expect(
+      classifyAgentTerminalNotification(
+        "future-agent",
+        "Future",
+        "Question 1/1: Continue unanswered"
+      )
     ).toEqual({ disposition: "generic" });
     expect(
       classifyAgentTerminalNotification("claude", "shell", "Task complete")

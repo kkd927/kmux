@@ -9,6 +9,7 @@ describe("local usage provider", () => {
     const scanService: UsageScanService = {
       watch: vi.fn(() => cleanup),
       scan: vi.fn<UsageScanService["scan"]>(async () => ({
+        failures: [],
         reads: [
           {
             sourceCount: 1,
@@ -68,12 +69,15 @@ describe("local usage provider", () => {
       scan: vi
         .fn<UsageScanService["scan"]>()
         .mockResolvedValueOnce({
+          failures: [],
           reads: [{ sourceCount: 1, samples: [], truncated: true }]
         })
         .mockResolvedValueOnce({
+          failures: [],
           reads: [{ sourceCount: 1, samples: [], truncated: false }]
         })
         .mockResolvedValueOnce({
+          failures: [],
           reads: [{ sourceCount: 1, samples: [], truncated: false }]
         }),
       markDirty: vi.fn(),
@@ -132,6 +136,7 @@ describe("local usage provider", () => {
       scan: vi
         .fn<UsageScanService["scan"]>()
         .mockResolvedValueOnce({
+          failures: [],
           reads: [
             {
               sourceCount: 1,
@@ -143,6 +148,7 @@ describe("local usage provider", () => {
           ]
         })
         .mockResolvedValueOnce({
+          failures: [],
           reads: [{ sourceCount: 1, samples: [] }]
         }),
       markDirty: vi.fn(),

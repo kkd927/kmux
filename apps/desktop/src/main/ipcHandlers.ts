@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
 import type {
+  AgentDescriptorDto,
   ExternalAgentSessionResumeRequest,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
@@ -68,6 +69,7 @@ import {
 } from "../shared/terminalStreamDiagnostics";
 
 interface IpcHandlersOptions {
+  getAgentCatalog: () => readonly AgentDescriptorDto[];
   getPlatformDescriptor: () => RendererPlatformDescriptor;
   getPreferredSystemLanguages: () => string[];
   getShellState: () => ShellStoreSnapshot;
@@ -200,6 +202,7 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
   const clipboardService = options.clipboard ?? createMainClipboardService();
 
   ipcMain.handle("kmux:platform:get", () => options.getPlatformDescriptor());
+  ipcMain.handle("kmux:agents:catalog", () => options.getAgentCatalog());
   ipcMain.handle("kmux:system-languages:get", () =>
     options.getPreferredSystemLanguages()
   );

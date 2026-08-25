@@ -55,7 +55,7 @@ export interface FileMetadata {
 export interface TargetHistoryRecord<
   TPath extends LocalPath | RemotePath | LocatedPath
 > {
-  vendor: "codex" | "claude" | "antigravity";
+  vendor: Exclude<UsageVendor, "unknown">;
   sessionId: string;
   updatedAtUnixMs: number;
   canResume: boolean;

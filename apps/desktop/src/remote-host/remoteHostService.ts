@@ -1,3 +1,8 @@
+import {
+  builtinAgentDefinitionRevisions,
+  createBuiltinRemoteHistoryProjections,
+  createBuiltinRemoteUsageProjections
+} from "@kmux/agents/builtin-runtime";
 import { parseUint64Decimal, type Id, type Uint64 } from "@kmux/proto";
 
 import {
@@ -381,14 +386,12 @@ export class RemoteHostService {
             : { agentSettings: request.agentSettings })
         };
         const scan = target.metadataSession
-          ? await target.metadataSession
-              .scanHistory({
-                maxRecords: request.maxRecords,
-                ...(request.agentSettings === undefined
-                  ? {}
-                  : { agentSettings: request.agentSettings })
-              })
-              .catch(async () => await target.runtime.scanHistory(scanRequest))
+          ? await target.metadataSession.scanHistory({
+              maxRecords: request.maxRecords,
+              ...(request.agentSettings === undefined
+                ? {}
+                : { agentSettings: request.agentSettings })
+            })
           : await target.runtime.scanHistory(scanRequest);
         this.respondOk(request.requestId, {
           type: "history.scanned",
@@ -409,15 +412,13 @@ export class RemoteHostService {
             : { agentSettings: request.agentSettings })
         };
         const scan = target.metadataSession
-          ? await target.metadataSession
-              .scanUsage({
-                startAtUnixMs: request.startAtUnixMs,
-                maxRecords: request.maxRecords,
-                ...(request.agentSettings === undefined
-                  ? {}
-                  : { agentSettings: request.agentSettings })
-              })
-              .catch(async () => await target.runtime.scanUsage(scanRequest))
+          ? await target.metadataSession.scanUsage({
+              startAtUnixMs: request.startAtUnixMs,
+              maxRecords: request.maxRecords,
+              ...(request.agentSettings === undefined
+                ? {}
+                : { agentSettings: request.agentSettings })
+            })
           : await target.runtime.scanUsage(scanRequest);
         this.respondOk(request.requestId, {
           type: "usage.scanned",
@@ -1228,7 +1229,6 @@ function createRemoteMetadataSession(options: {
   targetId: Id;
 }): RemoteMetadataSession | undefined {
   if (
-    process.env.KMUX_REMOTE_METADATA_LEGACY === "1" ||
     !options.hello.capabilities.includes(AGENT_METADATA_SOURCES_CAPABILITY) ||
     typeof options.runtime.listMetadataSources !== "function" ||
     typeof options.runtime.readMetadataSource !== "function" ||
@@ -1246,7 +1246,10 @@ function createRemoteMetadataSession(options: {
       >,
     desktopInstallationId: options.desktopInstallationId,
     targetId: options.targetId,
-    principal: { ...options.hello.authority.authenticatedPrincipal }
+    principal: { ...options.hello.authority.authenticatedPrincipal },
+    agentDefinitions: builtinAgentDefinitionRevisions(),
+    historyProjections: createBuiltinRemoteHistoryProjections(),
+    usageProjections: createBuiltinRemoteUsageProjections()
   });
 }
 

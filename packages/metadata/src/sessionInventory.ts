@@ -5,7 +5,7 @@ import {
   type Dirent,
   type Stats
 } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export interface SessionInventoryLimits {
   maxDepth: number;
@@ -24,6 +24,8 @@ export interface SessionInventoryCandidate {
   path: string;
   mtimeMs: number;
   size: number;
+  identity?: string;
+  birthtimeMs?: number;
 }
 
 export type SessionInventoryDiagnosticKind =
@@ -47,17 +49,6 @@ export interface SessionInventory {
   diagnostics: SessionInventoryDiagnostic[];
 }
 
-export type SessionInventoryVendor = "codex" | "claude" | "antigravity";
-
-export type SessionInventoryCandidateRole =
-  | "codex-session"
-  | "claude-session"
-  | "claude-subagent"
-  | "antigravity-history"
-  | "antigravity-transcript"
-  | "antigravity-conversation"
-  | "antigravity-project-index";
-
 export function collectSessionInventory(
   roots: readonly string[],
   limits: Partial<SessionInventoryLimits> = {}
@@ -69,7 +60,7 @@ export function collectSessionInventory(
   const seenRootIdentities = new Set<string>();
   let truncated = false;
 
-  for (const configuredRoot of roots) {
+  for (const configuredRoot of normalizeSessionInventoryRoots(roots)) {
     if (
       typeof configuredRoot !== "string" ||
       !configuredRoot.trim() ||
@@ -93,10 +84,7 @@ export function collectSessionInventory(
     seenRootPaths.add(actualRoot.path);
     seenRootIdentities.add(actualRoot.identity);
 
-    const rootResult = collectInventoryRoot(
-      actualRoot.path,
-      resolvedLimits
-    );
+    const rootResult = collectInventoryRoot(actualRoot.path, resolvedLimits);
     candidates.push(...rootResult.candidates);
     diagnostics.push(...rootResult.diagnostics);
     truncated ||= rootResult.truncated;
@@ -107,51 +95,34 @@ export function collectSessionInventory(
   return { candidates: uniqueCandidates, truncated, diagnostics };
 }
 
-export function classifySessionInventoryCandidate(
-  vendor: SessionInventoryVendor,
-  root: string,
-  candidatePath: string
-): SessionInventoryCandidateRole | null {
-  const relative = relativeInventoryPath(root, candidatePath);
-  if (relative === null) {
-    return null;
-  }
-  const segments = relative.split("/").filter(Boolean);
-  const fileName = segments.at(-1) ?? "";
-
-  if (vendor === "codex") {
-    return fileName.endsWith(".jsonl") ? "codex-session" : null;
-  }
-  if (vendor === "claude") {
-    if (!fileName.endsWith(".jsonl")) {
-      return null;
+export function normalizeSessionInventoryRoots(
+  roots: readonly string[]
+): string[] {
+  const canonical = new Set<string>();
+  for (const configuredRoot of roots) {
+    if (
+      typeof configuredRoot !== "string" ||
+      !configuredRoot.trim() ||
+      !isAbsolute(configuredRoot)
+    ) {
+      throw new TypeError("session inventory roots must be absolute paths");
     }
-    return segments.slice(0, -1).includes("subagents")
-      ? "claude-subagent"
-      : "claude-session";
+    const resolved = resolve(configuredRoot);
+    try {
+      canonical.add(realpathSync.native(resolved));
+    } catch {
+      canonical.add(resolved);
+    }
   }
-  if (relative === "history.jsonl") {
-    return "antigravity-history";
-  }
-  if (
-    segments.length >= 4 &&
-    segments.at(-3) === ".system_generated" &&
-    segments.at(-2) === "logs" &&
-    fileName === "transcript.jsonl"
-  ) {
-    return "antigravity-transcript";
-  }
-  if (
-    segments.length === 2 &&
-    segments[0] === "conversations" &&
-    fileName.endsWith(".db")
-  ) {
-    return "antigravity-conversation";
-  }
-  if (relative === "cache/projects.json") {
-    return "antigravity-project-index";
-  }
-  return null;
+  const sorted = [...canonical].sort();
+  return sorted.filter(
+    (candidate) =>
+      !sorted.some((parent) => {
+        if (parent === candidate) return false;
+        const nested = relative(parent, candidate);
+        return nested !== "" && !nested.startsWith("..") && !isAbsolute(nested);
+      })
+  );
 }
 
 function collectInventoryRoot(
@@ -181,10 +152,7 @@ function collectInventoryRoot(
       truncated = true;
       continue;
     }
-    if (
-      directoryStats.isSymbolicLink() ||
-      !directoryStats.isDirectory()
-    ) {
+    if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
       continue;
     }
     const identity = fileIdentity(directoryStats, directory.path);
@@ -250,9 +218,7 @@ function collectInventoryRoot(
         }
         if (stats.isDirectory()) {
           if (directory.depth >= limits.maxDepth) {
-            diagnostics.push(
-              inventoryDiagnostic(root, entryPath, "max-depth")
-            );
+            diagnostics.push(inventoryDiagnostic(root, entryPath, "max-depth"));
             truncated = true;
             continue;
           }
@@ -271,7 +237,9 @@ function collectInventoryRoot(
           candidates.push({
             path: entryPath,
             mtimeMs: Number(stats.mtimeMs),
-            size: Number(stats.size)
+            size: Number(stats.size),
+            identity: fileIdentity(stats, entryPath),
+            birthtimeMs: Number(stats.birthtimeMs)
           });
         }
       }
@@ -306,7 +274,9 @@ function resolveInventoryRoot(
     if (isMissingPathError(error)) {
       return null;
     }
-    diagnostics.push(inventoryDiagnostic(root, root, "root-unavailable", error));
+    diagnostics.push(
+      inventoryDiagnostic(root, root, "root-unavailable", error)
+    );
     return null;
   }
   try {
@@ -383,7 +353,7 @@ function compareInventoryCandidates(
   );
 }
 
-function relativeInventoryPath(
+export function relativeSessionInventoryPath(
   root: string,
   candidatePath: string
 ): string | null {
@@ -393,9 +363,7 @@ function relativeInventoryPath(
   } catch {
     // Classification of a disappeared root simply produces no match.
   }
-  const normalizedRoot = actualRoot
-    .replace(/\\/gu, "/")
-    .replace(/\/+$/u, "");
+  const normalizedRoot = actualRoot.replace(/\\/gu, "/").replace(/\/+$/u, "");
   const normalizedPath = resolve(candidatePath).replace(/\\/gu, "/");
   if (normalizedPath === normalizedRoot) {
     return "";

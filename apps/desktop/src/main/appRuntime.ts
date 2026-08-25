@@ -23,6 +23,7 @@ import {
   createWorkspaceGraphResetState,
   mergeSettings,
   migrateShortcutDefaultsForPlatform,
+  sameLocatedPath,
   terminalSessionForSurface
 } from "@kmux/core";
 import type { MainFact } from "@kmux/core/main";
@@ -50,10 +51,10 @@ import type {
   WindowStateFileStore
 } from "@kmux/persistence";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
+import type { ExternalSessionResumeSpec } from "@kmux/agents";
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
-import type { ExternalSessionResumeSpec } from "./externalSessions";
 import { logDiagnostics } from "../shared/diagnostics";
 import { TerminalTypographyController } from "./terminalTypography";
 import { profileNowMs } from "../shared/nodeSmoothnessProfile";
@@ -81,6 +82,9 @@ export interface AppRuntimeOptions {
   onDidDispatchAppAction?: (action: AppAction, state: AppState) => void;
   profileRecorder?: SmoothnessProfileRecorder;
   externalSessionIndexer?: ExternalSessionIndexerRuntime;
+  resolveAgentResumeLaunch?: (
+    agentSessionRef: AgentSessionRef
+  ) => SessionLaunchConfig | undefined;
   nativeNotificationIdentity?: NativeNotificationIdentity;
   playBellSound?: () => void;
   resolveLocalPath: LocalPathResolver;
@@ -867,7 +871,12 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     if (
       !spec ||
       !externalAgentSessionRefsMatch(agentSessionRef, spec.agentSessionRef) ||
-      !agentSessionTargetMatches(agentSessionRef, spec.target)
+      !agentSessionTargetMatches(agentSessionRef, spec.target) ||
+      (spec.cwd !== undefined &&
+        !sameLocatedPath(
+          agentSessionRef.cwd,
+          locatedPathForTarget(spec.target, spec.cwd)
+        ))
     ) {
       return null;
     }
@@ -876,7 +885,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
 
   function respawnRestoredSessions(): void {
     const state = getState();
-    let replacedLaunch = false;
+    let restoredStateChanged = false;
     for (const session of Object.values(state.sessions)) {
       if (session.runtimeStatus.processState !== "exited") {
         const surface = state.surfaces[session.surfaceId];
@@ -900,7 +909,51 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
             workspace.location.target,
             session.launch.cwd
           );
-          replacedLaunch = true;
+          restoredStateChanged = true;
+        } else if (session.agentSessionRef) {
+          const resumeTarget =
+            surface &&
+            workspace &&
+            agentSessionTargetMatches(
+              session.agentSessionRef,
+              workspace.location.target
+            ) &&
+            sameLocatedPath(
+              session.agentSessionRef.cwd,
+              session.runtimeMetadata.cwd
+            )
+              ? workspace.location.target
+              : undefined;
+          const resumeLaunch = resumeTarget
+            ? options.resolveAgentResumeLaunch?.(session.agentSessionRef)
+            : undefined;
+          if (resumeLaunch && resumeTarget) {
+            session.launch = storedLaunchFromDto(
+              {
+                ...resumeLaunch,
+                title: resumeLaunch.title ?? session.launch.title
+              },
+              resumeTarget,
+              session.runtimeMetadata.cwd
+            );
+            restoredStateChanged = true;
+          } else {
+            // A persisted agent identity is data, not execution authority. When
+            // the target runtime is gone, only a currently registered native
+            // resume capability may replace it. Preserve the reference and
+            // terminal Surface, but never replay a stale launch for an unknown or
+            // unavailable integration.
+            session.runtimeStatus = {
+              processState: "exited",
+              observationState: "observed",
+              attachmentState: "detached"
+            };
+            session.shellInputReady = false;
+            delete session.pid;
+            delete session.exitCode;
+            restoredStateChanged = true;
+            continue;
+          }
         }
         const workspaceId = pane?.workspaceId;
         if (!surface || !pane || !workspaceId) {
@@ -929,7 +982,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         ]);
       }
     }
-    if (replacedLaunch) {
+    if (restoredStateChanged) {
       options.snapshotStore.save(state, {
         cleanShutdown: false
       });

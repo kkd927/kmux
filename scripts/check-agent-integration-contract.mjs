@@ -8,25 +8,26 @@ const contract = JSON.parse(
 );
 const docs = await readFile(join(root, "docs/agent-signal-matrix.md"), "utf8");
 
-const label = {
-  claude: "Claude",
-  codex: "Codex",
-  antigravity: "Antigravity"
-};
 const rendered = [
   "<!-- agent-integration-contract:v2:start -->",
   "| Agent | Installed hooks | Removed legacy kmux hooks |",
   "| --- | --- | --- |",
   ...Object.entries(contract.vendors).map(([vendor, definition]) => {
     const managed = definition.managed
-      .map((hook) =>
-        `\`${hook.event}${hook.matcher ? `(${hook.matcher.replaceAll("|", "\\|")})` : ""}\``
+      .map(
+        (hook) =>
+          `\`${hook.event}${hook.matcher ? `(${hook.matcher.replaceAll("|", "\\|")})` : ""}\``
       )
       .join(", ");
     const deprecated = definition.deprecated
       .map((event) => `\`${event}\``)
       .join(", ");
-    return `| ${label[vendor]} | ${managed} | ${deprecated} |`;
+    const label = vendor
+      .split(/[._-]+/u)
+      .filter(Boolean)
+      .map((part) => part[0].toUpperCase() + part.slice(1))
+      .join(" ");
+    return `| ${label} | ${managed} | ${deprecated} |`;
   }),
   "<!-- agent-integration-contract:v2:end -->"
 ].join("\n");

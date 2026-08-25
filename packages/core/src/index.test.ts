@@ -30,6 +30,7 @@ import {
   MIN_SIDEBAR_WIDTH,
   migrateShortcutDefaultsForPlatform,
   resolveSurfaceDiagnosticCaptureEnabled,
+  sanitizeAgentSessionRef,
   sanitizeSettings
 } from "./index";
 import type {
@@ -818,14 +819,12 @@ describe("core reducer", () => {
       droppedUnsupportedSurfaces: dropped
     });
 
-    expect(dropped.map((entry) => entry.surfaceId)).toEqual([
-      droppedSurfaceId
-    ]);
+    expect(dropped.map((entry) => entry.surfaceId)).toEqual([droppedSurfaceId]);
     expect(restored.panes[paneId].surfaceIds).toEqual([keptSurfaceId]);
     expect(restored.panes[paneId].activeSurfaceId).toBe(keptSurfaceId);
-    expect(
-      Object.keys(restored.workspaces[workspaceId].statusEntries)
-    ).toEqual(["build"]);
+    expect(Object.keys(restored.workspaces[workspaceId].statusEntries)).toEqual(
+      ["build"]
+    );
   });
 
   it("drops prototype-inherited kinds instead of resolving them from the registry", () => {
@@ -2471,10 +2470,10 @@ describe("core reducer", () => {
     expect(settings.agents).toBeUndefined();
   });
 
-  it("normalizes v6 agent profiles while ignoring removed legacy fields", () => {
+  it("keeps the v6 settings shape while accepting open local agent IDs", () => {
     const restored = sanitizeSettings({
       ...createDefaultSettings(),
-      settingsVersion: 5,
+      settingsVersion: CURRENT_SETTINGS_VERSION,
       agents: {
         claude: {
           command: "  ccs  ",
@@ -2494,14 +2493,9 @@ describe("core reducer", () => {
             sessionRoot: "/srv/codex"
           }
         },
-        local: {
-          antigravity: {
-            command: "legacy-ignored",
-            sessionRoot: "/legacy/ignored"
-          }
-        },
-        container: {
-          claude: { command: "ignored" }
+        "future-agent": {
+          command: "future-agent",
+          sessionRoot: "/future/sessions"
         }
       }
     } as unknown as ReturnType<typeof createDefaultSettings>);
@@ -2515,6 +2509,10 @@ describe("core reducer", () => {
       },
       codex: {
         args: []
+      },
+      "future-agent": {
+        command: "future-agent",
+        sessionRoot: "/future/sessions"
       },
       ssh: {
         codex: {
@@ -2871,7 +2869,7 @@ describe("core reducer", () => {
     expect(restored.sessions[sessionId].launch.shell).toBe("/bin/zsh");
   });
 
-  it("drops legacy Gemini session refs and agent attention during restore", () => {
+  it("preserves valid unknown agent session refs without restoring stale attention", () => {
     const state = createInitialState("/bin/zsh");
     const workspaceId = Object.keys(state.workspaces)[0];
     const surfaceId = Object.keys(state.surfaces)[0];
@@ -2912,9 +2910,23 @@ describe("core reducer", () => {
 
     const restored = cloneState(legacyState);
 
-    expect(restored.sessions[sessionId].agentSessionRef).toBeUndefined();
+    expect(restored.sessions[sessionId].agentSessionRef).toMatchObject({
+      vendor: "gemini",
+      id: "legacy-session",
+      targetId: "local"
+    });
     expect(restored.notifications).toEqual([]);
     expect(restored.workspaces[workspaceId].statusEntries).toEqual({});
+  });
+
+  it("rejects malformed persisted agent ids instead of normalizing them", () => {
+    expect(
+      sanitizeAgentSessionRef(
+        { vendor: "Future-Agent", sessionId: "session-1" },
+        { kind: "local" },
+        localPath("/tmp")
+      )
+    ).toBeUndefined();
   });
 
   it("sanitizes theme mode settings updates", () => {

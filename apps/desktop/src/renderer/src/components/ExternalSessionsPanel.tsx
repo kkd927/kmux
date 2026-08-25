@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  AgentDescriptorDto,
   ExternalAgentSessionVm,
   ExternalAgentSessionsSnapshot
 } from "@kmux/proto";
@@ -9,16 +10,53 @@ import { useExternalAgentSessions } from "../hooks/useExternalAgentSessions";
 import styles from "../styles/App.module.css";
 
 const SESSION_PAGE_SIZE = 20;
-const SESSION_VENDOR_FILTERS = [
-  { key: "codex", label: "Codex" },
-  { key: "claude", label: "Claude" },
-  { key: "antigravity", label: "Antigravity" }
-] as const;
-
-type SessionVendorFilter = (typeof SESSION_VENDOR_FILTERS)[number]["key"];
+type SessionVendorFilter = string;
 type SessionFilter = "all" | SessionVendorFilter;
 
+export interface ExternalSessionAgentFilter {
+  readonly key: string;
+  readonly label: string;
+}
+
+export function projectExternalSessionAgentFilters(
+  agentDescriptors: readonly AgentDescriptorDto[] | undefined,
+  sessions: readonly ExternalAgentSessionVm[]
+): ExternalSessionAgentFilter[] {
+  const descriptorLabels = new Map(
+    (agentDescriptors ?? []).map((descriptor) => [
+      descriptor.id,
+      descriptor.displayName
+    ])
+  );
+  const labels = new Map(
+    sessions.map((session) => [
+      session.vendor,
+      descriptorLabels.get(session.vendor) ??
+        (agentDescriptors === undefined
+          ? fallbackObservedAgentLabel(session.vendor)
+          : session.vendor)
+    ])
+  );
+  const descriptorOrder = new Map(
+    (agentDescriptors ?? []).map((descriptor, index) => [descriptor.id, index])
+  );
+  return Array.from(labels, ([key, label]) => ({ key, label })).sort(
+    (left, right) => {
+      const leftOrder = descriptorOrder.get(left.key);
+      const rightOrder = descriptorOrder.get(right.key);
+      if (leftOrder !== undefined || rightOrder !== undefined) {
+        return (
+          (leftOrder ?? Number.MAX_SAFE_INTEGER) -
+          (rightOrder ?? Number.MAX_SAFE_INTEGER)
+        );
+      }
+      return 0;
+    }
+  );
+}
+
 interface ExternalSessionsPanelProps {
+  agentDescriptors?: readonly AgentDescriptorDto[];
   snapshot: ExternalAgentSessionsSnapshot;
   loading: boolean;
   error: string | null;
@@ -34,9 +72,26 @@ export function ExternalSessionsPanelContainer(): JSX.Element {
     () => new Set()
   );
   const resumeInFlightRef = useRef(new Set<string>());
+  const [agentDescriptors, setAgentDescriptors] = useState<
+    AgentDescriptorDto[] | undefined
+  >(undefined);
+
+  useEffect(() => {
+    let active = true;
+    void window.kmux
+      .getAgentCatalog()
+      .then((descriptors) => {
+        if (active) setAgentDescriptors(descriptors);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <ExternalSessionsPanel
+      agentDescriptors={agentDescriptors}
       snapshot={snapshot}
       loading={loading}
       error={resumeError ?? error}
@@ -89,10 +144,10 @@ export function ExternalSessionsPanel(
     }
     return counts;
   }, [sessions]);
-  const availableVendorFilters = useMemo(() => {
-    const vendors = new Set(sessions.map((session) => session.vendor));
-    return SESSION_VENDOR_FILTERS.filter((filter) => vendors.has(filter.key));
-  }, [sessions]);
+  const availableVendorFilters = useMemo(
+    () => projectExternalSessionAgentFilters(props.agentDescriptors, sessions),
+    [props.agentDescriptors, sessions]
+  );
   const visibleFilters = useMemo(() => {
     if (availableVendorFilters.length <= 1) {
       return [];
@@ -158,8 +213,19 @@ export function ExternalSessionsPanel(
     }
   }, [activeFilter, effectiveFilter]);
 
-  const activeFilterLabel = labelForFilter(effectiveFilter);
-  const activeFilterDisplayLabel = displayLabelForFilter(effectiveFilter);
+  const activeDescriptorLabel =
+    effectiveFilter === "all"
+      ? undefined
+      : availableVendorFilters.find(({ key }) => key === effectiveFilter)
+          ?.label;
+  const activeFilterLabel = labelForFilter(
+    effectiveFilter,
+    activeDescriptorLabel
+  );
+  const activeFilterDisplayLabel = displayLabelForFilter(
+    effectiveFilter,
+    activeDescriptorLabel
+  );
   const hasAnySessions = sessions.length > 0;
   const description = describeSessionCount(
     effectiveFilter,
@@ -412,30 +478,24 @@ function describeSessionCount(
   return `(${visibleCount})`;
 }
 
-function labelForFilter(filter: SessionFilter): string {
-  switch (filter) {
-    case "all":
-      return "local agent";
-    case "claude":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "antigravity":
-      return "Antigravity";
-  }
+function labelForFilter(
+  filter: SessionFilter,
+  descriptorLabel?: string
+): string {
+  return filter === "all" ? "local agent" : (descriptorLabel ?? filter);
 }
 
-function displayLabelForFilter(filter: SessionFilter): string {
-  switch (filter) {
-    case "all":
-      return "All";
-    case "claude":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "antigravity":
-      return "Antigravity";
-  }
+function displayLabelForFilter(
+  filter: SessionFilter,
+  descriptorLabel?: string
+): string {
+  return filter === "all" ? "All" : (descriptorLabel ?? filter);
+}
+
+function fallbackObservedAgentLabel(agentId: string): string {
+  return agentId
+    .replace(/[._-]+/gu, " ")
+    .replace(/\b\w/gu, (character) => character.toUpperCase());
 }
 
 function ChevronDownIcon(): JSX.Element {

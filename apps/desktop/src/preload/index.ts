@@ -23,6 +23,7 @@ import {
   resolveDiagnosticsLogPath
 } from "../shared/diagnostics";
 import type {
+  AgentDescriptorDto,
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
   ExternalAgentSessionResumeRequest,
@@ -67,6 +68,7 @@ import type {
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
 import {
+  decodeAgentDescriptorCatalogDto,
   decodeMarkdownDocumentEvent,
   type MarkdownDocumentEvent
 } from "@kmux/proto";
@@ -101,6 +103,11 @@ ipcRenderer.on("kmux:diagnostics-logging", (_event, enabled: boolean) => {
 });
 
 const api = {
+  getAgentCatalog(): Promise<AgentDescriptorDto[]> {
+    return ipcRenderer
+      .invoke("kmux:agents:catalog")
+      .then((value) => decodeAgentDescriptorCatalogDto(value));
+  },
   getPlatform(): Promise<RendererPlatformDescriptor> {
     return ipcRenderer.invoke("kmux:platform:get");
   },

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use kmux_agent_manifest::manifest as agent_manifest;
 use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -40,14 +41,20 @@ pub enum IntegrationError {
 struct Contract {
     contract_version: u16,
     command_template: String,
-    codex_wrapper: CodexWrapperContract,
+    command_wrappers: Vec<CommandWrapperContract>,
     vendors: BTreeMap<String, VendorContract>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CodexWrapperContract {
-    contract_marker: String,
+struct CommandWrapperContract {
+    agent_id: String,
+    executable: String,
+    home_environment_variable: String,
+    default_home_relative_path: String,
+    integration_relative_path: String,
+    integration_contract_marker: String,
+    integration_managed_marker: String,
     legacy_hooks_feature: String,
     current_hooks_feature: String,
     current_hooks_feature_minor: u16,
@@ -58,6 +65,7 @@ struct CodexWrapperContract {
 #[serde(rename_all = "camelCase")]
 struct VendorContract {
     format: String,
+    path_root: Option<PathRootContract>,
     relative_path: String,
     namespace: Option<String>,
     marker: String,
@@ -67,6 +75,13 @@ struct VendorContract {
     output_mode: String,
     fallback: Option<String>,
     fallback_by_event: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PathRootContract {
+    default_home_relative_path: String,
+    environment_variable: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -175,6 +190,15 @@ pub fn ensure_all_with_codex_home(
     agent_bin_dir: &Path,
     codex_home: Option<&Path>,
 ) -> Result<EnsureReport, IntegrationError> {
+    let environment = codex_home_environment(codex_home);
+    ensure_all_with_environment(home, agent_bin_dir, Some(&environment))
+}
+
+pub fn ensure_all_with_environment(
+    home: &Path,
+    agent_bin_dir: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Result<EnsureReport, IntegrationError> {
     require_absolute(home, "home")?;
     require_absolute(agent_bin_dir, "agent bin directory")?;
     let contract = contract()?;
@@ -183,7 +207,7 @@ pub fn ensure_all_with_codex_home(
         .iter()
         .map(|(vendor, definition)| {
             ensure_vendor_file(
-                vendor_settings_path(home, codex_home, vendor, definition),
+                vendor_settings_path(home, environment, definition),
                 vendor,
                 &contract,
             )
@@ -212,6 +236,15 @@ pub fn snapshot_all_with_codex_home(
     agent_bin_dir: &Path,
     codex_home: Option<&Path>,
 ) -> Result<SnapshotReport, IntegrationError> {
+    let environment = codex_home_environment(codex_home);
+    snapshot_all_with_environment(home, agent_bin_dir, Some(&environment))
+}
+
+pub fn snapshot_all_with_environment(
+    home: &Path,
+    agent_bin_dir: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Result<SnapshotReport, IntegrationError> {
     require_absolute(home, "home")?;
     require_absolute(agent_bin_dir, "agent bin directory")?;
     let contract = contract()?;
@@ -219,8 +252,9 @@ pub fn snapshot_all_with_codex_home(
         .vendors
         .iter()
         .map(|(vendor, definition)| {
-            let path = vendor_settings_path(home, codex_home, vendor, definition);
-            match snapshot_vendor_path(vendor, &path, settings_root(home, codex_home, vendor)) {
+            let root = settings_root(home, environment, definition);
+            let path = root.join(&definition.relative_path);
+            match snapshot_vendor_path(vendor, &path, &root) {
                 Ok(snapshot) => snapshot,
                 Err(error) => VendorSnapshot {
                     vendor: vendor.clone(),
@@ -245,6 +279,15 @@ pub fn apply_planned_with_codex_home(
     codex_home: Option<&Path>,
     request: &PlannedApplyRequest,
 ) -> Result<PlannedApplyReport, IntegrationError> {
+    let environment = codex_home_environment(codex_home);
+    apply_planned_with_environment(home, Some(&environment), request)
+}
+
+pub fn apply_planned_with_environment(
+    home: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+    request: &PlannedApplyRequest,
+) -> Result<PlannedApplyReport, IntegrationError> {
     require_absolute(home, "home")?;
     if request.operation_id.is_empty()
         || request.operation_id.len() > 256
@@ -266,7 +309,8 @@ pub fn apply_planned_with_codex_home(
         .vendors
         .get(&request.vendor)
         .ok_or_else(|| IntegrationError::Invalid("planned apply vendor is invalid".to_owned()))?;
-    let expected_path = vendor_settings_path(home, codex_home, &request.vendor, definition);
+    let root = settings_root(home, environment, definition);
+    let expected_path = root.join(&definition.relative_path);
     if request.path != expected_path || !request.path.is_absolute() {
         return Err(IntegrationError::Invalid(
             "planned apply path is outside its vendor contract".to_owned(),
@@ -285,11 +329,10 @@ pub fn apply_planned_with_codex_home(
             "planned settings must contain a JSON object".to_owned(),
         ));
     }
-    let root = settings_root(home, codex_home, &request.vendor);
-    ensure_safe_settings_parent(root, &request.path)?;
+    ensure_safe_settings_parent(&root, &request.path)?;
     with_lock(&request.path, || {
-        ensure_safe_settings_parent(root, &request.path)?;
-        let current = read_settings_bytes(&request.path, root)?;
+        ensure_safe_settings_parent(&root, &request.path)?;
+        let current = read_settings_bytes(&request.path, &root)?;
         let desired_bytes = request.content.as_bytes();
         if current.as_deref() == Some(desired_bytes) {
             return Ok(PlannedApplyReport {
@@ -378,13 +421,19 @@ fn snapshot_vendor_path(
     })
 }
 
-fn settings_root<'a>(home: &'a Path, codex_home: Option<&'a Path>, vendor: &str) -> &'a Path {
-    if vendor == "codex"
-        && let Some(codex_home) = codex_home.filter(|path| path.is_absolute())
-    {
-        return codex_home;
-    }
-    home
+fn settings_root(
+    home: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+    definition: &VendorContract,
+) -> PathBuf {
+    let Some(path_root) = &definition.path_root else {
+        return home.to_path_buf();
+    };
+    environment
+        .and_then(|environment| environment.get(&path_root.environment_variable))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(&path_root.default_home_relative_path))
 }
 
 fn read_settings_bytes(path: &Path, root: &Path) -> Result<Option<Vec<u8>>, IntegrationError> {
@@ -583,6 +632,15 @@ pub fn doctor_with_codex_home(
     agent_bin_dir: &Path,
     codex_home: Option<&Path>,
 ) -> Result<DoctorReport, IntegrationError> {
+    let environment = codex_home_environment(codex_home);
+    doctor_with_environment(home, agent_bin_dir, Some(&environment))
+}
+
+pub fn doctor_with_environment(
+    home: &Path,
+    agent_bin_dir: &Path,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Result<DoctorReport, IntegrationError> {
     require_absolute(home, "home")?;
     require_absolute(agent_bin_dir, "agent bin directory")?;
     let contract = contract()?;
@@ -590,7 +648,7 @@ pub fn doctor_with_codex_home(
     let (transport_ready, transport_reason) = remote_transport_readiness();
     let mut vendors = Vec::new();
     for (vendor, definition) in &contract.vendors {
-        let path = vendor_settings_path(home, codex_home, vendor, definition);
+        let path = vendor_settings_path(home, environment, definition);
         let status = match read_config(&path) {
             Ok(Some(value)) => match merge_value(vendor, value.clone(), &contract) {
                 Ok(merged) if value == merged => VendorReport {
@@ -630,16 +688,19 @@ pub fn doctor_with_codex_home(
 
 fn vendor_settings_path(
     home: &Path,
-    codex_home: Option<&Path>,
-    vendor: &str,
+    environment: Option<&BTreeMap<String, String>>,
     definition: &VendorContract,
 ) -> PathBuf {
-    if vendor == "codex"
-        && let Some(codex_home) = codex_home.filter(|path| path.is_absolute())
-    {
-        return codex_home.join("hooks.json");
-    }
-    home.join(&definition.relative_path)
+    settings_root(home, environment, definition).join(&definition.relative_path)
+}
+
+fn codex_home_environment(codex_home: Option<&Path>) -> BTreeMap<String, String> {
+    codex_home
+        .filter(|path| path.is_absolute())
+        .map(|path| {
+            BTreeMap::from([("CODEX_HOME".to_owned(), path.to_string_lossy().into_owned())])
+        })
+        .unwrap_or_default()
 }
 
 fn remote_transport_readiness() -> (bool, Option<&'static str>) {
@@ -699,17 +760,14 @@ pub fn ensure_runtime_shims(
     ensure_private_directory(&directory)?;
     let quoted = quote_posix_word(&executable.to_string_lossy());
     let cli = format!("#!/bin/sh\nexec {quoted} cli \"$@\"\n");
-    let hook = remote_hook_script(&quoted);
+    let hook = remote_hook_script(&quoted)?;
     let contract = contract()?;
-    let codex_marker = &contract
-        .vendors
-        .get("codex")
-        .ok_or_else(|| IntegrationError::Invalid("codex contract is missing".to_owned()))?
-        .marker;
-    let codex = codex_wrapper_script(&contract.codex_wrapper, codex_marker);
     write_executable_atomic(&directory.join("kmux"), cli.as_bytes())?;
     write_executable_atomic(&directory.join("kmux-agent-hook"), hook.as_bytes())?;
-    write_executable_atomic(&directory.join("codex"), codex.as_bytes())?;
+    for policy in &contract.command_wrappers {
+        let wrapper = version_gated_agent_wrapper_script(policy);
+        write_executable_atomic(&directory.join(&policy.executable), wrapper.as_bytes())?;
+    }
     write_shell_integration_files(&directory)?;
     Ok(directory)
 }
@@ -1024,12 +1082,127 @@ fn prune_managed(value: Value, marker: &str) -> Option<Value> {
 
 fn contract() -> Result<Contract, IntegrationError> {
     let contract: Contract = serde_json::from_str(CONTRACT_BYTES)?;
-    if contract.contract_version != 2 || contract.vendors.len() != 3 {
+    let manifest =
+        agent_manifest().map_err(|error| IntegrationError::Invalid(error.to_string()))?;
+    if contract.contract_version != 2
+        || contract.vendors.is_empty()
+        || contract.vendors.len() > 128
+        || contract.command_wrappers.len() > 128
+    {
         return Err(IntegrationError::Invalid(
-            "unsupported contract version or vendor set".to_owned(),
+            "unsupported contract version or agent count".to_owned(),
         ));
     }
+    let portable_hooks = manifest
+        .agents
+        .iter()
+        .filter_map(|agent| agent.hook.as_ref().map(|hook| (agent.id.as_str(), hook)))
+        .collect::<BTreeMap<_, _>>();
+    if portable_hooks.len() != contract.vendors.len() {
+        return Err(IntegrationError::Invalid(
+            "hook contract and portable manifest differ".to_owned(),
+        ));
+    }
+    for (agent_id, definition) in &contract.vendors {
+        let Some(portable) = portable_hooks.get(agent_id.as_str()) else {
+            return Err(IntegrationError::Invalid(
+                "hook contract agent is absent from the portable manifest".to_owned(),
+            ));
+        };
+        if definition.format != portable.format
+            || !matching_path_roots(definition.path_root.as_ref(), portable.path_root.as_ref())
+            || definition.relative_path != portable.relative_path
+            || definition.namespace != portable.namespace
+            || definition.marker != portable.marker
+            || definition.output_mode != portable.output_mode
+            || definition.managed.len() != portable.managed.len()
+            || definition
+                .managed
+                .iter()
+                .zip(&portable.managed)
+                .any(|(left, right)| left.event != right.event || left.matcher != right.matcher)
+        {
+            return Err(IntegrationError::Invalid(
+                "hook contract differs from the portable manifest".to_owned(),
+            ));
+        }
+    }
+    let mut wrapper_executables = BTreeSet::new();
+    for wrapper in &contract.command_wrappers {
+        let portable = manifest
+            .agents
+            .iter()
+            .find(|agent| agent.id == wrapper.agent_id)
+            .ok_or_else(|| {
+                IntegrationError::Invalid(
+                    "command wrapper agent is absent from the portable manifest".to_owned(),
+                )
+            })?;
+        let portable_hook = portable.hook.as_ref().ok_or_else(|| {
+            IntegrationError::Invalid("command wrapper agent has no hook".to_owned())
+        })?;
+        let expected_hook_path = format!(
+            "{}/{}",
+            wrapper.default_home_relative_path, wrapper.integration_relative_path
+        );
+        let portable_hook_path = portable_hook
+            .path_root
+            .as_ref()
+            .map(|root| {
+                format!(
+                    "{}/{}",
+                    root.default_home_relative_path, portable_hook.relative_path
+                )
+            })
+            .unwrap_or_else(|| portable_hook.relative_path.clone());
+        if !valid_wrapper_token(&wrapper.executable)
+            || !valid_wrapper_token(&wrapper.legacy_hooks_feature)
+            || !valid_wrapper_token(&wrapper.current_hooks_feature)
+            || !valid_wrapper_token(&wrapper.notification_method)
+            || !wrapper
+                .home_environment_variable
+                .bytes()
+                .enumerate()
+                .all(|(index, byte)| {
+                    byte.is_ascii_uppercase()
+                        || byte == b'_'
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+            || wrapper.home_environment_variable.is_empty()
+            || wrapper.home_environment_variable.len() > 64
+            || wrapper.current_hooks_feature_minor > 10_000
+            || !wrapper_executables.insert(wrapper.executable.clone())
+            || portable_hook_path != expected_hook_path
+            || portable_hook.marker != wrapper.integration_managed_marker
+        {
+            return Err(IntegrationError::Invalid(
+                "command wrapper contract is invalid".to_owned(),
+            ));
+        }
+    }
     Ok(contract)
+}
+
+fn matching_path_roots(
+    contract: Option<&PathRootContract>,
+    portable: Option<&kmux_agent_manifest::PathRootDefinition>,
+) -> bool {
+    match (contract, portable) {
+        (None, None) => true,
+        (Some(contract), Some(portable)) => {
+            contract.default_home_relative_path == portable.default_home_relative_path
+                && contract.environment_variable == portable.environment_variable
+        }
+        _ => false,
+    }
+}
+
+fn valid_wrapper_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 fn read_config(path: &Path) -> Result<Option<Value>, IntegrationError> {
@@ -1362,19 +1535,18 @@ fn write_managed_file_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(),
     result
 }
 
-fn remote_hook_script(executable: &str) -> String {
-    format!(
+fn remote_hook_script(executable: &str) -> Result<String, IntegrationError> {
+    let fallback_cases = remote_hook_fallback_cases()?;
+    Ok(format!(
         r#"#!/bin/sh
 mode=${{KMUX_AGENT_HOOK_OUTPUT_MODE:-silent}}
 fallback() {{
   [ "$mode" = json ] || return 0
   agent=$(printf '%s' "${{1:-}}" | tr '[:upper:]' '[:lower:]')
   event=$(printf '%s' "${{2:-}}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
-  if {{ [ "$agent" = agy ] || [ "$agent" = antigravity ] || [ "$agent" = antigravity-cli ]; }} && {{ [ "$event" = pretooluse ] || [ "$event" = stop ]; }}; then
-    printf '{{"decision":"allow"}}\n'
-  else
-    printf '{{}}\n'
-  fi
+  case "$agent:$event" in
+{fallback_cases}  esac
+  printf '{{}}\n'
 }}
 if [ "${{1:-}}" = --ensure-integration ]; then
   [ "$#" = 3 ] || exit 2
@@ -1405,10 +1577,47 @@ else
 fi
 exit 0
 "#
-    )
+    ))
 }
 
-fn codex_wrapper_script(policy: &CodexWrapperContract, managed_marker: &str) -> String {
+fn remote_hook_fallback_cases() -> Result<String, IntegrationError> {
+    let manifest =
+        agent_manifest().map_err(|error| IntegrationError::Invalid(error.to_string()))?;
+    let mut cases = String::new();
+    for agent in &manifest.agents {
+        let Some(hook) = &agent.hook else {
+            continue;
+        };
+        let identities =
+            std::iter::once(agent.id.as_str()).chain(agent.aliases.iter().map(String::as_str));
+        for identity in identities {
+            for (event, response) in &hook.fallback_by_event {
+                let event = event
+                    .bytes()
+                    .filter(u8::is_ascii_alphanumeric)
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                let response = serde_json::to_string(response)?;
+                cases.push_str(&format!(
+                    "    {identity}:{event}) printf '%s\\n' {}; return 0 ;;\n",
+                    quote_posix_word(&response)
+                ));
+            }
+            let response = serde_json::to_string(&hook.fallback_response)?;
+            cases.push_str(&format!(
+                "    {identity}:*) printf '%s\\n' {}; return 0 ;;\n",
+                quote_posix_word(&response)
+            ));
+        }
+    }
+    Ok(cases)
+}
+
+fn version_gated_agent_wrapper_script(policy: &CommandWrapperContract) -> String {
+    let home_expression = format!(
+        "${{{}:-${{HOME}}/{}}}",
+        policy.home_environment_variable, policy.default_home_relative_path
+    );
     r#"#!/bin/sh
 set -u
 self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -1418,8 +1627,8 @@ for segment in ${PATH:-}; do
   if [ -z "$filtered" ]; then filtered=$segment; else filtered=$filtered:$segment; fi
 done
 IFS=$old_ifs; PATH=$filtered; export PATH
-real_codex=$(command -v codex 2>/dev/null || true)
-[ -n "$real_codex" ] || exit 127
+real_agent=$(command -v __KMUX_EXECUTABLE__ 2>/dev/null || true)
+[ -n "$real_agent" ] || exit 127
 has_notification_override() {
   expect=0
   for arg in "$@"; do
@@ -1428,10 +1637,10 @@ has_notification_override() {
   done
   return 1
 }
-hooks_file=${CODEX_HOME:-${HOME}/.codex}/hooks.json
-"$self_dir/kmux-agent-hook" --ensure-integration codex "$hooks_file" >/dev/null 2>&1 || true
+hooks_file=__KMUX_HOME_EXPRESSION__/__KMUX_INTEGRATION_PATH__
+"$self_dir/kmux-agent-hook" --ensure-integration __KMUX_AGENT_ID__ "$hooks_file" >/dev/null 2>&1 || true
 if [ -f "$hooks_file" ] && grep -q '__KMUX_MANAGED_MARKER__' "$hooks_file" 2>/dev/null && grep -q '__KMUX_CONTRACT_MARKER__' "$hooks_file" 2>/dev/null; then
-  version=$($real_codex --version 2>/dev/null || true)
+  version=$($real_agent --version 2>/dev/null || true)
   major=$(printf '%s' "$version" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\.\([0-9][0-9]*\)\..*/\1/p')
   minor=$(printf '%s' "$version" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\.\([0-9][0-9]*\)\..*/\2/p')
   feature=__KMUX_LEGACY_HOOKS_FEATURE__
@@ -1441,10 +1650,17 @@ if [ -f "$hooks_file" ] && grep -q '__KMUX_MANAGED_MARKER__' "$hooks_file" 2>/de
   set -- --enable "$feature" "$@"
 fi
 has_notification_override "$@" || set -- --config tui.notification_method=__KMUX_NOTIFICATION_METHOD__ "$@"
-exec "$real_codex" "$@"
+exec "$real_agent" "$@"
 "#
-    .replace("__KMUX_MANAGED_MARKER__", managed_marker)
-    .replace("__KMUX_CONTRACT_MARKER__", &policy.contract_marker)
+    .replace("__KMUX_EXECUTABLE__", &policy.executable)
+    .replace("__KMUX_HOME_EXPRESSION__", &home_expression)
+    .replace("__KMUX_INTEGRATION_PATH__", &policy.integration_relative_path)
+    .replace("__KMUX_AGENT_ID__", &policy.agent_id)
+    .replace("__KMUX_MANAGED_MARKER__", &policy.integration_managed_marker)
+    .replace(
+        "__KMUX_CONTRACT_MARKER__",
+        &policy.integration_contract_marker,
+    )
     .replace(
         "__KMUX_LEGACY_HOOKS_FEATURE__",
         &policy.legacy_hooks_feature,

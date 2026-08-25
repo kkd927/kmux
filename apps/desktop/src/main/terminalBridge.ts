@@ -491,7 +491,7 @@ export function createTerminalBridge(
           message
         );
         if (terminalDecision.disposition === "needs_input") {
-          logDiagnostics("main.terminal.notification.codex-promoted", {
+          logDiagnostics("main.terminal.notification.agent-promoted", {
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
             protocol: event.protocol,
@@ -501,15 +501,17 @@ export function createTerminalBridge(
             message,
             matchReason: terminalDecision.reason
           });
+          const agentId = terminalDecision.agentId;
+          if (!agentId) return;
           options.dispatchAppAction({
             type: "agent.event",
             workspaceId: pane.workspaceId,
             paneId: surface.paneId,
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
-            agent: "codex",
+            agent: agentId,
             event: "needs_input",
-            title: "Codex needs input",
+            title: `${terminalDecision.displayName ?? agentId} needs input`,
             message,
             details: {
               uiOnly: true,
@@ -525,7 +527,7 @@ export function createTerminalBridge(
           return;
         }
         if (terminalDecision.disposition === "suppressed") {
-          logDiagnostics("main.terminal.notification.codex-suppressed", {
+          logDiagnostics("main.terminal.notification.agent-suppressed", {
             surfaceId: event.surfaceId,
             sessionId: event.sessionId,
             protocol: event.protocol,

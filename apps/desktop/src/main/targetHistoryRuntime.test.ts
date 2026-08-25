@@ -2,14 +2,16 @@ import {
   applyAction,
   createInitialState,
   encodeLocatedPathDto,
-  locatedPathForTarget
+  locatedPathForTarget,
+  resolveAgentScopeSettings
 } from "@kmux/core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ExternalSessionResumeSpec } from "./externalSessions";
+import type { ExternalSessionResumeSpec } from "@kmux/agents";
 import {
   createLocalHistoryProvider,
-  createTargetHistoryRuntime
+  createTargetHistoryRuntime,
+  mergeExternalAgentSessionSnapshots
 } from "./targetHistoryRuntime";
 import type {
   LocatedTargetServiceSet,
@@ -17,6 +19,43 @@ import type {
 } from "./targets/contracts";
 
 describe("target history runtime", () => {
+  it("keeps external-session-only and history-only records in the Main projection", () => {
+    const session = (key: string, updatedAt: string) => ({
+      key,
+      target: { kind: "local" as const },
+      vendor: key.split(":")[0]!,
+      vendorLabel: key.split(":")[0]!.toUpperCase(),
+      title: key,
+      updatedAt,
+      relativeTimeLabel: "now",
+      canResume: true,
+      resumeCommandPreview: "agent resume"
+    });
+    const merged = mergeExternalAgentSessionSnapshots([
+      {
+        updatedAt: "2026-08-18T01:00:00.000Z",
+        sessions: [
+          session("history-only:session-1", "2026-08-18T00:30:00.000Z"),
+          session("shared:session-1", "2026-08-18T00:00:00.000Z")
+        ]
+      },
+      {
+        updatedAt: "2026-08-18T02:00:00.000Z",
+        sessions: [
+          session("external-only:session-1", "2026-08-18T01:30:00.000Z"),
+          session("shared:session-1", "2026-08-18T01:00:00.000Z")
+        ]
+      }
+    ]);
+
+    expect(merged.updatedAt).toBe("2026-08-18T02:00:00.000Z");
+    expect(merged.sessions.map(({ key }) => key)).toEqual([
+      "external-only:session-1",
+      "shared:session-1",
+      "history-only:session-1"
+    ]);
+  });
+
   it("keeps identical vendor sessions distinct by target and resumes remotely", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
@@ -80,10 +119,8 @@ describe("target history runtime", () => {
         resolveExternalAgentSession: (key: string) =>
           key === localFallback.key ? localFallback : null
       } as never,
-      localAgentSettings: {
-        codex: { command: "local-codex" }
-      },
-      sshAgentSettings: state.settings.agents.ssh,
+      getAgentSettings: (scope) =>
+        resolveAgentScopeSettings(state.settings.agents, scope),
       now: () => new Date(10_000)
     });
     state.settings.agents = {
@@ -107,7 +144,7 @@ describe("target history runtime", () => {
         principal: { uid: 1_000, accountName: "kmux" }
       },
       cwd: "/srv/repo",
-      resumeCommandPreview: "ccsxp 'remote profile' resume same-session"
+      resumeCommandPreview: "changed-remote-codex resume same-session"
     });
     expect(
       runtime.resolveExternalAgentSession(snapshot.sessions[0].key)
@@ -116,27 +153,131 @@ describe("target history runtime", () => {
       cwd: "/srv/repo",
       launch: {
         cwd: "/srv/repo",
-        initialInput: "ccsxp 'remote profile' resume same-session\r"
+        initialInput: "changed-remote-codex resume same-session\r"
       }
     });
     expect(localHistory).toHaveBeenCalledWith({
       maxRecords: 100,
       agentSettings: {
-        codex: { command: "local-codex" }
+        codex: { command: "changed-local-codex" }
       }
     });
     expect(remoteHistory).toHaveBeenCalledWith({
       maxRecords: 100,
       agentSettings: {
-        codex: { command: "ccsxp", args: ["remote profile"] }
+        codex: { command: "changed-remote-codex" }
       }
+    });
+    expect(snapshot.sessions[1]).toMatchObject({
+      resumeCommandPreview: "changed-local-codex resume same-session"
     });
     expect(
       runtime.resolveExternalAgentSession(localFallback.key)
     ).toMatchObject({
       target: { kind: "local" },
       cwd: "/tmp/local",
-      agentSessionRef: { sessionId: "same-session" }
+      agentSessionRef: { sessionId: "same-session" },
+      launch: {
+        cwd: "/tmp/local",
+        initialInput: "changed-local-codex resume same-session\r"
+      }
+    });
+  });
+
+  it("revokes cached resume specs and discards scans from older settings generations", async () => {
+    const state = createInitialState("/bin/zsh");
+    state.settings.agents = {
+      codex: { command: "old-codex" }
+    };
+    type HistoryScan = Awaited<
+      ReturnType<LocatedTargetServiceSet["history"]["refresh"]>
+    >;
+    const staleScan = deferred<HistoryScan>();
+    const currentScan = deferred<HistoryScan>();
+    let callCount = 0;
+    const localHistory: LocatedTargetServiceSet["history"]["refresh"] = vi.fn(
+      async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            truncated: false,
+            records: [
+              {
+                vendor: "codex",
+                sessionId: "cached-old",
+                updatedAtUnixMs: 1_000,
+                canResume: true
+              }
+            ]
+          };
+        }
+        return callCount === 2 ? staleScan.promise : currentScan.promise;
+      }
+    );
+    const runtime = createTargetHistoryRuntime({
+      targetServices: registryWithHistory(localHistory, emptyHistoryRefresh()),
+      getState: () => state,
+      getAgentSettings: (scope) =>
+        resolveAgentScopeSettings(state.settings.agents, scope),
+      localIndexer: { resolveExternalAgentSession: () => null } as never,
+      now: () => new Date(10_000)
+    });
+
+    await runtime.listExternalAgentSessions();
+    expect(
+      runtime.resolveExternalAgentSession("codex:cached-old")
+    ).toMatchObject({
+      launch: { initialInput: "old-codex resume cached-old\r" }
+    });
+
+    const staleRequest = runtime.listExternalAgentSessions();
+    await vi.waitFor(() => expect(localHistory).toHaveBeenCalledTimes(2));
+    state.settings.agents.codex = { command: "current-codex" };
+    runtime.invalidateAgentSettings();
+    expect(runtime.resolveExternalAgentSession("codex:cached-old")).toBeNull();
+
+    const currentRequest = runtime.listExternalAgentSessions();
+    await vi.waitFor(() => expect(localHistory).toHaveBeenCalledTimes(3));
+    staleScan.resolve({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex",
+          sessionId: "stale-old",
+          updatedAtUnixMs: 2_000,
+          canResume: true
+        }
+      ]
+    });
+    currentScan.resolve({
+      truncated: false,
+      records: [
+        {
+          vendor: "codex",
+          sessionId: "current",
+          updatedAtUnixMs: 3_000,
+          canResume: true
+        }
+      ]
+    });
+
+    const [retried, current] = await Promise.all([
+      staleRequest,
+      currentRequest
+    ]);
+    expect(retried.sessions.map(({ key }) => key)).toEqual(["codex:current"]);
+    expect(current.sessions.map(({ key }) => key)).toEqual(["codex:current"]);
+    expect(runtime.resolveExternalAgentSession("codex:stale-old")).toBeNull();
+    expect(runtime.resolveExternalAgentSession("codex:current")).toMatchObject({
+      launch: { initialInput: "current-codex resume current\r" }
+    });
+    expect(localHistory).toHaveBeenNthCalledWith(2, {
+      maxRecords: 100,
+      agentSettings: { codex: { command: "old-codex" } }
+    });
+    expect(localHistory).toHaveBeenNthCalledWith(3, {
+      maxRecords: 100,
+      agentSettings: { codex: { command: "current-codex" } }
     });
   });
 
@@ -393,7 +534,7 @@ describe("local history provider", () => {
   it("normalizes the existing local index without refreshing usage", async () => {
     const provider = createLocalHistoryProvider({
       indexer: {
-        listExternalAgentSessions: () => ({
+        listAgentHistorySessions: () => ({
           updatedAt: "2026-07-18T00:00:00.000Z",
           sessions: [
             {
@@ -409,8 +550,7 @@ describe("local history provider", () => {
               resumeCommandPreview: "codex resume session-1"
             }
           ]
-        }),
-        resolveExternalAgentSession: () => null
+        })
       }
     });
 
@@ -454,4 +594,15 @@ function registryWithHistory(
 
 function emptyHistoryRefresh(): LocatedTargetServiceSet["history"]["refresh"] {
   return vi.fn(async () => ({ records: [], truncated: false }));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

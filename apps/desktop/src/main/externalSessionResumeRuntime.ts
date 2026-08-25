@@ -5,6 +5,7 @@ import type {
   StoredSessionLaunchConfig,
   WorkspaceTarget
 } from "@kmux/core";
+import type { ExternalSessionResumeSpec } from "@kmux/agents";
 import type {
   ExternalAgentSessionRef,
   ExternalAgentSessionResumeRequest,
@@ -13,7 +14,6 @@ import type {
 } from "@kmux/proto";
 
 import { logDiagnostics } from "../shared/diagnostics";
-import type { ExternalSessionResumeSpec } from "./externalSessions";
 import type { SshReconnectCoordinator } from "./remote/sshReconnectCoordinator";
 import type { SshWorkspaceCreationRuntime } from "./remote/sshWorkspaceCreationRuntime";
 

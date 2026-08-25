@@ -4,7 +4,6 @@ import { promisify } from "node:util";
 
 export * from "../aiCliProcess";
 export * from "../agentStorage";
-export * from "../antigravityStorage";
 export * from "../sessionInventory";
 export * from "../usage";
 

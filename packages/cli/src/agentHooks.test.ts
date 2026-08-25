@@ -421,11 +421,34 @@ describe("agent hook normalization", () => {
 
     expect(
       normalizeAgentHookInvocation("antigravity", "PreToolUse", {
-        tool_name: "ask_question"
+        tool_name: "ask_question",
+        question: "Which option?"
       })
     ).toMatchObject({
       agent: "antigravity",
-      event: "needs_input"
+      event: "needs_input",
+      message: "Which option?"
+    });
+
+    expect(
+      normalizeAgentHookInvocation("antigravity", "PreToolUse", {
+        tool: { toolName: "ask_question" },
+        toolInput: { question: "Use the remote target?" }
+      })
+    ).toMatchObject({
+      agent: "antigravity",
+      event: "needs_input",
+      message: "Use the remote target?"
+    });
+
+    expect(
+      normalizeAgentHookInvocation("antigravity", "PreToolUse", {
+        tool_name: "ask_permission",
+        reason: "Needs command access"
+      })
+    ).toMatchObject({
+      event: "needs_input",
+      message: "Needs command access"
     });
   });
 

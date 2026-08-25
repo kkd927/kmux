@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use kmux_agent_manifest::{agent as manifest_agent, manifest as agent_manifest};
 use rusqlite::{Connection, OpenFlags, params};
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,6 +19,7 @@ use thiserror::Error;
 pub const MAX_METADATA_CHUNK_BYTES: usize = 256 * 1024;
 pub const MAX_METADATA_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_METADATA_QUERY_ROWS: usize = 512;
+pub const METADATA_SOURCE_CONTRACT_CAPABILITY: &str = "agent-metadata-sources-v2";
 pub const ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID: &str = "antigravity.conversation.steps.v1";
 const SOURCE_CONTRACT_BYTES: &str =
     include_str!("../../../../../packages/metadata/source-contract.json");
@@ -41,6 +43,7 @@ const MAX_ANTIGRAVITY_PROMPT_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_ANTIGRAVITY_PROMPT_FIELD_BYTES: usize = 128 * 1024;
 const MAX_ANTIGRAVITY_PROMPT_PARSE_DEPTH: usize = 8;
 const MAX_OWNED_CLAUDE_SUBAGENT_ENTRIES: usize = 512;
+const MAX_METADATA_SOURCES: usize = 2_048;
 
 #[derive(Clone, Copy)]
 struct SessionInventoryLimits {
@@ -83,6 +86,7 @@ pub enum MetadataSourceError {
 pub enum MetadataPurpose {
     Usage,
     History,
+    All,
 }
 
 impl MetadataPurpose {
@@ -91,7 +95,13 @@ impl MetadataPurpose {
         match self {
             Self::Usage => "usage",
             Self::History => "history",
+            Self::All => "all",
         }
+    }
+
+    #[must_use]
+    pub fn includes(self, purpose: Self) -> bool {
+        self == Self::All || self == purpose
     }
 }
 
@@ -102,6 +112,7 @@ impl TryFrom<&str> for MetadataPurpose {
         match value {
             "usage" => Ok(Self::Usage),
             "history" => Ok(Self::History),
+            "all" => Ok(Self::All),
             _ => Err(MetadataSourceError::InvalidRequest),
         }
     }
@@ -115,6 +126,7 @@ pub enum MetadataSourceRole {
     AntigravityHistory,
     AntigravityTranscript,
     AntigravityConversation,
+    Other(&'static str),
 }
 
 impl MetadataSourceRole {
@@ -127,6 +139,7 @@ impl MetadataSourceRole {
             Self::AntigravityHistory => "antigravity-history",
             Self::AntigravityTranscript => "antigravity-transcript",
             Self::AntigravityConversation => "antigravity-conversation",
+            Self::Other(role) => role,
         }
     }
 }
@@ -152,6 +165,7 @@ pub struct MetadataSourceHandle {
     pub path: PathBuf,
     pub root: PathBuf,
     pub vendor: String,
+    pub definition_revision: String,
     pub role: MetadataSourceRole,
     pub format: MetadataSourceFormat,
     pub logical_name: String,
@@ -199,7 +213,7 @@ struct SourceContract {
     capability: String,
     limits: SourceContractLimits,
     sources: Vec<SourceContractSource>,
-    queries: SourceContractQueries,
+    queries: BTreeMap<String, SourceContractQuery>,
 }
 
 #[derive(Deserialize)]
@@ -212,18 +226,14 @@ struct SourceContractLimits {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceContractSource {
     vendor: String,
     role: String,
     format: String,
     purposes: Vec<String>,
+    claim_scope: Option<String>,
     pattern: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceContractQueries {
-    antigravity_conversation_steps: SourceContractQuery,
 }
 
 #[derive(Deserialize)]
@@ -282,12 +292,7 @@ pub struct ExternalAgentSettings {
     pub session_root: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ExternalAgentScanSettings {
-    pub claude: Option<ExternalAgentSettings>,
-    pub codex: Option<ExternalAgentSettings>,
-    pub antigravity: Option<ExternalAgentSettings>,
-}
+pub type ExternalAgentScanSettings = BTreeMap<String, ExternalAgentSettings>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalSessionClaim {
@@ -428,7 +433,127 @@ pub fn list_owned_metadata_sources(
     claims: &[ExternalSessionClaim],
     expected_uid: u32,
 ) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    let definitions = kmux_agent_manifest::definition_revisions()
+        .map_err(|_| MetadataSourceError::InvalidRequest)?;
+    list_owned_metadata_sources_for_definitions(
+        home,
+        purpose,
+        settings,
+        claims,
+        expected_uid,
+        &definitions,
+    )
+}
+
+pub fn list_owned_metadata_sources_for_definitions(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+    requested_definitions: &BTreeMap<String, String>,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    list_owned_metadata_sources_for_definitions_with_environment(
+        home,
+        purpose,
+        settings,
+        claims,
+        expected_uid,
+        requested_definitions,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn list_owned_metadata_sources_for_definitions_with_environment(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+    requested_definitions: &BTreeMap<String, String>,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    list_owned_metadata_sources_with_resolver_and_environment(
+        home,
+        purpose,
+        settings,
+        claims,
+        expected_uid,
+        requested_definitions,
+        environment,
+        &resolve_embedded_agent,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn list_owned_metadata_sources_with_resolver(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+    requested_definitions: &BTreeMap<String, String>,
+    resolve_agent: &AgentDefinitionResolver,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    list_owned_metadata_sources_with_resolver_and_environment(
+        home,
+        purpose,
+        settings,
+        claims,
+        expected_uid,
+        requested_definitions,
+        None,
+        resolve_agent,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn list_owned_metadata_sources_with_resolver_and_environment(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+    requested_definitions: &BTreeMap<String, String>,
+    environment: Option<&BTreeMap<String, String>>,
+    resolve_agent: &AgentDefinitionResolver,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
+    list_owned_metadata_sources_impl(
+        home,
+        purpose,
+        settings,
+        claims,
+        expected_uid,
+        requested_definitions,
+        environment,
+        resolve_agent,
+    )
+}
+
+type AgentDefinitionResolver =
+    dyn Fn(
+        &str,
+        &str,
+    )
+        -> Result<Option<&'static kmux_agent_manifest::AgentDefinition>, MetadataSourceError>;
+
+#[allow(clippy::too_many_arguments)]
+fn list_owned_metadata_sources_impl(
+    home: &Path,
+    purpose: MetadataPurpose,
+    settings: &ExternalAgentScanSettings,
+    claims: &[ExternalSessionClaim],
+    expected_uid: u32,
+    requested_definitions: &BTreeMap<String, String>,
+    environment: Option<&BTreeMap<String, String>>,
+    resolve_agent: &AgentDefinitionResolver,
+) -> Result<MetadataSourceInventory, MetadataSourceError> {
     if !home.is_absolute() || claims.len() > 500 {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    if requested_definitions.len() > 128 {
         return Err(MetadataSourceError::InvalidRequest);
     }
     require_source_contract()?;
@@ -437,19 +562,25 @@ pub fn list_owned_metadata_sources(
 
     let mut sources = Vec::new();
     let mut truncated = false;
+    let mut discovered_agent_scopes = BTreeSet::new();
     for claim in claims {
-        let roots = owned_session_roots(home, settings, &claim.vendor);
+        let Some(agent) = requested_agent_supporting_purpose(
+            requested_definitions,
+            &claim.vendor,
+            purpose,
+            resolve_agent,
+        )?
+        else {
+            continue;
+        };
+        let roots = owned_session_roots_for_agent(home, settings, agent, environment);
         let mut candidates = Vec::<(CandidateFile, MetadataSourceRole)>::new();
-        match claim.vendor.as_str() {
+        match agent.id.as_str() {
             "codex" | "claude" => {
-                for candidate in claimed_jsonl_candidates(
-                    claim,
-                    &roots,
-                    match purpose {
-                        MetadataPurpose::Usage => ExternalSourceCacheKind::Usage,
-                        MetadataPurpose::History => ExternalSourceCacheKind::History,
-                    },
-                ) {
+                for candidate in source_cache_kinds(purpose)
+                    .iter()
+                    .flat_map(|kind| claimed_jsonl_candidates(claim, &roots, *kind))
+                {
                     let role = if claim.vendor == "codex" {
                         MetadataSourceRole::CodexSession
                     } else if is_claude_subagent_path(&candidate.path) {
@@ -457,7 +588,7 @@ pub fn list_owned_metadata_sources(
                     } else {
                         MetadataSourceRole::ClaudeSession
                     };
-                    if purpose == MetadataPurpose::History
+                    if !purpose.includes(MetadataPurpose::Usage)
                         && role == MetadataSourceRole::ClaudeSubagent
                     {
                         continue;
@@ -466,7 +597,7 @@ pub fn list_owned_metadata_sources(
                 }
             }
             "antigravity" => {
-                if purpose == MetadataPurpose::History {
+                if purpose.includes(MetadataPurpose::History) {
                     for root in &roots {
                         if let Some(candidate) =
                             candidate_for_regular_file(&root.join("history.jsonl"))
@@ -483,14 +614,10 @@ pub fn list_owned_metadata_sources(
                         }
                     }
                 }
-                for candidate in claimed_jsonl_candidates(
-                    claim,
-                    &roots,
-                    match purpose {
-                        MetadataPurpose::Usage => ExternalSourceCacheKind::Usage,
-                        MetadataPurpose::History => ExternalSourceCacheKind::History,
-                    },
-                ) {
+                for candidate in source_cache_kinds(purpose)
+                    .iter()
+                    .flat_map(|kind| claimed_jsonl_candidates(claim, &roots, *kind))
+                {
                     if antigravity_conversation_id(&candidate.path).as_deref()
                         == Some(claim.vendor_session_id.as_str())
                         || claim
@@ -502,7 +629,17 @@ pub fn list_owned_metadata_sources(
                     }
                 }
             }
-            _ => return Err(MetadataSourceError::InvalidRequest),
+            _ => {
+                let (generic_candidates, partial) = generic_metadata_candidates(
+                    agent,
+                    &roots,
+                    claim,
+                    purpose,
+                    discovered_agent_scopes.insert(agent.id.clone()),
+                );
+                candidates.extend(generic_candidates);
+                truncated |= partial;
+            }
         }
 
         let mut seen = BTreeSet::new();
@@ -512,6 +649,7 @@ pub fn list_owned_metadata_sources(
                 candidate.clone(),
                 &roots,
                 claim,
+                agent,
                 role,
                 expected_uid,
                 &mut seen,
@@ -519,7 +657,7 @@ pub fn list_owned_metadata_sources(
                 &mut sources,
             )?;
             if accepted
-                && purpose == MetadataPurpose::Usage
+                && purpose.includes(MetadataPurpose::Usage)
                 && role == MetadataSourceRole::ClaudeSession
             {
                 let (subagents, partial) = adjacent_claude_subagent_candidates(&candidate);
@@ -529,6 +667,7 @@ pub fn list_owned_metadata_sources(
                         subagent,
                         &roots,
                         claim,
+                        agent,
                         MetadataSourceRole::ClaudeSubagent,
                         expected_uid,
                         &mut seen,
@@ -548,13 +687,22 @@ pub fn list_owned_metadata_sources(
             )
         })
         .collect::<BTreeSet<_>>();
-    let mut eligible_claims = if purpose == MetadataPurpose::History {
+    let mut eligible_claims = if purpose.includes(MetadataPurpose::History) {
         claims
             .iter()
             .filter(|claim| {
-                !configured_session_root(settings, &claim.vendor)
-                    || claims_with_source
-                        .contains(&(claim.vendor.clone(), claim.vendor_session_id.clone()))
+                requested_agent_supporting_purpose(
+                    requested_definitions,
+                    &claim.vendor,
+                    purpose,
+                    resolve_agent,
+                )
+                .ok()
+                .flatten()
+                .is_some()
+                    && (!configured_session_root(settings, &claim.vendor)
+                        || claims_with_source
+                            .contains(&(claim.vendor.clone(), claim.vendor_session_id.clone())))
             })
             .cloned()
             .collect::<Vec<_>>()
@@ -568,7 +716,10 @@ pub fn list_owned_metadata_sources(
     });
     let mut shared_history_sources = BTreeSet::new();
     sources.retain(|source| {
-        source.role != MetadataSourceRole::AntigravityHistory
+        !resolve_agent(&source.vendor, &source.definition_revision)
+            .ok()
+            .flatten()
+            .is_some_and(|agent| manifest_role_is_agent_scoped(agent, source.role))
             || shared_history_sources.insert(source.path.clone())
     });
     sources.sort_by(|left, right| {
@@ -583,8 +734,8 @@ pub fn list_owned_metadata_sources(
             })
             .then_with(|| left.logical_name.cmp(&right.logical_name))
     });
-    if sources.len() > 2_048 {
-        sources.truncate(2_048);
+    if sources.len() > MAX_METADATA_SOURCES {
+        sources.truncate(MAX_METADATA_SOURCES);
         truncated = true;
     }
     Ok(MetadataSourceInventory {
@@ -594,11 +745,157 @@ pub fn list_owned_metadata_sources(
     })
 }
 
+fn requested_agent_supporting_purpose(
+    requested_definitions: &BTreeMap<String, String>,
+    agent_id: &str,
+    purpose: MetadataPurpose,
+    resolve_agent: &AgentDefinitionResolver,
+) -> Result<Option<&'static kmux_agent_manifest::AgentDefinition>, MetadataSourceError> {
+    let Some(revision) = requested_definitions.get(agent_id) else {
+        return Ok(None);
+    };
+    let Some(agent) = resolve_agent(agent_id, revision)? else {
+        return Ok(None);
+    };
+    Ok(agent
+        .metadata
+        .as_ref()
+        .is_some_and(|metadata| {
+            metadata
+                .sources
+                .iter()
+                .any(|source| manifest_source_supports_purpose(source, purpose))
+        })
+        .then_some(agent))
+}
+
+fn resolve_embedded_agent(
+    agent_id: &str,
+    definition_revision: &str,
+) -> Result<Option<&'static kmux_agent_manifest::AgentDefinition>, MetadataSourceError> {
+    kmux_agent_manifest::compatible_agent(agent_id, definition_revision)
+        .map_err(|_| MetadataSourceError::InvalidRequest)
+}
+
+fn manifest_role_supports_purpose(
+    agent: &kmux_agent_manifest::AgentDefinition,
+    role: MetadataSourceRole,
+    purpose: MetadataPurpose,
+) -> bool {
+    agent.metadata.as_ref().is_some_and(|metadata| {
+        metadata.sources.iter().any(|source| {
+            source.role == role.as_str() && manifest_source_supports_purpose(source, purpose)
+        })
+    })
+}
+
+fn manifest_source_supports_purpose(
+    source: &kmux_agent_manifest::MetadataSourceDefinition,
+    purpose: MetadataPurpose,
+) -> bool {
+    source.purposes.iter().any(|value| match purpose {
+        MetadataPurpose::History => matches!(value.as_str(), "externalSessions" | "history"),
+        MetadataPurpose::Usage => value == "usage",
+        MetadataPurpose::All => {
+            matches!(value.as_str(), "externalSessions" | "history" | "usage")
+        }
+    })
+}
+
+fn manifest_role_is_agent_scoped(
+    agent: &kmux_agent_manifest::AgentDefinition,
+    role: MetadataSourceRole,
+) -> bool {
+    agent
+        .metadata
+        .as_ref()
+        .and_then(|metadata| {
+            metadata
+                .sources
+                .iter()
+                .find(|source| source.role == role.as_str())
+        })
+        .is_some_and(|source| source.claim_scope == "agent")
+}
+
+fn generic_metadata_candidates(
+    agent: &'static kmux_agent_manifest::AgentDefinition,
+    roots: &[PathBuf],
+    claim: &ExternalSessionClaim,
+    purpose: MetadataPurpose,
+    discover_agent_scope: bool,
+) -> (Vec<(CandidateFile, MetadataSourceRole)>, bool) {
+    let mut candidates = Vec::new();
+    for path in direct_claim_source_paths(claim, purpose) {
+        let Some(candidate) = candidate_for_regular_file(Path::new(path)) else {
+            continue;
+        };
+        for root in roots {
+            let roles = manifest_roles_for_path(agent, root, &candidate.path);
+            if roles.is_empty() {
+                continue;
+            }
+            candidates.extend(
+                roles
+                    .into_iter()
+                    .filter(|role| manifest_role_supports_purpose(agent, *role, purpose))
+                    .map(|role| (candidate.clone(), role)),
+            );
+            break;
+        }
+    }
+
+    if !discover_agent_scope
+        || !agent.metadata.as_ref().is_some_and(|metadata| {
+            metadata.sources.iter().any(|source| {
+                source.claim_scope == "agent" && manifest_source_supports_purpose(source, purpose)
+            })
+        })
+    {
+        return (candidates, false);
+    }
+
+    let inventory = collect_session_inventory(roots);
+    let mut truncated = inventory.is_partial();
+    'inventory: for candidate in inventory.candidates {
+        for root in roots {
+            let roles = manifest_roles_for_path(agent, root, &candidate.path);
+            if roles.is_empty() {
+                continue;
+            }
+            for role in roles.into_iter().filter(|role| {
+                manifest_role_is_agent_scoped(agent, *role)
+                    && manifest_role_supports_purpose(agent, *role, purpose)
+            }) {
+                if candidates.len() >= MAX_METADATA_SOURCES {
+                    truncated = true;
+                    break 'inventory;
+                }
+                candidates.push((candidate.clone(), role));
+            }
+            break;
+        }
+    }
+    (candidates, truncated)
+}
+
+fn source_cache_kinds(purpose: MetadataPurpose) -> &'static [ExternalSourceCacheKind] {
+    match purpose {
+        MetadataPurpose::History => &[ExternalSourceCacheKind::History],
+        MetadataPurpose::Usage => &[ExternalSourceCacheKind::Usage],
+        MetadataPurpose::All => &[
+            ExternalSourceCacheKind::History,
+            ExternalSourceCacheKind::Usage,
+        ],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_owned_metadata_source(
     candidate: CandidateFile,
     roots: &[PathBuf],
     claim: &ExternalSessionClaim,
+    agent: &'static kmux_agent_manifest::AgentDefinition,
     role: MetadataSourceRole,
     expected_uid: u32,
     seen: &mut BTreeSet<(PathBuf, &'static str)>,
@@ -608,18 +905,20 @@ fn append_owned_metadata_source(
     if !seen.insert((candidate.path.clone(), role.as_str())) {
         return Ok(false);
     }
-    let Some(source) = metadata_source_handle(candidate.clone(), roots, claim, role, expected_uid)?
+    let Some(source) =
+        metadata_source_handle(candidate.clone(), roots, claim, agent, role, expected_uid)?
     else {
         return Ok(false);
     };
-    validate_source_path(&source, expected_uid)?;
+    validate_source_path_for_agent(&source, expected_uid, agent)?;
     let verified_candidate = CandidateFile {
         path: source.path.clone(),
         modified_unix_ms: source.mtime_unix_ms,
         size: source.size,
     };
-    let matches_claim = metadata_source_candidate_matches_claim(&verified_candidate, role, claim);
-    validate_source_path(&source, expected_uid)?;
+    let matches_claim =
+        metadata_source_candidate_matches_claim(&verified_candidate, agent, role, claim);
+    validate_source_path_for_agent(&source, expected_uid, agent)?;
     if !matches_claim || !seen_sources.insert((source.path.clone(), role.as_str())) {
         return Ok(false);
     }
@@ -629,6 +928,7 @@ fn append_owned_metadata_source(
 
 fn metadata_source_candidate_matches_claim(
     candidate: &CandidateFile,
+    agent: &kmux_agent_manifest::AgentDefinition,
     role: MetadataSourceRole,
     claim: &ExternalSessionClaim,
 ) -> bool {
@@ -663,6 +963,13 @@ fn metadata_source_candidate_matches_claim(
                 .as_deref()
                 == Some(claim.vendor_session_id.as_str())
         }
+        MetadataSourceRole::Other(_) => {
+            manifest_role_is_agent_scoped(agent, role)
+                || direct_claim_source_paths(claim, MetadataPurpose::History)
+                    .chain(direct_claim_source_paths(claim, MetadataPurpose::Usage))
+                    .filter_map(|path| fs::canonicalize(path).ok())
+                    .any(|path| path == candidate.path)
+        }
     }
 }
 
@@ -671,6 +978,19 @@ pub fn read_metadata_source(
     offset: u64,
     max_bytes: usize,
     expected_uid: u32,
+) -> Result<MetadataSourceRead, MetadataSourceError> {
+    let agent = kmux_agent_manifest::compatible_agent(&source.vendor, &source.definition_revision)
+        .map_err(|_| MetadataSourceError::StaleSource)?
+        .ok_or(MetadataSourceError::StaleSource)?;
+    read_metadata_source_for_agent(source, offset, max_bytes, expected_uid, agent)
+}
+
+fn read_metadata_source_for_agent(
+    source: &MetadataSourceHandle,
+    offset: u64,
+    max_bytes: usize,
+    expected_uid: u32,
+    agent: &'static kmux_agent_manifest::AgentDefinition,
 ) -> Result<MetadataSourceRead, MetadataSourceError> {
     if max_bytes == 0
         || max_bytes > MAX_METADATA_CHUNK_BYTES
@@ -683,7 +1003,8 @@ pub fn read_metadata_source(
         .custom_flags(libc::O_NOFOLLOW)
         .open(&source.path)
         .map_err(map_source_open_error)?;
-    let metadata = validate_open_metadata(source, &file.metadata()?, expected_uid)?;
+    let metadata =
+        validate_open_metadata_for_agent(source, &file.metadata()?, expected_uid, agent)?;
     if metadata.len() < source.size || offset > source.size {
         return Err(MetadataSourceError::StaleSource);
     }
@@ -727,7 +1048,8 @@ pub fn read_metadata_source(
     }
     let next_offset = offset.saturating_add(content.len() as u64);
     eof = next_offset >= source.size;
-    let final_metadata = validate_open_metadata(source, &file.metadata()?, expected_uid)?;
+    let final_metadata =
+        validate_open_metadata_for_agent(source, &file.metadata()?, expected_uid, agent)?;
     if final_metadata.len() < source.size {
         return Err(MetadataSourceError::StaleSource);
     }
@@ -751,6 +1073,7 @@ pub fn query_metadata_source(
     if source.role != MetadataSourceRole::AntigravityConversation
         || source.format != MetadataSourceFormat::Sqlite
         || query_id != ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID
+        || !manifest_source_allows_query(source, query_id)
         || max_rows == 0
         || max_rows > MAX_METADATA_QUERY_ROWS
         || page_token.is_some()
@@ -820,13 +1143,36 @@ pub fn query_metadata_source(
     })
 }
 
+fn manifest_source_allows_query(source: &MetadataSourceHandle, query_id: &str) -> bool {
+    kmux_agent_manifest::compatible_agent(&source.vendor, &source.definition_revision)
+        .ok()
+        .flatten()
+        .and_then(|agent| agent.metadata.as_ref())
+        .is_some_and(|metadata| {
+            metadata.sources.iter().any(|definition| {
+                definition.role == source.role.as_str()
+                    && definition.format == source.format.as_str()
+                    && definition.query_plan_ids.iter().any(|id| id == query_id)
+            })
+        })
+}
+
 fn metadata_source_handle(
     candidate: CandidateFile,
     roots: &[PathBuf],
     claim: &ExternalSessionClaim,
+    agent: &'static kmux_agent_manifest::AgentDefinition,
     role: MetadataSourceRole,
     expected_uid: u32,
 ) -> Result<Option<MetadataSourceHandle>, MetadataSourceError> {
+    if agent.id != claim.vendor {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
+    let format =
+        manifest_format_for_role(agent, role).ok_or(MetadataSourceError::InvalidRequest)?;
+    if !manifest_declares_source(agent, role, format) {
+        return Err(MetadataSourceError::InvalidRequest);
+    }
     let canonical = match fs::canonicalize(&candidate.path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -844,7 +1190,7 @@ fn metadata_source_handle(
     {
         return Ok(None);
     }
-    if role_for_path(&claim.vendor, root, &canonical) != Some(role) {
+    if !manifest_roles_for_path(agent, root, &canonical).contains(&role) {
         return Ok(None);
     }
     let mut size = metadata.len();
@@ -879,12 +1225,9 @@ fn metadata_source_handle(
         path: canonical,
         root: root.clone(),
         vendor: claim.vendor.clone(),
+        definition_revision: agent.definition_revision.clone(),
         role,
-        format: if role == MetadataSourceRole::AntigravityConversation {
-            MetadataSourceFormat::Sqlite
-        } else {
-            MetadataSourceFormat::Jsonl
-        },
+        format,
         logical_name,
         size,
         mtime_unix_ms,
@@ -899,8 +1242,19 @@ fn validate_source_path(
     source: &MetadataSourceHandle,
     expected_uid: u32,
 ) -> Result<fs::Metadata, MetadataSourceError> {
+    let agent = kmux_agent_manifest::compatible_agent(&source.vendor, &source.definition_revision)
+        .map_err(|_| MetadataSourceError::StaleSource)?
+        .ok_or(MetadataSourceError::StaleSource)?;
+    validate_source_path_for_agent(source, expected_uid, agent)
+}
+
+fn validate_source_path_for_agent(
+    source: &MetadataSourceHandle,
+    expected_uid: u32,
+    agent: &'static kmux_agent_manifest::AgentDefinition,
+) -> Result<fs::Metadata, MetadataSourceError> {
     let metadata = fs::symlink_metadata(&source.path).map_err(map_source_open_error)?;
-    validate_open_metadata(source, &metadata, expected_uid)
+    validate_open_metadata_for_agent(source, &metadata, expected_uid, agent)
 }
 
 fn validate_sqlite_sidecars(
@@ -925,45 +1279,173 @@ fn validate_sqlite_sidecars(
     Ok(())
 }
 
-fn validate_open_metadata(
+fn validate_open_metadata_for_agent(
     source: &MetadataSourceHandle,
     metadata: &fs::Metadata,
     expected_uid: u32,
+    agent: &'static kmux_agent_manifest::AgentDefinition,
 ) -> Result<fs::Metadata, MetadataSourceError> {
+    let manifest_valid = agent.id == source.vendor
+        && agent.definition_revision == source.definition_revision
+        && manifest_declares_source(agent, source.role, source.format);
     let canonical = fs::canonicalize(&source.path).map_err(map_source_open_error)?;
     if canonical != source.path
+        || !manifest_valid
         || !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.uid() != expected_uid
         || metadata.dev() != source.device
         || metadata.ino() != source.inode
         || !source.path.starts_with(&source.root)
-        || role_for_path(&source.vendor, &source.root, &source.path) != Some(source.role)
+        || !manifest_roles_for_path(agent, &source.root, &source.path).contains(&source.role)
     {
         return Err(MetadataSourceError::StaleSource);
     }
     Ok(metadata.clone())
 }
 
-fn role_for_path(vendor: &str, root: &Path, path: &Path) -> Option<MetadataSourceRole> {
-    let vendor = match vendor {
-        "codex" => SessionVendor::Codex,
-        "claude" => SessionVendor::Claude,
-        "antigravity" => SessionVendor::Antigravity,
-        _ => return None,
+fn manifest_declares_source(
+    agent: &kmux_agent_manifest::AgentDefinition,
+    role: MetadataSourceRole,
+    format: MetadataSourceFormat,
+) -> bool {
+    agent.metadata.as_ref().is_some_and(|metadata| {
+        metadata
+            .sources
+            .iter()
+            .any(|source| source.role == role.as_str() && source.format == format.as_str())
+    })
+}
+
+fn manifest_roles_for_path(
+    agent: &'static kmux_agent_manifest::AgentDefinition,
+    root: &Path,
+    path: &Path,
+) -> Vec<MetadataSourceRole> {
+    let builtin = match agent.id.as_str() {
+        "codex" => Some(SessionVendor::Codex),
+        "claude" => Some(SessionVendor::Claude),
+        "antigravity" => Some(SessionVendor::Antigravity),
+        _ => None,
     };
-    match classify_session_candidate(root, path, vendor)? {
-        SessionCandidateRole::CodexSession => Some(MetadataSourceRole::CodexSession),
-        SessionCandidateRole::ClaudeSession => Some(MetadataSourceRole::ClaudeSession),
-        SessionCandidateRole::ClaudeSubagent => Some(MetadataSourceRole::ClaudeSubagent),
-        SessionCandidateRole::AntigravityHistory => Some(MetadataSourceRole::AntigravityHistory),
-        SessionCandidateRole::AntigravityTranscript => {
-            Some(MetadataSourceRole::AntigravityTranscript)
-        }
-        SessionCandidateRole::AntigravityConversation => {
-            Some(MetadataSourceRole::AntigravityConversation)
+    if let Some(vendor) = builtin
+        && let Some(role) = classify_session_candidate(root, path, vendor)
+    {
+        let role = match role {
+            SessionCandidateRole::CodexSession => MetadataSourceRole::CodexSession,
+            SessionCandidateRole::ClaudeSession => MetadataSourceRole::ClaudeSession,
+            SessionCandidateRole::ClaudeSubagent => MetadataSourceRole::ClaudeSubagent,
+            SessionCandidateRole::AntigravityHistory => MetadataSourceRole::AntigravityHistory,
+            SessionCandidateRole::AntigravityTranscript => {
+                MetadataSourceRole::AntigravityTranscript
+            }
+            SessionCandidateRole::AntigravityConversation => {
+                MetadataSourceRole::AntigravityConversation
+            }
+        };
+        return manifest_path_matches_role(agent, root, path, role)
+            .then_some(role)
+            .into_iter()
+            .collect();
+    }
+    let Some(metadata) = agent.metadata.as_ref() else {
+        return Vec::new();
+    };
+    let Some(relative) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+        return Vec::new();
+    };
+    metadata
+        .sources
+        .iter()
+        .filter(|source| manifest_pattern_matches(&source.pattern, relative))
+        .map(|source| metadata_role(source.role.as_str()))
+        .collect()
+}
+
+fn manifest_path_matches_role(
+    agent: &kmux_agent_manifest::AgentDefinition,
+    root: &Path,
+    path: &Path,
+    role: MetadataSourceRole,
+) -> bool {
+    let Some(relative) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+        return false;
+    };
+    agent.metadata.as_ref().is_some_and(|metadata| {
+        metadata.sources.iter().any(|source| {
+            source.role == role.as_str() && manifest_pattern_matches(&source.pattern, relative)
+        })
+    })
+}
+
+fn metadata_role(role: &'static str) -> MetadataSourceRole {
+    match role {
+        "codex-session" => MetadataSourceRole::CodexSession,
+        "claude-session" => MetadataSourceRole::ClaudeSession,
+        "claude-subagent" => MetadataSourceRole::ClaudeSubagent,
+        "antigravity-history" => MetadataSourceRole::AntigravityHistory,
+        "antigravity-transcript" => MetadataSourceRole::AntigravityTranscript,
+        "antigravity-conversation" => MetadataSourceRole::AntigravityConversation,
+        other => MetadataSourceRole::Other(other),
+    }
+}
+
+fn manifest_format_for_role(
+    agent: &kmux_agent_manifest::AgentDefinition,
+    role: MetadataSourceRole,
+) -> Option<MetadataSourceFormat> {
+    let source = agent
+        .metadata
+        .as_ref()?
+        .sources
+        .iter()
+        .find(|source| source.role == role.as_str())?;
+    match source.format.as_str() {
+        "jsonl" => Some(MetadataSourceFormat::Jsonl),
+        "sqlite" => Some(MetadataSourceFormat::Sqlite),
+        _ => None,
+    }
+}
+
+fn manifest_pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let path = path.split('/').collect::<Vec<_>>();
+    manifest_segments_match(&pattern, &path)
+}
+
+fn manifest_segments_match(pattern: &[&str], path: &[&str]) -> bool {
+    let Some((head, tail)) = pattern.split_first() else {
+        return path.is_empty();
+    };
+    if *head == "**" {
+        return manifest_segments_match(tail, path)
+            || path
+                .split_first()
+                .is_some_and(|(_, rest)| manifest_segments_match(pattern, rest));
+    }
+    path.split_first().is_some_and(|(segment, rest)| {
+        manifest_segment_matches(head, segment) && manifest_segments_match(tail, rest)
+    })
+}
+
+fn manifest_segment_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut reachable = vec![false; value.len() + 1];
+    reachable[0] = true;
+    for byte in pattern {
+        if *byte == b'*' {
+            for index in 1..=value.len() {
+                reachable[index] |= reachable[index - 1];
+            }
+        } else {
+            for index in (1..=value.len()).rev() {
+                reachable[index] = reachable[index - 1] && value[index - 1] == *byte;
+            }
+            reachable[0] = false;
         }
     }
+    reachable[value.len()]
 }
 
 fn metadata_modified_unix_ms(metadata: &fs::Metadata) -> Result<u64, MetadataSourceError> {
@@ -985,6 +1467,7 @@ fn map_source_open_error(error: std::io::Error) -> MetadataSourceError {
 fn require_source_contract() -> Result<(), MetadataSourceError> {
     let contract: SourceContract = serde_json::from_str(SOURCE_CONTRACT_BYTES)
         .map_err(|_| MetadataSourceError::InvalidRequest)?;
+    let manifest = agent_manifest().map_err(|_| MetadataSourceError::InvalidRequest)?;
     let sources = contract
         .sources
         .into_iter()
@@ -994,76 +1477,72 @@ fn require_source_contract() -> Result<(), MetadataSourceError> {
                 source.role,
                 source.format,
                 source.purposes.join(","),
+                source.claim_scope.unwrap_or_else(|| "session".to_owned()),
                 source.pattern,
             )
         })
         .collect::<BTreeSet<_>>();
-    let expected_sources = [
-        (
-            "codex",
-            "codex-session",
-            "jsonl",
-            "usage,history",
-            "**/*.jsonl",
-        ),
-        (
-            "claude",
-            "claude-session",
-            "jsonl",
-            "usage,history",
-            "**/*.jsonl",
-        ),
-        (
-            "claude",
-            "claude-subagent",
-            "jsonl",
-            "usage",
-            "**/subagents/*.jsonl",
-        ),
-        (
-            "antigravity",
-            "antigravity-history",
-            "jsonl",
-            "history",
-            "history.jsonl",
-        ),
-        (
-            "antigravity",
-            "antigravity-transcript",
-            "jsonl",
-            "usage,history",
-            "brain/*/.system_generated/logs/transcript.jsonl",
-        ),
-        (
-            "antigravity",
-            "antigravity-conversation",
-            "sqlite",
-            "history",
-            "conversations/*.db",
-        ),
-    ]
-    .into_iter()
-    .map(|(vendor, role, format, purposes, pattern)| {
-        (
-            vendor.to_owned(),
-            role.to_owned(),
-            format.to_owned(),
-            purposes.to_owned(),
-            pattern.to_owned(),
-        )
-    })
-    .collect::<BTreeSet<_>>();
-    if contract.version != 1
-        || contract.capability != "agent-metadata-sources-v1"
+    let expected_sources = manifest
+        .agents
+        .iter()
+        .flat_map(|agent| {
+            agent.metadata.iter().flat_map(move |metadata| {
+                metadata.sources.iter().filter_map(move |source| {
+                    let mut purposes = Vec::new();
+                    for purpose in &source.purposes {
+                        let mapped = match purpose.as_str() {
+                            "externalSessions" | "history" => "history",
+                            "usage" => "usage",
+                            _ => continue,
+                        };
+                        if !purposes.contains(&mapped) {
+                            purposes.push(mapped);
+                        }
+                    }
+                    (!purposes.is_empty()).then(|| {
+                        (
+                            agent.id.clone(),
+                            source.role.clone(),
+                            source.format.clone(),
+                            purposes.join(","),
+                            source.claim_scope.clone(),
+                            source.pattern.clone(),
+                        )
+                    })
+                })
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    let query_contract = contract
+        .queries
+        .values()
+        .map(|query| (query.id.as_str(), query.source_role.as_str()))
+        .collect::<BTreeSet<_>>();
+    let expected_queries = manifest
+        .agents
+        .iter()
+        .flat_map(|agent| agent.metadata.iter())
+        .flat_map(|metadata| &metadata.sources)
+        .flat_map(|source| {
+            source
+                .query_plan_ids
+                .iter()
+                .map(|query_id| (query_id.as_str(), source.role.as_str()))
+        })
+        .collect::<BTreeSet<_>>();
+    if contract.version != 2
+        || contract.capability != METADATA_SOURCE_CONTRACT_CAPABILITY
         || contract.limits.source_read_bytes != MAX_METADATA_CHUNK_BYTES
         || contract.limits.response_bytes != MAX_METADATA_RESPONSE_BYTES
         || contract.limits.query_rows != MAX_METADATA_QUERY_ROWS
         || contract.limits.query_execution_ms
             != u64::try_from(MAX_METADATA_QUERY_DURATION.as_millis()).unwrap_or(u64::MAX)
         || sources != expected_sources
-        || contract.queries.antigravity_conversation_steps.id
-            != ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID
-        || contract.queries.antigravity_conversation_steps.source_role != "antigravity-conversation"
+        || query_contract != expected_queries
+        || !query_contract.contains(&(
+            ANTIGRAVITY_CONVERSATION_STEPS_QUERY_ID,
+            "antigravity-conversation",
+        ))
     {
         return Err(MetadataSourceError::InvalidRequest);
     }
@@ -1097,6 +1576,9 @@ pub fn scan_owned_external_history_with_settings(
     let mut cache_updates = Vec::new();
     let mut truncated = false;
     'claims: for claim in claims {
+        let Some(vendor) = owned_vendor_name(&claim.vendor) else {
+            continue;
+        };
         let mut parsed = ParsedRecord::default();
         let mut updated_at_unix_ms = claim.last_kmux_seen_at_unix_ms;
         let mut source_path = None;
@@ -1137,7 +1619,7 @@ pub fn scan_owned_external_history_with_settings(
                     source_path = record.source_path;
                 }
             }
-            _ => unreachable!("claims were validated"),
+            _ => continue 'claims,
         }
         if configured_session_root(settings, &claim.vendor) && source_path.is_none() {
             continue 'claims;
@@ -1166,7 +1648,7 @@ pub fn scan_owned_external_history_with_settings(
             claim.launch_title.clone(),
         );
         records.push(ExternalHistoryRecord {
-            vendor: owned_vendor_name(&claim.vendor),
+            vendor,
             session_id: claim.vendor_session_id.clone(),
             updated_at_unix_ms,
             // Resume runs in the remote login shell, so the daemon's PATH is not authoritative.
@@ -1209,7 +1691,10 @@ pub fn scan_owned_external_usage_with_settings(
     let mut records = BTreeMap::<String, ExternalUsageRecord>::new();
     let mut cache_updates = Vec::new();
     let mut truncated = false;
-    for claim in claims {
+    'claims: for claim in claims {
+        if owned_vendor_name(&claim.vendor).is_none() {
+            continue;
+        }
         let effective_start = start_at_unix_ms.max(claim.claimed_at_unix_ms);
         let roots = owned_session_roots(home, settings, &claim.vendor);
         if claim.vendor == "claude" {
@@ -1309,8 +1794,7 @@ pub fn scan_owned_external_usage_with_settings(
                     selected_record = record;
                     break;
                 }
-                "claude" => unreachable!("Claude claims are handled above"),
-                _ => unreachable!("claims were validated"),
+                _ => continue 'claims,
             }
         }
         if let Some(path) = selected_path {
@@ -1781,42 +2265,80 @@ fn candidate_for_regular_file(path: &Path) -> Option<CandidateFile> {
     candidate_from_metadata(path.to_owned(), &metadata)
 }
 
+fn direct_claim_source_paths(
+    claim: &ExternalSessionClaim,
+    purpose: MetadataPurpose,
+) -> impl Iterator<Item = &str> {
+    [
+        claim.transcript_path.as_ref(),
+        claim.artifact_directory_path.as_ref(),
+        purpose
+            .includes(MetadataPurpose::History)
+            .then_some(claim.history_source_path.as_ref())
+            .flatten(),
+        purpose
+            .includes(MetadataPurpose::Usage)
+            .then_some(claim.usage_source_path.as_ref())
+            .flatten(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(String::as_str)
+}
+
+fn owned_session_roots_for_agent(
+    home: &Path,
+    settings: &ExternalAgentScanSettings,
+    agent: &kmux_agent_manifest::AgentDefinition,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Vec<PathBuf> {
+    let Some(metadata) = &agent.metadata else {
+        return Vec::new();
+    };
+    let default_base = metadata
+        .path_root
+        .as_ref()
+        .and_then(|path_root| {
+            environment
+                .and_then(|environment| environment.get(&path_root.environment_variable))
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+        })
+        .unwrap_or_else(|| {
+            metadata.path_root.as_ref().map_or_else(
+                || home.to_path_buf(),
+                |path_root| home.join(&path_root.default_home_relative_path),
+            )
+        });
+    session_roots(
+        home,
+        &default_base.join(&metadata.default_root),
+        settings.get(&agent.id),
+    )
+}
+
 fn owned_session_roots(
     home: &Path,
     settings: &ExternalAgentScanSettings,
     vendor: &str,
 ) -> Vec<PathBuf> {
-    match vendor {
-        "codex" => session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref()),
-        "claude" => session_roots(
-            home,
-            &home.join(".claude/projects"),
-            settings.claude.as_ref(),
-        ),
-        "antigravity" => session_roots(
-            home,
-            &home.join(".gemini/antigravity-cli"),
-            settings.antigravity.as_ref(),
-        ),
-        _ => Vec::new(),
-    }
+    let Ok(Some(agent)) = manifest_agent(vendor) else {
+        return Vec::new();
+    };
+    owned_session_roots_for_agent(home, settings, agent, None)
 }
 
 fn configured_session_root(settings: &ExternalAgentScanSettings, vendor: &str) -> bool {
-    match vendor {
-        "codex" => settings.codex.as_ref(),
-        "claude" => settings.claude.as_ref(),
-        "antigravity" => settings.antigravity.as_ref(),
-        _ => None,
-    }
-    .is_some_and(|settings| settings.session_root.is_some())
+    settings
+        .get(vendor)
+        .is_some_and(|settings| settings.session_root.is_some())
 }
 
 fn validate_external_session_claims(
     claims: &[ExternalSessionClaim],
 ) -> Result<(), MetadataScanError> {
     for claim in claims {
-        if !matches!(claim.vendor.as_str(), "codex" | "claude" | "antigravity")
+        if !valid_open_agent_id(&claim.vendor)
             || sanitize_identifier(Some(claim.vendor_session_id.clone())).as_deref()
                 != Some(claim.vendor_session_id.as_str())
             || claim.claimed_at_unix_ms == 0
@@ -1874,12 +2396,12 @@ fn meaningful_session_title(title: &str, vendor_session_id: &str) -> bool {
     !(identifier && trimmed.len() >= 24)
 }
 
-fn owned_vendor_name(vendor: &str) -> &'static str {
+fn owned_vendor_name(vendor: &str) -> Option<&'static str> {
     match vendor {
-        "codex" => "codex",
-        "claude" => "claude",
-        "antigravity" => "antigravity",
-        _ => unreachable!("vendor was validated"),
+        "codex" => Some("codex"),
+        "claude" => Some("claude"),
+        "antigravity" => Some("antigravity"),
+        _ => None,
     }
 }
 
@@ -1911,8 +2433,8 @@ pub fn scan_external_history_with_settings(
     let mut by_identity = BTreeMap::<String, ExternalHistoryRecord>::new();
     let mut truncated = false;
     let candidate_limit = max_records.saturating_mul(4);
-    let codex_command = configured_command(settings.codex.as_ref(), "codex");
-    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref());
+    let codex_command = configured_command(settings.get("codex"), "codex");
+    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.get("codex"));
     let inventory = collect_session_inventory(&codex_roots);
     truncated |= inventory.is_partial();
     let (candidates, parsing_truncated) = matching_candidates(
@@ -1924,12 +2446,8 @@ pub fn scan_external_history_with_settings(
     );
     truncated |= parsing_truncated;
     scan_jsonl_vendor("codex", codex_command, candidates, &mut by_identity);
-    let claude_command = configured_command(settings.claude.as_ref(), "claude");
-    let claude_roots = session_roots(
-        home,
-        &home.join(".claude/projects"),
-        settings.claude.as_ref(),
-    );
+    let claude_command = configured_command(settings.get("claude"), "claude");
+    let claude_roots = session_roots(home, &home.join(".claude/projects"), settings.get("claude"));
     let inventory = collect_session_inventory(&claude_roots);
     truncated |= inventory.is_partial();
     let (candidates, parsing_truncated) = matching_candidates(
@@ -1941,11 +2459,11 @@ pub fn scan_external_history_with_settings(
     );
     truncated |= parsing_truncated;
     scan_jsonl_vendor("claude", claude_command, candidates, &mut by_identity);
-    let antigravity_command = configured_command(settings.antigravity.as_ref(), "agy");
+    let antigravity_command = configured_command(settings.get("antigravity"), "agy");
     let antigravity_roots = session_roots(
         home,
         &home.join(".gemini/antigravity-cli"),
-        settings.antigravity.as_ref(),
+        settings.get("antigravity"),
     );
     let inventory = collect_session_inventory(&antigravity_roots);
     truncated |= inventory.is_partial();
@@ -2009,7 +2527,7 @@ pub fn scan_external_usage_with_settings(
     let mut truncated = false;
     let candidate_limit = max_records.saturating_mul(8);
 
-    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.codex.as_ref());
+    let codex_roots = session_roots(home, &home.join(".codex/sessions"), settings.get("codex"));
     let inventory = collect_session_inventory(&codex_roots);
     truncated |= inventory.is_partial();
     let (candidates, parsing_truncated) = matching_candidates(
@@ -2028,11 +2546,7 @@ pub fn scan_external_usage_with_settings(
     }
 
     let mut seen_claude_requests = BTreeSet::new();
-    let claude_roots = session_roots(
-        home,
-        &home.join(".claude/projects"),
-        settings.claude.as_ref(),
-    );
+    let claude_roots = session_roots(home, &home.join(".claude/projects"), settings.get("claude"));
     let inventory = collect_session_inventory(&claude_roots);
     truncated |= inventory.is_partial();
     let (candidates, parsing_truncated) = matching_candidates(
@@ -2063,7 +2577,7 @@ pub fn scan_external_usage_with_settings(
     let antigravity_roots = session_roots(
         home,
         &home.join(".gemini/antigravity-cli"),
-        settings.antigravity.as_ref(),
+        settings.get("antigravity"),
     );
     let inventory = collect_session_inventory(&antigravity_roots);
     truncated |= inventory.is_partial();
@@ -3703,14 +4217,14 @@ fn configured_command<'a>(settings: Option<&'a ExternalAgentSettings>, native: &
 fn validate_agent_scan_settings(
     settings: &ExternalAgentScanSettings,
 ) -> Result<(), MetadataScanError> {
-    for setting in [
-        settings.claude.as_ref(),
-        settings.codex.as_ref(),
-        settings.antigravity.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
+    if settings.len() > 128
+        || settings
+            .keys()
+            .any(|agent_id| !valid_open_agent_id(agent_id))
     {
+        return Err(MetadataScanError::InvalidRequest);
+    }
+    for setting in settings.values() {
         if setting
             .command
             .as_ref()
@@ -3729,6 +4243,16 @@ fn validate_agent_scan_settings(
         }
     }
     Ok(())
+}
+
+fn valid_open_agent_id(value: &str) -> bool {
+    !value.is_empty()
+        && value != "unknown"
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
 }
 
 fn valid_agent_setting_string(value: &str, allow_empty: bool) -> bool {
@@ -4322,14 +4846,14 @@ mod tests {
         let executable = home.join("ccsxp");
         write(&executable, "#!/bin/sh\n").unwrap();
         set_permissions(&executable, Permissions::from_mode(0o700)).unwrap();
-        let settings = ExternalAgentScanSettings {
-            codex: Some(ExternalAgentSettings {
+        let settings = ExternalAgentScanSettings::from([(
+            "codex".to_owned(),
+            ExternalAgentSettings {
                 command: Some(executable.to_string_lossy().into_owned()),
                 session_root: Some("~/wrapper-sessions-link".to_owned()),
                 ..ExternalAgentSettings::default()
-            }),
-            ..ExternalAgentScanSettings::default()
-        };
+            },
+        )]);
 
         let history = scan_external_history_with_settings(home, 10, &settings).unwrap();
         assert_eq!(history.records.len(), 1);
@@ -4344,13 +4868,13 @@ mod tests {
         );
         assert_eq!(usage.records[0].total_tokens, 15);
 
-        let missing_root_settings = ExternalAgentScanSettings {
-            codex: Some(ExternalAgentSettings {
+        let missing_root_settings = ExternalAgentScanSettings::from([(
+            "codex".to_owned(),
+            ExternalAgentSettings {
                 session_root: Some("~/missing".to_owned()),
                 ..ExternalAgentSettings::default()
-            }),
-            ..ExternalAgentScanSettings::default()
-        };
+            },
+        )]);
         assert!(
             scan_external_history_with_settings(home, 10, &missing_root_settings)
                 .unwrap()
@@ -4404,13 +4928,13 @@ mod tests {
             owned_claim("codex", "native-session", 1, Some(&native)),
             owned_claim("codex", "custom-session", 1, Some(&custom)),
         ];
-        let settings = ExternalAgentScanSettings {
-            codex: Some(ExternalAgentSettings {
+        let settings = ExternalAgentScanSettings::from([(
+            "codex".to_owned(),
+            ExternalAgentSettings {
                 session_root: Some("~/custom-codex".to_owned()),
                 ..ExternalAgentSettings::default()
-            }),
-            ..ExternalAgentScanSettings::default()
-        };
+            },
+        )]);
 
         let (history, _) =
             scan_owned_external_history_with_settings(home, 10, &settings, &claims).unwrap();
@@ -4643,17 +5167,17 @@ mod tests {
             owned_claim("antigravity", "agy-owned", 1_000, None),
             owned_claim("codex", "01234567-89ab-cdef-0123-456789abcdef", 1_000, None),
         ];
-        let settings = ExternalAgentScanSettings {
-            codex: Some(ExternalAgentSettings {
+        let settings = ExternalAgentScanSettings::from([(
+            "codex".to_owned(),
+            ExternalAgentSettings {
                 command: Some(
                     home.join("missing-from-daemon-path")
                         .to_string_lossy()
                         .into_owned(),
                 ),
                 ..ExternalAgentSettings::default()
-            }),
-            ..ExternalAgentScanSettings::default()
-        };
+            },
+        )]);
         let (scan, _) =
             scan_owned_external_history_with_settings(home, 10, &settings, &claims).unwrap();
 
@@ -5019,6 +5543,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inventory.sources.len(), 1, "{:?}", inventory.sources);
+        let shared_inventory = list_owned_metadata_sources(
+            home,
+            MetadataPurpose::All,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(shared_inventory.sources.len(), 1);
+        assert_eq!(shared_inventory.claims, vec![claim.clone()]);
         let source = &inventory.sources[0];
 
         let first_end = first.find('안').unwrap() + 1;
@@ -5257,13 +5791,13 @@ mod tests {
         let configured_inventory = list_owned_metadata_sources(
             home,
             MetadataPurpose::History,
-            &ExternalAgentScanSettings {
-                claude: Some(ExternalAgentSettings {
+            &ExternalAgentScanSettings::from([(
+                "claude".to_owned(),
+                ExternalAgentSettings {
                     session_root: Some(home.join("custom-claude").to_string_lossy().into_owned()),
                     ..ExternalAgentSettings::default()
-                }),
-                ..ExternalAgentScanSettings::default()
-            },
+                },
+            )]),
             &[claim],
             uid,
         )
@@ -5310,6 +5844,205 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn unavailable_future_agent_revision_degrades_without_invalidating_inventory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path();
+        let claim = ExternalSessionClaim {
+            vendor: "fixture-future".to_owned(),
+            vendor_session_id: "session-1".to_owned(),
+            claimed_at_unix_ms: 1,
+            last_kmux_seen_at_unix_ms: 1,
+            cwd: None,
+            workspace_paths: Vec::new(),
+            transcript_path: None,
+            artifact_directory_path: None,
+            history_source_path: None,
+            usage_source_path: None,
+            launch_title: None,
+        };
+        let inventory = list_owned_metadata_sources_for_definitions(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+            fs::metadata(home).unwrap().uid(),
+            &BTreeMap::from([("fixture-future".to_owned(), "future-v1".to_owned())]),
+        )
+        .unwrap();
+        assert!(inventory.sources.is_empty());
+        assert!(inventory.claims.is_empty());
+    }
+
+    #[test]
+    fn metadata_inventory_uses_manifest_declared_path_root_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let codex_home = temporary.path().join("custom-codex-home");
+        let rollout = codex_home.join("sessions/2026/08/24/rollout-session-1.jsonl");
+        create_dir_all(rollout.parent().unwrap()).unwrap();
+        create_dir_all(&home).unwrap();
+        write(
+            &rollout,
+            "{\"timestamp\":\"2026-08-24T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
+        )
+        .unwrap();
+        let claim = owned_claim("codex", "session-1", 1, Some(&rollout));
+        let environment = BTreeMap::from([(
+            "CODEX_HOME".to_owned(),
+            codex_home.to_string_lossy().into_owned(),
+        )]);
+        let inventory = list_owned_metadata_sources_for_definitions_with_environment(
+            &home,
+            MetadataPurpose::Usage,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+            fs::metadata(&home).unwrap().uid(),
+            &BTreeMap::from([("codex".to_owned(), "codex-v2".to_owned())]),
+            Some(&environment),
+        )
+        .unwrap();
+
+        assert_eq!(inventory.sources.len(), 1);
+        assert_eq!(inventory.sources[0].vendor, "codex");
+        assert_eq!(inventory.sources[0].role.as_str(), "codex-session");
+        assert_eq!(
+            inventory.sources[0].logical_name,
+            "2026/08/24/rollout-session-1.jsonl"
+        );
+    }
+
+    #[test]
+    fn legacy_owned_scans_skip_open_future_agent_claims_without_panicking() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path();
+        let claim = ExternalSessionClaim {
+            vendor: "fixture-future".to_owned(),
+            vendor_session_id: "session-1".to_owned(),
+            claimed_at_unix_ms: 1,
+            last_kmux_seen_at_unix_ms: 1,
+            cwd: None,
+            workspace_paths: Vec::new(),
+            transcript_path: None,
+            artifact_directory_path: None,
+            history_source_path: None,
+            usage_source_path: None,
+            launch_title: None,
+        };
+
+        let (history, history_cache) = scan_owned_external_history_with_settings(
+            home,
+            10,
+            &ExternalAgentScanSettings::default(),
+            std::slice::from_ref(&claim),
+        )
+        .unwrap();
+        let (usage, usage_cache) = scan_owned_external_usage_with_settings(
+            home,
+            0,
+            10,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+        )
+        .unwrap();
+
+        assert!(history.records.is_empty());
+        assert!(history_cache.is_empty());
+        assert!(usage.records.is_empty());
+        assert!(usage_cache.is_empty());
+    }
+
+    #[test]
+    fn portable_manifest_patterns_use_bounded_segment_matching() {
+        assert!(manifest_pattern_matches(
+            "**/*.jsonl",
+            "year/month/session.jsonl"
+        ));
+        assert!(manifest_pattern_matches(
+            "brain/*/transcript.jsonl",
+            "brain/one/transcript.jsonl"
+        ));
+        assert!(!manifest_pattern_matches(
+            "brain/*/transcript.jsonl",
+            "brain/one/two/transcript.jsonl"
+        ));
+        assert!(!manifest_pattern_matches("**/*.jsonl", "session.db"));
+
+        let antigravity = manifest_agent("antigravity").unwrap().unwrap();
+        assert!(
+            manifest_roles_for_path(
+                antigravity,
+                Path::new("/metadata-root"),
+                Path::new("/metadata-root/brain/session/.system_generated/logs/transcript.jsonl")
+            )
+            .contains(&MetadataSourceRole::AntigravityTranscript)
+        );
+        assert!(
+            manifest_roles_for_path(
+                antigravity,
+                Path::new("/metadata-root"),
+                Path::new("/metadata-root/other/.system_generated/logs/transcript.jsonl")
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn ordinary_agent_scoped_manifest_source_is_discovered_and_read_without_vendor_branching() {
+        let temporary = tempdir().unwrap();
+        let home = temporary.path();
+        let source_path = home.join(".orbit/sessions/year/month/shared.jsonl");
+        create_dir_all(source_path.parent().unwrap()).unwrap();
+        write(&source_path, "{\"prompt\":\"ordinary source\"}\n").unwrap();
+
+        let manifest = Box::leak(Box::new(
+            kmux_agent_manifest::parse_manifest(include_str!(
+                "../../../../../packages/agents/fixtures/ordinary-agent-manifest.json"
+            ))
+            .unwrap(),
+        ));
+        let agent = manifest
+            .agents
+            .iter()
+            .find(|agent| agent.id == "fixture-orbit")
+            .unwrap();
+        assert!(agent.hook.as_ref().unwrap().session_claim.is_some());
+        assert_eq!(
+            agent.metadata.as_ref().unwrap().sources[0].claim_scope,
+            "agent"
+        );
+        let claim = owned_claim("fixture-orbit", "orbit-session", 1, None);
+        let requested_definitions =
+            BTreeMap::from([(agent.id.clone(), agent.definition_revision.clone())]);
+        let resolve_fixture_agent = |agent_id: &str, definition_revision: &str| {
+            Ok(manifest.agents.iter().find(|candidate| {
+                candidate.id == agent_id && candidate.definition_revision == definition_revision
+            }))
+        };
+        let inventory = list_owned_metadata_sources_with_resolver(
+            home,
+            MetadataPurpose::History,
+            &ExternalAgentScanSettings::default(),
+            &[claim],
+            fs::metadata(home).unwrap().uid(),
+            &requested_definitions,
+            &resolve_fixture_agent,
+        )
+        .unwrap();
+        assert!(!inventory.truncated);
+        assert_eq!(inventory.sources.len(), 1);
+        assert_eq!(inventory.claims.len(), 1);
+        let read = read_metadata_source_for_agent(
+            &inventory.sources[0],
+            0,
+            4_096,
+            fs::metadata(home).unwrap().uid(),
+            agent,
+        )
+        .unwrap();
+        assert_eq!(read.content, "{\"prompt\":\"ordinary source\"}\n");
     }
 
     #[test]

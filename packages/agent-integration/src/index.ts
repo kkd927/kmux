@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
   AGENT_INTEGRATION_PLANNER_CONTRACT,
@@ -40,11 +40,7 @@ type JsonObject = Record<string, unknown>;
 
 export type AgentIntegrationContract = AgentIntegrationPlannerContract;
 
-export interface AgentIntegrationPaths {
-  claude: string;
-  codex: string;
-  antigravity: string;
-}
+export type AgentIntegrationPaths = Record<AgentIntegrationVendor, string>;
 
 export interface AgentIntegrationVendorResult {
   vendor: AgentIntegrationVendor;
@@ -55,6 +51,7 @@ export interface AgentIntegrationVendorResult {
 }
 
 export interface EnsureAgentIntegrationsOptions {
+  env?: NodeJS.ProcessEnv;
   homeDir?: string;
   paths?: Partial<AgentIntegrationPaths>;
 }
@@ -65,19 +62,20 @@ const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 5_000;
 
 export function defaultAgentIntegrationPaths(
-  homeDir: string
+  homeDir: string,
+  env: NodeJS.ProcessEnv = process.env
 ): AgentIntegrationPaths {
-  return {
-    claude: join(
-      homeDir,
-      AGENT_INTEGRATION_CONTRACT.vendors.claude.relativePath
-    ),
-    codex: join(homeDir, AGENT_INTEGRATION_CONTRACT.vendors.codex.relativePath),
-    antigravity: join(
-      homeDir,
-      AGENT_INTEGRATION_CONTRACT.vendors.antigravity.relativePath
+  return Object.fromEntries(
+    Object.entries(AGENT_INTEGRATION_CONTRACT.vendors).map(
+      ([agentId, definition]) => [
+        agentId,
+        join(
+          integrationPathRoot(homeDir, env, definition.pathRoot),
+          definition.relativePath
+        )
+      ]
     )
-  };
+  );
 }
 
 export function buildAgentHookCommand(
@@ -98,9 +96,19 @@ export function ensureAgentIntegrations(
   options: EnsureAgentIntegrationsOptions
 ): AgentIntegrationVendorResult[] {
   const homeDir = options.homeDir?.trim();
-  const defaults = homeDir ? defaultAgentIntegrationPaths(homeDir) : undefined;
-  return (["claude", "codex", "antigravity"] as const).map((vendor) => {
-    const path = options.paths?.[vendor] ?? defaults?.[vendor] ?? "";
+  const defaults = homeDir
+    ? defaultAgentIntegrationPaths(homeDir, options.env)
+    : undefined;
+  return Object.keys(AGENT_INTEGRATION_CONTRACT.vendors).map((vendor) => {
+    const configuredPath =
+      options.paths && Object.hasOwn(options.paths, vendor)
+        ? options.paths[vendor]
+        : undefined;
+    const defaultPath =
+      defaults && Object.hasOwn(defaults, vendor)
+        ? defaults[vendor]
+        : undefined;
+    const path = configuredPath ?? defaultPath ?? "";
     if (!path || !isAbsolute(path)) {
       return degraded(
         vendor,
@@ -110,6 +118,23 @@ export function ensureAgentIntegrations(
     }
     return ensureVendorFile(vendor, path);
   });
+}
+
+function integrationPathRoot(
+  homeDir: string,
+  env: NodeJS.ProcessEnv,
+  root:
+    | {
+        defaultHomeRelativePath: string;
+        environmentVariable: string;
+      }
+    | undefined
+): string {
+  if (!root) return homeDir;
+  const override = env[root.environmentVariable]?.trim();
+  return override && isAbsolute(override)
+    ? resolve(override)
+    : join(homeDir, root.defaultHomeRelativePath);
 }
 
 export function ensureAgentIntegrationVendor(

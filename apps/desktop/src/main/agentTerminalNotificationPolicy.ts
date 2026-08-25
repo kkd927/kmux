@@ -1,6 +1,10 @@
-import type { UsageVendor } from "@kmux/proto";
+import type { AgentId, UsageVendor } from "@kmux/proto";
+import {
+  builtinAgentDescriptor,
+  classifyBuiltinTerminalNotification
+} from "@kmux/agents/builtin-runtime";
 
-export type CodexTerminalInputReason =
+export type TerminalInputReason =
   | "plan-mode-prompt"
   | "enter-to-submit-answer"
   | "needs-input"
@@ -11,46 +15,59 @@ export type CodexTerminalInputReason =
 export type AgentTerminalNotificationDecision =
   | {
       disposition: "needs_input";
-      reason: CodexTerminalInputReason;
+      reason: string;
       inferredFromUnknownVendor: boolean;
+      agentId?: AgentId;
+      displayName?: string;
     }
-  | { disposition: "suppressed"; reason: "codex-terminal-chatter" }
+  | { disposition: "suppressed"; reason: string }
   | { disposition: "generic" };
 
 /**
  * Applies the shared local/SSH policy to terminal-originated agent signals.
- * Structured hooks remain authoritative; Codex terminal notifications only
- * fill needs-input gaps that are not covered by every Codex hook version.
+ * Structured hooks remain authoritative; terminal notifications only fill
+ * needs-input gaps that are not covered by every agent hook version.
  */
 export function classifyAgentTerminalNotification(
   vendor: UsageVendor,
   title: string,
   message: string
 ): AgentTerminalNotificationDecision {
-  if (vendor !== "codex" && vendor !== "unknown") {
-    return { disposition: "generic" };
+  const descriptor =
+    vendor === "unknown" ? undefined : builtinAgentDescriptor(vendor);
+  if (vendor === "unknown") {
+    const match = matchStrongGenericInputAttention(title, message);
+    return match
+      ? {
+          disposition: "needs_input",
+          reason: match.reason,
+          inferredFromUnknownVendor: true,
+          agentId: "codex",
+          displayName: "Codex"
+        }
+      : { disposition: "generic" };
   }
-
-  const match = matchCodexInputAttention(title, message, {
-    allowGenericInputPhrases: vendor === "codex"
-  });
-  if (match) {
+  if (!descriptor) return { disposition: "generic" };
+  const decision = classifyBuiltinTerminalNotification(vendor, title, message);
+  if (decision?.disposition === "needs_input") {
     return {
       disposition: "needs_input",
-      reason: match.reason,
-      inferredFromUnknownVendor: vendor === "unknown"
+      reason: decision.reason,
+      inferredFromUnknownVendor: false,
+      agentId: vendor,
+      displayName: descriptor.displayName
     };
   }
-  return vendor === "codex"
-    ? { disposition: "suppressed", reason: "codex-terminal-chatter" }
-    : { disposition: "generic" };
+  if (decision?.disposition === "suppressed") {
+    return { disposition: "suppressed", reason: decision.reason };
+  }
+  return { disposition: "generic" };
 }
 
-function matchCodexInputAttention(
+function matchStrongGenericInputAttention(
   title: string,
-  message: string,
-  options: { allowGenericInputPhrases: boolean }
-): { reason: CodexTerminalInputReason } | null {
+  message: string
+): { reason: TerminalInputReason } | null {
   const normalized = `${title}\n${message}`.trim();
   if (!normalized) {
     return null;
@@ -71,14 +88,6 @@ function matchCodexInputAttention(
   }
   if (hasEnterToSubmit) {
     return { reason: "enter-to-submit-answer" };
-  }
-  if (options.allowGenericInputPhrases) {
-    if (/\bneeds input\b/i.test(normalized)) {
-      return { reason: "needs-input" };
-    }
-    if (/\bwaiting for input\b/i.test(normalized)) {
-      return { reason: "waiting-for-input" };
-    }
   }
   return null;
 }

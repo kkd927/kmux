@@ -9,9 +9,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { listBuiltinLocalUsageAdapters } from "@kmux/agents/builtin-runtime";
 
 import { resolveAgentStorageRoots } from "./agentStorage";
-import { createUsageAdapters, scanUsageAdaptersAtStartup } from "./usage";
+import { createLocalMetadataInventoryService } from "./localMetadataInventory";
+import { scanUsageAdaptersAtStartup } from "./usage";
+
+const listTestBuiltinUsageAdapters = (
+  options: Parameters<typeof listBuiltinLocalUsageAdapters>[0] = {}
+) => [...listBuiltinLocalUsageAdapters(options)];
 
 const cleanupPaths: string[] = [];
 
@@ -24,7 +30,7 @@ afterEach(() => {
 describe("usage adapters", () => {
   it("creates usage adapters for supported providers only", () => {
     expect(
-      createUsageAdapters({
+      listTestBuiltinUsageAdapters({
         homeDir: "/tmp/kmux-usage-home"
       }).map((adapter) => adapter.vendor)
     ).toEqual(["claude", "codex", "antigravity"]);
@@ -67,7 +73,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const codexAdapter = createUsageAdapters({
+    const codexAdapter = listTestBuiltinUsageAdapters({
       homeDir,
       agentStorageRoots: roots
     }).find((adapter) => adapter.vendor === "codex");
@@ -85,6 +91,67 @@ describe("usage adapters", () => {
         totalTokens: 15
       })
     ]);
+  });
+
+  it("continues Codex usage after an oversized non-usage record across shared reads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-codex-large-"));
+    cleanupPaths.push(root);
+    const sessionsRoot = path.join(root, "sessions");
+    const usageDir = path.join(sessionsRoot, "2026", "08", "22");
+    mkdirSync(usageDir, { recursive: true });
+    const timestamp = "2026-08-22T09:00:00.000Z";
+    const oversizedRecord = JSON.stringify({
+      timestamp,
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        output: "x".repeat(300 * 1024)
+      }
+    });
+    expect(Buffer.byteLength(oversizedRecord, "utf8")).toBeGreaterThan(
+      256 * 1024
+    );
+    writeFileSync(
+      path.join(usageDir, "rollout-large-record.jsonl"),
+      [
+        codexSessionMetadata(timestamp, {
+          id: "large-record-session",
+          cwd: "/work/large-record"
+        }),
+        oversizedRecord,
+        codexTokenCount("2026-08-22T09:00:01.000Z", 100, 20, 10),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const inventory = createLocalMetadataInventoryService({
+      principal: "test-user",
+      sourceDefinitionRevisions: { codex: "test-v1" }
+    });
+    const adapters = listTestBuiltinUsageAdapters({
+      env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
+      homeDir: root,
+      metadataInventory: inventory
+    });
+    try {
+      const codexAdapter = adapters.find(
+        (adapter) => adapter.vendor === "codex"
+      )!;
+      const result = await codexAdapter.initialScan(
+        startOfLocalDay(Date.parse(timestamp))
+      );
+
+      expect(result.samples).toEqual([
+        expect.objectContaining({
+          vendor: "codex",
+          sessionId: "large-record-session",
+          totalTokens: 110
+        })
+      ]);
+    } finally {
+      for (const adapter of adapters) adapter.close();
+      await inventory.close();
+    }
   });
 
   it("replaces native usage roots and does not fall back from a missing root", async () => {
@@ -128,7 +195,7 @@ describe("usage adapters", () => {
     writeCodexUsage(roots.codex.sessionsDir, "default-session", 5);
     writeCodexUsage(additionalRoot, "additional-session", 7);
 
-    const adapter = createUsageAdapters({
+    const adapter = listTestBuiltinUsageAdapters({
       homeDir,
       agentStorageRoots: roots,
       agentSettings: {
@@ -144,7 +211,7 @@ describe("usage adapters", () => {
     ]);
     adapter.close();
 
-    const missingRootAdapter = createUsageAdapters({
+    const missingRootAdapter = listTestBuiltinUsageAdapters({
       homeDir,
       agentStorageRoots: roots,
       agentSettings: {
@@ -195,7 +262,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const codexAdapter = createUsageAdapters({
+    const codexAdapter = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: `   ${path.delimiter}relative/sessions`
       },
@@ -248,7 +315,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const codexAdapter = createUsageAdapters({
+    const codexAdapter = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: [
           "relative/sessions",
@@ -294,7 +361,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -360,7 +427,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: { KMUX_CLAUDE_USAGE_DIR: usageDir },
       homeDir: root
     });
@@ -407,7 +474,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -456,7 +523,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -501,7 +568,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -535,7 +602,7 @@ describe("usage adapters", () => {
     const dayRoot = path.join(usageDir, "2026", "04", "17");
     const sessionPath = path.join(dayRoot, "manual-codex-session.jsonl");
 
-    const [, adapter] = createUsageAdapters({
+    const [, adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: usageDir
       },
@@ -627,7 +694,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [claude, codex] = createUsageAdapters({
+    const [claude, codex] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: claudeDir,
         KMUX_CODEX_USAGE_DIR: codexDir
@@ -714,7 +781,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
       },
@@ -808,7 +875,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
       },
@@ -877,7 +944,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
       },
@@ -933,7 +1000,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: usageDir
       },
@@ -1007,7 +1074,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: path.join(root, "sessions")
       },
@@ -1116,7 +1183,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: { KMUX_CODEX_USAGE_DIR: path.join(root, "sessions") },
       homeDir: root
     });
@@ -1191,7 +1258,7 @@ describe("usage adapters", () => {
         "utf8"
       );
 
-      const [, codexAdapter] = createUsageAdapters({
+      const [, codexAdapter] = listTestBuiltinUsageAdapters({
         env: { KMUX_CODEX_USAGE_DIR: path.join(root, "sessions") },
         homeDir: root
       });
@@ -1278,7 +1345,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
       homeDir: root
     });
@@ -1340,7 +1407,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, codexAdapter] = createUsageAdapters({
+    const [, codexAdapter] = listTestBuiltinUsageAdapters({
       env: { KMUX_CODEX_USAGE_DIR: sessionsRoot },
       homeDir: root
     });
@@ -1429,7 +1496,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , antigravityAdapter] = createUsageAdapters({
+    const [, , antigravityAdapter] = listTestBuiltinUsageAdapters({
       homeDir,
       agentStorageRoots: roots
     });
@@ -1500,7 +1567,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , antigravityAdapter] = createUsageAdapters({
+    const [, , antigravityAdapter] = listTestBuiltinUsageAdapters({
       homeDir
     });
     const startOfDayMs = startOfLocalDay(
@@ -1568,7 +1635,7 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const adapters = createUsageAdapters({
+    const adapters = listTestBuiltinUsageAdapters({
       env: { KMUX_CLAUDE_USAGE_DIR: usageDir },
       homeDir: root,
       platform: "linux"
@@ -1606,6 +1673,36 @@ describe("usage adapters", () => {
         adapter.close();
       }
     }
+  });
+
+  it("preserves successful providers when another startup scan fails", async () => {
+    const successfulRead = { samples: [], sourceCount: 1 };
+    const startup = await scanUsageAdaptersAtStartup(
+      [
+        {
+          vendor: "claude",
+          initialScan: async () => successfulRead,
+          readIncremental: async () => successfulRead,
+          watch: () => () => undefined,
+          close: () => undefined
+        },
+        {
+          vendor: "codex",
+          initialScan: async () => {
+            throw new Error("codex source unavailable");
+          },
+          readIncremental: async () => successfulRead,
+          watch: () => () => undefined,
+          close: () => undefined
+        }
+      ],
+      { startOfDayMs: 0 }
+    );
+
+    expect(startup.reads).toEqual([successfulRead]);
+    expect(startup.failures).toEqual([
+      { vendor: "codex", message: "codex source unavailable" }
+    ]);
   });
 });
 

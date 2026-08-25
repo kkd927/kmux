@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+kmux-agent-manifest = { path = "../agent-manifest" }
 base64.workspace = true
 libc.workspace = true
 rusqlite.workspace = true

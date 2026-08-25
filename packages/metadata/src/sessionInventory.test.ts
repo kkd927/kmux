@@ -14,11 +14,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  classifySessionInventoryCandidate,
   collectSessionInventory,
-  type SessionInventoryCandidateRole,
-  type SessionInventoryLimits,
-  type SessionInventoryVendor
+  type SessionInventoryLimits
 } from "./sessionInventory";
 
 interface ContractFixture {
@@ -37,12 +34,6 @@ interface ContractScenario {
   >;
   expectedCandidates: string[];
   truncated: boolean;
-  classifications: Array<{
-    vendor: SessionInventoryVendor;
-    root: string;
-    path: string;
-    role: SessionInventoryCandidateRole;
-  }>;
 }
 
 const fixture = JSON.parse(
@@ -74,15 +65,6 @@ describe("session inventory cross-language contract", () => {
         )
       ).toEqual(scenario.expectedCandidates);
       expect(result.truncated).toBe(scenario.truncated);
-      for (const classification of scenario.classifications) {
-        expect(
-          classifySessionInventoryCandidate(
-            classification.vendor,
-            join(sandbox, classification.root),
-            join(sandbox, classification.path)
-          )
-        ).toBe(classification.role);
-      }
     });
   }
 });

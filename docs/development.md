@@ -6,6 +6,7 @@ This document is for contributors working on `kmux` locally.
 
 - Product scope: [product-spec.md](./product-spec.md)
 - Architecture decision: [adr/0002-electron-xterm-mvp-architecture.md](./adr/0002-electron-xterm-mvp-architecture.md)
+- Adding a coding-agent integration: [adding-coding-agent.md](./adding-coding-agent.md)
 - Contribution guide: [../CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ## Local Setup

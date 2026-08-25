@@ -1,8 +1,20 @@
 import {
-  createUsageAdapters,
+  createLocalMetadataInventoryService,
+  scanUsageAdapters,
   scanUsageAdaptersAtStartup,
+  type AgentMetadataInventoryService,
   type UsageAdapter
 } from "@kmux/metadata";
+import {
+  builtinAgentMetadataQueryPlans,
+  builtinAgentMetadataSourceRevisions,
+  createBuiltinLocalExternalSessionIndexer,
+  listBuiltinLocalUsageAdapters
+} from "@kmux/agents/builtin-runtime";
+import type {
+  AgentHistorySessionIndexer,
+  ExternalSessionIndexer
+} from "@kmux/agents";
 
 import type {
   UsageScanWorkerConfig,
@@ -11,6 +23,11 @@ import type {
 } from "./usageScanProtocol";
 
 let adapters: UsageAdapter[] = [];
+let externalSessionIndexer:
+  | (ExternalSessionIndexer & AgentHistorySessionIndexer)
+  | null = null;
+let metadataInventory: AgentMetadataInventoryService | null = null;
+let activeConfig: UsageScanWorkerConfig | null = null;
 let watcherCleanups: Array<() => void> = [];
 let initialized = false;
 let scanInitialized = false;
@@ -39,7 +56,7 @@ function sendError(requestId: string, error: unknown, context: string): void {
   });
 }
 
-function disposeAdapters(): void {
+async function disposeAdapters(): Promise<void> {
   for (const cleanup of watcherCleanups) {
     cleanup();
   }
@@ -48,42 +65,77 @@ function disposeAdapters(): void {
     adapter.close();
   }
   adapters = [];
+  externalSessionIndexer?.close?.();
+  externalSessionIndexer = null;
+  await metadataInventory?.close();
+  metadataInventory = null;
   initialized = false;
   scanInitialized = false;
 }
 
-function initialize(config: UsageScanWorkerConfig): void {
-  disposeAdapters();
-  adapters = createUsageAdapters(config);
+async function initialize(config: UsageScanWorkerConfig): Promise<void> {
+  await disposeAdapters();
+  metadataInventory = createLocalMetadataInventoryService({
+    principal: process.getuid ? `uid:${process.getuid()}` : "desktop-user",
+    platform: config.platform,
+    sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
+    queryPlans: builtinAgentMetadataQueryPlans()
+  });
+  const runtimeOptions = { ...config, metadataInventory };
+  adapters = [...listBuiltinLocalUsageAdapters(runtimeOptions)];
+  externalSessionIndexer =
+    createBuiltinLocalExternalSessionIndexer(runtimeOptions);
   watcherCleanups = adapters.map((adapter) =>
     adapter.watch(() => {
       send({ type: "changed", vendor: adapter.vendor });
     })
   );
   initialized = true;
+  activeConfig = config;
 }
 
 async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
   if (request.type === "init") {
-    initialize(request.config);
+    await initialize(request.config);
     send({ type: "ready", requestId: request.requestId });
     return;
   }
 
   if (request.type === "shutdown") {
-    disposeAdapters();
+    await disposeAdapters();
+    activeConfig = null;
     process.disconnect?.();
     return;
   }
 
   if (!initialized) {
-    if (request.type === "scan") {
+    if (request.type === "scan" || request.type === "external-sessions-scan") {
       sendError(
         request.requestId,
         new Error("usage scan worker is not initialized"),
         "scan before init"
       );
     }
+    return;
+  }
+
+  if (request.type === "reconfigure") {
+    if (!activeConfig) {
+      sendError(
+        request.requestId,
+        new Error("agent metadata scan worker has no active configuration"),
+        "reconfigure before init"
+      );
+      return;
+    }
+    const nextConfig = { ...activeConfig };
+    if (request.agentSettings === undefined) {
+      delete nextConfig.agentSettings;
+    } else {
+      nextConfig.agentSettings = request.agentSettings;
+    }
+    await initialize(nextConfig);
+    send({ type: "ready", requestId: request.requestId });
     return;
   }
 
@@ -96,27 +148,63 @@ async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
     return;
   }
 
+  if (request.type === "external-sessions-scan") {
+    if (!externalSessionIndexer) {
+      sendError(
+        request.requestId,
+        new Error("external session indexer is not initialized"),
+        "external session scan before init"
+      );
+      return;
+    }
+    try {
+      const snapshot = await (request.purpose === "history"
+        ? externalSessionIndexer.listAgentHistorySessions()
+        : externalSessionIndexer.listExternalAgentSessions());
+      const resumeSpecs = snapshot.sessions.flatMap((session) => {
+        const spec = externalSessionIndexer?.resolveExternalAgentSession(
+          session.key,
+          request.purpose
+        );
+        return spec ? [spec] : [];
+      });
+      send({
+        type: "external-sessions-scan-result",
+        requestId: request.requestId,
+        purpose: request.purpose,
+        snapshot,
+        resumeSpecs
+      });
+    } catch (error) {
+      sendError(request.requestId, error, "external session scan");
+    }
+    return;
+  }
+
   try {
     if (request.initial || !scanInitialized) {
       const result = await scanUsageAdaptersAtStartup(adapters, {
         startOfDayMs: request.startOfDayMs
       });
-      scanInitialized = true;
+      scanInitialized = result.failures.length === 0;
       send({
         type: "scan-result",
         requestId: request.requestId,
-        reads: result.reads
+        reads: result.reads,
+        failures: result.failures
       });
       return;
     }
 
-    const reads = await Promise.all(
-      adapters.map((adapter) => adapter.readIncremental(request.startOfDayMs))
-    );
+    const result = await scanUsageAdapters(adapters, {
+      startOfDayMs: request.startOfDayMs,
+      initial: false
+    });
     send({
       type: "scan-result",
       requestId: request.requestId,
-      reads
+      reads: result.reads,
+      failures: result.failures
     });
   } catch (error) {
     sendError(
@@ -141,13 +229,14 @@ process.on("message", (message: UsageScanWorkerRequest) => {
 });
 
 process.on("disconnect", () => {
-  disposeAdapters();
-  process.exit(0);
+  void disposeAdapters().finally(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
-  disposeAdapters();
-  process.exit(0);
+  void disposeAdapters().finally(() => process.exit(0));
 });
 
-process.on("exit", disposeAdapters);
+process.on("exit", () => {
+  for (const cleanup of watcherCleanups) cleanup();
+  for (const adapter of adapters) adapter.close();
+});

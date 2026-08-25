@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "capability": "agent-metadata-sources-v1",
+  "version": 2,
+  "capability": "agent-metadata-sources-v2",
   "limits": {
     "sourceReadBytes": 262144,
     "responseBytes": 1048576,
@@ -9,17 +9,10 @@
   },
   "sources": [
     {
-      "vendor": "codex",
-      "role": "codex-session",
-      "format": "jsonl",
-      "purposes": ["usage", "history"],
-      "pattern": "**/*.jsonl"
-    },
-    {
       "vendor": "claude",
       "role": "claude-session",
       "format": "jsonl",
-      "purposes": ["usage", "history"],
+      "purposes": ["history", "usage"],
       "pattern": "**/*.jsonl"
     },
     {
@@ -30,17 +23,25 @@
       "pattern": "**/subagents/*.jsonl"
     },
     {
+      "vendor": "codex",
+      "role": "codex-session",
+      "format": "jsonl",
+      "purposes": ["history", "usage"],
+      "pattern": "**/*.jsonl"
+    },
+    {
       "vendor": "antigravity",
       "role": "antigravity-history",
       "format": "jsonl",
       "purposes": ["history"],
+      "claimScope": "agent",
       "pattern": "history.jsonl"
     },
     {
       "vendor": "antigravity",
       "role": "antigravity-transcript",
       "format": "jsonl",
-      "purposes": ["usage", "history"],
+      "purposes": ["history", "usage"],
       "pattern": "brain/*/.system_generated/logs/transcript.jsonl"
     },
     {

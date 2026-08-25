@@ -13,13 +13,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentStorageRoots } from "@kmux/metadata";
 
 import {
-  createSubscriptionAuthDetectors,
-  createSubscriptionUsageFetchers,
+  createBuiltinSubscriptionSources,
+  detectAntigravitySubscriptionAuth,
+  detectClaudeSubscriptionAuth,
+  detectCodexSubscriptionAuth,
   fetchAntigravitySubscriptionUsage,
   fetchClaudeSubscriptionUsage,
   fetchCodexSubscriptionUsage,
   resolveCodexStatusScriptArgs
-} from "./subscriptionUsage";
+} from "@kmux/agents/builtin-subscriptions";
 
 const sandboxDirs: string[] = [];
 
@@ -36,16 +38,11 @@ afterEach(() => {
 
 describe("subscription usage fetchers", () => {
   it("exposes subscription providers for supported agents only", () => {
-    expect(Object.keys(createSubscriptionUsageFetchers()).sort()).toEqual([
-      "antigravity",
-      "claude",
-      "codex"
-    ]);
-    expect(Object.keys(createSubscriptionAuthDetectors()).sort()).toEqual([
-      "antigravity",
-      "claude",
-      "codex"
-    ]);
+    expect(
+      createBuiltinSubscriptionSources()
+        .map(({ agentId }) => agentId)
+        .sort()
+    ).toEqual(["antigravity", "claude", "codex"]);
   });
 
   it("uses AgentStorageRoots for Codex subscription auth", async () => {
@@ -220,16 +217,22 @@ describe("subscription usage fetchers", () => {
       })
     ).resolves.toBeNull();
 
-    const detectors = createSubscriptionAuthDetectors({
+    const detectorOptions = {
       homeDir,
       platform: "linux",
       execFileImpl,
       antigravityKeyringReader: () => null
-    });
+    } as const;
 
-    await expect(detectors.codex?.()).resolves.toBe(false);
-    await expect(detectors.claude?.()).resolves.toBe(false);
-    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    await expect(detectCodexSubscriptionAuth(detectorOptions)).resolves.toBe(
+      false
+    );
+    await expect(detectClaudeSubscriptionAuth(detectorOptions)).resolves.toBe(
+      false
+    );
+    await expect(
+      detectAntigravitySubscriptionAuth(detectorOptions)
+    ).resolves.toBe(false);
     expect(execFileImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(codexRpcProbe).not.toHaveBeenCalled();
@@ -390,7 +393,7 @@ describe("subscription usage fetchers", () => {
     expect(codexRpcProbe).toHaveBeenCalledTimes(1);
   });
 
-  it("passes the desktop app version to the Codex RPC probe fallback", async () => {
+  it("passes the Main-injected app version to the Codex RPC probe fallback", async () => {
     const homeDir = createSandboxHome();
     writeJson(homeDir, [".codex", "auth.json"], {
       auth_mode: "chatgpt",
@@ -418,16 +421,11 @@ describe("subscription usage fetchers", () => {
       homeDir,
       fetchImpl,
       codexRpcProbe,
+      appVersion: "9.8.7",
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
 
-    const desktopPackage = JSON.parse(
-      readFileSync(
-        join(process.cwd(), "apps", "desktop", "package.json"),
-        "utf8"
-      )
-    ) as { version: string };
-    expect(codexRpcProbe).toHaveBeenCalledWith(desktopPackage.version);
+    expect(codexRpcProbe).toHaveBeenCalledWith("9.8.7");
   });
 
   it("skips Codex fallback probes when there is no local auth token", async () => {
@@ -1729,18 +1727,18 @@ describe("subscription usage fetchers", () => {
         }
       })
     );
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl: vi.fn(async () => ({
-        stdout: "(<false>,)\n",
-        stderr: ""
-      })),
-      antigravityKeyringReader: keyringReader,
-      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl: vi.fn(async () => ({
+          stdout: "(<false>,)\n",
+          stderr: ""
+        })),
+        antigravityKeyringReader: keyringReader,
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      })
+    ).resolves.toBe(true);
     expect(keyringReader).toHaveBeenCalledOnce();
   });
 
@@ -1805,14 +1803,6 @@ describe("subscription usage fetchers", () => {
       antigravityKeyringReader: keyringReader,
       now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
     });
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: keyringReader,
-      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
-    });
-
     expect(usage).toEqual(
       expect.objectContaining({
         provider: "antigravity",
@@ -1825,7 +1815,15 @@ describe("subscription usage fetchers", () => {
         ]
       })
     );
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: keyringReader,
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      })
+    ).resolves.toBe(true);
     expect(keyringReader).not.toHaveBeenCalled();
     expect(execFileImpl).toHaveBeenCalledTimes(2);
   });
@@ -1845,14 +1843,14 @@ describe("subscription usage fetchers", () => {
     const keyringReader = vi.fn(() => {
       throw new Error("keyring must not be accessed");
     });
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: keyringReader
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: keyringReader
+      })
+    ).resolves.toBe(true);
     expect(keyringReader).not.toHaveBeenCalled();
   });
 
@@ -1872,14 +1870,14 @@ describe("subscription usage fetchers", () => {
     const keyringReader = vi.fn(() => {
       throw new Error("keyring lookup failed");
     });
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: keyringReader
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: keyringReader
+      })
+    ).resolves.toBe(true);
     expect(keyringReader).toHaveBeenCalledOnce();
   });
 
@@ -1991,14 +1989,14 @@ describe("subscription usage fetchers", () => {
     const keyringReader = vi.fn(() => {
       throw new Error("keyring must not be accessed");
     });
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: keyringReader
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: keyringReader
+      })
+    ).resolves.toBe(false);
     expect(keyringReader).not.toHaveBeenCalled();
     expect(execFileImpl).toHaveBeenCalledWith("gdbus", [
       "call",
@@ -2203,15 +2201,15 @@ describe("subscription usage fetchers", () => {
       fetchImpl,
       antigravityKeyringReader: keyringReader
     });
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: keyringReader
-    });
-
     expect(usage).toBeNull();
-    await expect(detectors.antigravity?.()).resolves.toBe(false);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: keyringReader
+      })
+    ).resolves.toBe(false);
     expect(keyringReader).not.toHaveBeenCalled();
     expect(execFileImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -2224,13 +2222,13 @@ describe("subscription usage fetchers", () => {
       stderr: ""
     }));
 
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "darwin",
-      execFileImpl
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "darwin",
+        execFileImpl
+      })
+    ).resolves.toBe(true);
   });
 
   it("treats Antigravity Linux keyring auth as visible local auth", async () => {
@@ -2240,23 +2238,23 @@ describe("subscription usage fetchers", () => {
       stderr: ""
     }));
 
-    const detectors = createSubscriptionAuthDetectors({
-      homeDir,
-      platform: "linux",
-      execFileImpl,
-      antigravityKeyringReader: () =>
-        JSON.stringify({
-          token: {
-            access_token: "agy-linux-access-token",
-            refresh_token: "agy-linux-refresh-token",
-            expiry: "2026-04-19T00:00:00.000Z"
-          },
-          auth_method: "consumer"
-        }),
-      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
-    });
-
-    await expect(detectors.antigravity?.()).resolves.toBe(true);
+    await expect(
+      detectAntigravitySubscriptionAuth({
+        homeDir,
+        platform: "linux",
+        execFileImpl,
+        antigravityKeyringReader: () =>
+          JSON.stringify({
+            token: {
+              access_token: "agy-linux-access-token",
+              refresh_token: "agy-linux-refresh-token",
+              expiry: "2026-04-19T00:00:00.000Z"
+            },
+            auth_method: "consumer"
+          }),
+        now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+      })
+    ).resolves.toBe(true);
     expect(execFileImpl).toHaveBeenCalledOnce();
   });
 });

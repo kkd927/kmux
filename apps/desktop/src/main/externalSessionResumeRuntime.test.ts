@@ -7,7 +7,7 @@ import {
 } from "@kmux/core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ExternalSessionResumeSpec } from "./externalSessions";
+import type { ExternalSessionResumeSpec } from "@kmux/agents";
 import {
   ExternalSessionConnectionError,
   ExternalSessionInitialInputOutcomeUnknownError,

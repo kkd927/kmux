@@ -24,9 +24,12 @@ export function createLocalUsageProvider(options: {
       const inventoryTruncated = result.reads.some(
         (read) => read.truncated === true
       );
+      const providerFailed = result.failures.length > 0;
       const truncated =
-        inventoryTruncated || samples.length > request.maxRecords;
-      requiresFullRescan = inventoryTruncated;
+        inventoryTruncated ||
+        providerFailed ||
+        samples.length > request.maxRecords;
+      requiresFullRescan = inventoryTruncated || providerFailed;
       return {
         records: samples.slice(0, request.maxRecords).flatMap((sample) => {
           const record = toTargetUsageRecord(sample);

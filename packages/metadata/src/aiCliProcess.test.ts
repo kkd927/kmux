@@ -12,6 +12,26 @@ vi.mock("node:util", () => ({
 
 import { resolveAiCliProcessMatches } from "./aiCliProcess";
 
+const matchers = [
+  {
+    agentId: "codex",
+    matches: (line: string) =>
+      /(?:^|[\s/])codex(?:\.js)?(?:\s|$)|@openai\/codex/u.test(line)
+  },
+  {
+    agentId: "claude",
+    matches: (line: string) =>
+      /(?:^|[\s/])claude(?:-code)?(?:\.js)?(?:\s|$)|@anthropic-ai\/claude-code/u.test(
+        line
+      )
+  },
+  {
+    agentId: "antigravity",
+    matches: (line: string) =>
+      /(?:^|[\s/])(?:agy|antigravity|antigravity-cli)(?:\s|$)/u.test(line)
+  }
+];
+
 describe("resolveAiCliProcessMatches", () => {
   it("detects Antigravity CLI aliases under the probed shell process", async () => {
     execFileAsyncMock.mockResolvedValue({
@@ -26,11 +46,15 @@ describe("resolveAiCliProcessMatches", () => {
       stderr: ""
     });
 
-    const matches = await resolveAiCliProcessMatches([
-      { parentPid: 100, vendor: "antigravity" },
-      { parentPid: 200, vendor: "antigravity" },
-      { parentPid: 300, vendor: "antigravity" }
-    ]);
+    const matches = await resolveAiCliProcessMatches(
+      [
+        { parentPid: 100, vendor: "antigravity" },
+        { parentPid: 200, vendor: "antigravity" },
+        { parentPid: 300, vendor: "antigravity" }
+      ],
+      process.env,
+      matchers
+    );
 
     expect(matches.get(100)).toMatchObject({
       parentPid: 100,
@@ -63,10 +87,14 @@ describe("resolveAiCliProcessMatches", () => {
       stderr: ""
     });
 
-    const matches = await resolveAiCliProcessMatches([
-      { parentPid: 400, vendor: "codex" },
-      { parentPid: 402, vendor: "antigravity" }
-    ]);
+    const matches = await resolveAiCliProcessMatches(
+      [
+        { parentPid: 400, vendor: "codex" },
+        { parentPid: 402, vendor: "antigravity" }
+      ],
+      process.env,
+      matchers
+    );
 
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       "ps",
@@ -92,10 +120,14 @@ describe("resolveAiCliProcessMatches", () => {
       stderr: ""
     });
 
-    const matches = await resolveAiCliProcessMatches([
-      { parentPid: 500, vendor: "codex" },
-      { parentPid: 510, vendor: "claude" }
-    ]);
+    const matches = await resolveAiCliProcessMatches(
+      [
+        { parentPid: 500, vendor: "codex" },
+        { parentPid: 510, vendor: "claude" }
+      ],
+      process.env,
+      matchers
+    );
 
     expect(matches.get(500)).toMatchObject({
       parentPid: 500,

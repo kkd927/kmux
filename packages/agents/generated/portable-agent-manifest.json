@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "primitiveVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "aliases": [],
+      "definitionRevision": "claude-v1",
+      "hook": {
+        "format": "grouped-hooks",
+        "relativePath": ".claude/settings.json",
+        "marker": "KMUX_MANAGED_CLAUDE_HOOK=1",
+        "managed": [
+          { "event": "PermissionRequest" },
+          { "event": "PreToolUse", "matcher": "AskUserQuestion|ExitPlanMode" },
+          { "event": "SessionStart" },
+          { "event": "Stop" }
+        ],
+        "deprecated": [
+          "Notification",
+          "PostToolUse",
+          "SessionEnd",
+          "UserPromptSubmit"
+        ],
+        "outputMode": "silent",
+        "successResponse": {},
+        "fallbackResponse": {},
+        "sessionClaim": {
+          "startEvents": ["SessionStart"],
+          "sessionIdFields": ["session_id", "sessionId"]
+        }
+      },
+      "metadata": {
+        "defaultRoot": ".claude/projects",
+        "sources": [
+          {
+            "role": "claude-session",
+            "format": "jsonl",
+            "pattern": "**/*.jsonl",
+            "purposes": ["externalSessions", "history", "usage"]
+          },
+          {
+            "role": "claude-subagent",
+            "format": "jsonl",
+            "pattern": "**/subagents/*.jsonl",
+            "purposes": ["usage"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "codex",
+      "aliases": [],
+      "definitionRevision": "codex-v2",
+      "hook": {
+        "format": "grouped-hooks",
+        "pathRoot": {
+          "defaultHomeRelativePath": ".codex",
+          "environmentVariable": "CODEX_HOME"
+        },
+        "relativePath": "hooks.json",
+        "marker": "KMUX_MANAGED_CODEX_HOOK=1",
+        "managed": [
+          { "event": "SessionStart" },
+          { "event": "PermissionRequest" },
+          { "event": "Stop" }
+        ],
+        "deprecated": ["UserPromptSubmit"],
+        "outputMode": "silent",
+        "successResponse": {},
+        "fallbackResponse": {},
+        "sessionClaim": {
+          "startEvents": ["SessionStart"],
+          "sessionIdFields": ["session_id", "sessionId"]
+        }
+      },
+      "metadata": {
+        "pathRoot": {
+          "defaultHomeRelativePath": ".codex",
+          "environmentVariable": "CODEX_HOME"
+        },
+        "defaultRoot": "sessions",
+        "sources": [
+          {
+            "role": "codex-session",
+            "format": "jsonl",
+            "pattern": "**/*.jsonl",
+            "purposes": ["externalSessions", "history", "usage"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "antigravity",
+      "aliases": ["agy", "antigravity-cli"],
+      "definitionRevision": "antigravity-v1",
+      "hook": {
+        "format": "namespaced-hooks",
+        "relativePath": ".gemini/config/hooks.json",
+        "namespace": "kmux-antigravity",
+        "marker": "KMUX_MANAGED_ANTIGRAVITY_HOOK=1",
+        "managed": [
+          { "event": "PreInvocation" },
+          { "event": "PreToolUse", "matcher": ".*" },
+          { "event": "Stop" }
+        ],
+        "deprecated": ["PostToolUse", "PostInvocation"],
+        "outputMode": "json",
+        "successResponse": { "decision": "allow" },
+        "fallbackResponse": { "decision": "allow" },
+        "fallbackByEvent": {
+          "PreInvocation": {},
+          "PreToolUse": { "decision": "allow" },
+          "Stop": { "decision": "allow" }
+        },
+        "sessionClaim": {
+          "startEvents": ["PreInvocation"],
+          "sessionIdFields": ["conversationId", "conversation_id"]
+        }
+      },
+      "metadata": {
+        "defaultRoot": ".gemini/antigravity-cli",
+        "sources": [
+          {
+            "role": "antigravity-history",
+            "format": "jsonl",
+            "pattern": "history.jsonl",
+            "purposes": ["externalSessions", "history"],
+            "claimScope": "agent"
+          },
+          {
+            "role": "antigravity-transcript",
+            "format": "jsonl",
+            "pattern": "brain/*/.system_generated/logs/transcript.jsonl",
+            "purposes": ["externalSessions", "history", "usage"]
+          },
+          {
+            "role": "antigravity-conversation",
+            "format": "sqlite",
+            "pattern": "conversations/*.db",
+            "purposes": ["externalSessions", "history"],
+            "queryPlanIds": ["antigravity.conversation.steps.v1"]
+          }
+        ]
+      }
+    }
+  ]
+}

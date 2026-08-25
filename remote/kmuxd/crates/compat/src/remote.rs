@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
@@ -516,6 +517,8 @@ pub enum BridgeRequest {
         #[serde(rename = "targetId")]
         target_id: String,
         purpose: String,
+        #[serde(rename = "agentDefinitions")]
+        agent_definitions: BTreeMap<String, String>,
         #[serde(rename = "agentSettings")]
         agent_settings: Option<AgentScopeSettings>,
     },
@@ -656,12 +659,48 @@ pub struct AgentSettings {
     pub session_root: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentScopeSettings {
-    pub claude: Option<AgentSettings>,
-    pub codex: Option<AgentSettings>,
-    pub antigravity: Option<AgentSettings>,
+#[derive(Clone, Debug, Default)]
+pub struct AgentScopeSettings(BTreeMap<String, AgentSettings>);
+
+impl AgentScopeSettings {
+    #[must_use]
+    pub fn get(&self, agent_id: &str) -> Option<&AgentSettings> {
+        self.0.get(agent_id)
+    }
+}
+
+impl IntoIterator for AgentScopeSettings {
+    type Item = (String, AgentSettings);
+    type IntoIter = std::collections::btree_map::IntoIter<String, AgentSettings>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentScopeSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = BTreeMap::<String, AgentSettings>::deserialize(deserializer)?;
+        if values.len() > 128 || values.keys().any(|agent_id| !valid_agent_id(agent_id)) {
+            return Err(serde::de::Error::custom(
+                "agent scope settings id is invalid",
+            ));
+        }
+        Ok(Self(values))
+    }
+}
+
+fn valid_agent_id(value: &str) -> bool {
+    !value.is_empty()
+        && value != "unknown"
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1154,6 +1193,7 @@ pub struct MetadataSourcesListedResponse {
     pub target_id: String,
     pub purpose: String,
     pub contract_version: u16,
+    pub agent_definitions: BTreeMap<String, String>,
     pub truncated: bool,
     pub claims: Vec<RemoteMetadataClaim>,
     pub sources: Vec<RemoteMetadataSource>,
@@ -1178,6 +1218,7 @@ pub struct RemoteMetadataClaim {
 pub struct RemoteMetadataSource {
     pub source_id: String,
     pub vendor: String,
+    pub definition_revision: String,
     pub role: String,
     pub format: String,
     pub logical_name: String,
@@ -1618,6 +1659,30 @@ mod tests {
             serde_json::from_value::<RemoteRetentionPolicy>(serde_json::json!({
                 "sessionQuotaMib": 64,
                 "targetQuotaMib": 256
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn agent_scope_settings_preserve_syntax_valid_future_ids() {
+        let settings = serde_json::from_value::<AgentScopeSettings>(serde_json::json!({
+            "fixture-future": {
+                "command": "/opt/fixture",
+                "args": ["--safe"],
+                "sessionRoot": "/srv/fixture"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            settings
+                .get("fixture-future")
+                .and_then(|settings| settings.command.as_deref()),
+            Some("/opt/fixture")
+        );
+        assert!(
+            serde_json::from_value::<AgentScopeSettings>(serde_json::json!({
+                "../escape": {}
             }))
             .is_err()
         );

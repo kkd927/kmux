@@ -10,20 +10,25 @@ import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
-import {
-  classifySessionInventoryCandidate,
-  type SessionInventoryCandidate
-} from "./sessionInventory";
+import type { SessionInventoryCandidate } from "@kmux/metadata";
+import type { CoreHistoryRecord } from "@kmux/metadata";
+import { classifyAntigravityMetadataPath } from "./inventory";
 import {
   parseAntigravityConversationRows,
-  parseCoreHistorySource,
-  type AntigravityConversationStepRow,
-  type CoreHistoryRecord
-} from "./core/history";
+  parseAntigravityHistoryRecords,
+  type AntigravityConversationStepRow
+} from "./history";
 
 const MAX_BINARY_SCAN_BYTES = 512 * 1024;
+const MAX_SHARED_TEXT_READ_BYTES = 256 * 1024;
+const MAX_SHARED_PROJECT_INDEX_BYTES = 1024 * 1024;
+const ANTIGRAVITY_CONVERSATION_QUERY_ID = "antigravity.conversation.steps.v1";
 
-const nodeRequire = createRequire(import.meta.url);
+const nodeRequire = createRequire(
+  typeof __filename === "string"
+    ? __filename
+    : join(process.cwd(), "package.json")
+);
 
 type DatabaseSyncConstructor = typeof NodeSqliteDatabaseSync;
 type DatabaseSyncInstance = InstanceType<DatabaseSyncConstructor>;
@@ -44,6 +49,22 @@ export interface AntigravityConversationMetadata {
   createdAt?: string;
   updatedAt?: string;
   mtimeMs: number;
+}
+
+export interface AntigravitySharedInventoryReader {
+  readText(request: {
+    path: string;
+    offset: number;
+    maxBytes: number;
+  }): Promise<string>;
+  query?(request: {
+    path: string;
+    queryPlanId: string;
+    maxRows: number;
+  }): Promise<{
+    queryPlanId: string;
+    rows: AntigravityConversationStepRow[];
+  }>;
 }
 
 const conversationMetadataCache = new Map<
@@ -92,9 +113,8 @@ export function readAntigravityConversationMetadataFromInventory(
 ): AntigravityConversationMetadata[] {
   const conversations = new Map<string, AntigravityConversationMetadata>();
   const classified = candidates.flatMap((candidate) => {
-    const role = classifySessionInventoryCandidate(
-      "antigravity",
-      antigravityRoot,
+    const role = classifyAntigravityMetadataPath(
+      [antigravityRoot],
       candidate.path
     );
     return role ? [{ candidate, role }] : [];
@@ -104,9 +124,7 @@ export function readAntigravityConversationMetadataFromInventory(
     if (role !== "antigravity-history") {
       continue;
     }
-    for (const record of parseCoreHistorySource({
-      vendor: "antigravity",
-      role: "antigravity-history",
+    for (const record of parseAntigravityHistoryRecords({
       logicalName: candidate.path,
       mtimeMs: candidate.mtimeMs,
       records: parseJsonlFile(candidate.path)
@@ -177,6 +195,115 @@ export function readAntigravityConversationMetadataFromInventory(
   );
 }
 
+export async function readAntigravityConversationMetadataFromSharedInventory(
+  antigravityRoot: string,
+  candidates: readonly SessionInventoryCandidate[],
+  reader: AntigravitySharedInventoryReader,
+  options: {
+    maxConversationFiles?: number;
+    includeConversationDetails?: boolean;
+  } = {}
+): Promise<AntigravityConversationMetadata[]> {
+  const conversations = new Map<string, AntigravityConversationMetadata>();
+  const candidateByPath = new Map(
+    candidates.map((candidate) => [candidate.path, candidate] as const)
+  );
+  const classified = candidates.flatMap((candidate) => {
+    const role = classifyAntigravityMetadataPath(
+      [antigravityRoot],
+      candidate.path
+    );
+    return role ? [{ candidate, role }] : [];
+  });
+
+  for (const { candidate, role } of classified) {
+    if (role !== "antigravity-history") continue;
+    const records = parseJsonlText(
+      await readSharedJsonlEdges(reader, candidate)
+    );
+    for (const record of parseAntigravityHistoryRecords({
+      logicalName: candidate.path,
+      mtimeMs: candidate.mtimeMs,
+      records
+    })) {
+      upsertConversation(
+        conversations,
+        coreHistoryToAntigravityConversation(record)
+      );
+    }
+  }
+
+  const projectIndex = classified.find(
+    ({ role }) => role === "antigravity-project-index"
+  )?.candidate;
+  const projectWorkspaces = projectIndex
+    ? new Map(
+        Array.from(
+          readStringMapText(
+            projectIndex.size <= MAX_SHARED_PROJECT_INDEX_BYTES
+              ? await readSharedTextPrefix(
+                  reader,
+                  projectIndex.path,
+                  projectIndex.size,
+                  projectIndex.size
+                )
+              : ""
+          ).entries()
+        ).map(([workspace, projectId]) => [projectId, workspace] as const)
+      )
+    : new Map<string, string>();
+  const conversationCandidates = classified
+    .filter(({ role }) => role === "antigravity-conversation")
+    .map(({ candidate }) => ({
+      ...candidate,
+      mtimeMs: Math.max(
+        candidate.mtimeMs,
+        candidateByPath.get(`${candidate.path}-wal`)?.mtimeMs ?? 0
+      )
+    }))
+    .sort(
+      (left, right) =>
+        right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path)
+    )
+    .slice(0, options.maxConversationFiles);
+
+  for (const candidate of conversationCandidates) {
+    const conversationId = basename(candidate.path, ".db");
+    if (!isUuidLike(conversationId)) continue;
+    const searchable = await readSharedTextPrefix(
+      reader,
+      candidate.path,
+      candidate.size,
+      MAX_BINARY_SCAN_BYTES
+    );
+    const workspace = inferWorkspaceFromText(searchable, projectWorkspaces);
+    const details =
+      options.includeConversationDetails === false || !reader.query
+        ? {}
+        : await readSharedConversationDetails(reader, candidate);
+    upsertConversation(conversations, {
+      conversationId,
+      ...optionalStringProperty("workspace", workspace),
+      ...optionalStringProperty("title", details.title),
+      ...optionalStringProperty(
+        "recentConversation",
+        details.recentConversation
+      ),
+      ...(candidate.birthtimeMs === undefined
+        ? {}
+        : { createdAt: new Date(candidate.birthtimeMs).toISOString() }),
+      updatedAt: new Date(candidate.mtimeMs).toISOString(),
+      mtimeMs: candidate.mtimeMs
+    });
+  }
+
+  return Array.from(conversations.values()).sort(
+    (left, right) =>
+      right.mtimeMs - left.mtimeMs ||
+      left.conversationId.localeCompare(right.conversationId)
+  );
+}
+
 function readAntigravityConversationMetadataUncached(
   antigravityRoot: string,
   options: { maxConversationFiles?: number }
@@ -184,9 +311,7 @@ function readAntigravityConversationMetadataUncached(
   const conversations = new Map<string, AntigravityConversationMetadata>();
 
   const historyPath = join(antigravityRoot, "history.jsonl");
-  for (const record of parseCoreHistorySource({
-    vendor: "antigravity",
-    role: "antigravity-history",
+  for (const record of parseAntigravityHistoryRecords({
     logicalName: historyPath,
     mtimeMs: fileMtimeMs(historyPath),
     records: parseJsonlFile(historyPath)
@@ -522,6 +647,125 @@ function readStringMap(filePath: string): Map<string, string> {
   }
 }
 
+function readStringMapText(text: string): Map<string, string> {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isRecord(parsed)) return new Map();
+    return new Map(
+      Object.entries(parsed).flatMap(([key, value]) => {
+        if (typeof value !== "string" || !key.trim() || !value.trim()) {
+          return [];
+        }
+        return [[key.trim(), value.trim()]];
+      })
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function parseJsonlText(text: string): unknown[] {
+  return text.split(/\r?\n/u).flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return [];
+    try {
+      return [JSON.parse(trimmed) as unknown];
+    } catch {
+      return [];
+    }
+  });
+}
+
+async function readSharedJsonlEdges(
+  reader: AntigravitySharedInventoryReader,
+  candidate: SessionInventoryCandidate
+): Promise<string> {
+  const prefix = await readSharedText(reader, {
+    path: candidate.path,
+    offset: 0,
+    maxBytes: Math.max(1, Math.min(candidate.size, MAX_SHARED_TEXT_READ_BYTES))
+  });
+  const suffixOffset = Math.max(0, candidate.size - MAX_SHARED_TEXT_READ_BYTES);
+  if (suffixOffset === 0) return prefix;
+  const suffix = await readSharedText(reader, {
+    path: candidate.path,
+    offset: suffixOffset,
+    maxBytes: Math.max(1, candidate.size - suffixOffset)
+  });
+  return `${prefix}\n${suffix}`;
+}
+
+async function readSharedTextPrefix(
+  reader: AntigravitySharedInventoryReader,
+  path: string,
+  size: number,
+  maximumBytes: number
+): Promise<string> {
+  const limit = Math.min(size, maximumBytes);
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < limit) {
+    const maxBytes = Math.min(MAX_SHARED_TEXT_READ_BYTES, limit - offset);
+    const chunk = await readSharedText(reader, { path, offset, maxBytes });
+    if (!chunk) break;
+    chunks.push(chunk);
+    offset += Buffer.byteLength(chunk, "utf8");
+  }
+  return chunks.join("");
+}
+
+async function readSharedText(
+  reader: AntigravitySharedInventoryReader,
+  request: { path: string; offset: number; maxBytes: number }
+): Promise<string> {
+  try {
+    return await reader.readText(request);
+  } catch {
+    return "";
+  }
+}
+
+function inferWorkspaceFromText(
+  searchable: string,
+  projectWorkspaces: ReadonlyMap<string, string>
+): string | undefined {
+  for (const [projectId, workspace] of projectWorkspaces) {
+    const normalizedWorkspace = normalizePathValue(workspace);
+    if (normalizedWorkspace && searchable.includes(projectId)) {
+      return normalizedWorkspace;
+    }
+  }
+  return undefined;
+}
+
+async function readSharedConversationDetails(
+  reader: AntigravitySharedInventoryReader,
+  candidate: SessionInventoryCandidate
+): Promise<{ title?: string; recentConversation?: string }> {
+  try {
+    const result = await reader.query!({
+      path: candidate.path,
+      queryPlanId: ANTIGRAVITY_CONVERSATION_QUERY_ID,
+      maxRows: 2
+    });
+    if (result.queryPlanId !== ANTIGRAVITY_CONVERSATION_QUERY_ID) return {};
+    const parsed = parseAntigravityConversationRows({
+      logicalName: candidate.path,
+      mtimeMs: candidate.mtimeMs,
+      rows: result.rows
+    });
+    return {
+      ...optionalStringProperty("title", parsed?.title),
+      ...optionalStringProperty(
+        "recentConversation",
+        parsed?.recentConversation
+      )
+    };
+  } catch {
+    return {};
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -574,10 +818,24 @@ function extractConversationDetailsFromDb(dbPath: string): {
   title?: string;
   recentConversation?: string;
 } {
+  const rows = queryAntigravityConversationSteps(dbPath, 2);
+  const parsed = parseAntigravityConversationRows({
+    logicalName: `/${basename(dbPath)}`,
+    mtimeMs: 0,
+    rows
+  });
+  return {
+    ...optionalStringProperty("title", parsed?.title),
+    ...optionalStringProperty("recentConversation", parsed?.recentConversation)
+  };
+}
+
+export function queryAntigravityConversationSteps(
+  dbPath: string,
+  maxRows: number
+): AntigravityConversationStepRow[] {
   const DatabaseSync = loadDatabaseSync();
-  if (!DatabaseSync) {
-    return {};
-  }
+  if (!DatabaseSync || !Number.isSafeInteger(maxRows) || maxRows < 1) return [];
 
   let db: DatabaseSyncInstance | undefined;
   try {
@@ -592,19 +850,9 @@ function extractConversationDetailsFromDb(dbPath: string): {
         "SELECT idx, step_type, CASE WHEN length(step_payload) <= 131072 THEN step_payload END AS step_payload FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1"
       )
       .get() as unknown;
-    const rows = [firstRow, latestRow].flatMap(coreConversationStepRow);
-    const parsed = parseAntigravityConversationRows({
-      logicalName: `/${basename(dbPath)}`,
-      mtimeMs: 0,
-      rows
-    });
-    return {
-      ...optionalStringProperty("title", parsed?.title),
-      ...optionalStringProperty(
-        "recentConversation",
-        parsed?.recentConversation
-      )
-    };
+    return [firstRow, latestRow]
+      .flatMap(coreConversationStepRow)
+      .slice(0, Math.min(maxRows, 2));
   } catch {
     // Database sync might fail if the file is locked, busy, or corrupted
   } finally {
@@ -614,7 +862,7 @@ function extractConversationDetailsFromDb(dbPath: string): {
       // Closing is best-effort because this reader is optional metadata.
     }
   }
-  return {};
+  return [];
 }
 
 function coreConversationStepRow(

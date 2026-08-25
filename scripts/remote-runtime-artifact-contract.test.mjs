@@ -257,7 +257,9 @@ describe("remote runtime artifact contract", () => {
     expect(ci.jobs["verify-ssh-native-parity"].if).toBe(
       "github.event_name != 'pull_request'"
     );
-    expect(ci.jobs["verify-ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
+    expect(ci.jobs["verify-ssh-native-parity"].env.RUSTUP_TOOLCHAIN).toBe(
+      "1.97.0"
+    );
     expect(ci.jobs["ssh-integration-linux"]).toBeUndefined();
     expect(ci.jobs["verify-linux"].env.RUSTUP_TOOLCHAIN).toBe("1.97.0");
     expect(
@@ -317,6 +319,28 @@ describe("remote runtime artifact contract", () => {
         (step) => step.uses === "actions/upload-artifact@v7"
       )?.with?.path
     ).toContain(".tar");
+  });
+
+  it("packages every repository contract embedded by the Linux runtime", () => {
+    const buildScript = readFileSync(
+      "scripts/build-remote-runtime.mjs",
+      "utf8"
+    );
+    const dockerfile = readFileSync(
+      "remote/kmuxd/Dockerfile.linux-musl",
+      "utf8"
+    );
+    for (const [buildMarker, dockerCopy] of [
+      ['"agent-integration"', "COPY packages/agent-integration/"],
+      [
+        '"portable-agent-manifest.json"',
+        "COPY packages/agents/generated/portable-agent-manifest.json"
+      ],
+      ['"source-contract.json"', "COPY packages/metadata/source-contract.json"]
+    ]) {
+      expect(buildScript).toContain(buildMarker);
+      expect(dockerfile).toContain(dockerCopy);
+    }
   });
 });
 

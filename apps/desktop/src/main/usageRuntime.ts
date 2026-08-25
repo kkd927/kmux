@@ -11,7 +11,19 @@ import {
 } from "@kmux/core";
 import type { AgentScopeSettings, Id } from "@kmux/proto";
 import {
+  builtinAgentPricingVendor,
+  listBuiltinProcessMatchers,
+  resolveBuiltinAgentId,
+  resolveBuiltinDetectedProcessAgent
+} from "@kmux/agents/builtin-runtime";
+import {
+  createBuiltinSubscriptionSources,
+  type SubscriptionProviderAuthDetector,
+  type SubscriptionProviderFetcher
+} from "@kmux/agents/builtin-subscriptions";
+import {
   createEmptyUsageViewSnapshot,
+  isAgentId,
   isoNow,
   type ModelUsageVm,
   type SubscriptionProviderUsageVm,
@@ -27,6 +39,7 @@ import {
 } from "@kmux/proto";
 import {
   BUNDLED_MODEL_PRICING_RESOLVER,
+  scanUsageAdapters,
   resolveAiCliProcessMatches,
   isProcessAlive,
   type AgentStorageRoots,
@@ -46,13 +59,7 @@ import type {
   UsageHistoryFileStore
 } from "@kmux/persistence";
 
-import {
-  createSubscriptionAuthDetectors,
-  createSubscriptionUsageFetchers,
-  formatResetLabel,
-  type SubscriptionProviderAuthDetector,
-  type SubscriptionProviderFetcher
-} from "./subscriptionUsage";
+import { formatResetLabel } from "@kmux/agents/builtin-subscriptions";
 import {
   createUsageScanWorkerClient,
   type UsageScanService
@@ -191,11 +198,6 @@ type ResolveAiCliProcesses = (
 type SubscriptionProvider = Exclude<UsageVendor, "unknown">;
 type PricingVendor = SupportedPricingVendor;
 type SubscriptionVisibility = "live" | "recent";
-const SUBSCRIPTION_PROVIDER_ORDER: SubscriptionProvider[] = [
-  "codex",
-  "claude",
-  "antigravity"
-];
 const DISCOVER_ONLY_DIRTY_OPTIONS = {
   discoverNewSources: true,
   markKnownSourcesDirty: false
@@ -260,15 +262,14 @@ interface UsageRuntimeOptions {
   homeDir?: string;
   agentStorageRoots?: AgentStorageRoots;
   agentSettings?: AgentScopeSettings;
-  sshAgentSettings?: AgentScopeSettings;
+  getAgentSettings?: (scope: "local" | "ssh") => AgentScopeSettings | undefined;
   platform?: NodeJS.Platform;
+  appVersion?: string;
   now?: () => number;
   emitSnapshot?: (snapshot: UsageViewSnapshot) => void;
-  subscriptionFetchers?: Partial<
-    Record<SubscriptionProvider, SubscriptionProviderFetcher>
-  >;
+  subscriptionFetchers?: Partial<Record<string, SubscriptionProviderFetcher>>;
   subscriptionAuthDetectors?: Partial<
-    Record<SubscriptionProvider, SubscriptionProviderAuthDetector>
+    Record<string, SubscriptionProviderAuthDetector>
   >;
   resolveLocalPath: LocalPathResolver;
   targetServices?: () => TargetServiceRegistry | undefined;
@@ -285,6 +286,7 @@ export interface UsageRuntime {
   handleTerminalInput(surfaceId: Id, text: string): void;
   setDashboardOpen(open: boolean): void;
   setPricingResolver(resolver: ModelPricingResolver): void;
+  invalidateAgentSettings(): void;
   refreshNow(): Promise<void>;
 }
 
@@ -316,26 +318,39 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   const resolveAiCliProcesses =
     options.resolveAiCliProcesses ??
     ((probes: AiCliProcessProbe[]) =>
-      resolveAiCliProcessMatches(probes, options.env));
-  const subscriptionFetchers = {
-    ...createSubscriptionUsageFetchers({
-      env: options.env,
-      homeDir: options.homeDir,
-      agentStorageRoots: options.agentStorageRoots,
-      platform: options.platform,
-      now
-    }),
-    ...(options.subscriptionFetchers ?? {})
-  };
-  const subscriptionAuthDetectors =
-    options.subscriptionAuthDetectors ??
-    createSubscriptionAuthDetectors({
-      env: options.env,
-      homeDir: options.homeDir,
-      agentStorageRoots: options.agentStorageRoots,
-      platform: options.platform,
-      now
-    });
+      resolveAiCliProcessMatches(
+        probes,
+        options.env,
+        listBuiltinProcessMatchers()
+      ));
+  const subscriptionSources = createBuiltinSubscriptionSources({
+    env: options.env,
+    homeDir: options.homeDir,
+    agentStorageRoots: options.agentStorageRoots,
+    platform: options.platform,
+    appVersion: options.appVersion,
+    now
+  }).map((source) => {
+    const fetch = ownRecordValue(options.subscriptionFetchers, source.agentId);
+    const detectAuth = ownRecordValue(
+      options.subscriptionAuthDetectors,
+      source.agentId
+    );
+    return {
+      ...source,
+      fetch: fetch ?? source.fetch,
+      detectAuth:
+        options.subscriptionAuthDetectors === undefined
+          ? source.detectAuth
+          : (detectAuth ?? (async () => false))
+    };
+  });
+  const subscriptionSourceByAgent = new Map(
+    subscriptionSources.map((source) => [source.agentId, source])
+  );
+  const subscriptionProviderOrder = subscriptionSources.map(
+    (source) => source.agentId
+  );
 
   let snapshot = createEmptyUsageViewSnapshot(dayKeyFor(now()), isoNow());
   let snapshotSignature = createSnapshotSignature(snapshot);
@@ -359,6 +374,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
   >();
   const initializedUsageTargets = new Set<string>();
+  let agentSettingsGeneration = 0;
   let dayKey = dayKeyFor(now());
   let historyDays = normalizeHistoryDays(options.historyStore?.load() ?? []);
   let lastAuthVisibilityRefreshAtMs = Number.NEGATIVE_INFINITY;
@@ -476,6 +492,17 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     rebuildSnapshot();
   }
 
+  function invalidateAgentSettings(): void {
+    agentSettingsGeneration += 1;
+    if (options.targetServices === undefined) return;
+    targetUsageScans.clear();
+    initializedUsageTargets.clear();
+    daySamples = [];
+    daySampleIndexes.clear();
+    initialScanComplete = false;
+    if (started) void refreshNow();
+  }
+
   function setDashboardOpen(open: boolean): void {
     const wasDashboardOpen = dashboardOpen;
     dashboardOpen = open;
@@ -521,10 +548,11 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
 
     refreshInFlight = (async () => {
+      const settingsGeneration = agentSettingsGeneration;
       try {
         await refreshManualCliBindings();
         await refreshAdapters();
-        rebuildSnapshot();
+        if (settingsGeneration === agentSettingsGeneration) rebuildSnapshot();
       } finally {
         refreshInFlight = null;
         scheduleRefresh();
@@ -670,8 +698,8 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           if (options.forceInteractiveRefresh === true) {
             lastInteractiveSubscriptionRefreshAtMs.set(provider, nowMs);
           }
-          const fetcher = subscriptionFetchers[provider];
-          if (!fetcher) {
+          const source = subscriptionSourceByAgent.get(provider);
+          if (!source) {
             return;
           }
           const currentState = subscriptionPollStates.get(provider) ?? {
@@ -680,7 +708,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
             visibility
           };
           try {
-            const nextUsage = await fetcher();
+            const nextUsage = await source.fetch();
             const previousUsage = subscriptionUsage.get(provider);
             if (nextUsage) {
               if (JSON.stringify(previousUsage) !== JSON.stringify(nextUsage)) {
@@ -740,9 +768,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     const state = options.getState();
 
     for (const binding of bindings.values()) {
-      if (!isSubscriptionProvider(binding.vendor)) {
-        continue;
-      }
+      if (!subscriptionSourceByAgent.has(binding.vendor)) continue;
       if (
         options.getState().workspaces[binding.workspaceId]?.location.target
           .kind !== "local"
@@ -760,20 +786,16 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     }
 
     for (const sample of daySamples) {
-      if (
-        sample.usageTarget.kind !== "local" ||
-        sample.vendor === "unknown" ||
-        !isSubscriptionProvider(sample.vendor)
-      ) {
+      if (sample.usageTarget.kind !== "local" || sample.vendor === "unknown") {
         continue;
       }
-      if (visibleProviders.has(sample.vendor)) {
-        continue;
+      if (!subscriptionSourceByAgent.has(sample.vendor)) continue;
+      if (!visibleProviders.has(sample.vendor)) {
+        visibleProviders.set(sample.vendor, "recent");
       }
-      visibleProviders.set(sample.vendor, "recent");
     }
 
-    for (const provider of SUBSCRIPTION_PROVIDER_ORDER) {
+    for (const provider of subscriptionProviderOrder) {
       if (visibleProviders.has(provider)) {
         continue;
       }
@@ -840,14 +862,10 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
       const nextVisibleProviders = new Set<SubscriptionProvider>();
 
       await Promise.all(
-        SUBSCRIPTION_PROVIDER_ORDER.map(async (provider) => {
-          const detector = subscriptionAuthDetectors[provider];
-          if (!detector) {
-            return;
-          }
+        subscriptionSources.map(async (source) => {
           try {
-            if (await detector()) {
-              nextVisibleProviders.add(provider);
+            if (await source.detectAuth()) {
+              nextVisibleProviders.add(source.agentId);
             }
           } catch {
             // Treat detector failures as auth unavailable.
@@ -882,6 +900,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
     const startOfDayMs = startOfLocalDay(now());
     let reads: UsageAdapterReadResult[];
+    let providerFailures = 0;
     const requestedInitialScan = !initialScanComplete;
     if (scanService) {
       try {
@@ -890,6 +909,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           initial: requestedInitialScan
         });
         reads = result.reads;
+        providerFailures = result.failures.length;
       } catch (error) {
         const hasWorkerDiagnostic =
           error instanceof Error &&
@@ -917,15 +937,21 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         return;
       }
     } else {
-      reads = await Promise.all(
-        adapters.map((adapter) =>
-          requestedInitialScan
-            ? adapter.initialScan(startOfDayMs)
-            : adapter.readIncremental(startOfDayMs)
-        )
-      );
+      const result = await scanUsageAdapters(adapters, {
+        startOfDayMs,
+        initial: requestedInitialScan
+      });
+      reads = result.reads;
+      providerFailures = result.failures.length;
+      for (const failure of result.failures) {
+        console.warn(
+          `[usage] ${failure.vendor} scan failed; keeping other provider results:`,
+          failure.message
+        );
+      }
     }
-    const truncated = reads.some((read) => read.truncated === true);
+    const truncated =
+      providerFailures > 0 || reads.some((read) => read.truncated === true);
     if (requestedInitialScan && !truncated) {
       daySamples = [];
       daySampleIndexes.clear();
@@ -943,6 +969,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   }
 
   async function refreshTargetUsageProviders(): Promise<void> {
+    const generation = agentSettingsGeneration;
     const registry = options.targetServices?.();
     if (!registry) {
       return;
@@ -953,16 +980,18 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         const key = usageTargetKey(target);
         try {
           const provider = registry.resolveLocated(target).usage;
-          const agentSettings =
-            target.kind === "local"
+          const agentSettings = options.getAgentSettings
+            ? options.getAgentSettings(target.kind)
+            : target.kind === "local"
               ? options.agentSettings
-              : options.sshAgentSettings;
+              : undefined;
           const scan = await provider.refresh({
             startAtUnixMs: startOfLocalDay(now()),
             initial: !initializedUsageTargets.has(key),
             maxRecords: target.kind === "local" ? 4_096 : 64,
             ...(agentSettings === undefined ? {} : { agentSettings })
           });
+          if (generation !== agentSettingsGeneration) return;
           const incoming = scan.records.map((record) =>
             priceUsageSample(
               scopedUsageSample(target, scan.principal, record),
@@ -982,12 +1011,14 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
           });
           initializedUsageTargets.add(key);
         } catch (error) {
+          if (generation !== agentSettingsGeneration) return;
           const failure =
             error instanceof Error ? error : new Error(String(error));
           options.reportTargetUsageError?.(target, failure);
         }
       })
     );
+    if (generation !== agentSettingsGeneration) return;
     const currentKeys = new Set(
       currentUsageTargets(options.getState()).map(usageTargetKey)
     );
@@ -2007,8 +2038,7 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
 
   function buildSubscriptionUsageSnapshot(): SubscriptionProviderUsageVm[] {
     const visibleProviders = getVisibleSubscriptionProviders();
-
-    return SUBSCRIPTION_PROVIDER_ORDER.flatMap((provider) => {
+    return subscriptionProviderOrder.flatMap((provider) => {
       if (!visibleProviders.has(provider)) {
         return [];
       }
@@ -2038,10 +2068,12 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
   function createSubscriptionVisibilitySignature(
     visibleProviders: Map<SubscriptionProvider, SubscriptionVisibility>
   ): string {
-    return SUBSCRIPTION_PROVIDER_ORDER.flatMap((provider) => {
-      const visibility = visibleProviders.get(provider);
-      return visibility ? [`${provider}:${visibility}`] : [];
-    }).join("|");
+    return subscriptionProviderOrder
+      .flatMap((provider) => {
+        const visibility = visibleProviders.get(provider);
+        return visibility ? [`${provider}:${visibility}`] : [];
+      })
+      .join("|");
   }
 
   return {
@@ -2053,8 +2085,16 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
     handleTerminalInput,
     setDashboardOpen,
     setPricingResolver,
+    invalidateAgentSettings,
     refreshNow
   };
+}
+
+function ownRecordValue<T>(
+  record: Readonly<Record<string, T>> | undefined,
+  key: string
+): T | undefined {
+  return record && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
 function resolveSurfaceId(
@@ -2364,58 +2404,15 @@ function createSnapshotSignature(snapshot: UsageViewSnapshot): string {
 }
 
 function normalizeVendor(agent: string): UsageVendor {
-  const normalized = agent.trim().toLowerCase();
-  switch (normalized) {
-    case "claude":
-    case "codex":
-    case "antigravity":
-      return normalized;
-    case "agy":
-    case "antigravity-cli":
-      return "antigravity";
-    default:
-      return "unknown";
-  }
-}
-
-function isSubscriptionProvider(
-  vendor: UsageVendor
-): vendor is SubscriptionProvider {
-  return vendor === "claude" || vendor === "codex" || vendor === "antigravity";
+  return resolveBuiltinAgentId(agent) ?? "unknown";
 }
 
 function pricingVendorForUsageVendor(
   vendor: UsageVendor
 ): PricingVendor | null {
-  if (vendor === "antigravity") {
-    return "gemini";
-  }
-  if (vendor === "claude" || vendor === "codex") {
-    return vendor;
-  }
-  return null;
-}
-
-function normalizeAiCliExecutableVendor(
-  normalizedExecutable: string
-): Exclude<UsageVendor, "unknown"> | null {
-  if (normalizedExecutable === "codex") {
-    return "codex";
-  }
-  if (
-    normalizedExecutable === "agy" ||
-    normalizedExecutable === "antigravity" ||
-    normalizedExecutable === "antigravity-cli"
-  ) {
-    return "antigravity";
-  }
-  if (
-    normalizedExecutable === "claude" ||
-    normalizedExecutable === "claude-code"
-  ) {
-    return "claude";
-  }
-  return null;
+  return vendor === "unknown"
+    ? null
+    : (builtinAgentPricingVendor(vendor) ?? null);
 }
 
 function detectAiCliVendorFromCommand(
@@ -2427,8 +2424,9 @@ function detectAiCliVendorFromCommand(
     return null;
   }
 
-  const normalizedExecutable = normalizeCommandName(executable);
-  return normalizeAiCliExecutableVendor(normalizedExecutable);
+  return (
+    resolveBuiltinDetectedProcessAgent(normalizeCommandName(executable)) ?? null
+  );
 }
 
 function tokenizeCommandLine(commandLine: string): string[] {
@@ -2778,9 +2776,7 @@ function normalizeHistoryDay(day: unknown): UsageHistoryDayRecord | null {
   for (const vendor of day.vendors) {
     if (
       !isRecord(vendor) ||
-      (vendor.vendor !== "claude" &&
-        vendor.vendor !== "codex" &&
-        vendor.vendor !== "antigravity") ||
+      !isAgentId(vendor.vendor) ||
       !isNonNegativeFinite(vendor.totalCostUsd) ||
       !isNonNegativeFinite(vendor.totalTokens)
     ) {

@@ -26,6 +26,7 @@ import type {
   Id,
   RemoteInitialInputOutcome
 } from "@kmux/proto";
+import { decodeAgentId } from "@kmux/proto";
 
 import { durableAtomicReplace } from "./durableAtomicWrite";
 
@@ -976,15 +977,8 @@ function decodeLaunch(value: unknown): ConversionPreparingRecord["launch"] {
 function decodeAgentSessionRef(value: unknown): ExternalAgentSessionRef {
   const record = requireRecord(value, "conversion agentSessionRef");
   assertExactKeys(record, ["vendor", "externalKey", "sessionId"]);
-  if (
-    record.vendor !== "codex" &&
-    record.vendor !== "claude" &&
-    record.vendor !== "antigravity"
-  ) {
-    throw new TypeError("conversion agent session vendor is invalid");
-  }
   return {
-    vendor: record.vendor,
+    vendor: decodeAgentId(record.vendor),
     externalKey: requireText(
       record.externalKey,
       "agentSessionRef.externalKey",

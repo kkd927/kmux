@@ -7,6 +7,7 @@ import type {
   SurfaceContextMenuContext
 } from "../../shared/surfaceContextMenu";
 import type {
+  AgentDescriptorDto,
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
   ExternalAgentSessionResumeRequest,
@@ -57,6 +58,7 @@ declare global {
   interface Window {
     __kmuxLastShellPublishAt?: number;
     kmux: {
+      getAgentCatalog(): Promise<AgentDescriptorDto[]>;
       getPlatform(): Promise<RendererPlatformDescriptor>;
       getPreferredSystemLanguages(): Promise<string[]>;
       automaticReleaseNotesEnabled?(): boolean;

@@ -1,6 +1,12 @@
 import { parseUint64Decimal } from "./uint64";
 import { REMOTE_CONTROL_HARD_MAX_BYTES } from "./remoteFrames";
 import type { AgentScopeSettings, Id, RemotePersistenceLevel } from "./index";
+import {
+  decodeAgentId,
+  decodeMetadataSourceRoleId,
+  type AgentId,
+  type MetadataSourceRoleId
+} from "./agents";
 
 export const REMOTE_PROTOCOL_VERSION = 1 as const;
 
@@ -34,7 +40,7 @@ export interface RemoteRuntimeRootsDto {
 }
 
 export interface AgentIntegrationVendorDiagnosticDto {
-  vendor: "claude" | "codex" | "antigravity";
+  vendor: AgentId;
   path: string;
   status: "changed" | "current" | "degraded";
   contractVersion: number;
@@ -49,16 +55,13 @@ export interface AgentIntegrationDiagnosticDto {
   warning?: string;
 }
 
-export type RemoteMetadataPurposeDto = "usage" | "history";
-export type RemoteMetadataVendorDto = "claude" | "codex" | "antigravity";
-export type RemoteMetadataSourceRoleDto =
-  | "codex-session"
-  | "claude-session"
-  | "claude-subagent"
-  | "antigravity-history"
-  | "antigravity-transcript"
-  | "antigravity-conversation";
+export type RemoteMetadataPurposeDto = "usage" | "history" | "all";
+export type RemoteMetadataVendorDto = AgentId;
+export type RemoteMetadataSourceRoleDto = MetadataSourceRoleId;
 export type RemoteMetadataSourceFormatDto = "jsonl" | "sqlite";
+export type RemoteAgentDefinitionRevisionsDto = Readonly<
+  Record<AgentId, string>
+>;
 
 export interface RemoteMetadataSourceClaimDto {
   sessionId: string;
@@ -76,6 +79,7 @@ export interface RemoteMetadataClaimDto extends RemoteMetadataSourceClaimDto {
 export interface RemoteMetadataSourceDto {
   sourceId: Id;
   vendor: RemoteMetadataVendorDto;
+  definitionRevision: string;
   role: RemoteMetadataSourceRoleDto;
   format: RemoteMetadataSourceFormatDto;
   logicalName: string;
@@ -199,6 +203,7 @@ export type RemoteBridgeRequestBody =
       desktopInstallationId: Id;
       targetId: Id;
       purpose: RemoteMetadataPurposeDto;
+      agentDefinitions: RemoteAgentDefinitionRevisionsDto;
       agentSettings?: AgentScopeSettings;
     }
   | {
@@ -350,7 +355,7 @@ export type RemoteBridgeResponseBody =
       principal: { uid: number; accountName: string };
       truncated?: boolean;
       records: Array<{
-        vendor: "codex" | "claude" | "antigravity";
+        vendor: AgentId;
         sessionId: string;
         updatedAtUnixMs: string;
         canResume: boolean;
@@ -368,7 +373,7 @@ export type RemoteBridgeResponseBody =
       principal: { uid: number; accountName: string };
       truncated: boolean;
       records: Array<{
-        vendor: "codex" | "claude" | "antigravity";
+        vendor: AgentId;
         sampleId: string;
         timestampUnixMs: string;
         sessionId?: string;
@@ -389,7 +394,8 @@ export type RemoteBridgeResponseBody =
       type: "metadata.sources.listed";
       targetId: Id;
       purpose: RemoteMetadataPurposeDto;
-      contractVersion: 1;
+      contractVersion: 2;
+      agentDefinitions: RemoteAgentDefinitionRevisionsDto;
       truncated: boolean;
       claims: RemoteMetadataClaimDto[];
       sources: RemoteMetadataSourceDto[];
@@ -1077,11 +1083,12 @@ export function decodeRemoteBridgeResponseBody(
         "targetId",
         "purpose",
         "contractVersion",
+        "agentDefinitions",
         "truncated",
         "claims",
         "sources"
       ]);
-      if (record.contractVersion !== 1) {
+      if (record.contractVersion !== 2) {
         throw new TypeError("metadata source contract version is unsupported");
       }
       if (!Array.isArray(record.sources) || record.sources.length > 2_048) {
@@ -1092,6 +1099,9 @@ export function decodeRemoteBridgeResponseBody(
       }
       const sources = record.sources.map(decodeRemoteMetadataSource);
       const claims = record.claims.map(decodeRemoteMetadataClaim);
+      const agentDefinitions = decodeRemoteAgentDefinitionRevisions(
+        record.agentDefinitions
+      );
       if (
         new Set(sources.map((source) => source.sourceId)).size !==
         sources.length
@@ -1108,7 +1118,8 @@ export function decodeRemoteBridgeResponseBody(
         type: record.type,
         targetId: requireId(record.targetId, "targetId"),
         purpose: requireRemoteMetadataPurpose(record.purpose),
-        contractVersion: 1,
+        contractVersion: 2,
+        agentDefinitions,
         truncated: requireBoolean(
           record.truncated,
           "metadata sources truncated"
@@ -1648,7 +1659,7 @@ export function decodeRemoteSpoolEventDto(value: unknown): RemoteSpoolEventDto {
 function requireRemoteMetadataPurpose(
   value: unknown
 ): RemoteMetadataPurposeDto {
-  if (value !== "usage" && value !== "history") {
+  if (value !== "usage" && value !== "history" && value !== "all") {
     throw new TypeError("metadata purpose is invalid");
   }
   return value;
@@ -1659,6 +1670,7 @@ function decodeRemoteMetadataSource(value: unknown): RemoteMetadataSourceDto {
   assertExactKeys(source, [
     "sourceId",
     "vendor",
+    "definitionRevision",
     "role",
     "format",
     "logicalName",
@@ -1667,39 +1679,10 @@ function decodeRemoteMetadataSource(value: unknown): RemoteMetadataSourceDto {
     "fileIdentity",
     "claim"
   ]);
-  if (
-    source.vendor !== "claude" &&
-    source.vendor !== "codex" &&
-    source.vendor !== "antigravity"
-  ) {
-    throw new TypeError("metadata source vendor is invalid");
-  }
-  if (
-    source.role !== "codex-session" &&
-    source.role !== "claude-session" &&
-    source.role !== "claude-subagent" &&
-    source.role !== "antigravity-history" &&
-    source.role !== "antigravity-transcript" &&
-    source.role !== "antigravity-conversation"
-  ) {
-    throw new TypeError("metadata source role is invalid");
-  }
+  const vendor = decodeAgentId(source.vendor);
+  const role = decodeMetadataSourceRoleId(source.role);
   if (source.format !== "jsonl" && source.format !== "sqlite") {
     throw new TypeError("metadata source format is invalid");
-  }
-  const roleContract = {
-    "codex-session": ["codex", "jsonl"],
-    "claude-session": ["claude", "jsonl"],
-    "claude-subagent": ["claude", "jsonl"],
-    "antigravity-history": ["antigravity", "jsonl"],
-    "antigravity-transcript": ["antigravity", "jsonl"],
-    "antigravity-conversation": ["antigravity", "sqlite"]
-  }[source.role];
-  if (
-    roleContract?.[0] !== source.vendor ||
-    roleContract?.[1] !== source.format
-  ) {
-    throw new TypeError("metadata source role contract is invalid");
   }
   const logicalName = requireString(
     source.logicalName,
@@ -1716,8 +1699,13 @@ function decodeRemoteMetadataSource(value: unknown): RemoteMetadataSourceDto {
   const claim = decodeRemoteMetadataSourceClaim(source.claim);
   return {
     sourceId: requireId(source.sourceId, "sourceId"),
-    vendor: source.vendor,
-    role: source.role,
+    vendor,
+    definitionRevision: requireString(
+      source.definitionRevision,
+      "metadata source definitionRevision",
+      128
+    ),
+    role,
     format: source.format,
     logicalName,
     size: requireUint64String(source.size, "metadata source size"),
@@ -1735,6 +1723,24 @@ function decodeRemoteMetadataSource(value: unknown): RemoteMetadataSourceDto {
   };
 }
 
+function decodeRemoteAgentDefinitionRevisions(
+  value: unknown
+): RemoteAgentDefinitionRevisionsDto {
+  const record = requireRecord(value, "agent definition revisions");
+  const entries = Object.entries(record);
+  if (entries.length > 128) {
+    throw new TypeError("agent definition revisions must be bounded");
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      entries.map(([agentId, revision]) => [
+        decodeAgentId(agentId),
+        requireString(revision, "agent definition revision", 128)
+      ])
+    )
+  );
+}
+
 function decodeRemoteMetadataClaim(value: unknown): RemoteMetadataClaimDto {
   const claim = requireRecord(value, "metadata claim");
   assertExactKeys(claim, [
@@ -1746,15 +1752,8 @@ function decodeRemoteMetadataClaim(value: unknown): RemoteMetadataClaimDto {
     "workspacePaths",
     "launchTitle"
   ]);
-  if (
-    claim.vendor !== "claude" &&
-    claim.vendor !== "codex" &&
-    claim.vendor !== "antigravity"
-  ) {
-    throw new TypeError("metadata claim vendor is invalid");
-  }
   return {
-    vendor: claim.vendor,
+    vendor: decodeAgentId(claim.vendor),
     ...decodeRemoteMetadataSourceClaim(claim, true)
   };
 }
@@ -1846,13 +1845,7 @@ function decodeRemoteHistoryRecord(
     "createdAt",
     "updatedAt"
   ]);
-  if (
-    record.vendor !== "codex" &&
-    record.vendor !== "claude" &&
-    record.vendor !== "antigravity"
-  ) {
-    throw new TypeError("remote history vendor is invalid");
-  }
+  const vendor = decodeAgentId(record.vendor);
   const createdAt =
     record.createdAt === undefined
       ? undefined
@@ -1862,7 +1855,7 @@ function decodeRemoteHistoryRecord(
       ? undefined
       : requireTimestamp(record.updatedAt, "history.updatedAt");
   return {
-    vendor: record.vendor,
+    vendor,
     sessionId: requireString(record.sessionId, "history.sessionId", 4 * 1024),
     updatedAtUnixMs: requireUint64String(
       record.updatedAtUnixMs,
@@ -1918,15 +1911,9 @@ function decodeRemoteUsageRecord(
     "cacheWriteTokensKnown",
     "totalTokens"
   ]);
-  if (
-    record.vendor !== "codex" &&
-    record.vendor !== "claude" &&
-    record.vendor !== "antigravity"
-  ) {
-    throw new TypeError("remote usage vendor is invalid");
-  }
+  const vendor = decodeAgentId(record.vendor);
   return {
-    vendor: record.vendor,
+    vendor,
     sampleId: requireString(record.sampleId, "usage.sampleId", 512),
     timestampUnixMs: requireUint64String(
       record.timestampUnixMs,
@@ -2033,7 +2020,7 @@ export function decodeAgentIntegrationDiagnostic(
   ) {
     throw new TypeError("agent integration contract version is invalid");
   }
-  if (!Array.isArray(record.vendors) || record.vendors.length > 3) {
+  if (!Array.isArray(record.vendors) || record.vendors.length > 128) {
     throw new TypeError("agent integration vendors must be a bounded array");
   }
   const seen = new Set<string>();
@@ -2046,15 +2033,7 @@ export function decodeAgentIntegrationDiagnostic(
       "contractVersion",
       "warning"
     ]);
-    if (
-      vendor.vendor !== "claude" &&
-      vendor.vendor !== "codex" &&
-      vendor.vendor !== "antigravity"
-    ) {
-      throw new TypeError("agent integration vendor is invalid");
-    }
-    const vendorName =
-      vendor.vendor as AgentIntegrationVendorDiagnosticDto["vendor"];
+    const vendorName = decodeAgentId(vendor.vendor);
     if (seen.has(vendorName)) {
       throw new TypeError("agent integration vendor is duplicated");
     }

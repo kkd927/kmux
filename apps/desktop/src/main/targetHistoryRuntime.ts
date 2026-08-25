@@ -1,12 +1,20 @@
 import {
   decodeLocalPath,
   formatAgentCommandForShell,
-  resolveAgentResumeCommand,
   type AppState,
   type LocatedPath,
   type LocalPath,
   type WorkspaceTarget
 } from "@kmux/core";
+import {
+  builtinAgentDescriptor,
+  resolveBuiltinAgentResumePolicy
+} from "@kmux/agents/builtin-runtime";
+import type {
+  AgentHistorySessionIndexer,
+  ExternalSessionIndexer,
+  ExternalSessionResumeSpec
+} from "@kmux/agents";
 import type {
   AgentScopeSettings,
   ExternalAgentSessionVendor,
@@ -15,10 +23,6 @@ import type {
 } from "@kmux/proto";
 
 import type {
-  ExternalSessionIndexer,
-  ExternalSessionResumeSpec
-} from "./externalSessions";
-import type {
   HistoryProvider,
   TargetHistoryRecord,
   TargetServiceRegistry
@@ -26,13 +30,58 @@ import type {
 
 const MAX_HISTORY_RECORDS = 100;
 
+export function mergeExternalAgentSessionSnapshots(
+  snapshots: readonly ExternalAgentSessionsSnapshot[]
+): ExternalAgentSessionsSnapshot {
+  const byKey = new Map<
+    string,
+    { readonly session: ExternalAgentSessionVm; readonly updatedAtMs: number }
+  >();
+  let updatedAt = "1970-01-01T00:00:00.000Z";
+  let updatedAtMs = 0;
+  let truncated = false;
+  for (const snapshot of snapshots) {
+    const snapshotUpdatedAtMs = validTimestamp(snapshot.updatedAt);
+    if (snapshotUpdatedAtMs >= updatedAtMs) {
+      updatedAt = snapshot.updatedAt;
+      updatedAtMs = snapshotUpdatedAtMs;
+    }
+    truncated ||= snapshot.truncated === true;
+    for (const session of snapshot.sessions) {
+      const sessionUpdatedAtMs = validTimestamp(session.updatedAt);
+      const effectiveUpdatedAtMs =
+        sessionUpdatedAtMs === 0 ? snapshotUpdatedAtMs : sessionUpdatedAtMs;
+      const previous = byKey.get(session.key);
+      if (!previous || effectiveUpdatedAtMs > previous.updatedAtMs) {
+        byKey.set(session.key, {
+          session,
+          updatedAtMs: effectiveUpdatedAtMs
+        });
+      }
+    }
+  }
+  const merged = [...byKey.values()].sort(
+    (left, right) =>
+      right.updatedAtMs - left.updatedAtMs ||
+      left.session.key.localeCompare(right.session.key)
+  );
+  truncated ||= merged.length > MAX_HISTORY_RECORDS;
+  return {
+    sessions: merged
+      .slice(0, MAX_HISTORY_RECORDS)
+      .map(({ session }) => session),
+    updatedAt,
+    ...(truncated ? { truncated: true } : {})
+  };
+}
+
 export function createLocalHistoryProvider(options: {
-  indexer: ExternalSessionIndexer;
+  indexer: AgentHistorySessionIndexer;
 }): HistoryProvider<LocalPath> {
   const provider: HistoryProvider<LocalPath> = {
     async refresh(request) {
       requireHistoryBound(request.maxRecords);
-      const snapshot = await options.indexer.listExternalAgentSessions();
+      const snapshot = await options.indexer.listAgentHistorySessions();
       return {
         records: snapshot.sessions
           .slice(0, request.maxRecords)
@@ -49,14 +98,14 @@ export function createLocalHistoryProvider(options: {
 export interface TargetHistoryRuntime {
   listExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
   resolveExternalAgentSession(key: string): ExternalSessionResumeSpec | null;
+  invalidateAgentSettings(): void;
 }
 
 export function createTargetHistoryRuntime(options: {
   targetServices: TargetServiceRegistry;
   getState: () => AppState;
   localIndexer: ExternalSessionIndexer;
-  localAgentSettings?: AgentScopeSettings;
-  sshAgentSettings?: AgentScopeSettings;
+  getAgentSettings?: (scope: "local" | "ssh") => AgentScopeSettings | undefined;
   now?: () => Date;
   reportError?: (target: WorkspaceTarget, error: Error) => void;
 }): TargetHistoryRuntime {
@@ -64,19 +113,26 @@ export function createTargetHistoryRuntime(options: {
   const recordsByTarget = new Map<string, TargetHistoryRecordWithTarget[]>();
   const partialTargetKeys = new Set<string>();
   const resumeByKey = new Map<string, ExternalSessionResumeSpec>();
-  let refreshInFlight: Promise<ExternalAgentSessionsSnapshot> | null = null;
+  let settingsGeneration = 0;
+  let refreshInFlight: {
+    readonly generation: number;
+    readonly promise: Promise<ExternalAgentSessionsSnapshot>;
+  } | null = null;
 
-  async function refresh(): Promise<ExternalAgentSessionsSnapshot> {
+  async function refresh(
+    generation: number
+  ): Promise<ExternalAgentSessionsSnapshot | null> {
     const targets = currentTargets(options.getState());
-    await Promise.all(
+    const settingsByScope = {
+      local: cloneAgentSettings(options.getAgentSettings?.("local")),
+      ssh: cloneAgentSettings(options.getAgentSettings?.("ssh"))
+    };
+    const results = await Promise.all(
       targets.map(async (target) => {
         const key = targetKey(target);
         try {
           const services = options.targetServices.resolveLocated(target);
-          const agentSettings =
-            target.kind === "local"
-              ? options.localAgentSettings
-              : options.sshAgentSettings;
+          const agentSettings = settingsByScope[target.kind];
           const scan = await services.history.refresh({
             maxRecords: MAX_HISTORY_RECORDS,
             ...(agentSettings === undefined ? {} : { agentSettings })
@@ -95,37 +151,61 @@ export function createTargetHistoryRuntime(options: {
             agentSettings,
             record
           }));
-          recordsByTarget.set(
+          return {
+            status: "success" as const,
+            target,
             key,
-            scan.truncated
-              ? mergeHistoryRecords(recordsByTarget.get(key) ?? [], incoming)
-              : incoming
-          );
-          if (scan.truncated) {
-            partialTargetKeys.add(key);
-          } else {
-            partialTargetKeys.delete(key);
-          }
+            incoming,
+            truncated: scan.truncated
+          };
         } catch (error) {
-          const failure =
-            error instanceof Error ? error : new Error(String(error));
-          options.reportError?.(target, failure);
-          recordsByTarget.delete(key);
-          partialTargetKeys.delete(key);
+          return {
+            status: "failure" as const,
+            target,
+            key,
+            error: error instanceof Error ? error : new Error(String(error))
+          };
         }
       })
     );
 
+    if (generation !== settingsGeneration) return null;
+
     const currentTargetKeys = new Set(
       currentTargets(options.getState()).map(targetKey)
     );
-    for (const key of recordsByTarget.keys()) {
-      if (!currentTargetKeys.has(key)) recordsByTarget.delete(key);
+    const nextRecordsByTarget = new Map(recordsByTarget);
+    const nextPartialTargetKeys = new Set(partialTargetKeys);
+    for (const result of results) {
+      if (!currentTargetKeys.has(result.key)) continue;
+      if (result.status === "failure") {
+        options.reportError?.(result.target, result.error);
+        nextRecordsByTarget.delete(result.key);
+        nextPartialTargetKeys.delete(result.key);
+        continue;
+      }
+      nextRecordsByTarget.set(
+        result.key,
+        result.truncated
+          ? mergeHistoryRecords(
+              nextRecordsByTarget.get(result.key) ?? [],
+              result.incoming
+            )
+          : result.incoming
+      );
+      if (result.truncated) {
+        nextPartialTargetKeys.add(result.key);
+      } else {
+        nextPartialTargetKeys.delete(result.key);
+      }
     }
-    for (const key of partialTargetKeys) {
-      if (!currentTargetKeys.has(key)) partialTargetKeys.delete(key);
+    for (const key of nextRecordsByTarget.keys()) {
+      if (!currentTargetKeys.has(key)) nextRecordsByTarget.delete(key);
     }
-    const allCurrentRecords = [...recordsByTarget]
+    for (const key of nextPartialTargetKeys) {
+      if (!currentTargetKeys.has(key)) nextPartialTargetKeys.delete(key);
+    }
+    const allCurrentRecords = [...nextRecordsByTarget]
       .flatMap(([, records]) => records)
       .sort(
         (left, right) =>
@@ -133,36 +213,69 @@ export function createTargetHistoryRuntime(options: {
       );
     const truncated =
       allCurrentRecords.length > MAX_HISTORY_RECORDS ||
-      Array.from(partialTargetKeys).some((key) => currentTargetKeys.has(key));
+      Array.from(nextPartialTargetKeys).some((key) =>
+        currentTargetKeys.has(key)
+      );
     const currentRecords = allCurrentRecords.slice(0, MAX_HISTORY_RECORDS);
     const nextResumeByKey = new Map<string, ExternalSessionResumeSpec>();
+    const currentNow = now();
     const sessions = currentRecords.map((entry) =>
-      toExternalSession(entry, now(), nextResumeByKey)
+      toExternalSession(entry, currentNow, nextResumeByKey)
     );
+    if (generation !== settingsGeneration) return null;
+    recordsByTarget.clear();
+    for (const [key, records] of nextRecordsByTarget) {
+      recordsByTarget.set(key, records);
+    }
+    partialTargetKeys.clear();
+    for (const key of nextPartialTargetKeys) partialTargetKeys.add(key);
     resumeByKey.clear();
     for (const [key, spec] of nextResumeByKey) resumeByKey.set(key, spec);
     return {
       sessions,
-      updatedAt: now().toISOString(),
+      updatedAt: currentNow.toISOString(),
       ...(truncated ? { truncated: true } : {})
     };
   }
 
-  const runtime: TargetHistoryRuntime = {
-    listExternalAgentSessions() {
-      refreshInFlight ??= refresh().finally(() => {
-        refreshInFlight = null;
+  function listExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot> {
+    const generation = settingsGeneration;
+    const current = refreshInFlight;
+    if (current?.generation === generation) return current.promise;
+
+    let request!: Promise<ExternalAgentSessionsSnapshot>;
+    request = refresh(generation)
+      .then((snapshot) => snapshot ?? listExternalAgentSessions())
+      .finally(() => {
+        if (refreshInFlight?.promise === request) refreshInFlight = null;
       });
-      return refreshInFlight;
-    },
+    refreshInFlight = { generation, promise: request };
+    return request;
+  }
+
+  const runtime: TargetHistoryRuntime = {
+    listExternalAgentSessions,
     resolveExternalAgentSession(key) {
       return (
         resumeByKey.get(key) ??
         options.localIndexer.resolveExternalAgentSession(key)
       );
+    },
+    invalidateAgentSettings() {
+      settingsGeneration += 1;
+      recordsByTarget.clear();
+      partialTargetKeys.clear();
+      resumeByKey.clear();
+      refreshInFlight = null;
     }
   };
   return Object.freeze(runtime);
+}
+
+function cloneAgentSettings(
+  settings: AgentScopeSettings | undefined
+): AgentScopeSettings | undefined {
+  return settings === undefined ? undefined : structuredClone(settings);
 }
 
 interface TargetHistoryRecordWithTarget {
@@ -189,6 +302,11 @@ function historyRecordIdentity(
   record: TargetHistoryRecord<LocatedPath>
 ): string {
   return `${record.vendor}\0${record.sessionId}`;
+}
+
+function validTimestamp(value: string | undefined): number {
+  const timestamp = value === undefined ? Number.NaN : Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : 0;
 }
 
 function localHistoryRecord(
@@ -228,12 +346,17 @@ function toExternalSession(
   const cwd = record.cwd ? entry.services.files.display(record.cwd) : undefined;
   const updatedAt =
     record.updatedAt ?? new Date(record.updatedAtUnixMs).toISOString();
-  const command = resolveAgentResumeCommand(
-    entry.agentSettings,
-    record.vendor,
-    record.sessionId
-  );
-  if (record.canResume) {
+  const settings =
+    entry.agentSettings && Object.hasOwn(entry.agentSettings, record.vendor)
+      ? entry.agentSettings[record.vendor]
+      : undefined;
+  const policy = resolveBuiltinAgentResumePolicy({
+    agentId: record.vendor,
+    sessionId: record.sessionId,
+    settings
+  });
+  const command = policy ? [policy.command, ...policy.args] : [];
+  if (record.canResume && policy) {
     resumeByKey.set(key, {
       key,
       vendor: record.vendor,
@@ -273,8 +396,8 @@ function toExternalSession(
     ...(record.createdAt === undefined ? {} : { createdAt: record.createdAt }),
     updatedAt,
     relativeTimeLabel: formatRelativeTime(currentNow, record.updatedAtUnixMs),
-    canResume: record.canResume,
-    resumeCommandPreview: formatAgentCommandForShell(command)
+    canResume: record.canResume && Boolean(policy),
+    resumeCommandPreview: policy ? formatAgentCommandForShell(command) : ""
   };
 }
 
@@ -317,25 +440,19 @@ function externalKey(
 function vendorLabel(
   vendor: ExternalAgentSessionVendor
 ): ExternalAgentSessionVm["vendorLabel"] {
-  switch (vendor) {
-    case "codex":
-      return "CODEX";
-    case "claude":
-      return "CLAUDE";
-    case "antigravity":
-      return "AGY";
-  }
+  return (
+    builtinAgentDescriptor(vendor)?.presentation?.shortLabel ??
+    vendor.toUpperCase()
+  );
 }
 
 function vendorTitle(vendor: ExternalAgentSessionVendor): string {
-  switch (vendor) {
-    case "codex":
-      return "Codex";
-    case "claude":
-      return "Claude";
-    case "antigravity":
-      return "Antigravity";
-  }
+  return (
+    builtinAgentDescriptor(vendor)?.displayName ??
+    vendor
+      .replace(/[._-]+/gu, " ")
+      .replace(/\b\w/gu, (character) => character.toUpperCase())
+  );
 }
 
 function formatRelativeTime(now: Date, updatedAtUnixMs: number): string {

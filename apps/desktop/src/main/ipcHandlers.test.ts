@@ -127,6 +127,7 @@ function registerTestHandlers(options: {
 }): void {
   handlers.clear();
   registerIpcHandlers({
+    getAgentCatalog: vi.fn(() => []),
     getPlatformDescriptor: () =>
       createRendererPlatformDescriptor({
         windowChrome: "native",

@@ -283,7 +283,7 @@ describe("shell integration launch preparation", () => {
     expect(existsSync(join(wrapperDir, "bin", "claude"))).toBe(false);
     expect(existsSync(join(wrapperDir, "bin", "codex"))).toBe(true);
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"'
+      'KMUX_AGENT_HOME="${CODEX_HOME:-${HOME}/.codex}"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "codex.wrapper.invoke"
@@ -325,19 +325,16 @@ describe("shell integration launch preparation", () => {
       "kmux_has_notification_method_override() {"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "Codex downgrade needs_input notifications to BEL-only beeps"
+      "kmux_resolve_agent_hooks_feature() {"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "kmux_resolve_codex_hooks_feature() {"
-    );
-    expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      'set -- --enable "$KMUX_CODEX_HOOKS_FEATURE" "$@"'
+      'set -- --enable "$KMUX_AGENT_HOOKS_FEATURE" "$@"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       'set -- --config tui.notification_method=osc9 "$@"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      '"$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?'
+      '"$KMUX_REAL_AGENT" "$@" || KMUX_EXIT_CODE=$?'
     );
     expect(existsSync(join(wrapperDir, "bin", "gemini"))).toBe(false);
     rmSync(fakeHome, { recursive: true, force: true });
@@ -454,7 +451,7 @@ describe("shell integration launch preparation", () => {
     SPAWNED_WRAPPER_TEST_TIMEOUT_MS
   );
 
-  it("recreates the cached zsh wrapper after temp cleanup removes it", () => {
+  it("recreates a missing command in the cached zsh wrapper", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "kmux-zsh-home-"));
 
     try {
@@ -472,8 +469,9 @@ describe("shell integration launch preparation", () => {
         throw new Error("expected zsh wrapper dir");
       }
 
-      rmSync(wrapperDir, { recursive: true, force: true });
-      expect(existsSync(wrapperDir)).toBe(false);
+      const wrapperCodex = join(wrapperDir, "bin", "codex");
+      rmSync(wrapperCodex, { force: true });
+      expect(existsSync(wrapperCodex)).toBe(false);
 
       const second = prepareShellIntegrationLaunch(
         "/bin/zsh",
@@ -490,7 +488,7 @@ describe("shell integration launch preparation", () => {
       expect(existsSync(join(wrapperDir, ".zshrc"))).toBe(true);
       expect(existsSync(join(wrapperDir, "kmux.zsh"))).toBe(true);
       expect(existsSync(join(wrapperDir, "bin", "kmux-agent-hook"))).toBe(true);
-      expect(existsSync(join(wrapperDir, "bin", "codex"))).toBe(true);
+      expect(existsSync(wrapperCodex)).toBe(true);
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
     }

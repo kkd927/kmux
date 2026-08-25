@@ -10,6 +10,7 @@ import {
 } from "@kmux/core";
 import {
   IncrementalSha256,
+  decodeAgentId,
   decodeAgentIntegrationDiagnostic,
   parseUint64Decimal,
   uint64,
@@ -1178,13 +1179,12 @@ function decodeProvisionalReclaim(
 
 function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
   const record = requireRecord(value, "agentSettings");
-  assertExactKeys(record, ["claude", "codex", "antigravity"]);
+  if (Object.keys(record).length > 128) {
+    throw new TypeError("agentSettings exceeds its agent bound");
+  }
   return Object.fromEntries(
-    (["claude", "codex", "antigravity"] as const).flatMap((vendor) => {
-      const raw = record[vendor];
-      if (raw === undefined) {
-        return [];
-      }
+    Object.entries(record).map(([input, raw]) => {
+      const vendor = decodeAgentId(input);
       const settings = requireRecord(raw, `agentSettings.${vendor}`);
       assertExactKeys(settings, ["command", "args", "sessionRoot"]);
       if (
@@ -1194,41 +1194,39 @@ function decodeAgentScopeSettings(value: unknown): AgentScopeSettings {
         throw new TypeError(`agentSettings.${vendor}.args is invalid`);
       }
       return [
-        [
-          vendor,
-          {
-            ...(settings.command === undefined
-              ? {}
-              : {
-                  command: requireString(
-                    settings.command,
-                    `agentSettings.${vendor}.command`,
-                    MAX_PATH_BYTES
+        vendor,
+        {
+          ...(settings.command === undefined
+            ? {}
+            : {
+                command: requireString(
+                  settings.command,
+                  `agentSettings.${vendor}.command`,
+                  MAX_PATH_BYTES
+                )
+              }),
+          ...(settings.args === undefined
+            ? {}
+            : {
+                args: settings.args.map((argument) =>
+                  requireAgentSettingString(
+                    argument,
+                    `agentSettings.${vendor}.args`,
+                    MAX_PATH_BYTES,
+                    true
                   )
-                }),
-            ...(settings.args === undefined
-              ? {}
-              : {
-                  args: settings.args.map((argument) =>
-                    requireAgentSettingString(
-                      argument,
-                      `agentSettings.${vendor}.args`,
-                      MAX_PATH_BYTES,
-                      true
-                    )
-                  )
-                }),
-            ...(settings.sessionRoot === undefined
-              ? {}
-              : {
-                  sessionRoot: requireAgentSessionRoot(
-                    settings.sessionRoot,
-                    `agentSettings.${vendor}.sessionRoot`
-                  )
-                })
-          }
-        ] as const
-      ];
+                )
+              }),
+          ...(settings.sessionRoot === undefined
+            ? {}
+            : {
+                sessionRoot: requireAgentSessionRoot(
+                  settings.sessionRoot,
+                  `agentSettings.${vendor}.sessionRoot`
+                )
+              })
+        }
+      ] as const;
     })
   );
 }

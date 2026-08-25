@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "primitiveVersion": 1,
+  "agents": [
+    {
+      "id": "fixture-nebula",
+      "aliases": ["nebula-cli"],
+      "definitionRevision": "fixture-nebula-v1",
+      "hook": {
+        "format": "grouped-hooks",
+        "relativePath": ".nebula/hooks.json",
+        "marker": "KMUX_MANAGED_NEBULA_FIXTURE=1",
+        "managed": [
+          {
+            "event": "Completed"
+          }
+        ],
+        "deprecated": [],
+        "outputMode": "silent",
+        "successResponse": {},
+        "fallbackResponse": {},
+        "sessionClaim": {
+          "startEvents": ["Completed"],
+          "sessionIdFields": ["sessionId"]
+        }
+      }
+    },
+    {
+      "id": "fixture-orbit",
+      "aliases": [],
+      "definitionRevision": "fixture-orbit-v1",
+      "hook": {
+        "format": "grouped-hooks",
+        "relativePath": ".orbit/hooks.json",
+        "marker": "KMUX_MANAGED_ORBIT_FIXTURE=1",
+        "managed": [
+          {
+            "event": "Started"
+          }
+        ],
+        "deprecated": [],
+        "outputMode": "silent",
+        "successResponse": {},
+        "fallbackResponse": {},
+        "sessionClaim": {
+          "startEvents": ["Started"],
+          "sessionIdFields": ["sessionId"]
+        }
+      },
+      "metadata": {
+        "defaultRoot": ".orbit/sessions",
+        "sources": [
+          {
+            "role": "fixture-orbit/session-jsonl",
+            "format": "jsonl",
+            "pattern": "**/*.jsonl",
+            "purposes": ["externalSessions", "history", "usage"],
+            "claimScope": "agent"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -768,7 +768,7 @@ describe("RemoteLifecycleRuntime", () => {
     await runtime.stop();
   });
 
-  it("promotes remote Codex input OSC into a structured needs-input event", async () => {
+  it("promotes remote Codex input OSC before vendor binding is restored", async () => {
     const fixture = remoteFixture();
     const surface =
       fixture.state.surfaces[
@@ -825,7 +825,7 @@ describe("RemoteLifecycleRuntime", () => {
       {
         receiptStore,
         persist: vi.fn(),
-        getSurfaceVendor: () => "codex"
+        getSurfaceVendor: () => "unknown"
       }
     );
     runtime.recover();

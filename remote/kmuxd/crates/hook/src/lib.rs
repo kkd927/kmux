@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use kmux_agent_manifest::HookSessionClaimDefinition;
 use kmux_compat::RemoteResourceKey;
 use kmux_platform::effective_uid;
 use nix::errno::Errno;
@@ -588,7 +589,7 @@ fn record_owned_agent_session_event(
     let Some((agent, hook_event)) = request.name.split_once('.') else {
         return Ok(());
     };
-    let Some(vendor) = normalized_owned_agent_vendor(agent) else {
+    let Some((vendor, session_claim)) = owned_agent_policy(agent)? else {
         return Ok(());
     };
     let normalized_event = hook_event
@@ -597,12 +598,12 @@ fn record_owned_agent_session_event(
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
-    let creates_claim = matches!(
-        (vendor, normalized_event.as_str()),
-        ("codex" | "claude", "sessionstart") | ("antigravity", "preinvocation")
-    );
+    let creates_claim = session_claim
+        .start_events
+        .iter()
+        .any(|event| normalized_hook_token(event) == normalized_event);
     let payload = request.payload.as_object();
-    let vendor_session_id = owned_vendor_session_id(vendor, payload);
+    let vendor_session_id = owned_vendor_session_id(session_claim, payload);
     if vendor_session_id
         .as_deref()
         .is_some_and(|value| validate_control_id(value).is_err())
@@ -895,32 +896,57 @@ fn validate_owned_agent_session(session: &OwnedAgentSession) -> Result<(), HookE
 }
 
 fn validate_owned_agent_vendor(vendor: &str) -> Result<(), HookError> {
-    if matches!(vendor, "codex" | "claude" | "antigravity") {
+    if !vendor.is_empty()
+        && vendor != "unknown"
+        && vendor.len() <= 64
+        && vendor.as_bytes()[0].is_ascii_alphanumeric()
+        && vendor.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+    {
         Ok(())
     } else {
         Err(HookError::Invalid("owned agent session vendor is invalid"))
     }
 }
 
-fn normalized_owned_agent_vendor(agent: &str) -> Option<&'static str> {
-    match agent.trim().to_ascii_lowercase().as_str() {
-        "codex" => Some("codex"),
-        "claude" => Some("claude"),
-        "agy" | "antigravity" | "antigravity-cli" => Some("antigravity"),
-        _ => None,
-    }
+fn owned_agent_policy(
+    agent_id_or_alias: &str,
+) -> Result<Option<(&'static str, &'static HookSessionClaimDefinition)>, HookError> {
+    let normalized = agent_id_or_alias.trim().to_ascii_lowercase();
+    let definition = kmux_agent_manifest::resolve_agent(&normalized)
+        .map_err(|_| HookError::Invalid("portable agent manifest is invalid"))?;
+    Ok(definition.and_then(|definition| {
+        definition
+            .hook
+            .as_ref()?
+            .session_claim
+            .as_ref()
+            .map(|claim| (definition.id.as_str(), claim))
+    }))
 }
 
 fn owned_vendor_session_id(
-    vendor: &str,
+    session_claim: &HookSessionClaimDefinition,
     payload: Option<&serde_json::Map<String, Value>>,
 ) -> Option<String> {
     let payload = payload?;
-    match vendor {
-        "codex" | "claude" => json_string(payload, &["session_id", "sessionId"]),
-        "antigravity" => json_string(payload, &["conversationId", "conversation_id"]),
-        _ => None,
-    }
+    session_claim
+        .session_id_fields
+        .iter()
+        .find_map(|key| payload.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalized_hook_token(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
 }
 
 fn json_string(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {

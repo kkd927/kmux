@@ -8,6 +8,7 @@ import {
 } from "@kmux/ui";
 import {
   type AgentEventName,
+  isAgentId,
   type AgentScopeSettings,
   type AgentSettings,
   type ActiveWorkspaceActivityVm,
@@ -96,10 +97,7 @@ export type {
 import { surfaceCoreModule, surfaceCoreRegistry } from "./surfaces/registry";
 
 export {
-  agentResumeOperationArgs,
   formatAgentCommandForShell,
-  resolveAgentCommand,
-  resolveAgentResumeCommand,
   resolveAgentScopeSettings,
   shellQuoteAgentCommandPart
 } from "./agentCommands";
@@ -702,26 +700,30 @@ export function sanitizeAgentsSettings(
   if (!isUnknownRecord(value)) {
     return undefined;
   }
-  const agents: NonNullable<KmuxSettings["agents"]> = {};
-  for (const vendor of ["claude", "codex", "antigravity"] as const) {
-    const sanitized = sanitizeAgentSettings(value[vendor]);
-    if (sanitized !== undefined) {
-      agents[vendor] = sanitized;
-    }
-  }
-  if (isUnknownRecord(value.ssh)) {
-    const ssh: AgentScopeSettings = {};
-    for (const vendor of ["claude", "codex", "antigravity"] as const) {
-      const sanitized = sanitizeAgentSettings(value.ssh[vendor]);
-      if (sanitized !== undefined) {
-        ssh[vendor] = sanitized;
-      }
-    }
-    if (Object.keys(ssh).length > 0) {
-      agents.ssh = ssh;
-    }
-  }
+  const local = sanitizeAgentScopeSettings(
+    Object.fromEntries(Object.entries(value).filter(([key]) => key !== "ssh"))
+  );
+  const ssh = isUnknownRecord(value.ssh)
+    ? sanitizeAgentScopeSettings(value.ssh)
+    : undefined;
+  const agents: NonNullable<KmuxSettings["agents"]> = {
+    ...local,
+    ...(ssh === undefined ? {} : { ssh })
+  };
   return Object.keys(agents).length > 0 ? agents : undefined;
+}
+
+function sanitizeAgentScopeSettings(
+  value: Record<string, unknown>
+): AgentScopeSettings | undefined {
+  const entries: Array<[string, AgentSettings]> = [];
+  for (const [agentId, rawSettings] of Object.entries(value)) {
+    if (entries.length >= 128) break;
+    if (!isAgentId(agentId)) continue;
+    const sanitized = sanitizeAgentSettings(rawSettings);
+    if (sanitized !== undefined) entries.push([agentId, sanitized]);
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function sanitizeAgentSettings(value: unknown): AgentSettings | undefined {
@@ -729,13 +731,21 @@ function sanitizeAgentSettings(value: unknown): AgentSettings | undefined {
     return undefined;
   }
   const command =
-    typeof value.command === "string" && value.command.trim()
+    typeof value.command === "string" &&
+    value.command.trim() &&
+    !/[\0\r\n]/u.test(value.command) &&
+    new TextEncoder().encode(value.command.trim()).byteLength <= 4 * 1024
       ? value.command.trim()
       : undefined;
   const args = Array.isArray(value.args)
-    ? value.args.filter(
-        (argument): argument is string => typeof argument === "string"
-      )
+    ? value.args
+        .filter(
+          (argument): argument is string =>
+            typeof argument === "string" &&
+            !argument.includes("\0") &&
+            new TextEncoder().encode(argument).byteLength <= 32 * 1024
+        )
+        .slice(0, 256)
     : undefined;
   const sessionRoot =
     typeof value.sessionRoot === "string" &&
@@ -2993,15 +3003,6 @@ function normalizeAgentName(agent: string): string {
 }
 
 function agentDisplayName(agent: string): string {
-  if (agent === "claude") {
-    return "Claude";
-  }
-  if (agent === "codex") {
-    return "Codex";
-  }
-  if (agent === "antigravity") {
-    return "Antigravity";
-  }
   return agent
     .split(/[-_:]+/)
     .filter(Boolean)
@@ -5197,24 +5198,7 @@ function encodePersistedDetectedWorkspaceWorktree(
 function normalizeExternalAgentSessionVendor(
   value: string
 ): ExternalAgentSessionVendor | null {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.:-]/g, "_");
-  if (normalized === "codex") {
-    return "codex";
-  }
-  if (normalized === "claude") {
-    return "claude";
-  }
-  if (
-    normalized === "agy" ||
-    normalized === "antigravity" ||
-    normalized === "antigravity-cli"
-  ) {
-    return "antigravity";
-  }
-  return null;
+  return isAgentId(value) ? value : null;
 }
 
 function externalAgentSessionKey(

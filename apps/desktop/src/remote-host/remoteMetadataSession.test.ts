@@ -1,6 +1,14 @@
 import { Buffer } from "node:buffer";
 
+import {
+  METADATA_SOURCE_CONTRACT,
+  type MetadataSourceContract
+} from "@kmux/metadata/core";
 import type { RemoteMetadataSourceDto } from "@kmux/proto";
+import {
+  createBuiltinRemoteHistoryProjections,
+  createBuiltinRemoteUsageProjections
+} from "@kmux/agents/builtin-runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -16,6 +24,21 @@ import {
 
 const TARGET_ID = "target_1";
 const SESSION_ID = "session-1";
+const AGENT_DEFINITIONS = Object.freeze({
+  claude: "claude-v1",
+  codex: "codex-v1",
+  antigravity: "antigravity-v1"
+});
+const CLAUDE_DEFINITIONS = Object.freeze({ claude: AGENT_DEFINITIONS.claude });
+const CLAUDE_CODEX_DEFINITIONS = Object.freeze({
+  claude: AGENT_DEFINITIONS.claude,
+  codex: AGENT_DEFINITIONS.codex
+});
+const ANTIGRAVITY_DEFINITIONS = Object.freeze({
+  antigravity: AGENT_DEFINITIONS.antigravity
+});
+const HISTORY_PROJECTIONS = createBuiltinRemoteHistoryProjections();
+const USAGE_PROJECTIONS = createBuiltinRemoteUsageProjections();
 
 describe("RemoteMetadataSession", () => {
   it("reuses unchanged sources and handles append, truncate, and rotation without duplicate usage", async () => {
@@ -98,7 +121,7 @@ describe("RemoteMetadataSession", () => {
     expect(runtime.readOffsets.at(-1)).toBe(0);
   });
 
-  it("coalesces simultaneous usage and history refreshes and preserves the last successful snapshots", async () => {
+  it("keeps simultaneous usage and history inventories independently bounded", async () => {
     const runtime = new FakeMetadataRuntime(initialClaudeLog());
     const session = createSession(runtime);
 
@@ -106,7 +129,9 @@ describe("RemoteMetadataSession", () => {
       session.scanUsage({ startAtUnixMs: 0, maxRecords: 64 }),
       session.scanHistory({ maxRecords: 100 })
     ]);
-    expect(runtime.maximumConcurrentInventories).toBe(1);
+    expect(runtime.maximumConcurrentInventories).toBe(2);
+    expect(runtime.inventoryPurposes).toEqual(["usage", "history"]);
+    expect(runtime.readOffsets).toEqual([0, 0]);
     expect(usage.records).toHaveLength(1);
     expect(history.records).toEqual([
       expect.objectContaining({
@@ -213,6 +238,85 @@ describe("RemoteMetadataSession", () => {
       historySession.scanHistory({ maxRecords: 100 })
     ).resolves.toMatchObject({
       records: [expect.objectContaining({ title: "late history title" })]
+    });
+  });
+
+  it("invalidates the coordinated inventory before retrying a stale source", async () => {
+    const runtime = new FakeMetadataRuntime(initialClaudeLog());
+    const session = createSession(runtime);
+    await session.scanUsage({ startAtUnixMs: 0, maxRecords: 64 });
+    runtime.append(claudeAssistant("request-stale", "2026-08-02T00:00:09Z", 5));
+    runtime.staleReadOnce = true;
+
+    const refreshed = await session.scanUsage({
+      startAtUnixMs: 0,
+      maxRecords: 64
+    });
+
+    expect(runtime.inventoryPurposes.slice(-2)).toEqual(["usage", "usage"]);
+    expect(refreshed.records).toEqual([
+      expect.objectContaining({ inputTokens: "15" })
+    ]);
+  });
+
+  it("batches agent inventory and preserves every handle across a stale retry", async () => {
+    const runtime = new AgentScopedMetadataRuntime();
+    const session = new RemoteMetadataSession({
+      runtime,
+      desktopInstallationId: "desktop_1",
+      targetId: TARGET_ID,
+      principal: { uid: 1_000, accountName: "kmux" },
+      agentDefinitions: CLAUDE_CODEX_DEFINITIONS,
+      historyProjections: HISTORY_PROJECTIONS,
+      usageProjections: USAGE_PROJECTIONS
+    });
+
+    const history = await session.scanHistory({ maxRecords: 100 });
+
+    expect(runtime.maximumConcurrentInventories).toBe(1);
+    expect(runtime.inventoryAgents).toEqual([
+      ["claude", "codex"],
+      ["claude", "codex"]
+    ]);
+    expect(history.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          vendor: "claude",
+          sessionId: SESSION_ID,
+          title: "hello from user"
+        }),
+        expect.objectContaining({
+          vendor: "codex",
+          sessionId: "codex-session",
+          title: "hello from codex"
+        })
+      ])
+    );
+  });
+
+  it("keeps compatible agents when the remote omits an unsupported definition", async () => {
+    const runtime = new AgentScopedMetadataRuntime();
+    runtime.staleReadOnce = false;
+    runtime.unsupportedAgents.add("codex");
+    const session = new RemoteMetadataSession({
+      runtime,
+      desktopInstallationId: "desktop_1",
+      targetId: TARGET_ID,
+      principal: { uid: 1_000, accountName: "kmux" },
+      agentDefinitions: CLAUDE_CODEX_DEFINITIONS,
+      historyProjections: HISTORY_PROJECTIONS,
+      usageProjections: USAGE_PROJECTIONS
+    });
+
+    await expect(
+      session.scanHistory({ maxRecords: 100 })
+    ).resolves.toMatchObject({
+      records: [
+        expect.objectContaining({
+          vendor: "claude",
+          sessionId: SESSION_ID
+        })
+      ]
     });
   });
 
@@ -473,16 +577,141 @@ describe("RemoteMetadataSession", () => {
     ).rejects.toThrow("record budget");
   });
 
-  it("rejects a JSONL record larger than the configured parser bound", async () => {
+  it("skips an oversized usage record and continues with later records", async () => {
     const runtime = new FakeMetadataRuntime(
-      claudeUser("x".repeat(512), "2026-08-02T00:00:00Z")
+      `${claudeUser("x".repeat(1_024), "2026-08-02T00:00:00Z")}${claudeAssistant(
+        "after-oversized-record",
+        "2026-08-02T00:00:01Z",
+        7
+      )}`
     );
     await expect(
-      createSession(runtime, { maxJsonlLineBytes: 128 }).scanUsage({
+      createSession(runtime, { maxJsonlLineBytes: 512 }).scanUsage({
         startAtUnixMs: 0,
         maxRecords: 64
       })
-    ).rejects.toThrow("usage JSONL record exceeds its byte bound");
+    ).resolves.toMatchObject({
+      records: [expect.objectContaining({ inputTokens: "7" })]
+    });
+  });
+
+  it("routes an open future agent source through its injected history projection", async () => {
+    const content = `${JSON.stringify({ prompt: "Future agent request" })}\n`;
+    const definitions = { "fixture-orbit": "fixture-orbit-v1" };
+    const sourceContract = {
+      ...METADATA_SOURCE_CONTRACT,
+      sources: [
+        ...METADATA_SOURCE_CONTRACT.sources,
+        {
+          vendor: "fixture-orbit",
+          role: "fixture-orbit/session-jsonl",
+          format: "jsonl",
+          purposes: ["history"],
+          pattern: "sessions/*.jsonl"
+        }
+      ]
+    } satisfies MetadataSourceContract;
+    const claim = {
+      sessionId: "orbit-session",
+      claimedAtUnixMs: "1700000000000",
+      lastSeenAtUnixMs: "1700000000001",
+      cwd: "/srv/orbit",
+      workspacePaths: ["/srv/orbit"],
+      launchTitle: "Orbit launch"
+    };
+    const runtime = {
+      async listMetadataSources(options: {
+        purpose: "usage" | "history" | "all";
+      }): Promise<RemoteMetadataSourcesList> {
+        return {
+          type: "metadata.sources.listed",
+          targetId: TARGET_ID,
+          purpose: options.purpose,
+          contractVersion: 2,
+          agentDefinitions: definitions,
+          truncated: false,
+          claims: [{ vendor: "fixture-orbit", ...claim }],
+          sources: [
+            {
+              sourceId: "orbit_source",
+              vendor: "fixture-orbit",
+              definitionRevision: "fixture-orbit-v1",
+              role: "fixture-orbit/session-jsonl",
+              format: "jsonl",
+              logicalName: "sessions/orbit-session.jsonl",
+              size: String(Buffer.byteLength(content, "utf8")),
+              mtimeUnixMs: "1700000000000",
+              fileIdentity: "orbit:1",
+              claim
+            }
+          ]
+        };
+      },
+      async readMetadataSource(request: {
+        sourceId: string;
+        offset: number;
+        maxBytes: number;
+      }): Promise<RemoteMetadataSourceRead> {
+        const bytes = Buffer.from(content, "utf8");
+        const end = Math.min(bytes.length, request.offset + request.maxBytes);
+        return {
+          type: "metadata.sources.read",
+          sourceId: request.sourceId,
+          offset: String(request.offset),
+          nextOffset: String(end),
+          eof: end === bytes.length,
+          fileIdentity: "orbit:1",
+          content: bytes.subarray(request.offset, end).toString("utf8")
+        };
+      },
+      async queryMetadataSource(): Promise<RemoteMetadataSourceQuery> {
+        throw new Error("unexpected query");
+      }
+    };
+    const session = new RemoteMetadataSession({
+      runtime,
+      desktopInstallationId: "desktop_1",
+      targetId: TARGET_ID,
+      principal: { uid: 1_000, accountName: "kmux" },
+      agentDefinitions: definitions,
+      sourceContract,
+      usageProjections: new Map(),
+      historyProjections: new Map([
+        [
+          "fixture-orbit",
+          {
+            projectSource(input) {
+              const record = input.records?.[0] as
+                | { prompt?: unknown }
+                | undefined;
+              return [
+                {
+                  sessionId: input.claim?.sessionId ?? "missing",
+                  title:
+                    typeof record?.prompt === "string"
+                      ? record.prompt
+                      : "Orbit session",
+                  updatedAtMs: input.mtimeMs
+                }
+              ];
+            }
+          }
+        ]
+      ])
+    });
+
+    await expect(
+      session.scanHistory({ maxRecords: 100 })
+    ).resolves.toMatchObject({
+      records: [
+        expect.objectContaining({
+          vendor: "fixture-orbit",
+          sessionId: "orbit-session",
+          title: "Future agent request",
+          cwd: "/srv/orbit"
+        })
+      ]
+    });
   });
 
   it("reads shared Antigravity history once and filters it to owned claims", async () => {
@@ -491,7 +720,10 @@ describe("RemoteMetadataSession", () => {
       runtime,
       desktopInstallationId: "desktop_1",
       targetId: TARGET_ID,
-      principal: { uid: 1_000, accountName: "kmux" }
+      principal: { uid: 1_000, accountName: "kmux" },
+      agentDefinitions: ANTIGRAVITY_DEFINITIONS,
+      historyProjections: HISTORY_PROJECTIONS,
+      usageProjections: USAGE_PROJECTIONS
     });
 
     const history = await session.scanHistory({ maxRecords: 100 });
@@ -516,7 +748,10 @@ describe("RemoteMetadataSession", () => {
       runtime,
       desktopInstallationId: "desktop_1",
       targetId: TARGET_ID,
-      principal: { uid: 1_000, accountName: "kmux" }
+      principal: { uid: 1_000, accountName: "kmux" },
+      agentDefinitions: ANTIGRAVITY_DEFINITIONS,
+      historyProjections: HISTORY_PROJECTIONS,
+      usageProjections: USAGE_PROJECTIONS
     });
 
     await expect(
@@ -564,6 +799,9 @@ function createSession(
     desktopInstallationId: "desktop_1",
     targetId: TARGET_ID,
     principal: { uid: 1_000, accountName: "kmux" },
+    agentDefinitions: CLAUDE_DEFINITIONS,
+    historyProjections: HISTORY_PROJECTIONS,
+    usageProjections: USAGE_PROJECTIONS,
     ...(limits === undefined ? {} : { limits })
   });
 }
@@ -577,16 +815,21 @@ function createAntigravityConversationSession(
     desktopInstallationId: "desktop_1",
     targetId: TARGET_ID,
     principal: { uid: 1_000, accountName: "kmux" },
+    agentDefinitions: ANTIGRAVITY_DEFINITIONS,
+    historyProjections: HISTORY_PROJECTIONS,
+    usageProjections: USAGE_PROJECTIONS,
     ...(limits === undefined ? {} : { limits })
   });
 }
 
 class FakeMetadataRuntime {
   readonly readOffsets: number[] = [];
+  readonly inventoryPurposes: Array<"usage" | "history" | "all"> = [];
   maximumConcurrentInventories = 0;
   failInventories = false;
   failReadAtOrAfterOffset: number | undefined;
   inventoryTruncated = false;
+  staleReadOnce = false;
 
   private content: string;
   private claimCwd = "/srv/project";
@@ -640,8 +883,9 @@ class FakeMetadataRuntime {
   }
 
   async listMetadataSources(options: {
-    purpose: "usage" | "history";
+    purpose: "usage" | "history" | "all";
   }): Promise<RemoteMetadataSourcesList> {
+    this.inventoryPurposes.push(options.purpose);
     if (this.failInventories) {
       throw new RemoteRuntimeError(
         "bridge-unavailable",
@@ -662,10 +906,11 @@ class FakeMetadataRuntime {
       type: "metadata.sources.listed",
       targetId: TARGET_ID,
       purpose: options.purpose,
-      contractVersion: 1,
+      contractVersion: 2,
+      agentDefinitions: CLAUDE_DEFINITIONS,
       truncated: this.inventoryTruncated,
       claims:
-        options.purpose === "history" && this.includeClaim
+        options.purpose !== "usage" && this.includeClaim
           ? [{ vendor: "claude", ...this.sourceClaim() }]
           : [],
       sources: this.includeSource ? [this.source(sourceId)] : []
@@ -680,6 +925,16 @@ class FakeMetadataRuntime {
     const content = this.contentBySourceId.get(options.sourceId);
     if (content === undefined) throw new Error("unknown source");
     this.readOffsets.push(options.offset);
+    if (this.staleReadOnce) {
+      this.staleReadOnce = false;
+      this.identity = `1:${this.revision + 1}`;
+      this.revision += 1;
+      throw new RemoteRuntimeError(
+        "stale_source",
+        "injected metadata source rotation",
+        true
+      );
+    }
     if (
       this.failReadAtOrAfterOffset !== undefined &&
       options.offset >= this.failReadAtOrAfterOffset
@@ -711,6 +966,7 @@ class FakeMetadataRuntime {
     return {
       sourceId,
       vendor: "claude",
+      definitionRevision: AGENT_DEFINITIONS.claude,
       role: "claude-session",
       format: "jsonl",
       logicalName: `projects/${SESSION_ID}.jsonl`,
@@ -733,6 +989,160 @@ class FakeMetadataRuntime {
   }
 }
 
+class AgentScopedMetadataRuntime {
+  readonly inventoryAgents: string[][] = [];
+  readonly unsupportedAgents = new Set<string>();
+  maximumConcurrentInventories = 0;
+  staleReadOnce = true;
+
+  private activeInventories = 0;
+  private readonly generationByAgent = new Map<string, number>();
+  private readonly handles = new Map<
+    string,
+    {
+      agentId: string;
+      purpose: "usage" | "history" | "all";
+      content: string;
+      fileIdentity: string;
+    }
+  >();
+
+  async listMetadataSources(options: {
+    purpose: "usage" | "history" | "all";
+    agentDefinitions: Record<string, string>;
+  }): Promise<RemoteMetadataSourcesList> {
+    const requestedDefinitions = Object.entries(options.agentDefinitions).sort(
+      ([left], [right]) => left.localeCompare(right)
+    );
+    if (requestedDefinitions.length === 0) {
+      throw new Error("test runtime requires agent definitions");
+    }
+    this.inventoryAgents.push(requestedDefinitions.map(([agentId]) => agentId));
+    const definitions = requestedDefinitions.filter(
+      ([agentId]) => !this.unsupportedAgents.has(agentId)
+    );
+    this.activeInventories += 1;
+    this.maximumConcurrentInventories = Math.max(
+      this.maximumConcurrentInventories,
+      this.activeInventories
+    );
+    await Promise.resolve();
+    this.activeInventories -= 1;
+    const requestedAgents = new Set(definitions.map(([agentId]) => agentId));
+    for (const [sourceId, handle] of this.handles) {
+      if (
+        handle.purpose === options.purpose &&
+        requestedAgents.has(handle.agentId)
+      ) {
+        this.handles.delete(sourceId);
+      }
+    }
+    const claims: RemoteMetadataSourcesList["claims"] = [];
+    const sources: RemoteMetadataSourcesList["sources"] = [];
+    for (const [agentId, definitionRevision] of definitions) {
+      const generation = (this.generationByAgent.get(agentId) ?? 0) + 1;
+      this.generationByAgent.set(agentId, generation);
+      const sourceId = `${agentId}_source_${generation}`;
+      const fileIdentity = `${agentId}:${generation}`;
+      const sessionId = agentId === "claude" ? SESSION_ID : "codex-session";
+      const content =
+        agentId === "claude"
+          ? initialClaudeLog()
+          : [
+              JSON.stringify({
+                type: "session_meta",
+                timestamp: "2026-08-02T00:00:00Z",
+                payload: { id: sessionId, cwd: "/srv/codex" }
+              }),
+              JSON.stringify({
+                type: "event_msg",
+                timestamp: "2026-08-02T00:00:01Z",
+                payload: {
+                  type: "user_message",
+                  message: "hello from codex"
+                }
+              })
+            ].join("\n") + "\n";
+      this.handles.set(sourceId, {
+        agentId,
+        purpose: options.purpose,
+        content,
+        fileIdentity
+      });
+      const claim = {
+        sessionId,
+        claimedAtUnixMs: "1",
+        lastSeenAtUnixMs: "1700000000001",
+        cwd: agentId === "claude" ? "/srv/project" : "/srv/codex",
+        workspacePaths: [agentId === "claude" ? "/srv/project" : "/srv/codex"],
+        launchTitle: `${agentId} session`
+      };
+      claims.push({ vendor: agentId, ...claim });
+      sources.push({
+        sourceId,
+        vendor: agentId,
+        definitionRevision,
+        role: agentId === "claude" ? "claude-session" : "codex-session",
+        format: "jsonl",
+        logicalName: `${agentId}/${sessionId}.jsonl`,
+        size: String(Buffer.byteLength(content, "utf8")),
+        mtimeUnixMs: String(1_700_000_000_000 + generation),
+        fileIdentity,
+        claim
+      });
+    }
+    return {
+      type: "metadata.sources.listed",
+      targetId: TARGET_ID,
+      purpose: options.purpose,
+      contractVersion: 2,
+      agentDefinitions: Object.fromEntries(definitions),
+      truncated: false,
+      claims: options.purpose === "usage" ? [] : claims,
+      sources
+    };
+  }
+
+  async readMetadataSource(options: {
+    sourceId: string;
+    offset: number;
+    maxBytes: number;
+  }): Promise<RemoteMetadataSourceRead> {
+    const handle = this.handles.get(options.sourceId);
+    if (!handle) {
+      throw new RemoteRuntimeError(
+        "stale_source",
+        "metadata source handle is stale",
+        true
+      );
+    }
+    if (this.staleReadOnce) {
+      this.staleReadOnce = false;
+      this.handles.delete(options.sourceId);
+      throw new RemoteRuntimeError(
+        "stale_source",
+        "injected metadata source rotation",
+        true
+      );
+    }
+    const bytes = Buffer.from(handle.content, "utf8");
+    const end = Math.min(bytes.length, options.offset + options.maxBytes);
+    return {
+      type: "metadata.sources.read",
+      sourceId: options.sourceId,
+      offset: String(options.offset),
+      nextOffset: String(end),
+      eof: end === bytes.length,
+      fileIdentity: handle.fileIdentity,
+      content: bytes.subarray(options.offset, end).toString("utf8")
+    };
+  }
+
+  queryMetadataSource = vi.fn(async (): Promise<RemoteMetadataSourceQuery> => {
+    throw new Error("unexpected SQLite query");
+  });
+}
+
 class FakeAntigravityHistoryRuntime {
   readonly readOffsets: number[] = [];
   private readonly content = [
@@ -753,7 +1163,9 @@ class FakeAntigravityHistoryRuntime {
     })
   ].join("\n");
 
-  async listMetadataSources(): Promise<RemoteMetadataSourcesList> {
+  async listMetadataSources(options: {
+    purpose: "usage" | "history" | "all";
+  }): Promise<RemoteMetadataSourcesList> {
     const claims = ["conversation-1", "conversation-2"].map((sessionId) => ({
       vendor: "antigravity" as const,
       sessionId,
@@ -766,13 +1178,15 @@ class FakeAntigravityHistoryRuntime {
     return {
       type: "metadata.sources.listed",
       targetId: TARGET_ID,
-      purpose: "history",
-      contractVersion: 1,
+      purpose: options.purpose,
+      contractVersion: 2,
+      agentDefinitions: ANTIGRAVITY_DEFINITIONS,
       truncated: false,
       claims,
       sources: claims.map((claim, index) => ({
         sourceId: `antigravity_history_${index}`,
         vendor: "antigravity",
+        definitionRevision: AGENT_DEFINITIONS.antigravity,
         role: "antigravity-history",
         format: "jsonl",
         logicalName: "history.jsonl",
@@ -817,7 +1231,9 @@ class FakeAntigravityConversationRuntime {
   }> = [];
   nextPageToken: string | undefined;
 
-  async listMetadataSources(): Promise<RemoteMetadataSourcesList> {
+  async listMetadataSources(options: {
+    purpose: "usage" | "history" | "all";
+  }): Promise<RemoteMetadataSourcesList> {
     const claim = {
       vendor: "antigravity" as const,
       sessionId: "conversation-1",
@@ -829,14 +1245,16 @@ class FakeAntigravityConversationRuntime {
     return {
       type: "metadata.sources.listed",
       targetId: TARGET_ID,
-      purpose: "history",
-      contractVersion: 1,
+      purpose: options.purpose,
+      contractVersion: 2,
+      agentDefinitions: ANTIGRAVITY_DEFINITIONS,
       truncated: false,
       claims: [claim],
       sources: [
         {
           sourceId: "antigravity_conversation",
           vendor: "antigravity",
+          definitionRevision: AGENT_DEFINITIONS.antigravity,
           role: "antigravity-conversation",
           format: "sqlite",
           logicalName: "conversations/conversation-1.db",

@@ -2,27 +2,35 @@ import { createHash } from "node:crypto";
 
 import {
   IncrementalCoreHistoryJsonlParser,
-  IncrementalCoreUsageParser,
   METADATA_SOURCE_CONTRACT,
   aggregateCoreUsageSamples,
   applyCoreHistoryClaim,
-  cloneCoreUsageParserState,
   coreUsageSampleIdentity,
-  createCoreUsageParserState,
   dedupeCoreUsageSamples,
   fallbackCoreHistoryRecord,
   mergeCoreHistoryRecords,
-  parseAntigravityConversationRows,
-  parseCoreHistorySource,
   shouldReplaceCoreUsageSample,
   type CoreHistoryClaim,
   type CoreHistoryRecord,
-  type CoreUsageEventSample,
-  type CoreUsageParserState
+  type MetadataSourceContract,
+  type CoreUsageEventSample
 } from "@kmux/metadata/core";
 import type {
+  AgentExternalSessionRecordProjection,
+  AgentHistorySourceProjection,
+  AgentUsageSourceParser,
+  AgentUsageSourceProjection,
+  AgentUsageSourceProjectionSession
+} from "@kmux/agents";
+import {
+  createMetadataSourceCoordinator,
+  type MetadataProjectionLease
+} from "@kmux/metadata";
+import type {
+  AgentId,
   AgentScopeSettings,
   Id,
+  RemoteAgentDefinitionRevisionsDto,
   RemoteBridgeResponseBody,
   RemoteMetadataClaimDto,
   RemoteMetadataSourceClaimDto,
@@ -44,11 +52,14 @@ type RemoteMetadataRuntime = Pick<
   "listMetadataSources" | "readMetadataSource" | "queryMetadataSource"
 >;
 
+type RemoteMetadataPurpose = "usage" | "history";
+type RemoteMetadataInventoryPurpose = RemoteMetadataPurpose | "all";
+
 interface UsageSourceState {
   source: RemoteMetadataSourceDto;
   fingerprint: string;
   cursor: number;
-  parser: IncrementalCoreUsageParser;
+  parser: AgentUsageSourceParser;
   samples: Map<string, CoreUsageEventSample>;
   continuity?: SourceContinuity;
 }
@@ -76,6 +87,23 @@ interface LastHistorySnapshot {
 interface UsageSnapshot {
   records: RemoteUsageScan["records"];
   truncated: boolean;
+}
+
+interface RemoteMetadataInventoryLoader {
+  load(
+    purpose: RemoteMetadataInventoryPurpose
+  ): Promise<RemoteMetadataSourcesList>;
+}
+
+type RemoteMetadataLease = MetadataProjectionLease<
+  RemoteMetadataInventoryLoader,
+  RemoteMetadataSourceRead
+>;
+
+interface CoordinatedReadRequest {
+  sourceId: Id;
+  offset: number;
+  maxBytes: number;
 }
 
 export interface RemoteMetadataSessionLimits {
@@ -116,14 +144,26 @@ export class RemoteMetadataSession {
   private refreshPromise: Promise<void> | undefined;
   private refreshUsageStartAtUnixMs: number | undefined;
   private usageRetainedFromUnixMs: number | undefined;
-  private usageParserState: CoreUsageParserState = createCoreUsageParserState();
+  private usageProjectionSessions: Map<
+    AgentId,
+    AgentUsageSourceProjectionSession
+  >;
   private usageSources = new Map<string, UsageSourceState>();
+  private usageClaims = new Map<string, RemoteMetadataClaimDto>();
   private historySources = new Map<string, HistorySourceState>();
   private historyClaims = new Map<string, RemoteMetadataClaimDto>();
   private usageInventoryTruncated = false;
   private historyInventoryTruncated = false;
   private lastHistory: LastHistorySnapshot | undefined;
   private readonly limits: RemoteMetadataSessionLimits;
+  private readonly sourceContract: MetadataSourceContract;
+  private readonly sourceCoordinator = createMetadataSourceCoordinator<
+    RemoteMetadataInventoryLoader,
+    RemoteMetadataSourceRead
+  >();
+  private activeSourceLeases:
+    | ReadonlyMap<AgentId, RemoteMetadataLease>
+    | undefined;
 
   constructor(
     private readonly options: {
@@ -131,10 +171,18 @@ export class RemoteMetadataSession {
       desktopInstallationId: Id;
       targetId: Id;
       principal: { uid: number; accountName: string };
+      agentDefinitions: RemoteAgentDefinitionRevisionsDto;
+      historyProjections: ReadonlyMap<AgentId, AgentHistorySourceProjection>;
+      usageProjections: ReadonlyMap<AgentId, AgentUsageSourceProjection>;
+      sourceContract?: MetadataSourceContract;
       limits?: Partial<RemoteMetadataSessionLimits>;
     }
   ) {
     this.limits = metadataSessionLimits(options.limits);
+    this.sourceContract = options.sourceContract ?? METADATA_SOURCE_CONTRACT;
+    this.usageProjectionSessions = createUsageProjectionSessions(
+      options.usageProjections
+    );
   }
 
   async scanUsage(request: {
@@ -188,14 +236,14 @@ export class RemoteMetadataSession {
 
   clear(): void {
     this.usageSources.clear();
+    this.usageClaims.clear();
     this.historySources.clear();
     this.historyClaims.clear();
     this.usageInventoryTruncated = false;
     this.historyInventoryTruncated = false;
-    this.usageParserState.codexContexts.clear();
-    this.usageParserState.codexTotals.clear();
-    this.usageParserState.antigravityContexts.clear();
-    this.usageParserState.antigravityWorkspaceByConversation.clear();
+    this.usageProjectionSessions = createUsageProjectionSessions(
+      this.options.usageProjections
+    );
     this.lastHistory = undefined;
     this.refreshUsageStartAtUnixMs = undefined;
     this.usageRetainedFromUnixMs = undefined;
@@ -241,26 +289,203 @@ export class RemoteMetadataSession {
   private async drainRefreshes(
     agentSettings: AgentScopeSettings | undefined
   ): Promise<void> {
-    while (true) {
-      await Promise.resolve();
-      if (this.pendingRefreshes.size === 0) return;
-      const purposes = new Set(this.pendingRefreshes);
-      this.pendingRefreshes.clear();
-      if (purposes.has("usage")) {
-        const startAtUnixMs = this.refreshUsageStartAtUnixMs;
-        if (startAtUnixMs === undefined) {
+    const leases = await this.acquireSourceLeases(agentSettings);
+    this.activeSourceLeases = leases;
+    try {
+      while (true) {
+        await Promise.resolve();
+        if (this.pendingRefreshes.size === 0) return;
+        const purposes = new Set(this.pendingRefreshes);
+        this.pendingRefreshes.clear();
+        const startAtUnixMs = purposes.has("usage")
+          ? this.refreshUsageStartAtUnixMs
+          : undefined;
+        if (purposes.has("usage") && startAtUnixMs === undefined) {
           throw new Error("usage metadata refresh lost its requested range");
         }
-        await this.withStaleSourceRetry(() =>
-          this.refreshUsage(agentSettings, startAtUnixMs)
-        );
+        await this.withStaleSourceRetry(async () => {
+          const results = await Promise.allSettled([
+            ...(startAtUnixMs === undefined
+              ? []
+              : [this.refreshUsage(startAtUnixMs)]),
+            ...(purposes.has("history") ? [this.refreshHistory()] : [])
+          ]);
+          const failed = results.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected"
+          );
+          if (failed) throw failed.reason;
+        });
       }
-      if (purposes.has("history")) {
-        await this.withStaleSourceRetry(() =>
-          this.refreshHistory(agentSettings)
-        );
-      }
+    } finally {
+      this.activeSourceLeases = undefined;
+      await Promise.all([...leases.values()].map((lease) => lease.release()));
     }
+  }
+
+  private async acquireSourceLeases(
+    agentSettings: AgentScopeSettings | undefined
+  ): Promise<ReadonlyMap<AgentId, RemoteMetadataLease>> {
+    const rootSettingsRevision = stableSettingsSignature(agentSettings);
+    const metadataDefinitions = Object.fromEntries(
+      Object.entries(this.options.agentDefinitions).filter(([agentId]) =>
+        this.sourceContract.sources.some((source) => source.vendor === agentId)
+      )
+    );
+    const batchInventories = new Map<
+      RemoteMetadataInventoryPurpose,
+      Promise<RemoteMetadataSourcesList>
+    >();
+    // Each product purpose owns an independent remote source-count and
+    // response-byte budget. Batch agents within a purpose; never consume
+    // `all` as the source inventory for both products.
+    const loadBatchInventory = (purpose: RemoteMetadataInventoryPurpose) => {
+      const existing = batchInventories.get(purpose);
+      if (existing) return existing;
+      const inventory = this.options.runtime
+        .listMetadataSources({
+          desktopInstallationId: this.options.desktopInstallationId,
+          targetId: this.options.targetId,
+          purpose,
+          agentDefinitions: metadataDefinitions,
+          ...(agentSettings === undefined ? {} : { agentSettings })
+        })
+        .then((inventory) => {
+          requireSourceInventory(
+            inventory,
+            this.options.targetId,
+            purpose,
+            metadataDefinitions,
+            this.sourceContract
+          );
+          return inventory;
+        })
+        .catch((error) => {
+          batchInventories.delete(purpose);
+          throw error;
+        });
+      batchInventories.set(purpose, inventory);
+      return inventory;
+    };
+    const invalidateBatchInventory = () => {
+      batchInventories.clear();
+    };
+    const leases = await Promise.all(
+      Object.entries(metadataDefinitions).map(
+        ([untrustedAgentId, definitionRevision]) => {
+          const agentId = untrustedAgentId as AgentId;
+          return this.sourceCoordinator
+            .acquire(
+              {
+                targetAuthority: this.options.targetId,
+                principal: `${this.options.principal.uid}:${this.options.principal.accountName}`,
+                agentId,
+                sourceDefinitionRevision: definitionRevision,
+                rootSettingsRevision
+              },
+              () => ({
+                inventory: async () => ({
+                  load: async (purpose: RemoteMetadataInventoryPurpose) =>
+                    partitionSourceInventory(
+                      await loadBatchInventory(purpose),
+                      agentId
+                    )
+                }),
+                read: (key) =>
+                  this.options.runtime.readMetadataSource(
+                    decodeCoordinatedReadRequest(key)
+                  ),
+                close() {}
+              })
+            )
+            .then(
+              (lease) =>
+                [
+                  agentId,
+                  withBatchInventoryInvalidation(
+                    lease,
+                    invalidateBatchInventory
+                  )
+                ] as const
+            );
+        }
+      )
+    );
+    return new Map(leases);
+  }
+
+  private async sourceInventory(purpose: RemoteMetadataPurpose): Promise<{
+    sources: RemoteMetadataSourceDto[];
+    claims: RemoteMetadataClaimDto[];
+    truncated: boolean;
+  }> {
+    const leases = this.activeSourceLeases;
+    if (!leases) throw new Error("metadata refresh has no source leases");
+    const inventoryLoaders = await Promise.all(
+      [...leases.values()].map((lease) => lease.inventory())
+    );
+    const loadInventories = async (
+      requestedPurpose: RemoteMetadataInventoryPurpose
+    ) => {
+      const inventories = await Promise.all(
+        inventoryLoaders.map((loader) => loader.load(requestedPurpose))
+      );
+      for (const inventory of inventories) {
+        requireSourceInventory(
+          inventory,
+          this.options.targetId,
+          requestedPurpose,
+          this.options.agentDefinitions,
+          this.sourceContract
+        );
+      }
+      return inventories;
+    };
+    const requiresAgentClaims =
+      purpose === "usage" &&
+      this.sourceContract.sources.some(
+        (source) =>
+          source.claimScope === "agent" &&
+          source.purposes.includes("usage") &&
+          ownRecordValue(this.options.agentDefinitions, source.vendor) !==
+            undefined
+      );
+    const [inventories, claimInventories] = await Promise.all([
+      loadInventories(purpose),
+      // `all` is only a claim side channel here. Its globally bounded sources
+      // are intentionally ignored; usage sources come from their own budget.
+      requiresAgentClaims ? loadInventories("all") : undefined
+    ]);
+    return {
+      sources: inventories.flatMap((inventory) =>
+        inventory.sources.filter((source) =>
+          metadataSourceSupportsPurpose(source, purpose, this.sourceContract)
+        )
+      ),
+      claims: (claimInventories ?? inventories).flatMap(
+        (inventory) => inventory.claims
+      ),
+      truncated: [...inventories, ...(claimInventories ?? [])].some(
+        (inventory) => inventory.truncated
+      )
+    };
+  }
+
+  private readSource(
+    source: RemoteMetadataSourceDto,
+    offset: number,
+    maxBytes: number
+  ): Promise<RemoteMetadataSourceRead> {
+    const lease = this.activeSourceLeases?.get(source.vendor);
+    if (!lease)
+      throw new Error("metadata source is outside its agent topology");
+    return lease.read(
+      encodeCoordinatedReadRequest({
+        sourceId: source.sourceId,
+        offset,
+        maxBytes
+      })
+    );
   }
 
   private requireSettings(settings: AgentScopeSettings | undefined): void {
@@ -274,39 +499,42 @@ export class RemoteMetadataSession {
     this.settingsSignature = signature;
   }
 
-  private async refreshUsage(
-    agentSettings: AgentScopeSettings | undefined,
-    startAtUnixMs: number
-  ): Promise<void> {
-    const inventory = await this.options.runtime.listMetadataSources({
-      desktopInstallationId: this.options.desktopInstallationId,
-      targetId: this.options.targetId,
-      purpose: "usage",
-      ...(agentSettings === undefined ? {} : { agentSettings })
-    });
-    requireSourceInventory(inventory, this.options.targetId, "usage");
+  private async refreshUsage(startAtUnixMs: number): Promise<void> {
+    const inventory = await this.sourceInventory("usage");
+    const nextClaims = inventory.truncated
+      ? new Map(this.usageClaims)
+      : new Map<string, RemoteMetadataClaimDto>();
+    for (const claim of inventory.claims) {
+      nextClaims.set(`${claim.vendor}:${claim.sessionId}`, claim);
+    }
 
     const resetForEarlierRange =
       !inventory.truncated &&
       this.usageRetainedFromUnixMs !== undefined &&
       startAtUnixMs < this.usageRetainedFromUnixMs;
-    const parserState = resetForEarlierRange
-      ? createCoreUsageParserState()
-      : cloneCoreUsageParserState(this.usageParserState);
+    const projectionSessions = resetForEarlierRange
+      ? createUsageProjectionSessions(this.options.usageProjections)
+      : cloneUsageProjectionSessions(this.usageProjectionSessions);
     const sources = resetForEarlierRange
       ? new Map<string, UsageSourceState>()
-      : cloneUsageSources(this.usageSources, parserState);
+      : cloneUsageSources(this.usageSources, projectionSessions);
     for (const state of sources.values()) {
       for (const [identity, sample] of state.samples) {
         if (sample.timestampMs < startAtUnixMs) state.samples.delete(identity);
       }
     }
-    const listedSources = dedupeInventorySources("usage", inventory.sources);
-    if (!inventory.truncated) {
-      parserState.antigravityWorkspaceByConversation.clear();
+    const listedSources = dedupeInventorySources(
+      "usage",
+      inventory.sources,
+      this.sourceContract
+    );
+    for (const session of projectionSessions.values()) {
+      session.beginInventory({ truncated: inventory.truncated });
     }
     const present = new Set(
-      listedSources.map((source) => metadataSourceKey("usage", source))
+      listedSources.map((source) =>
+        metadataSourceKey("usage", source, this.sourceContract)
+      )
     );
     if (!inventory.truncated) {
       for (const [key, state] of sources) {
@@ -326,18 +554,20 @@ export class RemoteMetadataSession {
     };
     requireUsageSampleBudget(budget, this.limits);
     for (const source of listedSources) {
-      const key = metadataSourceKey("usage", source);
+      const key = metadataSourceKey("usage", source, this.sourceContract);
       await this.refreshUsageSource(
         sources,
-        parserState,
+        projectionSessions,
         budget,
         key,
         source,
+        nextClaims,
         startAtUnixMs
       );
     }
     this.usageSources = sources;
-    this.usageParserState = parserState;
+    this.usageClaims = nextClaims;
+    this.usageProjectionSessions = projectionSessions;
     this.usageRetainedFromUnixMs = inventory.truncated
       ? Math.max(this.usageRetainedFromUnixMs ?? startAtUnixMs, startAtUnixMs)
       : startAtUnixMs;
@@ -346,26 +576,30 @@ export class RemoteMetadataSession {
 
   private async refreshUsageSource(
     sources: Map<string, UsageSourceState>,
-    parserState: CoreUsageParserState,
+    projectionSessions: ReadonlyMap<AgentId, AgentUsageSourceProjectionSession>,
     budget: MetadataRefreshBudget,
     key: string,
     source: RemoteMetadataSourceDto,
+    claims: ReadonlyMap<string, RemoteMetadataClaimDto>,
     startAtUnixMs: number
   ): Promise<void> {
     if (source.format !== "jsonl") return;
+    const projectionSession = projectionSessions.get(source.vendor);
+    if (!projectionSession) return;
     const size = safeDecimalNumber(source.size, "metadata source size");
     const fingerprint = metadataSourceFingerprint(source);
     const virtualPath = metadataVirtualPath(source);
-    const claim = toCoreHistoryClaim(source.claim);
-    if (source.vendor === "antigravity") {
-      if (claim.cwd) {
-        parserState.antigravityWorkspaceByConversation.set(
-          claim.sessionId,
-          claim.cwd
-        );
-      } else {
-        parserState.antigravityWorkspaceByConversation.delete(claim.sessionId);
-      }
+    const agentScoped =
+      metadataSourceDefinition(source, this.sourceContract)?.claimScope ===
+      "agent";
+    const sourceClaims = agentScoped
+      ? [...claims.values()].filter((claim) => claim.vendor === source.vendor)
+      : [source.claim];
+    for (const claim of sourceClaims) {
+      projectionSession.applySourceClaim({
+        role: source.role,
+        claim: toCoreHistoryClaim(claim)
+      });
     }
     let state = sources.get(key);
     const previousSize = state
@@ -398,12 +632,12 @@ export class RemoteMetadataSession {
         source,
         fingerprint,
         cursor: 0,
-        parser: new IncrementalCoreUsageParser(
-          source.vendor,
-          virtualPath,
-          parserState,
-          { maximumPendingBytes: this.limits.maxJsonlLineBytes }
-        ),
+        parser: projectionSession.createParser({
+          role: source.role,
+          format: source.format,
+          sourcePath: virtualPath,
+          maximumPendingBytes: this.limits.maxJsonlLineBytes
+        }),
         samples: new Map()
       };
       sources.set(key, state);
@@ -411,11 +645,11 @@ export class RemoteMetadataSession {
     }
     reserveTransferBytes(budget, key, size - state.cursor, this.limits);
     while (state.cursor < size) {
-      const chunk = await this.options.runtime.readMetadataSource({
-        sourceId: source.sourceId,
-        offset: state.cursor,
-        maxBytes: this.limits.maxReadBytes
-      });
+      const chunk = await this.readSource(
+        source,
+        state.cursor,
+        this.limits.maxReadBytes
+      );
       requireSourceRead(chunk, source, state.cursor);
       const nextOffset = safeDecimalNumber(
         chunk.nextOffset,
@@ -433,13 +667,23 @@ export class RemoteMetadataSession {
           eof: chunk.eof
         }
       )) {
-        if (parsed.sessionId !== source.claim.sessionId) {
-          continue;
+        if (parsed.vendor !== source.vendor) {
+          throw new TypeError(
+            "usage projection changed the source agent identity"
+          );
         }
+        const matchingClaim = agentScoped
+          ? parsed.sessionId === undefined
+            ? undefined
+            : claims.get(`${source.vendor}:${parsed.sessionId}`)
+          : parsed.sessionId === source.claim.sessionId
+            ? source.claim
+            : undefined;
+        if (!matchingClaim) continue;
         if (
           parsed.timestampMs <
           safeDecimalNumber(
-            source.claim.claimedAtUnixMs,
+            matchingClaim.claimedAtUnixMs,
             "metadata claim timestamp"
           )
         ) {
@@ -447,7 +691,7 @@ export class RemoteMetadataSession {
         }
         const sample: CoreUsageEventSample = {
           ...parsed,
-          sessionId: source.claim.sessionId,
+          sessionId: matchingClaim.sessionId,
           cwd: absolutePath(parsed.cwd),
           projectPath:
             absolutePath(parsed.projectPath) ?? absolutePath(parsed.cwd)
@@ -469,16 +713,8 @@ export class RemoteMetadataSession {
     state.continuity = sourceContinuity(tail, state.cursor);
   }
 
-  private async refreshHistory(
-    agentSettings: AgentScopeSettings | undefined
-  ): Promise<void> {
-    const inventory = await this.options.runtime.listMetadataSources({
-      desktopInstallationId: this.options.desktopInstallationId,
-      targetId: this.options.targetId,
-      purpose: "history",
-      ...(agentSettings === undefined ? {} : { agentSettings })
-    });
-    requireSourceInventory(inventory, this.options.targetId, "history");
+  private async refreshHistory(): Promise<void> {
+    const inventory = await this.sourceInventory("history");
     const nextClaims = inventory.truncated
       ? new Map(this.historyClaims)
       : new Map<string, RemoteMetadataClaimDto>();
@@ -486,9 +722,15 @@ export class RemoteMetadataSession {
       nextClaims.set(`${claim.vendor}:${claim.sessionId}`, claim);
     }
     const sources = cloneHistorySources(this.historySources);
-    const listedSources = dedupeInventorySources("history", inventory.sources);
+    const listedSources = dedupeInventorySources(
+      "history",
+      inventory.sources,
+      this.sourceContract
+    );
     const present = new Set(
-      listedSources.map((source) => metadataSourceKey("history", source))
+      listedSources.map((source) =>
+        metadataSourceKey("history", source, this.sourceContract)
+      )
     );
     if (!inventory.truncated) {
       for (const key of sources.keys()) {
@@ -506,7 +748,7 @@ export class RemoteMetadataSession {
     };
     requireHistoryRecordBudget(budget, this.limits);
     for (const source of listedSources) {
-      const key = metadataSourceKey("history", source);
+      const key = metadataSourceKey("history", source, this.sourceContract);
       await this.refreshHistorySource(sources, budget, key, source);
     }
     this.historySources = sources;
@@ -566,14 +808,10 @@ export class RemoteMetadataSession {
       tail = "";
     }
     if (source.format === "sqlite") {
-      const rows = await this.readConversationEdgeRows(source, budget, key);
-      const record = parseAntigravityConversationRows({
-        logicalName: `/${source.logicalName}`,
-        mtimeMs: safeDecimalNumber(source.mtimeUnixMs, "metadata source mtime"),
-        rows,
-        claim: identityHistoryClaim(source.claim)
+      const query = await this.readSourceQuery(source, budget, key);
+      state.records = await this.projectHistorySource(source, {
+        query
       });
-      state.records = record ? [record] : [];
       state.cursor = size;
       state.source = source;
       state.fingerprint = fingerprint;
@@ -588,11 +826,11 @@ export class RemoteMetadataSession {
     state.accumulator = accumulator;
     reserveTransferBytes(budget, key, size - state.cursor, this.limits);
     while (state.cursor < size) {
-      const chunk = await this.options.runtime.readMetadataSource({
-        sourceId: source.sourceId,
-        offset: state.cursor,
-        maxBytes: this.limits.maxReadBytes
-      });
+      const chunk = await this.readSource(
+        source,
+        state.cursor,
+        this.limits.maxReadBytes
+      );
       requireSourceRead(chunk, source, state.cursor);
       const nextOffset = safeDecimalNumber(
         chunk.nextOffset,
@@ -606,15 +844,8 @@ export class RemoteMetadataSession {
       accumulator.append(chunk.content, { eof: chunk.eof });
       if (chunk.eof) break;
     }
-    state.records = parseCoreHistorySource({
-      vendor: source.vendor,
-      role: source.role,
-      logicalName: `/${source.logicalName}`,
-      mtimeMs: safeDecimalNumber(source.mtimeUnixMs, "metadata source mtime"),
-      records: accumulator.records(),
-      ...(source.role === "antigravity-history"
-        ? {}
-        : { claim: identityHistoryClaim(source.claim) })
+    state.records = await this.projectHistorySource(source, {
+      records: accumulator.records()
     });
     state.source = source;
     state.fingerprint = fingerprint;
@@ -622,6 +853,32 @@ export class RemoteMetadataSession {
     budget.historyRecords +=
       accumulator.records().length - previousRetainedRecords;
     requireHistoryRecordBudget(budget, this.limits);
+  }
+
+  private async projectHistorySource(
+    source: RemoteMetadataSourceDto,
+    content:
+      | { records: readonly unknown[] }
+      | {
+          query: {
+            queryPlanId: string;
+            rows: RemoteMetadataSourceQuery["rows"];
+          };
+        }
+  ): Promise<CoreHistoryRecord[]> {
+    const projection = this.options.historyProjections.get(source.vendor);
+    if (!projection) return [];
+    const projected = await projection.projectSource({
+      role: source.role,
+      format: source.format,
+      logicalName: `/${source.logicalName}`,
+      mtimeMs: safeDecimalNumber(source.mtimeUnixMs, "metadata source mtime"),
+      ...content,
+      claim: toCoreHistoryClaim(source.claim)
+    });
+    return projected.map((record) =>
+      toCoreHistoryProjectionRecord(source.vendor, record)
+    );
   }
 
   private async verifySourceContinuity(
@@ -632,11 +889,11 @@ export class RemoteMetadataSession {
   ): Promise<string | undefined> {
     if (!continuity || continuity.length === 0) return undefined;
     reserveTransferBytes(budget, key, continuity.length, this.limits);
-    const read = await this.options.runtime.readMetadataSource({
-      sourceId: source.sourceId,
-      offset: continuity.offset,
-      maxBytes: continuity.length
-    });
+    const read = await this.readSource(
+      source,
+      continuity.offset,
+      continuity.length
+    );
     requireSourceRead(read, source, continuity.offset);
     const nextOffset = safeDecimalNumber(
       read.nextOffset,
@@ -652,13 +909,21 @@ export class RemoteMetadataSession {
     return read.content;
   }
 
-  private async readConversationEdgeRows(
+  private async readSourceQuery(
     source: RemoteMetadataSourceDto,
     budget: MetadataRefreshBudget,
     key: string
-  ): Promise<RemoteMetadataSourceQuery["rows"]> {
-    const queryId =
-      METADATA_SOURCE_CONTRACT.queries.antigravityConversationSteps.id;
+  ): Promise<{
+    queryPlanId: string;
+    rows: RemoteMetadataSourceQuery["rows"];
+  }> {
+    const queryDefinition = Object.values(this.sourceContract.queries).find(
+      ({ sourceRole }) => sourceRole === source.role
+    );
+    if (!queryDefinition) {
+      throw new Error("metadata sqlite source has no reviewed query plan");
+    }
+    const queryId = queryDefinition.id;
     const result = await this.options.runtime.queryMetadataSource({
       sourceId: source.sourceId,
       queryId,
@@ -687,7 +952,7 @@ export class RemoteMetadataSession {
       ),
       this.limits
     );
-    return result.rows;
+    return { queryPlanId: queryId, rows: result.rows };
   }
 
   private buildUsageSnapshot(
@@ -697,9 +962,29 @@ export class RemoteMetadataSession {
     const samples = aggregateCoreUsageSamples(
       dedupeCoreUsageSamples(
         [...this.usageSources.values()].flatMap((state) =>
-          [...state.samples.values()].map((sample) =>
-            applyUsageClaim(sample, state.source.claim)
-          )
+          [...state.samples.values()].flatMap((sample) => {
+            const agentScoped =
+              metadataSourceDefinition(state.source, this.sourceContract)
+                ?.claimScope === "agent";
+            const claim = agentScoped
+              ? sample.sessionId === undefined
+                ? undefined
+                : this.usageClaims.get(
+                    `${state.source.vendor}:${sample.sessionId}`
+                  )
+              : state.source.claim;
+            if (
+              !claim ||
+              sample.timestampMs <
+                safeDecimalNumber(
+                  claim.claimedAtUnixMs,
+                  "metadata claim timestamp"
+                )
+            ) {
+              return [];
+            }
+            return [applyUsageClaim(sample, claim)];
+          })
         )
       ).filter((sample) => sample.timestampMs >= startAtUnixMs)
     ).sort(
@@ -808,9 +1093,53 @@ export class RemoteMetadataSession {
       ) {
         throw error;
       }
+      for (const lease of this.activeSourceLeases?.values() ?? []) {
+        lease.invalidate();
+      }
       return await operation();
     }
   }
+}
+
+function partitionSourceInventory(
+  inventory: RemoteMetadataSourcesList,
+  agentId: AgentId
+): RemoteMetadataSourcesList {
+  const definitionRevision = ownRecordValue(
+    inventory.agentDefinitions,
+    agentId
+  );
+  if (!definitionRevision) {
+    return {
+      ...inventory,
+      agentDefinitions: {},
+      claims: [],
+      sources: []
+    };
+  }
+  return {
+    ...inventory,
+    agentDefinitions: { [agentId]: definitionRevision },
+    claims: inventory.claims.filter((claim) => claim.vendor === agentId),
+    sources: inventory.sources.filter((source) => source.vendor === agentId)
+  };
+}
+
+function withBatchInventoryInvalidation(
+  lease: RemoteMetadataLease,
+  invalidateBatch: () => void
+): RemoteMetadataLease {
+  return Object.freeze({
+    key: lease.key,
+    inventory: () => lease.inventory(),
+    read: (sourceId: string) => lease.read(sourceId),
+    watch: (onChange: (sourceId?: string) => void) => lease.watch(onChange),
+    invalidate(sourceId?: string) {
+      if (sourceId === undefined) invalidateBatch();
+      lease.invalidate(sourceId);
+    },
+    release: () => lease.release()
+  });
 }
 
 function metadataSessionLimits(
@@ -834,22 +1163,47 @@ function metadataSessionLimits(
 
 function cloneUsageSources(
   sources: ReadonlyMap<string, UsageSourceState>,
-  parserState: CoreUsageParserState
+  projectionSessions: ReadonlyMap<AgentId, AgentUsageSourceProjectionSession>
 ): Map<string, UsageSourceState> {
   return new Map(
-    [...sources].map(([key, state]) => [
-      key,
-      {
-        source: state.source,
-        fingerprint: state.fingerprint,
-        cursor: state.cursor,
-        parser: state.parser.clone(parserState),
-        samples: new Map(state.samples),
-        ...(state.continuity === undefined
-          ? {}
-          : { continuity: { ...state.continuity } })
+    [...sources].map(([key, state]) => {
+      const session = projectionSessions.get(state.source.vendor);
+      if (!session) {
+        throw new Error("usage source lost its agent projection");
       }
+      return [
+        key,
+        {
+          source: state.source,
+          fingerprint: state.fingerprint,
+          cursor: state.cursor,
+          parser: state.parser.clone(session),
+          samples: new Map(state.samples),
+          ...(state.continuity === undefined
+            ? {}
+            : { continuity: { ...state.continuity } })
+        }
+      ];
+    })
+  );
+}
+
+function createUsageProjectionSessions(
+  projections: ReadonlyMap<AgentId, AgentUsageSourceProjection>
+): Map<AgentId, AgentUsageSourceProjectionSession> {
+  return new Map(
+    [...projections].map(([agentId, projection]) => [
+      agentId,
+      projection.createSession()
     ])
+  );
+}
+
+function cloneUsageProjectionSessions(
+  sessions: ReadonlyMap<AgentId, AgentUsageSourceProjectionSession>
+): Map<AgentId, AgentUsageSourceProjectionSession> {
+  return new Map(
+    [...sessions].map(([agentId, session]) => [agentId, session.clone()])
   );
 }
 
@@ -877,11 +1231,12 @@ function cloneHistorySources(
 
 function dedupeInventorySources(
   purpose: "usage" | "history",
-  sources: readonly RemoteMetadataSourceDto[]
+  sources: readonly RemoteMetadataSourceDto[],
+  sourceContract: MetadataSourceContract
 ): RemoteMetadataSourceDto[] {
   const deduped = new Map<string, RemoteMetadataSourceDto>();
   for (const source of sources) {
-    const key = metadataSourceKey(purpose, source);
+    const key = metadataSourceKey(purpose, source, sourceContract);
     if (!deduped.has(key)) deduped.set(key, source);
   }
   return [...deduped.values()];
@@ -951,10 +1306,31 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function identityHistoryClaim(
-  claim: RemoteMetadataSourceClaimDto
-): CoreHistoryClaim {
-  return { sessionId: claim.sessionId };
+function toCoreHistoryProjectionRecord(
+  agentId: AgentId,
+  record: AgentExternalSessionRecordProjection
+): CoreHistoryRecord {
+  if (
+    !record.sessionId ||
+    !Number.isFinite(record.updatedAtMs) ||
+    record.updatedAtMs < 0
+  ) {
+    throw new TypeError("agent history projection record is invalid");
+  }
+  return {
+    key: `${agentId}:${record.sessionId}`,
+    vendor: agentId,
+    sessionId: record.sessionId,
+    title: record.title ?? `${agentId} session`,
+    ...(record.recentConversation === undefined
+      ? {}
+      : { recentConversation: record.recentConversation }),
+    ...(record.model === undefined ? {} : { model: record.model }),
+    ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
+    ...(record.createdAt === undefined ? {} : { createdAt: record.createdAt }),
+    ...(record.updatedAt === undefined ? {} : { updatedAt: record.updatedAt }),
+    updatedAtMs: record.updatedAtMs
+  };
 }
 
 function applyUsageClaim(
@@ -974,7 +1350,9 @@ function applyUsageClaim(
 function requireSourceInventory(
   inventory: RemoteMetadataSourcesList,
   targetId: Id,
-  purpose: "usage" | "history"
+  purpose: "usage" | "history" | "all",
+  requestedDefinitions: RemoteAgentDefinitionRevisionsDto,
+  sourceContract: MetadataSourceContract
 ): void {
   if (
     inventory.targetId !== targetId ||
@@ -983,37 +1361,109 @@ function requireSourceInventory(
   ) {
     throw new Error("metadata source inventory escaped its target contract");
   }
+  for (const [agentId, revision] of Object.entries(
+    inventory.agentDefinitions
+  )) {
+    if (ownRecordValue(requestedDefinitions, agentId) !== revision) {
+      throw new Error(
+        "remote agent definition escaped the requested intersection"
+      );
+    }
+  }
   if (purpose === "usage" && inventory.claims.length !== 0) {
     throw new Error("usage metadata inventory unexpectedly exposed claims");
+  }
+  if (
+    inventory.claims.some(
+      (claim) =>
+        ownRecordValue(inventory.agentDefinitions, claim.vendor) === undefined
+    )
+  ) {
+    throw new Error(
+      "metadata claim is outside the agent definition intersection"
+    );
   }
   const claimKeys = new Set(
     inventory.claims.map((claim) => `${claim.vendor}\t${claim.sessionId}`)
   );
   const sourcesByKey = new Map<string, RemoteMetadataSourceDto>();
   for (const source of inventory.sources) {
-    const definition = METADATA_SOURCE_CONTRACT.sources.find(
+    const definition = sourceContract.sources.find(
       (candidate) =>
         candidate.vendor === source.vendor &&
         candidate.role === source.role &&
         candidate.format === source.format &&
-        candidate.purposes.includes(purpose)
+        (purpose === "all"
+          ? candidate.purposes.some(
+              (value) => value === "usage" || value === "history"
+            )
+          : candidate.purposes.includes(purpose))
     );
-    const key = metadataSourceKey(purpose, source);
+    const key = metadataSourceKey(
+      purpose === "all" ? "history" : purpose,
+      source,
+      sourceContract
+    );
     const previous = sourcesByKey.get(key);
     if (
       !definition ||
+      ownRecordValue(inventory.agentDefinitions, source.vendor) !==
+        source.definitionRevision ||
       (previous !== undefined &&
-        (source.role !== "antigravity-history" ||
+        (definition.claimScope !== "agent" ||
           previous.fileIdentity !== source.fileIdentity ||
           previous.size !== source.size ||
           previous.mtimeUnixMs !== source.mtimeUnixMs)) ||
-      (purpose === "history" &&
+      (purpose !== "usage" &&
         !claimKeys.has(`${source.vendor}\t${source.claim.sessionId}`))
     ) {
       throw new Error("metadata source inventory violates its source contract");
     }
     sourcesByKey.set(key, source);
   }
+}
+
+function ownRecordValue<T>(
+  record: Readonly<Record<string, T>>,
+  key: string
+): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+function metadataSourceSupportsPurpose(
+  source: RemoteMetadataSourceDto,
+  purpose: "usage" | "history",
+  sourceContract: MetadataSourceContract
+): boolean {
+  return sourceContract.sources.some(
+    (definition) =>
+      definition.vendor === source.vendor &&
+      definition.role === source.role &&
+      definition.format === source.format &&
+      definition.purposes.includes(purpose)
+  );
+}
+
+function encodeCoordinatedReadRequest(request: CoordinatedReadRequest): string {
+  return JSON.stringify(request);
+}
+
+function decodeCoordinatedReadRequest(key: string): CoordinatedReadRequest {
+  const value = JSON.parse(key) as Partial<CoordinatedReadRequest>;
+  if (
+    typeof value.sourceId !== "string" ||
+    !Number.isSafeInteger(value.offset) ||
+    value.offset! < 0 ||
+    !Number.isSafeInteger(value.maxBytes) ||
+    value.maxBytes! < 1
+  ) {
+    throw new TypeError("coordinated metadata read key is invalid");
+  }
+  return {
+    sourceId: value.sourceId as Id,
+    offset: value.offset!,
+    maxBytes: value.maxBytes!
+  };
 }
 
 function requireSourceRead(
@@ -1045,9 +1495,12 @@ function requireSourceRead(
 
 function metadataSourceKey(
   purpose: "usage" | "history",
-  source: RemoteMetadataSourceDto
+  source: RemoteMetadataSourceDto,
+  sourceContract: MetadataSourceContract
 ): string {
-  if (source.role === "antigravity-history") {
+  if (
+    metadataSourceDefinition(source, sourceContract)?.claimScope === "agent"
+  ) {
     return [purpose, source.vendor, source.role, source.logicalName].join("\t");
   }
   return [
@@ -1057,6 +1510,18 @@ function metadataSourceKey(
     source.claim.sessionId,
     source.logicalName
   ].join("\t");
+}
+
+function metadataSourceDefinition(
+  source: RemoteMetadataSourceDto,
+  sourceContract: MetadataSourceContract
+) {
+  return sourceContract.sources.find(
+    (definition) =>
+      definition.vendor === source.vendor &&
+      definition.role === source.role &&
+      definition.format === source.format
+  );
 }
 
 function metadataSourceFingerprint(source: RemoteMetadataSourceDto): string {
@@ -1109,7 +1574,7 @@ function toRemoteUsageRecord(
   const cacheWriteTokens = safeTokenCount(sample.cacheWriteTokens ?? 0);
   const totalTokens = safeTokenCount(sample.totalTokens);
   return {
-    vendor: sample.vendor as "claude" | "codex" | "antigravity",
+    vendor: sample.vendor,
     sampleId,
     timestampUnixMs: safeTokenCount(sample.timestampMs).toString(10),
     ...(sample.sessionId === undefined

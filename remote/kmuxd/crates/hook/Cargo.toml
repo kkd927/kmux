@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+kmux-agent-manifest = { path = "../agent-manifest" }
 kmux-compat = { path = "../compat" }
 kmux-platform = { path = "../platform" }
 nix.workspace = true

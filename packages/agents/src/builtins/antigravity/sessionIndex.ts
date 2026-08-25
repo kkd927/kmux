@@ -9,29 +9,9 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
-import { ensureAgentIntegrationVendor } from "@kmux/agent-integration";
-import type { AgentStorageRoots } from "@kmux/metadata";
-
-const ANTIGRAVITY_HOOKS_PATH_SEGMENTS = [
-  ".gemini",
-  "config",
-  "hooks.json"
-] as const;
 const ANTIGRAVITY_SESSION_INDEX_VERSION = 1;
 const ANTIGRAVITY_SESSION_INDEX_FILENAME = "antigravity-sessions.json";
 type JsonObject = Record<string, unknown>;
-
-export interface AntigravityIntegrationInstallResult {
-  changed: boolean;
-  hooksPath: string;
-  warning?: string;
-}
-
-export interface AntigravityHookRuntimePaths {
-  socketPath?: string;
-  agentBinDir?: string;
-  agentStorageRoots?: AgentStorageRoots;
-}
 
 export interface AntigravitySessionIndexRecord {
   conversationId: string;
@@ -63,25 +43,6 @@ function atomicWrite(filePath: string, content: string): void {
       rmSync(tmpPath, { force: true });
     }
   }
-}
-
-export function ensureAntigravityHooksInstalled(
-  homeDir: string | undefined,
-  runtimePaths: AntigravityHookRuntimePaths = {}
-): AntigravityIntegrationInstallResult {
-  const normalizedHomeDir = homeDir?.trim();
-  const hooksPath =
-    runtimePaths.agentStorageRoots?.antigravity.hooksPath ??
-    (normalizedHomeDir
-      ? join(normalizedHomeDir, ...ANTIGRAVITY_HOOKS_PATH_SEGMENTS)
-      : join(...ANTIGRAVITY_HOOKS_PATH_SEGMENTS));
-
-  const result = ensureAgentIntegrationVendor("antigravity", hooksPath);
-  return {
-    changed: result.status === "changed",
-    hooksPath,
-    ...(result.warning ? { warning: result.warning } : {})
-  };
 }
 
 export function antigravitySessionIndexPath(

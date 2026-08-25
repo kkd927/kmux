@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
-import { AGENT_INTEGRATION_CONTRACT } from "@kmux/agent-integration";
+import { GENERATED_AGENT_HOOK_RESPONSES } from "@kmux/agents/generated-hook-responses";
+import { GENERATED_AGENT_COMMAND_WRAPPERS } from "@kmux/agents/generated-command-wrappers";
+import type { ResolvedAgentCommandWrapperDefinition } from "@kmux/agents";
 
 import { MAX_DIAGNOSTICS_LOG_BYTES } from "../shared/diagnostics";
 import type { ShellLaunchPolicy } from "../shared/ptyProtocol";
@@ -330,7 +332,7 @@ function isZshWrapperDirReady(
     (!options.includeLegacyAgentBin ||
       (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
         existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
-        existsSync(join(wrapperDir, "bin", "codex"))))
+        agentCommandWrappersReady(wrapperDir)))
   );
 }
 
@@ -433,7 +435,7 @@ function isBashWrapperDirReady(
     (!options.includeLegacyAgentBin ||
       (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
         existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
-        existsSync(join(wrapperDir, "bin", "codex"))))
+        agentCommandWrappersReady(wrapperDir)))
   );
 }
 
@@ -500,7 +502,13 @@ function isFishWrapperDirReady(
     (!options.includeLegacyAgentBin ||
       (existsSync(join(wrapperDir, "bin", "kmux-agent-hook")) &&
         existsSync(join(wrapperDir, "bin", "kmux-agent-hook.cjs")) &&
-        existsSync(join(wrapperDir, "bin", "codex"))))
+        agentCommandWrappersReady(wrapperDir)))
+  );
+}
+
+function agentCommandWrappersReady(wrapperDir: string): boolean {
+  return GENERATED_AGENT_COMMAND_WRAPPERS.every((wrapper) =>
+    existsSync(join(wrapperDir, "bin", wrapper.executable))
   );
 }
 
@@ -536,7 +544,12 @@ export function writeAgentHookHelpers(binDir: string): void {
 
 export function writeAgentWrapperBinaries(binDir: string): void {
   mkdirSync(binDir, { recursive: true });
-  writeExecutableFile(join(binDir, "codex"), buildCodexWrapperScript());
+  for (const wrapper of GENERATED_AGENT_COMMAND_WRAPPERS) {
+    writeExecutableFile(
+      join(binDir, wrapper.executable),
+      buildVersionGatedAgentWrapperScript(wrapper)
+    );
+  }
 }
 
 function writeLegacyAgentBin(wrapperDir: string): void {
@@ -977,6 +990,7 @@ const path = require("node:path");
 const outputJson = process.env.KMUX_AGENT_HOOK_OUTPUT_MODE === "json";
 const diagnose = process.argv.includes("--diagnose");
 const ensureIntegration = process.argv[2] === "--ensure-integration";
+const hookResponses = ${JSON.stringify(GENERATED_AGENT_HOOK_RESPONSES)};
 
 function resolveTransport() {
   const explicit = (process.env.KMUX_AGENT_HOOK_TRANSPORT || "").trim();
@@ -1017,32 +1031,31 @@ function resolveTransport() {
 
 const transport = resolveTransport();
 
-function hookResponsePayload() {
+function hookResponsePayload(outcome) {
   const agent = (process.env.KMUX_HOOK_AGENT || "").trim().toLowerCase();
   const eventName = (process.env.KMUX_HOOK_EVENT || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
-  if (
-    agent === "agy" ||
-    agent === "antigravity" ||
-    agent === "antigravity-cli"
-  ) {
-    if (eventName === "pretooluse" || eventName === "stop") {
-      return { decision: "allow" };
-    }
-  }
-  return {};
+  const policy = Object.prototype.hasOwnProperty.call(hookResponses, agent)
+    ? hookResponses[agent]
+    : undefined;
+  if (!policy) return {};
+  const eventPolicy = Object.entries(policy.fallbackByEvent || {}).find(
+    ([event]) => event.toLowerCase().replace(/[^a-z0-9]/g, "") === eventName
+  );
+  if (eventPolicy) return eventPolicy[1];
+  return outcome === "success" ? policy.success || {} : policy.fallback || {};
 }
 
-function emitResponse() {
+function emitResponse(outcome) {
   if (outputJson) {
-    process.stdout.write(JSON.stringify(hookResponsePayload()) + "\\n");
+    process.stdout.write(JSON.stringify(hookResponsePayload(outcome)) + "\\n");
   }
 }
 
-function finish() {
-  emitResponse();
+function finish(outcome = "fallback") {
+  emitResponse(outcome);
   process.exit(0);
 }
 
@@ -1059,7 +1072,7 @@ function connectAndEnsureIntegration() {
   const configPath = process.argv[4];
   if (
     !socketPath ||
-    !["claude", "codex", "antigravity"].includes(vendor) ||
+    !Object.hasOwn(hookResponses, vendor) ||
     !path.isAbsolute(configPath || "")
   ) {
     process.exit(1);
@@ -1146,14 +1159,14 @@ function connectAndSend(payload) {
     complete();
   }, ${AGENT_HOOK_RPC_TIMEOUT_MS});
 
-  function complete() {
+  function complete(outcome = "fallback") {
     if (settled) {
       return;
     }
     settled = true;
     clearTimeout(timeout);
     socket.destroy();
-    finish();
+    finish(outcome);
   }
 
   socket.on("connect", () => {
@@ -1170,7 +1183,12 @@ function connectAndSend(payload) {
   socket.on("data", (chunk) => {
     buffer += chunk.toString("utf8");
     if (buffer.includes("\\n")) {
-      complete();
+      try {
+        const response = JSON.parse(buffer.slice(0, buffer.indexOf("\\n")));
+        complete(response && !response.error ? "success" : "fallback");
+      } catch {
+        complete("fallback");
+      }
     }
   });
 
@@ -1233,10 +1251,7 @@ function buildAgentHookHelperScript(): string {
     "  fi",
     '  _kmux_hook_agent="$(printf "%s" "${1:-}" | tr "[:upper:]" "[:lower:]")"',
     '  _kmux_hook_event="$(printf "%s" "${2:-}" | tr "[:upper:]" "[:lower:]" | tr -cd "[:alnum:]")"',
-    '  if { [ "$_kmux_hook_agent" = "agy" ] || [ "$_kmux_hook_agent" = "antigravity" ] || [ "$_kmux_hook_agent" = "antigravity-cli" ]; } && { [ "$_kmux_hook_event" = "pretooluse" ] || [ "$_kmux_hook_event" = "stop" ]; }; then',
-    '    printf "{\\"decision\\":\\"allow\\"}\\n"',
-    "    return 0",
-    "  fi",
+    ...buildGeneratedHookFallbackCaseLines(),
     '  printf "{}\\n"',
     "}",
     'if [ "$#" -lt 2 ]; then',
@@ -1285,8 +1300,37 @@ function buildAgentHookHelperScript(): string {
   ].join("\n");
 }
 
-function buildCodexWrapperScript(): string {
-  const wrapperPolicy = AGENT_INTEGRATION_CONTRACT.codexWrapper;
+function buildGeneratedHookFallbackCaseLines(): string[] {
+  const lines = ['  case "$_kmux_hook_agent:$_kmux_hook_event" in'];
+  for (const [agentId, policy] of Object.entries(
+    GENERATED_AGENT_HOOK_RESPONSES
+  )) {
+    for (const [event, response] of Object.entries(policy.fallbackByEvent)) {
+      const normalizedEvent = event.toLowerCase().replace(/[^a-z0-9]/gu, "");
+      lines.push(
+        `    ${agentId}:${normalizedEvent}) printf '%s\\n' ${quotePosixWord(
+          JSON.stringify(response)
+        )}; return 0 ;;`
+      );
+    }
+    lines.push(
+      `    ${agentId}:*) printf '%s\\n' ${quotePosixWord(
+        JSON.stringify(policy.fallback)
+      )}; return 0 ;;`
+    );
+  }
+  lines.push("  esac");
+  return lines;
+}
+
+function quotePosixWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function buildVersionGatedAgentWrapperScript(
+  wrapperPolicy: ResolvedAgentCommandWrapperDefinition
+): string {
+  const defaultHome = wrapperPolicy.defaultHomeRelativePath.replace(/^\/+/, "");
   return [
     "#!/bin/sh",
     "set -u",
@@ -1298,18 +1342,18 @@ function buildCodexWrapperScript(): string {
     'PATH="$(kmux_filter_path "${PATH:-}")"',
     "export PATH",
     "",
-    'KMUX_REAL_CODEX="$(command -v codex 2>/dev/null || true)"',
-    'if [ -z "$KMUX_REAL_CODEX" ] || [ "$KMUX_REAL_CODEX" = "$0" ]; then',
+    `KMUX_REAL_AGENT="$(command -v ${wrapperPolicy.executable} 2>/dev/null || true)"`,
+    'if [ -z "$KMUX_REAL_AGENT" ] || [ "$KMUX_REAL_AGENT" = "$0" ]; then',
     "  exit 127",
     "fi",
     "",
     'KMUX_NODE_RUNTIME="$(kmux_resolve_node_runtime 2>/dev/null || true)"',
-    'KMUX_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"',
+    `KMUX_AGENT_HOME="\${${wrapperPolicy.homeEnvironmentVariable}:-\${HOME}/${defaultHome}}"`,
     'if [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ]; then',
-    '  "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" --ensure-integration codex "$KMUX_CODEX_HOME/hooks.json" >/dev/null 2>&1 || true',
+    `  "\${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" --ensure-integration ${quotePosixWord(wrapperPolicy.agentId)} "\${KMUX_AGENT_HOME}/${wrapperPolicy.integrationRelativePath}" >/dev/null 2>&1 || true`,
     "fi",
     "",
-    "kmux_log_codex_wrapper() {",
+    "kmux_log_agent_wrapper() {",
     '  [ -n "${KMUX_DEBUG_LOG_PATH:-}" ] || return 0',
     '  [ -n "${KMUX_NODE_RUNTIME:-}" ] || return 0',
     '  KMUX_WRAPPER_STDIN_TTY="0"',
@@ -1319,13 +1363,13 @@ function buildCodexWrapperScript(): string {
     '  [ -t 1 ] && KMUX_WRAPPER_STDOUT_TTY="1"',
     '  [ -t 2 ] && KMUX_WRAPPER_STDERR_TTY="1"',
     '  KMUX_WRAPPER_TTY_PATH="$(tty 2>/dev/null || true)"',
-    '  env KMUX_DEBUG_LOG_SCOPE="codex.wrapper.invoke" \\',
+    `  env KMUX_DEBUG_LOG_SCOPE=${quotePosixWord(`${wrapperPolicy.agentId}.wrapper.invoke`)} \\`,
     '    KMUX_DEBUG_LOG_PATH="${KMUX_DEBUG_LOG_PATH}" \\',
     '    KMUX_DEBUG_LOG_PID="$$" \\',
-    '    KMUX_REAL_CODEX="${KMUX_REAL_CODEX:-}" \\',
+    '    KMUX_REAL_AGENT="${KMUX_REAL_AGENT:-}" \\',
     '    KMUX_NODE_RUNTIME="${KMUX_NODE_RUNTIME:-}" \\',
-    '    KMUX_CODEX_HOME="${KMUX_CODEX_HOME:-}" \\',
-    '    KMUX_USE_CODEX_HOOKS="${KMUX_USE_CODEX_HOOKS:-0}" \\',
+    '    KMUX_AGENT_HOME="${KMUX_AGENT_HOME:-}" \\',
+    '    KMUX_USE_AGENT_HOOKS="${KMUX_USE_AGENT_HOOKS:-0}" \\',
     '    KMUX_AGENT_BIN_DIR="${KMUX_AGENT_BIN_DIR:-}" \\',
     '    KMUX_SHELL_INTEGRATION="${KMUX_SHELL_INTEGRATION:-}" \\',
     '    KMUX_ORIGINAL_HOME="${KMUX_ORIGINAL_HOME:-}" \\',
@@ -1366,12 +1410,12 @@ function buildCodexWrapperScript(): string {
     "}",
     "",
     "const record = {",
-    "  scope: process.env.KMUX_DEBUG_LOG_SCOPE || 'codex.wrapper.invoke',",
+    "  scope: process.env.KMUX_DEBUG_LOG_SCOPE || 'agent.wrapper.invoke',",
     "  shellPid: process.env.KMUX_DEBUG_LOG_PID || '',",
-    "  realCodex: process.env.KMUX_REAL_CODEX || '',",
+    "  realAgent: process.env.KMUX_REAL_AGENT || '',",
     "  nodeRuntime: process.env.KMUX_NODE_RUNTIME || '',",
-    "  codexHome: process.env.KMUX_CODEX_HOME || '',",
-    "  useCodexHooks: process.env.KMUX_USE_CODEX_HOOKS || '0',",
+    "  agentHome: process.env.KMUX_AGENT_HOME || '',",
+    "  useAgentHooks: process.env.KMUX_USE_AGENT_HOOKS || '0',",
     "  agentBinDir: process.env.KMUX_AGENT_BIN_DIR || '',",
     "  shellIntegration: process.env.KMUX_SHELL_INTEGRATION || '',",
     "  originalHome: process.env.KMUX_ORIGINAL_HOME || '',",
@@ -1436,18 +1480,14 @@ function buildCodexWrapperScript(): string {
     "EOF",
     "}",
     "",
-    'KMUX_USE_CODEX_HOOKS="0"',
-    'if [ -f "$KMUX_CODEX_HOME/hooks.json" ] &&',
-    "  grep -q 'KMUX_MANAGED_CODEX_HOOK=1' \"$KMUX_CODEX_HOME/hooks.json\" 2>/dev/null &&",
-    `  grep -q '${wrapperPolicy.contractMarker}' "$KMUX_CODEX_HOME/hooks.json" 2>/dev/null; then`,
-    '  KMUX_USE_CODEX_HOOKS="1"',
+    'KMUX_USE_AGENT_HOOKS="0"',
+    `if [ -f "$KMUX_AGENT_HOME/${wrapperPolicy.integrationRelativePath}" ] &&`,
+    `  grep -q ${quotePosixWord(wrapperPolicy.integrationManagedMarker)} "$KMUX_AGENT_HOME/${wrapperPolicy.integrationRelativePath}" 2>/dev/null &&`,
+    `  grep -q ${quotePosixWord(wrapperPolicy.integrationContractMarker)} "$KMUX_AGENT_HOME/${wrapperPolicy.integrationRelativePath}" 2>/dev/null; then`,
+    '  KMUX_USE_AGENT_HOOKS="1"',
     "fi",
-    "# History: kmux sets TERM_PROGRAM=kmux for child PTYs. Codex TUI currently",
-    "# only auto-selects OSC 9 notifications for a small terminal allowlist",
-    "# (for example WezTerm/ghostty/iTerm hints). In packaged/Dock launches this",
-    "# made Codex downgrade needs_input notifications to BEL-only beeps, so we",
-    "# force OSC 9 for kmux-managed Codex runs until upstream supports kmux or",
-    "# capability-based detection. Explicit user -c/--config overrides still win.",
+    "# The wrapper's reviewed notification policy is appended only when the user",
+    "# did not supply an explicit -c/--config override.",
     "kmux_has_notification_method_override() {",
     '  _kmux_expect_config_value="0"',
     '  for _kmux_arg in "$@"; do',
@@ -1469,49 +1509,49 @@ function buildCodexWrapperScript(): string {
     "  done",
     "  return 1",
     "}",
-    "kmux_resolve_codex_hooks_feature() {",
-    '  _kmux_codex_version_output="$("$KMUX_REAL_CODEX" --version 2>/dev/null || true)"',
-    '  _kmux_codex_version=""',
-    "  for _kmux_codex_version_token in $_kmux_codex_version_output; do",
-    '    case "$_kmux_codex_version_token" in',
+    "kmux_resolve_agent_hooks_feature() {",
+    '  _kmux_agent_version_output="$("$KMUX_REAL_AGENT" --version 2>/dev/null || true)"',
+    '  _kmux_agent_version=""',
+    "  for _kmux_agent_version_token in $_kmux_agent_version_output; do",
+    '    case "$_kmux_agent_version_token" in',
     "      [0-9]*.[0-9]*.[0-9]*)",
-    '        _kmux_codex_version="${_kmux_codex_version_token%%-*}"',
+    '        _kmux_agent_version="${_kmux_agent_version_token%%-*}"',
     "        break",
     "        ;;",
     "    esac",
     "  done",
-    '  _kmux_codex_major="${_kmux_codex_version%%.*}"',
-    '  _kmux_codex_rest="${_kmux_codex_version#*.}"',
-    '  _kmux_codex_minor="${_kmux_codex_rest%%.*}"',
-    '  case "$_kmux_codex_major" in',
+    '  _kmux_agent_major="${_kmux_agent_version%%.*}"',
+    '  _kmux_agent_rest="${_kmux_agent_version#*.}"',
+    '  _kmux_agent_minor="${_kmux_agent_rest%%.*}"',
+    '  case "$_kmux_agent_major" in',
     "    ''|*[!0-9]*)",
     `      printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "      return 0",
     "      ;;",
     "  esac",
-    '  case "$_kmux_codex_minor" in',
-    "    ''|*[!0-9]*|\"$_kmux_codex_version\")",
+    '  case "$_kmux_agent_minor" in',
+    "    ''|*[!0-9]*|\"$_kmux_agent_version\")",
     `      printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "      return 0",
     "      ;;",
     "  esac",
-    `  if [ "$_kmux_codex_major" -gt 0 ] || [ "$_kmux_codex_minor" -ge ${wrapperPolicy.currentHooksFeatureMinor} ]; then`,
+    `  if [ "$_kmux_agent_major" -gt 0 ] || [ "$_kmux_agent_minor" -ge ${wrapperPolicy.currentHooksFeatureMinor} ]; then`,
     `    printf '%s\\n' ${wrapperPolicy.currentHooksFeature}`,
     "  else",
     `    printf '%s\\n' ${wrapperPolicy.legacyHooksFeature}`,
     "  fi",
     "}",
-    "kmux_log_codex_wrapper",
+    "kmux_log_agent_wrapper",
     "",
     "KMUX_EXIT_CODE=0",
-    'if [ "$KMUX_USE_CODEX_HOOKS" = "1" ]; then',
-    '  KMUX_CODEX_HOOKS_FEATURE="$(kmux_resolve_codex_hooks_feature)"',
-    '  set -- --enable "$KMUX_CODEX_HOOKS_FEATURE" "$@"',
+    'if [ "$KMUX_USE_AGENT_HOOKS" = "1" ]; then',
+    '  KMUX_AGENT_HOOKS_FEATURE="$(kmux_resolve_agent_hooks_feature)"',
+    '  set -- --enable "$KMUX_AGENT_HOOKS_FEATURE" "$@"',
     "fi",
     'if ! kmux_has_notification_method_override "$@"; then',
     `  set -- --config tui.notification_method=${wrapperPolicy.notificationMethod} "$@"`,
     "fi",
-    '  "$KMUX_REAL_CODEX" "$@" || KMUX_EXIT_CODE=$?',
+    '  "$KMUX_REAL_AGENT" "$@" || KMUX_EXIT_CODE=$?',
     'exit "$KMUX_EXIT_CODE"',
     ""
   ].join("\n");

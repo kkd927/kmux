@@ -36,6 +36,35 @@ export default defineConfig({
         currentDir,
         "packages/agent-integration/src/index.ts"
       ),
+      "@kmux/agents/builtin-runtime": resolve(
+        currentDir,
+        "packages/agents/src/builtinRuntime.ts"
+      ),
+      "@kmux/agents/antigravity-session-index": resolve(
+        currentDir,
+        "packages/agents/src/builtins/antigravity/sessionIndex.ts"
+      ),
+      "@kmux/agents/builtin-hooks": resolve(
+        currentDir,
+        "packages/agents/src/builtinHooks.ts"
+      ),
+      "@kmux/agents/generated-hook-responses": resolve(
+        currentDir,
+        "packages/agents/src/generatedHookResponses.ts"
+      ),
+      "@kmux/agents/generated-command-wrappers": resolve(
+        currentDir,
+        "packages/agents/src/generatedCommandWrappers.ts"
+      ),
+      "@kmux/agents/builtin-subscriptions": resolve(
+        currentDir,
+        "packages/agents/src/builtinSubscriptions.ts"
+      ),
+      "@kmux/agents/composition": resolve(
+        currentDir,
+        "packages/agents/src/composition.ts"
+      ),
+      "@kmux/agents": resolve(currentDir, "packages/agents/src/index.ts"),
       "@kmux/ui": resolve(currentDir, "packages/ui/src/index.ts")
     }
   },

@@ -408,7 +408,7 @@ External session discovery and resume are required Linux workflows. Linux valida
 
 The resolver is only useful if its output is propagated. These areas should receive `AgentStorageRoots` instead of rebuilding hard-coded home-relative paths:
 
-- `createUsageAdapters` and metadata usage readers.
+- agent-owned usage adapters and metadata usage readers.
 - `createExternalSessionIndexer` and external session scanners.
 - Claude, Gemini, and Antigravity hook installers.
 - Codex wrapper installation and PATH injection.

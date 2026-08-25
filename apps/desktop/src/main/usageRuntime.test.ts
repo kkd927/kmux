@@ -425,6 +425,139 @@ describe("usage runtime", () => {
     ).toMatchObject({ todayTokens: 100 });
   });
 
+  it("uses current SSH agent settings after settings invalidation", async () => {
+    const state = createInitialState();
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/project"
+    });
+    const sshRefresh = vi.fn(async () => ({
+      principal: { uid: 1_000, accountName: "kmux" },
+      records: [],
+      truncated: false
+    }));
+    const localRefresh = vi.fn(async () => ({
+      records: [],
+      truncated: false
+    }));
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: (
+        target: Parameters<TargetServiceRegistry["resolveLocated"]>[0]
+      ) =>
+        ({
+          usage: {
+            refresh: target.kind === "local" ? localRefresh : sshRefresh
+          }
+        }) as never
+    } as unknown as TargetServiceRegistry;
+    let sshSessionRoot = "/srv/agents/old";
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      getAgentSettings: (scope) =>
+        scope === "ssh"
+          ? { codex: { sessionRoot: sshSessionRoot } }
+          : undefined,
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    await runtime.refreshNow();
+    sshSessionRoot = "/srv/agents/current";
+    runtime.invalidateAgentSettings();
+    await runtime.refreshNow();
+
+    expect(sshRefresh).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        initial: true,
+        agentSettings: { codex: { sessionRoot: "/srv/agents/old" } }
+      })
+    );
+    expect(sshRefresh).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        initial: true,
+        agentSettings: { codex: { sessionRoot: "/srv/agents/current" } }
+      })
+    );
+  });
+
+  it("discards an SSH usage scan completed from an older settings generation", async () => {
+    const state = createInitialState();
+    applyAction(state, {
+      type: "workspace.create",
+      target: { kind: "ssh", targetId: "target_1" },
+      cwd: "/srv/project"
+    });
+    let resolveOldScan!: (scan: {
+      principal: { uid: number; accountName: string };
+      records: ReturnType<typeof remoteUsageRecord>[];
+      truncated: boolean;
+    }) => void;
+    const oldScan = new Promise<Parameters<typeof resolveOldScan>[0]>(
+      (resolve) => {
+        resolveOldScan = resolve;
+      }
+    );
+    const sshRefresh = vi
+      .fn()
+      .mockReturnValueOnce(oldScan)
+      .mockResolvedValue({
+        principal: { uid: 1_000, accountName: "kmux" },
+        records: [remoteUsageRecord("current", 10)],
+        truncated: false
+      });
+    const targetServices = {
+      resolve: vi.fn(),
+      resolveLocated: (
+        target: Parameters<TargetServiceRegistry["resolveLocated"]>[0]
+      ) =>
+        ({
+          usage: {
+            refresh:
+              target.kind === "local"
+                ? async () => ({ records: [], truncated: false })
+                : sshRefresh
+          }
+        }) as never
+    } as unknown as TargetServiceRegistry;
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: vi.fn(),
+      emitSnapshot: vi.fn(),
+      targetServices: () => targetServices,
+      getAgentSettings: () => ({
+        codex: { sessionRoot: "/srv/agents/current" }
+      }),
+      now: () => new Date("2026-07-18T01:00:00.000Z").getTime()
+    });
+
+    const pending = runtime.refreshNow();
+    await vi.waitFor(() => expect(sshRefresh).toHaveBeenCalledTimes(1));
+    runtime.invalidateAgentSettings();
+    resolveOldScan({
+      principal: { uid: 1_000, accountName: "kmux" },
+      records: [remoteUsageRecord("stale", 99)],
+      truncated: false
+    });
+    await pending;
+
+    expect(runtime.getSnapshot().targets).toEqual([]);
+    await runtime.refreshNow();
+    expect(
+      runtime
+        .getSnapshot()
+        .targets.find(
+          (entry) =>
+            entry.target.kind === "ssh" && entry.target.targetId === "target_1"
+        )
+    ).toMatchObject({ todayTokens: 10 });
+  });
+
   it("restores exact SSH usage attribution from the persisted agent session ref", async () => {
     const state = createInitialState();
     applyAction(state, {
@@ -529,6 +662,7 @@ describe("usage runtime", () => {
       .fn<UsageScanService["scan"]>()
       .mockReturnValueOnce(initialScan)
       .mockResolvedValueOnce({
+        failures: [],
         reads: [
           {
             sourceCount: 1,
@@ -1525,7 +1659,7 @@ describe("usage runtime", () => {
     ]);
   });
 
-  it("preserves a legacy day's snapshot while removing unsupported vendor rows", async () => {
+  it("preserves a legacy day's snapshot and syntax-valid open-world agent rows", async () => {
     const state = createInitialState();
     const historyStore = createFakeUsageHistoryStore([
       {
@@ -1559,7 +1693,10 @@ describe("usage runtime", () => {
       estimatedCostUsd: 6,
       unknownCostTokens: 100,
       totalTokens: 1_000,
-      vendors: [{ vendor: "codex", totalCostUsd: 4, totalTokens: 400 }]
+      vendors: [
+        { vendor: "gemini", totalCostUsd: 6, totalTokens: 600 },
+        { vendor: "codex", totalCostUsd: 4, totalTokens: 400 }
+      ]
     });
     expect(
       runtime
@@ -1858,7 +1995,7 @@ describe("usage runtime", () => {
     );
   });
 
-  it("dedupes Claude usage across parent and subagent files by message and request id", async () => {
+  it("dedupes usage across sources by the agent-owned identity", async () => {
     const state = createInitialState();
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -1875,6 +2012,8 @@ describe("usage runtime", () => {
                   sessionId: "claude-session",
                   threadId: "msg_overlap",
                   requestId: "req_overlap",
+                  dedupeKey: "msg_overlap\treq_overlap",
+                  dedupeRank: 1,
                   inputTokens: 100,
                   cacheReadTokens: 10,
                   cacheWriteTokens: 20,
@@ -1890,6 +2029,8 @@ describe("usage runtime", () => {
                   sessionId: "claude-session",
                   threadId: "msg_overlap",
                   requestId: "req_overlap",
+                  dedupeKey: "msg_overlap\treq_overlap",
+                  dedupeRank: 0,
                   inputTokens: 100,
                   cacheReadTokens: 10,
                   cacheWriteTokens: 20,
@@ -1905,6 +2046,8 @@ describe("usage runtime", () => {
                   sessionId: "claude-session",
                   threadId: "msg_unique_sidechain",
                   requestId: "req_unique_sidechain",
+                  dedupeKey: "msg_unique_sidechain\treq_unique_sidechain",
+                  dedupeRank: 0,
                   inputTokens: 70,
                   cacheReadTokens: 0,
                   cacheWriteTokens: 5,
@@ -1938,7 +2081,7 @@ describe("usage runtime", () => {
     );
   });
 
-  it("prefers the parent Claude sample when duplicate totals match", async () => {
+  it("prefers the higher-ranked agent sample when duplicate totals match", async () => {
     const state = createInitialState();
     const runtime = createUsageRuntime({
       getState: () => state,
@@ -1955,6 +2098,8 @@ describe("usage runtime", () => {
                   sessionId: "claude-session",
                   threadId: "msg_equal",
                   requestId: "req_equal",
+                  dedupeKey: "msg_equal\treq_equal",
+                  dedupeRank: 0,
                   inputTokens: 80,
                   cacheReadTokens: 10,
                   cacheWriteTokens: 0,
@@ -1969,6 +2114,8 @@ describe("usage runtime", () => {
                   sessionId: "claude-session",
                   threadId: "msg_equal",
                   requestId: "req_equal",
+                  dedupeKey: "msg_equal\treq_equal",
+                  dedupeRank: 1,
                   inputTokens: 80,
                   cacheReadTokens: 10,
                   cacheWriteTokens: 0,
@@ -3147,6 +3294,25 @@ function buildSample(
     estimatedCostUsd: 0.4,
     costSource: "reported",
     ...overrides
+  };
+}
+
+function remoteUsageRecord(sampleId: string, totalTokens: number) {
+  return {
+    vendor: "codex" as const,
+    sampleId,
+    timestampUnixMs: Date.parse("2026-07-18T01:00:00.000Z"),
+    sessionId: sampleId,
+    cwd: locatedPathForTarget(
+      { kind: "ssh" as const, targetId: "target_1" },
+      "/srv/project"
+    ),
+    inputTokens: totalTokens,
+    outputTokens: 0,
+    cacheTokens: 0,
+    totalTokens,
+    estimatedCostUsd: 0,
+    costSource: "unavailable" as const
   };
 }
 

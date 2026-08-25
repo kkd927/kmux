@@ -1,19 +1,14 @@
 import rawSourceContract from "../../source-contract.json";
+import type { AgentId, MetadataSourceRoleId } from "@kmux/proto";
 
 export type MetadataPurpose = "usage" | "history";
-export type MetadataVendor = "claude" | "codex" | "antigravity";
+export type MetadataVendor = AgentId;
 export type MetadataSourceFormat = "jsonl" | "json" | "sqlite";
-export type MetadataSourceRole =
-  | "codex-session"
-  | "claude-session"
-  | "claude-subagent"
-  | "antigravity-history"
-  | "antigravity-transcript"
-  | "antigravity-conversation";
+export type MetadataSourceRole = MetadataSourceRoleId;
 
 export interface MetadataSourceContract {
-  version: 1;
-  capability: "agent-metadata-sources-v1";
+  version: 2;
+  capability: "agent-metadata-sources-v2";
   limits: {
     sourceReadBytes: number;
     responseBytes: number;
@@ -25,20 +20,16 @@ export interface MetadataSourceContract {
     role: MetadataSourceRole;
     format: MetadataSourceFormat;
     purposes: MetadataPurpose[];
+    claimScope?: "session" | "agent";
     pattern: string;
   }>;
-  queries: {
-    antigravityConversationSteps: {
-      id: "antigravity.conversation.steps.v1";
-      sourceRole: "antigravity-conversation";
-    };
-  };
+  queries: Record<string, { id: string; sourceRole: MetadataSourceRole }>;
 }
 
 export const METADATA_SOURCE_CONTRACT = Object.freeze(
   rawSourceContract as MetadataSourceContract
 );
 
-if (METADATA_SOURCE_CONTRACT.version !== 1) {
+if (METADATA_SOURCE_CONTRACT.version !== 2) {
   throw new Error("unsupported metadata source contract version");
 }

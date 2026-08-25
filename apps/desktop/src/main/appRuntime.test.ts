@@ -152,6 +152,7 @@ function createRuntime(
       options.persistWindowStateAsync ?? persistWindowStateAsync,
     profileRecorder: options.profileRecorder,
     externalSessionIndexer: options.externalSessionIndexer,
+    resolveAgentResumeLaunch: options.resolveAgentResumeLaunch,
     nativeNotificationIdentity: options.nativeNotificationIdentity,
     playBellSound: options.playBellSound,
     resolveLocalPath:
@@ -981,7 +982,7 @@ describe("app runtime restore", () => {
       externalKey: "codex:codex-session",
       id: "codex-session",
       targetId: "local",
-      cwd: snapshot.sessions[sessionId].launch.cwd
+      cwd: localPath("/tmp/project")
     };
     const resolveExternalAgentSession = vi.fn((key: string) =>
       key === "codex:codex-session"
@@ -1047,7 +1048,7 @@ describe("app runtime restore", () => {
     );
   });
 
-  it("keeps restored agent session launches when resume resolution fails", () => {
+  it("preserves an unresolved agent reference without replaying its stale launch", () => {
     const snapshot = createInitialState("/bin/zsh");
     const sessionId = Object.keys(snapshot.sessions)[0]!;
     snapshot.sessions[sessionId].runtimeStatus.processState = "running";
@@ -1084,12 +1085,71 @@ describe("app runtime restore", () => {
 
     runtime.respawnRestoredSessions();
 
-    const spawnMessage = ptyHost.send.mock.calls[0]?.[0];
-    expect(spawnMessage.spec.launch).toMatchObject({
-      cwd: "/tmp/original",
-      shell: "/bin/zsh"
+    expect(ptyHost.send).not.toHaveBeenCalled();
+    expect(runtime.getState().sessions[sessionId]).toMatchObject({
+      agentSessionRef: {
+        vendor: "codex",
+        externalKey: "codex:missing",
+        id: "missing"
+      },
+      launch: {
+        cwd: localPath("/tmp/original"),
+        shell: "/bin/zsh"
+      },
+      runtimeStatus: {
+        processState: "exited",
+        observationState: "observed",
+        attachmentState: "detached"
+      }
     });
-    expect(runtime.__test__.snapshotSave).not.toHaveBeenCalled();
+    expect(runtime.__test__.snapshotSave).toHaveBeenCalledWith(
+      runtime.getState(),
+      { cleanShutdown: false }
+    );
+  });
+
+  it("uses a registered native resume policy when the external index is cold", () => {
+    const snapshot = createInitialState("/bin/zsh");
+    const sessionId = Object.keys(snapshot.sessions)[0]!;
+    snapshot.sessions[sessionId].runtimeStatus.processState = "running";
+    snapshot.sessions[sessionId].agentSessionRef = {
+      vendor: "codex",
+      externalKey: "codex:cold-session",
+      id: "cold-session",
+      targetId: "local",
+      cwd: snapshot.sessions[sessionId].launch.cwd
+    };
+    const resolveAgentResumeLaunch = vi.fn(() => ({
+      initialInput: "codex resume cold-session\r"
+    }));
+    const runtime = createRuntime(false, {
+      snapshotRecord: {
+        snapshot,
+        cleanShutdown: true,
+        restoreOnLaunch: true
+      },
+      externalSessionIndexer: {
+        listExternalAgentSessions: () => ({
+          updatedAt: "2026-08-17T12:00:00.000Z",
+          sessions: []
+        }),
+        resolveExternalAgentSession: () => null
+      },
+      resolveAgentResumeLaunch
+    });
+    const restored = runtime.restoreInitialState().state;
+    const ptyHost = { send: vi.fn() };
+    runtime.setStore(new AppStore(restored));
+    runtime.setPtyHost(ptyHost as never);
+
+    runtime.respawnRestoredSessions();
+
+    expect(resolveAgentResumeLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({ vendor: "codex", id: "cold-session" })
+    );
+    expect(ptyHost.send.mock.calls[0]?.[0].spec.launch).toMatchObject({
+      initialInput: "codex resume cold-session\r"
+    });
   });
 
   it("flushes the live snapshot, settings, and window state without marking shutdown", async () => {

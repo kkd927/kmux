@@ -1,7 +1,9 @@
 export {
   normalizeAgentHookInvocation,
-  normalizeHookNotificationInvocation,
-  type AgentHookEnvironment,
-  type NormalizedAgentEvent,
-  type NormalizedHookNotification
+  normalizeHookNotificationInvocation
+} from "@kmux/agents/builtin-hooks";
+export type {
+  AgentHookEnvironment,
+  NormalizedAgentEvent,
+  NormalizedHookNotification
 } from "@kmux/proto";

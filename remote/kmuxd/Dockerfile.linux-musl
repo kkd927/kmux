@@ -11,6 +11,7 @@ RUN test -n "$RUST_TARGET" \
 WORKDIR /source/remote/kmuxd
 COPY remote/kmuxd/ .
 COPY packages/agent-integration/ /source/packages/agent-integration/
+COPY packages/agents/generated/portable-agent-manifest.json /source/packages/agents/generated/portable-agent-manifest.json
 COPY packages/metadata/source-contract.json /source/packages/metadata/source-contract.json
 
 RUN --mount=type=cache,id=kmux-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \

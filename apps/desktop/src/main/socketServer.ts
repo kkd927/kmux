@@ -15,11 +15,12 @@ import type {
   ShellIdentity,
   SplitDirection
 } from "@kmux/proto";
+import { decodeAgentId, makeId } from "@kmux/proto";
 import {
-  makeId,
   normalizeAgentHookInvocation,
   normalizeHookNotificationInvocation
-} from "@kmux/proto";
+} from "@kmux/agents/builtin-hooks";
+import { resolveBuiltinAgentId } from "@kmux/agents/builtin-runtime";
 import { ZodError } from "zod";
 
 import { formatLocalLogTimestamp } from "../shared/diagnostics";
@@ -635,17 +636,21 @@ export class KmuxSocketServer {
         });
         return { ok: true };
       case "surface.send_text":
-        return mapTerminalControlResult(runtime.sendSurfaceText(
-          request.params.surfaceId ?? activeSurfaceId,
-          request.params.text,
-          request.params.operationId
-        ));
+        return mapTerminalControlResult(
+          runtime.sendSurfaceText(
+            request.params.surfaceId ?? activeSurfaceId,
+            request.params.text,
+            request.params.operationId
+          )
+        );
       case "surface.send_key":
-        return mapTerminalControlResult(runtime.sendSurfaceKey(
-          request.params.surfaceId ?? activeSurfaceId,
-          request.params.key,
-          request.params.operationId
-        ));
+        return mapTerminalControlResult(
+          runtime.sendSurfaceKey(
+            request.params.surfaceId ?? activeSurfaceId,
+            request.params.key,
+            request.params.operationId
+          )
+        );
       case "surface.capture": {
         if (!runtime.captureSurface) {
           throw new Error("surface capture is unavailable");
@@ -837,7 +842,11 @@ export class KmuxSocketServer {
     fallbackWorkspaceId: string,
     runtime: SocketServerRuntime
   ): { ok: true } {
-    logAgentEvent(params, fallbackWorkspaceId);
+    const agent =
+      resolveBuiltinAgentId(params.agent) ?? decodeAgentId(params.agent);
+    const normalizedParams =
+      agent === params.agent ? params : { ...params, agent };
+    logAgentEvent(normalizedParams, fallbackWorkspaceId);
     const state = runtime.getState();
     const surfaceId =
       params.surfaceId ??
@@ -861,7 +870,7 @@ export class KmuxSocketServer {
       ...(params.vendorSessionId === undefined
         ? {}
         : { vendorSessionId: params.vendorSessionId }),
-      agent: params.agent,
+      agent,
       event: params.event,
       title: params.title,
       message: params.message,

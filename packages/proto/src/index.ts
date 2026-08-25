@@ -4,6 +4,27 @@ import type {
   TerminalOutputDiagnosticKind
 } from "./terminalDataPlane";
 
+export {
+  AGENT_CAPABILITY_KEYS,
+  AGENT_DESCRIPTOR_MAX_ALIASES,
+  AGENT_DESCRIPTOR_MAX_COUNT,
+  AGENT_ID_MAX_BYTES,
+  decodeAgentDescriptorCatalogDto,
+  decodeAgentDescriptorDto,
+  decodeAgentId,
+  decodeMetadataSourceRoleId,
+  isAgentId,
+  normalizeAgentIdInput
+} from "./agents";
+export type {
+  AgentCapabilityKey,
+  AgentDescriptorDto,
+  AgentId,
+  AgentPresentationDto,
+  MetadataSourceRoleId
+} from "./agents";
+import type { AgentId } from "./agents";
+
 export type Id = string;
 export type RemotePersistenceLevel =
   | "ssh-disconnect"
@@ -58,6 +79,7 @@ export type {
   RemoteKeeperAttachRequest,
   RemoteKeeperControlMessage,
   RemoteInitialInputOutcome,
+  RemoteAgentDefinitionRevisionsDto,
   RemoteMetadataPurposeDto,
   RemoteMetadataClaimDto,
   RemoteMetadataQueryRowDto,
@@ -89,8 +111,7 @@ export type NotificationSource =
   | "status"
   | "system";
 export type NotificationKind = "generic" | "needs_input" | "turn_complete";
-export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
-export type AgentVendor = "claude" | "codex" | "antigravity";
+export type UsageVendor = AgentId | "unknown";
 export type AgentScope = "local" | "ssh";
 
 export interface AgentSettings {
@@ -99,10 +120,11 @@ export interface AgentSettings {
   sessionRoot?: string;
 }
 
-export type AgentScopeSettings = Partial<Record<AgentVendor, AgentSettings>>;
-export type AgentsSettings = AgentScopeSettings & {
+export type AgentScopeSettings = Record<string, AgentSettings>;
+export interface AgentsSettings {
+  [agentId: string]: AgentSettings | AgentScopeSettings | undefined;
   ssh?: AgentScopeSettings;
-};
+}
 
 export type SubscriptionUsageProvider = Exclude<UsageVendor, "unknown">;
 export type ImageAttachmentMimeType =
@@ -145,7 +167,7 @@ export interface SessionLaunchConfig {
   title?: string;
 }
 
-export type ExternalAgentSessionVendor = "codex" | "claude" | "antigravity";
+export type ExternalAgentSessionVendor = AgentId;
 
 export interface ExternalAgentSessionRef {
   vendor: ExternalAgentSessionVendor;
@@ -163,7 +185,7 @@ export interface ExternalAgentSessionVm {
         principal: { uid: number; accountName: string };
       };
   vendor: ExternalAgentSessionVendor;
-  vendorLabel: "CODEX" | "CLAUDE" | "AGY";
+  vendorLabel: string;
   title: string;
   recentConversation?: string;
   model?: string;

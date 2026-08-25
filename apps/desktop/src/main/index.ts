@@ -13,6 +13,12 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
 
+import {
+  listBuiltinAgentDescriptors,
+  normalizeBuiltinAgentScopeSettings,
+  resolveBuiltinAgentResumePolicy,
+  resolvedAgentCommandIsAvailable
+} from "@kmux/agents/builtin-runtime";
 import { resolveAgentStorageRoots } from "@kmux/metadata";
 import {
   formatUint64Decimal,
@@ -20,6 +26,7 @@ import {
 } from "@kmux/proto";
 
 import {
+  formatAgentCommandForShell,
   resolveAgentScopeSettings,
   resolveSurfaceDiagnosticCaptureEnabled,
   terminalRuntimeMetadataForSurface,
@@ -42,7 +49,6 @@ import { DocumentService } from "./documentService";
 import { ResourceOpenCoordinator } from "./resourceOpenCoordinator";
 import { ensureLocalAgentIntegrations } from "./agentIntegration";
 import { createMainClipboardService } from "./clipboard";
-import { createExternalSessionScanWorkerClient } from "./externalSessionScanWorkerClient";
 import {
   createImageAttachmentService,
   IMAGE_ATTACHMENT_CLEANUP_INTERVAL_MS,
@@ -145,7 +151,7 @@ import {
   type MainWindowOpenReason
 } from "./rendererRecoveryController";
 import { AppStore } from "./store";
-import { recordAntigravitySessionFromHook } from "./antigravityIntegration";
+import { recordAntigravitySessionFromHook } from "@kmux/agents/antigravity-session-index";
 import {
   KMUX_APP_ID,
   KMUX_APP_NAME,
@@ -208,6 +214,7 @@ import type { TargetServiceSet } from "./targets/contracts";
 import {
   createLocalHistoryProvider,
   createTargetHistoryRuntime,
+  mergeExternalAgentSessionSnapshots,
   type TargetHistoryRuntime
 } from "./targetHistoryRuntime";
 
@@ -446,6 +453,7 @@ async function bootstrap(): Promise<void> {
   writeAgentHookHelpers(paths.agentHookBinDir);
   writeAgentWrapperBinaries(paths.agentWrapperBinDir);
   for (const result of ensureLocalAgentIntegrations({
+    env: resolvedShellEnv.baseEnv,
     homeDir: userHomeDir,
     agentStorageRoots
   })) {
@@ -461,18 +469,20 @@ async function bootstrap(): Promise<void> {
   let targetServices: TargetServiceRegistry | undefined;
   let targetHistoryRuntime: TargetHistoryRuntime | undefined;
   const configuredAgents = savedSettings?.agents;
-  const localAgentSettings = resolveAgentScopeSettings(
-    configuredAgents,
-    "local"
+  const localAgentNormalization = normalizeBuiltinAgentScopeSettings(
+    resolveAgentScopeSettings(configuredAgents, "local")
   );
-  const sshAgentSettings = resolveAgentScopeSettings(configuredAgents, "ssh");
-  const localExternalSessionIndexer = createExternalSessionScanWorkerClient({
+  const localAgentSettings = Object.fromEntries(localAgentNormalization);
+  const localAgentMetadataScanner = createUsageScanWorkerClient({
     homeDir: userHomeDir,
     env: resolvedShellEnv.baseEnv,
     agentStorageRoots,
     agentSettings: localAgentSettings,
-    antigravitySessionIndexPath: paths.antigravitySessionsPath
+    antigravitySessionIndexPath: paths.antigravitySessionsPath,
+    platform: platformRuntime.platformId
   });
+  const localExternalSessionIndexer =
+    localAgentMetadataScanner.externalSessions;
 
   const runtime = createAppRuntime({
     paths: {
@@ -525,6 +535,25 @@ async function bootstrap(): Promise<void> {
       }
       metadataRuntime?.handleAppAction(action);
       usageRuntime?.handleAppAction(action);
+      const agentSettingsChanged =
+        action.type === "state.restore" ||
+        (action.type === "settings.update" && "agents" in action.patch);
+      if (agentSettingsChanged) {
+        targetHistoryRuntime?.invalidateAgentSettings();
+        const executable = Object.fromEntries(
+          normalizeBuiltinAgentScopeSettings(
+            resolveAgentScopeSettings(state.settings.agents, "local")
+          )
+        );
+        const reconfigure =
+          localAgentMetadataScanner.updateAgentSettings(executable);
+        usageRuntime?.invalidateAgentSettings();
+        void reconfigure.catch((error: unknown) => {
+          logDiagnostics("main.agent-metadata.reconfigure-failed", {
+            message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
       if (
         action.type === "state.restore" ||
         action.type === "workspace.worktree.convert"
@@ -533,12 +562,48 @@ async function bootstrap(): Promise<void> {
       }
     },
     externalSessionIndexer: {
-      listExternalAgentSessions: () =>
-        targetHistoryRuntime?.listExternalAgentSessions() ??
-        localExternalSessionIndexer.listExternalAgentSessions(),
+      listExternalAgentSessions: async () => {
+        const localExternalSessions =
+          localExternalSessionIndexer.listExternalAgentSessions();
+        if (!targetHistoryRuntime) return await localExternalSessions;
+        const [history, externalSessions] = await Promise.all([
+          targetHistoryRuntime.listExternalAgentSessions(),
+          localExternalSessions
+        ]);
+        return mergeExternalAgentSessionSnapshots([history, externalSessions]);
+      },
       resolveExternalAgentSession: (key) =>
         targetHistoryRuntime?.resolveExternalAgentSession(key) ??
         localExternalSessionIndexer.resolveExternalAgentSession(key)
+    },
+    resolveAgentResumeLaunch: (agentSessionRef) => {
+      const settings = Object.fromEntries(
+        normalizeBuiltinAgentScopeSettings(
+          resolveAgentScopeSettings(runtime.getState().settings.agents, "local")
+        )
+      );
+      const policy = resolveBuiltinAgentResumePolicy({
+        agentId: agentSessionRef.vendor,
+        sessionId: agentSessionRef.id,
+        settings: Object.hasOwn(settings, agentSessionRef.vendor)
+          ? settings[agentSessionRef.vendor]
+          : undefined
+      });
+      if (
+        !policy ||
+        !resolvedAgentCommandIsAvailable(
+          policy.command,
+          resolvedShellEnv.baseEnv
+        )
+      ) {
+        return undefined;
+      }
+      return {
+        initialInput: `${formatAgentCommandForShell([
+          policy.command,
+          ...policy.args
+        ])}\r`
+      };
     },
     nativeNotificationIdentity,
     resolveLocalPath,
@@ -588,13 +653,7 @@ async function bootstrap(): Promise<void> {
   });
 
   const localUsageProvider = createLocalUsageProvider({
-    scanService: createUsageScanWorkerClient({
-      env: resolvedShellEnv.baseEnv,
-      homeDir: userHomeDir,
-      agentStorageRoots,
-      agentSettings: localAgentSettings,
-      platform: platformRuntime.platformId
-    })
+    scanService: localAgentMetadataScanner
   });
   usageRuntime = createUsageRuntime({
     getState: runtime.getState,
@@ -604,8 +663,14 @@ async function bootstrap(): Promise<void> {
     homeDir: userHomeDir,
     agentStorageRoots,
     agentSettings: localAgentSettings,
-    sshAgentSettings,
+    getAgentSettings: (scope) =>
+      Object.fromEntries(
+        normalizeBuiltinAgentScopeSettings(
+          resolveAgentScopeSettings(runtime.getState().settings.agents, scope)
+        )
+      ),
     platform: platformRuntime.platformId,
+    appVersion: app.getVersion(),
     pricingResolver: modelPricingCatalogRuntime.getResolver(),
     resolveLocalPath,
     targetServices: () => targetServices,
@@ -1157,8 +1222,12 @@ async function bootstrap(): Promise<void> {
     targetServices,
     getState: runtime.getState,
     localIndexer: localExternalSessionIndexer,
-    localAgentSettings,
-    sshAgentSettings,
+    getAgentSettings: (scope) =>
+      Object.fromEntries(
+        normalizeBuiltinAgentScopeSettings(
+          resolveAgentScopeSettings(runtime.getState().settings.agents, scope)
+        )
+      ),
     reportError: (target, error) =>
       logDiagnostics("main.target-history.refresh-failed", {
         target: target.kind === "local" ? "local" : `ssh:${target.targetId}`,
@@ -1459,6 +1528,7 @@ async function bootstrap(): Promise<void> {
   });
 
   registerIpcHandlers({
+    getAgentCatalog: listBuiltinAgentDescriptors,
     getPlatformDescriptor: () => ({
       ...platformRuntime.rendererDescriptor,
       debugging: {

@@ -2,6 +2,7 @@ import { posix } from "node:path";
 
 import type { RemotePath } from "@kmux/core";
 import { estimateUsageComponentCosts } from "@kmux/metadata";
+import { builtinAgentPricingVendor } from "@kmux/agents/builtin-runtime";
 import type { Id } from "@kmux/proto";
 
 import type { RemoteHostManager } from "../remoteHost";
@@ -59,17 +60,20 @@ function decodeUsageRecord(
     "cacheWriteTokens"
   );
   const totalTokens = safeUint64(record.totalTokens, "totalTokens");
-  const estimate = estimateUsageComponentCosts({
-    vendor: record.vendor === "antigravity" ? "gemini" : record.vendor,
-    model: record.model,
-    pricingMode: record.pricingMode,
-    inputTokens,
-    outputTokens,
-    thinkingTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    cacheWriteTokensKnown: record.cacheWriteTokensKnown
-  });
+  const pricingVendor = builtinAgentPricingVendor(record.vendor);
+  const estimate = pricingVendor
+    ? estimateUsageComponentCosts({
+        vendor: pricingVendor,
+        model: record.model,
+        pricingMode: record.pricingMode,
+        inputTokens,
+        outputTokens,
+        thinkingTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        cacheWriteTokensKnown: record.cacheWriteTokensKnown
+      })
+    : null;
   const estimatedCostUsd = estimate?.totalCostUsd ?? 0;
   return {
     vendor: record.vendor,

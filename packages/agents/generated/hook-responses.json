@@ -1,0 +1,31 @@
+{
+  "claude": { "success": {}, "fallback": {}, "fallbackByEvent": {} },
+  "codex": { "success": {}, "fallback": {}, "fallbackByEvent": {} },
+  "antigravity": {
+    "success": { "decision": "allow" },
+    "fallback": { "decision": "allow" },
+    "fallbackByEvent": {
+      "PreInvocation": {},
+      "PreToolUse": { "decision": "allow" },
+      "Stop": { "decision": "allow" }
+    }
+  },
+  "agy": {
+    "success": { "decision": "allow" },
+    "fallback": { "decision": "allow" },
+    "fallbackByEvent": {
+      "PreInvocation": {},
+      "PreToolUse": { "decision": "allow" },
+      "Stop": { "decision": "allow" }
+    }
+  },
+  "antigravity-cli": {
+    "success": { "decision": "allow" },
+    "fallback": { "decision": "allow" },
+    "fallbackByEvent": {
+      "PreInvocation": {},
+      "PreToolUse": { "decision": "allow" },
+      "Stop": { "decision": "allow" }
+    }
+  }
+}

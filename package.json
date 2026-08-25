@@ -31,7 +31,7 @@
     "package:linux": "npm run build && npm run verify:remote:artifacts:cross-host && npm run rebuild:electron && npm run dist:linux --workspace @kmux/desktop",
     "package:linux:clean": "npm run clean:desktop && npm run package:linux",
     "build:pty-host": "tsup apps/desktop/src/pty-host/index.ts --platform=node --format=cjs --target=node20 --out-dir apps/desktop/dist/pty-host --clean",
-    "build:remote-host": "tsup apps/desktop/src/remote-host/index.ts --platform=node --format=cjs --target=node20 --out-dir apps/desktop/dist/remote-host --clean",
+    "build:remote-host": "tsup apps/desktop/src/remote-host/index.ts --platform=node --format=cjs --target=node20 --out-dir apps/desktop/dist/remote-host --clean --splitting",
     "build:cli": "tsup packages/cli/src/bin.ts --platform=node --format=cjs --target=node20 --out-dir packages/cli/dist --clean",
     "build:remote:darwin-arm64": "node scripts/build-remote-runtime.mjs darwin-arm64",
     "build:remote:darwin-x64": "node scripts/build-remote-runtime.mjs darwin-x64",
@@ -45,7 +45,7 @@
     "rebuild:electron": "electron-rebuild -f -w node-pty",
     "postinstall": "node scripts/ensure-node-pty-spawn-helper.mjs",
     "lint": "eslint .",
-    "test": "npm run check:agent-integration-contract && vitest run",
+    "test": "npm run check:agents && npm run check:agent-architecture && npm run check:agent-integration-contract && vitest run",
     "test:ssh:integration": "npm run build:remote:linux-x64 && vitest run --config vitest.ssh.config.ts",
     "test:ssh:e2e": "npm run build:remote:linux-x64 && npm run smoke:dev && npm run build && playwright test tests/e2e/kmux-ssh-remote.spec.ts",
     "test:watch": "vitest",
@@ -72,6 +72,9 @@
     "update:model-pricing": "node scripts/update-model-pricing.mjs",
     "check:model-pricing": "node scripts/update-model-pricing.mjs --check",
     "check:agent-integration-contract": "node scripts/check-agent-integration-contract.mjs",
+    "generate:agents": "tsx scripts/generate-agent-artifacts.ts",
+    "check:agents": "tsx scripts/generate-agent-artifacts.ts --check",
+    "check:agent-architecture": "node scripts/check-agent-architecture.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

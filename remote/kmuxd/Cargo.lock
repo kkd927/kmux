@@ -354,6 +354,7 @@ dependencies = [
 name = "kmux-agent-integration"
 version = "0.1.0"
 dependencies = [
+ "kmux-agent-manifest",
  "nix",
  "serde",
  "serde_json",
@@ -364,10 +365,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kmux-agent-manifest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "kmux-bridge"
 version = "0.1.0"
 dependencies = [
  "kmux-agent-integration",
+ "kmux-agent-manifest",
  "kmux-compat",
  "kmux-doctor",
  "kmux-hook",
@@ -422,6 +433,7 @@ dependencies = [
 name = "kmux-hook"
 version = "0.1.0"
 dependencies = [
+ "kmux-agent-manifest",
  "kmux-compat",
  "kmux-platform",
  "nix",
@@ -480,6 +492,7 @@ name = "kmux-metadata"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "kmux-agent-manifest",
  "libc",
  "rusqlite",
  "serde",
@@ -519,6 +532,7 @@ dependencies = [
  "anyhow",
  "clap",
  "kmux-agent-integration",
+ "kmux-agent-manifest",
  "kmux-bridge",
  "kmux-cli",
  "kmux-compat",

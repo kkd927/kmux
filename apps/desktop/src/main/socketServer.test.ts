@@ -707,6 +707,69 @@ describe("kmux socket server agent hooks", () => {
     }
   });
 
+  it("canonicalizes built-in aliases for direct agent events and preserves open agent ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
+    tempDirs.push(tempDir);
+    const socketPath = join(tempDir, "control.sock");
+    const dispatch = vi.fn();
+
+    const state = createInitialState("/bin/zsh");
+    state.settings.socketMode = "allowAll";
+    const activeWorkspaceId =
+      state.windows[state.activeWindowId].activeWorkspaceId;
+    const server = new KmuxSocketServer({
+      socketPath,
+      getState: () => state,
+      dispatch,
+      sendSurfaceText: vi.fn(),
+      sendSurfaceKey: vi.fn(),
+      identify: () => ({
+        socketPath,
+        socketMode: state.settings.socketMode,
+        windowId: state.activeWindowId,
+        activeWorkspaceId,
+        activeSurfaceId:
+          state.panes[state.workspaces[activeWorkspaceId].activePaneId]
+            .activeSurfaceId,
+        capabilities: []
+      })
+    });
+
+    await server.start();
+
+    try {
+      for (const [agent, expected] of [
+        ["agy", "antigravity"],
+        ["antigravity-cli", "antigravity"],
+        ["future-agent", "future-agent"]
+      ] as const) {
+        const response = await sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: `rpc_${agent}`,
+          method: "agent.event",
+          params: {
+            agent,
+            event: "session_start",
+            surfaceId: "surface_1",
+            sessionId: "session_1",
+            vendorSessionId: `${agent}-session`
+          }
+        });
+
+        expect(response.result).toEqual({ ok: true });
+        expect(dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: "agent.event",
+            agent: expected,
+            vendorSessionId: `${agent}-session`
+          })
+        );
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("resolves surface split through the live surface pane when a request also carries a stale pane id", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kmux-socket-server-"));
     tempDirs.push(tempDir);

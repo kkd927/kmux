@@ -16,6 +16,7 @@ import {
   createSshWorkspaceReplacementPatch
 } from "@kmux/core/main";
 import {
+  decodeAgentId,
   parseUint64Decimal,
   type ExternalAgentSessionRef,
   type Id
@@ -953,15 +954,8 @@ function decodeConversionAgentSessionRef(
 ): ExternalAgentSessionRef {
   const record = requireConversionRequestRecord(value, "agentSessionRef");
   assertConversionRequestKeys(record, ["vendor", "externalKey", "sessionId"]);
-  if (
-    record.vendor !== "codex" &&
-    record.vendor !== "claude" &&
-    record.vendor !== "antigravity"
-  ) {
-    throw new TypeError("agentSessionRef vendor is invalid");
-  }
   return {
-    vendor: record.vendor,
+    vendor: decodeAgentId(record.vendor),
     externalKey: requireConversionRequestText(
       record.externalKey,
       "agentSessionRef.externalKey",

@@ -87,10 +87,12 @@ async function buildLinuxArtifact(temporaryRoot) {
   const contextRoot = join(temporaryRoot, "context");
   const contextSource = join(contextRoot, "remote", "kmuxd");
   const contextContract = join(contextRoot, "packages", "agent-integration");
+  const contextAgents = join(contextRoot, "packages", "agents", "generated");
   const contextMetadata = join(contextRoot, "packages", "metadata");
   const artifactRoot = join(temporaryRoot, "artifact");
   await mkdir(dirname(contextSource), { recursive: true });
   await mkdir(dirname(contextContract), { recursive: true });
+  await mkdir(contextAgents, { recursive: true });
   await mkdir(contextMetadata, { recursive: true });
   await cp(sourceDirectory, contextSource, {
     recursive: true,
@@ -102,6 +104,16 @@ async function buildLinuxArtifact(temporaryRoot) {
     join(repositoryRoot, "packages", "agent-integration"),
     contextContract,
     { recursive: true }
+  );
+  await copyFile(
+    join(
+      repositoryRoot,
+      "packages",
+      "agents",
+      "generated",
+      "portable-agent-manifest.json"
+    ),
+    join(contextAgents, "portable-agent-manifest.json")
   );
   await copyFile(
     join(repositoryRoot, "packages", "metadata", "source-contract.json"),

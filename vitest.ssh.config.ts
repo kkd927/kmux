@@ -32,6 +32,27 @@ export default defineConfig({
         currentDir,
         "packages/agent-integration/src/planner.ts"
       ),
+      "@kmux/agents/builtin-runtime": resolve(
+        currentDir,
+        "packages/agents/src/builtinRuntime.ts"
+      ),
+      "@kmux/agents/builtin-hooks": resolve(
+        currentDir,
+        "packages/agents/src/builtinHooks.ts"
+      ),
+      "@kmux/agents/generated-hook-responses": resolve(
+        currentDir,
+        "packages/agents/src/generatedHookResponses.ts"
+      ),
+      "@kmux/agents/builtin-subscriptions": resolve(
+        currentDir,
+        "packages/agents/src/builtinSubscriptions.ts"
+      ),
+      "@kmux/agents/composition": resolve(
+        currentDir,
+        "packages/agents/src/composition.ts"
+      ),
+      "@kmux/agents": resolve(currentDir, "packages/agents/src/index.ts"),
       "@kmux/ui": resolve(currentDir, "packages/ui/src/index.ts")
     }
   },

@@ -1111,7 +1111,8 @@ async function fetchRemoteAgentIntegrationSnapshot(
     containsAsciiControl(report.agentBinDir) ||
     Buffer.byteLength(report.agentBinDir, "utf8") > 32 * 1024 ||
     !Array.isArray(report.vendors) ||
-    report.vendors.length !== 3
+    report.vendors.length !==
+      Object.keys(AGENT_INTEGRATION_PLANNER_CONTRACT.vendors).length
   ) {
     throw new TypeError("remote agent integration snapshot is invalid");
   }
@@ -1127,7 +1128,9 @@ async function fetchRemoteAgentIntegrationSnapshot(
     seen.add(vendor.vendor);
     return vendor;
   });
-  if (seen.size !== 3) {
+  if (
+    seen.size !== Object.keys(AGENT_INTEGRATION_PLANNER_CONTRACT.vendors).length
+  ) {
     throw new TypeError(
       "remote agent integration snapshot vendor set is incomplete"
     );
@@ -1155,9 +1158,11 @@ function decodeRemoteAgentIntegrationVendorSnapshot(
     "warning"
   ]);
   if (
-    (snapshot.vendor !== "claude" &&
-      snapshot.vendor !== "codex" &&
-      snapshot.vendor !== "antigravity") ||
+    typeof snapshot.vendor !== "string" ||
+    !Object.hasOwn(
+      AGENT_INTEGRATION_PLANNER_CONTRACT.vendors,
+      snapshot.vendor
+    ) ||
     typeof snapshot.path !== "string" ||
     !isAbsolute(snapshot.path) ||
     containsAsciiControl(snapshot.path) ||

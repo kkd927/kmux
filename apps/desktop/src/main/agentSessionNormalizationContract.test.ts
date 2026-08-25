@@ -12,9 +12,13 @@ import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createUsageAdapters } from "@kmux/metadata";
-
-import { createExternalSessionIndexer } from "./externalSessions";
+import { createLocalMetadataInventoryService } from "@kmux/metadata";
+import {
+  builtinAgentMetadataQueryPlans,
+  builtinAgentMetadataSourceRevisions,
+  createBuiltinLocalExternalSessionIndexer,
+  listBuiltinLocalUsageAdapters
+} from "@kmux/agents/builtin-runtime";
 
 interface AgentSessionContractFixture {
   version: number;
@@ -153,23 +157,33 @@ describe("agent session cross-language normalization contract", () => {
         );
       }
 
-      const snapshot = createExternalSessionIndexer({
-        homeDir: sandbox,
-        commandAvailability: () => true
-      }).listExternalAgentSessions();
-      const session = snapshot.sessions.find(
-        (candidate) =>
-          candidate.vendor === scenario.vendor &&
-          candidate.key === `${scenario.vendor}:${scenario.sessionId}`
-      );
-
-      expect(session, scenario.name).toMatchObject({
-        title: scenario.expected.title,
-        cwd: scenario.expected.cwd
+      const metadataInventory = createLocalMetadataInventoryService({
+        principal: "uid:test",
+        sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
+        queryPlans: builtinAgentMetadataQueryPlans()
       });
-
-      const adapters = createUsageAdapters({ homeDir: sandbox });
+      const indexer = createBuiltinLocalExternalSessionIndexer({
+        homeDir: sandbox,
+        metadataInventory,
+        commandAvailability: () => true
+      });
+      const adapters = listBuiltinLocalUsageAdapters({
+        homeDir: sandbox,
+        metadataInventory
+      });
       try {
+        const snapshot = await indexer.listExternalAgentSessions();
+        const session = snapshot.sessions.find(
+          (candidate) =>
+            candidate.vendor === scenario.vendor &&
+            candidate.key === `${scenario.vendor}:${scenario.sessionId}`
+        );
+
+        expect(session, scenario.name).toMatchObject({
+          title: scenario.expected.title,
+          cwd: scenario.expected.cwd
+        });
+
         const adapter = adapters.find(
           (candidate) => candidate.vendor === scenario.vendor
         );
@@ -179,6 +193,8 @@ describe("agent session cross-language normalization contract", () => {
         );
         expect(sample, scenario.name).toMatchObject(scenario.expected.usage);
       } finally {
+        indexer.close();
+        await metadataInventory.close();
         adapters.forEach((adapter) => adapter.close());
       }
     }

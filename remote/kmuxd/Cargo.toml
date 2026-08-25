@@ -10,6 +10,7 @@ members = [
   ".",
   "crates/bridge",
   "crates/agent-integration",
+  "crates/agent-manifest",
   "crates/cli",
   "crates/compat",
   "crates/doctor",
@@ -53,6 +54,7 @@ anyhow.workspace = true
 clap.workspace = true
 kmux-bridge = { path = "crates/bridge" }
 kmux-agent-integration = { path = "crates/agent-integration" }
+kmux-agent-manifest = { path = "crates/agent-manifest" }
 kmux-cli = { path = "crates/cli" }
 kmux-doctor = { path = "crates/doctor" }
 kmux-hook = { path = "crates/hook" }

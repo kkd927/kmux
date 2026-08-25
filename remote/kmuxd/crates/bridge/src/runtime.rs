@@ -48,8 +48,9 @@ use kmux_keeper::{
 use kmux_metadata::{
     ExternalAgentScanSettings, ExternalAgentSettings, ExternalSessionClaim,
     ExternalSourceCacheKind, ExternalSourceCacheUpdate, MetadataPurpose, MetadataSourceError,
-    MetadataSourceHandle, list_owned_metadata_sources, query_metadata_source, read_metadata_source,
-    scan_owned_external_history_with_settings, scan_owned_external_usage_with_settings,
+    MetadataSourceHandle, list_owned_metadata_sources_for_definitions_with_environment,
+    query_metadata_source, read_metadata_source, scan_owned_external_history_with_settings,
+    scan_owned_external_usage_with_settings,
 };
 use kmux_platform::{
     current_authenticated_home, current_authenticated_principal, effective_uid, spawn_detached,
@@ -64,6 +65,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub const AGENT_METADATA_SOURCES_CAPABILITY: &str =
+    kmux_metadata::METADATA_SOURCE_CONTRACT_CAPABILITY;
 
 const MAX_BRIDGE_TOKEN_RECORD_BYTES: u64 = 64 * 1024;
 const MAX_BRIDGE_TOKEN_ROTATION_BYTES: u64 = 64 * 1024;
@@ -1152,12 +1156,14 @@ fn handle_single_request(
             desktop_installation_id,
             target_id,
             purpose,
+            agent_definitions,
             agent_settings,
         } => inspect_metadata_sources(
             roots,
             &desktop_installation_id,
             &target_id,
             &purpose,
+            &agent_definitions,
             agent_settings,
             metadata_handles,
         )
@@ -1329,7 +1335,7 @@ fn hello(
             "history.scan-bounded-v1".to_owned(),
             "history.scan-partial-v2".to_owned(),
             "usage.scan-bounded-v1".to_owned(),
-            "agent-metadata-sources-v1".to_owned(),
+            AGENT_METADATA_SOURCES_CAPABILITY.to_owned(),
             "agent-sessions.kmux-owned-v1".to_owned(),
             "agents.settings-scan-v2".to_owned(),
             "worktree.durable-v1".to_owned(),
@@ -2283,6 +2289,7 @@ fn inspect_metadata_sources(
     desktop_installation_id: &str,
     target_id: &str,
     purpose: &str,
+    agent_definitions: &BTreeMap<String, String>,
     agent_settings: Option<AgentScopeSettings>,
     handles: &mut BridgeMetadataHandles,
 ) -> Result<MetadataSourcesListedResponse, BridgeRuntimeError> {
@@ -2305,7 +2312,21 @@ fn inspect_metadata_sources(
         .iter()
         .map(metadata_session_claim)
         .collect::<Vec<_>>();
-    let inventory = list_owned_metadata_sources(&home, purpose, &settings, &claims, principal.uid)?;
+    let metadata_environment = std::env::vars().collect::<BTreeMap<_, _>>();
+    let inventory = list_owned_metadata_sources_for_definitions_with_environment(
+        &home,
+        purpose,
+        &settings,
+        &claims,
+        principal.uid,
+        agent_definitions,
+        Some(&metadata_environment),
+    )?;
+    let compatible_definitions = kmux_agent_manifest::definition_revisions()
+        .map_err(|error| BridgeRuntimeError::Invalid(error.to_string()))?
+        .into_iter()
+        .filter(|(agent_id, revision)| agent_definitions.get(agent_id) == Some(revision))
+        .collect::<BTreeMap<_, _>>();
     handles.sources.retain(|_, handle| {
         handle.desktop_installation_id != desktop_installation_id
             || handle.target_id != target_id
@@ -2330,7 +2351,7 @@ fn inspect_metadata_sources(
         .map(|claim| (claim.vendor.as_str(), claim.session_id.as_str()))
         .collect::<BTreeSet<_>>();
     for source in inventory.sources {
-        if purpose == MetadataPurpose::History
+        if purpose.includes(MetadataPurpose::History)
             && !listed_claims.contains(&(
                 source.claim.vendor.as_str(),
                 source.claim.vendor_session_id.as_str(),
@@ -2361,7 +2382,8 @@ fn inspect_metadata_sources(
     Ok(MetadataSourcesListedResponse {
         target_id: target_id.to_owned(),
         purpose: purpose.as_str().to_owned(),
-        contract_version: 1,
+        contract_version: 2,
+        agent_definitions: compatible_definitions,
         truncated,
         claims,
         sources,
@@ -2469,6 +2491,7 @@ fn remote_metadata_source(source_id: &str, source: &MetadataSourceHandle) -> Rem
     RemoteMetadataSource {
         source_id: source_id.to_owned(),
         vendor: source.vendor.clone(),
+        definition_revision: source.definition_revision.clone(),
         role: source.role.as_str().to_owned(),
         format: source.format.as_str().to_owned(),
         logical_name: source.logical_name.clone(),
@@ -2632,12 +2655,11 @@ fn cache_metadata_sources_best_effort(
 }
 
 fn metadata_agent_scan_settings(settings: Option<AgentScopeSettings>) -> ExternalAgentScanSettings {
-    let settings = settings.unwrap_or_default();
-    ExternalAgentScanSettings {
-        claude: settings.claude.map(metadata_agent_settings),
-        codex: settings.codex.map(metadata_agent_settings),
-        antigravity: settings.antigravity.map(metadata_agent_settings),
-    }
+    settings
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(agent_id, settings)| (agent_id, metadata_agent_settings(settings)))
+        .collect()
 }
 
 fn metadata_agent_settings(settings: AgentSettings) -> ExternalAgentSettings {
@@ -3361,10 +3383,11 @@ fn create_keeper(
         executable,
         &executable_generation,
     )?;
-    let (integration_home, integration_codex_home) = agent_integration_homes(launch.env.as_ref());
+    let (integration_home, integration_environment) =
+        agent_integration_environment(launch.env.as_ref());
     let agent_integration = reconcile_agent_integration(
         integration_home.as_deref(),
-        integration_codex_home.as_deref(),
+        Some(&integration_environment),
         &cli_bin,
     );
     let mut managed_env = launch.env.take().unwrap_or_default();
@@ -3510,7 +3533,7 @@ fn create_keeper(
 
 fn reconcile_agent_integration(
     home: Option<&Path>,
-    codex_home: Option<&Path>,
+    environment: Option<&BTreeMap<String, String>>,
     agent_bin_dir: &Path,
 ) -> AgentIntegrationDiagnostic {
     let Some(home) = home else {
@@ -3522,7 +3545,7 @@ fn reconcile_agent_integration(
             warning: Some("remote agent integration HOME is unavailable".to_owned()),
         };
     };
-    match kmux_agent_integration::ensure_all_with_codex_home(home, agent_bin_dir, codex_home) {
+    match kmux_agent_integration::ensure_all_with_environment(home, agent_bin_dir, environment) {
         Ok(report) => {
             let vendors = report
                 .vendors
@@ -3565,18 +3588,18 @@ fn reconcile_agent_integration(
     }
 }
 
-fn agent_integration_homes(
+fn agent_integration_environment(
     env: Option<&BTreeMap<String, String>>,
-) -> (Option<PathBuf>, Option<PathBuf>) {
-    let absolute_path = |name: &str| {
-        if let Some(value) = env.and_then(|env| env.get(name)) {
-            return Some(PathBuf::from(value)).filter(|path| path.is_absolute());
-        }
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    (absolute_path("HOME"), absolute_path("CODEX_HOME"))
+) -> (Option<PathBuf>, BTreeMap<String, String>) {
+    let mut environment = std::env::vars().collect::<BTreeMap<_, _>>();
+    if let Some(env) = env {
+        environment.extend(env.clone());
+    }
+    let home = environment
+        .get("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    (home, environment)
 }
 
 fn resolve_existing_session_operation(
@@ -3606,10 +3629,10 @@ fn resolve_existing_session_operation(
         return Ok(result);
     };
     let user_env = user_launch_env(descriptor.launch.env.as_ref());
-    let (home, codex_home) = agent_integration_homes(user_env.as_ref());
+    let (home, environment) = agent_integration_environment(user_env.as_ref());
     result.agent_integration = Some(reconcile_agent_integration(
         home.as_deref(),
-        codex_home.as_deref(),
+        Some(&environment),
         &agent_bin_dir,
     ));
     Ok(result)

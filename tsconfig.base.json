@@ -23,6 +23,22 @@
       "@kmux/agent-integration/planner": [
         "packages/agent-integration/src/planner.ts"
       ],
+      "@kmux/agents": ["packages/agents/src/index.ts"],
+      "@kmux/agents/composition": ["packages/agents/src/composition.ts"],
+      "@kmux/agents/builtin-hooks": ["packages/agents/src/builtinHooks.ts"],
+      "@kmux/agents/generated-hook-responses": [
+        "packages/agents/src/generatedHookResponses.ts"
+      ],
+      "@kmux/agents/generated-command-wrappers": [
+        "packages/agents/src/generatedCommandWrappers.ts"
+      ],
+      "@kmux/agents/builtin-subscriptions": [
+        "packages/agents/src/builtinSubscriptions.ts"
+      ],
+      "@kmux/agents/builtin-runtime": ["packages/agents/src/builtinRuntime.ts"],
+      "@kmux/agents/antigravity-session-index": [
+        "packages/agents/src/builtins/antigravity/sessionIndex.ts"
+      ],
       "@kmux/ui": ["packages/ui/src/index.ts"]
     }
   }

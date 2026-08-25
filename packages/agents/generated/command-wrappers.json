@@ -1,0 +1,15 @@
+[
+  {
+    "agentId": "codex",
+    "executable": "codex",
+    "homeEnvironmentVariable": "CODEX_HOME",
+    "defaultHomeRelativePath": ".codex",
+    "integrationRelativePath": "hooks.json",
+    "integrationContractMarker": "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2",
+    "legacyHooksFeature": "codex_hooks",
+    "currentHooksFeature": "hooks",
+    "currentHooksFeatureMinor": 129,
+    "notificationMethod": "osc9",
+    "integrationManagedMarker": "KMUX_MANAGED_CODEX_HOOK=1"
+  }
+]

@@ -3,79 +3,45 @@ import {
   existsSync,
   openSync,
   readSync,
-  readFileSync,
   realpathSync,
   statSync,
   watch,
   type FSWatcher
 } from "node:fs";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import type {
+  AgentMetadataQueryRequest,
+  AgentMetadataQueryResult,
+  AgentMetadataInventoryService,
+  AgentMetadataTextReadRequest
+} from "./localMetadataInventory";
 import {
-  basename,
-  delimiter,
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  resolve
-} from "node:path";
-import {
-  type AgentStorageRoots,
-  resolveAgentSessionRoots,
-  resolveAgentStorageRoots
-} from "./agentStorage";
-import type { AgentScopeSettings } from "@kmux/proto";
-import { readAntigravityConversationMetadataFromInventory } from "./antigravityStorage";
-import { isCodexSubagentSessionMetadata } from "./codexSession";
-import {
-  classifySessionInventoryCandidate,
   collectSessionInventory,
   type SessionInventoryCandidate,
-  type SessionInventoryDiagnostic
+  type SessionInventoryDiagnostic,
+  type SessionInventory
 } from "./sessionInventory";
 import {
-  consumeCoreUsageJsonLine,
   coreUsageSampleIdentity,
-  createCoreUsageParserState,
-  parseCoreUsageJsonDocument,
-  shouldReplaceCoreUsageSample
+  shouldReplaceCoreUsageSample,
+  type CoreUsageEventSample,
+  type CoreUsageTimeRange
 } from "./core/usage";
-import type { PricingMode } from "./modelPricing";
+import type { AgentId, MetadataSourceRoleId } from "@kmux/proto";
 
-const JSON_EXTENSIONS = new Set([".json"]);
 const JSONL_EXTENSIONS = new Set([".jsonl", ".ndjson"]);
 const WATCH_DEBOUNCE_MS = 180;
 const SOURCE_INDEX_RESYNC_MS = 60_000;
 const WATCH_ROOT_RETRY_MS = 60_000;
-const CODEX_IDENTITY_SCAN_BYTES = 64 * 1024;
+const MAX_SHARED_READ_BYTES = 256 * 1024;
+// This bounds retained parser state, not the size of each source read.
+const MAX_USAGE_JSONL_RECORD_BYTES = 256 * 1024;
 const MAX_USAGE_PARSE_CANDIDATES = 4_096 * 8;
 
-export type UsageVendor = "claude" | "codex" | "antigravity" | "unknown";
+export type UsageVendor = AgentId | "unknown";
 export type UsageCostSource = "reported" | "estimated" | "unavailable";
 
-export interface UsageEventSample {
-  vendor: UsageVendor;
-  timestampMs: number;
-  sourcePath: string;
-  sourceType: "jsonl" | "json";
-  sessionId?: string;
-  threadId?: string;
-  requestId?: string;
-  eventId?: string;
-  model?: string;
-  pricingMode?: PricingMode;
-  cwd?: string;
-  projectPath?: string;
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  cacheWriteTokensKnown?: boolean;
-  cacheTokens: number;
-  totalTokens: number;
-  estimatedCostUsd: number;
-  costSource?: UsageCostSource;
-}
+export type UsageEventSample = CoreUsageEventSample;
 
 export interface UsageAdapterReadResult {
   samples: UsageEventSample[];
@@ -98,95 +64,152 @@ export interface UsageAdapter {
   close(): void;
 }
 
-export interface CreateUsageAdaptersOptions {
-  env?: NodeJS.ProcessEnv;
-  homeDir?: string;
-  agentStorageRoots?: AgentStorageRoots;
-  agentSettings?: AgentScopeSettings;
-  platform?: NodeJS.Platform;
-}
-
-type UsageTimeRange = {
-  fromMs: number;
-  toMs?: number;
-};
+type UsageTimeRange = CoreUsageTimeRange;
 
 export interface UsageStartupScanResult {
   reads: UsageAdapterReadResult[];
+  failures: UsageAdapterScanFailure[];
+}
+
+export interface UsageAdapterScanFailure {
+  vendor: UsageVendor;
+  message: string;
 }
 
 interface JsonlCursor {
   kind: "jsonl";
   dayKey: string;
   offset: number;
-  inode: number;
+  identity: string;
   mtimeMs: number;
 }
 
-interface JsonCursor {
-  kind: "json";
-  dayKey: string;
-  inode: number;
-  mtimeMs: number;
-}
-
-type SourceCursor = JsonCursor | JsonlCursor;
+type SourceCursor = JsonlCursor;
 
 interface SourceDescriptor {
-  kind: "json" | "jsonl";
+  kind: "jsonl";
+  role: MetadataSourceRoleId;
   path: string;
+  size: number;
+  mtimeMs: number;
+  identity: string;
 }
 
-type CodexSourceIdentity = {
-  inode: number;
-  isSubagent: boolean;
-};
-
-interface AntigravityWorkspaceInventory {
-  workspaces: Map<string, string>;
-  truncated: boolean;
-  diagnostics: SessionInventoryDiagnostic[];
+interface LocalUsageSourceParser {
+  append(
+    text: string,
+    range: CoreUsageTimeRange,
+    options?: { readonly eof?: boolean }
+  ): readonly CoreUsageEventSample[];
+  reset(): void;
 }
 
-interface CachedAntigravityWorkspaceInventory {
-  candidateSignature: string;
-  fastProbeSignature: string;
-  inventory: AntigravityWorkspaceInventory;
-  lastFullScanAtMs: number;
+interface LocalUsageProjectionSession {
+  beginInventory(options: { readonly truncated: boolean }): void;
+  applySourceClaim(options: {
+    readonly role: MetadataSourceRoleId;
+    readonly claim: UsageSourceClaim;
+  }): void;
+  createParser(options: {
+    readonly role: MetadataSourceRoleId;
+    readonly format: "jsonl";
+    readonly sourcePath: string;
+    readonly maximumPendingBytes: number;
+  }): LocalUsageSourceParser;
 }
 
-interface AntigravityWorkspaceCandidateInventory {
-  candidates: SessionInventoryCandidate[];
-  diagnostics: SessionInventoryDiagnostic[];
-  signature: string;
-  truncated: boolean;
+interface LocalUsageSourceProjection {
+  createSession(): LocalUsageProjectionSession;
+}
+
+export interface UsageSourceClaim {
+  readonly sessionId: string;
+  readonly claimedAtUnixMs?: number;
+  readonly lastSeenAtUnixMs?: number;
+  readonly cwd?: string;
+  readonly workspacePaths?: readonly string[];
+  readonly launchTitle?: string;
+}
+
+export interface UsageProjectionPreparationResult {
+  readonly claims: readonly {
+    readonly role: MetadataSourceRoleId;
+    readonly claim: UsageSourceClaim;
+  }[];
+  readonly revision: string;
+  readonly truncated?: boolean;
+  readonly diagnostics?: readonly SessionInventoryDiagnostic[];
+}
+
+export interface UsageProjectionPreparationInput {
+  readonly roots: readonly string[];
+  readonly inventory: SessionInventory;
+  readText(request: AgentMetadataTextReadRequest): Promise<string>;
+  readonly query?: (
+    request: AgentMetadataQueryRequest
+  ) => Promise<AgentMetadataQueryResult>;
 }
 
 interface FileUsageAdapterOptions {
-  includeJson?: boolean;
-  includeHiddenDirs?: boolean;
   watchRecursive?: boolean;
-  antigravityWorkspaceByConversation?: Map<string, string>;
-  antigravityWorkspaceByConversationLoader?: () => AntigravityWorkspaceInventory;
+  sourceProjection: LocalUsageSourceProjection;
+  classifySource(candidate: SessionInventoryCandidate): {
+    readonly role: MetadataSourceRoleId;
+    readonly format: "jsonl";
+  } | null;
+  prepareProjection?: (
+    input: UsageProjectionPreparationInput
+  ) => Promise<UsageProjectionPreparationResult>;
+  probeProjectionRevision?: () => string;
+  projectionRoots?: readonly string[];
+  inventoryRoots?: readonly string[];
+  inventoryLoader?: () => SessionInventory | Promise<SessionInventory>;
+  inventoryWatch?: (onChange: (sourcePath?: string) => void) => () => void;
+  inventoryInvalidate?: () => void;
+  inventoryClose?: () => void;
+  readText?: (request: AgentMetadataTextReadRequest) => Promise<string>;
+  query?: (
+    request: AgentMetadataQueryRequest
+  ) => Promise<AgentMetadataQueryResult>;
+}
+
+export interface FileUsageAdapterDefinition {
+  readonly agentId: AgentId;
+  readonly roots: readonly string[];
+  readonly watchRecursive?: boolean;
+  readonly sourceProjection: LocalUsageSourceProjection;
+  readonly classifySource: FileUsageAdapterOptions["classifySource"];
+  readonly prepareProjection?: FileUsageAdapterOptions["prepareProjection"];
+  readonly probeProjectionRevision?: FileUsageAdapterOptions["probeProjectionRevision"];
+  readonly metadataInventory?: AgentMetadataInventoryService;
+  readonly topologyRoots?: readonly string[];
 }
 
 class FileUsageAdapter implements UsageAdapter {
   readonly vendor: UsageVendor;
 
-  private readonly coreParserState = createCoreUsageParserState();
-  private readonly codexContexts = this.coreParserState.codexContexts;
-  private readonly codexTotals = this.coreParserState.codexTotals;
-  private readonly codexSourceIdentities = new Map<
-    string,
-    CodexSourceIdentity
-  >();
-  private readonly antigravityContexts =
-    this.coreParserState.antigravityContexts;
-  private readonly antigravityWorkspaceByConversation =
-    this.coreParserState.antigravityWorkspaceByConversation;
-  private readonly antigravityWorkspaceByConversationLoader?: () => AntigravityWorkspaceInventory;
-  private readonly includeJson: boolean;
-  private readonly includeHiddenDirs: boolean;
+  private projectionSession: LocalUsageProjectionSession;
+  private readonly parsers = new Map<string, LocalUsageSourceParser>();
+  private readonly sourceProjection: LocalUsageSourceProjection;
+  private readonly classifySource: FileUsageAdapterOptions["classifySource"];
+  private readonly prepareProjection?: FileUsageAdapterOptions["prepareProjection"];
+  private readonly probeProjectionRevision?: FileUsageAdapterOptions["probeProjectionRevision"];
+  private readonly projectionRoots: readonly string[];
+  private readonly inventoryRoots: readonly string[];
+  private readonly inventoryLoader?: () =>
+    | SessionInventory
+    | Promise<SessionInventory>;
+  private readonly inventoryWatch?: (
+    onChange: (sourcePath?: string) => void
+  ) => () => void;
+  private readonly inventoryInvalidate?: () => void;
+  private readonly inventoryClose?: () => void;
+  private readonly readText?: (
+    request: AgentMetadataTextReadRequest
+  ) => Promise<string>;
+  private readonly query?: (
+    request: AgentMetadataQueryRequest
+  ) => Promise<AgentMetadataQueryResult>;
   private readonly watchRecursive: boolean;
   private readonly roots: string[];
   private readonly cursors = new Map<string, SourceCursor>();
@@ -200,26 +223,31 @@ class FileUsageAdapter implements UsageAdapter {
   private lastSourceIndexRefreshAtMs = 0;
   private inventoryTruncated = false;
   private inventoryDiagnostics: SessionInventoryDiagnostic[] = [];
-  private workspaceInventoryTruncated = false;
-  private workspaceInventoryDiagnostics: SessionInventoryDiagnostic[] = [];
+  private projectionTruncated = false;
+  private projectionDiagnostics: SessionInventoryDiagnostic[] = [];
+  private projectionRevision: string | undefined;
+  private projectionProbeRevision: string | undefined;
 
   constructor(
     vendor: UsageVendor,
     roots: string[],
-    options: FileUsageAdapterOptions = {}
+    options: FileUsageAdapterOptions
   ) {
     this.vendor = vendor;
     this.roots = roots.filter(Boolean);
-    this.antigravityWorkspaceByConversationLoader =
-      options.antigravityWorkspaceByConversationLoader;
-    for (const [
-      conversationId,
-      workspace
-    ] of options.antigravityWorkspaceByConversation ?? []) {
-      this.antigravityWorkspaceByConversation.set(conversationId, workspace);
-    }
-    this.includeJson = options.includeJson ?? false;
-    this.includeHiddenDirs = options.includeHiddenDirs ?? false;
+    this.sourceProjection = options.sourceProjection;
+    this.projectionSession = options.sourceProjection.createSession();
+    this.classifySource = options.classifySource;
+    this.prepareProjection = options.prepareProjection;
+    this.probeProjectionRevision = options.probeProjectionRevision;
+    this.projectionRoots = options.projectionRoots ?? this.roots;
+    this.inventoryRoots = options.inventoryRoots ?? this.roots;
+    this.inventoryLoader = options.inventoryLoader;
+    this.inventoryWatch = options.inventoryWatch;
+    this.inventoryInvalidate = options.inventoryInvalidate;
+    this.inventoryClose = options.inventoryClose;
+    this.readText = options.readText;
+    this.query = options.query;
     this.watchRecursive = options.watchRecursive ?? false;
   }
 
@@ -230,9 +258,8 @@ class FileUsageAdapter implements UsageAdapter {
 
   private resetForInitialScan(startOfDayMs: number): void {
     this.dayKey = dayKeyFor(startOfDayMs);
-    this.codexContexts.clear();
-    this.codexTotals.clear();
-    this.antigravityContexts.clear();
+    this.projectionSession = this.sourceProjection.createSession();
+    this.parsers.clear();
     this.cursors.clear();
     this.sourceIndexDirty = true;
     this.dirtySourceIndex = true;
@@ -251,6 +278,7 @@ class FileUsageAdapter implements UsageAdapter {
     const discoverNewSources = options.discoverNewSources ?? true;
     const markKnownSourcesDirty = options.markKnownSourcesDirty ?? true;
     if (discoverNewSources) {
+      this.inventoryInvalidate?.();
       this.sourceIndexDirty = true;
       if (markKnownSourcesDirty) {
         this.dirtySourceIndex = true;
@@ -265,6 +293,25 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   watch(onChange: () => void): () => void {
+    if (this.inventoryWatch) {
+      this.hasWatchers = true;
+      const stop = this.inventoryWatch((sourcePath) => {
+        if (sourcePath && this.sources.has(sourcePath)) {
+          this.dirtyPaths.add(sourcePath);
+        } else {
+          this.sourceIndexDirty = true;
+          this.dirtySourceIndex = true;
+          for (const knownPath of this.sources.keys()) {
+            this.dirtyPaths.add(knownPath);
+          }
+        }
+        onChange();
+      });
+      return () => {
+        stop();
+        this.hasWatchers = false;
+      };
+    }
     const cleanups = this.roots.map((root) => {
       let watcherCleanup = this.startWatchingRoot(root, onChange);
       if (watcherCleanup) {
@@ -303,6 +350,7 @@ class FileUsageAdapter implements UsageAdapter {
   }
 
   close(): void {
+    this.inventoryClose?.();
     for (const watcher of this.watchers) {
       watcher.close();
     }
@@ -313,19 +361,17 @@ class FileUsageAdapter implements UsageAdapter {
   private async readAllSources(
     range: UsageTimeRange
   ): Promise<UsageAdapterReadResult> {
-    this.refreshAntigravityWorkspaceByConversation();
+    this.refreshProjectionProbe();
     const samples: UsageEventSample[] = [];
-    const sources = this.resolveSourcesForRead();
+    const sources = await this.resolveSourcesForRead();
     const cursorDayKey = dayKeyFor(range.fromMs);
 
     for (const source of sources) {
-      if (source.kind === "json") {
-        for (const sample of this.readJsonSource(source, range, cursorDayKey)) {
-          samples.push(sample);
-        }
-        continue;
-      }
-      for (const sample of this.readJsonlSource(source, range, cursorDayKey)) {
+      for (const sample of await this.readJsonlSource(
+        source,
+        range,
+        cursorDayKey
+      )) {
         samples.push(sample);
       }
     }
@@ -333,57 +379,42 @@ class FileUsageAdapter implements UsageAdapter {
     return {
       samples,
       sourceCount: this.sources.size,
-      truncated: this.inventoryTruncated || this.workspaceInventoryTruncated,
-      ...([...this.inventoryDiagnostics, ...this.workspaceInventoryDiagnostics]
+      truncated: this.inventoryTruncated || this.projectionTruncated,
+      ...([...this.inventoryDiagnostics, ...this.projectionDiagnostics]
         .length === 0
         ? {}
         : {
             diagnostics: [
               ...this.inventoryDiagnostics,
-              ...this.workspaceInventoryDiagnostics
+              ...this.projectionDiagnostics
             ].map((diagnostic) => ({ ...diagnostic }))
           })
     };
   }
 
-  private refreshAntigravityWorkspaceByConversation(): void {
+  private refreshProjectionProbe(): void {
+    if (this.hasWatchers || !this.probeProjectionRevision) return;
+    const revision = this.probeProjectionRevision();
     if (
-      this.vendor !== "antigravity" ||
-      !this.antigravityWorkspaceByConversationLoader
+      this.projectionProbeRevision !== undefined &&
+      revision !== this.projectionProbeRevision
     ) {
-      return;
+      this.inventoryInvalidate?.();
+      this.sourceIndexDirty = true;
+      this.dirtySourceIndex = true;
     }
-    const workspaceInventory = this.antigravityWorkspaceByConversationLoader();
-    this.workspaceInventoryTruncated = workspaceInventory.truncated;
-    this.workspaceInventoryDiagnostics = workspaceInventory.diagnostics;
-    const nextWorkspaces = workspaceInventory.truncated
-      ? new Map([
-          ...this.antigravityWorkspaceByConversation,
-          ...workspaceInventory.workspaces
-        ])
-      : workspaceInventory.workspaces;
-    if (
-      stringMapEquals(this.antigravityWorkspaceByConversation, nextWorkspaces)
-    ) {
-      return;
-    }
-    this.antigravityWorkspaceByConversation.clear();
-    for (const [conversationId, workspace] of nextWorkspaces.entries()) {
-      this.antigravityWorkspaceByConversation.set(conversationId, workspace);
-    }
-    this.antigravityContexts.clear();
-    for (const sourcePath of this.sources.keys()) {
-      this.cursors.delete(sourcePath);
-      this.dirtyPaths.add(sourcePath);
-    }
+    this.projectionProbeRevision = revision;
   }
 
-  private resolveSourcesForRead(): SourceDescriptor[] {
+  private async resolveSourcesForRead(): Promise<SourceDescriptor[]> {
     const shouldResyncSourceIndex = this.shouldResyncSourceIndex();
     if (this.sourceIndexDirty || shouldResyncSourceIndex) {
       // A low-frequency resync must also revisit known files so append-only
       // providers still catch up when a filesystem watch event is missed.
-      this.refreshSourceIndex(this.dirtySourceIndex || shouldResyncSourceIndex);
+      if (shouldResyncSourceIndex) this.inventoryInvalidate?.();
+      await this.refreshSourceIndex(
+        this.dirtySourceIndex || shouldResyncSourceIndex
+      );
       this.dirtySourceIndex = false;
     }
 
@@ -402,11 +433,16 @@ class FileUsageAdapter implements UsageAdapter {
     return sources;
   }
 
-  private refreshSourceIndex(markAllDirty: boolean): void {
-    const inventory = collectUsageSources(this.vendor, this.roots, {
-      includeJson: this.includeJson,
-      includeHiddenDirs: this.includeHiddenDirs
-    });
+  private async refreshSourceIndex(markAllDirty: boolean): Promise<void> {
+    const sharedInventory = this.inventoryLoader
+      ? await this.inventoryLoader()
+      : undefined;
+    const inventory = collectUsageSources(
+      this.inventoryRoots,
+      this.classifySource,
+      sharedInventory
+    );
+    await this.refreshProjection(inventory.inventory);
     const nextSources = inventory.sources;
     const nextSourceMap = new Map(
       nextSources.map((source) => [source.path, source] as const)
@@ -432,6 +468,53 @@ class FileUsageAdapter implements UsageAdapter {
     this.inventoryDiagnostics = inventory.diagnostics;
     this.sourceIndexDirty = inventory.truncated;
     this.lastSourceIndexRefreshAtMs = Date.now();
+  }
+
+  private async refreshProjection(inventory: SessionInventory): Promise<void> {
+    this.projectionSession.beginInventory({ truncated: inventory.truncated });
+    if (!this.prepareProjection) {
+      this.projectionTruncated = false;
+      this.projectionDiagnostics = [];
+      return;
+    }
+    const prepared = await this.prepareProjection({
+      roots: this.projectionRoots,
+      inventory,
+      readText: (request) =>
+        this.readText
+          ? this.readText(request)
+          : Promise.resolve(
+              readJsonlSlice(
+                request.path,
+                request.offset,
+                request.offset + request.maxBytes
+              )
+            ),
+      ...(this.query
+        ? {
+            query: (request: AgentMetadataQueryRequest) => this.query!(request)
+          }
+        : {})
+    });
+    this.projectionTruncated = prepared.truncated ?? false;
+    this.projectionDiagnostics = prepared.diagnostics
+      ? [...prepared.diagnostics]
+      : [];
+    for (const claim of prepared.claims) {
+      this.projectionSession.applySourceClaim(claim);
+    }
+    if (
+      this.projectionRevision !== undefined &&
+      prepared.revision !== this.projectionRevision
+    ) {
+      for (const parser of this.parsers.values()) parser.reset();
+      this.parsers.clear();
+      this.cursors.clear();
+      for (const sourcePath of this.sources.keys()) {
+        this.dirtyPaths.add(sourcePath);
+      }
+    }
+    this.projectionRevision = prepared.revision;
   }
 
   private markSourceDirty(
@@ -470,10 +553,8 @@ class FileUsageAdapter implements UsageAdapter {
   private removeTrackedSource(sourcePath: string): void {
     this.sources.delete(sourcePath);
     this.cursors.delete(sourcePath);
-    this.codexContexts.delete(sourcePath);
-    this.codexTotals.delete(sourcePath);
-    this.codexSourceIdentities.delete(sourcePath);
-    this.antigravityContexts.delete(sourcePath);
+    this.parsers.get(sourcePath)?.reset();
+    this.parsers.delete(sourcePath);
     this.dirtyPaths.delete(sourcePath);
   }
 
@@ -516,408 +597,117 @@ class FileUsageAdapter implements UsageAdapter {
     }
   }
 
-  private readJsonlSource(
+  private async readJsonlSource(
     source: SourceDescriptor,
     range: UsageTimeRange,
     cursorDayKey: string
-  ): UsageEventSample[] {
-    const stats = safeStat(source.path);
-    if (!stats) {
-      this.removeTrackedSource(source.path);
-      return [];
-    }
-
-    // Codex team counters are shared with the root conversation. Forked
-    // rollout files replay that same counter, so reading them would count the
-    // team's usage once per subagent. The root rollout remains authoritative.
-    if (this.isCodexSubagentSource(source.path, Number(stats.ino))) {
-      this.cursors.set(source.path, {
-        kind: "jsonl",
-        dayKey: cursorDayKey,
-        offset: Number(stats.size),
-        inode: Number(stats.ino),
-        mtimeMs: Number(stats.mtimeMs)
-      });
-      return [];
-    }
+  ): Promise<UsageEventSample[]> {
+    const state =
+      readSourceState(source.path) ??
+      (this.readText
+        ? {
+            identity: source.identity,
+            size: source.size,
+            mtimeMs: source.mtimeMs
+          }
+        : null);
+    if (!state) return this.removeMissingSource(source.path);
+    const { identity, size, mtimeMs } = state;
 
     const previous = this.cursors.get(source.path);
-    let offset =
+    const canContinue =
       previous?.kind === "jsonl" &&
       previous.dayKey === cursorDayKey &&
-      previous.inode === stats.ino &&
-      stats.size >= previous.offset
-        ? previous.offset
-        : 0;
+      previous.identity === identity &&
+      size >= previous.offset;
+    const offset = canContinue ? previous.offset : 0;
+    let parser = this.parsers.get(source.path);
+    if (!parser) {
+      parser = this.projectionSession.createParser({
+        role: source.role,
+        format: "jsonl",
+        sourcePath: source.path,
+        maximumPendingBytes: MAX_USAGE_JSONL_RECORD_BYTES
+      });
+      this.parsers.set(source.path, parser);
+    } else if (!canContinue) {
+      parser.reset();
+    }
 
-    const text = readJsonlSlice(source.path, offset, Number(stats.size));
     const samples: UsageEventSample[] = [];
-    const lines = text.split("\n");
-    const endedWithNewline = text.endsWith("\n");
-    const completeLines = endedWithNewline
-      ? lines.slice(0, -1)
-      : lines.slice(0, -1);
-
-    for (const line of completeLines) {
-      offset = consumeCoreUsageJsonLine(
-        samples,
-        this.vendor,
+    const appendChunk = (text: string) => {
+      samples.push(...parser.append(text, range));
+    };
+    if (this.readText) {
+      await streamSharedTextRange(
+        this.readText,
         source.path,
-        range,
-        line,
         offset,
-        true,
-        this.coreParserState
+        size,
+        appendChunk
       );
+    } else {
+      streamLocalTextRange(source.path, offset, size, appendChunk);
     }
-
-    const trailingLine = endedWithNewline ? "" : (lines.at(-1) ?? "");
-    if (trailingLine) {
-      offset = consumeCoreUsageJsonLine(
-        samples,
-        this.vendor,
-        source.path,
-        range,
-        trailingLine,
-        offset,
-        false,
-        this.coreParserState
-      );
-    }
+    samples.push(...parser.append("", range, { eof: true }));
 
     this.cursors.set(source.path, {
       kind: "jsonl",
       dayKey: cursorDayKey,
-      offset,
-      inode: Number(stats.ino),
-      mtimeMs: Number(stats.mtimeMs)
+      offset: size,
+      identity,
+      mtimeMs
     });
 
     return samples;
   }
 
-  private isCodexSubagentSource(sourcePath: string, inode: number): boolean {
-    if (this.vendor !== "codex") {
-      return false;
-    }
-    const cached = this.codexSourceIdentities.get(sourcePath);
-    if (cached?.inode === inode) {
-      return cached.isSubagent;
-    }
-    const metadata = readFirstCodexSessionMetadata(sourcePath);
-    if (!metadata) {
-      return false;
-    }
-    const identity = {
-      inode,
-      isSubagent: isCodexSubagentSessionMetadata(metadata)
-    };
-    this.codexSourceIdentities.set(sourcePath, identity);
-    return identity.isSubagent;
-  }
-
-  private readJsonSource(
-    source: SourceDescriptor,
-    range: UsageTimeRange,
-    cursorDayKey: string
-  ): UsageEventSample[] {
-    const stats = safeStat(source.path);
-    if (!stats) {
-      this.removeTrackedSource(source.path);
-      return [];
-    }
-
-    const previous = this.cursors.get(source.path);
-    if (
-      previous?.kind === "json" &&
-      previous.dayKey === cursorDayKey &&
-      previous.inode === Number(stats.ino) &&
-      previous.mtimeMs === Number(stats.mtimeMs)
-    ) {
-      return [];
-    }
-
-    try {
-      const parsed = JSON.parse(readFileSync(source.path, "utf8")) as Record<
-        string,
-        unknown
-      >;
-      const samples = parseCoreUsageJsonDocument({
-        vendor: this.vendor,
-        value: parsed,
-        sourcePath: source.path,
-        range,
-        state: this.coreParserState
-      });
-      this.cursors.set(source.path, {
-        kind: "json",
-        dayKey: cursorDayKey,
-        inode: Number(stats.ino),
-        mtimeMs: Number(stats.mtimeMs)
-      });
-      return samples;
-    } catch {
-      return [];
-    }
+  private removeMissingSource(sourcePath: string): [] {
+    this.removeTrackedSource(sourcePath);
+    return [];
   }
 }
 
-export function createUsageAdapters(
-  options: CreateUsageAdaptersOptions = {}
-): UsageAdapter[] {
-  const env = options.env ?? process.env;
-  const watchRecursive = shouldUseRecursiveUsageWatch(
-    options.platform ?? process.platform
+export function createFileUsageAdapter(
+  definition: FileUsageAdapterDefinition
+): UsageAdapter {
+  const topologyRoots = [...(definition.topologyRoots ?? definition.roots)];
+  const metadataInventory = definition.metadataInventory;
+  const topologyLease = metadataInventory?.acquire(
+    definition.agentId,
+    topologyRoots
   );
-  const agentStorageRoots =
-    options.agentStorageRoots ??
-    resolveAgentStorageRoots({
-      homeDir: options.homeDir,
-      env
-    });
-  const sessionRoots = resolveAgentSessionRoots({
-    agentStorageRoots,
-    agentSettings: options.agentSettings
+  const loadInventory = topologyLease
+    ? () => topologyLease.inventory()
+    : undefined;
+  return new FileUsageAdapter(definition.agentId, [...definition.roots], {
+    sourceProjection: definition.sourceProjection,
+    classifySource: definition.classifySource,
+    projectionRoots: topologyRoots,
+    inventoryRoots: topologyRoots,
+    ...(definition.prepareProjection
+      ? { prepareProjection: definition.prepareProjection }
+      : {}),
+    ...(definition.probeProjectionRevision
+      ? { probeProjectionRevision: definition.probeProjectionRevision }
+      : {}),
+    ...(definition.watchRecursive === undefined
+      ? {}
+      : { watchRecursive: definition.watchRecursive }),
+    ...(topologyLease
+      ? {
+          inventoryLoader: loadInventory,
+          inventoryWatch: (onChange: (sourcePath?: string) => void) =>
+            topologyLease.watch(onChange),
+          inventoryInvalidate: () => topologyLease.invalidate(),
+          inventoryClose: () => void topologyLease.release(),
+          readText: (request: AgentMetadataTextReadRequest) =>
+            topologyLease.readText(request),
+          query: (request: AgentMetadataQueryRequest) =>
+            topologyLease.query(request)
+        }
+      : {})
   });
-  const antigravityRoots =
-    options.agentSettings?.antigravity?.sessionRoot === undefined &&
-    env.KMUX_ANTIGRAVITY_USAGE_DIR?.trim()
-      ? resolveRoots(
-          env.KMUX_ANTIGRAVITY_USAGE_DIR,
-          agentStorageRoots.antigravity.brainDir
-        )
-      : sessionRoots.antigravity.map((root) => join(root, "brain"));
-  const antigravityWorkspaceInventoryLoader =
-    createAntigravityWorkspaceInventoryLoader(sessionRoots.antigravity);
-
-  return [
-    new FileUsageAdapter(
-      "claude",
-      options.agentSettings?.claude?.sessionRoot === undefined &&
-        env.KMUX_CLAUDE_USAGE_DIR?.trim()
-        ? resolveRoots(
-            env.KMUX_CLAUDE_USAGE_DIR,
-            agentStorageRoots.claude.projectsDir
-          )
-        : sessionRoots.claude,
-      { watchRecursive }
-    ),
-    new FileUsageAdapter(
-      "codex",
-      options.agentSettings?.codex?.sessionRoot === undefined &&
-        env.KMUX_CODEX_USAGE_DIR?.trim()
-        ? resolveRoots(
-            env.KMUX_CODEX_USAGE_DIR,
-            agentStorageRoots.codex.sessionsDir
-          )
-        : sessionRoots.codex,
-      { watchRecursive }
-    ),
-    new FileUsageAdapter("antigravity", antigravityRoots, {
-      antigravityWorkspaceByConversationLoader:
-        antigravityWorkspaceInventoryLoader,
-      includeHiddenDirs: true,
-      watchRecursive
-    })
-  ];
-}
-
-function createAntigravityWorkspaceInventoryLoader(
-  roots: string[]
-): () => AntigravityWorkspaceInventory {
-  let cached: CachedAntigravityWorkspaceInventory | undefined;
-  const fastProbePaths = antigravityWorkspaceFastProbePaths(roots);
-  return () => {
-    // Workspace metadata lives outside the watched brain roots. Probe its
-    // stable entry points on each read, then revalidate every candidate only
-    // on the same low-frequency interval used by the usage source inventory.
-    const fastProbeSignature =
-      antigravityWorkspaceProbeSignature(fastProbePaths);
-    if (
-      cached &&
-      fastProbeSignature === cached.fastProbeSignature &&
-      Date.now() - cached.lastFullScanAtMs < SOURCE_INDEX_RESYNC_MS
-    ) {
-      return cloneAntigravityWorkspaceInventory(cached.inventory);
-    }
-
-    const collected = collectAntigravityWorkspaceCandidates(roots);
-    const inventory =
-      cached?.candidateSignature === collected.signature
-        ? cached.inventory
-        : buildAntigravityWorkspaceInventory(roots, collected);
-    cached = {
-      candidateSignature: collected.signature,
-      fastProbeSignature,
-      inventory,
-      lastFullScanAtMs: Date.now()
-    };
-    return cloneAntigravityWorkspaceInventory(inventory);
-  };
-}
-
-function collectAntigravityWorkspaceCandidates(
-  roots: string[]
-): AntigravityWorkspaceCandidateInventory {
-  const inventory = collectSessionInventory(roots);
-  const candidateByPath = new Map(
-    inventory.candidates.map(
-      (candidate) => [candidate.path, candidate] as const
-    )
-  );
-  const candidates = inventory.candidates
-    .filter((candidate) =>
-      roots.some((root) => {
-        const role = classifySessionInventoryCandidate(
-          "antigravity",
-          root,
-          candidate.path
-        );
-        return (
-          role === "antigravity-history" ||
-          role === "antigravity-conversation" ||
-          role === "antigravity-project-index"
-        );
-      })
-    )
-    .map((candidate) =>
-      candidate.path.endsWith(".db")
-        ? {
-            ...candidate,
-            mtimeMs: Math.max(
-              candidate.mtimeMs,
-              candidateByPath.get(`${candidate.path}-wal`)?.mtimeMs ?? 0
-            )
-          }
-        : candidate
-    )
-    .sort(
-      (left, right) =>
-        right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path)
-    );
-  const parsingTruncated = candidates.length > MAX_USAGE_PARSE_CANDIDATES;
-  if (parsingTruncated) {
-    candidates.length = MAX_USAGE_PARSE_CANDIDATES;
-  }
-  const signature = antigravityWorkspaceCandidateSignature(
-    candidates,
-    candidateByPath,
-    inventory.truncated || parsingTruncated,
-    inventory.diagnostics
-  );
-
-  return {
-    candidates,
-    diagnostics: inventory.diagnostics,
-    signature,
-    truncated: inventory.truncated || parsingTruncated
-  };
-}
-
-function buildAntigravityWorkspaceInventory(
-  roots: readonly string[],
-  collected: AntigravityWorkspaceCandidateInventory
-): AntigravityWorkspaceInventory {
-  const workspaces = new Map<string, string>();
-  for (const root of roots) {
-    for (const conversation of readAntigravityConversationMetadataFromInventory(
-      root,
-      collected.candidates,
-      { maxConversationFiles: MAX_USAGE_PARSE_CANDIDATES }
-    )) {
-      if (
-        conversation.workspace &&
-        !workspaces.has(conversation.conversationId)
-      ) {
-        workspaces.set(conversation.conversationId, conversation.workspace);
-      }
-    }
-  }
-  return {
-    workspaces,
-    truncated: collected.truncated,
-    diagnostics: collected.diagnostics
-  };
-}
-
-function antigravityWorkspaceCandidateSignature(
-  candidates: readonly SessionInventoryCandidate[],
-  candidateByPath: ReadonlyMap<string, SessionInventoryCandidate>,
-  truncated: boolean,
-  diagnostics: readonly SessionInventoryDiagnostic[]
-): string {
-  const candidateSignatures = candidates.map((candidate) => {
-    const rawCandidate = candidateByPath.get(candidate.path) ?? candidate;
-    const wal = candidate.path.endsWith(".db")
-      ? candidateByPath.get(`${candidate.path}-wal`)
-      : undefined;
-    return [
-      candidate.path,
-      rawCandidate.size,
-      rawCandidate.mtimeMs,
-      candidate.mtimeMs,
-      wal?.path ?? "",
-      wal?.size ?? "",
-      wal?.mtimeMs ?? ""
-    ].join("\0");
-  });
-  const diagnosticSignatures = diagnostics.map((diagnostic) =>
-    [
-      diagnostic.root,
-      diagnostic.path,
-      diagnostic.kind,
-      diagnostic.message ?? ""
-    ].join("\0")
-  );
-  return [
-    truncated ? "truncated" : "complete",
-    ...candidateSignatures,
-    ...diagnosticSignatures
-  ].join("\n");
-}
-
-function antigravityWorkspaceFastProbePaths(
-  roots: readonly string[]
-): string[] {
-  const paths = new Set<string>();
-  for (const root of roots) {
-    paths.add(resolve(root));
-    paths.add(resolve(root, "cache"));
-    paths.add(resolve(root, "cache", "projects.json"));
-    paths.add(resolve(root, "conversations"));
-    paths.add(resolve(root, "history.jsonl"));
-  }
-  return Array.from(paths).sort();
-}
-
-function antigravityWorkspaceProbeSignature(paths: readonly string[]): string {
-  return paths
-    .map((path) => {
-      try {
-        const stats = statSync(path);
-        return [
-          path,
-          stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other",
-          Number(stats.size),
-          Number(stats.mtimeMs)
-        ].join("\0");
-      } catch {
-        return `${path}\0missing`;
-      }
-    })
-    .join("\n");
-}
-
-function cloneAntigravityWorkspaceInventory(
-  inventory: AntigravityWorkspaceInventory
-): AntigravityWorkspaceInventory {
-  return {
-    workspaces: new Map(inventory.workspaces),
-    truncated: inventory.truncated,
-    diagnostics: inventory.diagnostics.map((diagnostic) => ({
-      ...diagnostic
-    }))
-  };
 }
 
 export async function scanUsageAdaptersAtStartup(
@@ -926,76 +716,94 @@ export async function scanUsageAdaptersAtStartup(
     startOfDayMs: number;
   }
 ): Promise<UsageStartupScanResult> {
+  return scanUsageAdapters(adapters, {
+    startOfDayMs: options.startOfDayMs,
+    initial: true
+  });
+}
+
+export async function scanUsageAdapters(
+  adapters: UsageAdapter[],
+  options: {
+    startOfDayMs: number;
+    initial: boolean;
+  }
+): Promise<UsageStartupScanResult> {
+  const settled = await Promise.all(
+    adapters.map(async (adapter) => {
+      try {
+        return {
+          read: options.initial
+            ? await adapter.initialScan(options.startOfDayMs)
+            : await adapter.readIncremental(options.startOfDayMs)
+        };
+      } catch (error) {
+        return {
+          failure: {
+            vendor: adapter.vendor,
+            message: error instanceof Error ? error.message : String(error)
+          }
+        };
+      }
+    })
+  );
   return {
-    reads: await Promise.all(
-      adapters.map((adapter) => adapter.initialScan(options.startOfDayMs))
+    reads: settled.flatMap((result) => (result.read ? [result.read] : [])),
+    failures: settled.flatMap((result) =>
+      result.failure ? [result.failure] : []
     )
   };
 }
 
-function shouldUseRecursiveUsageWatch(platform: NodeJS.Platform): boolean {
-  return platform === "darwin" || platform === "win32";
-}
-
-function resolveRoots(
-  overrideValue: string | undefined,
-  fallbackRoot: string
-): string[] {
-  const overrideRoots = overrideValue?.trim()
-    ? overrideValue
-        .split(delimiter)
-        .map((entry) => entry.trim())
-        .filter((entry) => isAbsolute(entry))
-    : [];
-  const roots = overrideRoots.length > 0 ? overrideRoots : [fallbackRoot];
-  return roots.map((entry) => resolve(entry));
-}
-
 function collectUsageSources(
-  vendor: UsageVendor,
-  roots: string[],
-  options: { includeJson: boolean; includeHiddenDirs: boolean }
+  roots: readonly string[],
+  classifySource: FileUsageAdapterOptions["classifySource"],
+  sharedInventory?: SessionInventory
 ): {
   sources: SourceDescriptor[];
   truncated: boolean;
   diagnostics: SessionInventoryDiagnostic[];
+  inventory: SessionInventory;
 } {
   const sources: SourceDescriptor[] = [];
-  const inventory = collectSessionInventory(roots);
+  const inventory = sharedInventory ?? collectSessionInventory(roots);
   let truncated = inventory.truncated;
-
-  if (vendor === "unknown") {
-    return {
-      sources,
-      truncated,
-      diagnostics: inventory.diagnostics
-    };
-  }
-  const matching = inventory.candidates.filter(
-    (candidate) =>
-      roots.some(
-        (root) =>
-          classifySessionInventoryCandidate(vendor, root, candidate.path) !==
-          null
-      ) ||
-      ((vendor === "codex" || vendor === "claude") &&
-        extname(candidate.path).toLowerCase() === ".ndjson")
-  );
+  const matching = inventory.candidates
+    .map((candidate) => ({
+      candidate,
+      classification: classifySource(candidate)
+    }))
+    .filter(
+      (
+        entry
+      ): entry is {
+        candidate: SessionInventoryCandidate;
+        classification: { role: MetadataSourceRoleId; format: "jsonl" };
+      } => entry.classification !== null
+    );
   if (matching.length > MAX_USAGE_PARSE_CANDIDATES) {
     matching.length = MAX_USAGE_PARSE_CANDIDATES;
     truncated = true;
   }
-  for (const candidate of matching) {
-    const source = describeUsageSource(vendor, candidate.path, options);
-    if (source) {
-      sources.push(source);
-    }
+  for (const { candidate, classification } of matching) {
+    if (!JSONL_EXTENSIONS.has(extname(candidate.path).toLowerCase())) continue;
+    sources.push({
+      kind: "jsonl",
+      role: classification.role,
+      path: candidate.path,
+      size: candidate.size,
+      mtimeMs: candidate.mtimeMs,
+      identity:
+        candidate.identity ??
+        `${candidate.path}\0${candidate.birthtimeMs ?? candidate.mtimeMs}`
+    });
   }
 
   return {
     sources,
     truncated,
-    diagnostics: inventory.diagnostics
+    diagnostics: inventory.diagnostics,
+    inventory
   };
 }
 
@@ -1011,54 +819,32 @@ function canonicalUsageSourcePath(filePath: string): string {
   }
 }
 
-function describeUsageSource(
-  vendor: UsageVendor,
-  filePath: string,
-  options: { includeJson: boolean; includeHiddenDirs: boolean }
-): SourceDescriptor | null {
-  const extension = extname(filePath).toLowerCase();
-  if (
-    JSONL_EXTENSIONS.has(extension) &&
-    shouldCollectJsonlSource(vendor, filePath)
-  ) {
-    return { kind: "jsonl", path: filePath };
-  }
-  if (
-    options.includeJson &&
-    JSON_EXTENSIONS.has(extension) &&
-    shouldCollectJsonSource(vendor, filePath)
-  ) {
-    return { kind: "json", path: filePath };
-  }
-  return null;
-}
-
-function shouldCollectJsonlSource(
-  vendor: UsageVendor,
-  filePath: string
-): boolean {
-  if (vendor === "antigravity") {
-    const normalizedPath = filePath.replace(/\\/g, "/");
-    return /\/[^/]+\/\.system_generated\/logs\/transcript\.jsonl$/u.test(
-      normalizedPath
-    );
-  }
-  return true;
-}
-
-function shouldCollectJsonSource(
-  _vendor: UsageVendor,
-  _filePath: string
-): boolean {
-  return true;
-}
-
 function safeStat(filePath: string): ReturnType<typeof statSync> | null {
   try {
     return statSync(filePath);
   } catch {
     return null;
   }
+}
+
+function readSourceState(filePath: string): {
+  size: number;
+  mtimeMs: number;
+  identity: string;
+} | null {
+  const stats = safeStat(filePath);
+  if (!stats?.isFile()) return null;
+  return {
+    size: Number(stats.size),
+    mtimeMs: Number(stats.mtimeMs),
+    identity: fileIdentity(Number(stats.dev), Number(stats.ino), filePath)
+  };
+}
+
+function fileIdentity(dev: number, inode: number, filePath: string): string {
+  return Number.isFinite(dev) && Number.isFinite(inode)
+    ? `${dev}:${inode}`
+    : filePath;
 }
 
 function resolveExistingWatchRoot(rootPath: string): string | null {
@@ -1098,40 +884,55 @@ function readJsonlSlice(
   }
 }
 
-function readFirstCodexSessionMetadata(
-  filePath: string
-): Record<string, unknown> | null {
-  const prefix = readJsonlSlice(filePath, 0, CODEX_IDENTITY_SCAN_BYTES);
-  for (const line of prefix.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    try {
-      const record = JSON.parse(trimmed) as Record<string, unknown>;
-      if (record.type === "session_meta" && isRecord(record.payload)) {
-        return record.payload;
+function streamLocalTextRange(
+  path: string,
+  offset: number,
+  fileSize: number,
+  onChunk: (text: string) => void
+): void {
+  let nextOffset = Math.max(0, Math.min(offset, fileSize));
+  if (nextOffset >= fileSize) return;
+  const decoder = new TextDecoder("utf-8");
+  const fd = openSync(path, "r");
+  try {
+    while (nextOffset < fileSize) {
+      const byteLength = Math.min(MAX_SHARED_READ_BYTES, fileSize - nextOffset);
+      const buffer = Buffer.allocUnsafe(byteLength);
+      const bytesRead = readSync(fd, buffer, 0, byteLength, nextOffset);
+      if (bytesRead <= 0) {
+        throw new Error("local metadata source read made no progress");
       }
-    } catch {
-      // The prefix may end in the middle of a JSONL record.
+      nextOffset += bytesRead;
+      const text = decoder.decode(buffer.subarray(0, bytesRead), {
+        stream: nextOffset < fileSize
+      });
+      if (text) onChunk(text);
     }
+    const trailing = decoder.decode();
+    if (trailing) onChunk(trailing);
+  } finally {
+    closeSync(fd);
   }
-  return null;
 }
 
-function stringMapEquals(
-  left: Map<string, string>,
-  right: Map<string, string>
-): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
-  for (const [key, value] of left.entries()) {
-    if (right.get(key) !== value) {
-      return false;
+async function streamSharedTextRange(
+  readText: (request: AgentMetadataTextReadRequest) => Promise<string>,
+  path: string,
+  offset: number,
+  fileSize: number,
+  onChunk: (text: string) => void
+): Promise<void> {
+  let nextOffset = Math.max(0, Math.min(offset, fileSize));
+  while (nextOffset < fileSize) {
+    const maxBytes = MAX_SHARED_READ_BYTES;
+    const chunk = await readText({ path, offset: nextOffset, maxBytes });
+    const bytesRead = Buffer.byteLength(chunk, "utf8");
+    if (bytesRead <= 0) {
+      throw new Error("shared metadata source read made no progress");
     }
+    nextOffset += bytesRead;
+    onChunk(chunk);
   }
-  return true;
 }
 
 export function usageSampleIdentity(sample: UsageEventSample): string {
@@ -1143,10 +944,6 @@ export function shouldReplaceUsageSample(
   candidate: UsageEventSample
 ): boolean {
   return shouldReplaceCoreUsageSample(existing, candidate);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function dayKeyFor(timestampMs: number): string {

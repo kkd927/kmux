@@ -13,11 +13,19 @@ import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveAgentStorageRoots } from "@kmux/metadata";
-
-import { createExternalSessionIndexer } from "./externalSessions";
+import {
+  createLocalMetadataInventoryService,
+  resolveAgentStorageRoots,
+  type AgentMetadataInventoryService
+} from "@kmux/metadata";
+import {
+  builtinAgentMetadataQueryPlans,
+  builtinAgentMetadataSourceRevisions,
+  createBuiltinLocalExternalSessionIndexer
+} from "@kmux/agents/builtin-runtime";
 
 const sandboxDirs: string[] = [];
+const metadataInventories: AgentMetadataInventoryService[] = [];
 const nodeRequire = createRequire(import.meta.url);
 
 type DatabaseSyncConstructor = typeof NodeSqliteDatabaseSync;
@@ -57,10 +65,20 @@ function loadTestDatabaseSync(): DatabaseSyncConstructor | undefined {
 }
 
 function createTestExternalSessionIndexer(
-  options: Parameters<typeof createExternalSessionIndexer>[0]
-): ReturnType<typeof createExternalSessionIndexer> {
-  return createExternalSessionIndexer({
+  options: Omit<
+    Parameters<typeof createBuiltinLocalExternalSessionIndexer>[0],
+    "metadataInventory"
+  >
+): ReturnType<typeof createBuiltinLocalExternalSessionIndexer> {
+  const metadataInventory = createLocalMetadataInventoryService({
+    principal: "uid:test",
+    sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
+    queryPlans: builtinAgentMetadataQueryPlans()
+  });
+  metadataInventories.push(metadataInventory);
+  return createBuiltinLocalExternalSessionIndexer({
     ...options,
+    metadataInventory,
     antigravitySessionIndexPath:
       options.antigravitySessionIndexPath ??
       join(options.homeDir, ".config", "kmux", "antigravity-sessions.json")
@@ -120,14 +138,110 @@ function encodeVarint(value: number): Buffer {
   return Buffer.from(bytes);
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(
+    metadataInventories.splice(0).map((inventory) => inventory.close())
+  );
   for (const sandboxDir of sandboxDirs.splice(0)) {
     rmSync(sandboxDir, { force: true, recursive: true });
   }
 });
 
 describe("external session indexer", () => {
-  it("uses AgentStorageRoots for vendor session discovery", () => {
+  it("materializes built-in metadata projections in the production composition", async () => {
+    const homeDir = createSandboxHome();
+    const now = new Date("2026-08-18T12:00:00.000Z");
+    const mtime = new Date("2026-08-18T11:00:00.000Z");
+    writeJsonl(
+      join(homeDir, ".codex", "sessions", "2026", "08", "session.jsonl"),
+      [
+        {
+          type: "session_meta",
+          timestamp: mtime.toISOString(),
+          payload: { id: "composed-codex", cwd: "/workspace/codex" }
+        },
+        {
+          type: "event_msg",
+          timestamp: mtime.toISOString(),
+          payload: { type: "user_message", message: "Composed Codex" }
+        }
+      ],
+      mtime
+    );
+    writeJsonl(
+      join(homeDir, ".claude", "projects", "workspace", "session.jsonl"),
+      [
+        {
+          sessionId: "composed-claude",
+          cwd: "/workspace/claude",
+          timestamp: mtime.toISOString()
+        },
+        {
+          type: "user",
+          timestamp: mtime.toISOString(),
+          message: "Composed Claude"
+        }
+      ],
+      mtime
+    );
+    mkdirSync(join(homeDir, ".gemini", "antigravity-cli"), {
+      recursive: true
+    });
+    const indexPath = join(
+      homeDir,
+      ".config",
+      "kmux",
+      "antigravity-sessions.json"
+    );
+    writeJson(
+      indexPath,
+      {
+        version: 1,
+        sessions: [
+          {
+            conversationId: "composed-antigravity",
+            cwd: "/workspace/antigravity",
+            createdAt: mtime.toISOString(),
+            updatedAt: mtime.toISOString()
+          }
+        ]
+      },
+      mtime
+    );
+
+    const metadataInventory = createLocalMetadataInventoryService({
+      principal: "uid:test",
+      sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
+      queryPlans: builtinAgentMetadataQueryPlans()
+    });
+    const indexer = createBuiltinLocalExternalSessionIndexer({
+      homeDir,
+      metadataInventory,
+      antigravitySessionIndexPath: indexPath,
+      now: () => now,
+      commandAvailability: () => true
+    });
+    try {
+      const snapshot = await indexer.listExternalAgentSessions();
+      expect(snapshot.sessions.map(({ key }) => key).sort()).toEqual([
+        "antigravity:composed-antigravity",
+        "claude:composed-claude",
+        "codex:composed-codex"
+      ]);
+      expect(snapshot.truncated).not.toBe(true);
+      expect(
+        indexer.resolveExternalAgentSession("codex:composed-codex")
+      ).toMatchObject({
+        vendor: "codex",
+        launch: { initialInput: "codex resume composed-codex\r" }
+      });
+    } finally {
+      indexer.close();
+      await metadataInventory.close();
+    }
+  });
+
+  it("uses AgentStorageRoots for vendor session discovery", async () => {
     const homeDir = createSandboxHome();
     const storageHomeDir = createSandboxHome();
     const roots = resolveAgentStorageRoots({
@@ -172,7 +286,7 @@ describe("external session indexer", () => {
       commandAvailability: () => true
     });
 
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toEqual([
       expect.objectContaining({
@@ -195,7 +309,7 @@ describe("external session indexer", () => {
     );
   });
 
-  it("defaults to indexing at most 100 recent files per vendor", () => {
+  it("defaults to indexing at most 100 recent files per vendor", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
 
@@ -259,7 +373,7 @@ describe("external session indexer", () => {
       );
     }
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -279,7 +393,7 @@ describe("external session indexer", () => {
     );
   }, 15_000);
 
-  it("only lists sessions updated within the last 30 days", () => {
+  it("only lists sessions updated within the last 30 days", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const cutoffMtime = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -395,7 +509,7 @@ describe("external session indexer", () => {
       homeDir,
       now: () => now
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions.map((session) => session.key).sort()).toEqual([
       "claude:claude-recent",
@@ -405,7 +519,7 @@ describe("external session indexer", () => {
     expect(indexer.resolveExternalAgentSession("claude:claude-old")).toBeNull();
   });
 
-  it("ignores Codex environment context when deriving session titles", () => {
+  it("ignores Codex environment context when deriving session titles", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -483,7 +597,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -492,7 +606,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Actual Codex request");
   });
 
-  it("ignores Codex recommended plugin metadata when deriving session titles", () => {
+  it("ignores Codex recommended plugin metadata when deriving session titles", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-07-11T12:00:00.000Z");
     const mtime = new Date("2026-07-11T11:00:00.000Z");
@@ -545,7 +659,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -557,7 +671,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("ignores Codex repository instructions when deriving session titles", () => {
+  it("ignores Codex repository instructions when deriving session titles", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-05-28T12:00:00.000Z");
     const mtime = new Date("2026-05-28T11:00:00.000Z");
@@ -626,7 +740,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -635,7 +749,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Fix sessions panel Codex titles");
   });
 
-  it("prefers Codex thread names over sanitized prompt fallback titles", () => {
+  it("prefers Codex thread names over sanitized prompt fallback titles", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -685,7 +799,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -694,7 +808,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Generated Codex thread title");
   });
 
-  it("formats session times as compact seconds, minutes, hours, and days", () => {
+  it("formats session times as compact seconds, minutes, hours, and days", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const cases = [
@@ -738,7 +852,7 @@ describe("external session indexer", () => {
       );
     }
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -755,7 +869,7 @@ describe("external session indexer", () => {
     expect(labels.get("codex:days")).toBe("10d");
   });
 
-  it("lists Codex and Claude sessions newest first with sanitized titles", () => {
+  it("lists Codex and Claude sessions newest first with sanitized titles", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const codexMtime = new Date("2026-04-26T11:00:00.000Z");
@@ -863,7 +977,7 @@ describe("external session indexer", () => {
       claudeMtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -896,7 +1010,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("invalidates cached session previews when a transcript grows", () => {
+  it("invalidates cached session previews when a transcript grows", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const firstMtime = new Date("2026-04-26T11:00:00.000Z");
@@ -936,7 +1050,9 @@ describe("external session indexer", () => {
       homeDir,
       now: () => now
     });
-    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+    expect(
+      (await indexer.listExternalAgentSessions()).sessions[0]
+    ).toMatchObject({
       recentConversation: "Initial request"
     });
 
@@ -963,13 +1079,15 @@ describe("external session indexer", () => {
       nextMtime
     );
 
-    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+    expect(
+      (await indexer.listExternalAgentSessions()).sessions[0]
+    ).toMatchObject({
       recentConversation: "Updated response",
       model: "gpt-5.4"
     });
   });
 
-  it("keeps the first Codex session metadata as the transcript identity", () => {
+  it("keeps the first Codex session metadata as the transcript identity", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-07-11T12:00:00.000Z");
     const mtime = new Date("2026-07-11T11:00:00.000Z");
@@ -1027,7 +1145,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: () => true
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0]).toMatchObject({
@@ -1041,7 +1159,7 @@ describe("external session indexer", () => {
     ).toBeNull();
   });
 
-  it("skips Codex subagents before applying the user session limit", () => {
+  it("skips Codex subagents before applying the user session limit", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-07-11T12:00:00.000Z");
     const cases = [
@@ -1091,7 +1209,7 @@ describe("external session indexer", () => {
       );
     }
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now,
       maxFilesPerVendor: 2
@@ -1103,7 +1221,7 @@ describe("external session indexer", () => {
     ]);
   });
 
-  it("keeps only the latest Codex transcript when physical files share a session id", () => {
+  it("keeps only the latest Codex transcript when physical files share a session id", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-07-11T12:00:00.000Z");
     const cases = [
@@ -1150,7 +1268,7 @@ describe("external session indexer", () => {
       );
     }
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1162,7 +1280,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("lists Antigravity sessions from the kmux-owned index and resumes with a deterministic conversation id", () => {
+  it("lists Antigravity sessions from the kmux-owned index and resumes with a deterministic conversation id", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-06-02T02:30:00.000Z");
     const updatedAt = new Date("2026-06-02T02:05:00.000Z");
@@ -1193,7 +1311,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: (command) => command === "agy"
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0]).toMatchObject({
@@ -1223,7 +1341,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("lists existing Antigravity CLI conversations from local history and database files", () => {
+  it("lists existing Antigravity CLI conversations from local history and database files", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-06-02T15:30:00.000Z");
     const firstConversationId = "4814da0a-b93c-41cc-837d-8a747e9d5b2e";
@@ -1320,7 +1438,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: (command) => command === "agy"
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(3);
     expect(snapshot.sessions[0]).toMatchObject({
@@ -1354,7 +1472,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("uses sanitized prompt titles from Antigravity SQLite conversations", () => {
+  it("uses sanitized prompt titles from Antigravity SQLite conversations", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-06-02T15:30:00.000Z");
     const conversationId = "02bf2ec4-d6e4-4bf9-b5a0-66e7cc9176d8";
@@ -1395,7 +1513,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: (command) => command === "agy"
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0]).toMatchObject({
@@ -1407,7 +1525,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("disables Antigravity resume when agy is not available", () => {
+  it("disables Antigravity resume when agy is not available", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-06-02T02:30:00.000Z");
     writeJson(
@@ -1431,7 +1549,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: (command) => command !== "agy"
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions[0]).toMatchObject({
       key: "antigravity:9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
@@ -1446,7 +1564,7 @@ describe("external session indexer", () => {
     ).toBeNull();
   });
 
-  it("only indexes Claude main session transcripts as top-level sessions", () => {
+  it("only indexes Claude main session transcripts as top-level sessions", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mainMtime = new Date("2026-04-26T09:00:00.000Z");
@@ -1500,7 +1618,7 @@ describe("external session indexer", () => {
       subagentMtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1514,7 +1632,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("prefers Claude custom titles appended near the end of a transcript", () => {
+  it("prefers Claude custom titles appended near the end of a transcript", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1555,7 +1673,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1564,7 +1682,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Hand named Claude session");
   });
 
-  it("uses the first meaningful Claude user prompt as the title fallback", () => {
+  it("uses the first meaningful Claude user prompt as the title fallback", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1646,7 +1764,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1655,7 +1773,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Actual user request");
   });
 
-  it("uses a neutral Claude title when no safe title is available", () => {
+  it("uses a neutral Claude title when no safe title is available", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1697,7 +1815,7 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1706,7 +1824,7 @@ describe("external session indexer", () => {
     expect(snapshot.sessions[0].title).toBe("Claude session");
   });
 
-  it("uses JSONL file mtime as recent activity when the bounded prefix scan is stale", () => {
+  it("uses JSONL file mtime as recent activity when the bounded prefix scan is stale", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const activeMtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1775,7 +1893,7 @@ describe("external session indexer", () => {
       otherMtime
     );
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => now
     }).listExternalAgentSessions();
@@ -1790,7 +1908,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("marks sessions unavailable and refuses resume resolution when the vendor command is missing", () => {
+  it("marks sessions unavailable and refuses resume resolution when the vendor command is missing", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-04-26T12:00:00.000Z");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -1831,7 +1949,7 @@ describe("external session indexer", () => {
       now: () => now,
       commandAvailability: (command) => command !== "codex"
     });
-    const snapshot = indexer.listExternalAgentSessions();
+    const snapshot = await indexer.listExternalAgentSessions();
 
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0]).toMatchObject({
@@ -1844,7 +1962,7 @@ describe("external session indexer", () => {
     ).toBeNull();
   });
 
-  it("resolves a session key to a vendor resume launch config", () => {
+  it("resolves a session key to a vendor resume launch config", async () => {
     const homeDir = createSandboxHome();
     const mtime = new Date("2026-04-26T11:00:00.000Z");
 
@@ -1879,10 +1997,12 @@ describe("external session indexer", () => {
       mtime
     );
 
-    const resolved = createTestExternalSessionIndexer({
+    const indexer = createTestExternalSessionIndexer({
       homeDir,
       now: () => new Date("2026-04-26T12:00:00.000Z")
-    }).resolveExternalAgentSession("codex:codex-session");
+    });
+    await indexer.listExternalAgentSessions();
+    const resolved = indexer.resolveExternalAgentSession("codex:codex-session");
 
     expect(resolved).toMatchObject({
       key: "codex:codex-session",
@@ -1902,7 +2022,7 @@ describe("external session indexer", () => {
     });
   });
 
-  it("replaces the native root and resumes with the same configured launcher", () => {
+  it("replaces the native root and resumes with the same configured launcher", async () => {
     const homeDir = createSandboxHome();
     const additionalRoot = join(homeDir, "wrapper-sessions");
     const older = new Date("2026-04-26T10:00:00.000Z");
@@ -1968,7 +2088,7 @@ describe("external session indexer", () => {
       }
     });
 
-    const sessions = indexer.listExternalAgentSessions().sessions;
+    const sessions = (await indexer.listExternalAgentSessions()).sessions;
     expect(sessions).toHaveLength(2);
     expect(
       sessions.find((session) => session.key === "codex:shared-session")
@@ -1988,7 +2108,7 @@ describe("external session indexer", () => {
     ).toBe("ccsxp 'shared profile' -- resume shared-session\r");
   });
 
-  it("does not fall back to native history when a custom root is missing", () => {
+  it("does not fall back to native history when a custom root is missing", async () => {
     const homeDir = createSandboxHome();
     const mtime = new Date("2026-04-26T11:00:00.000Z");
     writeJsonl(
@@ -2012,17 +2132,19 @@ describe("external session indexer", () => {
     );
 
     expect(
-      createTestExternalSessionIndexer({
-        homeDir,
-        now: () => new Date("2026-04-26T12:00:00.000Z"),
-        agentSettings: {
-          codex: { sessionRoot: join(homeDir, "missing-sessions") }
-        }
-      }).listExternalAgentSessions().sessions
+      (
+        await createTestExternalSessionIndexer({
+          homeDir,
+          now: () => new Date("2026-04-26T12:00:00.000Z"),
+          agentSettings: {
+            codex: { sessionRoot: join(homeDir, "missing-sessions") }
+          }
+        }).listExternalAgentSessions()
+      ).sessions
     ).toEqual([]);
   });
 
-  it("does not fall back to a native command when a configured launcher is missing", () => {
+  it("does not fall back to a native command when a configured launcher is missing", async () => {
     const homeDir = createSandboxHome();
     const mtime = new Date("2026-04-26T11:00:00.000Z");
     writeJsonl(
@@ -2053,7 +2175,9 @@ describe("external session indexer", () => {
       }
     });
 
-    expect(indexer.listExternalAgentSessions().sessions[0]).toMatchObject({
+    expect(
+      (await indexer.listExternalAgentSessions()).sessions[0]
+    ).toMatchObject({
       canResume: false,
       resumeCommandPreview: "missing-wrapper resume configured-launcher"
     });
@@ -2062,7 +2186,7 @@ describe("external session indexer", () => {
     ).toBeNull();
   });
 
-  it("skips symlinked directories instead of following recursive inventory loops", () => {
+  it("skips symlinked directories instead of following recursive inventory loops", async () => {
     const homeDir = createSandboxHome();
     const additionalRoot = join(homeDir, "wrapper-sessions");
     const mtime = new Date("2026-04-26T11:00:00.000Z");
@@ -2079,7 +2203,7 @@ describe("external session indexer", () => {
     );
     symlinkSync(additionalRoot, join(additionalRoot, "recursive-link"));
 
-    const snapshot = createTestExternalSessionIndexer({
+    const snapshot = await createTestExternalSessionIndexer({
       homeDir,
       now: () => new Date("2026-04-26T12:00:00.000Z"),
       agentSettings: {
@@ -2098,7 +2222,7 @@ describe("external session indexer", () => {
     ]);
   });
 
-  it("returns partial history at the configured hard entry bound", () => {
+  it("returns partial history at the configured hard entry bound", async () => {
     const homeDir = createSandboxHome();
     const additionalRoot = join(homeDir, "oversized-sessions");
     mkdirSync(additionalRoot, { recursive: true });
@@ -2117,7 +2241,7 @@ describe("external session indexer", () => {
       }
     });
 
-    expect(indexer.listExternalAgentSessions()).toMatchObject({
+    await expect(indexer.listExternalAgentSessions()).resolves.toMatchObject({
       sessions: [],
       truncated: true
     });

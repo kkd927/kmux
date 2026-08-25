@@ -11,23 +11,35 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listBuiltinLocalUsageAdapters } from "@kmux/agents/builtin-runtime";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual: typeof NodeFs = await importOriginal();
   return {
     ...actual,
+    lstatSync: vi.fn(actual.lstatSync),
+    openSync: vi.fn(actual.openSync),
     opendirSync: vi.fn(actual.opendirSync),
+    readSync: vi.fn(actual.readSync),
     readFileSync: vi.fn(actual.readFileSync),
+    statSync: vi.fn(actual.statSync),
     watch: vi.fn(
       () =>
         ({
-          close: vi.fn()
+          close: vi.fn(),
+          on: vi.fn()
         }) as unknown as NodeFs.FSWatcher
     )
   };
 });
 
-import { createUsageAdapters } from "./usage";
+import { createLocalMetadataInventoryService } from "./localMetadataInventory";
+import { IncrementalCoreUsageJsonlParser } from "./core/usage";
+import { createFileUsageAdapter } from "./usage";
+
+const listTestBuiltinUsageAdapters = (
+  options: Parameters<typeof listBuiltinLocalUsageAdapters>[0] = {}
+) => [...listBuiltinLocalUsageAdapters(options)];
 
 const cleanupPaths: string[] = [];
 
@@ -44,6 +56,126 @@ afterEach(() => {
 });
 
 describe("usage adapter performance", () => {
+  it("performs no file I/O for a clean incremental read through the production metadata lease", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-shared-clean-"));
+    cleanupPaths.push(root);
+    const usagePath = path.join(root, "usage.jsonl");
+    writeFileSync(
+      usagePath,
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        session_id: "claude-shared-clean",
+        input_tokens: 120,
+        output_tokens: 30
+      })}\n`,
+      "utf8"
+    );
+    const inventory = createLocalMetadataInventoryService({
+      principal: "uid:test",
+      sourceDefinitionRevisions: { claude: "claude-metadata-v1" }
+    });
+    const adapter = createFileUsageAdapter({
+      agentId: "claude",
+      roots: [root],
+      sourceProjection: createFixtureUsageProjection("claude"),
+      classifySource: () => ({ role: "fixture/usage", format: "jsonl" }),
+      metadataInventory: inventory
+    });
+    const unwatch = adapter.watch(() => undefined);
+    const startOfDayMs = startOfLocalDay(
+      Date.parse("2026-04-17T09:00:00.000Z")
+    );
+
+    await adapter.initialScan(startOfDayMs);
+    vi.mocked(fs.lstatSync).mockClear();
+    vi.mocked(fs.openSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
+    vi.mocked(fs.readSync).mockClear();
+    vi.mocked(fs.readFileSync).mockClear();
+    vi.mocked(fs.statSync).mockClear();
+
+    await expect(adapter.readIncremental(startOfDayMs)).resolves.toMatchObject({
+      samples: []
+    });
+    expect(fs.lstatSync).not.toHaveBeenCalled();
+    expect(fs.openSync).not.toHaveBeenCalled();
+    expect(fs.opendirSync).not.toHaveBeenCalled();
+    expect(fs.readSync).not.toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+    expect(fs.statSync).not.toHaveBeenCalled();
+
+    unwatch();
+    adapter.close();
+    await inventory.close();
+  });
+
+  it("debounces a shared watcher event and rereads only the changed source", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-17T09:00:00.000Z"));
+    const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-shared-dirty-"));
+    cleanupPaths.push(root);
+    const changedPath = path.join(root, "changed.jsonl");
+    const unchangedPath = path.join(root, "unchanged.jsonl");
+    const record = (sessionId: string, inputTokens: number) =>
+      `${JSON.stringify({
+        timestamp: "2026-04-17T09:00:00.000Z",
+        session_id: sessionId,
+        input_tokens: inputTokens,
+        output_tokens: 1
+      })}\n`;
+    writeFileSync(changedPath, record("changed", 1), "utf8");
+    writeFileSync(unchangedPath, record("unchanged", 1), "utf8");
+    const inventory = createLocalMetadataInventoryService({
+      principal: "uid:test",
+      sourceDefinitionRevisions: { claude: "claude-metadata-v1" }
+    });
+    const adapter = createFileUsageAdapter({
+      agentId: "claude",
+      roots: [root],
+      sourceProjection: createFixtureUsageProjection("claude"),
+      classifySource: () => ({ role: "fixture/usage", format: "jsonl" }),
+      metadataInventory: inventory
+    });
+    const onChange = vi.fn();
+    const unwatch = adapter.watch(onChange);
+    const startOfDayMs = startOfLocalDay(Date.now());
+    await adapter.initialScan(startOfDayMs);
+
+    appendFileSync(changedPath, record("changed", 5), "utf8");
+    const watchCall = vi.mocked(fs.watch).mock.calls.at(-1);
+    const watchListener = watchCall?.[watchCall.length - 1] as
+      | NodeFs.WatchListener<string>
+      | undefined;
+    expect(watchListener).toBeTypeOf("function");
+    watchListener?.("change", path.basename(changedPath));
+    await vi.advanceTimersByTimeAsync(179);
+    expect(onChange).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fs.openSync).mockClear();
+    vi.mocked(fs.opendirSync).mockClear();
+    const incremental = await adapter.readIncremental(startOfDayMs);
+
+    expect(incremental.samples).toEqual([
+      expect.objectContaining({
+        sessionId: "changed",
+        inputTokens: 5,
+        outputTokens: 1
+      })
+    ]);
+    expect(fs.openSync).toHaveBeenCalledTimes(1);
+    expect(fs.openSync).toHaveBeenCalledWith(
+      expect.stringMatching(/changed\.jsonl$/u),
+      expect.any(Number)
+    );
+    expect(fs.opendirSync).not.toHaveBeenCalled();
+
+    unwatch();
+    adapter.close();
+    await inventory.close();
+  });
+
   it("does not rescan roots or reread unchanged jsonl files while the watch-driven source set is clean", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "kmux-usage-clean-"));
     cleanupPaths.push(root);
@@ -61,7 +193,7 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -124,7 +256,7 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [, , adapter] = createUsageAdapters({ homeDir: root });
+    const [, , adapter] = listTestBuiltinUsageAdapters({ homeDir: root });
     const startOfDayMs = startOfLocalDay(
       Date.parse("2026-04-17T09:00:00.000Z")
     );
@@ -165,7 +297,7 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -218,7 +350,7 @@ describe("usage adapter performance", () => {
     cleanupPaths.push(root);
     mkdirSync(path.join(root, ".codex"), { recursive: true });
 
-    const [, adapter] = createUsageAdapters({
+    const [, adapter] = listTestBuiltinUsageAdapters({
       homeDir: root,
       platform: "darwin"
     });
@@ -240,7 +372,7 @@ describe("usage adapter performance", () => {
     cleanupPaths.push(root);
     mkdirSync(path.join(root, ".codex"), { recursive: true });
 
-    const [, adapter] = createUsageAdapters({
+    const [, adapter] = listTestBuiltinUsageAdapters({
       homeDir: root,
       platform: "linux"
     });
@@ -264,7 +396,7 @@ describe("usage adapter performance", () => {
     cleanupPaths.push(root);
     const usageDir = path.join(root, "codex");
     mkdirSync(usageDir, { recursive: true });
-    const [_, adapter] = createUsageAdapters({
+    const [_, adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: usageDir
       },
@@ -372,7 +504,7 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [, adapter] = createUsageAdapters({
+    const [, adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CODEX_USAGE_DIR: usageDir
       },
@@ -458,7 +590,7 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [adapter] = createUsageAdapters({
+    const [adapter] = listTestBuiltinUsageAdapters({
       env: {
         KMUX_CLAUDE_USAGE_DIR: usageDir
       },
@@ -513,6 +645,56 @@ describe("usage adapter performance", () => {
     adapter.close();
   });
 });
+
+function createFixtureUsageProjection(agentId: string) {
+  return {
+    createSession() {
+      return {
+        beginInventory: () => undefined,
+        applySourceClaim: () => undefined,
+        createParser(options: {
+          sourcePath: string;
+          maximumPendingBytes: number;
+        }) {
+          const parser = new IncrementalCoreUsageJsonlParser(
+            (record, range) => {
+              const timestampMs = Date.parse(String(record.timestamp ?? ""));
+              if (
+                !Number.isFinite(timestampMs) ||
+                timestampMs < range.fromMs ||
+                (range.toMs !== undefined && timestampMs > range.toMs)
+              ) {
+                return [];
+              }
+              const inputTokens = Number(record.input_tokens ?? 0);
+              const outputTokens = Number(record.output_tokens ?? 0);
+              return [
+                {
+                  vendor: agentId,
+                  timestampMs,
+                  sourcePath: options.sourcePath,
+                  sourceType: "jsonl" as const,
+                  sessionId: String(record.session_id ?? ""),
+                  inputTokens,
+                  outputTokens,
+                  cacheTokens: 0,
+                  totalTokens: inputTokens + outputTokens,
+                  estimatedCostUsd: 0,
+                  costSource: "unavailable" as const
+                }
+              ];
+            },
+            { maximumPendingBytes: options.maximumPendingBytes }
+          );
+          return {
+            append: parser.append.bind(parser),
+            reset: parser.reset.bind(parser)
+          };
+        }
+      };
+    }
+  };
+}
 
 function startOfLocalDay(timestampMs: number): number {
   const date = new Date(timestampMs);

@@ -65,6 +65,31 @@ const alias = {
     repoRoot,
     "packages/agent-integration/src/index.ts"
   ),
+  "@kmux/agents/builtin-runtime": resolve(
+    repoRoot,
+    "packages/agents/src/builtinRuntime.ts"
+  ),
+  "@kmux/agents/antigravity-session-index": resolve(
+    repoRoot,
+    "packages/agents/src/builtins/antigravity/sessionIndex.ts"
+  ),
+  "@kmux/agents/builtin-hooks": resolve(
+    repoRoot,
+    "packages/agents/src/builtinHooks.ts"
+  ),
+  "@kmux/agents/generated-command-wrappers": resolve(
+    repoRoot,
+    "packages/agents/src/generatedCommandWrappers.ts"
+  ),
+  "@kmux/agents/generated-hook-responses": resolve(
+    repoRoot,
+    "packages/agents/src/generatedHookResponses.ts"
+  ),
+  "@kmux/agents/builtin-subscriptions": resolve(
+    repoRoot,
+    "packages/agents/src/builtinSubscriptions.ts"
+  ),
+  "@kmux/agents": resolve(repoRoot, "packages/agents/src/index.ts"),
   "@kmux/ui": resolve(repoRoot, "packages/ui/src/index.ts")
 };
 
@@ -90,10 +115,6 @@ export default defineConfig({
           shellEnvProbeWorker: resolve(
             currentDir,
             "src/main/shellEnvProbeWorker.ts"
-          ),
-          externalSessionScanWorker: resolve(
-            currentDir,
-            "src/main/externalSessionScanWorker.ts"
           ),
           usageScanWorker: resolve(currentDir, "src/main/usageScanWorker.ts"),
           askpassClient: resolve(currentDir, "src/askpass-client/index.ts")

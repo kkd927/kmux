@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::net::Shutdown;
@@ -390,7 +391,7 @@ fn main() -> anyhow::Result<()> {
             print_json(&RuntimeCapabilities {
                 runtime_version: env!("CARGO_PKG_VERSION"),
                 capabilities: [
-                    "agent-metadata-sources-v1",
+                    kmux_bridge::AGENT_METADATA_SOURCES_CAPABILITY,
                     "agent-integration-snapshot-apply-v1",
                 ],
                 agent_integration_contract_version: kmux_agent_integration::contract_version()?,
@@ -951,6 +952,7 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
             kmux_agent_integration::ensure_runtime_shims(install_root, &executable, &generation)?
         }
     };
+    let environment = std::env::vars().collect::<BTreeMap<_, _>>();
     match command.command {
         AgentIntegrationSubcommand::Ensure(options) => match (options.vendor, options.path) {
             (Some(vendor), Some(path)) => {
@@ -958,11 +960,10 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
             }
             (None, None) => {
                 let home = resolve_agent_integration_home(options.home)?;
-                let codex_home = resolve_agent_integration_codex_home();
-                print_json(&kmux_agent_integration::ensure_all_with_codex_home(
+                print_json(&kmux_agent_integration::ensure_all_with_environment(
                     &home,
                     &agent_bin_dir,
-                    codex_home.as_deref(),
+                    Some(&environment),
                 )?)
             }
             _ => anyhow::bail!("agent integration --vendor and --path must be provided together"),
@@ -973,11 +974,10 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
                 "agent integration doctor does not accept --vendor or --path"
             );
             let home = resolve_agent_integration_home(options.home)?;
-            let codex_home = resolve_agent_integration_codex_home();
-            print_json(&kmux_agent_integration::doctor_with_codex_home(
+            print_json(&kmux_agent_integration::doctor_with_environment(
                 &home,
                 &agent_bin_dir,
-                codex_home.as_deref(),
+                Some(&environment),
             )?)
         }
         AgentIntegrationSubcommand::Snapshot(options) => {
@@ -986,11 +986,10 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
                 "agent integration snapshot does not accept --vendor or --path"
             );
             let home = resolve_agent_integration_home(options.home)?;
-            let codex_home = resolve_agent_integration_codex_home();
-            print_json(&kmux_agent_integration::snapshot_all_with_codex_home(
+            print_json(&kmux_agent_integration::snapshot_all_with_environment(
                 &home,
                 &agent_bin_dir,
-                codex_home.as_deref(),
+                Some(&environment),
             )?)
         }
         AgentIntegrationSubcommand::Apply(options) => {
@@ -999,12 +998,11 @@ fn run_agent_integration(command: AgentIntegrationCommand) -> anyhow::Result<()>
                 "agent integration apply does not accept --vendor or --path"
             );
             let home = resolve_agent_integration_home(options.home)?;
-            let codex_home = resolve_agent_integration_codex_home();
             let request: kmux_agent_integration::PlannedApplyRequest =
                 serde_json::from_value(read_bounded_stdin_json(8 * 1024 * 1024 + 128 * 1024)?)?;
-            print_json(&kmux_agent_integration::apply_planned_with_codex_home(
+            print_json(&kmux_agent_integration::apply_planned_with_environment(
                 &home,
-                codex_home.as_deref(),
+                Some(&environment),
                 &request,
             )?)
         }
@@ -1020,12 +1018,6 @@ fn resolve_agent_integration_home(home: Option<PathBuf>) -> anyhow::Result<PathB
         "agent integration HOME must be absolute"
     );
     Ok(home)
-}
-
-fn resolve_agent_integration_codex_home() -> Option<PathBuf> {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
 }
 
 fn hash_file_bytes(path: &Path) -> anyhow::Result<String> {
@@ -1055,15 +1047,35 @@ fn agent_hook_response(kind: &str, name: &str) -> serde_json::Value {
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
-    if matches!(
-        normalized_agent.as_str(),
-        "agy" | "antigravity" | "antigravity-cli"
-    ) && matches!(normalized_event.as_str(), "pretooluse" | "stop")
-    {
-        serde_json::json!({ "decision": "allow" })
-    } else {
-        serde_json::json!({})
-    }
+    let Ok(manifest) = kmux_agent_manifest::manifest() else {
+        return serde_json::json!({});
+    };
+    let Some(definition) = manifest.agents.iter().find(|definition| {
+        definition.id == normalized_agent
+            || definition
+                .aliases
+                .iter()
+                .any(|alias| alias == &normalized_agent)
+    }) else {
+        return serde_json::json!({});
+    };
+    let Some(hook) = &definition.hook else {
+        return serde_json::json!({});
+    };
+    let response = hook
+        .fallback_by_event
+        .iter()
+        .find(|(event, _)| {
+            event
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_lowercase()
+                == normalized_event
+        })
+        .map(|(_, response)| response)
+        .unwrap_or(&hook.success_response);
+    serde_json::to_value(response).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 fn run_cli(command: CliCommand) -> anyhow::Result<()> {

@@ -9,6 +9,7 @@ import {
   type RemoteOperationPayloadDto,
   type RemoteResourceKey
 } from "@kmux/core";
+import { METADATA_SOURCE_CONTRACT } from "@kmux/metadata/core";
 import {
   REMOTE_PROTOCOL_VERSION,
   REMOTE_CHECKPOINT_HARD_MAX_CHUNKS,
@@ -28,6 +29,7 @@ import {
   type AgentIntegrationDiagnosticDto,
   type AgentScopeSettings,
   type Id,
+  type RemoteAgentDefinitionRevisionsDto,
   type RemoteConversionPrepareRequestDto,
   type RemoteConversionPromoteRequestDto,
   type RemoteInitialInputOutcome,
@@ -77,7 +79,8 @@ const MAX_PENDING_TERMINAL_MUTATION_BYTES = 4 * 1024 * 1024;
 const MAX_CHANNEL_STDERR_TAIL_BYTES = 64 * 1024;
 const AGENT_SETTINGS_SCAN_CAPABILITY = "agents.settings-scan-v2";
 const OWNED_AGENT_SESSIONS_CAPABILITY = "agent-sessions.kmux-owned-v1";
-export const AGENT_METADATA_SOURCES_CAPABILITY = "agent-metadata-sources-v1";
+export const AGENT_METADATA_SOURCES_CAPABILITY =
+  METADATA_SOURCE_CONTRACT.capability;
 
 export class RemoteRuntimeError extends Error {
   constructor(
@@ -510,7 +513,8 @@ export class LinuxX64RemoteRuntime {
   async listMetadataSources(options: {
     desktopInstallationId: Id;
     targetId: Id;
-    purpose: "usage" | "history";
+    purpose: "usage" | "history" | "all";
+    agentDefinitions: RemoteAgentDefinitionRevisionsDto;
     agentSettings?: AgentScopeSettings;
   }): Promise<RemoteMetadataSourcesList> {
     if (options.targetId !== this.options.assigned.targetId) {

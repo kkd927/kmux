@@ -11,6 +11,7 @@ describe("remote control v1", () => {
     const source = {
       sourceId: "source_1",
       vendor: "claude",
+      definitionRevision: "claude-v1",
       role: "claude-session",
       format: "jsonl",
       logicalName: "projects/session-1.jsonl",
@@ -33,8 +34,9 @@ describe("remote control v1", () => {
         body: {
           type: "metadata.sources.listed",
           targetId: "target_1",
-          purpose: "history",
-          contractVersion: 1,
+          purpose: "all",
+          contractVersion: 2,
+          agentDefinitions: { claude: "claude-v1" },
           truncated: false,
           claims: [{ vendor: "claude", ...source.claim }],
           sources: [source]
@@ -82,7 +84,7 @@ describe("remote control v1", () => {
       )
     ).toMatchObject({ body: { rows: [{ payloadBase64: "" }] } });
 
-    expect(() =>
+    expect(
       decodeRemoteBridgeResponseEnvelope(
         encodeRemoteControlJson({
           protocolVersion: 1,
@@ -92,14 +94,24 @@ describe("remote control v1", () => {
             type: "metadata.sources.listed",
             targetId: "target_1",
             purpose: "usage",
-            contractVersion: 1,
+            contractVersion: 2,
+            agentDefinitions: {
+              claude: "claude-v1",
+              codex: "codex-v1"
+            },
             truncated: false,
             claims: [{ vendor: "claude", ...source.claim }],
             sources: [{ ...source, vendor: "codex" }]
           }
         })
       )
-    ).toThrow(/role contract/u);
+    ).toMatchObject({
+      status: "ok",
+      body: {
+        type: "metadata.sources.listed",
+        sources: [{ vendor: "codex", role: "claude-session" }]
+      }
+    });
   });
 
   it("strictly bounds target-local port and history metadata", () => {

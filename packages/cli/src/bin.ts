@@ -8,6 +8,7 @@ import { Command } from "commander";
 
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
 import { AGENT_HOOK_RPC_TIMEOUT_MS, makeId } from "@kmux/proto";
+import { generatedAgentHookResponse } from "@kmux/agents/generated-hook-responses";
 
 import { resolveCliSocketPath } from "./socketPath";
 
@@ -91,23 +92,10 @@ function print(value: unknown): void {
 
 function agentHookResponse(
   agent: string,
-  hookEvent: string
+  hookEvent: string,
+  outcome: "success" | "fallback"
 ): Record<string, unknown> {
-  const normalizedAgent = agent.trim().toLowerCase();
-  const normalizedEvent = hookEvent
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-  if (
-    normalizedAgent === "agy" ||
-    normalizedAgent === "antigravity" ||
-    normalizedAgent === "antigravity-cli"
-  ) {
-    if (normalizedEvent === "pretooluse" || normalizedEvent === "stop") {
-      return { decision: "allow" };
-    }
-  }
-  return {};
+  return generatedAgentHookResponse(agent, hookEvent, outcome);
 }
 
 function readJsonFromStdin(): Record<string, unknown> {
@@ -128,6 +116,7 @@ function readJsonFromStdin(): Record<string, unknown> {
 }
 
 async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
+  let outcome: "success" | "fallback" = "fallback";
   try {
     const payload = readJsonFromStdin();
     await sendRpc(
@@ -142,10 +131,11 @@ async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
       },
       { timeoutMs: AGENT_HOOK_RPC_TIMEOUT_MS }
     );
+    outcome = "success";
   } catch {
     // Agent hooks must never block or fail the agent command path.
   }
-  print(agentHookResponse(agent, hookEvent));
+  print(agentHookResponse(agent, hookEvent, outcome));
 }
 
 const program = new Command();

@@ -6,8 +6,6 @@ import {
   formatUint64Decimal,
   incrementUint64,
   makeId,
-  normalizeAgentHookInvocation,
-  normalizeHookNotificationInvocation,
   parseUint64Decimal,
   REMOTE_PROTOCOL_VERSION,
   uint64,
@@ -20,6 +18,10 @@ import {
   type TerminalKeyInput,
   type UsageVendor
 } from "@kmux/proto";
+import {
+  normalizeAgentHookInvocation,
+  normalizeHookNotificationInvocation
+} from "@kmux/agents/builtin-hooks";
 import {
   canonicalizeRemoteOperationPayload,
   cloneState,
@@ -2175,6 +2177,10 @@ function normalizeRemoteSpoolEvent(
         Number.isInteger(payload.protocol)
           ? payload.protocol
           : undefined;
+      const agentId = terminalDecision.agentId;
+      if (!agentId) {
+        return { disposition: "suppressed", reason: "agent-unresolved" };
+      }
       return {
         disposition: "applied",
         productAction: {
@@ -2183,9 +2189,9 @@ function normalizeRemoteSpoolEvent(
           paneId: pane.id,
           surfaceId: surface.id,
           sessionId: session.id,
-          agent: "codex",
+          agent: agentId,
           event: "needs_input",
-          title: "Codex needs input",
+          title: `${terminalDecision.displayName ?? agentId} needs input`,
           message,
           details: {
             ...eventDetails,

@@ -378,6 +378,10 @@ describe("remote-host Phase 7 metadata request boundary", () => {
             command: "ccs",
             args: ["enterprise"],
             sessionRoot: "~/.ccs/shared/context-groups/default/projects"
+          },
+          "fixture-future": {
+            command: "future-cli",
+            args: ["--safe"]
           }
         }
       })
@@ -389,6 +393,10 @@ describe("remote-host Phase 7 metadata request boundary", () => {
           command: "ccs",
           args: ["enterprise"],
           sessionRoot: "~/.ccs/shared/context-groups/default/projects"
+        },
+        "fixture-future": {
+          command: "future-cli",
+          args: ["--safe"]
         }
       }
     });
