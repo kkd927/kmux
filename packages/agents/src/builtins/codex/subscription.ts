@@ -232,6 +232,7 @@ function normalizeCodexUsageFromApi(
     provider: "codex",
     providerLabel: "Codex",
     planLabel,
+    accentTone: "blue",
     source: "oauth",
     updatedAt: new Date(nowMs).toISOString(),
     rows
@@ -338,6 +339,7 @@ function normalizeCodexUsageFromProbe(
     provider: "codex",
     providerLabel: "Codex",
     planLabel,
+    accentTone: "blue",
     source,
     updatedAt: new Date(nowMs).toISOString(),
     rows

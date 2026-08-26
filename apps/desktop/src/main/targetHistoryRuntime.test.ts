@@ -10,8 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ExternalSessionResumeSpec } from "@kmux/agents";
 import {
   createLocalHistoryProvider,
-  createTargetHistoryRuntime,
-  mergeExternalAgentSessionSnapshots
+  createTargetHistoryRuntime
 } from "./targetHistoryRuntime";
 import type {
   LocatedTargetServiceSet,
@@ -19,43 +18,6 @@ import type {
 } from "./targets/contracts";
 
 describe("target history runtime", () => {
-  it("keeps external-session-only and history-only records in the Main projection", () => {
-    const session = (key: string, updatedAt: string) => ({
-      key,
-      target: { kind: "local" as const },
-      vendor: key.split(":")[0]!,
-      vendorLabel: key.split(":")[0]!.toUpperCase(),
-      title: key,
-      updatedAt,
-      relativeTimeLabel: "now",
-      canResume: true,
-      resumeCommandPreview: "agent resume"
-    });
-    const merged = mergeExternalAgentSessionSnapshots([
-      {
-        updatedAt: "2026-08-18T01:00:00.000Z",
-        sessions: [
-          session("history-only:session-1", "2026-08-18T00:30:00.000Z"),
-          session("shared:session-1", "2026-08-18T00:00:00.000Z")
-        ]
-      },
-      {
-        updatedAt: "2026-08-18T02:00:00.000Z",
-        sessions: [
-          session("external-only:session-1", "2026-08-18T01:30:00.000Z"),
-          session("shared:session-1", "2026-08-18T01:00:00.000Z")
-        ]
-      }
-    ]);
-
-    expect(merged.updatedAt).toBe("2026-08-18T02:00:00.000Z");
-    expect(merged.sessions.map(({ key }) => key)).toEqual([
-      "external-only:session-1",
-      "shared:session-1",
-      "history-only:session-1"
-    ]);
-  });
-
   it("keeps identical vendor sessions distinct by target and resumes remotely", async () => {
     const state = createInitialState("/bin/zsh");
     applyAction(state, {
@@ -534,7 +496,7 @@ describe("local history provider", () => {
   it("normalizes the existing local index without refreshing usage", async () => {
     const provider = createLocalHistoryProvider({
       indexer: {
-        listAgentHistorySessions: () => ({
+        listExternalAgentSessions: () => ({
           updatedAt: "2026-07-18T00:00:00.000Z",
           sessions: [
             {
@@ -550,7 +512,8 @@ describe("local history provider", () => {
               resumeCommandPreview: "codex resume session-1"
             }
           ]
-        })
+        }),
+        resolveExternalAgentSession: () => null
       }
     });
 

@@ -76,6 +76,7 @@ export function commonHookResult(options: {
   for (const key of [
     "hook_event_name",
     "notification_type",
+    "notificationType",
     "tool_name",
     "toolName",
     "session_id",

@@ -1,14 +1,18 @@
 {
-  "version": 1,
-  "primitiveVersion": 1,
+  "version": 2,
+  "primitiveVersion": 2,
   "agents": [
     {
       "id": "claude",
       "aliases": [],
-      "definitionRevision": "claude-v1",
+      "definitionRevision": "claude-v2",
       "hook": {
-        "format": "grouped-hooks",
         "relativePath": ".claude/settings.json",
+        "document": { "eventsPath": ["hooks"] },
+        "entry": {
+          "commandField": "command",
+          "wrapper": { "field": "hooks", "when": "always" }
+        },
         "marker": "KMUX_MANAGED_CLAUDE_HOOK=1",
         "managed": [
           { "event": "PermissionRequest" },
@@ -37,7 +41,7 @@
             "role": "claude-session",
             "format": "jsonl",
             "pattern": "**/*.jsonl",
-            "purposes": ["externalSessions", "history", "usage"]
+            "purposes": ["sessions", "usage"]
           },
           {
             "role": "claude-subagent",
@@ -51,14 +55,18 @@
     {
       "id": "codex",
       "aliases": [],
-      "definitionRevision": "codex-v2",
+      "definitionRevision": "codex-v3",
       "hook": {
-        "format": "grouped-hooks",
         "pathRoot": {
           "defaultHomeRelativePath": ".codex",
           "environmentVariable": "CODEX_HOME"
         },
         "relativePath": "hooks.json",
+        "document": { "eventsPath": ["hooks"] },
+        "entry": {
+          "commandField": "command",
+          "wrapper": { "field": "hooks", "when": "always" }
+        },
         "marker": "KMUX_MANAGED_CODEX_HOOK=1",
         "managed": [
           { "event": "SessionStart" },
@@ -85,7 +93,54 @@
             "role": "codex-session",
             "format": "jsonl",
             "pattern": "**/*.jsonl",
-            "purposes": ["externalSessions", "history", "usage"]
+            "purposes": ["sessions", "usage"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "copilot",
+      "aliases": [],
+      "definitionRevision": "copilot-v1",
+      "hook": {
+        "pathRoot": {
+          "defaultHomeRelativePath": ".copilot",
+          "environmentVariable": "COPILOT_HOME"
+        },
+        "relativePath": "hooks/kmux.json",
+        "document": {
+          "eventsPath": ["hooks"],
+          "version": { "field": "version", "value": 1 }
+        },
+        "entry": { "commandField": "bash" },
+        "marker": "KMUX_MANAGED_COPILOT_HOOK=1",
+        "managed": [
+          { "event": "sessionStart" },
+          { "event": "notification" },
+          { "event": "agentStop" },
+          { "event": "sessionEnd" }
+        ],
+        "deprecated": [],
+        "outputMode": "silent",
+        "successResponse": {},
+        "fallbackResponse": {},
+        "sessionClaim": {
+          "startEvents": ["sessionStart"],
+          "sessionIdFields": ["sessionId", "session_id"]
+        }
+      },
+      "metadata": {
+        "pathRoot": {
+          "defaultHomeRelativePath": ".copilot",
+          "environmentVariable": "COPILOT_HOME"
+        },
+        "defaultRoot": "session-state",
+        "sources": [
+          {
+            "role": "copilot-session",
+            "format": "jsonl",
+            "pattern": "*/events.jsonl",
+            "purposes": ["sessions", "usage"]
           }
         ]
       }
@@ -93,11 +148,14 @@
     {
       "id": "antigravity",
       "aliases": ["agy", "antigravity-cli"],
-      "definitionRevision": "antigravity-v1",
+      "definitionRevision": "antigravity-v2",
       "hook": {
-        "format": "namespaced-hooks",
         "relativePath": ".gemini/config/hooks.json",
-        "namespace": "kmux-antigravity",
+        "document": { "eventsPath": ["kmux-antigravity"] },
+        "entry": {
+          "commandField": "command",
+          "wrapper": { "field": "hooks", "when": "matcher" }
+        },
         "marker": "KMUX_MANAGED_ANTIGRAVITY_HOOK=1",
         "managed": [
           { "event": "PreInvocation" },
@@ -125,20 +183,20 @@
             "role": "antigravity-history",
             "format": "jsonl",
             "pattern": "history.jsonl",
-            "purposes": ["externalSessions", "history"],
+            "purposes": ["sessions"],
             "claimScope": "agent"
           },
           {
             "role": "antigravity-transcript",
             "format": "jsonl",
             "pattern": "brain/*/.system_generated/logs/transcript.jsonl",
-            "purposes": ["externalSessions", "history", "usage"]
+            "purposes": ["sessions", "usage"]
           },
           {
             "role": "antigravity-conversation",
             "format": "sqlite",
             "pattern": "conversations/*.db",
-            "purposes": ["externalSessions", "history"],
+            "purposes": ["sessions"],
             "queryPlanIds": ["antigravity.conversation.steps.v1"]
           }
         ]

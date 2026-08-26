@@ -12,6 +12,7 @@ import type {
   AgentMetadataInventoryService,
   AgentStorageRoots,
   AiCliProcessMatcher,
+  PricingVendorId,
   SessionInventoryLimits,
   UsageAdapter
 } from "@kmux/metadata";
@@ -22,7 +23,7 @@ import {
   type ResolvedAgentLaunchPolicy
 } from "./command";
 import type {
-  AgentHistorySourceProjection,
+  AgentSessionSourceProjection,
   AgentUsageSourceProjection,
   AgentUsageRuntimeOptions,
   AgentTerminalNotificationDecision
@@ -102,7 +103,7 @@ export function resolveBuiltinDetectedProcessAgent(
 
 export function builtinAgentPricingVendor(
   agentId: AgentId
-): "claude" | "codex" | "gemini" | undefined {
+): PricingVendorId | undefined {
   return composition.resolver("usage").resolve(agentId)?.pricingVendorId;
 }
 
@@ -143,20 +144,9 @@ export function createBuiltinLocalExternalSessionIndexer(options: {
       ? {}
       : { indexPath: options.antigravitySessionIndexPath })
   };
-  const bindings: AgentSessionProjectionBinding[] = [
-    ...composition
-      .materialize("externalSessions")
-      .map(({ agentId, capability }) => ({
-        agentId,
-        purpose: "externalSessions" as const,
-        capability
-      })),
-    ...composition.materialize("history").map(({ agentId, capability }) => ({
-      agentId,
-      purpose: "history" as const,
-      capability
-    }))
-  ];
+  const bindings: AgentSessionProjectionBinding[] = composition
+    .materialize("sessions")
+    .map(({ agentId, capability }) => ({ agentId, capability }));
   const sources = materializeAgentSessionSources({
     bindings,
     metadataSources: composition.metadataSources(),
@@ -186,10 +176,10 @@ export function createBuiltinLocalExternalSessionIndexer(options: {
 
 export function createBuiltinRemoteHistoryProjections(): ReadonlyMap<
   AgentId,
-  AgentHistorySourceProjection
+  AgentSessionSourceProjection
 > {
   return new Map(
-    composition.materialize("history").flatMap(({ agentId, capability }) => {
+    composition.materialize("sessions").flatMap(({ agentId, capability }) => {
       const projection = capability.createSourceProjection?.();
       return projection ? [[agentId, projection] as const] : [];
     })

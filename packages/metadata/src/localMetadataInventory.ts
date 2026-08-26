@@ -461,6 +461,7 @@ function readBoundedText(
 }
 
 function decodeBoundedUtf8(bytes: Buffer): string {
+  if (bytes.includes(0)) return decodeBoundedBinary(bytes);
   let start = 0;
   while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
   for (let trim = 0; trim <= 3 && start <= bytes.length - trim; trim += 1) {
@@ -474,14 +475,22 @@ function decodeBoundedUtf8(bytes: Buffer): string {
   }
   // Preserve one output byte per input byte for bounded binary scans so the
   // caller can advance its offset without skipping data.
-  return Array.from(bytes, (byte) =>
-    byte === 0x09 ||
-    byte === 0x0a ||
-    byte === 0x0d ||
-    (byte >= 0x20 && byte < 0x7f)
-      ? String.fromCharCode(byte)
-      : " "
-  ).join("");
+  return decodeBoundedBinary(bytes);
+}
+
+function decodeBoundedBinary(bytes: Buffer): string {
+  const sanitized = Buffer.allocUnsafe(bytes.length);
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = bytes[index]!;
+    sanitized[index] =
+      byte === 0x09 ||
+      byte === 0x0a ||
+      byte === 0x0d ||
+      (byte >= 0x20 && byte < 0x7f)
+        ? byte
+        : 0x20;
+  }
+  return sanitized.toString("ascii");
 }
 
 function resolveAuthorizedMetadataFile(

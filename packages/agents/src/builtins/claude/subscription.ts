@@ -210,6 +210,7 @@ function normalizeClaudeUsage(options: {
     provider: "claude",
     providerLabel: "Claude Code",
     planLabel: options.planLabel,
+    accentTone: "amber",
     source: options.source,
     updatedAt: new Date(options.nowMs).toISOString(),
     rows

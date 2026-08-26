@@ -4,7 +4,7 @@ import { resolveBuiltinDetectedProcessAgent } from "./builtinRuntime";
 import { createInternalAgentModuleRegistry } from "./composition";
 import { normalizeAgentScopeSettings } from "./settings";
 import { resolveAgentResumePolicy } from "./command";
-import type { AgentModule } from "./contracts";
+import type { AgentModule, AgentSessionsCapability } from "./contracts";
 
 const fixture = (id: string, aliases: string[] = []): AgentModule => ({
   descriptor: { id, displayName: id, aliases },
@@ -52,7 +52,7 @@ describe("agent composition contracts", () => {
       createInternalAgentModuleRegistry([
         {
           ...fixture("direct"),
-          history: {}
+          sessions: {} as AgentSessionsCapability
         }
       ])
     ).toThrow(/no metadata sources/u);
@@ -68,13 +68,13 @@ describe("agent composition contracts", () => {
                 role: "duplicate/session",
                 format: "jsonl",
                 pattern: "*.jsonl",
-                purposes: ["history"]
+                purposes: ["sessions"]
               },
               {
                 role: "duplicate/session",
                 format: "jsonl",
                 pattern: "**/*.jsonl",
-                purposes: ["history"]
+                purposes: ["sessions"]
               }
             ]
           }
@@ -97,10 +97,10 @@ describe("agent composition contracts", () => {
               }
             ]
           },
-          history: {}
+          sessions: {} as AgentSessionsCapability
         }
       ])
-    ).toThrow(/no metadata source for history/u);
+    ).toThrow(/no metadata source for sessions/u);
     expect(() =>
       createInternalAgentModuleRegistry([
         {
@@ -113,14 +113,14 @@ describe("agent composition contracts", () => {
                 role: "missing-projection/session",
                 format: "jsonl",
                 pattern: "*.jsonl",
-                purposes: ["history"]
+                purposes: ["sessions"]
               }
             ]
           },
-          history: {}
+          sessions: {} as AgentSessionsCapability
         }
       ])
-    ).toThrow(/history has no projection factory/u);
+    ).toThrow(/sessions has no projection factory/u);
   });
 
   it("rejects hook session claims that are not backed by a managed event", () => {
@@ -130,8 +130,12 @@ describe("agent composition contracts", () => {
           ...fixture("invalid-hook"),
           hooks: {
             portable: {
-              format: "grouped-hooks",
               relativePath: ".invalid/hooks.json",
+              document: { eventsPath: ["hooks"] },
+              entry: {
+                commandField: "command",
+                wrapper: { field: "hooks", when: "always" }
+              },
               marker: "KMUX_INVALID_HOOK=1",
               managed: [{ event: "Stop" }],
               deprecated: [],

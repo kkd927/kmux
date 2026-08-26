@@ -319,7 +319,7 @@ describe("shell integration launch preparation", () => {
       readFileSync(join(wrapperDir, "bin", "codex"), "utf8")
     ).not.toContain('export CODEX_HOME="$KMUX_WRAPPER_CODEX_HOME"');
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2"
+      "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=3"
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
       "kmux_has_notification_method_override() {"

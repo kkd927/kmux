@@ -42,7 +42,7 @@ describe("subscription usage fetchers", () => {
       createBuiltinSubscriptionSources()
         .map(({ agentId }) => agentId)
         .sort()
-    ).toEqual(["antigravity", "claude", "codex"]);
+    ).toEqual(["antigravity", "claude", "codex", "copilot"]);
   });
 
   it("uses AgentStorageRoots for Codex subscription auth", async () => {

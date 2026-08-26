@@ -1472,6 +1472,53 @@ describe("external session indexer", () => {
     });
   });
 
+  it("refreshes the cached Antigravity projection when history changes", async () => {
+    const homeDir = createSandboxHome();
+    const historyPath = join(
+      homeDir,
+      ".gemini",
+      "antigravity-cli",
+      "history.jsonl"
+    );
+    const conversationId = "4814da0a-b93c-41cc-837d-8a747e9d5b2e";
+    const firstUpdatedAt = new Date("2026-06-02T12:00:00.000Z");
+    const nextUpdatedAt = new Date("2026-06-02T12:01:00.000Z");
+    const indexer = createTestExternalSessionIndexer({
+      homeDir,
+      now: () => new Date("2026-06-02T13:00:00.000Z")
+    });
+
+    writeJsonl(
+      historyPath,
+      [
+        {
+          conversationId,
+          display: "Initial request",
+          timestamp: firstUpdatedAt.getTime()
+        }
+      ],
+      firstUpdatedAt
+    );
+    await expect(indexer.listExternalAgentSessions()).resolves.toMatchObject({
+      sessions: [{ title: "Initial request" }]
+    });
+
+    writeJsonl(
+      historyPath,
+      [
+        {
+          conversationId,
+          display: "Updated request",
+          timestamp: nextUpdatedAt.getTime()
+        }
+      ],
+      nextUpdatedAt
+    );
+    await expect(indexer.listExternalAgentSessions()).resolves.toMatchObject({
+      sessions: [{ title: "Updated request" }]
+    });
+  });
+
   it("uses sanitized prompt titles from Antigravity SQLite conversations", async () => {
     const homeDir = createSandboxHome();
     const now = new Date("2026-06-02T15:30:00.000Z");

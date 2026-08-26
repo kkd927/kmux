@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import fixtures from "../fixtures/merge-v2.json";
+import fixtures from "../fixtures/merge-v3.json";
 
 import {
   ensureAgentIntegrations,
@@ -41,6 +42,7 @@ describe("agent integration contract", () => {
       ).toEqual([
         { vendor: "claude", status: "changed" },
         { vendor: "codex", status: "changed" },
+        { vendor: "copilot", status: "changed" },
         { vendor: "antigravity", status: "changed" }
       ]);
       expect(
@@ -63,6 +65,21 @@ describe("agent integration contract", () => {
           )["kmux-antigravity"]
         )
       ).toEqual(["PreInvocation", "PreToolUse", "Stop"]);
+      const copilot = JSON.parse(
+        readFileSync(join(home, ".copilot", "hooks", "kmux.json"), "utf8")
+      );
+      expect(copilot.version).toBe(1);
+      expect(Object.keys(copilot.hooks)).toEqual([
+        "sessionStart",
+        "notification",
+        "agentStop",
+        "sessionEnd"
+      ]);
+      expect(copilot.hooks.sessionStart[0]).toMatchObject({
+        type: "command",
+        bash: expect.stringContaining("KMUX_MANAGED_COPILOT_HOOK=1")
+      });
+      expect(copilot.hooks.sessionStart[0]).not.toHaveProperty("hooks");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -110,6 +127,33 @@ describe("agent integration contract", () => {
     }
   });
 
+  it("uses COPILOT_HOME for the Copilot hook document", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-agent-integration-"));
+    const home = join(sandbox, "home");
+    const copilotHome = join(sandbox, "custom-copilot-home");
+    try {
+      const copilot = ensureAgentIntegrations({
+        homeDir: home,
+        env: { COPILOT_HOME: copilotHome }
+      }).find(({ vendor }) => vendor === "copilot");
+
+      expect(copilot).toMatchObject({
+        path: join(copilotHome, "hooks", "kmux.json"),
+        status: "changed"
+      });
+      expect(
+        JSON.parse(
+          readFileSync(join(copilotHome, "hooks", "kmux.json"), "utf8")
+        )
+      ).toMatchObject({ version: 1 });
+      expect(existsSync(join(home, ".copilot", "hooks", "kmux.json"))).toBe(
+        false
+      );
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("does not partially install over a structurally unsupported user config", () => {
     const home = mkdtempSync(join(tmpdir(), "kmux-agent-integration-"));
     const path = join(home, ".codex", "hooks.json");
@@ -126,6 +170,7 @@ describe("agent integration contract", () => {
         [
           { vendor: "claude", status: "changed" },
           { vendor: "codex", status: "degraded" },
+          { vendor: "copilot", status: "changed" },
           { vendor: "antigravity", status: "changed" }
         ]
       );

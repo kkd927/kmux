@@ -256,7 +256,9 @@ describe("usage adapter performance", () => {
       "utf8"
     );
 
-    const [, , adapter] = listTestBuiltinUsageAdapters({ homeDir: root });
+    const adapter = listTestBuiltinUsageAdapters({ homeDir: root }).find(
+      (candidate) => candidate.vendor === "antigravity"
+    )!;
     const startOfDayMs = startOfLocalDay(
       Date.parse("2026-04-17T09:00:00.000Z")
     );

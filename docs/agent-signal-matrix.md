@@ -1,10 +1,10 @@
 # Agent Signal Matrix
 
-Date: 2026-04-20
+Date: 2026-08-25
 
 ## Purpose
 
-This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, and Antigravity, and how those signals are consumed by:
+This document defines how `kmux` collects agent lifecycle signals from Claude, Codex, GitHub Copilot, and Antigravity, and how those signals are consumed by:
 
 - notifications and sidebar attention
 - usage binding and attribution
@@ -103,13 +103,14 @@ The installed set below is owned by
 [`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json).
 Local TypeScript and remote `kmuxd` both consume that contract.
 
-<!-- agent-integration-contract:v2:start -->
+<!-- agent-integration-contract:v3:start -->
 | Agent | Installed hooks | Removed legacy kmux hooks |
 | --- | --- | --- |
 | Claude | `PermissionRequest`, `PreToolUse(AskUserQuestion\|ExitPlanMode)`, `SessionStart`, `Stop` | `Notification`, `PostToolUse`, `SessionEnd`, `UserPromptSubmit` |
 | Codex | `SessionStart`, `PermissionRequest`, `Stop` | `UserPromptSubmit` |
+| Copilot | `sessionStart`, `notification`, `agentStop`, `sessionEnd` |  |
 | Antigravity | `PreInvocation`, `PreToolUse(.*)`, `Stop` | `PostToolUse`, `PostInvocation` |
-<!-- agent-integration-contract:v2:end -->
+<!-- agent-integration-contract:v3:end -->
 
 Settings reconciliation is non-destructive:
 
@@ -192,6 +193,36 @@ Usage policy:
 
 - [`usageRuntime.ts`](../apps/desktop/src/main/usageRuntime.ts) must ignore `agent.event` when `details.uiOnly === true`
 - this prevents UI-only promotions (Codex OSC-derived attention and similar synthetic events) from creating bindings
+
+### GitHub Copilot
+
+Installed hooks:
+
+- [`packages/agent-integration/contract.json`](../packages/agent-integration/contract.json)
+- versioned hook document at `$COPILOT_HOME/hooks/kmux.json` (falling back to `~/.copilot/hooks/kmux.json`)
+- `sessionStart`, `notification`, `agentStop`, and `sessionEnd`
+
+Canonical notification signals:
+
+- hook `sessionStart` -> `agent.event(session_start)`
+- hook `notification` with a permission or elicitation notification type -> `agent.event(needs_input)`; other notifications remain generic notifications
+- hook `agentStop` -> `agent.event(turn_complete)`
+- hook `sessionEnd` -> `agent.event(session_end)`
+
+Important:
+
+- kmux does not install `permissionRequest`: Copilot emits it before rules, session approvals, auto-allow/auto-deny, and any real user prompt.
+- only `permission_prompt` and `elicitation_dialog` notifications prove that user input is required.
+
+Session and usage policy:
+
+- local and SSH history read only declared `session-state/*/events.jsonl` sources beneath the effective Copilot home
+- resume uses the exact persisted session ID with `copilot --resume=<session-id>`
+- usage is emitted from per-model cumulative `session.shutdown.modelMetrics` token deltas; AI credits are not interpreted as USD
+- an active session may have no complete usage sample until Copilot writes a shutdown event
+- subscription remaining uses Copilot's bounded headless `account.getQuota` RPC; kmux prefers an entitled `premium_interactions` quota and otherwise uses the finite `chat` quota
+- the same bounded RPC session reads `account.getCurrentAuth` for the declared plan and `quota_reset_date_utc`; kmux does not infer a plan from its quota amount or use the unreliable per-snapshot `resetDate`
+- the interactive `/usage` screen is not scraped, and Copilot credentials are not read directly by kmux
 
 ### Antigravity
 

@@ -1,10 +1,10 @@
 import type { AgentModule } from "./contracts";
 
-export const PORTABLE_AGENT_MANIFEST_VERSION = 1 as const;
+export const PORTABLE_AGENT_MANIFEST_VERSION = 2 as const;
 
 export interface PortableAgentManifest {
   readonly version: typeof PORTABLE_AGENT_MANIFEST_VERSION;
-  readonly primitiveVersion: 1;
+  readonly primitiveVersion: 2;
   readonly agents: readonly PortableAgentManifestEntry[];
 }
 
@@ -13,10 +13,22 @@ export interface PortableAgentManifestEntry {
   readonly aliases: readonly string[];
   readonly definitionRevision: string;
   readonly hook?: {
-    readonly format: "grouped-hooks" | "namespaced-hooks";
     readonly pathRoot?: PortableAgentPathRoot;
     readonly relativePath: string;
-    readonly namespace?: string;
+    readonly document: {
+      readonly eventsPath: readonly string[];
+      readonly version?: {
+        readonly field: string;
+        readonly value: number;
+      };
+    };
+    readonly entry: {
+      readonly commandField: "command" | "bash";
+      readonly wrapper?: {
+        readonly field: string;
+        readonly when: "always" | "matcher";
+      };
+    };
     readonly marker: string;
     readonly managed: readonly {
       readonly event: string;
@@ -58,7 +70,7 @@ export function createPortableAgentManifest(
 ): PortableAgentManifest {
   return {
     version: PORTABLE_AGENT_MANIFEST_VERSION,
-    primitiveVersion: 1,
+    primitiveVersion: 2,
     agents: modules.map((module) => {
       const hook = module.hooks?.portable;
       if (hook) {
@@ -80,10 +92,20 @@ export function createPortableAgentManifest(
         ...(hook
           ? {
               hook: {
-                format: hook.format,
                 ...(hook.pathRoot ? { pathRoot: { ...hook.pathRoot } } : {}),
                 relativePath: hook.relativePath,
-                ...(hook.namespace ? { namespace: hook.namespace } : {}),
+                document: {
+                  eventsPath: [...hook.document.eventsPath],
+                  ...(hook.document.version
+                    ? { version: { ...hook.document.version } }
+                    : {})
+                },
+                entry: {
+                  commandField: hook.entry.commandField,
+                  ...(hook.entry.wrapper
+                    ? { wrapper: { ...hook.entry.wrapper } }
+                    : {})
+                },
                 marker: hook.marker,
                 managed: hook.managed.map((entry) => ({ ...entry })),
                 deprecated: [...hook.deprecated],

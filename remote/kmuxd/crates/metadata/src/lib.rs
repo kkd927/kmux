@@ -794,10 +794,10 @@ fn manifest_source_supports_purpose(
     purpose: MetadataPurpose,
 ) -> bool {
     source.purposes.iter().any(|value| match purpose {
-        MetadataPurpose::History => matches!(value.as_str(), "externalSessions" | "history"),
+        MetadataPurpose::History => matches!(value.as_str(), "sessions"),
         MetadataPurpose::Usage => value == "usage",
         MetadataPurpose::All => {
-            matches!(value.as_str(), "externalSessions" | "history" | "usage")
+            matches!(value.as_str(), "sessions" | "usage")
         }
     })
 }
@@ -1491,7 +1491,7 @@ fn require_source_contract() -> Result<(), MetadataSourceError> {
                     let mut purposes = Vec::new();
                     for purpose in &source.purposes {
                         let mapped = match purpose.as_str() {
-                            "externalSessions" | "history" => "history",
+                            "sessions" => "history",
                             "usage" => "usage",
                             _ => continue,
                         };
@@ -5894,13 +5894,14 @@ mod tests {
             "CODEX_HOME".to_owned(),
             codex_home.to_string_lossy().into_owned(),
         )]);
+        let definitions = kmux_agent_manifest::definition_revisions().unwrap();
         let inventory = list_owned_metadata_sources_for_definitions_with_environment(
             &home,
             MetadataPurpose::Usage,
             &ExternalAgentScanSettings::default(),
             &[claim],
             fs::metadata(&home).unwrap().uid(),
-            &BTreeMap::from([("codex".to_owned(), "codex-v2".to_owned())]),
+            &definitions,
             Some(&environment),
         )
         .unwrap();

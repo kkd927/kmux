@@ -1,10 +1,15 @@
+import { statSync } from "node:fs";
+
+import type { SessionInventoryCandidate } from "@kmux/metadata";
+
 import type {
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionInput,
   AgentExternalSessionProjectionOptions,
+  AgentExternalSessionProjectionResult,
   AgentExternalSessionRecordProjection,
-  AgentHistorySourceProjection,
-  AgentHistorySourceProjectionInput
+  AgentSessionSourceProjection,
+  AgentSessionSourceProjectionInput
 } from "../../contracts";
 import {
   dedupeProjectedRecords,
@@ -22,6 +27,12 @@ import {
 export function createAntigravityExternalSessionProjection(
   options: AgentExternalSessionProjectionOptions
 ): AgentExternalSessionMetadataProjection {
+  let cached:
+    | {
+        readonly signature: string;
+        readonly result: AgentExternalSessionProjectionResult;
+      }
+    | undefined;
   return Object.freeze({
     async project(input: AgentExternalSessionProjectionInput) {
       const selected = projectionCandidates(input, (candidate) =>
@@ -33,6 +44,23 @@ export function createAntigravityExternalSessionProjection(
           classifyAntigravityMetadataPath(input.roots, candidate.path) ?? ""
         )
       );
+      const walPaths = new Set(
+        selected.candidates
+          .filter((candidate) => candidate.path.endsWith(".db"))
+          .map((candidate) => `${candidate.path}-wal`)
+      );
+      const projectionInventory = [
+        ...selected.candidates,
+        ...input.inventory.candidates.filter((candidate) =>
+          walPaths.has(candidate.path)
+        )
+      ];
+      const signature = projectionSignature(
+        input,
+        projectionInventory,
+        options.indexPath
+      );
+      if (cached?.signature === signature) return cached.result;
       const records = new Map<string, AgentExternalSessionRecordProjection>();
       const upsert = (record: AgentExternalSessionRecordProjection) => {
         const previous = records.get(record.sessionId);
@@ -45,7 +73,7 @@ export function createAntigravityExternalSessionProjection(
       for (const root of input.roots) {
         for (const session of await readAntigravityConversationMetadataFromSharedInventory(
           root,
-          selected.candidates,
+          projectionInventory,
           {
             readText: input.readText,
             query: input.query
@@ -79,20 +107,52 @@ export function createAntigravityExternalSessionProjection(
       }
 
       const projected = dedupeProjectedRecords([...records.values()]);
-      return {
+      const result = {
         records: projected.slice(0, input.maxRecords),
         truncated: selected.truncated || projected.length > input.maxRecords
-      };
+      } satisfies AgentExternalSessionProjectionResult;
+      cached = { signature, result };
+      return result;
     }
   });
 }
 
-export function createAntigravityHistorySourceProjection(): AgentHistorySourceProjection {
+function projectionSignature(
+  input: AgentExternalSessionProjectionInput,
+  candidates: readonly SessionInventoryCandidate[],
+  indexPath: string | undefined
+): string {
+  return JSON.stringify({
+    roots: input.roots,
+    maxRecords: input.maxRecords,
+    inventoryTruncated: input.inventory.truncated,
+    candidates: [...candidates]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map(({ path, size, mtimeMs, birthtimeMs }) => [
+        path,
+        size,
+        mtimeMs,
+        birthtimeMs ?? null
+      ]),
+    index: indexPath ? fileSignature(indexPath) : null
+  });
+}
+
+function fileSignature(path: string): readonly [number, number] | null {
+  try {
+    const stats = statSync(path);
+    return [stats.size, Number(stats.mtimeMs)];
+  } catch {
+    return null;
+  }
+}
+
+export function createAntigravitySessionSourceProjection(): AgentSessionSourceProjection {
   return Object.freeze({ projectSource: projectAntigravityHistorySource });
 }
 
 function projectAntigravityHistorySource(
-  input: AgentHistorySourceProjectionInput
+  input: AgentSessionSourceProjectionInput
 ): readonly AgentExternalSessionRecordProjection[] {
   if (input.format === "jsonl") {
     if (

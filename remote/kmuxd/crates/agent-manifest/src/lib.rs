@@ -33,10 +33,10 @@ pub struct AgentDefinition {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HookDefinition {
-    pub format: String,
     pub path_root: Option<PathRootDefinition>,
     pub relative_path: String,
-    pub namespace: Option<String>,
+    pub document: HookDocumentDefinition,
+    pub entry: HookEntryDefinition,
     pub marker: String,
     pub managed: Vec<ManagedHook>,
     pub deprecated: Vec<String>,
@@ -46,6 +46,34 @@ pub struct HookDefinition {
     #[serde(default)]
     pub fallback_by_event: BTreeMap<String, BTreeMap<String, Value>>,
     pub session_claim: Option<HookSessionClaimDefinition>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HookDocumentDefinition {
+    pub events_path: Vec<String>,
+    pub version: Option<HookDocumentVersionDefinition>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDocumentVersionDefinition {
+    pub field: String,
+    pub value: u16,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HookEntryDefinition {
+    pub command_field: String,
+    pub wrapper: Option<HookEntryWrapperDefinition>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookEntryWrapperDefinition {
+    pub field: String,
+    pub when: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -143,7 +171,7 @@ pub fn definition_revisions() -> Result<BTreeMap<String, String>, ManifestError>
 fn parse_and_validate(input: &str) -> Result<AgentManifest, ManifestError> {
     let manifest: AgentManifest =
         serde_json::from_str(input).map_err(|error| ManifestError::Json(error.to_string()))?;
-    if manifest.version != 1 || manifest.primitive_version != 1 {
+    if manifest.version != 2 || manifest.primitive_version != 2 {
         return Err(ManifestError::Invalid("unsupported manifest version"));
     }
     if manifest.agents.is_empty() || manifest.agents.len() > MAX_AGENTS {
@@ -175,10 +203,26 @@ fn parse_and_validate(input: &str) -> Result<AgentManifest, ManifestError> {
 }
 
 fn validate_hook(hook: &HookDefinition) -> Result<(), ManifestError> {
-    if !matches!(hook.format.as_str(), "grouped-hooks" | "namespaced-hooks")
-        || !valid_path_root(hook.path_root.as_ref())
+    if !valid_path_root(hook.path_root.as_ref())
         || !matches!(hook.output_mode.as_str(), "silent" | "json")
         || !valid_relative_pattern(&hook.relative_path)
+        || hook.document.events_path.is_empty()
+        || hook.document.events_path.len() > 8
+        || hook
+            .document
+            .events_path
+            .iter()
+            .any(|component| !valid_hook_token(component))
+        || hook
+            .document
+            .version
+            .as_ref()
+            .is_some_and(|version| !valid_hook_token(&version.field) || version.value == 0)
+        || !matches!(hook.entry.command_field.as_str(), "command" | "bash")
+        || hook.entry.wrapper.as_ref().is_some_and(|wrapper| {
+            !valid_hook_token(&wrapper.field)
+                || !matches!(wrapper.when.as_str(), "always" | "matcher")
+        })
         || hook.marker.is_empty()
         || hook.managed.len() > 64
     {

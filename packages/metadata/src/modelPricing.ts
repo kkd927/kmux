@@ -15,8 +15,7 @@ export type {
   ModelPricingModels
 } from "./modelPricingCatalog";
 
-type SupportedVendor = "claude" | "codex" | "gemini";
-export type SupportedPricingVendor = SupportedVendor;
+export type PricingVendorId = string;
 export type PricingMode = "standard" | "fast";
 
 const DEFAULT_TIERED_PRICING_THRESHOLD_TOKENS = 200_000;
@@ -57,7 +56,7 @@ export type UsageComponentCostEstimate = {
 };
 
 export type UsageCostEstimateParams = {
-  vendor: SupportedPricingVendor;
+  vendor: PricingVendorId;
   model?: string;
   pricingMode?: PricingMode;
   inputTokens: number;
@@ -69,7 +68,7 @@ export type UsageCostEstimateParams = {
 };
 
 export type ModelCostEstimateParams = {
-  vendor: SupportedPricingVendor;
+  vendor: PricingVendorId;
   model?: string;
   pricingMode?: PricingMode;
   inputTokens: number;
@@ -89,7 +88,7 @@ export interface ModelPricingResolver {
     params: ModelCostEstimateParams
   ): { modelId: string; estimatedCostUsd: number } | null;
   resolveCanonicalModelId(params: {
-    vendor: SupportedPricingVendor;
+    vendor: PricingVendorId;
     model?: string;
   }): string | null;
 }
@@ -103,48 +102,54 @@ export function createModelPricingResolver(
     catalog,
     estimateUsageComponentCosts: (params: UsageCostEstimateParams) =>
       estimateUsageComponentCostsForCatalog(
-        catalog.models[params.vendor],
+        pricingCatalogFor(catalog.models, params.vendor),
         params
       ),
     estimateModelCost: (params: ModelCostEstimateParams) => {
-      const estimate = estimateUsageComponentCostsForCatalog(
-        catalog.models[params.vendor],
-        {
-          vendor: params.vendor,
-          model: params.model,
-          pricingMode: params.pricingMode,
-          inputTokens: params.inputTokens,
-          outputTokens: params.outputTokens,
-          thinkingTokens: params.thinkingTokens,
-          cacheReadTokens: params.cacheTokens,
-          cacheWriteTokens: params.cacheCreateTokens,
-          cacheWriteTokensKnown: params.cacheCreateTokensKnown
-        }
-      );
+      const vendorCatalog = pricingCatalogFor(catalog.models, params.vendor);
+      if (!vendorCatalog) return null;
+      const estimate = estimateUsageComponentCostsForCatalog(vendorCatalog, {
+        vendor: params.vendor,
+        model: params.model,
+        pricingMode: params.pricingMode,
+        inputTokens: params.inputTokens,
+        outputTokens: params.outputTokens,
+        thinkingTokens: params.thinkingTokens,
+        cacheReadTokens: params.cacheTokens,
+        cacheWriteTokens: params.cacheCreateTokens,
+        cacheWriteTokensKnown: params.cacheCreateTokensKnown
+      });
       return estimate
         ? { modelId: estimate.modelId, estimatedCostUsd: estimate.totalCostUsd }
         : null;
     },
     resolveCanonicalModelId: (params: {
-      vendor: SupportedPricingVendor;
+      vendor: PricingVendorId;
       model?: string;
     }) => {
       if (!params.model?.trim()) {
         return null;
       }
       return (
-        canonicalLookup[params.vendor].get(
-          normalizeCanonicalModelLookupKey(params.model)
-        )?.modelId ?? null
+        canonicalLookup
+          .get(params.vendor)
+          ?.get(normalizeCanonicalModelLookupKey(params.model))?.modelId ?? null
       );
     }
   });
 }
 
+function pricingCatalogFor(
+  models: ModelPricingModels,
+  vendor: PricingVendorId
+): PricingCatalog | undefined {
+  return Object.hasOwn(models, vendor) ? models[vendor] : undefined;
+}
+
 function buildCanonicalModelLookup(
   models: ModelPricingModels
-): Record<SupportedPricingVendor, Map<string, PricingEntry>> {
-  return Object.fromEntries(
+): ReadonlyMap<PricingVendorId, Map<string, PricingEntry>> {
+  return new Map(
     Object.entries(models).map(([vendor, catalog]) => {
       const lookup = new Map<string, PricingEntry>();
       for (const mode of ["standard", "fast"] as PricingMode[]) {
@@ -159,7 +164,7 @@ function buildCanonicalModelLookup(
       }
       return [vendor, lookup];
     })
-  ) as Record<SupportedPricingVendor, Map<string, PricingEntry>>;
+  );
 }
 
 export const BUNDLED_MODEL_PRICING_CATALOG = validateModelPricingCatalog(
@@ -170,7 +175,7 @@ export const BUNDLED_MODEL_PRICING_RESOLVER = createModelPricingResolver(
 );
 
 export function resolveCanonicalModelId(params: {
-  vendor: SupportedPricingVendor;
+  vendor: PricingVendorId;
   model?: string;
 }): string | null {
   return BUNDLED_MODEL_PRICING_RESOLVER.resolveCanonicalModelId(params);
@@ -211,14 +216,10 @@ type PricingCatalogIndex = {
   >;
 };
 
-const PRICING_CATALOG_INDEX_CACHE: Record<
-  SupportedVendor,
-  WeakMap<PricingCatalog, PricingCatalogIndex>
-> = {
-  claude: new WeakMap(),
-  codex: new WeakMap(),
-  gemini: new WeakMap()
-};
+const PRICING_CATALOG_INDEX_CACHE = new WeakMap<
+  PricingCatalog,
+  Map<PricingVendorId, PricingCatalogIndex>
+>();
 
 export function estimateUsageComponentCosts(
   params: UsageCostEstimateParams
@@ -228,9 +229,9 @@ export function estimateUsageComponentCosts(
 
 /** @internal Exposed so pricing resolution contracts can use synthetic catalogs. */
 export function estimateUsageComponentCostsForCatalog(
-  catalog: PricingCatalog,
+  catalog: PricingCatalog | undefined,
   params: {
-    vendor: SupportedVendor;
+    vendor: PricingVendorId;
     model?: string;
     pricingMode?: PricingMode;
     inputTokens: number;
@@ -241,7 +242,7 @@ export function estimateUsageComponentCostsForCatalog(
     cacheWriteTokensKnown?: boolean;
   }
 ): UsageComponentCostEstimate | null {
-  if (!params.model?.trim()) {
+  if (!catalog || !params.model?.trim()) {
     return null;
   }
 
@@ -397,10 +398,11 @@ function normalizeCanonicalModelLookupKey(model: string): string {
 }
 
 function pricingCatalogIndex(
-  vendor: SupportedVendor,
+  vendor: PricingVendorId,
   catalog: PricingCatalog
 ): PricingCatalogIndex {
-  const cached = PRICING_CATALOG_INDEX_CACHE[vendor].get(catalog);
+  const cachedByVendor = PRICING_CATALOG_INDEX_CACHE.get(catalog);
+  const cached = cachedByVendor?.get(vendor);
   if (cached) {
     return cached;
   }
@@ -430,19 +432,24 @@ function pricingCatalogIndex(
     ])
   ) as PricingCatalogIndex["forwardCompatEntries"];
   const created = { lookup, forwardCompatEntries };
-  PRICING_CATALOG_INDEX_CACHE[vendor].set(catalog, created);
+  if (cachedByVendor) {
+    cachedByVendor.set(vendor, created);
+  } else {
+    PRICING_CATALOG_INDEX_CACHE.set(catalog, new Map([[vendor, created]]));
+  }
   return created;
 }
 
 function resolvePricingEntry(
   catalog: PricingCatalog,
-  vendor: SupportedVendor,
+  vendor: PricingVendorId,
   model: string,
   pricingMode: PricingMode
 ): PricingEntry | undefined {
   const index = pricingCatalogIndex(vendor, catalog);
   const normalizedKey = normalizeModelLookupKey(model);
-  const effectiveMode = vendor === "codex" ? pricingMode : "standard";
+  const effectiveMode =
+    pricingMode === "fast" && catalog.fast ? "fast" : "standard";
   if (effectiveMode === "fast") {
     const fastDirect = index.lookup.fast.get(normalizedKey);
     if (fastDirect) {
@@ -467,26 +474,22 @@ function resolvePricingEntry(
   if (effectiveMode === "fast") {
     return (
       resolveForwardCompatPricingEntry(
-        vendor,
         index.forwardCompatEntries.fast,
         requestedSpec
       ) ??
       resolveForwardCompatPricingEntry(
-        vendor,
         index.forwardCompatEntries.standard,
         requestedSpec
       )
     );
   }
   return resolveForwardCompatPricingEntry(
-    vendor,
     index.forwardCompatEntries.standard,
     requestedSpec
   );
 }
 
 function resolveForwardCompatPricingEntry(
-  vendor: SupportedVendor,
   entries: Array<{ entry: PricingEntry; spec: ForwardCompatSpec }>,
   requestedSpec: ForwardCompatSpec
 ): PricingEntry | undefined {
@@ -557,7 +560,7 @@ function compareVersion(
 }
 
 function parseForwardCompatSpec(
-  vendor: SupportedVendor,
+  vendor: PricingVendorId,
   normalizedKey: string
 ): ForwardCompatSpec | null {
   if (vendor === "codex") {
@@ -566,7 +569,9 @@ function parseForwardCompatSpec(
   if (vendor === "claude") {
     return parseClaudeForwardCompatSpec(normalizedKey);
   }
-  return parseGeminiForwardCompatSpec(normalizedKey);
+  return vendor === "gemini"
+    ? parseGeminiForwardCompatSpec(normalizedKey)
+    : null;
 }
 
 function parseCodexForwardCompatSpec(

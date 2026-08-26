@@ -1,14 +1,18 @@
 {
-  "version": 1,
-  "primitiveVersion": 1,
+  "version": 2,
+  "primitiveVersion": 2,
   "agents": [
     {
       "id": "fixture-nebula",
       "aliases": ["nebula-cli"],
       "definitionRevision": "fixture-nebula-v1",
       "hook": {
-        "format": "grouped-hooks",
         "relativePath": ".nebula/hooks.json",
+        "document": { "eventsPath": ["hooks"] },
+        "entry": {
+          "commandField": "command",
+          "wrapper": { "field": "hooks", "when": "always" }
+        },
         "marker": "KMUX_MANAGED_NEBULA_FIXTURE=1",
         "managed": [
           {
@@ -30,8 +34,12 @@
       "aliases": [],
       "definitionRevision": "fixture-orbit-v1",
       "hook": {
-        "format": "grouped-hooks",
         "relativePath": ".orbit/hooks.json",
+        "document": { "eventsPath": ["hooks"] },
+        "entry": {
+          "commandField": "command",
+          "wrapper": { "field": "hooks", "when": "always" }
+        },
         "marker": "KMUX_MANAGED_ORBIT_FIXTURE=1",
         "managed": [
           {
@@ -54,7 +62,7 @@
             "role": "fixture-orbit/session-jsonl",
             "format": "jsonl",
             "pattern": "**/*.jsonl",
-            "purposes": ["externalSessions", "history", "usage"],
+            "purposes": ["sessions", "usage"],
             "claimScope": "agent"
           }
         ]

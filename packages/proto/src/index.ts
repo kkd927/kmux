@@ -1294,6 +1294,14 @@ export type SubscriptionUsageWindowKind =
   | "spend"
   | "credits";
 
+export type UsageAccentTone =
+  | "blue"
+  | "amber"
+  | "violet"
+  | "emerald"
+  | "rose"
+  | "slate";
+
 interface SubscriptionUsageBaseRowVm {
   key: string;
   label: string;
@@ -1320,6 +1328,7 @@ export interface SubscriptionProviderUsageVm {
   provider: SubscriptionUsageProvider;
   providerLabel: string;
   planLabel: string;
+  accentTone?: UsageAccentTone;
   source: string;
   updatedAt: string;
   rows: SubscriptionUsageRowVm[];

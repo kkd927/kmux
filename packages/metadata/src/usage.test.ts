@@ -33,7 +33,7 @@ describe("usage adapters", () => {
       listTestBuiltinUsageAdapters({
         homeDir: "/tmp/kmux-usage-home"
       }).map((adapter) => adapter.vendor)
-    ).toEqual(["claude", "codex", "antigravity"]);
+    ).toEqual(["claude", "codex", "copilot", "antigravity"]);
   });
 
   it("uses AgentStorageRoots for default vendor usage locations", async () => {
@@ -1496,10 +1496,10 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , antigravityAdapter] = listTestBuiltinUsageAdapters({
+    const antigravityAdapter = listTestBuiltinUsageAdapters({
       homeDir,
       agentStorageRoots: roots
-    });
+    }).find((adapter) => adapter.vendor === "antigravity")!;
 
     const initial = await antigravityAdapter.initialScan(
       startOfLocalDay(new Date("2026-06-02T03:55:54.000Z").getTime())
@@ -1567,9 +1567,9 @@ describe("usage adapters", () => {
       "utf8"
     );
 
-    const [, , antigravityAdapter] = listTestBuiltinUsageAdapters({
+    const antigravityAdapter = listTestBuiltinUsageAdapters({
       homeDir
-    });
+    }).find((adapter) => adapter.vendor === "antigravity")!;
     const startOfDayMs = startOfLocalDay(
       new Date("2026-06-02T03:55:54.000Z").getTime()
     );

@@ -267,6 +267,7 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
     provider: "antigravity",
     providerLabel: "Antigravity",
     planLabel: resolvedPlanLabel,
+    accentTone: "emerald",
     source: "quota_summary_api",
     updatedAt: new Date(options.now()).toISOString(),
     rows

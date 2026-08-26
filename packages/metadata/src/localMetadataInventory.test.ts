@@ -37,18 +37,18 @@ describe("local metadata inventory coordination", () => {
     ];
 
     try {
-      const [externalSessions, history, usage] = await Promise.all([
+      const [sessions, usage, secondProjection] = await Promise.all([
         leases[0]!.inventory(),
         leases[1]!.inventory(),
         leases[2]!.inventory()
       ]);
-      expect(history).toBe(externalSessions);
-      expect(usage).toBe(externalSessions);
-      expect(externalSessions.candidates).toHaveLength(1);
+      expect(usage).toBe(sessions);
+      expect(secondProjection).toBe(sessions);
+      expect(sessions.candidates).toHaveLength(1);
 
       leases[0]!.invalidate();
       const refreshed = await leases[1]!.inventory();
-      expect(refreshed).not.toBe(externalSessions);
+      expect(refreshed).not.toBe(sessions);
     } finally {
       await Promise.all(leases.map((lease) => lease.release()));
       await service.close();

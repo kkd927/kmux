@@ -11,10 +11,7 @@ import {
   createBuiltinLocalExternalSessionIndexer,
   listBuiltinLocalUsageAdapters
 } from "@kmux/agents/builtin-runtime";
-import type {
-  AgentHistorySessionIndexer,
-  ExternalSessionIndexer
-} from "@kmux/agents";
+import type { ExternalSessionIndexer } from "@kmux/agents";
 
 import type {
   UsageScanWorkerConfig,
@@ -23,9 +20,7 @@ import type {
 } from "./usageScanProtocol";
 
 let adapters: UsageAdapter[] = [];
-let externalSessionIndexer:
-  | (ExternalSessionIndexer & AgentHistorySessionIndexer)
-  | null = null;
+let externalSessionIndexer: ExternalSessionIndexer | null = null;
 let metadataInventory: AgentMetadataInventoryService | null = null;
 let activeConfig: UsageScanWorkerConfig | null = null;
 let watcherCleanups: Array<() => void> = [];
@@ -158,20 +153,16 @@ async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
       return;
     }
     try {
-      const snapshot = await (request.purpose === "history"
-        ? externalSessionIndexer.listAgentHistorySessions()
-        : externalSessionIndexer.listExternalAgentSessions());
+      const snapshot = await externalSessionIndexer.listExternalAgentSessions();
       const resumeSpecs = snapshot.sessions.flatMap((session) => {
         const spec = externalSessionIndexer?.resolveExternalAgentSession(
-          session.key,
-          request.purpose
+          session.key
         );
         return spec ? [spec] : [];
       });
       send({
         type: "external-sessions-scan-result",
         requestId: request.requestId,
-        purpose: request.purpose,
         snapshot,
         resumeSpecs
       });

@@ -18,7 +18,7 @@ import {
 } from "../shared";
 import {
   createAntigravityExternalSessionProjection,
-  createAntigravityHistorySourceProjection
+  createAntigravitySessionSourceProjection
 } from "./externalSessions";
 import { classifyAntigravityMetadataPath } from "./inventory";
 import { antigravitySessionIndexPath } from "./sessionIndex";
@@ -38,7 +38,7 @@ export const antigravityAgent = Object.freeze({
     aliases: ["agy", "antigravity-cli"],
     presentation: { shortLabel: "AGY" }
   },
-  definitionRevision: "antigravity-v1",
+  definitionRevision: "antigravity-v2",
   command: { executable: "agy" },
   resume: {
     build: (commonArgs, sessionId) => [
@@ -51,9 +51,12 @@ export const antigravityAgent = Object.freeze({
     resolveLocalConfigPath: ({ agentStorageRoots }) =>
       agentStorageRoots.antigravity.hooksPath,
     portable: {
-      format: "namespaced-hooks",
       relativePath: ".gemini/config/hooks.json",
-      namespace: "kmux-antigravity",
+      document: { eventsPath: ["kmux-antigravity"] },
+      entry: {
+        commandField: "command",
+        wrapper: { field: "hooks", when: "matcher" }
+      },
       marker: "KMUX_MANAGED_ANTIGRAVITY_HOOK=1",
       managed: [
         { event: "PreInvocation" },
@@ -111,7 +114,7 @@ export const antigravityAgent = Object.freeze({
     }
   },
   metadataSources: {
-    revision: "antigravity-metadata-v1",
+    revision: "antigravity-metadata-v2",
     defaultRoot: ".gemini/antigravity-cli",
     localQueryPlans: {
       "antigravity.conversation.steps.v1": {
@@ -135,37 +138,25 @@ export const antigravityAgent = Object.freeze({
         role: "antigravity-history",
         format: "jsonl",
         pattern: "history.jsonl",
-        purposes: ["externalSessions", "history"],
+        purposes: ["sessions"],
         claimScope: "agent"
       },
       {
         role: "antigravity-transcript",
         format: "jsonl",
         pattern: "brain/*/.system_generated/logs/transcript.jsonl",
-        purposes: ["externalSessions", "history", "usage"]
+        purposes: ["sessions", "usage"]
       },
       {
         role: "antigravity-conversation",
         format: "sqlite",
         pattern: "conversations/*.db",
-        purposes: ["externalSessions", "history"],
+        purposes: ["sessions"],
         queryPlanIds: ["antigravity.conversation.steps.v1"]
       }
     ]
   },
-  externalSessions: {
-    createMetadataProjection(options) {
-      return createAntigravityExternalSessionProjection({
-        ...options,
-        indexPath:
-          options.agentSettings?.antigravity?.sessionRoot === undefined
-            ? (options.indexPath ??
-              antigravitySessionIndexPath(options.homeDir, options.env))
-            : undefined
-      });
-    }
-  },
-  history: {
+  sessions: {
     createMetadataProjection(options) {
       return createAntigravityExternalSessionProjection({
         ...options,
@@ -176,7 +167,7 @@ export const antigravityAgent = Object.freeze({
             : undefined
       });
     },
-    createSourceProjection: createAntigravityHistorySourceProjection
+    createSourceProjection: createAntigravitySessionSourceProjection
   },
   usage: {
     pricingVendorId: "gemini",

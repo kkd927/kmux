@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
-import type { AgentScopeSettings } from "@kmux/proto";
+import type { AgentId, AgentScopeSettings } from "@kmux/proto";
 
 export interface AgentStorageRoots {
   homeDir: string;
@@ -38,6 +38,11 @@ export interface AgentSessionRoots {
   codex: string[];
   claude: string[];
   antigravity: string[];
+}
+
+export interface AgentMetadataPathRoot {
+  defaultHomeRelativePath: string;
+  environmentVariable: string;
 }
 
 export function resolveAgentStorageRoots(
@@ -98,6 +103,32 @@ export function resolveAgentSessionRoots(options: {
       agentStorageRoots.homeDir
     )
   };
+}
+
+/**
+ * Resolves a manifest-declared metadata root for any registered agent. Agent
+ * settings remain authoritative and use the same canonicalization policy as
+ * the legacy built-in root map.
+ */
+export function resolveAgentMetadataRoots(options: {
+  agentId: AgentId;
+  homeDir: string;
+  env?: NodeJS.ProcessEnv;
+  pathRoot?: AgentMetadataPathRoot;
+  defaultRoot: string;
+  agentSettings?: AgentScopeSettings;
+}): string[] {
+  const homeDir = resolveHomeDir(options.homeDir, options.env);
+  const base = options.pathRoot
+    ? (normalizedAbsolutePath(
+        options.env?.[options.pathRoot.environmentVariable]
+      ) ?? join(homeDir, options.pathRoot.defaultHomeRelativePath))
+    : homeDir;
+  return resolveSessionRootList(
+    join(base, options.defaultRoot),
+    options.agentSettings?.[options.agentId]?.sessionRoot,
+    homeDir
+  );
 }
 
 function resolveSessionRootList(

@@ -3,12 +3,13 @@ import {
   estimateModelCost,
   type CoreUsageEventSample,
   type CoreUsageTimeRange,
+  type PricingVendorId,
   type PricingMode
 } from "@kmux/metadata";
 import type { AgentId, MetadataSourceRoleId } from "@kmux/proto";
 
 import type {
-  AgentHistorySourceClaimProjection,
+  AgentSessionSourceClaimProjection,
   AgentUsageSourceParser,
   AgentUsageSourceProjection,
   AgentUsageSourceProjectionSession
@@ -30,7 +31,7 @@ export interface UsageProjectionPolicy<State> {
     state: State,
     options: {
       readonly role: MetadataSourceRoleId;
-      readonly claim: AgentHistorySourceClaimProjection;
+      readonly claim: AgentSessionSourceClaimProjection;
     }
   ): void;
   parseRecord(
@@ -72,7 +73,7 @@ class JsonlUsageProjectionSession<
 
   applySourceClaim(options: {
     readonly role: MetadataSourceRoleId;
-    readonly claim: AgentHistorySourceClaimProjection;
+    readonly claim: AgentSessionSourceClaimProjection;
   }): void {
     this.policy.applySourceClaim?.(this.state, options);
   }
@@ -172,7 +173,7 @@ interface ObjectCandidate {
 
 export function extractGenericUsageSample(options: {
   agentId: AgentId;
-  pricingVendorId?: "claude" | "codex" | "gemini";
+  pricingVendorId?: PricingVendorId;
   record: Record<string, unknown>;
   metricsRoot?: Record<string, unknown>;
   sourcePath: string;

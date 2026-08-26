@@ -1,12 +1,10 @@
 export type {
-  AgentHistorySessionIndexer,
   ExternalSessionIndexer,
-  ExternalSessionResumeSpec,
-  ExternalSessionScanPurpose
+  ExternalSessionResumeSpec
 } from "./externalSessionTypes";
 export type {
   AgentExternalSessionRecordProjection,
-  AgentHistorySourceProjection,
+  AgentSessionSourceProjection,
   AgentUsageSourceParser,
   AgentUsageSourceProjection,
   AgentUsageSourceProjectionSession,

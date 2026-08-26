@@ -11,7 +11,6 @@ import {
   resolveBuiltinAgentResumePolicy
 } from "@kmux/agents/builtin-runtime";
 import type {
-  AgentHistorySessionIndexer,
   ExternalSessionIndexer,
   ExternalSessionResumeSpec
 } from "@kmux/agents";
@@ -30,58 +29,13 @@ import type {
 
 const MAX_HISTORY_RECORDS = 100;
 
-export function mergeExternalAgentSessionSnapshots(
-  snapshots: readonly ExternalAgentSessionsSnapshot[]
-): ExternalAgentSessionsSnapshot {
-  const byKey = new Map<
-    string,
-    { readonly session: ExternalAgentSessionVm; readonly updatedAtMs: number }
-  >();
-  let updatedAt = "1970-01-01T00:00:00.000Z";
-  let updatedAtMs = 0;
-  let truncated = false;
-  for (const snapshot of snapshots) {
-    const snapshotUpdatedAtMs = validTimestamp(snapshot.updatedAt);
-    if (snapshotUpdatedAtMs >= updatedAtMs) {
-      updatedAt = snapshot.updatedAt;
-      updatedAtMs = snapshotUpdatedAtMs;
-    }
-    truncated ||= snapshot.truncated === true;
-    for (const session of snapshot.sessions) {
-      const sessionUpdatedAtMs = validTimestamp(session.updatedAt);
-      const effectiveUpdatedAtMs =
-        sessionUpdatedAtMs === 0 ? snapshotUpdatedAtMs : sessionUpdatedAtMs;
-      const previous = byKey.get(session.key);
-      if (!previous || effectiveUpdatedAtMs > previous.updatedAtMs) {
-        byKey.set(session.key, {
-          session,
-          updatedAtMs: effectiveUpdatedAtMs
-        });
-      }
-    }
-  }
-  const merged = [...byKey.values()].sort(
-    (left, right) =>
-      right.updatedAtMs - left.updatedAtMs ||
-      left.session.key.localeCompare(right.session.key)
-  );
-  truncated ||= merged.length > MAX_HISTORY_RECORDS;
-  return {
-    sessions: merged
-      .slice(0, MAX_HISTORY_RECORDS)
-      .map(({ session }) => session),
-    updatedAt,
-    ...(truncated ? { truncated: true } : {})
-  };
-}
-
 export function createLocalHistoryProvider(options: {
-  indexer: AgentHistorySessionIndexer;
+  indexer: ExternalSessionIndexer;
 }): HistoryProvider<LocalPath> {
   const provider: HistoryProvider<LocalPath> = {
     async refresh(request) {
       requireHistoryBound(request.maxRecords);
-      const snapshot = await options.indexer.listAgentHistorySessions();
+      const snapshot = await options.indexer.listExternalAgentSessions();
       return {
         records: snapshot.sessions
           .slice(0, request.maxRecords)
@@ -302,11 +256,6 @@ function historyRecordIdentity(
   record: TargetHistoryRecord<LocatedPath>
 ): string {
   return `${record.vendor}\0${record.sessionId}`;
-}
-
-function validTimestamp(value: string | undefined): number {
-  const timestamp = value === undefined ? Number.NaN : Date.parse(value);
-  return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : 0;
 }
 
 function localHistoryRecord(

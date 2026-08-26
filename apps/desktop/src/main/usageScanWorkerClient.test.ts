@@ -95,10 +95,7 @@ describe("usage scan worker launch", () => {
 
     try {
       const usage = await client.scan({ startOfDayMs: 0, initial: true });
-      const snapshot =
-        await client.externalSessions.listExternalAgentSessions();
-      const historySnapshot =
-        await client.externalSessions.listAgentHistorySessions();
+      const snapshot = await client.sessions.listExternalAgentSessions();
       expect(usage.reads).toEqual(
         expect.arrayContaining([expect.objectContaining({ sourceCount: 1 })])
       );
@@ -108,11 +105,8 @@ describe("usage scan worker launch", () => {
           canResume: true
         })
       ]);
-      expect(historySnapshot.sessions).toEqual(snapshot.sessions);
       expect(
-        client.externalSessions.resolveExternalAgentSession(
-          "codex:worker-session"
-        )
+        client.sessions.resolveExternalAgentSession("codex:worker-session")
       ).toMatchObject({
         launch: {
           initialInput: `${formatAgentCommandForShell([
@@ -127,13 +121,10 @@ describe("usage scan worker launch", () => {
         codex: { command: join(homeDir, "missing-codex") }
       });
       expect(
-        client.externalSessions.resolveExternalAgentSession(
-          "codex:worker-session"
-        )
+        client.sessions.resolveExternalAgentSession("codex:worker-session")
       ).toBeNull();
       await reconfigure;
-      const reconfigured =
-        await client.externalSessions.listExternalAgentSessions();
+      const reconfigured = await client.sessions.listExternalAgentSessions();
       expect(reconfigured.sessions[0]).toMatchObject({
         key: "codex:worker-session",
         canResume: false
@@ -153,8 +144,7 @@ describe("usage scan worker launch", () => {
     });
 
     try {
-      const initialRequest =
-        client.externalSessions.listExternalAgentSessions();
+      const initialRequest = client.sessions.listExternalAgentSessions();
       await vi.waitFor(() =>
         expect(worker.requestsOfType("init")).toHaveLength(1)
       );
@@ -169,12 +159,12 @@ describe("usage scan worker launch", () => {
       );
       await initialRequest;
       expect(
-        client.externalSessions.resolveExternalAgentSession("codex:cached-old")
+        client.sessions.resolveExternalAgentSession("codex:cached-old")
       ).toMatchObject({
         launch: { initialInput: "old-codex resume cached-old\r" }
       });
 
-      const staleRequest = client.externalSessions.listExternalAgentSessions();
+      const staleRequest = client.sessions.listExternalAgentSessions();
       await vi.waitFor(() =>
         expect(worker.requestsOfType("external-sessions-scan")).toHaveLength(2)
       );
@@ -183,7 +173,7 @@ describe("usage scan worker launch", () => {
         codex: { command: "current-codex" }
       });
       expect(
-        client.externalSessions.resolveExternalAgentSession("codex:cached-old")
+        client.sessions.resolveExternalAgentSession("codex:cached-old")
       ).toBeNull();
 
       worker.respond(
@@ -210,10 +200,10 @@ describe("usage scan worker launch", () => {
         sessions: [{ key: "codex:current" }]
       });
       expect(
-        client.externalSessions.resolveExternalAgentSession("codex:stale-old")
+        client.sessions.resolveExternalAgentSession("codex:stale-old")
       ).toBeNull();
       expect(
-        client.externalSessions.resolveExternalAgentSession("codex:current")
+        client.sessions.resolveExternalAgentSession("codex:current")
       ).toMatchObject({
         launch: { initialInput: "current-codex resume current\r" }
       });
@@ -241,7 +231,7 @@ describe("usage scan worker launch", () => {
         expect(worker.requestsOfType("scan")).toHaveLength(1)
       );
 
-      const external = client.externalSessions.listExternalAgentSessions();
+      const external = client.sessions.listExternalAgentSessions();
       await new Promise((resolve) => setTimeout(resolve, 150));
 
       expect(worker.requestsOfType("external-sessions-scan")).toHaveLength(0);
@@ -341,7 +331,7 @@ describe("usage scan worker launch", () => {
       requestTimeoutMs: 100
     });
 
-    const scan = client.externalSessions.listExternalAgentSessions();
+    const scan = client.sessions.listExternalAgentSessions();
     await vi.waitFor(() =>
       expect(worker.requestsOfType("init")).toHaveLength(1)
     );
@@ -400,7 +390,6 @@ function externalSessionResponse(
   return {
     type: "external-sessions-scan-result",
     requestId: request.requestId,
-    purpose: request.purpose,
     snapshot: {
       updatedAt: "2026-08-18T00:00:00.000Z",
       sessions: [

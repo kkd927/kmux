@@ -4,7 +4,7 @@
 - Date: 2026-08-16
 - Accepted: 2026-08-17
 - Scope: agent identity, resume, hooks, terminal notifications, settings,
-  external sessions, history, usage, subscription usage, Electron IPC, and
+  local/SSH sessions, usage, subscription usage, Electron IPC, and
   local/SSH composition
 
 ## Context
@@ -44,7 +44,7 @@ agent-owned module.
 Comparable terminal products establish two useful product layers:
 
 1. every command-line agent works as an ordinary terminal process
-2. richer behavior such as hooks, session restore, history, or usage is exposed
+2. richer behavior such as hooks, session restore, session discovery, or usage is exposed
    only when an integration supplies that capability
 
 Some products also preserve unknown agent IDs and support data-defined custom
@@ -99,7 +99,7 @@ Adopt an open agent identity and a capability-based built-in agent registry.
    behavior.
 9. Treat unsupported capabilities as normal, typed product states rather than
    as malformed agents.
-10. When external-session, history, or usage capabilities reference the same
+10. When sessions or usage capabilities reference the same
     metadata source, share its topology, inventory, watcher, remote listing, and
     reads.
 11. Execute remote portable behavior only where the desktop composition and the
@@ -131,7 +131,7 @@ Agent support is capability-specific rather than one boolean claim.
    ordinary terminal process without an agent module.
 2. **Registered:** A trusted built-in or future explicit data-only configuration
    supplies identity and one or more capabilities.
-3. **Capability-supported:** kmux exposes resume, hooks, history, usage, or
+3. **Capability-supported:** kmux exposes resume, hooks, sessions, usage, or
    another feature only when that registration implements it.
    Documentation and UI must name the relevant capability when support differs.
    Being terminal-compatible does not imply native session restore, transcript
@@ -246,8 +246,7 @@ The initial contract is conceptually:
 export type AgentCapabilityKey =
   | "resume"
   | "hooks"
-  | "externalSessions"
-  | "history"
+  | "sessions"
   | "usage"
   | "subscription"
   | "processDetection"
@@ -266,8 +265,7 @@ export interface AgentModule {
   readonly resume?: AgentResumeCapability;
   readonly hooks?: AgentHookCapability;
   readonly metadataSources?: AgentMetadataSourcesCapability;
-  readonly externalSessions?: AgentExternalSessionsCapability;
-  readonly history?: AgentHistoryCapability;
+  readonly sessions?: AgentSessionsCapability;
   readonly usage?: AgentUsageCapabilityFactory;
   readonly subscription?: AgentSubscriptionCapabilityFactory;
   readonly processDetection?: AgentProcessDetectionCapability;
@@ -279,8 +277,10 @@ The exact TypeScript names may change during implementation, but these
 boundaries are normative.
 
 `command` and `metadataSources` are shared supporting definitions rather than
-separate product-support claims. External-session, history, and usage
-capabilities are metadata-backed projections in the current implementation.
+separate product-support claims. Sessions and usage are metadata-backed
+projections in the current implementation. A sessions capability owns its
+local projection and may additionally expose a portable source projection for
+SSH targets; target selection does not create a second agent capability.
 The registry validates these invariants:
 
 - `resume` requires `command`
@@ -416,12 +416,13 @@ Moving Codex-specific classification into its module must not delete that
 unknown-agent fallback. Classification remains on the control plane and must
 not parse, delay, or transform the PTY byte stream.
 
-### Metadata Sources, External Sessions, and History
+### Metadata Sources and Sessions
 
-The external-session capability derives normalized session references from a
-coordinated metadata-source inventory. The history capability parses the same
-declared sources when supported. They are separate because an agent may support
-one without the other.
+The sessions capability derives normalized session references from a
+coordinated metadata-source inventory. Its local projection reads through the
+local metadata service. Its optional portable source projection parses bounded
+source reads supplied by an SSH target. These are execution backends for one
+product capability, not separate external-session and history capabilities.
 
 Normalized records contain an open `agentId` plus target identity. They never
 match or restore by session ID or cwd alone.
@@ -429,9 +430,9 @@ match or restore by session ID or cwd alone.
 When an agent uses files, SQLite databases, or another supported inventory/read
 primitive, its optional `metadataSources` definition owns one topology for those
 sources: storage layouts, source descriptors, role classifiers, formats, and
-the product purposes served by each source. External-session, history, and usage
-capabilities remain separate projections, but projections referencing the same
-agent/root topology do not independently rediscover those sources.
+the product purposes served by each source. Sessions and usage remain separate
+projections, but projections referencing the same agent/root topology do not
+independently rediscover those sources.
 
 Agent-specific parsing, parser state, title/model extraction, and deduplication
 keys belong to the relevant capability. Generic inventory bounds, file-identity
@@ -470,8 +471,7 @@ transport resources exactly once.
 ### Usage
 
 Usage consumes declared metadata sources and owns process-local parser state.
-It uses the shared source coordinator when the same source also feeds history
-or external sessions.
+It uses the shared source coordinator when the same source also feeds sessions.
 
 The generic usage runtime owns adapter start/stop, refresh scheduling,
 aggregation, attribution, diagnostics, and renderer DTO production. For
@@ -762,11 +762,11 @@ contains `if (target.kind === "ssh")`, opens an SSH channel, or treats a remote
 path as local. Target providers never contain Claude/Codex/Antigravity selection
 logic.
 
-For example, external history refresh resolves:
+For example, a Sessions refresh resolves:
 
 1. the workspace/selected target through `TargetServiceRegistry`
-2. the agent's history projection through a history-only resolver
-3. the target-bound metadata primitive declared by that capability
+2. the agent's sessions capability through a sessions-only resolver
+3. its local projection or portable source projection for the selected target
 4. normalized records retaining both `agentId` and target identity
 
 Capability absence for one agent or target degrades that combination only.
@@ -948,7 +948,7 @@ Implementation is staged in this order:
 2. generic resume-command resolution, settings integration, and renderer
    descriptors
 3. generated hook definitions/responses and terminal-notification capabilities
-4. metadata-source coordination and external-session/history projection
+4. metadata-source coordination and local/SSH session projection
 5. usage and subscription capability ownership without changing their product
    semantics
 6. obsolete compatibility removal and the ordinary-addition architecture gate
@@ -1030,7 +1030,7 @@ internally, but registration does not require subclassing.
 
 ### Separate Handwritten Registries per Feature or Process
 
-Rejected because hook, process-detection, external-session, usage, renderer, and
+Rejected because hook, process-detection, sessions, usage, renderer, and
 remote catalogs would drift. Processes may instantiate separate registry
 objects, but all built-in composition derives from the same module list.
 
@@ -1041,13 +1041,18 @@ allows feature code to recover agent-name filtering and unrelated capabilities.
 Only composition roots see complete modules; consumers receive a descriptor
 catalog or one capability-specific dependency.
 
-### Independent Source Acquisition per Product Capability
+### Separate External-Session and History Capabilities
 
-Rejected because history, external sessions, and usage often project the same
-transcript, database, or upstream service. Independent factories would multiply
-local watchers, SSH listings, identity checks, reads, or requests. Product
-capabilities remain separate while identical metadata sources are coordinated
-once.
+Rejected because both concepts produce the same Sessions product records; the
+actual distinction is whether acquisition runs against a local or SSH target.
+Separate capabilities caused the local composition to project the same files
+twice. One sessions capability therefore owns its local projection and an
+optional portable source projection, while the target provider selects the
+execution backend.
+
+Sessions and usage remain separate product projections. When they consume the
+same transcript, database, or upstream service, the metadata coordinator shares
+inventory, watchers, identity checks, and bounded reads.
 
 ### Cross-Process Plugin Objects
 

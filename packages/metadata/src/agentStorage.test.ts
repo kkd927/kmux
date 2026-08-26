@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  resolveAgentMetadataRoots,
   resolveAgentSessionRoots,
   resolveAgentStorageRoots
 } from "./agentStorage";
@@ -155,5 +156,35 @@ describe("agent storage roots", () => {
         }
       }).codex
     ).toEqual(["/home/test/missing-codex-sessions"]);
+  });
+
+  it("resolves manifest roots and settings for an open-ended agent id", () => {
+    expect(
+      resolveAgentMetadataRoots({
+        agentId: "fixture-orbit",
+        homeDir: "/home/test",
+        env: { ORBIT_HOME: "/srv/orbit" },
+        pathRoot: {
+          defaultHomeRelativePath: ".orbit",
+          environmentVariable: "ORBIT_HOME"
+        },
+        defaultRoot: "sessions"
+      })
+    ).toEqual(["/srv/orbit/sessions"]);
+
+    expect(
+      resolveAgentMetadataRoots({
+        agentId: "fixture-orbit",
+        homeDir: "/home/test",
+        pathRoot: {
+          defaultHomeRelativePath: ".orbit",
+          environmentVariable: "ORBIT_HOME"
+        },
+        defaultRoot: "sessions",
+        agentSettings: {
+          "fixture-orbit": { sessionRoot: "~/custom-orbit" }
+        }
+      })
+    ).toEqual(["/home/test/custom-orbit"]);
   });
 });

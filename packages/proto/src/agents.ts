@@ -8,8 +8,7 @@ export const AGENT_DESCRIPTOR_MAX_ALIASES = 16;
 export type AgentCapabilityKey =
   | "resume"
   | "hooks"
-  | "externalSessions"
-  | "history"
+  | "sessions"
   | "usage"
   | "subscription"
   | "processDetection"
@@ -18,8 +17,7 @@ export type AgentCapabilityKey =
 export const AGENT_CAPABILITY_KEYS = Object.freeze([
   "resume",
   "hooks",
-  "externalSessions",
-  "history",
+  "sessions",
   "usage",
   "subscription",
   "processDetection",

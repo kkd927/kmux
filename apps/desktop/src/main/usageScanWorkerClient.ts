@@ -5,10 +5,8 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
-  AgentHistorySessionIndexer,
   ExternalSessionIndexer,
-  ExternalSessionResumeSpec,
-  ExternalSessionScanPurpose
+  ExternalSessionResumeSpec
 } from "@kmux/agents";
 import type {
   AgentStorageRoots,
@@ -48,8 +46,7 @@ export interface UsageScanService {
 }
 
 export interface AgentMetadataScanService extends UsageScanService {
-  readonly externalSessions: ExternalSessionIndexer &
-    AgentHistorySessionIndexer;
+  readonly sessions: ExternalSessionIndexer;
   updateAgentSettings(agentSettings?: AgentScopeSettings): Promise<void>;
 }
 
@@ -160,14 +157,8 @@ export function createUsageScanWorkerClient(
   let closed = false;
   let agentSettingsGeneration = 0;
   let agentSettingsReady: Promise<void> = Promise.resolve();
-  const externalScanPromises = new Map<
-    ExternalSessionScanPurpose,
-    ExternalScanInFlight
-  >();
-  const resumeSpecs = new Map<
-    ExternalSessionScanPurpose,
-    ReadonlyMap<string, ExternalSessionResumeSpec>
-  >();
+  let externalScanPromise: ExternalScanInFlight | null = null;
+  let resumeSpecs: ReadonlyMap<string, ExternalSessionResumeSpec> = new Map();
 
   function enqueueOperation<TResult>(
     operation: () => Promise<TResult>
@@ -194,8 +185,8 @@ export function createUsageScanWorkerClient(
     }
     child = null;
     startPromise = null;
-    externalScanPromises.clear();
-    resumeSpecs.clear();
+    externalScanPromise = null;
+    resumeSpecs = new Map();
     rejectPending(error);
   }
 
@@ -389,16 +380,15 @@ export function createUsageScanWorkerClient(
     });
   }
 
-  function scanExternalSessions(
-    purpose: ExternalSessionScanPurpose
-  ): Promise<ExternalAgentSessionsSnapshot> {
+  function scanExternalSessions(): Promise<ExternalAgentSessionsSnapshot> {
     const generation = agentSettingsGeneration;
-    const current = externalScanPromises.get(purpose);
-    if (current?.generation === generation) return current.promise;
+    if (externalScanPromise?.generation === generation) {
+      return externalScanPromise.promise;
+    }
     const request = (async () => {
       await agentSettingsReady;
       if (generation !== agentSettingsGeneration) {
-        return scanExternalSessions(purpose);
+        return scanExternalSessions();
       }
       let message: UsageScanWorkerResponse | null;
       try {
@@ -414,40 +404,33 @@ export function createUsageScanWorkerClient(
             target,
             {
               type: "external-sessions-scan",
-              requestId: randomUUID(),
-              purpose
+              requestId: randomUUID()
             },
             requestTimeoutMs
           );
         });
       } catch (error) {
         if (generation !== agentSettingsGeneration) {
-          return scanExternalSessions(purpose);
+          return scanExternalSessions();
         }
         throw error;
       }
       if (message === null || generation !== agentSettingsGeneration) {
-        return scanExternalSessions(purpose);
+        return scanExternalSessions();
       }
-      if (
-        message.type !== "external-sessions-scan-result" ||
-        message.purpose !== purpose
-      ) {
+      if (message.type !== "external-sessions-scan-result") {
         throw new Error(
           "agent metadata scan worker returned an invalid external-session response"
         );
       }
-      resumeSpecs.set(
-        purpose,
-        new Map(message.resumeSpecs.map((spec) => [spec.key, spec]))
+      resumeSpecs = new Map(
+        message.resumeSpecs.map((spec) => [spec.key, spec])
       );
       return message.snapshot;
     })().finally(() => {
-      if (externalScanPromises.get(purpose)?.promise === request) {
-        externalScanPromises.delete(purpose);
-      }
+      if (externalScanPromise?.promise === request) externalScanPromise = null;
     });
-    externalScanPromises.set(purpose, { generation, promise: request });
+    externalScanPromise = { generation, promise: request };
     return request;
   }
 
@@ -532,8 +515,8 @@ export function createUsageScanWorkerClient(
       };
       if (nextAgentSettings === undefined) delete config.agentSettings;
       agentSettingsGeneration += 1;
-      externalScanPromises.clear();
-      resumeSpecs.clear();
+      externalScanPromise = null;
+      resumeSpecs = new Map();
       if (closed) {
         return Promise.reject(new Error("usage scan worker is closed"));
       }
@@ -547,20 +530,12 @@ export function createUsageScanWorkerClient(
       agentSettingsReady = reconfigure.catch(() => undefined);
       return reconfigure;
     },
-    externalSessions: {
+    sessions: {
       listExternalAgentSessions() {
-        return scanExternalSessions("externalSessions");
+        return scanExternalSessions();
       },
-      listAgentHistorySessions() {
-        return scanExternalSessions("history");
-      },
-      resolveExternalAgentSession(key, purpose) {
-        if (purpose) return resumeSpecs.get(purpose)?.get(key) ?? null;
-        return (
-          resumeSpecs.get("externalSessions")?.get(key) ??
-          resumeSpecs.get("history")?.get(key) ??
-          null
-        );
+      resolveExternalAgentSession(key) {
+        return resumeSpecs.get(key) ?? null;
       },
       close() {
         service.close();
@@ -572,8 +547,8 @@ export function createUsageScanWorkerClient(
       }
       closed = true;
       listeners.clear();
-      resumeSpecs.clear();
-      externalScanPromises.clear();
+      resumeSpecs = new Map();
+      externalScanPromise = null;
       const target = child;
       child = null;
       startPromise = null;

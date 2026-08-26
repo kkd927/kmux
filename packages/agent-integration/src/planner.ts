@@ -11,13 +11,25 @@ interface HookSpec {
 }
 
 interface VendorContract {
-  format: "grouped-hooks" | "namespaced-hooks";
   pathRoot?: {
     defaultHomeRelativePath: string;
     environmentVariable: string;
   };
   relativePath: string;
-  namespace?: string;
+  document: {
+    eventsPath: string[];
+    version?: {
+      field: string;
+      value: number;
+    };
+  };
+  entry: {
+    commandField: "command" | "bash";
+    wrapper?: {
+      field: string;
+      when: "always" | "matcher";
+    };
+  };
   marker: string;
   managed: HookSpec[];
   deprecated: string[];
@@ -122,9 +134,7 @@ export function mergePlannedAgentIntegrationConfig(
   }
   const definition = vendorDefinition(vendor);
   if (!definition) throw new TypeError(`unknown agent integration ${vendor}`);
-  return definition.format === "namespaced-hooks"
-    ? mergeNamespacedHooks(vendor, definition, input)
-    : mergeGroupedHooks(vendor, definition, input);
+  return mergeDocumentHooks(vendor, definition, input);
 }
 
 function vendorDefinition(
@@ -180,117 +190,126 @@ function parseSettings(
   return parsed;
 }
 
-function mergeGroupedHooks(
+function mergeDocumentHooks(
   vendor: AgentIntegrationPlannerVendor,
   definition: VendorContract,
   input: JsonObject
 ): JsonObject {
-  if (input.hooks !== undefined && !isPlainObject(input.hooks)) {
-    throw new TypeError(`${vendor} hooks must be an object`);
-  }
-  const existingHooks = isPlainObject(input.hooks) ? input.hooks : {};
-  for (const hook of definition.managed) {
-    const existing = existingHooks[hook.event];
-    if (existing !== undefined && !Array.isArray(existing)) {
-      throw new TypeError(`${vendor} hooks.${hook.event} must be an array`);
-    }
-  }
-  const nextHooks: JsonObject = { ...existingHooks };
-  for (const [event, groups] of Object.entries(existingHooks)) {
-    const pruned = pruneManagedEntries(groups, definition.marker);
-    if (Array.isArray(pruned) && pruned.length === 0) delete nextHooks[event];
-    else nextHooks[event] = pruned;
+  const pruned = pruneManagedEntries(
+    input,
+    definition.marker,
+    definition.entry.wrapper?.field
+  );
+  const next = isPlainObject(pruned) ? pruned : {};
+  requireDocumentVersion(vendor, definition, next);
+  const events = objectAtPath(vendor, next, definition.document.eventsPath);
+  const eventsLabel = definition.document.eventsPath.join(".");
+  for (const [event, entries] of Object.entries(events)) {
+    if (Array.isArray(entries) && entries.length === 0) delete events[event];
   }
   for (const hook of definition.managed) {
-    const current = Array.isArray(nextHooks[hook.event])
-      ? (nextHooks[hook.event] as unknown[])
-      : [];
-    nextHooks[hook.event] = [
-      ...current,
-      {
-        ...(hook.matcher ? { matcher: hook.matcher } : {}),
-        hooks: [managedCommand(vendor, hook.event)]
-      }
-    ];
-  }
-  return { ...input, hooks: nextHooks };
-}
-
-function mergeNamespacedHooks(
-  vendor: AgentIntegrationPlannerVendor,
-  definition: VendorContract,
-  input: JsonObject
-): JsonObject {
-  const namespace = definition.namespace;
-  if (!namespace) throw new Error(`${vendor} namespace is missing`);
-  if (input[namespace] !== undefined && !isPlainObject(input[namespace])) {
-    throw new TypeError(`${vendor} ${namespace} must be an object`);
-  }
-  const existingNamespace = isPlainObject(input[namespace])
-    ? input[namespace]
-    : {};
-  for (const hook of definition.managed) {
-    const existing = existingNamespace[hook.event];
+    const existing = events[hook.event];
     if (existing !== undefined && !Array.isArray(existing)) {
       throw new TypeError(
-        `${vendor} ${namespace}.${hook.event} must be an array`
+        `${vendor} ${eventsLabel}.${hook.event} must be an array`
       );
     }
   }
-  const pruned = pruneManagedEntries(input, definition.marker);
-  const next = isPlainObject(pruned) ? { ...pruned } : {};
-  const managedNamespace = isPlainObject(next[namespace])
-    ? { ...(next[namespace] as JsonObject) }
-    : {};
   for (const hook of definition.managed) {
-    const existing = Array.isArray(managedNamespace[hook.event])
-      ? (managedNamespace[hook.event] as unknown[])
+    const current = Array.isArray(events[hook.event])
+      ? (events[hook.event] as unknown[])
       : [];
-    managedNamespace[hook.event] = [
-      ...existing,
-      ...(hook.matcher
-        ? [
-            {
-              matcher: hook.matcher,
-              hooks: [managedCommand(vendor, hook.event)]
-            }
-          ]
-        : [managedCommand(vendor, hook.event)])
-    ];
+    events[hook.event] = [...current, managedEntry(vendor, definition, hook)];
   }
-  next[namespace] = managedNamespace;
   return next;
 }
 
-function managedCommand(
+function requireDocumentVersion(
   vendor: AgentIntegrationPlannerVendor,
-  event: string
-): JsonObject {
-  return {
-    type: "command",
-    command: buildPlannedAgentHookCommand(vendor, event)
-  };
+  definition: VendorContract,
+  root: JsonObject
+): void {
+  const version = definition.document.version;
+  if (!version) return;
+  const existing = root[version.field];
+  if (existing !== undefined && existing !== version.value) {
+    throw new TypeError(`${vendor} ${version.field} must be ${version.value}`);
+  }
+  root[version.field] = version.value;
 }
 
-function pruneManagedEntries(value: unknown, marker: string): unknown {
+function objectAtPath(
+  vendor: AgentIntegrationPlannerVendor,
+  root: JsonObject,
+  path: readonly string[]
+): JsonObject {
+  let current = root;
+  const traversed: string[] = [];
+  for (const component of path) {
+    traversed.push(component);
+    const existing = current[component];
+    if (existing !== undefined && !isPlainObject(existing)) {
+      throw new TypeError(`${vendor} ${traversed.join(".")} must be an object`);
+    }
+    const next = isPlainObject(existing) ? existing : {};
+    current[component] = next;
+    current = next;
+  }
+  return current;
+}
+
+function managedEntry(
+  vendor: AgentIntegrationPlannerVendor,
+  definition: VendorContract,
+  hook: HookSpec
+): JsonObject {
+  const command = {
+    type: "command",
+    [definition.entry.commandField]: buildPlannedAgentHookCommand(
+      vendor,
+      hook.event
+    )
+  };
+  const wrapper = definition.entry.wrapper;
+  const shouldWrap =
+    wrapper && (wrapper.when === "always" || hook.matcher !== undefined);
+  return shouldWrap
+    ? {
+        ...(hook.matcher ? { matcher: hook.matcher } : {}),
+        [wrapper.field]: [command]
+      }
+    : { ...(hook.matcher ? { matcher: hook.matcher } : {}), ...command };
+}
+
+function pruneManagedEntries(
+  value: unknown,
+  marker: string,
+  wrapperField?: string
+): unknown {
   if (Array.isArray(value)) {
     return value
-      .map((item) => pruneManagedEntries(item, marker))
+      .map((item) => pruneManagedEntries(item, marker, wrapperField))
       .filter((item) => item !== undefined);
   }
   if (!isPlainObject(value)) return value;
-  if (typeof value.command === "string" && value.command.includes(marker)) {
+  if (
+    ["command", "bash", "powershell"].some(
+      (field) =>
+        typeof value[field] === "string" && value[field].includes(marker)
+    )
+  ) {
     return undefined;
   }
   const next: JsonObject = {};
   for (const [key, nested] of Object.entries(value)) {
-    const pruned = pruneManagedEntries(nested, marker);
+    const pruned = pruneManagedEntries(nested, marker, wrapperField);
     if (pruned !== undefined) next[key] = pruned;
   }
   if (
-    Array.isArray(value.hooks) &&
-    Array.isArray(next.hooks) &&
-    next.hooks.length === 0
+    wrapperField &&
+    Array.isArray(value[wrapperField]) &&
+    Array.isArray(next[wrapperField]) &&
+    next[wrapperField].length === 0
   ) {
     return undefined;
   }

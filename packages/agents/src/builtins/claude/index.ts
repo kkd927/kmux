@@ -17,7 +17,7 @@ import {
 } from "../shared";
 import {
   createClaudeExternalSessionProjection,
-  createClaudeHistorySourceProjection
+  createClaudeSessionSourceProjection
 } from "./externalSessions";
 import { classifyClaudeMetadataPath } from "./inventory";
 import { createClaudeUsageSourceProjection } from "./usage";
@@ -29,7 +29,7 @@ export const claudeAgent = Object.freeze({
     aliases: [],
     presentation: { shortLabel: "CLAUDE" }
   },
-  definitionRevision: "claude-v1",
+  definitionRevision: "claude-v2",
   command: { executable: "claude" },
   resume: {
     build: (commonArgs, sessionId, options) => [
@@ -43,8 +43,12 @@ export const claudeAgent = Object.freeze({
     resolveLocalConfigPath: ({ agentStorageRoots }) =>
       agentStorageRoots.claude.settingsPath,
     portable: {
-      format: "grouped-hooks",
       relativePath: ".claude/settings.json",
+      document: { eventsPath: ["hooks"] },
+      entry: {
+        commandField: "command",
+        wrapper: { field: "hooks", when: "always" }
+      },
       marker: "KMUX_MANAGED_CLAUDE_HOOK=1",
       managed: [
         { event: "PermissionRequest" },
@@ -109,7 +113,7 @@ export const claudeAgent = Object.freeze({
     }
   },
   metadataSources: {
-    revision: "claude-metadata-v1",
+    revision: "claude-metadata-v2",
     defaultRoot: ".claude/projects",
     resolveLocalRoots(options) {
       const storage =
@@ -128,7 +132,7 @@ export const claudeAgent = Object.freeze({
         role: "claude-session",
         format: "jsonl",
         pattern: "**/*.jsonl",
-        purposes: ["externalSessions", "history", "usage"]
+        purposes: ["sessions", "usage"]
       },
       {
         role: "claude-subagent",
@@ -138,12 +142,9 @@ export const claudeAgent = Object.freeze({
       }
     ]
   },
-  externalSessions: {
-    createMetadataProjection: createClaudeExternalSessionProjection
-  },
-  history: {
+  sessions: {
     createMetadataProjection: createClaudeExternalSessionProjection,
-    createSourceProjection: createClaudeHistorySourceProjection
+    createSourceProjection: createClaudeSessionSourceProjection
   },
   usage: {
     pricingVendorId: "claude",

@@ -9,7 +9,7 @@ const contract = JSON.parse(
 const docs = await readFile(join(root, "docs/agent-signal-matrix.md"), "utf8");
 
 const rendered = [
-  "<!-- agent-integration-contract:v2:start -->",
+  "<!-- agent-integration-contract:v3:start -->",
   "| Agent | Installed hooks | Removed legacy kmux hooks |",
   "| --- | --- | --- |",
   ...Object.entries(contract.vendors).map(([vendor, definition]) => {
@@ -29,7 +29,7 @@ const rendered = [
       .join(" ");
     return `| ${label} | ${managed} | ${deprecated} |`;
   }),
-  "<!-- agent-integration-contract:v2:end -->"
+  "<!-- agent-integration-contract:v3:end -->"
 ].join("\n");
 
 if (!docs.includes(rendered)) {

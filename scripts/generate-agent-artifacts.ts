@@ -15,11 +15,11 @@ const manifest = createPortableAgentManifest(builtinAgentModules);
 const prettierOptions = (await resolveConfig(root)) ?? {};
 
 const commandTemplate =
-  '{marker}; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2; _kmux_agent_hook=; if [ -n "${KMUX_AGENT_BIN_DIR:-}" ] && [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ]; then _kmux_agent_hook="${KMUX_AGENT_BIN_DIR}/kmux-agent-hook"; else _kmux_agent_hook="$(command -v kmux-agent-hook 2>/dev/null || true)"; fi; if [ -n "$_kmux_agent_hook" ] && [ -x "$_kmux_agent_hook" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE={outputMode} "$_kmux_agent_hook" {agent} {event} || {fallback}; else {fallback}; fi';
+  '{marker}; KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=3; _kmux_agent_hook=; if [ -n "${KMUX_AGENT_BIN_DIR:-}" ] && [ -x "${KMUX_AGENT_BIN_DIR}/kmux-agent-hook" ]; then _kmux_agent_hook="${KMUX_AGENT_BIN_DIR}/kmux-agent-hook"; else _kmux_agent_hook="$(command -v kmux-agent-hook 2>/dev/null || true)"; fi; if [ -n "$_kmux_agent_hook" ] && [ -x "$_kmux_agent_hook" ]; then KMUX_AGENT_HOOK_OUTPUT_MODE={outputMode} "$_kmux_agent_hook" {agent} {event} || {fallback}; else {fallback}; fi';
 const commandWrappers = generatedCommandWrappers();
 
 const integrationContract = {
-  contractVersion: 2,
+  contractVersion: 3,
   commandTemplate,
   commandWrappers,
   vendors: Object.fromEntries(
@@ -30,10 +30,20 @@ const integrationContract = {
         [
           agent.id,
           {
-            format: hook.format,
             ...(hook.pathRoot ? { pathRoot: { ...hook.pathRoot } } : {}),
             relativePath: hook.relativePath,
-            ...(hook.namespace ? { namespace: hook.namespace } : {}),
+            document: {
+              eventsPath: [...hook.document.eventsPath],
+              ...(hook.document.version
+                ? { version: { ...hook.document.version } }
+                : {})
+            },
+            entry: {
+              commandField: hook.entry.commandField,
+              ...(hook.entry.wrapper
+                ? { wrapper: { ...hook.entry.wrapper } }
+                : {})
+            },
             marker: hook.marker,
             managed: hook.managed,
             deprecated: hook.deprecated,
@@ -64,7 +74,7 @@ const metadataSources = manifest.agents.flatMap((agent) =>
     role: source.role,
     format: source.format,
     purposes: source.purposes
-      .map((purpose) => (purpose === "externalSessions" ? "history" : purpose))
+      .map((purpose) => (purpose === "sessions" ? "history" : purpose))
       .filter((purpose, index, values) => values.indexOf(purpose) === index),
     ...(source.claimScope === undefined
       ? {}

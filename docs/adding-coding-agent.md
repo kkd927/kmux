@@ -1,53 +1,32 @@
-# Adding a Coding-Agent Integration
+# Adding a Coding Agent
 
-This is the contributor workflow for adding a coding-agent integration to
-`kmux`. [ADR 0007](./adr/0007-extensible-coding-agent-integrations.md) defines
-the normative architecture. If this guide and the ADR disagree, the ADR takes
-precedence.
+Use this path when the new CLI fits the primitives in
+[ADR 0007](./adr/0007-extensible-coding-agent-integrations.md).
 
-## Decide Whether the Addition Is Ordinary
+## Change Boundary
 
-An ordinary addition is an agent whose behavior can be expressed with the
-existing capability and portable-primitive contracts.
-
-For an ordinary addition, the only handwritten production-code changes are:
-
-1. files under `packages/agents/src/builtins/<agent>/`
-2. one import and one array entry in
-   `packages/agents/src/builtins/index.ts`
-
-Generated artifacts and agent-owned tests may also change. Shared consumers do
-not need another agent-name condition.
-
-The change is not ordinary if it requires a new reusable primitive, such as:
-
-- a hook configuration grammar
-- a metadata source format or remote locator
-- a remote command or RPC operation
-- a settings field type
-- a credential backend
-- a kmux-wide lifecycle event semantic
-
-Add and review the generic primitive separately. Keep the agent-specific policy
-inside the agent directory; do not add a one-off vendor branch to shared code.
-
-## Create the Agent Module
-
-Create an agent-owned directory:
+Handwritten production files normally stay here:
 
 ```text
 packages/agents/src/builtins/<agent>/
-  index.ts
+  index.ts          # required descriptor and capability wiring
+  resume.ts         # optional argv construction
+  inventory.ts      # optional metadata path classification
+  sessions.ts       # optional local/SSH session projection
+  usage.ts          # optional usage projection
+  subscription.ts   # optional authenticated quota acquisition
+
+packages/agents/src/builtins/index.ts  # one import and one array entry
 ```
 
-Use the closest existing built-in as a reference:
+Do not add the agent ID to Proto unions, IPC decoders, Main/renderer switches,
+Rust branches, or settings migrations. Generated artifacts are never edited by
+hand.
 
-- `builtins/claude/`
-- `builtins/codex/`
-- `builtins/antigravity/`
+Stop and add a reusable primitive first if the agent needs a new hook grammar,
+metadata format, credential backend, remote operation, or lifecycle semantic.
 
-Every module has a descriptor and definition revision. Add only the capabilities
-that work in production.
+## 1. Define the Module
 
 ```ts
 import type { AgentModule } from "../../contracts";
@@ -60,120 +39,206 @@ export const exampleAgent = Object.freeze({
     presentation: { shortLabel: "EXAMPLE" }
   },
   definitionRevision: "example-v1",
-  command: {
-    executable: "example"
-  }
+  command: { executable: "example" },
+  processDetection: { executableBasenames: ["example"] }
 } satisfies AgentModule);
 ```
 
-`AgentId` is already open-ended. Do not add the new ID to a Proto union or a
-consumer allowlist.
+- Prefer the real executable as the canonical ID.
+- Aliases are only for operational executable/hook names. They never migrate or
+  reinterpret persisted IDs.
+- Advertise only capabilities that work in production.
+- Keep parsing, credentials, and vendor policy inside this directory.
+- Bump `definitionRevision` when portable hooks, metadata, or remote projection
+  behavior changes.
 
-Aliases are accepted only at operational ingress, such as CLI and hook input.
-Declare an alias only when the agent has a real executable or hook alias that
-kmux must accept. Persisted settings and session state use canonical IDs and
-must never be dynamically reinterpreted through the current alias registry.
+## 2. Add Capabilities
 
-Increment `definitionRevision` when a portable definition changes in a way that
-requires local and remote runtimes to agree on the new contract. Increment the
-metadata revision when the declared metadata topology or interpretation changes.
+### Resume
 
-## Implement Capabilities
-
-The available optional capabilities are defined by `AgentModule` in
-`packages/agents/src/contracts.ts`:
-
-- `command` and `resume`: executable identity and argv-only resume behavior
-- `commandWrapper`: reviewed version-gated executable wrapper policy
-- `hooks`: portable hook installation plus agent-owned event normalization
-- `metadataSources`: portable, bounded metadata source topology
-- `externalSessions`: session-list projection
-- `history`: conversation-history projection
-- `usage`: local and remote usage projection
-- `subscription`: authenticated subscription usage acquisition
-- `processDetection`: executable and wrapper matching
-- `terminalNotifications`: agent-specific terminal notification classification
-
-Do not advertise a capability whose production path is absent. A capability
-shown in the descriptor must work through the relevant local or remote
-composition path, not only in an isolated unit test.
-
-Keep agent-specific parsing, metadata classification, credential lookup, API
-normalization, process detection, and notification policy under the agent
-directory. Shared packages may expose vendor-neutral facilities such as bounded
-reads, inventory coordination, HTTP deadlines, and credential interfaces.
-
-For metadata-backed capabilities:
-
-- declare source roles, formats, patterns, purposes, and claim scope in the
-  agent module
-- use `pathRoot` when an established environment variable relocates the agent
-  home directory
-- use the shared inventory, read, watch, and query services
-- ensure every advertised remote projection can be materialized from the
-  portable manifest
-
-Do not bypass the metadata coordinator with an undeclared side file or add a
-vendor switch to `@kmux/metadata` or the remote host.
-
-## Register the Module
-
-Add one import and one entry to
-`packages/agents/src/builtins/index.ts`:
+Return argv, never a shell command. Put agent-specific selector cleanup in
+`resume.ts`, then add the exact persisted session ID.
 
 ```ts
-import { exampleAgent } from "./example";
+import { buildExampleResumeArgs } from "./resume";
 
-export const builtinAgentModules = Object.freeze([
-  claudeAgent,
-  codexAgent,
-  antigravityAgent,
-  exampleAgent
-] satisfies readonly AgentModule[]);
+const resume = { build: buildExampleResumeArgs };
 ```
 
-This is the only handwritten global built-in list.
+`buildExampleResumeArgs` must remove every conflicting selector form the CLI
+accepts (`--resume value`, `--resume=value`, short aliases, and continue flags).
 
-## Regenerate Derived Artifacts
+### Hooks
 
-Run:
+Describe the vendor JSON layout; the shared installer owns merge, cleanup, and
+atomic writes.
+
+```ts
+hooks: {
+  portable: {
+    pathRoot: {
+      defaultHomeRelativePath: ".example",
+      environmentVariable: "EXAMPLE_HOME"
+    },
+    relativePath: "hooks/kmux.json",
+    document: {
+      eventsPath: ["hooks"],
+      version: { field: "version", value: 1 } // omit if unversioned
+    },
+    entry: { commandField: "bash" },
+    marker: "KMUX_MANAGED_EXAMPLE_HOOK=1",
+    managed: [{ event: "sessionStart" }, { event: "agentStop" }],
+    deprecated: [],
+    outputMode: "silent",
+    successResponse: {},
+    fallbackResponse: {},
+    sessionClaim: {
+      startEvents: ["sessionStart"],
+      sessionIdFields: ["sessionId", "session_id"]
+    }
+  },
+  normalize(rawEvent, payload) {
+    if (rawEvent === "sessionStart") {
+      const sessionId =
+        typeof payload.sessionId === "string" ? payload.sessionId : undefined;
+      return {
+        event: "session_start",
+        ...(sessionId ? { vendorSessionId: sessionId } : {})
+      };
+    }
+    if (rawEvent === "agentStop") return { event: "turn_complete" };
+    return null;
+  }
+}
+```
+
+`sessionClaim` is required for SSH discovery of session-scoped metadata. Use
+`claimScope: "agent"` only for a genuinely agent-global source.
+
+Hook entry shapes:
+
+| Vendor entry                        | Declaration                                    |
+| ----------------------------------- | ---------------------------------------------- |
+| `{ "type": "command", "bash": "" }` | `entry: { commandField: "bash" }`              |
+| `{ "hooks": [{ "command": "" }] }`  | `wrapper: { field: "hooks", when: "always" }`  |
+| Only matched entries are wrapped    | `wrapper: { field: "hooks", when: "matcher" }` |
+
+### Metadata and Sessions
+
+Declare every file read by a projection:
+
+```ts
+const EXAMPLE_PATH_ROOT = {
+  defaultHomeRelativePath: ".example",
+  environmentVariable: "EXAMPLE_HOME"
+} as const;
+
+metadataSources: {
+  revision: "example-metadata-v1",
+  pathRoot: EXAMPLE_PATH_ROOT,
+  defaultRoot: "session-state",
+  sources: [{
+    role: "example-session",
+    format: "jsonl",
+    pattern: "*/events.jsonl",
+    purposes: ["sessions", "usage"]
+  }]
+},
+sessions: {
+  createMetadataProjection: createExampleSessionProjection,
+  createSourceProjection: createExampleSessionSourceProjection
+}
+```
+
+- The local sessions runtime applies `pathRoot` and
+  `settings.agents[agentId].sessionRoot` automatically.
+- `createMetadataProjection` is required. Add `createSourceProjection` when SSH
+  Sessions are supported.
+- Read only through the supplied bounded `readText`/`query` functions.
+- For SQLite, declare both `localQueryPlans` and each source's `queryPlanIds`.
+- Bump `metadataSources.revision` when topology or query definitions change.
+
+### Usage
+
+Usage needs the same target-neutral projection locally and over SSH. The local
+adapter only supplies roots, classification, and watcher policy:
+
+```ts
+usage: {
+  pricingVendorId: "example-pricing", // omit when cost is reported or unknown
+  createSourceProjection: createExampleUsageSourceProjection,
+  createLocalAdapter(options) {
+    const env = options.env ?? process.env;
+    const storage = options.agentStorageRoots ??
+      resolveAgentStorageRoots({ homeDir: options.homeDir, env });
+    const roots = resolveAgentMetadataRoots({
+      agentId: "example",
+      homeDir: storage.homeDir,
+      env,
+      pathRoot: EXAMPLE_PATH_ROOT,
+      defaultRoot: "session-state",
+      agentSettings: options.agentSettings
+    });
+    return createFileUsageAdapter({
+      agentId: "example",
+      roots,
+      topologyRoots: roots,
+      sourceProjection: createExampleUsageSourceProjection(),
+      classifySource(candidate) {
+        const role = classifyExampleMetadataPath(roots, candidate.path);
+        return role ? { role, format: "jsonl" } : null;
+      },
+      metadataInventory: options.metadataInventory,
+      watchRecursive: usageWatchIsRecursive(
+        options.platform ?? process.platform
+      )
+    });
+  }
+}
+```
+
+The projection owns incremental state, absolute-counter deltas, deduplication,
+and malformed-record handling. Do not bypass the metadata coordinator.
+
+`pricingVendorId` is an open catalog key. Add a `standard` catalog entry to
+`packages/metadata/src/modelPricing.json` only for real USD token pricing, then
+run `npm run update:model-pricing` to refresh its revision. Vendor credits such
+as Copilot AIC are not USD pricing and must omit this field.
+
+### Subscription Quota
+
+Use a stable structured API or headless RPC; do not scrape interactive terminal
+output. Keep credential/network code out of the eager module bundle:
+
+```ts
+subscription: {
+  createFetcher: (options) => async () =>
+    (await import("./subscription")).fetchExampleSubscriptionUsage(options),
+  createAuthDetector: (options) => async () =>
+    (await import("./subscription")).detectExampleSubscriptionAuth(options)
+}
+```
+
+The returned `SubscriptionProviderUsageVm` may select an existing
+`accentTone`: `blue`, `amber`, `violet`, `emerald`, `rose`, or `slate`. Do not
+add renderer vendor-color branches. If a structured quota exists but is not
+implemented, document the partial support.
+
+## 3. Register and Generate
+
+Add one import and one array entry in
+`packages/agents/src/builtins/index.ts`, then run:
 
 ```bash
 npm run generate:agents
-```
-
-Review the generated diff, but do not edit generated manifests or hook and
-metadata contracts by hand. Check that generation is stable:
-
-```bash
 npm run check:agents
 npm run check:agent-architecture
 npm run check:agent-integration-contract
 ```
 
-## Add Meaningful Tests
+Update `docs/agent-signal-matrix.md` when hook or lifecycle semantics change.
 
-Place agent-owned tests and fixtures in the new agent directory. Test durable,
-user-visible behavior such as:
-
-- resume argv construction
-- hook payload normalization
-- metadata parsing and projection
-- usage attribution and deduplication
-- executable detection
-- malformed or unsupported input handling
-
-Test a rule at the layer that owns it and prefer observable outcomes over
-implementation details. Do not duplicate generated-contract assertions or add
-tests that only verify descriptor copy.
-
-When a shared primitive is required, test that primitive at its owning layer.
-The ordinary-agent architecture fixture should prove that existing consumers do
-not require an agent-name branch.
-
-## Validate the Integration
-
-Run the narrowest relevant tests first, then:
+## 4. Verify
 
 ```bash
 npm run typecheck
@@ -182,40 +247,24 @@ npm test
 npm run build
 ```
 
-When portable metadata, hooks, or remote behavior changes, also run:
+For hooks, portable metadata, or remote behavior:
 
 ```bash
-cargo test --workspace --manifest-path remote/kmuxd/Cargo.toml
+cd remote/kmuxd
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Run the walking-skeleton, SSH, or terminal data-plane gates only when the change
-affects those runtime boundaries. Follow the environment requirements documented
-by each gate rather than treating a skipped or incompatible run as a pass.
+Add agent-owned tests only for durable behavior: resume sanitization, hook
+normalization, session parsing, usage deltas/deduplication, quota normalization,
+process detection, and malformed input.
 
-## Do Not
+## Done When
 
-An ordinary agent addition must not:
-
-- introduce a settings schema version or settings migration
-- reinterpret persisted unknown IDs through current aliases
-- add the agent ID to Proto unions, IPC decoders, renderer filters, Main
-  switches, metadata vendor lists, or Rust vendor matches
-- expose executable adapters or the private registry over IPC
-- advertise local or remote functionality that is not materialized
-- hand-edit generated artifacts
-- add agent-specific policy to a shared package merely to reuse its import path
-
-Unknown persisted IDs must remain preserved but non-executable. Execution and
-resume authority always come from a currently registered capability.
-
-## Definition of Done
-
-An ordinary integration is complete when:
-
-- agent-specific production code is owned by its built-in directory
-- `builtins/index.ts` is the only handwritten global registration change
-- generated artifacts are current and drift checks pass
-- declared local and remote capabilities work through production composition
-- unknown IDs remain preserved and non-executable
-- no settings migration or shared agent-name branch was introduced
-- relevant behavioral tests, typecheck, lint, and build pass
+- handwritten production policy is confined to the agent directory and the one
+  registry entry
+- no settings migration or shared agent-name branch was added
+- declared local and SSH capabilities work with the same roots and IDs
+- generated artifacts are current
+- relevant tests, typecheck, lint, build, and Rust checks pass

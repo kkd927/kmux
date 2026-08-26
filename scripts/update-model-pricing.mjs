@@ -58,7 +58,7 @@ const PRICING_ENTRY_KEYS = [
 async function main() {
   const check = process.argv.includes("--check");
   const pricingDate = resolveModelPricingDate();
-  const models = {
+  const managedModels = {
     claude: { standard: await fetchClaudePricing(pricingDate) },
     codex: await fetchCodexPricing(),
     gemini: { standard: await fetchGeminiPricing() }
@@ -66,17 +66,18 @@ async function main() {
 
   for (const vendor of VENDOR_ORDER) {
     for (const mode of PRICING_MODE_ORDER) {
-      const entries = models[vendor][mode];
+      const entries = managedModels[vendor][mode];
       if (!entries) {
         continue;
       }
-      models[vendor][mode] = mergeManualEntries(vendor, entries);
-      applyManualAliases(vendor, models[vendor][mode]);
-      assertEntries(`${vendor}/${mode}`, models[vendor][mode]);
+      managedModels[vendor][mode] = mergeManualEntries(vendor, entries);
+      applyManualAliases(vendor, managedModels[vendor][mode]);
+      assertEntries(`${vendor}/${mode}`, managedModels[vendor][mode]);
     }
   }
 
   const current = JSON.parse(await readFile(MODEL_PRICING_PATH, "utf8"));
+  const models = mergeManagedPricingModels(current.models, managedModels);
   const nextCatalog = buildModelPricingCatalog({
     currentCatalog: current,
     models,
@@ -107,6 +108,15 @@ async function main() {
   console.log("Updated packages/metadata/src/modelPricing.json.");
 }
 
+export function mergeManagedPricingModels(currentModels, managedModels) {
+  const unmanaged = Object.fromEntries(
+    Object.entries(currentModels ?? {})
+      .filter(([vendor]) => !VENDOR_ORDER.includes(vendor))
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+  return { ...managedModels, ...unmanaged };
+}
+
 export function buildModelPricingCatalog({
   currentCatalog,
   models,
@@ -119,7 +129,11 @@ export function buildModelPricingCatalog({
   ) {
     throw new Error("Current model pricing catalog metadata is invalid.");
   }
-  if (JSON.stringify(currentCatalog.models) === JSON.stringify(models)) {
+  const revision = calculateModelPricingRevision(models);
+  if (
+    JSON.stringify(currentCatalog.models) === JSON.stringify(models) &&
+    currentCatalog.revision === revision
+  ) {
     return currentCatalog;
   }
   const publishedAtMs = Date.parse(publishedAt);
@@ -133,9 +147,13 @@ export function buildModelPricingCatalog({
     schemaVersion: 1,
     catalogVersion: currentCatalog.catalogVersion + 1,
     publishedAt,
-    revision: createHash("sha256").update(JSON.stringify(models)).digest("hex"),
+    revision,
     models
   };
+}
+
+export function calculateModelPricingRevision(models) {
+  return createHash("sha256").update(JSON.stringify(models)).digest("hex");
 }
 
 async function fetchClaudePricing(activeDate) {

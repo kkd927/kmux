@@ -103,6 +103,50 @@ describe("model pricing", () => {
     ).not.toBe(0.5);
   });
 
+  it("accepts an open pricing vendor and resolves its declared aliases and modes", () => {
+    const models = {
+      xai: {
+        standard: [
+          pricingEntry("grok-4", 2, 8, 0.2, { aliases: ["grok-latest"] })
+        ],
+        fast: [
+          pricingEntry("grok-4", 4, 16, 0.4, {
+            aliases: ["grok-latest"]
+          })
+        ]
+      }
+    };
+    const resolver = createModelPricingResolver({
+      schemaVersion: 1,
+      catalogVersion: 1,
+      publishedAt: "2026-08-26T00:00:00.000Z",
+      revision: calculateModelPricingRevision(models),
+      models
+    });
+
+    expect(
+      resolver.estimateUsageComponentCosts({
+        vendor: "xai",
+        model: "grok-latest",
+        pricingMode: "fast",
+        inputTokens: 1_000_000,
+        outputTokens: 0
+      })?.inputCostUsd
+    ).toBe(4);
+    expect(
+      resolver.resolveCanonicalModelId({ vendor: "xai", model: "grok-latest" })
+    ).toBe("grok-4");
+    expect(
+      resolver.estimateModelCost({
+        vendor: "constructor",
+        model: "grok-4",
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheTokens: 0
+      })
+    ).toBeNull();
+  });
+
   it("rejects unsupported keys and invalid prices", () => {
     const withUnsupportedKey = {
       ...structuredClone(BUNDLED_MODEL_PRICING_CATALOG),
@@ -131,6 +175,19 @@ describe("model pricing", () => {
     );
     expect(() => validateModelPricingCatalog(withNegativePrice)).toThrow(
       /finite non-negative/u
+    );
+
+    const withInvalidVendor = structuredClone(BUNDLED_MODEL_PRICING_CATALOG);
+    Object.assign(withInvalidVendor.models, {
+      "Invalid Vendor": {
+        standard: [pricingEntry("invalid-model", 1, 1, 0)]
+      }
+    });
+    withInvalidVendor.revision = calculateModelPricingRevision(
+      withInvalidVendor.models
+    );
+    expect(() => validateModelPricingCatalog(withInvalidVendor)).toThrow(
+      /vendor ID is invalid/u
     );
   });
 

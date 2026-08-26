@@ -541,10 +541,10 @@ describe("kmux socket server agent hooks", () => {
         vendor: "codex",
         path: hooksPath,
         status: "changed",
-        contractVersion: 2
+        contractVersion: 3
       });
       expect(readFileSync(hooksPath, "utf8")).toContain(
-        "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2"
+        "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=3"
       );
 
       const second = await sendSocketMessage(socketPath, {

@@ -8,6 +8,7 @@ import {
 
 import type {
   SubscriptionUsageRowVm,
+  UsageAccentTone,
   UsageViewSnapshot
 } from "@kmux/proto";
 
@@ -147,7 +148,6 @@ export function UsageDashboard(props: UsageDashboardProps): JSX.Element {
           tokenCostBreakdown={tokenCostBreakdown}
         />
       </section>
-
     </div>
   );
 
@@ -239,7 +239,9 @@ function SubscriptionWindowsCard(props: {
                       <InlineBar
                         value={displayPercent}
                         total={100}
-                        tone={colorForVendor(providerUsage.provider)}
+                        tone={colorForUsageAccentTone(
+                          providerUsage.accentTone ?? "slate"
+                        )}
                       />
                     </div>
                     <div className={styles.subscriptionUsagePercent}>
@@ -960,14 +962,15 @@ function buildSalesCategories(
   ];
 }
 
-function colorForVendor(vendor: string): string {
-  if (vendor === "claude") {
-    return "#f59e0b";
-  }
-  if (vendor === "codex") {
-    return "#465fff";
-  }
-  return "#94a3b8";
+function colorForUsageAccentTone(tone: UsageAccentTone): string {
+  return {
+    blue: "#465fff",
+    amber: "#f59e0b",
+    violet: "#8b5cf6",
+    emerald: "#34d399",
+    rose: "#f87171",
+    slate: "#94a3b8"
+  }[tone];
 }
 
 function resolveBreakdownMetric(
@@ -996,12 +999,12 @@ function sortBreakdownRows(rows: LinearBreakdownRow[]): LinearBreakdownRow[] {
 
 function colorForBreakdownSeries(index: number): string {
   const palette = [
-    colorForVendor("codex"),
-    "#34D399",
-    "#8B5CF6",
-    "#F59E0B",
-    "#F87171",
-    "#94A3B8"
+    colorForUsageAccentTone("blue"),
+    colorForUsageAccentTone("emerald"),
+    colorForUsageAccentTone("violet"),
+    colorForUsageAccentTone("amber"),
+    colorForUsageAccentTone("rose"),
+    colorForUsageAccentTone("slate")
   ];
   return palette[index % palette.length];
 }

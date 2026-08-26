@@ -214,7 +214,6 @@ import type { TargetServiceSet } from "./targets/contracts";
 import {
   createLocalHistoryProvider,
   createTargetHistoryRuntime,
-  mergeExternalAgentSessionSnapshots,
   type TargetHistoryRuntime
 } from "./targetHistoryRuntime";
 
@@ -481,8 +480,7 @@ async function bootstrap(): Promise<void> {
     antigravitySessionIndexPath: paths.antigravitySessionsPath,
     platform: platformRuntime.platformId
   });
-  const localExternalSessionIndexer =
-    localAgentMetadataScanner.externalSessions;
+  const localExternalSessionIndexer = localAgentMetadataScanner.sessions;
 
   const runtime = createAppRuntime({
     paths: {
@@ -562,16 +560,9 @@ async function bootstrap(): Promise<void> {
       }
     },
     externalSessionIndexer: {
-      listExternalAgentSessions: async () => {
-        const localExternalSessions =
-          localExternalSessionIndexer.listExternalAgentSessions();
-        if (!targetHistoryRuntime) return await localExternalSessions;
-        const [history, externalSessions] = await Promise.all([
-          targetHistoryRuntime.listExternalAgentSessions(),
-          localExternalSessions
-        ]);
-        return mergeExternalAgentSessionSnapshots([history, externalSessions]);
-      },
+      listExternalAgentSessions: () =>
+        targetHistoryRuntime?.listExternalAgentSessions() ??
+        localExternalSessionIndexer.listExternalAgentSessions(),
       resolveExternalAgentSession: (key) =>
         targetHistoryRuntime?.resolveExternalAgentSession(key) ??
         localExternalSessionIndexer.resolveExternalAgentSession(key)

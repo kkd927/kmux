@@ -47,7 +47,7 @@ import {
   type AiCliProcessProbe,
   shouldReplaceUsageSample,
   usageSampleIdentity,
-  type SupportedPricingVendor,
+  type PricingVendorId,
   type ModelPricingResolver,
   type UsageAdapter,
   type UsageAdapterReadResult,
@@ -196,7 +196,7 @@ type ResolveAiCliProcesses = (
 ) => Promise<Map<number, AiCliProcessMatch>>;
 
 type SubscriptionProvider = Exclude<UsageVendor, "unknown">;
-type PricingVendor = SupportedPricingVendor;
+type PricingVendor = PricingVendorId;
 type SubscriptionVisibility = "live" | "recent";
 const DISCOVER_ONLY_DIRTY_OPTIONS = {
   discoverNewSources: true,

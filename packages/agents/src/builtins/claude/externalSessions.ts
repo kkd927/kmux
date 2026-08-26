@@ -16,8 +16,8 @@ import type {
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionInput,
   AgentExternalSessionRecordProjection,
-  AgentHistorySourceProjection,
-  AgentHistorySourceProjectionInput
+  AgentSessionSourceProjection,
+  AgentSessionSourceProjectionInput
 } from "../../contracts";
 import {
   createExternalSessionProjectionCache,
@@ -36,40 +36,56 @@ export function createClaudeExternalSessionProjection(): AgentExternalSessionMet
         (candidate) =>
           classifyClaudeMetadataPath(candidate.path) === "claude-session"
       );
-      const records: AgentExternalSessionRecordProjection[] = [];
+      const records = new Map<string, AgentExternalSessionRecordProjection>();
+      let visitedCandidates = 0;
       for (const candidate of selected.candidates) {
+        visitedCandidates += 1;
         const cached = cache.get(candidate);
         if (cached !== undefined) {
-          if (cached) records.push(cached);
-          continue;
+          if (cached) upsert(records, cached);
+        } else {
+          const edges = await readJsonlEdges(input, candidate);
+          const record =
+            projectClaudeHistorySource({
+              role: "claude-session",
+              format: "jsonl",
+              logicalName: basename(candidate.path),
+              mtimeMs: candidate.mtimeMs,
+              records: edges.records
+            })[0] ?? null;
+          cache.set(candidate, record);
+          if (record) upsert(records, record);
         }
-        const edges = await readJsonlEdges(input, candidate);
-        const record =
-          projectClaudeHistorySource({
-            role: "claude-session",
-            format: "jsonl",
-            logicalName: basename(candidate.path),
-            mtimeMs: candidate.mtimeMs,
-            records: edges.records
-          })[0] ?? null;
-        cache.set(candidate, record);
-        if (record) records.push(record);
+        if (records.size >= input.maxRecords) break;
       }
-      const projected = dedupeProjectedRecords(records);
+      const projected = dedupeProjectedRecords([...records.values()]);
       return {
         records: projected.slice(0, input.maxRecords),
-        truncated: selected.truncated || projected.length > input.maxRecords
+        truncated:
+          selected.truncated ||
+          visitedCandidates < selected.candidates.length ||
+          projected.length > input.maxRecords
       };
     }
   });
 }
 
-export function createClaudeHistorySourceProjection(): AgentHistorySourceProjection {
+function upsert(
+  records: Map<string, AgentExternalSessionRecordProjection>,
+  record: AgentExternalSessionRecordProjection
+): void {
+  const previous = records.get(record.sessionId);
+  if (!previous || record.updatedAtMs > previous.updatedAtMs) {
+    records.set(record.sessionId, record);
+  }
+}
+
+export function createClaudeSessionSourceProjection(): AgentSessionSourceProjection {
   return Object.freeze({ projectSource: projectClaudeHistorySource });
 }
 
 function projectClaudeHistorySource(
-  input: AgentHistorySourceProjectionInput
+  input: AgentSessionSourceProjectionInput
 ): readonly AgentExternalSessionRecordProjection[] {
   if (input.format !== "jsonl" || input.role !== "claude-session") return [];
   const record = parseClaudeHistory(input);
@@ -77,7 +93,7 @@ function projectClaudeHistorySource(
 }
 
 function parseClaudeHistory(
-  input: AgentHistorySourceProjectionInput
+  input: AgentSessionSourceProjectionInput
 ): AgentExternalSessionRecordProjection | null {
   let sessionId: string | undefined;
   let cwd: string | undefined;

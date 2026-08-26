@@ -17,7 +17,7 @@ import {
 } from "@kmux/metadata/core";
 import type {
   AgentExternalSessionRecordProjection,
-  AgentHistorySourceProjection,
+  AgentSessionSourceProjection,
   AgentUsageSourceParser,
   AgentUsageSourceProjection,
   AgentUsageSourceProjectionSession
@@ -162,8 +162,7 @@ export class RemoteMetadataSession {
     RemoteMetadataSourceRead
   >();
   private activeSourceLeases:
-    | ReadonlyMap<AgentId, RemoteMetadataLease>
-    | undefined;
+    ReadonlyMap<AgentId, RemoteMetadataLease> | undefined;
 
   constructor(
     private readonly options: {
@@ -172,7 +171,7 @@ export class RemoteMetadataSession {
       targetId: Id;
       principal: { uid: number; accountName: string };
       agentDefinitions: RemoteAgentDefinitionRevisionsDto;
-      historyProjections: ReadonlyMap<AgentId, AgentHistorySourceProjection>;
+      historyProjections: ReadonlyMap<AgentId, AgentSessionSourceProjection>;
       usageProjections: ReadonlyMap<AgentId, AgentUsageSourceProjection>;
       sourceContract?: MetadataSourceContract;
       limits?: Partial<RemoteMetadataSessionLimits>;

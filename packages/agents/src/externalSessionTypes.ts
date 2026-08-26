@@ -6,22 +6,11 @@ import type {
   SessionLaunchConfig
 } from "@kmux/proto";
 
-export type ExternalSessionScanPurpose = "externalSessions" | "history";
-
-export interface AgentHistorySessionIndexer {
-  listAgentHistorySessions():
-    | ExternalAgentSessionsSnapshot
-    | Promise<ExternalAgentSessionsSnapshot>;
-}
-
 export interface ExternalSessionIndexer {
   listExternalAgentSessions():
     | ExternalAgentSessionsSnapshot
     | Promise<ExternalAgentSessionsSnapshot>;
-  resolveExternalAgentSession(
-    key: string,
-    purpose?: ExternalSessionScanPurpose
-  ): ExternalSessionResumeSpec | null;
+  resolveExternalAgentSession(key: string): ExternalSessionResumeSpec | null;
   close?(): void;
 }
 

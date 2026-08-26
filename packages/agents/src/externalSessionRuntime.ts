@@ -3,6 +3,7 @@ import type {
   AgentMetadataInventoryService,
   SessionInventoryLimits
 } from "@kmux/metadata";
+import { resolveAgentMetadataRoots } from "@kmux/metadata";
 import type {
   AgentId,
   AgentScopeSettings,
@@ -13,35 +14,26 @@ import type {
 } from "@kmux/proto";
 
 import type { ResolvedAgentLaunchPolicy } from "./command";
-import type { ExternalSessionScanPurpose } from "./externalSessionTypes";
 import type {
   AgentCatalog,
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionOptions,
   AgentExternalSessionProjectionResult,
   AgentExternalSessionRecordProjection,
-  AgentExternalSessionsCapability,
-  AgentHistoryCapability,
+  AgentSessionsCapability,
   AgentMetadataSourcesCapability
 } from "./contracts";
-import { resolveAgentPortablePath } from "./portablePath";
 
 const DEFAULT_MAX_RECORDS = 100;
 const SESSION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
-type SessionProjectionCapability =
-  | AgentExternalSessionsCapability
-  | AgentHistoryCapability;
-
 export interface AgentSessionProjectionBinding {
   readonly agentId: AgentId;
-  readonly purpose: "externalSessions" | "history";
-  readonly capability: SessionProjectionCapability;
+  readonly capability: AgentSessionsCapability;
 }
 
 export interface MaterializedAgentSessionSource {
   readonly agentId: AgentId;
-  readonly purpose: "externalSessions" | "history";
   readonly kind: "metadata";
   readonly roots: readonly string[];
   readonly projection: AgentExternalSessionMetadataProjection;
@@ -65,10 +57,8 @@ export interface MaterializedExternalSessionIndexerOptions {
 
 export interface MaterializedExternalSessionIndexer {
   listExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
-  listAgentHistorySessions(): Promise<ExternalAgentSessionsSnapshot>;
   resolveExternalAgentSession(
-    key: string,
-    purpose?: ExternalSessionScanPurpose
+    key: string
   ): MaterializedExternalSessionResumeSpec | null;
   close(): void;
 }
@@ -98,30 +88,29 @@ export function materializeAgentSessionSources(options: {
   readonly runtime: AgentExternalSessionProjectionOptions;
 }): readonly MaterializedAgentSessionSource[] {
   return Object.freeze(
-    options.bindings.map(({ agentId, purpose, capability }) => {
+    options.bindings.map(({ agentId, capability }) => {
       const metadata = options.metadataSources.get(agentId);
-      const projection = capability.createMetadataProjection?.(options.runtime);
+      const projection = capability.createMetadataProjection(options.runtime);
       if (!metadata || !projection) {
         throw new TypeError(
-          `agent ${agentId} ${purpose} metadata projection is incomplete`
+          `agent ${agentId} sessions metadata projection is incomplete`
         );
       }
-      const roots = metadata.resolveLocalRoots?.(options.runtime) ?? [
-        resolveAgentPortablePath({
+      const roots =
+        metadata.resolveLocalRoots?.(options.runtime) ??
+        resolveAgentMetadataRoots({
+          agentId,
           env: options.runtime.env,
           homeDir: options.runtime.homeDir,
           pathRoot: metadata.pathRoot,
-          relativePath: metadata.defaultRoot
-        })
-      ];
+          defaultRoot: metadata.defaultRoot,
+          agentSettings: options.runtime.agentSettings
+        });
       if (roots.length === 0) {
-        throw new TypeError(
-          `agent ${agentId} ${purpose} has no metadata roots`
-        );
+        throw new TypeError(`agent ${agentId} sessions has no metadata roots`);
       }
       return Object.freeze({
         agentId,
-        purpose,
         kind: "metadata" as const,
         roots: Object.freeze([...roots]),
         projection
@@ -136,31 +125,16 @@ export function createMaterializedExternalSessionIndexer(
   const now = options.now ?? (() => new Date());
   const maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
   const canRunCommand = options.commandAvailability ?? (() => true);
-  const cachedRecords = new Map<ExternalSessionScanPurpose, RuntimeRecord[]>();
-  const inFlight = new Map<
-    ExternalSessionScanPurpose,
-    Promise<ExternalAgentSessionsSnapshot>
-  >();
+  let cachedRecords: RuntimeRecord[] = [];
+  let inFlight: Promise<ExternalAgentSessionsSnapshot> | null = null;
   let closed = false;
 
   const runtime = Object.freeze({
     listExternalAgentSessions() {
-      return listSessions("externalSessions");
+      return listSessions();
     },
-    listAgentHistorySessions() {
-      return listSessions("history");
-    },
-    resolveExternalAgentSession(
-      key: string,
-      purpose?: ExternalSessionScanPurpose
-    ) {
-      const records = purpose
-        ? (cachedRecords.get(purpose) ?? [])
-        : [
-            ...(cachedRecords.get("externalSessions") ?? []),
-            ...(cachedRecords.get("history") ?? [])
-          ];
-      const record = records.find((candidate) => candidate.key === key);
+    resolveExternalAgentSession(key: string) {
+      const record = cachedRecords.find((candidate) => candidate.key === key);
       if (!record) return null;
       const policy = resumePolicy(record);
       return policy && canRunCommand(policy.command)
@@ -170,35 +144,28 @@ export function createMaterializedExternalSessionIndexer(
     close() {
       if (closed) return;
       closed = true;
-      cachedRecords.clear();
-      inFlight.clear();
+      cachedRecords = [];
+      inFlight = null;
     }
   });
   return runtime;
 
-  function listSessions(
-    purpose: ExternalSessionScanPurpose
-  ): Promise<ExternalAgentSessionsSnapshot> {
+  function listSessions(): Promise<ExternalAgentSessionsSnapshot> {
     if (closed) {
       return Promise.reject(new Error("external session indexer is closed"));
     }
-    const current = inFlight.get(purpose);
-    if (current) return current;
-    const request = scan(purpose).finally(() => {
-      if (inFlight.get(purpose) === request) inFlight.delete(purpose);
+    if (inFlight) return inFlight;
+    const request = scan().finally(() => {
+      if (inFlight === request) inFlight = null;
     });
-    inFlight.set(purpose, request);
+    inFlight = request;
     return request;
   }
 
-  async function scan(
-    purpose: ExternalSessionScanPurpose
-  ): Promise<ExternalAgentSessionsSnapshot> {
+  async function scan(): Promise<ExternalAgentSessionsSnapshot> {
     const currentNow = now();
     const results = await Promise.allSettled(
-      options.sources
-        .filter((source) => source.purpose === purpose)
-        .map(projectSource)
+      options.sources.map(projectSource)
     );
     const projected = results.flatMap((result) =>
       result.status === "fulfilled" ? [...result.value.records] : []
@@ -208,7 +175,7 @@ export function createMaterializedExternalSessionIndexer(
       projected.filter((record) => record.updatedAtMs >= cutoffMs)
     );
     const currentRecords = limitRecordsPerAgent(merged, maxRecords);
-    if (!closed) cachedRecords.set(purpose, currentRecords);
+    if (!closed) cachedRecords = currentRecords;
     const truncated =
       results.some(
         (result) =>

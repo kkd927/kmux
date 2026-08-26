@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildModelPricingCatalog,
+  calculateModelPricingRevision,
   extractOpenAiPricingChunkUrl,
+  mergeManagedPricingModels,
   parseClaudePricingHtml,
   parseClaudePricingTable,
   parseOpenAiLongContextPricing,
@@ -38,13 +40,26 @@ const SONNET_WINDOW_ROWS = [
 ];
 
 describe("update-model-pricing catalog versions", () => {
+  it("preserves pricing vendors not managed by the bundled fetchers", () => {
+    const current = {
+      claude: { standard: [pricingEntry("old-claude", 1)] },
+      xai: { standard: [pricingEntry("grok-4", 2)] }
+    };
+    const managed = emptyPricingCatalogs();
+
+    expect(mergeManagedPricingModels(current, managed)).toEqual({
+      ...managed,
+      xai: current.xai
+    });
+  });
+
   it("keeps catalog metadata unchanged when the models payload is unchanged", () => {
     const models = emptyPricingCatalogs();
     const currentCatalog = {
       schemaVersion: 1,
       catalogVersion: 7,
       publishedAt: "2026-08-03T00:00:00.000Z",
-      revision: "previous-revision",
+      revision: calculateModelPricingRevision(models),
       models
     };
 
@@ -55,6 +70,30 @@ describe("update-model-pricing catalog versions", () => {
         publishedAt: "2026-08-04T00:00:00.000Z"
       })
     ).toBe(currentCatalog);
+  });
+
+  it("repairs a stale revision after a manual vendor catalog change", () => {
+    const models = {
+      ...emptyPricingCatalogs(),
+      xai: { standard: [pricingEntry("grok-4", 2)] }
+    };
+    const result = buildModelPricingCatalog({
+      currentCatalog: {
+        schemaVersion: 1,
+        catalogVersion: 7,
+        publishedAt: "2026-08-03T00:00:00.000Z",
+        revision: "stale",
+        models
+      },
+      models,
+      publishedAt: "2026-08-04T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      catalogVersion: 8,
+      revision: calculateModelPricingRevision(models),
+      models
+    });
   });
 
   it("increments the version and reproducibly hashes only a changed models payload", () => {

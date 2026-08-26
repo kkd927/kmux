@@ -30,6 +30,13 @@
       "pattern": "**/*.jsonl"
     },
     {
+      "vendor": "copilot",
+      "role": "copilot-session",
+      "format": "jsonl",
+      "purposes": ["history", "usage"],
+      "pattern": "*/events.jsonl"
+    },
+    {
       "vendor": "antigravity",
       "role": "antigravity-history",
       "format": "jsonl",

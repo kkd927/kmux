@@ -15,6 +15,7 @@ import type {
   AgentMetadataQueryResult,
   AgentMetadataTextReadRequest,
   AgentStorageRoots,
+  PricingVendorId,
   SessionInventory,
   SessionInventoryLimits,
   UsageAdapter
@@ -79,7 +80,6 @@ export interface NormalizedAgentHookResult {
 }
 
 export interface AgentPortableHookDefinition {
-  readonly format: "grouped-hooks" | "namespaced-hooks";
   /**
    * Optional agent-owned base for paths that normally live below HOME but may
    * be relocated by a reviewed environment variable such as CODEX_HOME.
@@ -87,7 +87,28 @@ export interface AgentPortableHookDefinition {
    */
   readonly pathRoot?: AgentPortablePathRootDefinition;
   readonly relativePath: string;
-  readonly namespace?: string;
+  /** JSON document layout used by both local and remote hook installers. */
+  readonly document: {
+    /** Object path containing event-name arrays. */
+    readonly eventsPath: readonly string[];
+    /** Required version field for versioned hook documents. */
+    readonly version?: {
+      readonly field: string;
+      readonly value: number;
+    };
+  };
+  /** Encoding of each kmux-owned command inside an event array. */
+  readonly entry: {
+    readonly commandField: "command" | "bash";
+    /**
+     * Some hook grammars wrap commands in an object containing another array.
+     * `always` models grouped hooks; `matcher` wraps only matched entries.
+     */
+    readonly wrapper?: {
+      readonly field: string;
+      readonly when: "always" | "matcher";
+    };
+  };
   readonly marker: string;
   readonly managed: readonly {
     readonly event: string;
@@ -129,7 +150,7 @@ export interface AgentHookCapability {
 }
 
 export type AgentMetadataSourceFormat = "jsonl" | "sqlite";
-export type AgentMetadataPurpose = "externalSessions" | "history" | "usage";
+export type AgentMetadataPurpose = "sessions" | "usage";
 
 export interface AgentMetadataSourceDefinition {
   readonly role: MetadataSourceRoleId;
@@ -194,20 +215,14 @@ export interface AgentExternalSessionProjectionOptions extends AgentMetadataRunt
   readonly indexPath?: string;
 }
 
-export interface AgentExternalSessionsCapability {
-  createMetadataProjection?(
+export interface AgentSessionsCapability {
+  createMetadataProjection(
     options: AgentExternalSessionProjectionOptions
   ): AgentExternalSessionMetadataProjection;
+  createSourceProjection?(): AgentSessionSourceProjection;
 }
 
-export interface AgentHistoryCapability {
-  createMetadataProjection?(
-    options: AgentExternalSessionProjectionOptions
-  ): AgentExternalSessionMetadataProjection;
-  createSourceProjection?(): AgentHistorySourceProjection;
-}
-
-export interface AgentHistorySourceClaimProjection {
+export interface AgentSessionSourceClaimProjection {
   readonly sessionId: string;
   readonly claimedAtUnixMs?: number;
   readonly lastSeenAtUnixMs?: number;
@@ -216,7 +231,7 @@ export interface AgentHistorySourceClaimProjection {
   readonly launchTitle?: string;
 }
 
-export interface AgentHistorySourceProjectionInput {
+export interface AgentSessionSourceProjectionInput {
   readonly role: MetadataSourceRoleId;
   readonly format: AgentMetadataSourceFormat;
   readonly logicalName: string;
@@ -230,19 +245,19 @@ export interface AgentHistorySourceProjectionInput {
       readonly payloadBase64: string;
     }[];
   };
-  readonly claim?: AgentHistorySourceClaimProjection;
+  readonly claim?: AgentSessionSourceClaimProjection;
 }
 
-export interface AgentHistorySourceProjection {
+export interface AgentSessionSourceProjection {
   projectSource(
-    input: AgentHistorySourceProjectionInput
+    input: AgentSessionSourceProjectionInput
   ):
     | readonly AgentExternalSessionRecordProjection[]
     | Promise<readonly AgentExternalSessionRecordProjection[]>;
 }
 
 export interface AgentUsageCapabilityFactory {
-  readonly pricingVendorId?: "claude" | "codex" | "gemini";
+  readonly pricingVendorId?: PricingVendorId;
   createLocalAdapter?(options: AgentUsageRuntimeOptions): UsageAdapter;
   createSourceProjection?(): AgentUsageSourceProjection;
 }
@@ -256,7 +271,7 @@ export interface AgentUsageSourceProjectionSession {
   beginInventory(options: { readonly truncated: boolean }): void;
   applySourceClaim(options: {
     readonly role: MetadataSourceRoleId;
-    readonly claim: AgentHistorySourceClaimProjection;
+    readonly claim: AgentSessionSourceClaimProjection;
   }): void;
   createParser(options: {
     readonly role: MetadataSourceRoleId;
@@ -327,8 +342,7 @@ export interface AgentModule {
   readonly resume?: AgentResumeCapability;
   readonly hooks?: AgentHookCapability;
   readonly metadataSources?: AgentMetadataSourcesCapability;
-  readonly externalSessions?: AgentExternalSessionsCapability;
-  readonly history?: AgentHistoryCapability;
+  readonly sessions?: AgentSessionsCapability;
   readonly usage?: AgentUsageCapabilityFactory;
   readonly subscription?: AgentSubscriptionCapabilityFactory;
   readonly processDetection?: AgentProcessDetectionCapability;
@@ -346,19 +360,17 @@ export type AgentCapabilityFor<K extends AgentCapabilityKey> =
     ? AgentResumeCapability
     : K extends "hooks"
       ? AgentHookCapability
-      : K extends "externalSessions"
-        ? AgentExternalSessionsCapability
-        : K extends "history"
-          ? AgentHistoryCapability
-          : K extends "usage"
-            ? AgentUsageCapabilityFactory
-            : K extends "subscription"
-              ? AgentSubscriptionCapabilityFactory
-              : K extends "processDetection"
-                ? AgentProcessDetectionCapability
-                : K extends "terminalNotifications"
-                  ? AgentTerminalNotificationCapability
-                  : never;
+      : K extends "sessions"
+        ? AgentSessionsCapability
+        : K extends "usage"
+          ? AgentUsageCapabilityFactory
+          : K extends "subscription"
+            ? AgentSubscriptionCapabilityFactory
+            : K extends "processDetection"
+              ? AgentProcessDetectionCapability
+              : K extends "terminalNotifications"
+                ? AgentTerminalNotificationCapability
+                : never;
 
 export interface CapabilityResolver<K extends AgentCapabilityKey> {
   resolve(id: AgentId): AgentCapabilityFor<K> | undefined;

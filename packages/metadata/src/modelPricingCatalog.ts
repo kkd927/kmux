@@ -1,13 +1,13 @@
 import { IncrementalSha256 } from "@kmux/proto";
 
 import type {
+  PricingVendorId,
   PricingCatalog,
   PricingEntry,
-  PricingMode,
-  SupportedPricingVendor
+  PricingMode
 } from "./modelPricing";
 
-export type ModelPricingModels = Record<SupportedPricingVendor, PricingCatalog>;
+export type ModelPricingModels = Record<PricingVendorId, PricingCatalog>;
 
 export type ModelPricingCatalogDocument = {
   schemaVersion: 1;
@@ -30,6 +30,8 @@ const PRICING_ENTRY_KEYS = new Set([
   "tieredPricingThresholdTokens",
   "aliases"
 ]);
+const PRICING_VENDOR_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const MAX_PRICING_VENDORS = 32;
 
 export function calculateModelPricingRevision(
   models: ModelPricingModels
@@ -81,10 +83,19 @@ export function validateModelPricingCatalog(
   ) {
     throw new TypeError("model pricing revision is invalid");
   }
-  requireExactObjectKeys(value.models, ["claude", "codex", "gemini"], "models");
-  validateVendorCatalog(value.models.claude, "claude", ["standard"]);
-  validateVendorCatalog(value.models.codex, "codex", ["standard", "fast"]);
-  validateVendorCatalog(value.models.gemini, "gemini", ["standard"]);
+  if (!isRecord(value.models)) {
+    throw new TypeError("model pricing models must be an object");
+  }
+  const vendors = Object.keys(value.models);
+  if (vendors.length < 1 || vendors.length > MAX_PRICING_VENDORS) {
+    throw new TypeError("model pricing vendor count is invalid");
+  }
+  for (const vendor of vendors) {
+    if (!PRICING_VENDOR_ID_PATTERN.test(vendor)) {
+      throw new TypeError(`model pricing vendor ID is invalid: ${vendor}`);
+    }
+    validateVendorCatalog(value.models[vendor], vendor);
+  }
   const catalog = value as ModelPricingCatalogDocument;
   if (calculateModelPricingRevision(catalog.models) !== catalog.revision) {
     throw new TypeError(
@@ -94,13 +105,18 @@ export function validateModelPricingCatalog(
   return catalog;
 }
 
-function validateVendorCatalog(
-  value: unknown,
-  vendor: SupportedPricingVendor,
-  modes: PricingMode[]
-): void {
-  requireExactObjectKeys(value, modes, `models.${vendor}`);
-  for (const mode of modes) {
+function validateVendorCatalog(value: unknown, vendor: PricingVendorId): void {
+  if (!isRecord(value)) {
+    throw new TypeError(`model pricing models.${vendor} must be an object`);
+  }
+  const modes = Object.keys(value);
+  if (
+    !modes.includes("standard") ||
+    modes.some((mode) => mode !== "standard" && mode !== "fast")
+  ) {
+    throw new TypeError(`model pricing models.${vendor} keys are invalid`);
+  }
+  for (const mode of modes as PricingMode[]) {
     const entries = value[mode];
     if (!Array.isArray(entries) || entries.length === 0) {
       throw new TypeError(`model pricing ${vendor}/${mode} must not be empty`);

@@ -16,7 +16,7 @@ import {
 } from "../shared";
 import {
   createCodexExternalSessionProjection,
-  createCodexHistorySourceProjection
+  createCodexSessionSourceProjection
 } from "./externalSessions";
 import { classifyCodexMetadataPath } from "./inventory";
 import { createCodexUsageSourceProjection } from "./usage";
@@ -28,13 +28,13 @@ export const codexAgent = Object.freeze({
     aliases: [],
     presentation: { shortLabel: "CODEX" }
   },
-  definitionRevision: "codex-v2",
+  definitionRevision: "codex-v3",
   command: { executable: "codex" },
   commandWrapper: {
     homeEnvironmentVariable: "CODEX_HOME",
     defaultHomeRelativePath: ".codex",
     integrationRelativePath: "hooks.json",
-    integrationContractMarker: "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2",
+    integrationContractMarker: "KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=3",
     legacyHooksFeature: "codex_hooks",
     currentHooksFeature: "hooks",
     currentHooksFeatureMinor: 129,
@@ -52,12 +52,16 @@ export const codexAgent = Object.freeze({
     resolveLocalConfigPath: ({ agentStorageRoots }) =>
       agentStorageRoots.codex.hooksPath,
     portable: {
-      format: "grouped-hooks",
       pathRoot: {
         defaultHomeRelativePath: ".codex",
         environmentVariable: "CODEX_HOME"
       },
       relativePath: "hooks.json",
+      document: { eventsPath: ["hooks"] },
+      entry: {
+        commandField: "command",
+        wrapper: { field: "hooks", when: "always" }
+      },
       marker: "KMUX_MANAGED_CODEX_HOOK=1",
       managed: [
         { event: "SessionStart" },
@@ -118,7 +122,7 @@ export const codexAgent = Object.freeze({
     }
   },
   metadataSources: {
-    revision: "codex-metadata-v2",
+    revision: "codex-metadata-v3",
     pathRoot: {
       defaultHomeRelativePath: ".codex",
       environmentVariable: "CODEX_HOME"
@@ -141,16 +145,13 @@ export const codexAgent = Object.freeze({
         role: "codex-session",
         format: "jsonl",
         pattern: "**/*.jsonl",
-        purposes: ["externalSessions", "history", "usage"]
+        purposes: ["sessions", "usage"]
       }
     ]
   },
-  externalSessions: {
-    createMetadataProjection: createCodexExternalSessionProjection
-  },
-  history: {
+  sessions: {
     createMetadataProjection: createCodexExternalSessionProjection,
-    createSourceProjection: createCodexHistorySourceProjection
+    createSourceProjection: createCodexSessionSourceProjection
   },
   usage: {
     pricingVendorId: "codex",

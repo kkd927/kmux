@@ -36,7 +36,6 @@ vi.mock("electron", () => ({
 }));
 
 import { registerIpcHandlers } from "../../../apps/desktop/src/main/ipcHandlers";
-import { mergeExternalAgentSessionSnapshots } from "../../../apps/desktop/src/main/targetHistoryRuntime";
 import type {
   RemoteMetadataSourceQuery,
   RemoteMetadataSourceRead,
@@ -75,8 +74,12 @@ const basicFixture = {
   },
   hooks: {
     portable: {
-      format: "grouped-hooks",
       relativePath: ".nebula/hooks.json",
+      document: { eventsPath: ["hooks"] },
+      entry: {
+        commandField: "command",
+        wrapper: { field: "hooks", when: "always" }
+      },
       marker: "KMUX_MANAGED_NEBULA_FIXTURE=1",
       managed: [{ event: "Completed" }],
       deprecated: [],
@@ -108,8 +111,12 @@ const sharedMetadataFixture = {
   definitionRevision: "fixture-orbit-v1",
   hooks: {
     portable: {
-      format: "grouped-hooks",
       relativePath: ".orbit/hooks.json",
+      document: { eventsPath: ["hooks"] },
+      entry: {
+        commandField: "command",
+        wrapper: { field: "hooks", when: "always" }
+      },
       marker: "KMUX_MANAGED_ORBIT_FIXTURE=1",
       managed: [{ event: "Started" }],
       deprecated: [],
@@ -133,21 +140,17 @@ const sharedMetadataFixture = {
   metadataSources: {
     revision: "fixture-orbit-metadata-v1",
     defaultRoot: ".orbit/sessions",
-    resolveLocalRoots: () => ["/fixture/orbit/sessions"],
     sources: [
       {
         role: "fixture-orbit/session-jsonl",
         format: "jsonl",
         pattern: "**/*.jsonl",
-        purposes: ["externalSessions", "history", "usage"],
+        purposes: ["sessions", "usage"],
         claimScope: "agent"
       }
     ]
   },
-  externalSessions: {
-    createMetadataProjection: createOrbitProjection
-  },
-  history: {
+  sessions: {
     createMetadataProjection: createOrbitProjection,
     createSourceProjection: () => ({
       projectSource: (input) =>
@@ -282,24 +285,18 @@ describe("ordinary new-agent architecture gate", () => {
       vendorSessionId: "s-1"
     });
 
-    const bindings: AgentSessionProjectionBinding[] = [
-      ...registry
-        .materialize("externalSessions")
-        .map(({ agentId, capability }) => ({
-          agentId,
-          purpose: "externalSessions" as const,
-          capability
-        })),
-      ...registry.materialize("history").map(({ agentId, capability }) => ({
-        agentId,
-        purpose: "history" as const,
-        capability
-      }))
-    ];
+    const bindings: AgentSessionProjectionBinding[] = registry
+      .materialize("sessions")
+      .map(({ agentId, capability }) => ({ agentId, capability }));
     const sources = materializeAgentSessionSources({
       bindings,
       metadataSources: registry.metadataSources(),
-      runtime: { homeDir: "/fixture" }
+      runtime: {
+        homeDir: "/fixture",
+        agentSettings: {
+          "fixture-orbit": { sessionRoot: "/fixture/orbit/sessions" }
+        }
+      }
     });
     const inventory = vi.fn(async () => ({
       candidates: [
@@ -344,26 +341,13 @@ describe("ordinary new-agent architecture gate", () => {
         title: "Orbit metadata session"
       })
     ]);
-    const historySnapshot = await indexer.listAgentHistorySessions();
-    expect(historySnapshot.sessions).toEqual([
-      expect.objectContaining({
-        vendor: "fixture-orbit",
-        title: "Orbit metadata session"
-      })
-    ]);
-    expect(
-      sources.map(({ agentId, purpose }) => ({ agentId, purpose }))
-    ).toEqual(
-      expect.arrayContaining([
-        { agentId: "fixture-orbit", purpose: "externalSessions" },
-        { agentId: "fixture-orbit", purpose: "history" }
-      ])
-    );
+    expect(sources.map(({ agentId }) => agentId)).toEqual(["fixture-orbit"]);
     expect(acquire).toHaveBeenCalledWith(
       "fixture-orbit",
       ["/fixture/orbit/sessions"],
       undefined
     );
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(readText).toHaveBeenCalled();
     const usageAdapter = registry.resolver("usage").resolve("fixture-orbit")!
       .createLocalAdapter!({ metadataInventory });
@@ -375,8 +359,7 @@ describe("ordinary new-agent architecture gate", () => {
     ipcHandlers.clear();
     registerIpcHandlers({
       getAgentCatalog: () => registry.catalog.listDescriptors(),
-      getExternalAgentSessions: () =>
-        mergeExternalAgentSessionSnapshots([historySnapshot, snapshot]),
+      getExternalAgentSessions: () => snapshot,
       clipboard: {
         readText: () => "",
         writeText: () => undefined,
@@ -408,7 +391,7 @@ describe("ordinary new-agent architecture gate", () => {
     ).toEqual([{ key: "fixture-orbit", label: "Orbit Fixture" }]);
 
     const remoteProjection = registry
-      .resolver("history")
+      .resolver("sessions")
       .resolve("fixture-orbit")
       ?.createSourceProjection?.();
     expect(remoteProjection).toBeDefined();

@@ -1,6 +1,7 @@
 {
   "claude": { "success": {}, "fallback": {}, "fallbackByEvent": {} },
   "codex": { "success": {}, "fallback": {}, "fallbackByEvent": {} },
+  "copilot": { "success": {}, "fallback": {}, "fallbackByEvent": {} },
   "antigravity": {
     "success": { "decision": "allow" },
     "fallback": { "decision": "allow" },

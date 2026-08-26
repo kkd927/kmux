@@ -138,6 +138,18 @@ function validateHookDefinition(module: AgentModule): void {
   if (!hook) return;
   const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
   if (
+    hook.document.eventsPath.length < 1 ||
+    hook.document.eventsPath.length > 8 ||
+    hook.document.eventsPath.some((component) => !token.test(component)) ||
+    (hook.document.version !== undefined &&
+      (!token.test(hook.document.version.field) ||
+        !Number.isSafeInteger(hook.document.version.value) ||
+        hook.document.version.value < 1 ||
+        hook.document.version.value > 65_535)) ||
+    !token.test(hook.entry.commandField) ||
+    (hook.entry.wrapper !== undefined &&
+      (!token.test(hook.entry.wrapper.field) ||
+        !["always", "matcher"].includes(hook.entry.wrapper.when))) ||
     hook.managed.length > 64 ||
     hook.managed.some(({ event }) => !token.test(event)) ||
     hook.deprecated.length > 64 ||
@@ -221,8 +233,7 @@ function validateMetadataReferences(module: AgentModule): void {
     );
   }
   for (const [purpose, capability] of [
-    ["externalSessions", module.externalSessions],
-    ["history", module.history],
+    ["sessions", module.sessions],
     ["usage", module.usage]
   ] as const) {
     if (!capability) continue;
@@ -240,17 +251,9 @@ function validateMetadataReferences(module: AgentModule): void {
         `agent ${module.descriptor.id} has no metadata source for ${purpose}`
       );
     }
-    if (
-      (purpose === "externalSessions" || purpose === "history") &&
-      !capability.createMetadataProjection
-    ) {
+    if (purpose === "sessions" && !module.sessions?.createMetadataProjection) {
       throw new TypeError(
         `agent ${module.descriptor.id} metadata ${purpose} has no projection factory`
-      );
-    }
-    if (purpose === "history" && !module.history?.createSourceProjection) {
-      throw new TypeError(
-        `agent ${module.descriptor.id} metadata history has no target-neutral source projection`
       );
     }
     if (purpose === "usage" && !module.usage?.createSourceProjection) {

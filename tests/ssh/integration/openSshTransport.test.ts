@@ -2869,7 +2869,7 @@ describe("real system OpenSSH transport spike", () => {
       const eagerCustomCodexHooks = await target.target.exec([
         "sh",
         "-c",
-        `grep -q KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=2 ${quotePosixWord(`${customCodexHome}/hooks.json`)}`
+        `grep -q KMUX_AGENT_INTEGRATION_CONTRACT_VERSION=3 ${quotePosixWord(`${customCodexHome}/hooks.json`)}`
       ]);
       expect(eagerCustomCodexHooks.exitCode).toBe(0);
       const resourceKey = {
