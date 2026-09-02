@@ -1,11 +1,31 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 4,
-  "publishedAt": "2026-08-24T00:00:00.000Z",
-  "revision": "f6c8b1cb10252ea8b66207fa56b9c01a1112940545398bf5c71f8742a89522b7",
+  "catalogVersion": 5,
+  "publishedAt": "2026-09-01T00:00:00.000Z",
+  "revision": "f04339a068c1340dab04cb33c5dcc36d0d584c4ada7100b9c6303d7e9c5561d8",
   "models": {
     "claude": {
       "standard": [
+        {
+          "modelId": "claude-mythos-5-1",
+          "inputCostPerMillionTokens": 10,
+          "outputCostPerMillionTokens": 50,
+          "cacheReadCostPerMillionTokens": 0.25,
+          "cacheCreateCostPerMillionTokens": 12.5,
+          "aliases": [
+            "claude-mythos-5.1"
+          ]
+        },
+        {
+          "modelId": "claude-fable-5-1",
+          "inputCostPerMillionTokens": 10,
+          "outputCostPerMillionTokens": 50,
+          "cacheReadCostPerMillionTokens": 0.25,
+          "cacheCreateCostPerMillionTokens": 12.5,
+          "aliases": [
+            "claude-fable-5.1"
+          ]
+        },
         {
           "modelId": "claude-sonnet-5",
           "inputCostPerMillionTokens": 2,
@@ -628,12 +648,6 @@
           "cacheCreateCostPerMillionTokensAboveThreshold": 0.25
         },
         {
-          "modelId": "gemini-2.5-flash-lite-preview",
-          "inputCostPerMillionTokens": 0.1,
-          "outputCostPerMillionTokens": 0.4,
-          "cacheReadCostPerMillionTokens": 0.01
-        },
-        {
           "modelId": "gemini-2.5-flash-lite",
           "inputCostPerMillionTokens": 0.1,
           "outputCostPerMillionTokens": 0.4,
@@ -644,18 +658,6 @@
           "inputCostPerMillionTokens": 0.3,
           "outputCostPerMillionTokens": 2.5,
           "cacheReadCostPerMillionTokens": 0.03
-        },
-        {
-          "modelId": "gemini-2.0-flash-lite",
-          "inputCostPerMillionTokens": 0.075,
-          "outputCostPerMillionTokens": 0.3,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gemini-2.0-flash",
-          "inputCostPerMillionTokens": 0.1,
-          "outputCostPerMillionTokens": 0.4,
-          "cacheReadCostPerMillionTokens": 0.025
         }
       ]
     }
