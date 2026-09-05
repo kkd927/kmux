@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 5,
-  "publishedAt": "2026-09-01T00:00:00.000Z",
-  "revision": "f04339a068c1340dab04cb33c5dcc36d0d584c4ada7100b9c6303d7e9c5561d8",
+  "catalogVersion": 6,
+  "publishedAt": "2026-09-04T00:00:00.000Z",
+  "revision": "e06df77b41725a6585ac3ed8303fb3fa51e3e0000a76e3e6f19c8d95ae3f31d4",
   "models": {
     "claude": {
       "standard": [
@@ -180,6 +180,18 @@
     },
     "codex": {
       "standard": [
+        {
+          "modelId": "gpt-6-astra",
+          "inputCostPerMillionTokens": 10,
+          "outputCostPerMillionTokens": 50,
+          "cacheReadCostPerMillionTokens": 1,
+          "cacheCreateCostPerMillionTokens": 12.5,
+          "inputCostPerMillionTokensAboveThreshold": 20,
+          "outputCostPerMillionTokensAboveThreshold": 75,
+          "cacheReadCostPerMillionTokensAboveThreshold": 2,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 25,
+          "tieredPricingThresholdTokens": 272000
+        },
         {
           "modelId": "gpt-5.6-sol",
           "inputCostPerMillionTokens": 4,
@@ -442,6 +454,18 @@
       ],
       "fast": [
         {
+          "modelId": "gpt-6-astra",
+          "inputCostPerMillionTokens": 20,
+          "outputCostPerMillionTokens": 100,
+          "cacheReadCostPerMillionTokens": 2,
+          "cacheCreateCostPerMillionTokens": 25,
+          "inputCostPerMillionTokensAboveThreshold": 40,
+          "outputCostPerMillionTokensAboveThreshold": 150,
+          "cacheReadCostPerMillionTokensAboveThreshold": 4,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 50,
+          "tieredPricingThresholdTokens": 272000
+        },
+        {
           "modelId": "gpt-5.6-sol",
           "inputCostPerMillionTokens": 8,
           "outputCostPerMillionTokens": 40,
@@ -580,6 +604,12 @@
     },
     "gemini": {
       "standard": [
+        {
+          "modelId": "gemini-3.8-flash",
+          "inputCostPerMillionTokens": 0.75,
+          "outputCostPerMillionTokens": 3.75,
+          "cacheReadCostPerMillionTokens": 0.075
+        },
         {
           "modelId": "gemini-3.7-flash",
           "inputCostPerMillionTokens": 0.75,
