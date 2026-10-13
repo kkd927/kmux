@@ -1,14 +1,22 @@
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
   buildModelPricingCatalog,
   extractOpenAiPricingChunkUrl,
+  parseClaudePricingHtml,
   parseClaudePricingTable,
   parseOpenAiLongContextPricing,
   parseOpenAiPricingHtml,
   parseOpenAiTextTokenPricingHtml,
   sortModelPricingEntries
 } from "./update-model-pricing.mjs";
+
+const CLAUDE_PRICING_TABLE = readFileSync(
+  new URL("./fixtures/claude-pricing-table.html", import.meta.url),
+  "utf8"
+);
 
 const SONNET_WINDOW_ROWS = [
   [
@@ -81,6 +89,114 @@ describe("update-model-pricing catalog versions", () => {
 });
 
 describe("update-model-pricing Claude parser", () => {
+  it("reads linked names, legacy names and prices from the current table headers", () => {
+    const entries = parseClaudePricingHtml(CLAUDE_PRICING_TABLE, "2026-10-14");
+
+    expect(
+      entries.map((entry) => [
+        entry.modelId,
+        entry.inputCostPerMillionTokens,
+        entry.outputCostPerMillionTokens,
+        entry.cacheCreateCostPerMillionTokens,
+        entry.cacheReadCostPerMillionTokens,
+        entry.aliases
+      ])
+    ).toEqual([
+      ["claude-fable-5-1", 10, 50, 12.5, 0.25, ["claude-fable-5.1"]],
+      ["claude-opus-5-5", 4, 20, 5, 0.2, ["claude-opus-5.5"]],
+      ["claude-sonnet-5-5", 2, 10, 2.5, 0.1, ["claude-sonnet-5.5"]],
+      ["claude-haiku-5-5", 0.1, 0.5, 0.125, 0.01, ["claude-haiku-5.5"]],
+      ["claude-mythos-5-1", 10, 50, 12.5, 0.25, ["claude-mythos-5.1"]],
+      ["claude-opus-4-1", 15, 75, 18.75, 1.5, ["claude-opus-4.1"]]
+    ]);
+  });
+
+  it("merges a model's rowspanned long-context prices without losing any token rate", () => {
+    const entries = parseClaudePricingHtml(CLAUDE_PRICING_TABLE, "2026-10-14");
+
+    expect(
+      entries.find((entry) => entry.modelId === "claude-haiku-5-5")
+    ).toEqual({
+      modelId: "claude-haiku-5-5",
+      inputCostPerMillionTokens: 0.1,
+      outputCostPerMillionTokens: 0.5,
+      cacheCreateCostPerMillionTokens: 0.125,
+      cacheReadCostPerMillionTokens: 0.01,
+      tieredPricingThresholdTokens: 100_000,
+      inputCostPerMillionTokensAboveThreshold: 0.5,
+      outputCostPerMillionTokensAboveThreshold: 2.5,
+      cacheCreateCostPerMillionTokensAboveThreshold: 0.625,
+      cacheReadCostPerMillionTokensAboveThreshold: 0.05,
+      aliases: ["claude-haiku-5.5"]
+    });
+  });
+
+  it("maps reordered model and price columns by their headers", () => {
+    expect(
+      parseClaudePricingTable(
+        table(
+          [["$50", "Claude Fable 5.1", "$0.25", "$20", "$10", "$12.50"]],
+          [
+            "Output Tokens",
+            "Model",
+            "Cache Hits &amp; Refreshes",
+            "1h Cache Writes",
+            "Base Input Tokens",
+            "5m Cache Writes"
+          ]
+        ),
+        "2026-10-14"
+      )
+    ).toEqual([
+      {
+        modelId: "claude-fable-5-1",
+        inputCostPerMillionTokens: 10,
+        outputCostPerMillionTokens: 50,
+        cacheReadCostPerMillionTokens: 0.25,
+        cacheCreateCostPerMillionTokens: 12.5,
+        aliases: ["claude-fable-5.1"]
+      }
+    ]);
+  });
+
+  it.each([
+    ["missing output column", "<th>Output</th>", "<th>Unknown</th>", /column/u],
+    ["invalid price", "$50 / MTok", "unavailable", /Could not parse Claude/u],
+    [
+      "mismatched tier thresholds",
+      "over 100,000 tokens",
+      "over 200,000 tokens",
+      /Unmatched Claude long-context/u
+    ],
+    [
+      "unsupported token range",
+      "up to 100,000 tokens",
+      "below 100,000 tokens",
+      /Could not parse Claude input token range/u
+    ]
+  ])(
+    "rejects %s instead of emitting incorrect prices",
+    (_label, from, to, error) => {
+      expect(() =>
+        parseClaudePricingHtml(
+          CLAUDE_PRICING_TABLE.replace(from, to),
+          "2026-10-14"
+        )
+      ).toThrow(error);
+    }
+  );
+
+  it("rejects incomplete tier rows instead of keeping only the cheaper prices", () => {
+    const incomplete = CLAUDE_PRICING_TABLE.replace(
+      /<tr data-tier="above">[\s\S]*?<\/tr>/u,
+      ""
+    );
+
+    expect(() => parseClaudePricingHtml(incomplete, "2026-10-14")).toThrow(
+      /Could not parse Claude|Missing Claude long-context/u
+    );
+  });
+
   it("canonicalizes period-specific Claude Sonnet 5 rows to the same model", () => {
     expect(
       parseClaudePricingTable(table(SONNET_WINDOW_ROWS), "2026-07-03")
@@ -377,7 +493,12 @@ describe("update-model-pricing OpenAI parser", () => {
             cachedInput: 1,
             cacheWrite: 12.5
           },
-          "gpt-7.0": { input: 5, output: 22.5, cachedInput: 0.5, cacheWrite: "-" },
+          "gpt-7.0": {
+            input: 5,
+            output: 22.5,
+            cachedInput: 0.5,
+            cacheWrite: "-"
+          },
           "gpt-7.0-mini": {
             input: "-",
             output: "-",
@@ -509,7 +630,9 @@ describe("update-model-pricing OpenAI parser", () => {
           }
         }
       )
-    ).toThrow(/no entries although these models declare a context-length threshold: gpt-7\.0/u);
+    ).toThrow(
+      /no entries although these models declare a context-length threshold: gpt-7\.0/u
+    );
   });
 
   it("parses the long-context table when standard is not the first tier key", () => {
@@ -519,7 +642,12 @@ describe("update-model-pricing OpenAI parser", () => {
 
     expect(parseOpenAiLongContextPricing(chunk)).toEqual({
       fast: {
-        "gpt-7.1-orbit": { input: 20, output: 90, cachedInput: 2, cacheWrite: 25 }
+        "gpt-7.1-orbit": {
+          input: 20,
+          output: 90,
+          cachedInput: 2,
+          cacheWrite: 25
+        }
       },
       standard: {
         "gpt-7.0": { input: 10, output: 45, cachedInput: 0.5, cacheWrite: "-" }
@@ -527,34 +655,49 @@ describe("update-model-pricing OpenAI parser", () => {
     });
   });
 
-  it("parses the long-context table from a minified pricing chunk", () => {
-    const chunk = [
-      'const decoy={standard:{}};',
-      'X={standard:{"gpt-7.0":{input:10,output:45,cachedInput:.5,cacheWrite:"-"},',
-      '"gpt-7.0-mini":{input:"-",output:"-",cachedInput:"-",cacheWrite:"-"}},',
-      'fast:{"gpt-7.1-orbit":{input:20,output:90,cachedInput:2,cacheWrite:25}}};',
-      'tt=new Intl.NumberFormat("en-US");'
-    ].join("");
+  it.each(['"-"', "`-`"])(
+    "parses minified chunk prices using %s for unavailable rates",
+    (unavailable) => {
+      const chunk = [
+        "const decoy={standard:{}};",
+        'X={standard:{"gpt-7.0":{input:10,output:45,cachedInput:.5,cacheWrite:"-"},',
+        '"gpt-7.0-mini":{input:"-",output:"-",cachedInput:"-",cacheWrite:"-"}},',
+        'fast:{"gpt-7.1-orbit":{input:20,output:90,cachedInput:2,cacheWrite:25}}};',
+        'tt=new Intl.NumberFormat("en-US");'
+      ]
+        .join("")
+        .replaceAll('"-"', unavailable);
 
-    expect(parseOpenAiLongContextPricing(chunk)).toEqual({
-      standard: {
-        "gpt-7.0": { input: 10, output: 45, cachedInput: 0.5, cacheWrite: "-" },
-        "gpt-7.0-mini": {
-          input: "-",
-          output: "-",
-          cachedInput: "-",
-          cacheWrite: "-"
+      expect(parseOpenAiLongContextPricing(chunk)).toEqual({
+        standard: {
+          "gpt-7.0": {
+            input: 10,
+            output: 45,
+            cachedInput: 0.5,
+            cacheWrite: "-"
+          },
+          "gpt-7.0-mini": {
+            input: "-",
+            output: "-",
+            cachedInput: "-",
+            cacheWrite: "-"
+          }
+        },
+        fast: {
+          "gpt-7.1-orbit": {
+            input: 20,
+            output: 90,
+            cachedInput: 2,
+            cacheWrite: 25
+          }
         }
-      },
-      fast: {
-        "gpt-7.1-orbit": { input: 20, output: 90, cachedInput: 2, cacheWrite: 25 }
-      }
-    });
-  });
+      });
+    }
+  );
 
   it("throws when the pricing chunk has no long-context table", () => {
     expect(() =>
-      parseOpenAiLongContextPricing('const decoy={standard:{}};')
+      parseOpenAiLongContextPricing("const decoy={standard:{}};")
     ).toThrow(/long-context pricing table/u);
   });
 
@@ -562,7 +705,9 @@ describe("update-model-pricing OpenAI parser", () => {
     const html =
       '<astro-island uid="1" component-url="/_astro/pricing.ABC123.js"' +
       ' component-export="TextTokenPricingTables" props="{}"></astro-island>';
-    expect(extractOpenAiPricingChunkUrl(html)).toBe("/_astro/pricing.ABC123.js");
+    expect(extractOpenAiPricingChunkUrl(html)).toBe(
+      "/_astro/pricing.ABC123.js"
+    );
     expect(() => extractOpenAiPricingChunkUrl("<div></div>")).toThrow(
       /component script URL/u
     );
@@ -798,16 +943,19 @@ function pricingEntry(modelId, tieredPricingThresholdTokens) {
   };
 }
 
-function table(rows) {
+function table(
+  rows,
+  headers = [
+    "Model",
+    "Base Input Tokens",
+    "5m Cache Writes",
+    "1h Cache Writes",
+    "Cache Hits & Refreshes",
+    "Output Tokens"
+  ]
+) {
   return `<table>
-    <tr>
-      <th>Model</th>
-      <th>Base Input Tokens</th>
-      <th>5m Cache Writes</th>
-      <th>1h Cache Writes</th>
-      <th>Cache Hits & Refreshes</th>
-      <th>Output Tokens</th>
-    </tr>
+    <tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>
     ${rows
       .map(
         (row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`

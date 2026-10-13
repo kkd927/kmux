@@ -23,6 +23,7 @@ import type { UsageHistoryDayRecord } from "@kmux/persistence";
 import { createUsageRuntime as createUsageRuntimeImpl } from "./usageRuntime";
 import type { UsageScanService } from "./usageScanWorkerClient";
 import type { TargetServiceRegistry } from "./targets/contracts";
+import { createAntigravityTestPricingResolver } from "../../../../tests/fixtures/modelPricing";
 
 function localPath(value: string) {
   return locatedPathForTarget({ kind: "local" }, value);
@@ -1045,6 +1046,7 @@ describe("usage runtime", () => {
     });
 
     const runtime = createUsageRuntime({
+      pricingResolver: createAntigravityTestPricingResolver(),
       getState: () => state,
       dispatchAppAction: vi.fn(),
       adapters: [adapter],
@@ -1127,6 +1129,7 @@ describe("usage runtime", () => {
     });
 
     const runtime = createUsageRuntime({
+      pricingResolver: createAntigravityTestPricingResolver(),
       getState: () => state,
       dispatchAppAction: vi.fn(),
       adapters: [adapter],
@@ -1196,6 +1199,7 @@ describe("usage runtime", () => {
     });
 
     const runtime = createUsageRuntime({
+      pricingResolver: createAntigravityTestPricingResolver(),
       getState: () => state,
       dispatchAppAction: vi.fn(),
       adapters: [adapter],

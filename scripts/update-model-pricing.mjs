@@ -162,9 +162,48 @@ export function parseClaudePricingTable(
   activeDate = resolveModelPricingDate()
 ) {
   assertPricingDayKey(activeDate, "Claude pricing active date");
-  const rows = parseHtmlTable(tableHtml)
-    .filter((row) => row[0]?.startsWith("Claude "))
-    .map(parseClaudePricingRow);
+  const tableRows = parseHtmlTable(tableHtml, (html, attributes) => ({
+    html,
+    text: stripHtml(html),
+    rowSpan: Number(/\browspan=["'](\d+)["']/iu.exec(attributes)?.[1] ?? 1)
+  }));
+  const headerIndex = tableRows.findIndex((row) =>
+    row.some((cell) => /^(?:base input tokens|input)$/iu.test(cell.text))
+  );
+  const columns = claudePricingColumnsFromHeader(tableRows[headerIndex] ?? []);
+  const rows = [];
+  let spanningModelCell;
+  let remainingModelRows = 0;
+  for (const cells of tableRows.slice(headerIndex + 1)) {
+    const row = [...cells];
+    if (remainingModelRows > 0) {
+      row.splice(columns.model, 0, spanningModelCell);
+      remainingModelRows -= 1;
+    } else {
+      spanningModelCell = row[columns.model];
+      remainingModelRows = (spanningModelCell?.rowSpan ?? 1) - 1;
+    }
+    const sourceLabel = claudeModelCellText(row[columns.model]?.html ?? "");
+    if (!sourceLabel.startsWith("Claude ")) {
+      continue;
+    }
+    const parsed = parseClaudePricingRow(row, columns, sourceLabel);
+    if (parsed.inputTokenRange?.kind === "over") {
+      mergeClaudePricingTier(rows.at(-1), parsed);
+    } else {
+      rows.push(parsed);
+    }
+  }
+  if (remainingModelRows > 0) {
+    throw new Error("Incomplete Claude model pricing rowspan.");
+  }
+  for (const row of rows) {
+    if (row.inputTokenRange && !row.entry.tieredPricingThresholdTokens) {
+      throw new Error(
+        `Missing Claude long-context pricing for ${row.modelId}.`
+      );
+    }
+  }
 
   return selectActiveClaudePricingRows(rows, activeDate).map(
     (row) => row.entry
@@ -339,10 +378,7 @@ function openAiLongContextEntries({
   const entries = [];
   const unknownPricedModelIds = [];
   for (const [modelId, prices] of Object.entries(tierTable)) {
-    if (
-      typeof prices.input !== "number" ||
-      typeof prices.output !== "number"
-    ) {
+    if (typeof prices.input !== "number" || typeof prices.output !== "number") {
       continue;
     }
     if (!knownModelIds.has(modelId)) {
@@ -478,7 +514,8 @@ function readBalancedObject(source, start) {
 function parseLongContextTableObject(objectSource) {
   const json = objectSource
     .replace(/([{,])\s*([A-Za-z_$][\w$]*)\s*:/gu, '$1"$2":')
-    .replace(/:\s*\.(\d)/gu, ":0.$1");
+    .replace(/:\s*\.(\d)/gu, ":0.$1")
+    .replace(/:\s*`-`/gu, ':"-"');
   let parsed;
   try {
     parsed = JSON.parse(json);
@@ -919,12 +956,12 @@ function openAiPricingDiagnostics(html, mode) {
   }
 }
 
-function parseHtmlTable(tableHtml) {
+function parseHtmlTable(tableHtml, mapCell = stripHtml) {
   const rows = [];
   for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gu)) {
     const cells = [
-      ...rowMatch[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gu)
-    ].map((cellMatch) => stripHtml(cellMatch[1]));
+      ...rowMatch[1].matchAll(/<t[dh]\b([^>]*)>([\s\S]*?)<\/t[dh]>/gu)
+    ].map((cellMatch) => mapCell(cellMatch[2], cellMatch[1]));
     if (cells.length > 0) {
       rows.push(cells);
     }
@@ -1055,12 +1092,50 @@ function compareVersionLike(left, right) {
   return left.localeCompare(right);
 }
 
-function parseClaudePricingRow(row) {
-  const sourceLabel = row[0] ?? "";
+function claudePricingColumnsFromHeader(header) {
+  const labels = {
+    model: /^(?:model|name)$/u,
+    inputCostPerMillionTokens: /^(?:base input tokens|input)$/u,
+    outputCostPerMillionTokens: /^(?:output tokens|output)$/u,
+    cacheReadCostPerMillionTokens: /^(?:cache )?hits (?:&|and) refreshes$/u,
+    cacheCreateCostPerMillionTokens: /^5m (?:cache )?writes$/u
+  };
+  return Object.fromEntries(
+    Object.entries(labels).map(([key, pattern]) => {
+      const index = header.findIndex((cell) =>
+        pattern.test(normalizePricingHeader(cell.text))
+      );
+      if (index < 0) {
+        throw new Error(`Could not find Claude pricing ${key} column.`);
+      }
+      return [key, index];
+    })
+  );
+}
+
+function claudeModelCellText(html) {
+  for (const match of html.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/giu)) {
+    const text = stripHtml(match[1]);
+    if (text.startsWith("Claude ")) {
+      return text;
+    }
+  }
+  // Retired models have no link, and their status buttons contain icon text.
+  return stripHtml(html.replace(/<button\b[^>]*>[\s\S]*?<\/button\s*>/giu, ""));
+}
+
+function parseClaudePricingRow(row, columns, sourceLabel) {
   const identity = parseClaudeModelIdentity(sourceLabel);
-  const prices = row.slice(1).map(parseFirstDollar);
-  if (prices.length < 5 || prices.some((price) => !Number.isFinite(price))) {
-    throw new Error(`Could not parse Claude pricing row: ${row.join(" | ")}`);
+  const prices = {};
+  for (const [key, index] of Object.entries(columns)) {
+    if (key === "model") {
+      continue;
+    }
+    const price = parseFirstDollar(row[index]?.text ?? "");
+    if (!Number.isFinite(price)) {
+      throw new Error(`Could not parse Claude ${key} for ${sourceLabel}.`);
+    }
+    prices[key] = price;
   }
 
   const modelId = claudeModelId(identity.modelName);
@@ -1071,15 +1146,52 @@ function parseClaudePricingRow(row) {
     sourceLabel,
     activeFrom: identity.activeFrom,
     activeThrough: identity.activeThrough,
+    inputTokenRange: parseClaudeInputTokenRange(
+      row[columns.inputCostPerMillionTokens].text
+    ),
     entry: {
       modelId,
-      inputCostPerMillionTokens: prices[0],
-      outputCostPerMillionTokens: prices[4],
-      cacheReadCostPerMillionTokens: prices[3],
-      cacheCreateCostPerMillionTokens: prices[1],
+      ...prices,
       aliases: [claudeDottedAlias(identity.modelName)]
     }
   };
+}
+
+function parseClaudeInputTokenRange(value) {
+  if (!/\bfor prompts\b/iu.test(value)) {
+    return undefined;
+  }
+  const match = /\bfor prompts (up to|over) ([\d,]+) tokens$/iu.exec(value);
+  const tokens = Number(match?.[2].replace(/,/gu, ""));
+  if (!match || !Number.isSafeInteger(tokens) || tokens <= 0) {
+    throw new Error(`Could not parse Claude input token range: ${value}`);
+  }
+  return { kind: match[1].toLowerCase(), tokens };
+}
+
+function mergeClaudePricingTier(base, above) {
+  if (
+    !base ||
+    base.modelId !== above.modelId ||
+    base.activeFrom !== above.activeFrom ||
+    base.activeThrough !== above.activeThrough ||
+    base.inputTokenRange?.kind !== "up to" ||
+    base.inputTokenRange.tokens !== above.inputTokenRange.tokens ||
+    base.entry.tieredPricingThresholdTokens
+  ) {
+    throw new Error(
+      `Unmatched Claude long-context pricing for ${above.modelId}.`
+    );
+  }
+  base.entry.tieredPricingThresholdTokens = above.inputTokenRange.tokens;
+  for (const key of [
+    "inputCostPerMillionTokens",
+    "outputCostPerMillionTokens",
+    "cacheReadCostPerMillionTokens",
+    "cacheCreateCostPerMillionTokens"
+  ]) {
+    base.entry[`${key}AboveThreshold`] = above.entry[key];
+  }
 }
 
 function parseClaudeModelIdentity(value) {

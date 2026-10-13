@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createAntigravityTestPricingResolver } from "../../../tests/fixtures/modelPricing";
 
 import {
   BUNDLED_MODEL_PRICING_CATALOG,
@@ -136,10 +137,12 @@ describe("model pricing", () => {
   it.each([
     ["Gemini 3.5 Flash (Medium)", "gemini-3.5-flash"],
     ["Gemini 3.5 Flash (High)", "gemini-3.5-flash"],
-    ["gemini-3.5-flash-medium", "gemini-3.5-flash"],
-    ["gemini-3.1-pro-preview-customtools", "gemini-3.1-pro-preview"]
-  ])("canonicalizes confirmed Gemini model aliases: %s", (model, modelId) => {
-    expect(resolveCanonicalModelId({ vendor: "gemini", model })).toBe(modelId);
+    ["gemini-3.5-flash-medium", "gemini-3.5-flash"]
+  ])("canonicalizes configured Gemini model aliases: %s", (model, modelId) => {
+    const resolver = createAntigravityTestPricingResolver();
+    expect(resolver.resolveCanonicalModelId({ vendor: "gemini", model })).toBe(
+      modelId
+    );
   });
 
   it("canonicalizes confirmed Claude dotted aliases", () => {
@@ -593,8 +596,9 @@ describe("model pricing", () => {
     expect(estimate!.cacheReadCostUsd).toBeGreaterThan(0);
   });
 
-  it("uses Gemini 3.5 Flash pricing for Antigravity model labels", () => {
-    const estimate = estimateUsageComponentCosts({
+  it("uses configured Gemini pricing for Antigravity model labels", () => {
+    const resolver = createAntigravityTestPricingResolver();
+    const estimate = resolver.estimateUsageComponentCosts({
       vendor: "gemini",
       model: "Gemini 3.5 Flash (Medium)",
       inputTokens: 2_000,
