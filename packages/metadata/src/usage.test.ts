@@ -1395,7 +1395,7 @@ describe("usage adapters", () => {
           status: "DONE",
           created_at: "2026-06-02T03:55:54.000Z",
           content:
-            "The user changed setting `Model Selection` from None to Gemini 3.5 Flash (Medium).\n<USER_REQUEST>\nhello\n</USER_REQUEST>"
+            "The user changed setting `Model Selection` from None to Gemini 3.8 Flash.\n<USER_REQUEST>\nhello\n</USER_REQUEST>"
         }),
         JSON.stringify({
           step_index: 1,
@@ -1444,7 +1444,7 @@ describe("usage adapters", () => {
         vendor: "antigravity",
         sessionId: conversationId,
         threadId: `${conversationId}:0`,
-        model: "Gemini 3.5 Flash (Medium)",
+        model: "Gemini 3.8 Flash",
         cwd: workspace,
         projectPath: workspace,
         outputTokens: 0,
@@ -1454,7 +1454,7 @@ describe("usage adapters", () => {
         vendor: "antigravity",
         sessionId: conversationId,
         threadId: `${conversationId}:1`,
-        model: "Gemini 3.5 Flash (Medium)",
+        model: "Gemini 3.8 Flash",
         cwd: workspace,
         projectPath: workspace,
         inputTokens: 0,
