@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 8,
-  "publishedAt": "2026-10-13T00:00:00.000Z",
-  "revision": "bb28deeddeeeead982eb2d00ceae4ffa81a43f618a5c9d8496567815b75a459b",
+  "catalogVersion": 9,
+  "publishedAt": "2026-10-20T00:00:00.000Z",
+  "revision": "b4fe9d0fe01a7d56defbe59762fd7b7ed54dc93d110e3c8314904a0e2ce345f6",
   "models": {
     "claude": {
       "standard": [
@@ -224,8 +224,8 @@
           "inputCostPerMillionTokensAboveThreshold": 4,
           "outputCostPerMillionTokensAboveThreshold": 15,
           "cacheReadCostPerMillionTokensAboveThreshold": 0.2,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 5,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 5
         },
         {
           "modelId": "gpt-6-astra",
@@ -236,8 +236,8 @@
           "inputCostPerMillionTokensAboveThreshold": 20,
           "outputCostPerMillionTokensAboveThreshold": 75,
           "cacheReadCostPerMillionTokensAboveThreshold": 2,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 25,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 25
         },
         {
           "modelId": "gpt-6-luna",
@@ -248,8 +248,8 @@
           "inputCostPerMillionTokensAboveThreshold": 0.2,
           "outputCostPerMillionTokensAboveThreshold": 0.75,
           "cacheReadCostPerMillionTokensAboveThreshold": 0.02,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 0.25,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 0.25
         },
         {
           "modelId": "gpt-6-sol",
@@ -445,18 +445,6 @@
           "cacheReadCostPerMillionTokens": 0
         },
         {
-          "modelId": "gpt-3.5-turbo-1106",
-          "inputCostPerMillionTokens": 1,
-          "outputCostPerMillionTokens": 2,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gpt-3.5-turbo-instruct",
-          "inputCostPerMillionTokens": 1.5,
-          "outputCostPerMillionTokens": 2,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
           "modelId": "gpt-4o-2024-05-13",
           "inputCostPerMillionTokens": 5,
           "outputCostPerMillionTokens": 15,
@@ -499,18 +487,6 @@
           "cacheReadCostPerMillionTokens": 0.5
         },
         {
-          "modelId": "davinci-002",
-          "inputCostPerMillionTokens": 2,
-          "outputCostPerMillionTokens": 2,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "babbage-002",
-          "inputCostPerMillionTokens": 0.4,
-          "outputCostPerMillionTokens": 0.4,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
           "modelId": "o1-pro",
           "inputCostPerMillionTokens": 150,
           "outputCostPerMillionTokens": 600,
@@ -533,8 +509,8 @@
           "inputCostPerMillionTokensAboveThreshold": 8,
           "outputCostPerMillionTokensAboveThreshold": 30,
           "cacheReadCostPerMillionTokensAboveThreshold": 0.4,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 10,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 10
         },
         {
           "modelId": "gpt-6-astra",
@@ -545,8 +521,8 @@
           "inputCostPerMillionTokensAboveThreshold": 40,
           "outputCostPerMillionTokensAboveThreshold": 150,
           "cacheReadCostPerMillionTokensAboveThreshold": 4,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 50,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 50
         },
         {
           "modelId": "gpt-6-luna",
@@ -557,8 +533,8 @@
           "inputCostPerMillionTokensAboveThreshold": 0.4,
           "outputCostPerMillionTokensAboveThreshold": 1.5,
           "cacheReadCostPerMillionTokensAboveThreshold": 0.04,
-          "cacheCreateCostPerMillionTokensAboveThreshold": 0.5,
-          "tieredPricingThresholdTokens": 272000
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 0.5
         },
         {
           "modelId": "gpt-6-sol",
