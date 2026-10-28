@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 9,
-  "publishedAt": "2026-10-20T00:00:00.000Z",
-  "revision": "b4fe9d0fe01a7d56defbe59762fd7b7ed54dc93d110e3c8314904a0e2ce345f6",
+  "catalogVersion": 10,
+  "publishedAt": "2026-10-27T00:00:00.000Z",
+  "revision": "b96e45bd8b670286334336a627cd81b5b4c25de6c8e5602c5fd5f11337368c86",
   "models": {
     "claude": {
       "standard": [
@@ -226,6 +226,18 @@
           "cacheReadCostPerMillionTokensAboveThreshold": 0.2,
           "tieredPricingThresholdTokens": 272000,
           "cacheCreateCostPerMillionTokensAboveThreshold": 5
+        },
+        {
+          "modelId": "gpt-6.1-terra",
+          "inputCostPerMillionTokens": 1,
+          "outputCostPerMillionTokens": 5,
+          "cacheReadCostPerMillionTokens": 0.05,
+          "cacheCreateCostPerMillionTokens": 1.25,
+          "inputCostPerMillionTokensAboveThreshold": 2,
+          "outputCostPerMillionTokensAboveThreshold": 7.5,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.1,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 2.5
         },
         {
           "modelId": "gpt-6-astra",
@@ -511,6 +523,18 @@
           "cacheReadCostPerMillionTokensAboveThreshold": 0.4,
           "tieredPricingThresholdTokens": 272000,
           "cacheCreateCostPerMillionTokensAboveThreshold": 10
+        },
+        {
+          "modelId": "gpt-6.1-terra",
+          "inputCostPerMillionTokens": 2,
+          "outputCostPerMillionTokens": 10,
+          "cacheReadCostPerMillionTokens": 0.1,
+          "cacheCreateCostPerMillionTokens": 2.5,
+          "inputCostPerMillionTokensAboveThreshold": 4,
+          "outputCostPerMillionTokensAboveThreshold": 15,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.2,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 5
         },
         {
           "modelId": "gpt-6-astra",
