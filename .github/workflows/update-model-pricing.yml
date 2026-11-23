@@ -41,5 +41,5 @@ jobs:
             - https://docs.anthropic.com/en/docs/about-claude/pricing
             - https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens
             - https://developers.openai.com/api/docs/pricing?latest-pricing=fast#text-tokens
-            - https://ai.google.dev/gemini-api/docs/pricing
+            - https://aistudio.google.com/docs/pricing
           labels: automated

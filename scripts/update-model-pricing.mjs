@@ -18,7 +18,7 @@ const SOURCES = {
       "https://developers.openai.com/api/docs/pricing?latest-pricing=standard#text-tokens",
     fast: "https://developers.openai.com/api/docs/pricing?latest-pricing=fast#text-tokens"
   },
-  gemini: "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
+  gemini: "https://aistudio.google.com/docs/pricing.md"
 };
 
 const MANUAL_ALIASES = {
@@ -61,7 +61,7 @@ async function main() {
   const managedModels = {
     claude: { standard: await fetchClaudePricing(pricingDate) },
     codex: await fetchCodexPricing(),
-    gemini: { standard: await fetchGeminiPricing() }
+    gemini: { standard: await fetchGeminiPricing(pricingDate) }
   };
 
   for (const vendor of VENDOR_ORDER) {
@@ -675,11 +675,15 @@ function openAiTextTokenPricingColumns(rows, mode, table) {
     );
   }
 
+  const cacheWrites = findColumnIndexes(header, "cache writes");
   const columns = {
     model: findColumnIndexes(header, "model")[0],
     input: findColumnIndexes(header, "input"),
     cachedInput: findColumnIndexes(header, "cached input"),
-    cacheWrites: findColumnIndexes(header, "cache writes"),
+    cacheWrites:
+      cacheWrites.length > 0
+        ? cacheWrites
+        : findColumnIndexes(header, "30m write"),
     output: findColumnIndexes(header, "output")
   };
   for (const key of ["model", "input", "cachedInput", "output"]) {
@@ -718,6 +722,11 @@ function assertOpenAiPricingMode(mode) {
 function assertOpenAiModelId(modelId, mode) {
   if (typeof modelId !== "string" || modelId.trim() === "") {
     throw new Error(`OpenAI ${mode} pricing row has an empty model ID.`);
+  }
+  if (modelId === "[object Object]") {
+    throw new Error(
+      `OpenAI ${mode} pricing row has an unparsed object model ID.`
+    );
   }
 }
 
@@ -758,9 +767,20 @@ function mergeCompatibleOpenAiPricingEntries(left, right) {
   return { ...left, ...right };
 }
 
-async function fetchGeminiPricing() {
-  const html = await fetchText(SOURCES.gemini);
-  const sections = html.split(/<div class="models-section">/u).slice(1);
+async function fetchGeminiPricing(activeDate) {
+  const markdown = await fetchText(SOURCES.gemini);
+  return parseGeminiPricingMarkdown(markdown, activeDate);
+}
+
+export function parseGeminiPricingMarkdown(
+  markdown,
+  activeDate = resolveModelPricingDate()
+) {
+  assertPricingDayKey(activeDate, "Gemini pricing active date");
+  const normalized = markdown.replace(/\r\n/gu, "\n");
+  const sections = normalized
+    .split(/(?:^|\n)(?=## )/u)
+    .filter((section) => section.startsWith("## "));
   const entries = [];
 
   for (const section of sections) {
@@ -770,26 +790,47 @@ async function fetchGeminiPricing() {
       continue;
     }
 
-    const standardTable = section.match(
-      /<section><h3[^>]*data-text="Standard"[\s\S]*?<table class="pricing-table">[\s\S]*?<\/table>/u
-    )?.[0];
+    const standardTab = section.match(
+      /\{%\s*tab\s+title=["']Standard["']\s*%\}([\s\S]*?)\{%\s*\/tab\s*%\}/u
+    )?.[1];
+    const standardTable = standardTab?.match(
+      /\{%\s*table\s*%\}([\s\S]*?)\{%\s*\/table\s*%\}/u
+    )?.[1];
     if (!standardTable) {
       continue;
     }
 
-    const rows = parseHtmlTable(standardTable);
-    const inputPrices = parseDollarTiers(findPriceRow(rows, "Input price"));
-    const outputPrices = parseDollarTiers(findPriceRow(rows, "Output price"));
-    const cachePrices = parseDollarTiers(
-      findPriceRow(rows, "Context caching price")
+    const rows = parseMarkdocTable(standardTable);
+    const paidColumnIndex = geminiPaidTierColumnIndex(rows[0] ?? []);
+    if (paidColumnIndex < 1) {
+      throw new Error(
+        `Could not find Gemini Standard Paid Tier column for ${modelId}.`
+      );
+    }
+
+    const canonicalId = canonicalGeminiModelId(modelId);
+    const inputPrices = parseGeminiDollarTiers(
+      findPriceRow(rows.slice(1), "Input price", paidColumnIndex),
+      activeDate,
+      `${canonicalId} input price`
+    );
+    const outputPrices = parseGeminiDollarTiers(
+      findPriceRow(rows.slice(1), "Output price", paidColumnIndex),
+      activeDate,
+      `${canonicalId} output price`
+    );
+    const cachePrices = parseGeminiDollarTiers(
+      findPriceRow(rows.slice(1), "Context caching price", paidColumnIndex),
+      activeDate,
+      `${canonicalId} context caching price`
     );
 
-    if (!inputPrices.base || !outputPrices.base) {
+    if (inputPrices.base === null || outputPrices.base === null) {
       continue;
     }
 
     const entry = {
-      modelId: canonicalGeminiModelId(modelId),
+      modelId: canonicalId,
       inputCostPerMillionTokens: inputPrices.base,
       outputCostPerMillionTokens: outputPrices.base,
       cacheReadCostPerMillionTokens: cachePrices.base ?? 0
@@ -799,7 +840,11 @@ async function fetchGeminiPricing() {
       entry.aliases = aliases;
     }
 
-    if (inputPrices.above || outputPrices.above || cachePrices.above) {
+    if (
+      inputPrices.above !== null ||
+      outputPrices.above !== null ||
+      cachePrices.above !== null
+    ) {
       entry.inputCostPerMillionTokensAboveThreshold =
         inputPrices.above ?? inputPrices.base;
       entry.outputCostPerMillionTokensAboveThreshold =
@@ -810,13 +855,20 @@ async function fetchGeminiPricing() {
         entry.cacheCreateCostPerMillionTokensAboveThreshold =
           entry.cacheReadCostPerMillionTokensAboveThreshold;
       }
+      const thresholdTokens =
+        inputPrices.thresholdTokens ??
+        outputPrices.thresholdTokens ??
+        cachePrices.thresholdTokens;
+      if (thresholdTokens && thresholdTokens !== 200_000) {
+        entry.tieredPricingThresholdTokens = thresholdTokens;
+      }
     }
 
     entries.push(entry);
   }
 
-  if (!entries.some((entry) => entry.modelId === "gemini-2.5-pro")) {
-    throw new Error("Could not find Gemini 2.5 Pro pricing.");
+  if (entries.length === 0) {
+    throw new Error("Could not find any Gemini text model pricing entries.");
   }
 
   return entries;
@@ -1234,8 +1286,9 @@ function parseClaudeModelIdentity(value) {
     if (windowKind !== "through" && windowKind !== "starting") {
       throw new Error(`Could not parse Claude model identity: ${value}`);
     }
-    const dayKey = parseClaudePricingWindowDate(
-      windowTokens.slice(1).join(" ")
+    const dayKey = parsePricingWindowDate(
+      windowTokens.slice(1).join(" "),
+      "Claude"
     );
     if (windowKind === "through") {
       identity.activeThrough = dayKey;
@@ -1246,13 +1299,15 @@ function parseClaudeModelIdentity(value) {
   return identity;
 }
 
-function parseClaudePricingWindowDate(value) {
+function parsePricingWindowDate(value, vendorLabel = "Claude") {
   const match =
     /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})$/iu.exec(
       value.trim()
     );
   if (!match) {
-    throw new Error(`Could not parse Claude pricing window date: ${value}`);
+    throw new Error(
+      `Could not parse ${vendorLabel} pricing window date: ${value}`
+    );
   }
 
   const monthIndex = [
@@ -1278,7 +1333,7 @@ function parseClaudePricingWindowDate(value) {
     parsed.getUTCMonth() !== monthIndex ||
     parsed.getUTCDate() !== day
   ) {
-    throw new Error(`Invalid Claude pricing window date: ${value}`);
+    throw new Error(`Invalid ${vendorLabel} pricing window date: ${value}`);
   }
 
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(
@@ -1298,7 +1353,7 @@ function selectActiveClaudePricingRows(rows, activeDate) {
   const selected = [];
   for (const [modelId, modelRows] of rowsByModelId) {
     const activeRows = modelRows.filter((row) =>
-      isClaudePricingRowActive(row, activeDate)
+      isPricingWindowActive(row, activeDate)
     );
     if (activeRows.length !== 1) {
       const prefix = activeRows.length === 0 ? "No active" : "Multiple active";
@@ -1313,11 +1368,11 @@ function selectActiveClaudePricingRows(rows, activeDate) {
   return selected;
 }
 
-function isClaudePricingRowActive(row, activeDate) {
-  if (row.activeFrom && activeDate < row.activeFrom) {
+function isPricingWindowActive(windowRange, activeDate) {
+  if (windowRange.activeFrom && activeDate < windowRange.activeFrom) {
     return false;
   }
-  if (row.activeThrough && activeDate > row.activeThrough) {
+  if (windowRange.activeThrough && activeDate > windowRange.activeThrough) {
     return false;
   }
   return true;
@@ -1376,10 +1431,19 @@ function claudeDottedAlias(modelName) {
   return modelName.toLowerCase().replace(/\s+/gu, "-");
 }
 
+const GEMINI_NON_TEXT_MODEL_TOKEN =
+  /(?:^|-)(?:transcribe|live|translate|image|tts|audio|video|embedding|robotics)(?:-|$)/u;
+
+function geminiSectionHeaderBlock(section) {
+  const stopIndex = section.search(/\{%\s*(?:hr\b|callout\b|tabs\b|table\b)/u);
+  return stopIndex >= 0 ? section.slice(0, stopIndex) : section;
+}
+
 function geminiTextModelIds(section) {
+  const header = geminiSectionHeaderBlock(section);
   return [
     ...new Set(
-      [...section.matchAll(/<code[^>]*>(gemini-[^<]+)<\/code>/gu)]
+      [...header.matchAll(/`(gemini-[^`\s]+)`/gu)]
         .map((match) => match[1])
         .filter((modelId) => isGeminiTextModelAlias(modelId))
     )
@@ -1393,8 +1457,10 @@ function isGeminiTextModelAlias(modelId) {
 }
 
 function isGeminiTextModel(modelId) {
-  return /^gemini-\d+(?:\.\d+)?-(?:pro|flash-lite|flash)(?:-preview(?:-\d{2}-\d{4})?)?$/u.test(
-    modelId
+  return (
+    /^gemini-\d+(?:\.\d+)?-[a-z]+(?:-[a-z]+)*(?:-preview(?:-\d{2}-\d{4})?)?$/u.test(
+      modelId
+    ) && !GEMINI_NON_TEXT_MODEL_TOKEN.test(modelId)
   );
 }
 
@@ -1402,27 +1468,144 @@ function canonicalGeminiModelId(modelId) {
   return modelId.replace(/-preview-\d{2}-\d{4}$/u, "-preview");
 }
 
-function parseDollarTiers(value) {
-  if (!value || /not available/iu.test(value)) {
-    return { base: null, above: null };
+function parseMarkdocTable(tableBody) {
+  return tableBody
+    .split(/^\s*---\s*$/mu)
+    .map((rowBlock) => {
+      const cells = [];
+      for (const rawLine of rowBlock.split("\n")) {
+        const bulletMatch = /^\s*\*\s+(.*)$/u.exec(rawLine);
+        if (bulletMatch) {
+          cells.push(bulletMatch[1].trim());
+        } else if (cells.length > 0) {
+          const trimmed = rawLine.trim();
+          if (trimmed !== "") {
+            cells[cells.length - 1] = `${cells[cells.length - 1]}\n${trimmed}`;
+          }
+        }
+      }
+      return cells;
+    })
+    .filter((cells) => cells.length > 0);
+}
+
+function geminiPaidTierColumnIndex(headerRow) {
+  return headerRow.findIndex((cell) => /paid tier/iu.test(cell));
+}
+
+function parseGeminiDollarTiers(value, activeDate, contextLabel) {
+  if (!value || /^\s*(?:not available|not applicable)\b/iu.test(value)) {
+    return { base: null, above: null, thresholdTokens: undefined };
   }
-  const prices = [...value.matchAll(/\$([0-9.]+)/gu)].map((match) =>
-    Number(match[1])
-  );
-  const tokenPrices = prices.filter((price, index) => {
-    if (index < 2) {
-      return true;
+
+  const lines = value
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/\{%[\s\S]*?%\}/gu, " ")
+        .replace(/\\+$/u, "")
+        .replace(/\s+/gu, " ")
+        .trim()
+    )
+    .filter(Boolean);
+
+  const tierEntries = { base: [], above: [] };
+  let thresholdTokens;
+
+  for (const line of lines) {
+    if (!/\$[0-9.]+/u.test(line)) {
+      continue;
     }
-    return !/per hour/iu.test(value);
-  });
+    if (/\bper hour\b|\bstorage price\b/iu.test(line)) {
+      continue;
+    }
+    if (/\((?!.*text)[^)]*\b(?:audio|video|images?)\b[^)]*\)/iu.test(line)) {
+      continue;
+    }
+
+    const price = parseFirstDollar(line);
+    if (!Number.isFinite(price)) {
+      continue;
+    }
+
+    const thresholdMatch = /prompts\s*>\s*([0-9.]+)k\b/iu.exec(line);
+    const tier =
+      thresholdMatch || /prompts\s*>/iu.test(line) ? "above" : "base";
+    if (thresholdMatch) {
+      thresholdTokens = Math.round(Number(thresholdMatch[1]) * 1_000);
+    }
+
+    const entry = { price, sourceLine: line };
+    const windowMatch =
+      /\b(through|starting)\s+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4})\b/iu.exec(
+        line
+      );
+    if (windowMatch) {
+      const dayKey = parsePricingWindowDate(windowMatch[2], "Gemini");
+      if (windowMatch[1].toLowerCase() === "through") {
+        entry.activeThrough = dayKey;
+      } else {
+        entry.activeFrom = dayKey;
+      }
+    } else if (/\b(?:through|starting)\b/iu.test(line)) {
+      throw new Error(
+        `Could not parse Gemini pricing window for ${contextLabel}: ${line}`
+      );
+    }
+
+    tierEntries[tier].push(entry);
+  }
+
   return {
-    base: tokenPrices[0] ?? null,
-    above: /prompts\s*>/iu.test(value) ? (tokenPrices[1] ?? null) : null
+    base: selectActiveGeminiTierPrice(
+      tierEntries.base,
+      activeDate,
+      contextLabel
+    ),
+    above: selectActiveGeminiTierPrice(
+      tierEntries.above,
+      activeDate,
+      `${contextLabel} (> threshold)`
+    ),
+    thresholdTokens
   };
 }
 
-function findPriceRow(rows, labelPrefix) {
-  return rows.find((row) => row[0]?.startsWith(labelPrefix))?.[2];
+function selectActiveGeminiTierPrice(entries, activeDate, contextLabel) {
+  if (entries.length === 0) {
+    return null;
+  }
+  const hasWindow = entries.some(
+    (entry) => entry.activeFrom || entry.activeThrough
+  );
+  if (hasWindow) {
+    const active = entries.filter((entry) =>
+      isPricingWindowActive(entry, activeDate)
+    );
+    if (active.length !== 1) {
+      const prefix = active.length === 0 ? "No active" : "Multiple active";
+      throw new Error(
+        `${prefix} Gemini pricing rows for ${contextLabel} on ${activeDate}: ${entries
+          .map((entry) => entry.sourceLine)
+          .join(" | ")}`
+      );
+    }
+    return active[0].price;
+  }
+
+  const uniquePrices = [...new Set(entries.map((entry) => entry.price))];
+  if (uniquePrices.length > 1) {
+    throw new Error(
+      `Ambiguous Gemini pricing rows for ${contextLabel}: ${entries
+        .map((entry) => entry.sourceLine)
+        .join(" | ")}`
+    );
+  }
+  return uniquePrices[0];
+}
+
+function findPriceRow(rows, labelPrefix, columnIndex = 2) {
+  return rows.find((row) => row[0]?.startsWith(labelPrefix))?.[columnIndex];
 }
 
 function parseFirstDollar(value) {
@@ -1481,8 +1664,16 @@ async function fetchText(url) {
 }
 
 function cellText(cell) {
-  if (cell && typeof cell === "object" && "__pricingHtml" in cell) {
-    return stripHtml(String(cell.__pricingHtml));
+  if (cell && typeof cell === "object") {
+    if ("__pricingHtml" in cell) {
+      return stripHtml(String(cell.__pricingHtml));
+    }
+    if ("__pricingTooltipHeading" in cell) {
+      return cellText(cell.__pricingTooltipHeading);
+    }
+    if ("label" in cell && cell.label !== undefined && cell.label !== null) {
+      return cellText(cell.label);
+    }
   }
   return String(cell);
 }

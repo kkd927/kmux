@@ -9,6 +9,7 @@ import {
   mergeManagedPricingModels,
   parseClaudePricingHtml,
   parseClaudePricingTable,
+  parseGeminiPricingMarkdown,
   parseOpenAiLongContextPricing,
   parseOpenAiPricingHtml,
   parseOpenAiTextTokenPricingHtml,
@@ -927,6 +928,88 @@ describe("update-model-pricing OpenAI parser", () => {
     );
   });
 
+  it("unwraps deprecated model objects and maps 30m write headers", () => {
+    const html = openAiPricingPage([
+      {
+        mode: "fast",
+        flagshipHeadings: [
+          "Model",
+          "Input",
+          "Output",
+          "Cached input",
+          "30m write",
+          "12h write"
+        ],
+        flagshipRows: [
+          ["gpt-7.1-orbit", "$4.00", "$20.00", "$0.20", "$5.00", "$10.00"]
+        ],
+        flagshipPropsRows: [
+          ["gpt-7.1-orbit", 4, 0.2, 5, 20],
+          [{ label: "gpt-5.1", deprecated: true }, 2.5, 0.25, 20],
+          [{ label: "gpt-5-mini", deprecated: true }, 0.45, 0.045, 3.6]
+        ],
+        specializedHeadings: [
+          "Category",
+          "Model",
+          "Input",
+          "Output",
+          "Cached input"
+        ],
+        groups: [
+          {
+            model: "Codex",
+            rows: [
+              [{ label: "gpt-5.3-codex", deprecated: true }, 3.5, 28, 0.35]
+            ]
+          }
+        ]
+      }
+    ]);
+
+    expect(parseOpenAiPricingHtml(html, "fast")).toEqual([
+      {
+        modelId: "gpt-7.1-orbit",
+        inputCostPerMillionTokens: 4,
+        outputCostPerMillionTokens: 20,
+        cacheReadCostPerMillionTokens: 0.2,
+        cacheCreateCostPerMillionTokens: 5
+      },
+      {
+        modelId: "gpt-5.1",
+        inputCostPerMillionTokens: 2.5,
+        outputCostPerMillionTokens: 20,
+        cacheReadCostPerMillionTokens: 0.25
+      },
+      {
+        modelId: "gpt-5-mini",
+        inputCostPerMillionTokens: 0.45,
+        outputCostPerMillionTokens: 3.6,
+        cacheReadCostPerMillionTokens: 0.045
+      },
+      {
+        modelId: "gpt-5.3-codex",
+        inputCostPerMillionTokens: 3.5,
+        outputCostPerMillionTokens: 28,
+        cacheReadCostPerMillionTokens: 0.35
+      }
+    ]);
+  });
+
+  it("rejects unparsed object model IDs instead of emitting [object Object]", () => {
+    const html = openAiPricingPage([
+      {
+        mode: "standard",
+        flagshipRows: [["gpt-new", "$1.00", "$0.10", "$5.00"]],
+        flagshipPropsRows: [[{ unexpected: true }, 1, 0.1, 5]],
+        groups: [{ model: "Codex", rows: [["codex-new", 2, 0.2, 10]] }]
+      }
+    ]);
+
+    expect(() => parseOpenAiPricingHtml(html, "standard")).toThrow(
+      /unparsed object model ID/u
+    );
+  });
+
   it("fails clearly when the requested tier has no valid pricing rows", () => {
     const html = openAiPricingPage([
       {
@@ -939,6 +1022,230 @@ describe("update-model-pricing OpenAI parser", () => {
     expect(() => parseOpenAiPricingHtml(html, "fast")).toThrow(
       /No OpenAI fast pricing entries were generated/u
     );
+  });
+});
+
+describe("update-model-pricing Gemini parser", () => {
+  const GEMINI_PRICING_MARKDOWN = `
+## Gemini 4 Carbon  {% id="gemini-4-carbon" %}
+
+{% two-column-layout %}
+  {% left-column %}
+  *[\`gemini-4-carbon\`](/docs/models/gemini-4-carbon)*
+  {% /left-column %}
+{% /two-column-layout %}
+
+{% hr /%}
+
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Not available
+  * $2.00 through November 30, 2026.
+  $4.00 starting December 1, 2026.
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Not available
+  * $10.00 through November 30, 2026.
+  $20.00 starting December 1, 2026.
+
+  ---
+
+  * Context caching price
+  * Not available
+  * $0.10 through November 30, 2026.
+  $0.20 starting December 1, 2026.
+  Implicit caching only (explicit caching is not supported).
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 3.1 Pro Preview  {% id="gemini-3.1-pro-preview" %}
+
+*[\`gemini-3.1-pro-preview\`](/docs/models/gemini-3.1-pro-preview) and
+  [\`gemini-3.1-pro-preview-customtools\`](/docs/models/gemini-3.1-pro-preview)*
+
+{% hr /%}
+
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Not available
+  * $2.00, prompts <= 200k tokens
+  $4.00, prompts > 200k tokens
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Not available
+  * $12.00, prompts <= 200k tokens
+  $18.00, prompts > 200k
+
+  ---
+
+  * Context caching price
+  * Not available
+  * $0.20, prompts <= 200k tokens
+  $0.40, prompts > 200k
+  $4.50 / 1,000,000 tokens per hour (storage price)
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 2.5 Flash  {% id="gemini-2.5-flash" %}
+
+*[\`gemini-2.5-flash\`](/docs/models/gemini-2.5-flash)*
+
+{% hr /%}
+
+{% callout type="caution" %}
+  Migrate to [Gemini 3.5 Flash-Lite (\`gemini-3.5-flash-lite\`)](/docs/models/gemini-3.5-flash-lite).
+{% /callout %}
+
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.30 (text / image / video)
+  $1.00 (audio)
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $2.50
+
+  ---
+
+  * Context caching price
+  * Not available
+  * $0.03 (text / image / video)
+  $0.1 (audio)
+  $1.00 / 1,000,000 tokens per hour (storage price)
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 3.1 Flash Image  {% id="gemini-3.1-flash-image" %}
+
+*[\`gemini-3.1-flash-image\`](/docs/models/gemini-3.1-flash-image)*
+
+{% hr /%}
+
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Not available
+  * $0.50 (text/image)
+
+  ---
+
+  * Output price
+  * Not available
+  * $3.00 (text and thinking)
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+`;
+
+  it("parses Markdoc text models, aliases, modality lines, and long-context tiers while ignoring callout references and non-text models", () => {
+    expect(
+      parseGeminiPricingMarkdown(GEMINI_PRICING_MARKDOWN, "2026-11-23")
+    ).toEqual([
+      {
+        modelId: "gemini-4-carbon",
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 10,
+        cacheReadCostPerMillionTokens: 0.1
+      },
+      {
+        modelId: "gemini-3.1-pro-preview",
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 12,
+        cacheReadCostPerMillionTokens: 0.2,
+        aliases: ["gemini-3.1-pro-preview-customtools"],
+        inputCostPerMillionTokensAboveThreshold: 4,
+        outputCostPerMillionTokensAboveThreshold: 18,
+        cacheReadCostPerMillionTokensAboveThreshold: 0.4,
+        cacheCreateCostPerMillionTokensAboveThreshold: 0.4
+      },
+      {
+        modelId: "gemini-2.5-flash",
+        inputCostPerMillionTokens: 0.3,
+        outputCostPerMillionTokens: 2.5,
+        cacheReadCostPerMillionTokens: 0.03
+      }
+    ]);
+  });
+
+  it("selects the active Gemini price across through/starting date windows", () => {
+    const entries = parseGeminiPricingMarkdown(
+      GEMINI_PRICING_MARKDOWN,
+      "2026-12-01"
+    );
+
+    expect(
+      entries.find((entry) => entry.modelId === "gemini-4-carbon")
+    ).toEqual({
+      modelId: "gemini-4-carbon",
+      inputCostPerMillionTokens: 4,
+      outputCostPerMillionTokens: 20,
+      cacheReadCostPerMillionTokens: 0.2
+    });
+  });
+
+  it("fails when a windowed Gemini price has no active rate or multiple overlapping rates", () => {
+    const expired = GEMINI_PRICING_MARKDOWN.replace(
+      "$4.00 starting December 1, 2026.",
+      ""
+    );
+    expect(() => parseGeminiPricingMarkdown(expired, "2026-12-01")).toThrow(
+      /No active Gemini pricing rows for gemini-4-carbon input price/u
+    );
+
+    const overlapping = GEMINI_PRICING_MARKDOWN.replace(
+      "$4.00 starting December 1, 2026.",
+      "$4.00 starting November 1, 2026."
+    );
+    expect(() => parseGeminiPricingMarkdown(overlapping, "2026-11-23")).toThrow(
+      /Multiple active Gemini pricing rows for gemini-4-carbon input price/u
+    );
+  });
+
+  it("fails when no Gemini text model entries can be parsed", () => {
+    expect(() =>
+      parseGeminiPricingMarkdown("# Empty page", "2026-11-23")
+    ).toThrow(/Could not find any Gemini text model pricing entries/u);
   });
 });
 

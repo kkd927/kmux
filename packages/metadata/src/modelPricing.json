@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 10,
-  "publishedAt": "2026-10-27T00:00:00.000Z",
-  "revision": "b96e45bd8b670286334336a627cd81b5b4c25de6c8e5602c5fd5f11337368c86",
+  "catalogVersion": 11,
+  "publishedAt": "2026-11-23T00:00:00.000Z",
+  "revision": "a512d409683c09402a3596b952baf30998b10dce019ecc9a6db8570036eb4861",
   "models": {
     "claude": {
       "standard": [
@@ -40,6 +40,26 @@
           "outputCostPerMillionTokensAboveThreshold": 2.5,
           "cacheReadCostPerMillionTokensAboveThreshold": 0.05,
           "cacheCreateCostPerMillionTokensAboveThreshold": 0.625
+        },
+        {
+          "modelId": "claude-mythos-5-2",
+          "inputCostPerMillionTokens": 8,
+          "outputCostPerMillionTokens": 40,
+          "cacheReadCostPerMillionTokens": 0.2,
+          "cacheCreateCostPerMillionTokens": 10,
+          "aliases": [
+            "claude-mythos-5.2"
+          ]
+        },
+        {
+          "modelId": "claude-fable-5-2",
+          "inputCostPerMillionTokens": 8,
+          "outputCostPerMillionTokens": 40,
+          "cacheReadCostPerMillionTokens": 0.2,
+          "cacheCreateCostPerMillionTokens": 10,
+          "aliases": [
+            "claude-fable-5.2"
+          ]
         },
         {
           "modelId": "claude-mythos-5-1",
@@ -200,21 +220,35 @@
           "aliases": [
             "claude-opus-4"
           ]
-        },
-        {
-          "modelId": "claude-haiku-3-5",
-          "inputCostPerMillionTokens": 0.8,
-          "outputCostPerMillionTokens": 4,
-          "cacheReadCostPerMillionTokens": 0.08,
-          "cacheCreateCostPerMillionTokens": 1,
-          "aliases": [
-            "claude-haiku-3.5"
-          ]
         }
       ]
     },
     "codex": {
       "standard": [
+        {
+          "modelId": "gpt-6.2-astra",
+          "inputCostPerMillionTokens": 8,
+          "outputCostPerMillionTokens": 40,
+          "cacheReadCostPerMillionTokens": 0.4,
+          "cacheCreateCostPerMillionTokens": 10,
+          "inputCostPerMillionTokensAboveThreshold": 16,
+          "outputCostPerMillionTokensAboveThreshold": 60,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.8,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 20
+        },
+        {
+          "modelId": "gpt-6.2-sol",
+          "inputCostPerMillionTokens": 2,
+          "outputCostPerMillionTokens": 10,
+          "cacheReadCostPerMillionTokens": 0.1,
+          "cacheCreateCostPerMillionTokens": 2.5,
+          "inputCostPerMillionTokensAboveThreshold": 4,
+          "outputCostPerMillionTokensAboveThreshold": 15,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.2,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 5
+        },
         {
           "modelId": "gpt-6.1-sol",
           "inputCostPerMillionTokens": 2,
@@ -427,48 +461,6 @@
           "cacheReadCostPerMillionTokens": 0.1
         },
         {
-          "modelId": "gpt-4.1-nano",
-          "inputCostPerMillionTokens": 0.1,
-          "outputCostPerMillionTokens": 0.4,
-          "cacheReadCostPerMillionTokens": 0.025
-        },
-        {
-          "modelId": "gpt-4-turbo-2024-04-09",
-          "inputCostPerMillionTokens": 10,
-          "outputCostPerMillionTokens": 30,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gpt-4-0613",
-          "inputCostPerMillionTokens": 30,
-          "outputCostPerMillionTokens": 60,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gpt-3.5-turbo",
-          "inputCostPerMillionTokens": 0.5,
-          "outputCostPerMillionTokens": 1.5,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gpt-3.5-turbo-0125",
-          "inputCostPerMillionTokens": 0.5,
-          "outputCostPerMillionTokens": 1.5,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "gpt-4o-2024-05-13",
-          "inputCostPerMillionTokens": 5,
-          "outputCostPerMillionTokens": 15,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "o4-mini",
-          "inputCostPerMillionTokens": 1.1,
-          "outputCostPerMillionTokens": 4.4,
-          "cacheReadCostPerMillionTokens": 0.275
-        },
-        {
           "modelId": "gpt-4o-mini",
           "inputCostPerMillionTokens": 0.15,
           "outputCostPerMillionTokens": 0.6,
@@ -487,31 +479,37 @@
           "cacheReadCostPerMillionTokens": 0
         },
         {
-          "modelId": "o3-mini",
-          "inputCostPerMillionTokens": 1.1,
-          "outputCostPerMillionTokens": 4.4,
-          "cacheReadCostPerMillionTokens": 0.55
-        },
-        {
           "modelId": "o3",
           "inputCostPerMillionTokens": 2,
           "outputCostPerMillionTokens": 8,
           "cacheReadCostPerMillionTokens": 0.5
-        },
-        {
-          "modelId": "o1-pro",
-          "inputCostPerMillionTokens": 150,
-          "outputCostPerMillionTokens": 600,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "o1",
-          "inputCostPerMillionTokens": 15,
-          "outputCostPerMillionTokens": 60,
-          "cacheReadCostPerMillionTokens": 7.5
         }
       ],
       "fast": [
+        {
+          "modelId": "gpt-6.2-astra",
+          "inputCostPerMillionTokens": 16,
+          "outputCostPerMillionTokens": 80,
+          "cacheReadCostPerMillionTokens": 0.8,
+          "cacheCreateCostPerMillionTokens": 20,
+          "inputCostPerMillionTokensAboveThreshold": 32,
+          "outputCostPerMillionTokensAboveThreshold": 120,
+          "cacheReadCostPerMillionTokensAboveThreshold": 1.6,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 40
+        },
+        {
+          "modelId": "gpt-6.2-sol",
+          "inputCostPerMillionTokens": 4,
+          "outputCostPerMillionTokens": 20,
+          "cacheReadCostPerMillionTokens": 0.2,
+          "cacheCreateCostPerMillionTokens": 5,
+          "inputCostPerMillionTokensAboveThreshold": 8,
+          "outputCostPerMillionTokensAboveThreshold": 30,
+          "cacheReadCostPerMillionTokensAboveThreshold": 0.4,
+          "tieredPricingThresholdTokens": 272000,
+          "cacheCreateCostPerMillionTokensAboveThreshold": 10
+        },
         {
           "modelId": "gpt-6.1-sol",
           "inputCostPerMillionTokens": 4,
@@ -672,24 +670,6 @@
           "cacheReadCostPerMillionTokens": 0.175
         },
         {
-          "modelId": "gpt-4.1-nano",
-          "inputCostPerMillionTokens": 0.2,
-          "outputCostPerMillionTokens": 0.8,
-          "cacheReadCostPerMillionTokens": 0.05
-        },
-        {
-          "modelId": "gpt-4o-2024-05-13",
-          "inputCostPerMillionTokens": 8.75,
-          "outputCostPerMillionTokens": 26.25,
-          "cacheReadCostPerMillionTokens": 0
-        },
-        {
-          "modelId": "o4-mini",
-          "inputCostPerMillionTokens": 2,
-          "outputCostPerMillionTokens": 8,
-          "cacheReadCostPerMillionTokens": 0.5
-        },
-        {
           "modelId": "gpt-4o-mini",
           "inputCostPerMillionTokens": 0.25,
           "outputCostPerMillionTokens": 1,
@@ -711,6 +691,30 @@
     },
     "gemini": {
       "standard": [
+        {
+          "modelId": "gemini-4-neon",
+          "inputCostPerMillionTokens": 3,
+          "outputCostPerMillionTokens": 15,
+          "cacheReadCostPerMillionTokens": 0.15
+        },
+        {
+          "modelId": "gemini-4-hydrogen",
+          "inputCostPerMillionTokens": 1.5,
+          "outputCostPerMillionTokens": 7.5,
+          "cacheReadCostPerMillionTokens": 0.075
+        },
+        {
+          "modelId": "gemini-4-carbon",
+          "inputCostPerMillionTokens": 2,
+          "outputCostPerMillionTokens": 10,
+          "cacheReadCostPerMillionTokens": 0.1
+        },
+        {
+          "modelId": "gemini-4-argon",
+          "inputCostPerMillionTokens": 2,
+          "outputCostPerMillionTokens": 10,
+          "cacheReadCostPerMillionTokens": 0.1
+        },
         {
           "modelId": "gemini-3.8-flash",
           "inputCostPerMillionTokens": 0.75,
